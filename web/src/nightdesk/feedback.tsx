@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 type AlertTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
@@ -57,11 +57,27 @@ const ToastContext = createContext<ToastApi | null>(null);
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const nextId = useRef(0);
+  // Every scheduled dismissal, so a toast raised just before the provider is
+  // torn down (a navigation away, a test unmount) cannot fire setItems against
+  // a dead tree 4.2s later.
+  const timers = useRef(new Set<number>());
 
   const toast = useCallback<ToastApi['toast']>((title, opts) => {
     const id = ++nextId.current;
     setItems((xs) => [...xs, { id, title, description: opts?.description, tone: opts?.tone }]);
-    setTimeout(() => setItems((xs) => xs.filter((t) => t.id !== id)), 4200);
+    const timer = window.setTimeout(() => {
+      timers.current.delete(timer);
+      setItems((xs) => xs.filter((t) => t.id !== id));
+    }, 4200);
+    timers.current.add(timer);
+  }, []);
+
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      for (const timer of pending) window.clearTimeout(timer);
+      pending.clear();
+    };
   }, []);
 
   return (

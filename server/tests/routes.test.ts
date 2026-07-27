@@ -1071,6 +1071,39 @@ describe('live-mode screen contracts', () => {
     }
   });
 
+  it('one claimant with a shell path is enough — a peer plane saying no does not erase it', async () => {
+    contributions.clear();
+    // The union is ANY, not ALL (reconcile.ts unionLocalShell), and the gate
+    // downstream is what keeps that honest: Mist claims this controller and
+    // answers capabilities().localShell === false, AOS-8 claims the same box and
+    // reports a shell. ALL would lose a working shell to Mist's disclaimer; ANY
+    // cannot offer a broken one, because the collector credentials still have to
+    // be there for the gate to open.
+    const saved = await saveCreds('mist', { apiHost: 'api.mist.example.com', orgId: 'org-1', token: 'mist-token-1234' });
+    expect(saved.status).toBe(200);
+    const savedAos8 = await saveCreds('aos8', { master: 'https://10.48.0.10:4343', username: 'ro', password: 'pw-12345678' });
+    expect(savedAos8.status).toBe(200);
+    const CONTROLLER = { ...DEVICE, name: 'mc-both-1', type: 'controller', ip: '10.48.0.10' };
+    try {
+      contributions.set('mist', { devices: [{ ...CONTROLLER, plane: 'MIST', planeTone: 'info', localShell: false }] });
+      contributions.set('aos8', { devices: [{ ...CONTROLLER, plane: 'AOS-8', planeTone: 'accent', localShell: true }] });
+      const noCreds = await getJson('/api/devices/mc-both-1');
+      expect(noCreds.body.device.claimedBy).toEqual(['MIST', 'AOS-8']);
+      expect(noCreds.body.device.localShell).toBe(false); // no collector credentials — no shell path at all
+
+      const savedLocal = await saveCreds('local', { host: 'jump-01.meridian.health', username: 'svc-portal', password: 'pw-12345678' });
+      expect(savedLocal.status).toBe(200);
+      const { body } = await getJson('/api/devices/mc-both-1');
+      expect(body.device.localShell).toBe(true);
+      expect(body.terminal.quickCommands).toContain('show ap database');
+    } finally {
+      await fetch(`${base}/api/systems/mist`, { method: 'DELETE' });
+      await fetch(`${base}/api/systems/aos8`, { method: 'DELETE' });
+      await fetch(`${base}/api/systems/local`, { method: 'DELETE' });
+      contributions.clear();
+    }
+  });
+
   it('live auth rows badge the plane that owns the NAS, not the reporting policy plane', async () => {
     contributions.clear();
     const event = {
@@ -1216,13 +1249,62 @@ describe('live-mode screen contracts', () => {
 
   it('live launchpad offers only planes and devices this estate actually has', async () => {
     contributions.clear();
-    contributions.set('central', { devices: [{ ...DEVICE, localShell: true }] });
-    const { body } = await getJson('/api/overview');
-    const labels = (body.launchpad as any[]).map((row) => row.label);
-    expect(labels).toContain('SSH to sw-test-1');
-    expect(labels).toContain('Run compliance scan');
-    expect(labels.some((l: string) => l.includes('Mist'))).toBe(false); // Mist is not linked
-    expect(labels).not.toContain('Reconcile licences with GreenLake'); // GreenLake is not linked
+    // The row claims a shell and names a dialable IP, but no collector
+    // credentials are stored — the credentials ARE the shell path, so the
+    // terminal would refuse. A Launchpad row here is a control that cannot act.
+    const SHELL_ROW = { ...DEVICE, name: 'sw-shell-1', plane: 'LOCAL', planeTone: 'neutral', localShell: true, ip: '10.1.0.9' };
+    contributions.set('local', { devices: [SHELL_ROW] });
+    const noCreds = await getJson('/api/overview');
+    const noCredLabels = (noCreds.body.launchpad as any[]).map((row) => row.label);
+    expect(noCredLabels.some((l: string) => l.startsWith('SSH to'))).toBe(false);
+    expect(noCredLabels).toContain('Run compliance scan');
+
+    const savedLocal = await saveCreds('local', { host: 'jump-01.meridian.health', username: 'svc-portal', password: 'pw-12345678' });
+    expect(savedLocal.status).toBe(200);
+    try {
+      contributions.set('local', { devices: [SHELL_ROW] });
+      const { body } = await getJson('/api/overview');
+      const labels = (body.launchpad as any[]).map((row) => row.label);
+      // Same gate the device page uses, so the row cannot land on a page that
+      // then says there is no shell here.
+      expect(labels).toContain('SSH to sw-shell-1');
+      expect(labels).toContain('Run compliance scan');
+      expect(labels.some((l: string) => l.includes('Mist'))).toBe(false); // Mist is not linked
+      expect(labels).not.toContain('Reconcile licences with GreenLake'); // GreenLake is not linked
+
+      // …and the device page agrees: one gate, one answer.
+      const detail = await getJson('/api/devices/sw-shell-1');
+      expect(detail.body.device.localShell).toBe(true);
+      expect(detail.body.terminal.quickCommands.length).toBeGreaterThan(0);
+    } finally {
+      await fetch(`${base}/api/systems/local`, { method: 'DELETE' });
+      contributions.clear();
+    }
+  });
+
+  it('the served inventory carries the live shell gate, not the plane row claim', async () => {
+    contributions.clear();
+    // /api/devices is where every other live consumer gets its rows, so the
+    // correction belongs on the way out of the merge — not on the one endpoint
+    // that happens to render it.
+    const CLAIMED = { ...DEVICE, name: 'sw-claimed-1', plane: 'LOCAL', planeTone: 'neutral', localShell: true, ip: '10.1.0.7' };
+    contributions.set('local', { devices: [CLAIMED] });
+    const noCreds = await getJson('/api/devices');
+    expect((noCreds.body.devices as any[])[0]).toMatchObject({ name: 'sw-claimed-1', localShell: false });
+
+    const savedLocal = await saveCreds('local', { host: 'jump-01.meridian.health', username: 'svc-portal', password: 'pw-12345678' });
+    expect(savedLocal.status).toBe(200);
+    try {
+      contributions.set('local', { devices: [CLAIMED, { ...CLAIMED, name: 'sw-claimed-2', ip: undefined }] });
+      const withCreds = await getJson('/api/devices');
+      const rows = withCreds.body.devices as any[];
+      expect(rows.find((d) => d.name === 'sw-claimed-1').localShell).toBe(true);
+      // Same claim, same credentials — but no management IP to dial.
+      expect(rows.find((d) => d.name === 'sw-claimed-2').localShell).toBe(false);
+    } finally {
+      await fetch(`${base}/api/systems/local`, { method: 'DELETE' });
+      contributions.clear();
+    }
   });
 
   it('a local-only device is coverage, not an ownership-reconciliation finding', async () => {

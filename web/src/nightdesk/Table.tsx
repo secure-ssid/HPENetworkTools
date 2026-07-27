@@ -44,6 +44,11 @@ function Row({
       onKeyDown={
         onClick
           ? (event) => {
+              // Only the row's own key presses navigate. Enter/Space inside a
+              // nested control (an input being submitted, a button being
+              // activated) belongs to that control, and swallowing it here
+              // would fire row navigation on top of the control's own action.
+              if (event.target !== event.currentTarget) return;
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
                 onClick();

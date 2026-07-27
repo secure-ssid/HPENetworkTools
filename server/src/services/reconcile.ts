@@ -92,11 +92,20 @@ const PLANE_ID_FOR: Partial<Record<Plane, PlaneId>> = Object.fromEntries(
  * /api/devices and /api/devices/:name, which is the false-negative twin of the
  * "gate can never open" defect.
  *
- * This is the row-level claim only. Whether the portal can open a session RIGHT
- * NOW additionally needs the claiming planes' capabilities() and live local
- * credentials, both of which are singleton/registry reads; the route layer ANDs
- * them in (screens.ts canOpenShell). Doing it here would make this module
- * impure and circular — terminal.ts imports planeIdForLabel from this file.
+ * ANY, not ALL — deliberately, and the honesty argument runs the other way from
+ * the usual one. Offering a shell that fails is a broken control, so if this
+ * value reached a button unchanged, ALL would be the safer rule. It does not:
+ * this is the row-level CLAIM only, and every live consumer reads it after the
+ * composition layer has ANDed in the claiming planes' capabilities() and the
+ * collector credentials that ARE the shell path (screens.ts canOpenShell,
+ * applied to every live row in liveDeviceData). So ANY here can never surface a
+ * control that cannot act, while ALL here would let one cloud plane's "I do not
+ * provide a shell" permanently hide a peer's working one — a false negative
+ * nothing downstream can recover, because the positive claim is gone.
+ *
+ * The live facts stay out of this module on purpose: both are singleton/registry
+ * reads, and importing them would make this module impure and circular —
+ * terminal.ts imports planeIdForLabel from this file.
  */
 function unionLocalShell(claims: readonly Claim[]): boolean {
   return claims.some((c) => c.row.localShell === true);

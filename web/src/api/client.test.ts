@@ -3,6 +3,7 @@ import {
   DEFAULT_SETTINGS,
   getAlerts,
   getChangeHistory,
+  getChangeQueue,
   getConfigure,
   getDeviceDetail,
   getDevices,
@@ -511,6 +512,33 @@ describe('screen API source handling', () => {
 
     const events = await getChangeHistory();
     expect(events).toEqual({ error: 'audit log unreadable' });
+  });
+
+  it('treats a wrong-shaped 200 on the audit log as an API failure, not an empty log', async () => {
+    // A 200 whose body has no `events` array used to flow through as
+    // `undefined`, which the drawer would render as "nothing brokered yet".
+    mockFetch({ ok: true, body: { ok: true } });
+
+    expect(await getChangeHistory()).toEqual({
+      error: 'The portal API returned an unexpected change-history payload.',
+    });
+  });
+
+  it('treats a wrong-shaped 200 on the change queue as an API failure, not an empty queue', async () => {
+    // An undefined queue would read as "nothing is pending" while the broker
+    // may in fact be holding changes the operator cannot see.
+    mockFetch({ ok: true, body: { changes: { id: 'chg-7f21' } } });
+
+    expect(await getChangeQueue()).toEqual({
+      error: 'The portal API returned an unexpected change-queue payload.',
+    });
+  });
+
+  it('returns the broker queue rows from a well-shaped envelope', async () => {
+    mockFetch({ ok: true, body: { changes: [{ id: 'chg-7f21', ticket: 'NET-4166' }] } });
+
+    const queue = await getChangeQueue();
+    expect(Array.isArray(queue) && queue[0]).toMatchObject({ id: 'chg-7f21', ticket: 'NET-4166' });
   });
 
   it('returns null (never fixtures) for the audit log when no backend answers', async () => {

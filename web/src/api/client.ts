@@ -723,7 +723,15 @@ export async function queueChange(
 /** GET /api/configure/queue — null only when no backend answers. */
 export async function getChangeQueue(): Promise<BrokeredChange[] | ApiError | null> {
   const result = await fetchScreen<{ changes: BrokeredChange[] }>('/api/configure/queue');
-  if (result.kind === 'ok') return result.data.changes;
+  if (result.kind === 'ok') {
+    // A 200 carrying the wrong body is an API failure, not an empty queue:
+    // handing `undefined` to the screen would silently read as "nothing is
+    // pending" and let the operator push against a queue nobody can see.
+    if (!Array.isArray(result.data?.changes)) {
+      return { error: 'The portal API returned an unexpected change-queue payload.' };
+    }
+    return result.data.changes;
+  }
   if (result.kind === 'http-error') return { error: result.message };
   return null;
 }
@@ -744,7 +752,14 @@ export async function getChangeHistory(limit = 50): Promise<BrokerAuditEvent[] |
   const result = await fetchScreen<{ events: BrokerAuditEvent[] }>(
     `/api/configure/history?limit=${encodeURIComponent(String(limit))}`,
   );
-  if (result.kind === 'ok') return result.data.events;
+  if (result.kind === 'ok') {
+    // Same rule as an HTTP error: a wrong-shaped 200 must not collapse into an
+    // empty drawer that reads as "nothing has ever been brokered here".
+    if (!Array.isArray(result.data?.events)) {
+      return { error: 'The portal API returned an unexpected change-history payload.' };
+    }
+    return result.data.events;
+  }
   if (result.kind === 'http-error') return { error: result.message };
   return null;
 }

@@ -287,13 +287,26 @@ function planeIsStale(plane: Plane, stale: ReadonlySet<PlaneId>): boolean {
   return id !== undefined && stale.has(id);
 }
 
-/** Reconcile every plane's last good device list into one row per device. */
+/**
+ * Reconcile every plane's last good device list into one row per device.
+ *
+ * The `localShell` on the rows that leave here is the LIVE gate, not the
+ * claiming planes' row claim. reconcile.ts can only union what the planes
+ * asserted — it is a pure module with no registry and no credential store, and
+ * terminal.ts imports from it, so it cannot import back — which makes this the
+ * first place that knows the other two facts (the claiming planes'
+ * capabilities() and whether the collector credentials that ARE the shell path
+ * exist). Correcting it once, here, is what stops one consumer offering a shell
+ * another would refuse: the Launchpad SSH row, the site reachability core, the
+ * device-detail flag and its terminal block all read the same corrected field.
+ */
 function liveDeviceData(): { devices: ReconciledDeviceRow[]; doubleClaimed: number; unclaimed: number } {
   const byPlane: Partial<Record<PlaneId, readonly DeviceRow[]>> = {};
   for (const [id, pull] of poller.contributionsByPlane()) {
     if (pull.devices) byPlane[id] = pull.devices;
   }
-  return reconcileDevices(byPlane, stalePlanes());
+  const { devices, doubleClaimed, unclaimed } = reconcileDevices(byPlane, stalePlanes());
+  return { devices: devices.map(withLiveShellGate), doubleClaimed, unclaimed };
 }
 
 function datasetReported(key: keyof PlanePull): boolean {
@@ -520,21 +533,25 @@ function planeAllowsShell(device: ReconciledDeviceRow): boolean {
 }
 
 /**
- * The live device-detail row, with `localShell` corrected to what the portal
- * can ACTUALLY do rather than what the claiming plane's inventory asserted.
- *
- * DeviceDetail drives its WS attempt and all three honest shell notes off this
- * one field, so a row that says `true` while the bridge would refuse renders a
- * terminal that can never open (finding
- * devicedetail-live-terminal-gate-can-never-open). Three facts, weakest wins:
- *   - the plane's own row claim (`localShell`),
+ * Can the portal open a recorded shell to this row RIGHT NOW? Three facts,
+ * weakest wins:
+ *   - the plane's own row claim (`localShell`, a union across claimants),
  *   - no claiming plane's adapter vetoing it (planeAllowsShell), and
  *   - terminalManager.canShell(): the device class has a CLI, the inventory
  *     names a dialable management IP, and local-plane credentials — the shell
  *     path itself — are stored.
- * Detail-only on purpose: /api/devices serves the reconciled rows straight
- * from the merge, and correcting one row here cannot be mistaken for a rewrite
- * of the inventory (that belongs in reconcile.ts — handed off).
+ *
+ * This is THE shell gate for live rows. liveDeviceData() applies it to every
+ * row as it leaves the merge, so `device.localShell` on anything this router
+ * serves already means "the portal can open a session", and calling the gate
+ * again later (the terminal block, the site core pick, the Launchpad SSH row)
+ * is idempotent — it re-states the rule at the point a control is offered
+ * rather than trusting a field that arrived from somewhere else.
+ *
+ * DeviceDetail drives its WS attempt and all three honest shell notes off that
+ * one field, so a row that says `true` while the bridge would refuse renders a
+ * terminal that can never open (finding
+ * devicedetail-live-terminal-gate-can-never-open).
  */
 function canOpenShell(device: ReconciledDeviceRow): boolean {
   return (
@@ -544,6 +561,8 @@ function canOpenShell(device: ReconciledDeviceRow): boolean {
   );
 }
 
+/** One reconciled row with `localShell` replaced by the live gate. Same object
+ *  back when the merge already agreed, so the common case allocates nothing. */
 function withLiveShellGate(device: ReconciledDeviceRow): ReconciledDeviceRow {
   const localShell = canOpenShell(device);
   return localShell === device.localShell ? device : { ...device, localShell };
@@ -1147,7 +1166,10 @@ function liveLaunchpad(devices: ReconciledDeviceRow[]): LaunchpadRow[] {
     const name = settings.get().planes[id]?.displayName ?? PLANE_LABEL[id];
     rows.push({ label: `Open ${name}`, hint: 'console ↗', target: { type: 'view', view: 'systems' } });
   }
-  const shell = devices.find((d) => d.localShell);
+  // Same gate the device page and the site reachability core use — a row that
+  // merely CLAIMS a shell would put an SSH row on the Launchpad whose terminal
+  // then refuses to open.
+  const shell = devices.find(canOpenShell);
   if (shell) rows.push({ label: `SSH to ${shell.name}`, hint: 'terminal', target: { type: 'device', device: shell.name } });
   rows.push({ label: 'Run compliance scan', hint: 'all sites', target: { type: 'view', view: 'compliance' } });
   if (registry.state('greenlake').linked) {
@@ -2264,8 +2286,8 @@ screensRouter.get('/devices/:name', (req, res) => {
     if (blendFor('devices')) {
       const liveDevices = liveDeviceData().devices;
       if (liveDevices.length > 0) {
-        const found = liveDevices.find((d) => d.name === name) ?? null;
-        const device = found === null ? null : withLiveShellGate(found);
+        // Rows arrive shell-gated from liveDeviceData(); nothing to correct here.
+        const device = liveDevices.find((d) => d.name === name) ?? null;
         if (!device) {
           res.status(404).json({ error: `device '${name}' not in the live inventory`, dataSource: 'demo', blended: ['devices'] });
           return;
@@ -2311,12 +2333,13 @@ screensRouter.get('/devices/:name', (req, res) => {
     return;
   }
 
-  const found = liveDeviceData().devices.find((d) => d.name === name) ?? null;
-  if (!found) {
+  // liveDeviceData() has already replaced `localShell` with the live gate, so
+  // the served row and the terminal block below cannot disagree.
+  const device = liveDeviceData().devices.find((d) => d.name === name) ?? null;
+  if (!device) {
     res.status(404).json({ error: `device '${name}' not in the live cache`, dataSource: 'live' });
     return;
   }
-  const device = withLiveShellGate(found);
   res.json(
     envelopeFor('devices', {
       device,
