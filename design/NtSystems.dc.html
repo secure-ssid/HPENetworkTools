@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Govern / Connected systems" hint-size="300px,56px">Connected systems</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">Every plane the portal speaks to, what it is allowed to do there, and when it last succeeded.</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="90px,26px">Sync all</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="primary" size="sm" onClick="{{ openAdd }}" hint-size="150px,26px">Connect a system</x-import>
+</div>
+</div>
+<x-import component-from-global-scope="Nightdesk.Alert" tone="danger" title="Central Classic is throttling us" onDismiss="{{ noop }}" hint-size="100%,86px">
+<span style="font-size:13px">Two API clients share one token quota on the Classic tenant, so every third poll returns 429 and inventory falls behind. Re-key the portal client, or retire the legacy scripts still using it.</span>
+</x-import>
+<div style="display:flex;flex-direction:column;gap:0">
+<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Planes</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">7 LINKED · SELECT ONE FOR DETAIL</span>
+</div>
+<sc-for list="{{ systems }}" as="s" hint-placeholder-count="7">
+<button type="button" onClick="{{ s.open }}" style="display:flex;align-items:flex-start;gap:20px;width:100%;text-align:left;background:none;border:none;border-bottom:1px solid var(--nd-border-subtle);border-left:2px solid transparent;padding:15px 10px 15px 12px;cursor:pointer" style-hover="background:var(--nd-bg-surface);border-left-color:var(--nd-accent)">
+<div style="width:230px;flex:0 0 230px;display:flex;flex-direction:column;gap:4px">
+<span style="font-family:var(--nd-font-display);font-size:16px;color:var(--nd-text-primary)">{{ s.name }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--nd-text-muted)">{{ s.kind }}</span>
+</div>
+<div style="width:96px;flex:0 0 96px;padding-top:2px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ s.tone }}" dot="{{ true }}" hint-size="76px,18px">{{ s.state }}</x-import>
+</div>
+<div style="flex:1;min-width:0;display:flex;gap:26px;flex-wrap:wrap;padding-top:1px">
+<sc-for list="{{ s.facts }}" as="f" hint-placeholder-count="4">
+<div style="display:flex;flex-direction:column;gap:3px;min-width:96px">
+<span style="font-family:var(--nd-font-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">{{ f.k }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:11.5px;color:var(--nd-text-secondary)">{{ f.v }}</span>
+</div>
+</sc-for>
+</div>
+<div style="width:180px;flex:0 0 180px;display:flex;flex-direction:column;gap:5px;align-items:flex-end">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ s.scopeTone }}" hint-size="90px,18px">{{ s.scope }}</x-import>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);text-align:right">{{ s.scopeNote }}</span>
+</div>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-accent-text);padding-top:3px">Detail ▸</span>
+</button>
+</sc-for>
+</div>
+<x-import component-from-global-scope="Nightdesk.Divider" variant="flair" hint-size="40px,2px"></x-import>
+<div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:34px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Sync history</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">LAST 2 HOURS</span>
+</div>
+<sc-for list="{{ history }}" as="h" hint-placeholder-count="7">
+<div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);width:44px;flex:0 0 44px">{{ h.time }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-secondary);width:88px;flex:0 0 88px">{{ h.system }}</span>
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ h.what }}</span>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ h.tone }}" hint-size="56px,18px">{{ h.result }}</x-import>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Permissions model</div>
+<div style="font-size:13px;color:var(--nd-text-secondary);line-height:1.6">The portal never holds standing write access. Read scopes are permanent; write is brokered per change, expires in fifteen minutes, and is stamped with the ticket that authorised it.</div>
+<sc-for list="{{ perms }}" as="p" hint-placeholder-count="4">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ p.tone }}" hint-size="60px,18px">{{ p.mode }}</x-import>
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-secondary)">{{ p.what }}</span>
+</div>
+</sc-for>
+</div>
+</div>
+<x-import component-from-global-scope="Nightdesk.Drawer" open="{{ detailOpen }}" onOpenChange="{{ setDetail }}" width="lg" title="{{ cur.name }}" description="{{ cur.kind }}" hint-size="100%,100%">
+<div style="display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ cur.tone }}" dot="{{ true }}" hint-size="76px,18px">{{ cur.state }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ cur.scopeTone }}" hint-size="90px,18px">{{ cur.scope }}</x-import>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ cur.scopeNote }}</span>
+</div>
+<div style="display:flex;align-items:center;gap:4px;padding:3px;border:1px solid var(--nd-border-subtle);border-radius:var(--nd-radius-md);width:fit-content">
+<sc-if value="{{ tabSummary }}" hint-placeholder-val="{{ true }}">
+<button type="button" onClick="{{ showSummary }}" style="background:var(--nd-accent-subtle);color:var(--nd-accent-text);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Summary</button>
+<button type="button" onClick="{{ showActivity }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Activity</button>
+<button type="button" onClick="{{ showConfig }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Configuration</button>
+</sc-if>
+<sc-if value="{{ tabActivity }}" hint-placeholder-val="{{ false }}">
+<button type="button" onClick="{{ showSummary }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Summary</button>
+<button type="button" onClick="{{ showActivity }}" style="background:var(--nd-accent-subtle);color:var(--nd-accent-text);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Activity</button>
+<button type="button" onClick="{{ showConfig }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Configuration</button>
+</sc-if>
+<sc-if value="{{ tabConfig }}" hint-placeholder-val="{{ false }}">
+<button type="button" onClick="{{ showSummary }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Summary</button>
+<button type="button" onClick="{{ showActivity }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Activity</button>
+<button type="button" onClick="{{ showConfig }}" style="background:var(--nd-accent-subtle);color:var(--nd-accent-text);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Configuration</button>
+</sc-if>
+</div>
+<sc-if value="{{ tabSummary }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;flex-direction:column;gap:18px">
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 18px">
+<sc-for list="{{ cur.facts }}" as="f" hint-placeholder-count="4">
+<div style="display:flex;flex-direction:column;gap:2px;padding:7px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">{{ f.k }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:11.5px;color:var(--nd-text-secondary)">{{ f.v }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Sites on this plane</div>
+<sc-for list="{{ cur.sites }}" as="x" hint-placeholder-count="3">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-primary)">{{ x.name }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ x.detail }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Live on this plane</div>
+<sc-for list="{{ cur.live }}" as="l" hint-placeholder-count="3">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:12px;color:var(--nd-text-primary);width:80px;flex:0 0 80px">{{ l.value }}</span>
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-secondary)">{{ l.label }}</span>
+</div>
+</sc-for>
+<div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:12px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goDevices }}" hint-size="110px,26px">Devices →</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goClients }}" hint-size="110px,26px">Clients →</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goAuth }}" hint-size="130px,26px">Auth events →</x-import>
+</div>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{ tabActivity }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">API calls</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">LAST 20 MINUTES</span>
+</div>
+<sc-for list="{{ cur.calls }}" as="c" hint-placeholder-count="6">
+<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);width:44px;flex:0 0 44px">{{ c.time }}</span>
+<span style="flex:1;min-width:0;font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.path }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);width:56px;text-align:right">{{ c.ms }}</span>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ c.tone }}" hint-size="46px,18px">{{ c.code }}</x-import>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Recent events</div>
+<sc-for list="{{ cur.events }}" as="e" hint-placeholder-count="4">
+<div style="display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);width:44px;flex:0 0 44px">{{ e.time }}</span>
+<div style="flex:1;min-width:0">
+<div style="font-size:12.5px;color:var(--nd-text-primary);line-height:1.4">{{ e.what }}</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ e.who }}</div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{ tabConfig }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">What the portal pulls</div>
+<sc-for list="{{ cur.pulls }}" as="p" hint-placeholder-count="5">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-primary)">{{ p.what }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);width:96px;text-align:right">{{ p.every }}</span>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ p.tone }}" hint-size="56px,18px">{{ p.mode }}</x-import>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Credential &amp; connection</div>
+<x-import component-from-global-scope="Nightdesk.Code" block="{{ true }}" hint-size="100%,150px">{{ cur.configText }}</x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Actions</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="90px,26px">Sync now</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" onClick="{{ openAdd }}" hint-size="140px,26px">Re-key credentials</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="120px,26px">Open console ↗</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="danger" size="sm" hint-size="110px,26px">Retire plane</x-import>
+</div>
+</div>
+</div>
+</sc-if>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Drawer" open="{{ addOpen }}" onOpenChange="{{ setAdd }}" width="lg" title="Connect a system" description="The portal needs read scope to index devices, and an optional brokered write scope for changes." hint-size="100%,100%">
+<div style="display:flex;flex-direction:column;gap:16px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">System type</span>
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ typeOptions }}" value="{{ newType }}" onValueChange="{{ setNewType }}" hint-size="100%,32px"></x-import>
+<span style="font-size:11.5px;color:var(--nd-text-muted)">Pick the plane this credential belongs to.</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Display name</span>
+<x-import component-from-global-scope="Nightdesk.Input" placeholder="Central — Meridian production" hint-size="100%,32px"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">{{ endpointLabel }}</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" placeholder="{{ endpointHint }}" hint-size="100%,32px"></x-import>
+<span style="font-size:11.5px;color:var(--nd-text-muted)">{{ endpointHelp }}</span>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Client ID</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" placeholder="a41f…" hint-size="100%,32px"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Client secret</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" type="password" placeholder="••••••••••••" hint-size="100%,32px"></x-import>
+<span style="font-size:11.5px;color:var(--nd-text-muted)">Stored in the workspace vault, never shown again.</span>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;padding:14px 0;border-top:1px solid var(--nd-border-subtle);border-bottom:1px solid var(--nd-border-subtle)">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Scopes</div>
+<x-import component-from-global-scope="Nightdesk.Checkbox" label="Read inventory, sites and topology" defaultChecked="{{ true }}" hint-size="100%,22px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Checkbox" label="Read clients, sessions and auth events" defaultChecked="{{ true }}" hint-size="100%,22px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Checkbox" label="Read configuration and licences" defaultChecked="{{ true }}" hint-size="100%,22px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Checkbox" label="Brokered write — config push, requires a ticket reference" hint-size="100%,22px"></x-import>
+</div>
+<sc-if value="{{ tested }}" hint-placeholder-val="{{ false }}">
+<x-import component-from-global-scope="Nightdesk.Alert" tone="success" title="Connection succeeded" hint-size="100%,76px">
+<span style="font-size:13px">{{ testResult }}</span>
+</x-import>
+</sc-if>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="md" loading="{{ testing }}" onClick="{{ test }}" hint-size="140px,32px">Test connection</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="primary" size="md" disabled="{{ saveDisabled }}" onClick="{{ closeAdd }}" hint-size="130px,32px">Save and index</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="md" onClick="{{ closeAdd }}" hint-size="80px,32px">Cancel</x-import>
+</div>
+<div style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);line-height:1.6">Indexing a new plane takes 2–6 minutes. Devices already claimed elsewhere are flagged as double-claimed rather than duplicated.</div>
+</div>
+</x-import>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:940},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onGo&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(view: string) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { addOpen: false, detail: null, tab: 'summary', newType: 'central', testing: false, tested: false };
+  systems = [
+    { name: 'HPE Aruba Central', kind: 'cloud · new central · us-west-4', state: 'healthy', tone: 'success', scope: 'read + broker', scopeTone: 'accent', scopeNote: 'write expires per change',
+      facts: [{ k: 'Last sync', v: '40s ago' }, { k: 'Devices', v: '164' }, { k: 'Calls today', v: '9,412 / 50k' }, { k: 'Token', v: 'rotates 12 Aug' }],
+      sites: [{ name: 'Campus-01 — Meridian HQ', detail: '148 devices · wireless + gateways' }, { name: 'Northgate Clinic', detail: '16 devices' }, { name: 'Remote & VPN users', detail: '2 gateways · 168 RAPs' }],
+      live: [{ value: '2,472', label: 'client sessions reported by this plane' }, { value: '164', label: 'devices claimed' }, { value: '4', label: 'open alerts sourced here' }],
+      calls: [
+        { time: '09:41', path: 'GET /monitoring/v2/aps?site=campus-01', ms: '212 ms', code: '200', tone: 'success' },
+        { time: '09:41', path: 'GET /monitoring/v1/switches', ms: '188 ms', code: '200', tone: 'success' },
+        { time: '09:40', path: 'GET /monitoring/v1/clients?limit=500', ms: '431 ms', code: '200', tone: 'success' },
+        { time: '09:39', path: 'GET /configuration/v1/dhcp_scopes', ms: '96 ms', code: '200', tone: 'success' },
+        { time: '09:38', path: 'POST /oauth2/token (refresh)', ms: '77 ms', code: '200', tone: 'success' },
+        { time: '09:36', path: 'GET /central/v2/alerts?from=09:00', ms: '140 ms', code: '200', tone: 'success' },
+      ],
+      events: [
+        { time: '09:22', what: 'Brokered write accepted — vlan 812 helper pushed to 2 switches', who: 'r.okafor · ticket NET-4166' },
+        { time: '07:15', what: 'Gateway cluster failover test recorded', who: 'j.alvarez' },
+        { time: 'Yest.', what: 'Token rotated automatically, 30-day cycle', who: 'portal vault' },
+      ],
+      pulls: [
+        { what: 'Device inventory and topology', every: 'every 30s', mode: 'read', tone: 'neutral' },
+        { what: 'Client sessions and roaming events', every: 'every 60s', mode: 'read', tone: 'neutral' },
+        { what: 'Alerts and audit trail', every: 'stream', mode: 'read', tone: 'neutral' },
+        { what: 'Configuration templates and groups', every: 'every 10m', mode: 'read', tone: 'neutral' },
+        { what: 'Config push (vlan, port, template)', every: 'on change', mode: 'write', tone: 'accent' },
+      ],
+      configText: 'plane: central\nbase_url: us4.api.central.arubanetworks.com\nclient_id: a41f9c02-…\nsecret: vault://meridian/central/prod\nscopes: [inventory, clients, alerts, config.read, config.write]\nwrite_broker: ticket_required=true lease=15m\nrate_limit: 50000/day (used 9412)\nretention: 30d events, 90d config snapshots' },
+    { name: 'Mist', kind: 'cloud · global 01 · org meridian', state: 'healthy', tone: 'success', scope: 'read only', scopeTone: 'neutral', scopeNote: 'write via console',
+      facts: [{ k: 'Last sync', v: '1m ago' }, { k: 'Devices', v: '128' }, { k: 'Calls today', v: '4,105 / 20k' }, { k: 'Token', v: 'rotates 01 Sep' }],
+      sites: [{ name: 'Campus-02 Research', detail: '96 devices · AP43 + EX4400' }, { name: 'Northgate Clinic', detail: '16 devices' }, { name: 'Southpoint Clinic', detail: '15 devices' }],
+      live: [{ value: '1,472', label: 'client sessions reported by this plane' }, { value: '128', label: 'devices claimed' }, { value: '1', label: 'open alert sourced here' }],
+      calls: [
+        { time: '09:41', path: 'GET /api/v1/sites/:id/stats/devices', ms: '164 ms', code: '200', tone: 'success' },
+        { time: '09:40', path: 'GET /api/v1/sites/:id/stats/clients', ms: '302 ms', code: '200', tone: 'success' },
+        { time: '09:37', path: 'WS /api/v1/subscribe (alarms)', ms: 'reconnect', code: '101', tone: 'warning' },
+        { time: '09:35', path: 'GET /api/v1/orgs/:id/inventory', ms: '221 ms', code: '200', tone: 'success' },
+      ],
+      events: [
+        { time: '08:47', what: 'WLAN MRDN-Guest PSK rotation observed', who: 'mist automation' },
+        { time: '07:41', what: 'DFS radar events on two APs pulled into ticket NET-4188', who: 'portal correlation' },
+      ],
+      pulls: [
+        { what: 'Device inventory and org claims', every: 'every 60s', mode: 'read', tone: 'neutral' },
+        { what: 'Client sessions, SLE metrics', every: 'every 60s', mode: 'read', tone: 'neutral' },
+        { what: 'Alarm stream', every: 'websocket', mode: 'read', tone: 'neutral' },
+        { what: 'Configuration (read-only mirror)', every: 'every 15m', mode: 'read', tone: 'neutral' },
+      ],
+      configText: 'plane: mist\napi_host: api.mist.com\norg_id: 4f2a77c1-…\ntoken: vault://meridian/mist/readonly\nscopes: [read:inventory, read:clients, read:alarms, read:config]\nwrite_broker: disabled — changes go out in the Mist console\nrate_limit: 20000/day (used 4105)\nretention: 30d events' },
+    { name: 'Central Classic', kind: 'legacy cloud · eu-central', state: 'degraded', tone: 'danger', scope: 'read only', scopeTone: 'neutral', scopeNote: '429 every third poll',
+      facts: [{ k: 'Last sync', v: '6h 12m ago' }, { k: 'Devices', v: '40 (stale)' }, { k: 'Calls today', v: '812 / 1k' }, { k: 'Retires', v: '12 Aug 26' }],
+      sites: [{ name: 'Riverside Clinic', detail: '24 devices · unverified' }, { name: 'Warehouse-DC2', detail: '16 devices · stale 6h' }],
+      live: [{ value: '266', label: 'client sessions last reported (03:12)' }, { value: '40', label: 'devices claimed, state unverified' }, { value: '2', label: 'open alerts sourced here' }],
+      calls: [
+        { time: '09:38', path: 'GET /monitoring/v1/switches', ms: '—', code: '429', tone: 'danger' },
+        { time: '09:28', path: 'GET /monitoring/v1/switches', ms: '—', code: '429', tone: 'danger' },
+        { time: '09:18', path: 'GET /monitoring/v1/aps', ms: '904 ms', code: '200', tone: 'success' },
+        { time: '03:12', path: 'GET /monitoring/v1/clients', ms: '1.2 s', code: '200', tone: 'success' },
+      ],
+      events: [
+        { time: '09:38', what: 'Backed off to a 10-minute interval, queue depth 41', who: 'portal collector' },
+        { time: '09:05', what: 'Two API clients found sharing one token quota', who: 'greenlake audit' },
+        { time: '06:40', what: 'Fallback SSH probe verified all 24 Riverside devices', who: 'collector-04' },
+      ],
+      pulls: [
+        { what: 'Device inventory', every: 'every 10m (throttled)', mode: 'read', tone: 'warning' },
+        { what: 'Client sessions', every: 'paused', mode: 'read', tone: 'warning' },
+        { what: 'Alerts', every: 'every 10m', mode: 'read', tone: 'neutral' },
+      ],
+      configText: 'plane: central-classic\nbase_url: eu-central.classic.arubanetworks.com\nclient_id: legacy-portal-01\nsecret: vault://meridian/classic/legacy\nscopes: [read:inventory, read:alerts]\nrate_limit: 1000/day (used 812) — SHARED with legacy-scripts\nbackoff: 600s after 429\nretires: 2026-08-12 (migrate 24 devices to Central)' },
+    { name: 'GreenLake', kind: 'platform · workspace meridian-health', state: 'healthy', tone: 'success', scope: 'read only', scopeTone: 'neutral', scopeNote: 'licences + users',
+      facts: [{ k: 'Last sync', v: '4m ago' }, { k: 'Subscriptions', v: '486' }, { k: 'Calls today', v: '210 / 5k' }, { k: 'Token', v: 'rotates 30 Sep' }],
+      sites: [{ name: 'Workspace-wide', detail: 'licences, users, audit' }],
+      live: [{ value: '486', label: 'subscription records reconciled' }, { value: '34', label: 'expiring within 60 days' }, { value: '6', label: 'orphaned assignments found' }],
+      calls: [
+        { time: '09:35', path: 'GET /subscriptions/v1/assignments', ms: '340 ms', code: '200', tone: 'success' },
+        { time: '09:35', path: 'GET /devices/v1/inventory', ms: '288 ms', code: '200', tone: 'success' },
+        { time: '09:20', path: 'GET /identity/v1/users', ms: '120 ms', code: '200', tone: 'success' },
+      ],
+      events: [
+        { time: '09:35', what: 'Reconciliation found 6 orphan AP subscriptions', who: 'portal reconciler' },
+        { time: 'Mon', what: 'Workspace role added for the portal service principal', who: 'admin@meridian' },
+      ],
+      pulls: [
+        { what: 'Subscriptions and assignments', every: 'every 5m', mode: 'read', tone: 'neutral' },
+        { what: 'Device-to-licence mapping', every: 'every 5m', mode: 'read', tone: 'neutral' },
+        { what: 'Users and workspace roles', every: 'every 30m', mode: 'read', tone: 'neutral' },
+      ],
+      configText: 'plane: greenlake\nworkspace: wks-meridian-health\nclient_id: gl-portal-svc\nsecret: vault://meridian/greenlake/svc\nscopes: [read:subscriptions, read:devices, read:identity]\nrate_limit: 5000/day (used 210)\nretention: 400d subscription history' },
+    { name: 'AOS-8 mobility master', kind: 'on-prem · mm-lake-1 · 8.10.0.10', state: 'warning', tone: 'warning', scope: 'read + ssh', scopeTone: 'accent', scopeNote: 'jump host 10.48.0.9',
+      facts: [{ k: 'Last sync', v: '2m ago' }, { k: 'Devices', v: '62' }, { k: 'Cluster', v: '1 of 4 up' }, { k: 'Auth', v: 'tacacs + key' }],
+      sites: [{ name: 'Lakeshore Medical Center', detail: '62 devices · master-local' }, { name: 'Airport Annex', detail: '21 devices · 1 local' }],
+      live: [{ value: '744', label: 'client sessions terminated on controllers' }, { value: '62', label: 'devices claimed' }, { value: '3', label: 'open alerts sourced here' }],
+      calls: [
+        { time: '09:40', path: 'GET /v1/configuration/showcommand?show+switches', ms: '540 ms', code: '200', tone: 'success' },
+        { time: '09:39', path: 'GET /v1/configuration/showcommand?show+ap+database', ms: '612 ms', code: '200', tone: 'success' },
+        { time: '09:38', path: 'SSH show datapath tunnel (jump host)', ms: '1.1 s', code: 'ok', tone: 'success' },
+        { time: '09:36', path: 'GET /v1/configuration/showcommand?show+switch+ip', ms: '—', code: 'timeout', tone: 'warning' },
+      ],
+      events: [
+        { time: '09:00', what: 'Three locals stopped answering heartbeat', who: 'mm-lake-1' },
+        { time: '19 Jul', what: 'Tunnel MTU corrected on mc-lake-4 under change window', who: 'j.alvarez' },
+      ],
+      pulls: [
+        { what: 'Cluster and AP database', every: 'every 2m', mode: 'read', tone: 'neutral' },
+        { what: 'Client table per controller', every: 'every 2m', mode: 'read', tone: 'neutral' },
+        { what: 'Datapath and tunnel state (SSH)', every: 'every 5m', mode: 'read', tone: 'neutral' },
+        { what: 'Recorded shell for changes', every: 'on demand', mode: 'ssh', tone: 'accent' },
+      ],
+      configText: 'plane: aos8\nmaster: 10.48.0.10:4343\njump_host: 10.48.0.9 (session recording on)\nauth: tacacs+ for api, vault-issued key for ssh\nscopes: [read:cluster, read:clients, ssh:recorded]\nchange_window: 01:00–04:00 local only\nretention: 90d session recordings' },
+    { name: 'Local switch collector', kind: 'on-prem agent · ssh · 5 sites', state: 'healthy', tone: 'success', scope: 'read + ssh', scopeTone: 'accent', scopeNote: 'session recording on',
+      facts: [{ k: 'Last sync', v: '30s ago' }, { k: 'Devices', v: '96' }, { k: 'Agents', v: '5 online' }, { k: 'Auth', v: 'vault-issued key' }],
+      sites: [{ name: 'Campus-01 — Meridian HQ', detail: '42 switches' }, { name: 'Warehouse-DC1', detail: '14 switches · only plane here' }, { name: 'Riverside Clinic', detail: '8 switches · fallback for Classic' }],
+      live: [{ value: '572', label: 'wired client sessions from MAC tables' }, { value: '96', label: 'switches polled over SSH' }, { value: '14', label: 'devices in no cloud plane' }],
+      calls: [
+        { time: '09:41', path: 'ssh sw-core-a · show interface brief', ms: '410 ms', code: 'ok', tone: 'success' },
+        { time: '09:41', path: 'ssh sw-acc-3f-2 · show mac-address', ms: '380 ms', code: 'ok', tone: 'success' },
+        { time: '09:40', path: 'ssh sw-wh1-1 · show stack', ms: '520 ms', code: 'warn', tone: 'warning' },
+        { time: '09:40', path: 'ssh sw-riv-1 · show running-config', ms: '1.4 s', code: 'ok', tone: 'success' },
+      ],
+      events: [
+        { time: '09:22', what: 'Brokered write — vlan 812 helper added to two switches', who: 'r.okafor · recorded' },
+        { time: '02:04', what: 'Inventory delta at Warehouse-DC1: stack member 3 missing', who: 'collector-05' },
+      ],
+      pulls: [
+        { what: 'Interfaces, VLANs, LLDP, MAC tables', every: 'every 30s', mode: 'read', tone: 'neutral' },
+        { what: 'Running config snapshots', every: 'every 6h', mode: 'read', tone: 'neutral' },
+        { what: 'Firmware and hardware inventory', every: 'every 1h', mode: 'read', tone: 'neutral' },
+        { what: 'Recorded shell and config push', every: 'on demand', mode: 'ssh', tone: 'accent' },
+      ],
+      configText: 'plane: local-collector\nagents: collector-01,03,04,05,06 (dial-out)\nauth: vault-issued ed25519 keys, 24h leases\nscopes: [read:cli, ssh:recorded, config:push_with_ticket]\nsnapshot: every 6h, diffed against baseline\nrecording: full keystroke + output, 90d\nfallback_for: central-classic (Riverside)' },
+    { name: 'ClearPass', kind: 'on-prem · cppm-01 · 6.11.7', state: 'healthy', tone: 'success', scope: 'read only', scopeTone: 'neutral', scopeNote: 'auth telemetry',
+      facts: [{ k: 'Last sync', v: '55s ago' }, { k: 'Endpoints', v: '4,182' }, { k: 'Calls today', v: '1,904' }, { k: 'Cert', v: 'expires 15 Aug' }],
+      sites: [{ name: 'Workspace-wide', detail: 'policy for every plane' }],
+      live: [{ value: '412', label: 'authentications per minute' }, { value: '24', label: 'rejects in the last hour' }, { value: '4,182', label: 'known endpoints' }],
+      calls: [
+        { time: '09:41', path: 'GET /api/session?filter=recent', ms: '180 ms', code: '200', tone: 'success' },
+        { time: '09:40', path: 'GET /api/endpoint?limit=500', ms: '260 ms', code: '200', tone: 'success' },
+        { time: '09:31', path: 'GET /api/insight/endpoint/auth-events', ms: '310 ms', code: '200', tone: 'success' },
+      ],
+      events: [
+        { time: '09:31', what: 'Seven rejects from one unknown endpoint, moved to Quarantine', who: 'policy engine' },
+        { time: '22 Jul', what: 'Guest role rewritten — captive portal timeout raised', who: 'j.alvarez' },
+      ],
+      pulls: [
+        { what: 'Auth and accounting events', every: 'every 60s', mode: 'read', tone: 'neutral' },
+        { what: 'Endpoint profiles and roles', every: 'every 5m', mode: 'read', tone: 'neutral' },
+        { what: 'Service and policy definitions', every: 'every 30m', mode: 'read', tone: 'neutral' },
+      ],
+      configText: 'plane: clearpass\npublisher: cppm-01.meridian.health\nclient_id: portal-insight\nsecret: vault://meridian/clearpass/insight\nscopes: [read:session, read:endpoint, read:policy]\nradsec_cert: expires 2026-08-15 (renew)\nretention: 30d auth events in portal, 180d on box' },
+  ];
+  renderVals() {
+    const go = this.props.onGo || (() => {});
+    const t = this.state.newType;
+    const cur = this.systems.find((s) => s.name === this.state.detail) || this.systems[0];
+    const endpoints = {
+      central: { label: 'Central region / base URL', help: 'Shown under Central → API Gateway → REST API. Tokens are minted by HPE GreenLake SSO.', hint: 'us4.api.central.arubanetworks.com' },
+      mist: { label: 'Mist API host + org ID', help: 'Global 01–06, plus the org UUID.', hint: 'api.mist.com · org 4f2a…' },
+      classic: { label: 'Classic tenant URL', help: 'Legacy tenant; expect a low rate limit.', hint: 'eu-central.classic.arubanetworks.com' },
+      greenlake: { label: 'GreenLake workspace ID', help: 'Platform workspace, not the application instance.', hint: 'wks-meridian-health' },
+      aos8: { label: 'Mobility master address', help: 'Portal reaches it through a jump host.', hint: '10.48.0.10:4343' },
+      local: { label: 'Collector agent address', help: 'The agent dials out; this is for verification only.', hint: '10.42.0.9:8443' },
+      clearpass: { label: 'ClearPass publisher URL', help: 'Publisher node, API client credentials.', hint: 'cppm-01.meridian.health' },
+    };
+    const e = endpoints[t] || endpoints.central;
+    return {
+      density: this.props.density ?? 'comfortable',
+      noop: () => {},
+      systems: this.systems.map((s) => ({ ...s, open: () => this.setState({ detail: s.name, tab: 'summary' }) })),
+      cur, detailOpen: !!this.state.detail,
+      setDetail: (v) => { if (!v) this.setState({ detail: null }); },
+      tabSummary: this.state.tab === 'summary', tabActivity: this.state.tab === 'activity', tabConfig: this.state.tab === 'config',
+      showSummary: () => this.setState({ tab: 'summary' }),
+      showActivity: () => this.setState({ tab: 'activity' }),
+      showConfig: () => this.setState({ tab: 'config' }),
+      goDevices: () => { this.setState({ detail: null }); go('devices'); },
+      goClients: () => { this.setState({ detail: null }); go('clients'); },
+      goAuth: () => { this.setState({ detail: null }); go('auth'); },
+      addOpen: this.state.addOpen,
+      openAdd: () => this.setState({ addOpen: true, detail: null, tested: false }),
+      closeAdd: () => this.setState({ addOpen: false }),
+      setAdd: (v) => this.setState({ addOpen: v }),
+      typeOptions: [
+        { value: 'central', label: 'HPE Aruba Central (new)' },
+        { value: 'mist', label: 'Mist' },
+        { value: 'classic', label: 'Central Classic (legacy)' },
+        { value: 'greenlake', label: 'GreenLake platform' },
+        { value: 'aos8', label: 'AOS-8 mobility master' },
+        { value: 'local', label: 'Local switch collector (SSH)' },
+        { value: 'clearpass', label: 'ClearPass' },
+      ],
+      newType: t,
+      setNewType: (v) => this.setState({ newType: v, tested: false }),
+      endpointLabel: e.label, endpointHelp: e.help, endpointHint: e.hint,
+      testing: this.state.testing, tested: this.state.tested,
+      saveDisabled: !this.state.tested,
+      testResult: 'Authenticated, read scopes granted. Found 164 devices across 3 sites and 486 subscription records — 3 devices are already claimed by another plane and will be flagged, not duplicated.',
+      test: () => {
+        this.setState({ testing: true });
+        setTimeout(() => this.setState({ testing: false, tested: true }), 900);
+      },
+      history: [
+        { time: '09:41', system: 'central', what: 'Inventory delta — 2 devices changed state', result: 'ok', tone: 'success' },
+        { time: '09:40', system: 'local ssh', what: '96 switches polled, 1 stack member still missing', result: 'ok', tone: 'success' },
+        { time: '09:38', system: 'classic', what: 'Poll rejected — HTTP 429, backing off 600s', result: '429', tone: 'danger' },
+        { time: '09:37', system: 'mist', what: 'Alarm stream reconnected after keepalive timeout', result: 'ok', tone: 'success' },
+        { time: '09:36', system: 'aos-8', what: 'Cluster state read — 3 locals still without heartbeat', result: 'warn', tone: 'warning' },
+        { time: '09:35', system: 'greenlake', what: 'Subscription reconciliation — 6 orphans found', result: 'ok', tone: 'success' },
+        { time: '09:31', system: 'clearpass', what: 'Auth telemetry batch, 1,904 records', result: 'ok', tone: 'success' },
+      ],
+      perms: [
+        { mode: 'read', tone: 'neutral', what: 'Inventory, clients, auth events, configuration, licences — all seven planes' },
+        { mode: 'broker', tone: 'accent', what: 'Config push to Central and the local collector, ticket-stamped' },
+        { mode: 'ssh', tone: 'accent', what: 'Recorded shell to CX switches and AOS-8, 15-minute leases' },
+        { mode: 'none', tone: 'warning', what: 'No write access to Mist or Classic — changes go out in their consoles' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

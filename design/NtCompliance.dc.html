@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Govern / Compliance" hint-size="240px,56px">Config compliance</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">One baseline per device class, checked against every plane — including the switches no cloud can see.</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<div style="width:210px"><x-import component-from-global-scope="Nightdesk.Select" options="{{ baselineOptions }}" value="{{ baseline }}" onValueChange="{{ setBaseline }}" size="sm" aria-label="Baseline" hint-size="210px,26px"></x-import></div>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="120px,26px">Diff selected</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="primary" size="sm" hint-size="110px,26px">Run scan now</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:18px">
+<x-import component-from-global-scope="Nightdesk.Stat" label="Checks last run" value="1,842" delta="09:05 today" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Devices in scope" value="404" delta="14 unreachable" deltaTone="negative" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Findings" value="12" delta="▼ 4 this week" deltaTone="positive" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Sites clean" value="6 / 10" delta="▲ 1" deltaTone="positive" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Auto-remediable" value="7" delta="of 12 findings" deltaTone="neutral" hint-size="140px,76px"></x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Divider" variant="flair" hint-size="40px,2px"></x-import>
+<div style="display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:34px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:10px;min-width:0">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Findings</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ countLabel }}</span>
+</div>
+<x-import component-from-global-scope="Nightdesk.Table" density="{{ density }}" hint-size="100%,460px">
+<x-import component-from-global-scope="Nightdesk.Table.Head" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="60px,28px">Sev</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="320px,28px">Finding</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="150px,28px">Rule</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Plane</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="70px,28px">Devices</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="120px,28px">Fix</x-import>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Body" hint-size="100%,420px">
+<sc-for list="{{ rows }}" as="f" hint-placeholder-count="9">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,38px">
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="60px,38px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ f.tone }}" dot="{{ true }}" hint-size="44px,18px">{{ f.sev }}</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="320px,38px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-size:13px;color:var(--nd-text-primary)">{{ f.title }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ f.detail }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="150px,38px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-secondary)">{{ f.rule }}</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,38px">
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="neutral" hint-size="64px,18px">{{ f.plane }}</x-import>
+</sc-if>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="70px,38px">
+<button type="button" onClick="{{ f.open }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:12px;color:var(--nd-accent-text)">{{ f.count }}</button>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="120px,38px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:{{ f.fixColor }}">{{ f.fix }}</span>
+</x-import>
+</x-import>
+</sc-for>
+</x-import>
+</x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:26px;min-width:0">
+<div style="display:flex;flex-direction:column;gap:14px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Pass rate by baseline</div>
+<sc-for list="{{ baselines }}" as="b" hint-placeholder-count="5">
+<div style="display:flex;flex-direction:column;gap:4px">
+<x-import component-from-global-scope="Nightdesk.Progress" value="{{ b.value }}" label="{{ b.label }}" showValue="{{ true }}" hint-size="100%,40px"></x-import>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ b.note }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Drift, as text</div>
+<x-import component-from-global-scope="Nightdesk.Code" block="{{ true }}" hint-size="100%,180px">{{ diff }}</x-import>
+<div style="display:flex;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="140px,26px">Push fix to 2 devices</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="110px,26px">Accept as exception</x-import>
+</div>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:920},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onOpenDevice&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(device: string) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { baseline: 'all' };
+  findings = [
+    { sev: 'high', tone: 'danger', title: 'Tunnel MTU 1500 where path MTU is 1400', detail: 'causes the AP tunnel resets seen at Lakeshore', rule: 'wlan.tunnel.mtu', plane: 'AOS-8', count: '2', fix: 'auto', fixColor: 'var(--nd-success)', device: 'mm-lake-1', base: 'AOS-8 controller' },
+    { sev: 'high', tone: 'danger', title: 'Admin fallback account with local password', detail: 'found on 3 legacy switches at Warehouse-DC2', rule: 'aaa.local.fallback', plane: 'CLASSIC', count: '3', fix: 'manual', fixColor: 'var(--nd-warning)', device: 'sw-wh2-1', base: 'CX switch' },
+    { sev: 'med', tone: 'warning', title: 'vlan 812 missing DHCP helper 10.44.0.20', detail: 'guest onboarding retries when the primary is busy', rule: 'dhcp.helpers.count', plane: 'LOCAL', count: '2', fix: 'auto', fixColor: 'var(--nd-success)', device: 'sw-core-a', base: 'CX switch' },
+    { sev: 'med', tone: 'warning', title: 'Single NTP server configured', detail: 'baseline expects two, drift since the 10.11 image', rule: 'ntp.servers.min', plane: 'LOCAL', count: '6', fix: 'auto', fixColor: 'var(--nd-success)', device: 'sw-acc-3f-2', base: 'CX switch' },
+    { sev: 'med', tone: 'warning', title: 'Firmware behind approved train', detail: '10.11.1030 installed, 10.13.1005 approved', rule: 'fw.approved.version', plane: 'LOCAL', count: '6', fix: 'window', fixColor: 'var(--nd-text-muted)', device: 'sw-acc-3f-2', base: 'CX switch' },
+    { sev: 'med', tone: 'warning', title: 'DFS channels permitted on clinical floors', detail: 'radar events keep moving clients between APs', rule: 'rf.dfs.exclude', plane: 'MIST', count: '14', fix: 'auto', fixColor: 'var(--nd-success)', device: 'ap-3f-12', base: 'Wireless RF' },
+    { sev: 'med', tone: 'warning', title: 'RadSec certificate expires within 30 days', detail: 'cppm-01 to Mist org trust breaks on 15 Aug', rule: 'pki.expiry.min', plane: 'CLEARPASS', count: '1', fix: 'manual', fixColor: 'var(--nd-warning)', device: 'cppm-01', base: 'ClearPass' },
+    { sev: 'low', tone: 'info', title: 'Interface descriptions missing', detail: '18 access ports with no description string', rule: 'port.description', plane: 'LOCAL', count: '18', fix: 'auto', fixColor: 'var(--nd-success)', device: 'sw-acc-3f-2', base: 'CX switch' },
+    { sev: 'low', tone: 'info', title: 'Syslog pointing at the retired collector', detail: '10.42.0.5 decommissioned in April', rule: 'logging.target', plane: 'LOCAL', count: '9', fix: 'auto', fixColor: 'var(--nd-success)', device: 'sw-core-b', base: 'CX switch' },
+    { sev: 'low', tone: 'info', title: 'Device state unverified — plane is stale', detail: '24 Riverside devices cannot be scanned via Classic', rule: 'scan.coverage', plane: 'CLASSIC', count: '24', fix: 'ssh scan', fixColor: 'var(--nd-text-muted)', device: 'sw-riv-1', base: 'CX switch' },
+  ];
+  renderVals() {
+    const openDevice = this.props.onOpenDevice || (() => {});
+    const bases = this.findings.map((f) => f.base).filter((v, i, a) => a.indexOf(v) === i);
+    const rows = this.findings.filter((f) => this.state.baseline === 'all' || f.base === this.state.baseline);
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      baseline: this.state.baseline,
+      baselineOptions: [{ value: 'all', label: 'All baselines' }].concat(bases.map((b) => ({ value: b, label: b + ' baseline' }))),
+      setBaseline: (v) => this.setState({ baseline: v }),
+      countLabel: rows.length + ' of ' + this.findings.length + ' findings · scanned 09:05',
+      rows: rows.map((f) => ({ ...f, open: () => openDevice(f.device) })),
+      baselines: [
+        { label: 'CX switch baseline', value: 91, note: '96 devices · 8 findings · last edited 12 Jul' },
+        { label: 'Wireless RF baseline', value: 86, note: '268 APs · 1 finding · clinical floors stricter' },
+        { label: 'AOS-8 controller baseline', value: 74, note: '4 controllers · 2 findings · frozen until migration' },
+        { label: 'ClearPass baseline', value: 96, note: '2 nodes · 1 finding · certificate expiry' },
+        { label: 'Gateway baseline', value: 88, note: '8 gateways · 1 finding · MTU' },
+      ],
+      diff: 'vlan 812\n    name guest-wifi\n    ip helper-address 10.42.0.20\n-   ip helper-address 10.44.0.20     <- baseline\n+   (missing on sw-core-a, sw-core-b)\n\nntp server 10.42.0.20 iburst\n-   ntp server 10.44.0.20 iburst     <- baseline\n\ninterface 1/1/22\n-   description uxi-cam01-2\n+   (no description)',
+    };
+  }
+}
+</script>
+</body>
+</html>

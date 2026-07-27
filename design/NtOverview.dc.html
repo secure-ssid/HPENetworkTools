@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:22px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="{{ overline }}" hint-size="320px,56px">Operations</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">Ten sites, six management planes — one queue of things that actually need you.</div>
+</div>
+<div style="display:flex;align-items:center;gap:10px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);letter-spacing:.08em">SYNCED 09:41 · AUTO 60s</span>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" onClick="{{ goSystems }}" hint-size="130px,26px">Connected systems</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:18px">
+<x-import component-from-global-scope="Nightdesk.Stat" label="Devices reachable" value="404 / 418" delta="▼ 3 since 08:00" deltaTone="negative" hint-size="150px,80px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Open alerts" value="7" delta="▲ 2 critical" deltaTone="negative" hint-size="150px,80px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Config drift" value="12" delta="▼ 4 this week" deltaTone="positive" hint-size="150px,80px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Licences ≤60d" value="34" delta="▲ 12 renewals due" deltaTone="neutral" hint-size="150px,80px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Planes linked" value="6 / 7" delta="Classic degraded" deltaTone="negative" hint-size="150px,80px"></x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Divider" variant="flair" hint-size="40px,2px"></x-import>
+<div style="display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:34px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:26px;min-width:0">
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Needs you now</span>
+<button type="button" onClick="{{ goAlerts }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.08em;color:var(--nd-accent-text);text-transform:uppercase">All 7 alerts →</button>
+</div>
+<sc-for list="{{ alerts }}" as="a" hint-placeholder-count="4">
+<div style="display:flex;align-items:flex-start;gap:14px;padding:13px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<div style="width:34px;flex:0 0 34px;padding-top:1px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ a.tone }}" dot="{{ true }}" hint-size="34px,18px">{{ a.sev }}</x-import>
+</div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+<div style="font-size:14px;color:var(--nd-text-primary);line-height:1.35">{{ a.title }}</div>
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ a.meta }}</span>
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="neutral" hint-size="60px,18px">{{ a.plane }}</x-import>
+</sc-if>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:6px;flex:0 0 auto">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ a.age }}</span>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ a.open }}" hint-size="60px,26px">Inspect</x-import>
+</div>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Sites</span>
+<button type="button" onClick="{{ goSites }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.08em;color:var(--nd-accent-text);text-transform:uppercase">All 10 sites →</button>
+</div>
+<x-import component-from-global-scope="Nightdesk.Table" density="{{ density }}" hint-size="100%,280px">
+<x-import component-from-global-scope="Nightdesk.Table.Head" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="180px,28px">Site</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="120px,28px">Managed by</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="70px,28px">Devices</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="70px,28px">Clients</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Health</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="80px,28px">Alerts</x-import>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Body" hint-size="100%,240px">
+<sc-for list="{{ sites }}" as="s" hint-placeholder-count="6">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,34px">
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="180px,34px">
+<button type="button" onClick="{{ s.open }}" style="background:none;border:none;padding:0;cursor:pointer;font-size:13px;color:var(--nd-text-primary);text-align:left">{{ s.name }}</button>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="120px,34px">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-secondary)">{{ s.plane }}</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="70px,34px">{{ s.devices }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="70px,34px">{{ s.clients }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,34px">
+<div style="display:flex;align-items:center;gap:8px">
+<div style="width:64px;height:3px;background:var(--nd-bg-inset);border-radius:99px;overflow:hidden">
+<div style="height:3px;border-radius:99px;width:{{ s.healthPct }};background:{{ s.healthColor }}"></div>
+</div>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ s.health }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="80px,34px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ s.alertTone }}" hint-size="46px,18px">{{ s.alerts }}</x-import>
+</x-import>
+</x-import>
+</sc-for>
+</x-import>
+</x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:26px;min-width:0">
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Management planes</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">LAST SYNC</span>
+</div>
+<sc-for list="{{ planes }}" as="p" hint-placeholder-count="7">
+<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<div style="flex:1;min-width:0">
+<div style="font-size:13px;color:var(--nd-text-primary)">{{ p.name }}</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);text-transform:uppercase;letter-spacing:.08em">{{ p.scope }}</div>
+</div>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ p.tone }}" dot="{{ true }}" hint-size="66px,18px">{{ p.state }}</x-import>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-secondary);width:52px;text-align:right">{{ p.sync }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Launchpad</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:0">
+<sc-for list="{{ launch }}" as="l" hint-placeholder-count="5">
+<button type="button" onClick="{{ l.run }}" style="display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;border-bottom:1px solid var(--nd-border-subtle);border-left:2px solid transparent;padding:10px 8px;cursor:pointer;text-align:left" style-hover="background:var(--nd-bg-surface);border-left-color:var(--nd-accent)">
+<span style="flex:1;min-width:0;font-size:13px;color:var(--nd-text-primary)">{{ l.label }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);text-transform:uppercase;letter-spacing:.08em">{{ l.hint }}</span>
+</button>
+</sc-for>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;align-items:baseline;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Change log</span>
+</div>
+<sc-for list="{{ changes }}" as="c" hint-placeholder-count="4">
+<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);width:46px;flex:0 0 46px;padding-top:2px">{{ c.time }}</span>
+<div style="flex:1;min-width:0">
+<div style="font-size:12.5px;color:var(--nd-text-secondary);line-height:1.4">{{ c.text }}</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ c.who }}</div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:980},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;workspaceName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Meridian Health&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;onGo&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(view: string) =&gt; void&quot;},&quot;onOpenSite&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(site: string) =&gt; void&quot;},&quot;onOpenDevice&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(device: string) =&gt; void&quot;}}">
+const NT_ALERTS = [
+  { sev: 'P1', tone: 'danger', title: 'Central Classic sync stalled — inventory 6h stale', meta: 'classic.central · api 429 rate-limited', plane: 'CLASSIC', age: '6h' , device: 'sw-acc-3f-2' },
+  { sev: 'P1', tone: 'danger', title: 'mm-lake-1 lost heartbeat from 3 local controllers', meta: 'Lakeshore Medical Center · AOS-8 cluster', plane: 'AOS-8', age: '41m', device: 'mm-lake-1' },
+  { sev: 'P2', tone: 'warning', title: 'Wi-Fi drops, 3rd floor east — 22 clients affected', meta: 'Campus-02 Research · ap-3f-12, ap-3f-14', plane: 'MIST', age: '2h', device: 'ap-3f-12' },
+  { sev: 'P2', tone: 'warning', title: 'sw-core-a PSU 2 absent, running on single supply', meta: 'Campus-01 · CX 8325 · local SSH', plane: 'LOCAL', age: '3h', device: 'sw-core-a' },
+  { sev: 'P3', tone: 'info', title: '34 AP subscriptions expire within 60 days', meta: 'GreenLake · Foundation AP licences', plane: 'GLK', age: '1d', device: 'sw-core-a' },
+];
+const NT_SITES = [
+  { name: 'Campus-01 — Meridian HQ', plane: 'Central · local', devices: 148, clients: '1,904', health: '98%', healthPct: '98%', tone: 'ok', alerts: '2 open', alertTone: 'warning' },
+  { name: 'Campus-02 Research', plane: 'Mist', devices: 96, clients: '1,212', health: '94%', healthPct: '94%', tone: 'ok', alerts: '1 open', alertTone: 'warning' },
+  { name: 'Lakeshore Medical Center', plane: 'AOS-8', devices: 62, clients: '744', health: '81%', healthPct: '81%', tone: 'bad', alerts: '3 open', alertTone: 'danger' },
+  { name: 'Riverside Clinic', plane: 'Central Classic', devices: 24, clients: '188', health: '—', healthPct: '0%', tone: 'stale', alerts: 'stale', alertTone: 'neutral' },
+  { name: 'Warehouse-DC1', plane: 'Local only', devices: 18, clients: '96', health: '100%', healthPct: '100%', tone: 'ok', alerts: 'clear', alertTone: 'success' },
+  { name: 'Airport Annex', plane: 'AOS-8 · local', devices: 21, clients: '132', health: '96%', healthPct: '96%', tone: 'ok', alerts: 'clear', alertTone: 'success' },
+];
+const NT_PLANES = [
+  { name: 'HPE Aruba Central', scope: 'new · 3 sites', state: 'healthy', tone: 'success', sync: '40s' },
+  { name: 'Mist', scope: 'cloud · 3 sites', state: 'healthy', tone: 'success', sync: '1m' },
+  { name: 'Central Classic', scope: 'legacy · 2 sites', state: 'degraded', tone: 'danger', sync: '6h' },
+  { name: 'GreenLake', scope: 'workspace · licences', state: 'healthy', tone: 'success', sync: '4m' },
+  { name: 'AOS-8 master', scope: 'mm-lake-1 · on-prem', state: 'warning', tone: 'warning', sync: '2m' },
+  { name: 'Local switch collector', scope: 'ssh · 96 switches', state: 'healthy', tone: 'success', sync: '30s' },
+  { name: 'ClearPass', scope: 'cppm-01 · policy', state: 'healthy', tone: 'success', sync: '55s' },
+];
+const NT_CHANGES = [
+  { time: '09:22', text: 'vlan 812 added to sw-acc-3f-2, sw-acc-3f-3', who: 'r.okafor · local ssh' },
+  { time: '08:47', text: 'WLAN "MRDN-Guest" PSK rotated at Campus-02', who: 'automation · mist api' },
+  { time: '07:15', text: 'AOS-10 gateway cluster failover test, Campus-01', who: 'j.alvarez · central' },
+  { time: 'Yest.', text: '12 CX switches upgraded to 10.13.1005', who: 'r.okafor · orchestrated' },
+];
+class Component extends DCLogic {
+  renderVals() {
+    const go = this.props.onGo || (() => {});
+    const openDevice = this.props.onOpenDevice || (() => {});
+    const openSite = this.props.onOpenSite || (() => {});
+    const colors = { ok: 'var(--nd-success)', bad: 'var(--nd-warning)', stale: 'var(--nd-border-strong)' };
+    return {
+      overline: (this.props.workspaceName || 'Meridian Health') + ' / Single pane',
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      goAlerts: () => go('alerts'), goSites: () => go('sites'), goSystems: () => go('systems'),
+      alerts: NT_ALERTS.slice(0, 4).map((a) => ({ ...a, open: () => openDevice(a.device) })),
+      sites: NT_SITES.map((s) => ({ ...s, healthColor: colors[s.tone], open: () => openSite(s.name) })),
+      planes: NT_PLANES,
+      changes: NT_CHANGES,
+      launch: [
+        { label: 'Open Central — Campus-01', hint: 'sso ↗', run: () => go('systems') },
+        { label: 'Open Mist — Campus-02 org', hint: 'sso ↗', run: () => go('systems') },
+        { label: 'SSH to sw-core-a', hint: 'terminal', run: () => openDevice('sw-core-a') },
+        { label: 'Run compliance scan', hint: 'all sites', run: () => go('compliance') },
+        { label: 'Reconcile licences with GreenLake', hint: 'report', run: () => go('licenses') },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

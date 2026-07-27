@@ -1,0 +1,360 @@
+/**
+ * web/src/screens/Sites.tsx — ten sites, and the plane each one answers to.
+ * High-fidelity port of design/NtSites.dc.html: header actions carry the plane
+ * Select + name Input + "Add site", a 4-Stat row, flair divider, the open
+ * table (Site / Managed by — multiple plane Badges / Mix / Devices / Clients /
+ * 70×3px Health bar / Alerts / Last sync), and a footer with the mono count
+ * and a decorative one-page Pagination. Filters are local, instant, AND-combined.
+ * "Add site" opens a small honest drawer: sites are created on the managing
+ * plane, so submitting hands off (toast) instead of fake-creating a row.
+ * Data: getSites() — live /api/sites when the server is up, fixtures otherwise.
+ */
+
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  Badge,
+  Button,
+  Divider,
+  Drawer,
+  EmptyState,
+  FormField,
+  Input,
+  Pagination,
+  Select,
+  Spinner,
+  Stat,
+  Table,
+  useToast,
+} from '../nightdesk';
+import { getSites } from '../api/client';
+import type { SitesData } from '../api/client';
+import { useSettings } from '../app/SettingsContext';
+import type { SiteHealthTone, SiteRow } from '../../../shared';
+import { ScreenHeader } from './ScreenHeader';
+import { ApiErrorState } from './ApiErrorState';
+
+const HEALTH_COLORS: Record<SiteHealthTone, string> = {
+  ok: 'var(--nd-success)',
+  warn: 'var(--nd-warning)',
+  bad: 'var(--nd-danger)',
+  stale: 'var(--nd-border-strong)',
+};
+
+function planeNames(sites: SiteRow[]): string[] {
+  const all: string[] = [];
+  sites.forEach((s) =>
+    s.planes.forEach((p) => {
+      if (all.indexOf(p.name) < 0) all.push(p.name);
+    }),
+  );
+  return all;
+}
+
+export default function Sites() {
+  const navigate = useNavigate();
+  const { density, showPlatformTags } = useSettings();
+  const { toast } = useToast();
+  const [data, setData] = useState<SitesData | null>(null);
+  const [plane, setPlane] = useState('all');
+  const [q, setQ] = useState('');
+  const [addOpen, setAddOpen] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newSubnet, setNewSubnet] = useState('');
+  const [newPlane, setNewPlane] = useState('CENTRAL');
+
+  useEffect(() => {
+    let live = true;
+    void getSites().then((d) => {
+      if (live) setData(d);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (!data) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
+        <Spinner size="md" />
+      </div>
+    );
+  }
+  if (data.apiError) return <ApiErrorState message={data.apiError} />;
+
+  const sites = data.sites;
+  const ql = q.trim().toLowerCase();
+  const rows = sites.filter(
+    (s) =>
+      (plane === 'all' || s.planes.some((p) => p.name === plane)) &&
+      (!ql || s.name.toLowerCase().includes(ql)),
+  );
+  const planeOptions = [{ value: 'all', label: 'All planes' }].concat(
+    planeNames(sites).map((p) => ({ value: p, label: p })),
+  );
+  const addPlaneOptions = planeNames(sites).map((p) => ({ value: p, label: p }));
+
+  /* Sites are owned by the managing planes — hand off, never fake-create. */
+  const submitAddSite = () => {
+    toast('Site creation runs on the managing plane — handed off', {
+      description: newName
+        ? `${newName}${newSubnet ? ` · ${newSubnet}` : ''} · ${newPlane}`
+        : undefined,
+      tone: 'info',
+    });
+    setAddOpen(false);
+    setNewName('');
+    setNewSubnet('');
+    setNewPlane('CENTRAL');
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <ScreenHeader
+        overline="Inventory / Sites"
+        title="Sites"
+        subtitle="Ten sites, and the plane each one actually answers to."
+        actions={
+          <>
+            <div style={{ width: 170 }}>
+              <Select
+                options={planeOptions}
+                value={plane}
+                onValueChange={setPlane}
+                size="sm"
+                aria-label="Filter by plane"
+              />
+            </div>
+            <div style={{ width: 200 }}>
+              <Input
+                size="sm"
+                mono
+                placeholder="site name…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+            </div>
+            <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)}>
+              Add site
+            </Button>
+          </>
+        }
+      />
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+          gap: 18,
+        }}
+      >
+        {data.stats.map((s) => (
+          <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
+        ))}
+      </div>
+
+      <Divider variant="flair" />
+
+      <Table density={density}>
+        <Table.Head>
+          <Table.Row>
+            <Table.HeaderCell>Site</Table.HeaderCell>
+            <Table.HeaderCell>Managed by</Table.HeaderCell>
+            <Table.HeaderCell>Mix</Table.HeaderCell>
+            <Table.HeaderCell numeric>Devices</Table.HeaderCell>
+            <Table.HeaderCell numeric>Clients</Table.HeaderCell>
+            <Table.HeaderCell>Health</Table.HeaderCell>
+            <Table.HeaderCell>Alerts</Table.HeaderCell>
+            <Table.HeaderCell numeric>Last sync</Table.HeaderCell>
+          </Table.Row>
+        </Table.Head>
+        <Table.Body>
+          {rows.map((s) => (
+            <Table.Row key={s.id}>
+              <Table.Cell>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/sites/${encodeURIComponent(s.id)}`)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 2,
+                  }}
+                >
+                  <span style={{ fontSize: 13.5, color: 'var(--nd-text-primary)' }}>{s.name}</span>
+                  <span
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 'var(--nd-text-10)',
+                      color: 'var(--nd-text-muted)',
+                    }}
+                  >
+                    {s.subnet}
+                  </span>
+                </button>
+              </Table.Cell>
+              <Table.Cell>
+                {showPlatformTags ? (
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    {s.planes.map((p) => (
+                      <Badge key={p.name} tone={p.tone}>
+                        {p.name}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+              </Table.Cell>
+              <Table.Cell>
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 10.5,
+                    color: 'var(--nd-text-muted)',
+                  }}
+                >
+                  {s.mix}
+                </span>
+              </Table.Cell>
+              <Table.Cell numeric>{s.devices}</Table.Cell>
+              <Table.Cell numeric>{s.clients}</Table.Cell>
+              <Table.Cell>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {s.healthPct !== '—' ? (
+                    <div
+                      style={{
+                        width: 70,
+                        height: 3,
+                        background: 'var(--nd-bg-inset)',
+                        borderRadius: 99,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: 3,
+                          borderRadius: 99,
+                          width: s.healthPct,
+                          background: HEALTH_COLORS[s.tone],
+                        }}
+                      />
+                    </div>
+                  ) : null}
+                  <span
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 'var(--nd-text-11)',
+                      color: 'var(--nd-text-muted)',
+                    }}
+                  >
+                    {s.health ?? 'not reported'}
+                  </span>
+                </div>
+              </Table.Cell>
+              <Table.Cell>
+                <Badge tone={s.alertTone}>{s.alerts}</Badge>
+              </Table.Cell>
+              <Table.Cell numeric>{s.sync}</Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table>
+
+      {rows.length === 0 ? (
+        <EmptyState
+          title="Nothing matches that filter"
+          description="No site matches that plane and name combination."
+        />
+      ) : null}
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+          paddingTop: 4,
+        }}
+      >
+        <span
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 10.5,
+            color: 'var(--nd-text-muted)',
+          }}
+        >
+          {rows.length} of {sites.length} sites · 418 devices indexed
+        </span>
+        <Pagination page={1} total={1} onChange={() => {}} />
+      </div>
+
+      <Drawer
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        title="Add site"
+        description="Sites are created on the managing plane — the portal hands off with this payload pre-filled."
+      >
+        <form
+          style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitAddSite();
+          }}
+        >
+          <FormField label="Site name" htmlFor="add-site-name">
+            <Input
+              id="add-site-name"
+              size="md"
+              placeholder="e.g. Eastfield Clinic"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+            />
+          </FormField>
+          <FormField label="Subnet" htmlFor="add-site-subnet">
+            <Input
+              id="add-site-subnet"
+              size="md"
+              mono
+              placeholder="10.54.0.0/24"
+              value={newSubnet}
+              onChange={(e) => setNewSubnet(e.target.value)}
+            />
+          </FormField>
+          <FormField label="Managed by" htmlFor="add-site-plane">
+            <Select
+              id="add-site-plane"
+              options={addPlaneOptions}
+              value={newPlane}
+              onValueChange={setNewPlane}
+              size="md"
+              aria-label="Managing plane"
+            />
+          </FormField>
+          <div
+            style={{
+              fontFamily: 'var(--nd-font-mono)',
+              fontSize: 'var(--nd-text-10)',
+              color: 'var(--nd-text-muted)',
+              lineHeight: 1.5,
+            }}
+          >
+            The portal does not create sites locally — the request is handed to the managing plane,
+            which owns site creation.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button variant="primary" size="sm" type="submit">
+              Hand off to plane
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setAddOpen(false)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      </Drawer>
+    </div>
+  );
+}

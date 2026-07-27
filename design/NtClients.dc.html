@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Operate / Clients" hint-size="240px,56px">Clients</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">Every session, wired or wireless, whichever plane authenticated it.</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goAuth }}" hint-size="120px,26px">Auth events →</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="110px,26px">Export session</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:18px">
+<x-import component-from-global-scope="Nightdesk.Stat" label="Clients now" value="4,982" delta="▲ 214 since 08:00" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Wireless" value="4,410" delta="88% of sessions" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Wired" value="572" delta="incl. 148 medical" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Failing auth" value="24" delta="▲ 9 in the last hour" deltaTone="negative" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Poor experience" value="61" delta="rssi under −72dBm" deltaTone="negative" hint-size="140px,76px"></x-import>
+</div>
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+<div style="width:230px">
+<x-import component-from-global-scope="Nightdesk.Input" size="sm" mono="{{ true }}" placeholder="user, MAC, IP, hostname…" value="{{ q }}" onChange="{{ setQ }}" hint-size="230px,26px"></x-import>
+</div>
+<div style="width:150px">
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ mediumOptions }}" value="{{ medium }}" onValueChange="{{ setMedium }}" size="sm" aria-label="Medium" hint-size="150px,26px"></x-import>
+</div>
+<div style="width:160px">
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ typeOptions }}" value="{{ type }}" onValueChange="{{ setType }}" size="sm" aria-label="Device type" hint-size="160px,26px"></x-import>
+</div>
+<div style="width:190px">
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ siteOptions }}" value="{{ site }}" onValueChange="{{ setSite }}" size="sm" aria-label="Site" hint-size="190px,26px"></x-import>
+</div>
+<div style="width:190px">
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ groupOptions }}" value="{{ group }}" onValueChange="{{ setGroup }}" size="sm" aria-label="Group" hint-size="190px,26px"></x-import>
+</div>
+<div style="width:150px">
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ planeOptions }}" value="{{ plane }}" onValueChange="{{ setPlane }}" size="sm" aria-label="Plane" hint-size="150px,26px"></x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Switch" label="Problems only" size="sm" checked="{{ problemsOnly }}" onCheckedChange="{{ setProblems }}" hint-size="140px,20px"></x-import>
+<span style="margin-left:auto;font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ countLabel }}</span>
+</div>
+<x-import component-from-global-scope="Nightdesk.Table" density="{{ density }}" hint-size="100%,560px">
+<x-import component-from-global-scope="Nightdesk.Table.Head" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="160px,28px">Client</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="100px,28px">Type</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="150px,28px">Site</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="140px,28px">Group</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="150px,28px">Connected to</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="100px,28px">Plane</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Auth</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="120px,28px">Role / VLAN</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Health</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="70px,28px">Session</x-import>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Body" hint-size="100%,520px">
+<sc-for list="{{ rows }}" as="c" hint-placeholder-count="12">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,38px">
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="160px,38px">
+<button type="button" onClick="{{ c.open }}" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;display:flex;flex-direction:column;gap:2px">
+<span style="font-size:13px;color:var(--nd-text-primary)">{{ c.name }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ c.mac }}</span>
+</button>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="100px,38px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-secondary);text-transform:uppercase;letter-spacing:.06em">{{ c.type }}</span>
+<span style="font-size:11px;color:var(--nd-text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.kind }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="150px,38px">{{ c.site }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="140px,38px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-secondary)">{{ c.group }}</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="150px,38px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-accent-text)">{{ c.attach }}</span>
+<span style="font-size:11px;color:var(--nd-text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.where }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="100px,38px">
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ c.planeTone }}" hint-size="60px,18px">{{ c.plane }}</x-import>
+</sc-if>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,38px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-secondary)">{{ c.auth }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ c.authBy }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="120px,38px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-size:12px;color:var(--nd-text-secondary)">{{ c.role }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ c.vlan }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,38px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ c.healthTone }}" dot="{{ true }}" hint-size="74px,18px">{{ c.health }}</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="70px,38px">{{ c.session }}</x-import>
+</x-import>
+</sc-for>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Drawer" open="{{ open }}" onOpenChange="{{ setOpen }}" width="lg" title="{{ cur.name }}" description="{{ summary }}" hint-size="100%,100%">
+<div style="display:flex;flex-direction:column;gap:22px">
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ cur.healthTone }}" dot="{{ true }}" hint-size="74px,18px">{{ cur.health }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ cur.planeTone }}" hint-size="60px,18px">{{ cur.plane }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="neutral" hint-size="80px,18px">{{ cur.type }}</x-import>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">session {{ cur.session }}</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Experience</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ cur.link }}</span>
+</div>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 18px">
+<sc-for list="{{ metrics }}" as="m" hint-placeholder-count="6">
+<div style="display:flex;flex-direction:column;gap:3px">
+<span style="font-family:var(--nd-font-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">{{ m.k }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:15px;color:{{ m.color }}">{{ m.v }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ m.note }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;padding-top:6px">
+<x-import component-from-global-scope="Nightdesk.Progress" value="{{ quality }}" label="Connection quality score" showValue="{{ true }}" hint-size="100%,40px"></x-import>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ qualityNote }}</span>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Where it is</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ cur.group }}</span>
+</div>
+<sc-for list="{{ place }}" as="p" hint-placeholder-count="5">
+<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted);width:104px;flex:0 0 104px;padding-top:2px">{{ p.k }}</span>
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-secondary)">{{ p.v }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Path to the internet</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ pathMeta }}</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:0;padding-left:2px">
+<sc-for list="{{ path }}" as="h" hint-placeholder-count="5">
+<div style="display:flex;gap:16px;align-items:stretch">
+<div style="width:11px;flex:0 0 11px;display:flex;flex-direction:column;align-items:center">
+<span style="width:9px;height:9px;border-radius:99px;background:{{ h.dot }};margin-top:6px;flex:0 0 9px"></span>
+<sc-if value="{{ h.hasNext }}" hint-placeholder-val="{{ true }}">
+<span style="flex:1;width:1px;background:var(--nd-border-default);margin:3px 0 0"></span>
+</sc-if>
+</div>
+<div style="flex:1;min-width:0;padding-bottom:16px">
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+<sc-if value="{{ h.device }}" hint-placeholder-val="{{ true }}">
+<button type="button" onClick="{{ h.open }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:12.5px;color:var(--nd-accent-text)">{{ h.name }}</button>
+</sc-if>
+<sc-if value="{{ h.plain }}" hint-placeholder-val="{{ false }}">
+<span style="font-family:var(--nd-font-mono);font-size:12.5px;color:var(--nd-text-primary)">{{ h.name }}</span>
+</sc-if>
+<span style="font-size:11.5px;color:var(--nd-text-muted)">{{ h.role }}</span>
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ h.tone }}" hint-size="58px,18px">{{ h.state }}</x-import>
+</sc-if>
+</div>
+<sc-if value="{{ h.hasNext }}" hint-placeholder-val="{{ true }}">
+<div style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);padding-top:5px">↓ {{ h.link }}</div>
+</sc-if>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Session timeline</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">STITCHED ACROSS PLANES</span>
+</div>
+<sc-for list="{{ timeline }}" as="t" hint-placeholder-count="6">
+<div style="display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);width:44px;flex:0 0 44px">{{ t.time }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);width:74px;flex:0 0 74px;text-transform:uppercase">{{ t.plane }}</span>
+<div style="flex:1;min-width:0">
+<div style="font-size:12.5px;color:var(--nd-text-primary);line-height:1.4">{{ t.what }}</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ t.raw }}</div>
+</div>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Actions</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="120px,26px">Reauthenticate</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" onClick="{{ openAttach }}" hint-size="150px,26px">Inspect {{ cur.attach }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goAuth }}" hint-size="120px,26px">Auth history</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="danger" size="sm" hint-size="110px,26px">Block endpoint</x-import>
+</div>
+</div>
+</div>
+</x-import>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:940},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onGo&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(view: string) =&gt; void&quot;},&quot;onOpenDevice&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(device: string) =&gt; void&quot;}}">
+const NT_AP_UPLINK = { 'ap-3f-12': 'sw-acc-3f-2', 'ap-3f-14': 'sw-acc-3f-2', 'ap-3f-08': 'sw-acc-3f-3', 'ap-1f-04': 'sw-acc-1f-1', 'ap-ng-02': 'sw-ng-1', 'ap-t1-12': 'sw-lake-1', 'ap-t2-04': 'sw-lake-1' };
+const NT_SITE_CHAIN = {
+  'Campus-01 HQ': { core: 'sw-core-a', coreRole: 'core · CX 8325 VSX pair', coreState: 'degraded', coreTone: 'warning', gw: 'gw-edge-1', gwRole: 'edge gateway · AOS-10', gwState: 'flapping', gwTone: 'warning', wan: '2 × 10G to DC1 · rtt 3 ms', exit: 'DC1 border', exitRole: 'firewall + internet break-out' },
+  'Campus-02 Research': { core: 'sw-cam02-1', coreRole: 'core · EX4400 virtual chassis', coreState: 'up', coreTone: 'success', gw: 'gw-edge-1', gwRole: 'edge gateway · AOS-10', gwState: 'flapping', gwTone: 'warning', wan: '10G to Campus-01 · rtt 1 ms', exit: 'DC1 border', exitRole: 'firewall + internet break-out' },
+  'Lakeshore Medical': { core: 'sw-lake-1', coreRole: 'core · CX 6400', coreState: 'up', coreTone: 'success', gw: null, wan: '1G primary + diverse fibre · rtt 6 ms', exit: 'DC1 border', exitRole: 'firewall + internet break-out' },
+  'Northgate Clinic': { core: 'sw-ng-1', coreRole: 'core · EX4100', coreState: 'up', coreTone: 'success', gw: null, wan: '500M broadband · rtt 11 ms', exit: 'Internet', exitRole: 'local break-out' },
+  'Warehouse-DC1': { core: 'sw-wh1-1', coreRole: 'stack master · CX 6300', coreState: 'up', coreTone: 'success', gw: null, wan: '1G to DC1 · rtt 4 ms', exit: 'DC1 border', exitRole: 'firewall + internet break-out' },
+  'Remote & VPN users': { core: 'sw-core-a', coreRole: 'core · CX 8325 VSX pair', coreState: 'degraded', coreTone: 'warning', gw: 'gw-edge-1', gwRole: 'VPN concentrator · AOS-10', gwState: 'flapping', gwTone: 'warning', wan: '2 × 10G to DC1 · rtt 3 ms', exit: 'DC1 border', exitRole: 'firewall + internet break-out' },
+};
+class Component extends DCLogic {
+  state = { q: '', medium: 'all', type: 'all', plane: 'all', site: 'all', group: 'all', problemsOnly: false, sel: null, open: false };
+  clients = [
+    { name: 'm.okonjo', kind: 'iPad Pro', type: 'tablet', group: 'clinical-floors', mac: '3c:22:fb:41:0a:19', ip: '10.44.12.88', attach: 'ap-3f-12', where: '3F east · ward 3E', plane: 'MIST', planeTone: 'info', auth: '802.1X', authBy: 'clearpass', role: 'Clinical staff', vlan: 'vlan 820', health: 'good', healthTone: 'success', session: '2h 14m', medium: 'wireless', site: 'Campus-02 Research', problem: false, link: '5 GHz · ch 36 · 40 MHz', rssi: '−52 dBm', snr: '41 dB', retries: '2.1%', tput: '866 Mbps', roams: '3', quality: 94, zone: 'Tower A · 3rd floor east · bed bay 12', closet: 'IDF-3F-A · sw-acc-3f-2 port 1/1/14' },
+    { name: 'infusion-4A-12', kind: 'Infusion pump', type: 'medical', group: 'medical-wired', mac: '00:1b:c5:09:7f:22', ip: '10.42.30.44', attach: 'sw-acc-3f-2', where: 'port 1/1/20', plane: 'LOCAL', planeTone: 'neutral', auth: 'MAB', authBy: 'clearpass', role: 'Medical device', vlan: 'vlan 820', health: 'good', healthTone: 'success', session: '41d', medium: 'wired', site: 'Campus-01 HQ', problem: false, link: '1 Gb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '4 Mbps', roams: '0', quality: 99, zone: 'Tower A · 4th floor · room 4A-12', closet: 'IDF-3F-A · port 1/1/20 · poe 6.1 W' },
+    { name: 'j.alvarez', kind: 'MacBook Pro', type: 'laptop', group: 'staff-wireless', mac: '8c:85:90:22:d1:04', ip: '10.42.14.19', attach: 'ap-3f-08', where: 'ward 3E · nurse station', plane: 'CENTRAL', planeTone: 'accent', auth: 'EAP-TLS', authBy: 'clearpass', role: 'IT admin', vlan: 'vlan 810', health: 'good', healthTone: 'success', session: '5h 02m', medium: 'wireless', site: 'Campus-01 HQ', problem: false, link: '6 GHz · ch 37 · 80 MHz', rssi: '−48 dBm', snr: '45 dB', retries: '1.2%', tput: '1.2 Gbps', roams: '1', quality: 97, zone: 'Tower A · 3rd floor · nurse station', closet: 'IDF-3F-B · sw-acc-3f-3 port 1/1/9' },
+    { name: 'guest-4471', kind: 'Android phone', type: 'phone', group: 'guest-lobby', mac: 'f0:18:98:5c:11:73', ip: '10.42.12.208', attach: 'ap-1f-04', where: 'lobby · reception', plane: 'CENTRAL', planeTone: 'accent', auth: 'PSK + portal', authBy: 'clearpass guest', role: 'Guest', vlan: 'vlan 812', health: 'weak signal', healthTone: 'warning', session: '18m', medium: 'wireless', site: 'Campus-01 HQ', problem: true, link: '5 GHz · ch 44 · 20 MHz', rssi: '−74 dBm', snr: '18 dB', retries: '14.8%', tput: '117 Mbps', roams: '0', quality: 46, zone: 'Ground floor · lobby, far corner by the café', closet: 'IDF-1F-A · sw-acc-1f-1 port 1/1/4' },
+    { name: 'xray-cart-2', kind: 'Imaging cart', type: 'imaging', group: 'lakeshore-medical', mac: '00:0c:29:7a:41:88', ip: '10.48.30.12', attach: 'ap-t1-12', where: 'tower 1 · corridor', plane: 'AOS-8', planeTone: 'accent', auth: '802.1X', authBy: 'controller', role: 'Medical device', vlan: 'vlan 848', health: 'roaming', healthTone: 'warning', session: '1h 09m', medium: 'wireless', site: 'Lakeshore Medical', problem: true, link: '5 GHz · ch 60 · 40 MHz', rssi: '−69 dBm', snr: '24 dB', retries: '9.4%', tput: '400 Mbps', roams: '14', quality: 61, zone: 'Tower 1 · moving between floors 2 and 3', closet: 'MDF-T1 · sw-lake-1 port 1/2/11' },
+    { name: 'voip-3f-114', kind: 'Desk handset', type: 'voip', group: 'voice-wired', mac: '00:04:f2:aa:19:60', ip: '10.42.16.114', attach: 'sw-acc-3f-3', where: 'port 1/1/14', plane: 'LOCAL', planeTone: 'neutral', auth: '802.1X', authBy: 'clearpass', role: 'Voice', vlan: 'vlan 816', health: 'good', healthTone: 'success', session: '12d', medium: 'wired', site: 'Campus-01 HQ', problem: false, link: '1 Gb full duplex · lldp-med', rssi: '—', snr: '—', retries: '0.0%', tput: '128 kbps', roams: '0', quality: 98, zone: 'Tower A · 3rd floor · desk 114', closet: 'IDF-3F-B · port 1/1/14 · poe 4.4 W' },
+    { name: 'r.okafor', kind: 'ThinkPad X1', type: 'laptop', group: 'staff-wireless', mac: '54:e1:ad:03:77:c1', ip: '10.42.14.61', attach: 'ap-1f-04', where: 'lobby · hot desk', plane: 'CENTRAL', planeTone: 'accent', auth: 'EAP-TLS', authBy: 'clearpass', role: 'IT admin', vlan: 'vlan 810', health: 'good', healthTone: 'success', session: '3h 44m', medium: 'wireless', site: 'Campus-01 HQ', problem: false, link: '5 GHz · ch 36 · 80 MHz', rssi: '−55 dBm', snr: '38 dB', retries: '2.8%', tput: '866 Mbps', roams: '2', quality: 92, zone: 'Ground floor · lobby hot desks', closet: 'IDF-1F-A · sw-acc-1f-1 port 1/1/4' },
+    { name: 'ct-scanner-b', kind: 'CT scanner', type: 'imaging', group: 'medical-wired', mac: '00:50:56:11:c4:07', ip: '10.48.30.61', attach: 'sw-lake-1', where: 'port 1/3/4', plane: 'LOCAL', planeTone: 'neutral', auth: 'MAB', authBy: 'clearpass', role: 'Medical device', vlan: 'vlan 848', health: 'good', healthTone: 'success', session: '96d', medium: 'wired', site: 'Lakeshore Medical', problem: false, link: '1 Gb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '210 Mbps', roams: '0', quality: 99, zone: 'Tower 1 · basement · imaging suite 2', closet: 'MDF-T1 · port 1/3/4' },
+    { name: 'unknown', kind: 'Unrecognised', type: 'unknown', group: 'clinical-floors', mac: '6e:41:0d:99:2b:af', ip: '—', attach: 'ap-3f-14', where: '3F east', plane: 'MIST', planeTone: 'info', auth: '802.1X', authBy: 'reject ×7', role: 'Quarantine', vlan: 'none', health: 'auth failing', healthTone: 'danger', session: '—', medium: 'wireless', site: 'Campus-02 Research', problem: true, link: '5 GHz · ch 36 · assoc only', rssi: '−61 dBm', snr: '30 dB', retries: '—', tput: '0', roams: '0', quality: 12, zone: 'Tower A · 3rd floor east · unknown position', closet: 'IDF-3F-A · sw-acc-3f-2 port 1/1/16' },
+    { name: 's.mehta', kind: 'iPhone 16', type: 'phone', group: 'clinical-floors', mac: 'de:ad:0b:14:65:22', ip: '10.44.12.140', attach: 'ap-3f-12', where: '3F east · ward 3E', plane: 'MIST', planeTone: 'info', auth: '802.1X', authBy: 'clearpass', role: 'Clinical staff', vlan: 'vlan 820', health: 'sticky client', healthTone: 'warning', session: '48m', medium: 'wireless', site: 'Campus-02 Research', problem: true, link: '2.4 GHz · ch 6 · 20 MHz', rssi: '−71 dBm', snr: '21 dB', retries: '11.2%', tput: '144 Mbps', roams: '0', quality: 52, zone: 'Tower A · 3rd floor east · should be on 5 GHz', closet: 'IDF-3F-A · sw-acc-3f-2 port 1/1/14' },
+    { name: 'kiosk-ng-02', kind: 'Check-in kiosk', type: 'kiosk', group: 'northgate-public', mac: '00:26:57:03:14:9a', ip: '10.52.4.22', attach: 'ap-ng-02', where: 'reception', plane: 'MIST', planeTone: 'info', auth: 'PSK', authBy: 'local psk', role: 'Kiosk', vlan: 'vlan 830', health: 'good', healthTone: 'success', session: '22d', medium: 'wireless', site: 'Northgate Clinic', problem: false, link: '5 GHz · ch 100 · 40 MHz', rssi: '−58 dBm', snr: '35 dB', retries: '3.1%', tput: '400 Mbps', roams: '0', quality: 90, zone: 'Ground floor · reception, fixed mount', closet: 'Comms cupboard · sw-ng-1 port 1/1/6' },
+    { name: 'p.singh', kind: 'Surface Laptop', type: 'laptop', group: 'remote-workers', mac: 'a4:83:e7:5f:00:31', ip: '10.70.8.44', attach: 'gw-edge-1', where: 'VIA tunnel · home', plane: 'AOS-10', planeTone: 'accent', auth: 'EAP-TLS', authBy: 'clearpass', role: 'Remote worker', vlan: 'vlan 870', health: 'good', healthTone: 'success', session: '1h 51m', medium: 'wireless', site: 'Remote & VPN users', problem: false, link: 'IPsec · 42 Mbps · rtt 28 ms', rssi: '—', snr: '—', retries: '0.4%', tput: '42 Mbps', roams: '0', quality: 88, zone: 'Off-site · Chicago metro, residential broadband', closet: 'n/a — VPN client' },
+    { name: 'printer-2f-04', kind: 'Multifunction', type: 'printer', group: 'office-wired', mac: '00:17:c8:20:11:70', ip: '10.42.18.4', attach: 'sw-acc-3f-3', where: 'port 1/1/31', plane: 'LOCAL', planeTone: 'neutral', auth: 'MAB', authBy: 'clearpass', role: 'Printer', vlan: 'vlan 818', health: 'good', healthTone: 'success', session: '61d', medium: 'wired', site: 'Campus-01 HQ', problem: false, link: '100 Mb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '2 Mbps', roams: '0', quality: 97, zone: 'Tower A · 2nd floor · print room', closet: 'IDF-3F-B · port 1/1/31' },
+    { name: 'guest-4488', kind: 'Windows laptop', type: 'laptop', group: 'guest-lobby', mac: '2c:33:61:8a:04:12', ip: 'pending', attach: 'ap-1f-04', where: 'lobby', plane: 'CENTRAL', planeTone: 'accent', auth: 'PSK + portal', authBy: 'dhcp pending', role: 'Guest', vlan: 'vlan 812', health: 'no address', healthTone: 'danger', session: '3m', medium: 'wireless', site: 'Campus-01 HQ', problem: true, link: '5 GHz · ch 44 · 40 MHz', rssi: '−63 dBm', snr: '29 dB', retries: '4.0%', tput: '0', roams: '0', quality: 28, zone: 'Ground floor · lobby, seating area', closet: 'IDF-1F-A · sw-acc-1f-1 port 1/1/4' },
+    { name: 'a.ferreira', kind: 'iPad Air', type: 'tablet', group: 'lakeshore-medical', mac: '9a:11:74:0c:33:81', ip: '10.48.12.19', attach: 'ap-t2-04', where: 'tower 2 · ICU', plane: 'AOS-8', planeTone: 'accent', auth: '802.1X', authBy: 'controller', role: 'Clinical staff', vlan: 'vlan 820', health: 'good', healthTone: 'success', session: '2h 40m', medium: 'wireless', site: 'Lakeshore Medical', problem: false, link: '5 GHz · ch 52 · 40 MHz', rssi: '−57 dBm', snr: '36 dB', retries: '2.6%', tput: '866 Mbps', roams: '4', quality: 91, zone: 'Tower 2 · 5th floor · ICU bay 3', closet: 'MDF-T1 · sw-lake-1 port 1/2/14' },
+    { name: 'badge-reader-14', kind: 'Door controller', type: 'building', group: 'building-systems', mac: '00:1e:c0:44:81:07', ip: '10.60.2.14', attach: 'sw-wh1-1', where: 'port 1/1/9', plane: 'LOCAL', planeTone: 'neutral', auth: 'MAB', authBy: 'local db', role: 'Building system', vlan: 'vlan 860', health: 'good', healthTone: 'success', session: '88d', medium: 'wired', site: 'Warehouse-DC1', problem: false, link: '100 Mb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '64 kbps', roams: '0', quality: 96, zone: 'Warehouse · dock door 14', closet: 'Dock panel · port 1/1/9 · poe 3.2 W' },
+  ];
+  timelines = {
+    default: [
+      { time: '07:41', plane: 'MIST', what: 'Association to the access point, 5 GHz', raw: 'assoc rssi=-52 snr=41' },
+      { time: '07:41', plane: 'CLEARPASS', what: '802.1X accepted, role applied from AD group', raw: 'service=MRDN-Wireless result=ACCEPT' },
+      { time: '07:41', plane: 'CENTRAL', what: 'DHCP lease issued from the site scope', raw: 'lease 8h · relay on the access switch' },
+      { time: '08:12', plane: 'MIST', what: 'Roamed to the neighbouring AP and back', raw: 'roam type=11r time=38ms' },
+      { time: '08:52', plane: 'UXI', what: 'Sensor on the same AP passed 2.4 GHz, failed 5 GHz twice', raw: 'wifi-5 assoc timeout' },
+      { time: '09:38', plane: 'PORTAL', what: 'Session stitched into ticket NET-4188 evidence', raw: 'linked ticket NET-4188' },
+    ],
+    reject: [
+      { time: '09:31', plane: 'MIST', what: 'Association attempt to ap-3f-14', raw: 'assoc rssi=-61' },
+      { time: '09:31', plane: 'CLEARPASS', what: '802.1X rejected — certificate not yet valid', raw: 'result=REJECT reason=cert_not_valid_yet' },
+      { time: '09:33', plane: 'CLEARPASS', what: 'Six further attempts rejected, moved to Quarantine', raw: 'count=6 role=Quarantine' },
+      { time: '09:34', plane: 'PORTAL', what: 'Flagged for review — no matching inventory record', raw: 'unknown MAC block 6e:41:0d' },
+    ],
+    dhcp: [
+      { time: '09:40', plane: 'CENTRAL', what: 'Association to ap-1f-04, guest PSK accepted', raw: 'assoc rssi=-63 ssid=MRDN-Guest' },
+      { time: '09:40', plane: 'CLEARPASS', what: 'Guest portal login accepted, role Guest applied', raw: 'service=Guest result=ACCEPT' },
+      { time: '09:41', plane: 'LOCAL SSH', what: 'DHCP discover unanswered — scope at 92%', raw: 'relay counters: 61 discovers dropped' },
+      { time: '09:43', plane: 'PORTAL', what: 'Correlated with the DHCP pool alert on vlan 812', raw: 'alert id A-2214' },
+    ],
+  };
+  pathFor(c) {
+    const chain = NT_SITE_CHAIN[c.site] || NT_SITE_CHAIN['Campus-01 HQ'];
+    const hops = [];
+    const dot = { success: 'var(--nd-success)', warning: 'var(--nd-warning)', danger: 'var(--nd-danger)', neutral: 'var(--nd-border-strong)', accent: 'var(--nd-accent)' };
+    hops.push({ name: c.name, role: c.kind + ' · ' + c.type, state: c.health, tone: c.healthTone, link: c.link + (c.rssi === '—' ? '' : ' · ' + c.rssi + ' · ' + c.tput), device: false });
+    if (c.plane === 'AOS-10' && c.medium === 'wireless' && c.attach === 'gw-edge-1') {
+      hops.push({ name: 'Residential broadband', role: 'untrusted internet', state: 'ok', tone: 'neutral', link: 'IPsec tunnel · rtt 28 ms · aes-gcm-256', device: false });
+      hops.push({ name: chain.gw, role: chain.gwRole, state: chain.gwState, tone: chain.gwTone, link: 'transit vlan 12 · 10G to core', device: true });
+      hops.push({ name: chain.core, role: chain.coreRole, state: chain.coreState, tone: chain.coreTone, link: chain.wan, device: true });
+      hops.push({ name: chain.exit, role: chain.exitRole, state: 'ok', tone: 'neutral', link: null, device: false });
+      return hops.map((h, i) => ({ ...h, hasNext: i < hops.length - 1, plain: !h.device, dot: dot[h.tone] || dot.neutral }));
+    }
+    if (c.medium === 'wireless') {
+      const uplink = NT_AP_UPLINK[c.attach] || chain.core;
+      const apPort = (c.closet || '').split('port ')[1];
+      hops.push({ name: c.attach, role: c.plane === 'AOS-8' ? 'access point · tunnelled to controller' : 'access point · ' + c.plane.toLowerCase() + '-managed', state: 'up', tone: 'success', link: c.plane === 'AOS-8' ? 'GRE tunnel to mc-lake-2 · mtu 1500' : '1 Gb access port' + (apPort ? ' ' + apPort : '') + ' · vlan ' + c.vlan.replace('vlan ', ''), device: true });
+      if (c.plane === 'AOS-8') {
+        hops.push({ name: 'mc-lake-2', role: 'local controller · terminates the tunnel', state: 'no heartbeat', tone: 'danger', link: '10G uplink to core · client traffic still forwarding', device: true });
+      } else if (uplink !== chain.core) {
+        hops.push({ name: uplink, role: 'access switch · CX 6300M', state: 'up', tone: 'success', link: '20G lag to core · vlan trunk', device: true });
+      }
+    } else {
+      hops.push({ name: c.attach, role: 'access switch · ' + c.where, state: 'up', tone: 'success', link: c.attach === chain.core ? chain.wan : '20G lag to core · vlan trunk', device: true });
+    }
+    if (c.attach !== chain.core) {
+      hops.push({ name: chain.core, role: chain.coreRole, state: chain.coreState, tone: chain.coreTone, link: chain.gw ? 'transit vlan 12 · 10G to gateway' : chain.wan, device: true });
+    }
+    if (chain.gw) {
+      hops.push({ name: chain.gw, role: chain.gwRole, state: chain.gwState, tone: chain.gwTone, link: chain.wan, device: true });
+    }
+    hops.push({ name: chain.exit, role: chain.exitRole, state: 'ok', tone: 'neutral', link: null, device: false });
+    return hops.map((h, i) => ({ ...h, hasNext: i < hops.length - 1, plain: !h.device, dot: dot[h.tone] || dot.neutral }));
+  }
+  renderVals() {
+    const s = this.state;
+    const go = this.props.onGo || (() => {});
+    const openDevice = this.props.onOpenDevice || (() => {});
+    const ql = s.q.trim().toLowerCase();
+    const rows = this.clients.filter((c) =>
+      (s.medium === 'all' || c.medium === s.medium) &&
+      (s.type === 'all' || c.type === s.type) &&
+      (s.plane === 'all' || c.plane === s.plane) &&
+      (s.site === 'all' || c.site === s.site) &&
+      (s.group === 'all' || c.group === s.group) &&
+      (!s.problemsOnly || c.problem) &&
+      (!ql || (c.name + c.kind + c.mac + c.ip + c.attach + c.group).toLowerCase().includes(ql))
+    );
+    const uniq = (k) => this.clients.map((c) => c[k]).filter((v, i, a) => a.indexOf(v) === i);
+    const cur = this.clients.find((c) => c.mac === s.sel) || this.clients[0];
+    const tl = cur.health === 'auth failing' ? this.timelines.reject : cur.health === 'no address' ? this.timelines.dhcp : this.timelines.default;
+    const warn = (bad) => (bad ? 'var(--nd-warning)' : 'var(--nd-text-primary)');
+    const path = this.pathFor(cur);
+    const weakHops = path.filter((h) => h.tone === 'warning' || h.tone === 'danger').length;
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      q: s.q, medium: s.medium, type: s.type, plane: s.plane, site: s.site, group: s.group, problemsOnly: s.problemsOnly,
+      mediumOptions: [{ value: 'all', label: 'Wired + wireless' }, { value: 'wireless', label: 'Wireless' }, { value: 'wired', label: 'Wired' }],
+      typeOptions: [{ value: 'all', label: 'All device types' }].concat(uniq('type').map((v) => ({ value: v, label: v }))),
+      planeOptions: [{ value: 'all', label: 'All planes' }].concat(uniq('plane').map((p) => ({ value: p, label: p }))),
+      siteOptions: [{ value: 'all', label: 'All sites' }].concat(uniq('site').map((v) => ({ value: v, label: v }))),
+      groupOptions: [{ value: 'all', label: 'All groups' }].concat(uniq('group').map((v) => ({ value: v, label: v }))),
+      setQ: (e) => this.setState({ q: e.target.value }),
+      setMedium: (v) => this.setState({ medium: v }),
+      setType: (v) => this.setState({ type: v }),
+      setPlane: (v) => this.setState({ plane: v }),
+      setSite: (v) => this.setState({ site: v }),
+      setGroup: (v) => this.setState({ group: v }),
+      setProblems: (v) => this.setState({ problemsOnly: v }),
+      countLabel: rows.length + ' of ' + this.clients.length + ' sampled · 4,982 live sessions',
+      rows: rows.map((c) => ({ ...c, open: () => this.setState({ sel: c.mac, open: true }) })),
+      cur, open: s.open,
+      setOpen: (v) => this.setState({ open: v }),
+      goAuth: () => { this.setState({ open: false }); go('auth'); },
+      openAttach: () => { this.setState({ open: false }); openDevice(cur.attach); },
+      timeline: tl,
+      summary: cur.role + ' · ' + cur.group + ' · ' + cur.site,
+      quality: cur.quality,
+      qualityNote: cur.quality >= 85 ? 'Signal, retries and throughput all within the clinical target.' : cur.quality >= 50 ? 'Below the clinical target — signal or retries are the limiting factor.' : 'Session is effectively unusable; see the timeline for why.',
+      metrics: [
+        { k: 'Signal', v: cur.rssi, note: cur.medium === 'wired' ? 'wired link' : 'target ≥ −67 dBm', color: warn(cur.rssi !== '—' && parseInt(cur.rssi, 10) < -67) },
+        { k: 'SNR', v: cur.snr, note: cur.medium === 'wired' ? '—' : 'target ≥ 25 dB', color: warn(cur.snr !== '—' && parseInt(cur.snr, 10) < 25) },
+        { k: 'Retries', v: cur.retries, note: 'target under 8%', color: warn(cur.retries !== '—' && parseFloat(cur.retries) > 8) },
+        { k: 'Throughput', v: cur.tput, note: 'current rate', color: 'var(--nd-text-primary)' },
+        { k: 'Roams', v: cur.roams, note: 'this session', color: warn(parseInt(cur.roams, 10) > 8) },
+        { k: 'IP', v: cur.ip, note: cur.vlan, color: warn(cur.ip === 'pending' || cur.ip === '—') },
+      ],
+      place: [
+        { k: 'Site', v: cur.site },
+        { k: 'Zone', v: cur.zone },
+        { k: 'Group', v: cur.group + ' — the config group this client inherits' },
+        { k: 'Attached to', v: cur.attach + ' · ' + cur.where },
+        { k: 'Wiring', v: cur.closet },
+      ],
+      path, pathMeta: path.length + ' HOPS' + (weakHops ? ' · ' + weakHops + ' DEGRADED' : ' · ALL HEALTHY'),
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,506 @@
+/**
+ * server/tests/mcpChat.test.ts — MCP streamable-HTTP client + LLM tool loop.
+ *
+ * Covers: the initialize handshake and Mcp-Session-Id capture, SSE response
+ * parsing, the re-init-once-on-session-error retry, the write-tool gating
+ * (invoke_tool only offered when settings.chatWriteMode AND per-request
+ * allowWrite; a hallucinated write is refused, never executed), and the full
+ * chat loop against a scripted fetch (tool_call round, then a final answer).
+ *
+ * HPE_SETTINGS_PATH points at a tmp dir; global fetch is stubbed per test.
+ */
+
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { McpClient as McpClientType, chatLoop as chatLoopType } from '../src/services/mcpChat';
+import type { SettingsStore } from '../src/config/settings';
+
+let tmpDir: string;
+let McpClient: typeof McpClientType;
+let chatLoop: typeof chatLoopType;
+let settings: SettingsStore;
+
+const MCP_URL = 'http://mcp.test/mcp';
+const LLM_URL = 'http://llm.test/v1';
+
+interface CapturedRequest {
+  url: string;
+  headers: Record<string, string>;
+  body: any; // parsed JSON payload
+}
+
+let requests: CapturedRequest[] = [];
+
+function record(url: unknown, init?: RequestInit): CapturedRequest {
+  const captured: CapturedRequest = {
+    url: String(url),
+    headers: (init?.headers ?? {}) as Record<string, string>,
+    body: init?.body ? JSON.parse(String(init.body)) : undefined,
+  };
+  requests.push(captured);
+  return captured;
+}
+
+function jsonRpc(result: unknown, id: number | string = 1): unknown {
+  return { jsonrpc: '2.0', id, result };
+}
+
+function jsonResponse(body: unknown, init?: { status?: number; headers?: Record<string, string> }): Response {
+  return new Response(JSON.stringify(body), {
+    status: init?.status ?? 200,
+    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+  });
+}
+
+function sseResponse(payloads: unknown[], init?: { headers?: Record<string, string> }): Response {
+  const body = payloads.map((p) => `data: ${JSON.stringify(p)}\n\n`).join('');
+  return new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream', ...(init?.headers ?? {}) },
+  });
+}
+
+/** OpenAI-shaped completion payload. */
+function llmMessage(message: unknown): Response {
+  return jsonResponse({ choices: [{ message }] });
+}
+
+beforeAll(async () => {
+  tmpDir = mkdtempSync(join(tmpdir(), 'hpe-mcpchat-'));
+  process.env.HPE_SETTINGS_PATH = join(tmpDir, 'settings.json');
+  const mod = await import('../src/services/mcpChat');
+  const cfg = await import('../src/config/settings');
+  McpClient = mod.McpClient;
+  chatLoop = mod.chatLoop;
+  settings = cfg.settings;
+});
+
+afterAll(() => {
+  rmSync(tmpDir, { recursive: true, force: true });
+  delete process.env.HPE_SETTINGS_PATH;
+});
+
+beforeEach(() => {
+  requests = [];
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('McpClient', () => {
+  it('runs the initialize handshake, captures Mcp-Session-Id and echoes it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown, init?: RequestInit) => {
+        record(url, init);
+        const method = init?.body ? JSON.parse(String(init.body)).method : '';
+        if (method === 'initialize') {
+          return jsonResponse(jsonRpc({ serverInfo: { name: 'centralmcp' } }, 1), {
+            headers: { 'mcp-session-id': 'sess-1' },
+          });
+        }
+        if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+        if (method === 'tools/call') {
+          return jsonResponse(jsonRpc({ content: [{ type: 'text', text: 'hello' }] }, 2));
+        }
+        throw new Error(`unexpected method ${method}`);
+      }),
+    );
+
+    const client = new McpClient(MCP_URL, 'tok-abc');
+    const out = await client.callTool('find_tool', { query: 'devices' });
+
+    expect(out).toEqual({ text: 'hello', isError: false });
+    expect(client.isReady()).toBe(true);
+    expect(requests.map((r) => r.body.method)).toEqual([
+      'initialize',
+      'notifications/initialized',
+      'tools/call',
+    ]);
+
+    const initReq = requests[0];
+    expect(initReq.body.params.protocolVersion).toBe('2025-03-26');
+    expect(initReq.body.params.clientInfo.name).toBe('hpe-network-tools');
+    expect(initReq.headers.accept).toBe('application/json, text/event-stream');
+    expect(initReq.headers.authorization).toBe('Bearer tok-abc');
+
+    const notify = requests[1];
+    expect(notify.body.id).toBeUndefined(); // a notification, not a request
+
+    const call = requests[2];
+    expect(call.headers['mcp-session-id']).toBe('sess-1');
+    expect(call.body.params).toEqual({ name: 'find_tool', arguments: { query: 'devices' } });
+  });
+
+  it('probes a cached session with tools/list and clears stale readiness on failure', async () => {
+    let failProbe = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown, init?: RequestInit) => {
+        record(url, init);
+        const method = init?.body ? JSON.parse(String(init.body)).method : '';
+        if (method === 'initialize') {
+          return jsonResponse(jsonRpc({}, 1), { headers: { 'mcp-session-id': 'sess-probe' } });
+        }
+        if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+        if (method === 'tools/list') {
+          if (failProbe) return new Response('backend unavailable', { status: 503 });
+          return jsonResponse(jsonRpc({ tools: [] }, 2));
+        }
+        throw new Error(`unexpected method ${method}`);
+      }),
+    );
+
+    const client = new McpClient(MCP_URL, null);
+    await client.init();
+    await client.probe();
+    expect(requests.map((r) => r.body.method)).toEqual([
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+    ]);
+
+    failProbe = true;
+    await expect(client.probe()).rejects.toThrow(/503/);
+    expect(client.isReady()).toBe(false);
+  });
+
+  it('parses SSE answers, joining content text items and taking the last result', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        const method = init?.body ? JSON.parse(String(init.body)).method : '';
+        if (method === 'initialize') return jsonResponse(jsonRpc({}, 1));
+        if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+        return sseResponse([
+          { jsonrpc: '2.0', method: 'notifications/progress', params: { pct: 50 } },
+          jsonRpc(
+            { content: [{ type: 'text', text: 'line one' }, { type: 'image', data: '…' }, { type: 'text', text: 'line two' }] },
+            2,
+          ),
+        ]);
+      }),
+    );
+
+    const client = new McpClient(MCP_URL, null);
+    const out = await client.callTool('invoke_read_tool', { name: 'x', arguments: {} });
+    expect(out.text).toBe('line one\nline two');
+    expect(out.isError).toBe(false);
+  });
+
+  it('maps isError tool results without throwing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        const method = init?.body ? JSON.parse(String(init.body)).method : '';
+        if (method === 'initialize') return jsonResponse(jsonRpc({}, 1));
+        if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+        return jsonResponse(jsonRpc({ isError: true, content: [{ type: 'text', text: 'denied by policy' }] }, 2));
+      }),
+    );
+    const out = await new McpClient(MCP_URL, null).callTool('invoke_read_tool', { name: 'x', arguments: {} });
+    expect(out).toEqual({ text: 'denied by policy', isError: true });
+  });
+
+  it('re-initializes once on a session error and retries the call', async () => {
+    let toolCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        record(_url, init);
+        const method = init?.body ? JSON.parse(String(init.body)).method : '';
+        if (method === 'initialize') {
+          const sessions = requests.filter((r) => r.body.method === 'initialize').length;
+          return jsonResponse(jsonRpc({}, 1), { headers: { 'mcp-session-id': `sess-${sessions}` } });
+        }
+        if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+        toolCalls += 1;
+        if (toolCalls === 1) return new Response('unknown session', { status: 400 });
+        return jsonResponse(jsonRpc({ content: [{ type: 'text', text: 'after retry' }] }, 3));
+      }),
+    );
+
+    const client = new McpClient(MCP_URL, null);
+    const out = await client.callTool('find_tool', { query: 'x' });
+
+    expect(out.text).toBe('after retry');
+    expect(requests.map((r) => r.body.method)).toEqual([
+      'initialize',
+      'notifications/initialized',
+      'tools/call',
+      'initialize',
+      'notifications/initialized',
+      'tools/call',
+    ]);
+    expect(requests[5].headers['mcp-session-id']).toBe('sess-2');
+  });
+
+  it('does not retry a non-session HTTP failure, and retries only once', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        record(_url, init);
+        const method = init?.body ? JSON.parse(String(init.body)).method : '';
+        if (method === 'initialize') return jsonResponse(jsonRpc({}, 1));
+        if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+        return new Response('boom', { status: 500 });
+      }),
+    );
+    await expect(new McpClient(MCP_URL, null).callTool('find_tool', { query: 'x' })).rejects.toThrow(
+      /MCP HTTP 500/,
+    );
+    expect(requests.filter((r) => r.body.method === 'initialize')).toHaveLength(1);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        record(_url, init);
+        const method = init?.body ? JSON.parse(String(init.body)).method : '';
+        if (method === 'initialize') return jsonResponse(jsonRpc({}, 1));
+        if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+        return new Response('session gone again', { status: 404 });
+      }),
+    );
+    requests = [];
+    await expect(new McpClient(MCP_URL, null).callTool('find_tool', { query: 'x' })).rejects.toThrow(
+      /session/i,
+    );
+    // init + notify + call, re-init + notify + call — then it gives up.
+    expect(requests.filter((r) => r.body.method === 'tools/call')).toHaveLength(2);
+    expect(requests.filter((r) => r.body.method === 'initialize')).toHaveLength(2);
+  });
+
+  it('raises JSON-RPC errors with their code and message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        const method = init?.body ? JSON.parse(String(init.body)).method : '';
+        if (method === 'initialize') return jsonResponse(jsonRpc({}, 1));
+        if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+        return jsonResponse({ jsonrpc: '2.0', id: 2, error: { code: -32602, message: 'bad arguments' } });
+      }),
+    );
+    await expect(new McpClient(MCP_URL, null).callTool('find_tool', {})).rejects.toThrow(
+      'MCP error -32602: bad arguments',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// chatLoop — gating + the scripted tool round-trip
+// ---------------------------------------------------------------------------
+
+function configureChat(chatWriteMode: boolean): void {
+  settings.update({
+    mcp: { url: MCP_URL, bearerToken: null },
+    llm: { baseUrl: LLM_URL, apiKey: 'sk-test', model: 'test-model' },
+    chatWriteMode,
+  });
+}
+
+/** A client that never actually gets used in LLM-only tests. */
+function freshClient(): McpClientType {
+  return new McpClient(MCP_URL, null);
+}
+
+/** Stub fetch for LLM-only tests: answers completions, records payloads. */
+function stubLlm(script: Array<(body: any) => unknown>): void {
+  let call = 0;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: unknown, init?: RequestInit) => {
+      record(url, init);
+      if (String(url) === `${LLM_URL}/chat/completions`) {
+        const produce = script[Math.min(call, script.length - 1)];
+        call += 1;
+        return llmMessage(produce(JSON.parse(String(init?.body ?? '{}'))));
+      }
+      throw new Error(`unexpected fetch to ${String(url)}`);
+    }),
+  );
+}
+
+describe('chatLoop tool gating', () => {
+  it('offers only find_tool + invoke_read_tool by default', async () => {
+    configureChat(false);
+    stubLlm([() => ({ role: 'assistant', content: 'done.' })]);
+
+    const { reply } = await chatLoop([{ role: 'user', content: 'hi' }], { client: freshClient() });
+    expect(reply).toBe('done.');
+
+    const tools = requests[0].body.tools.map((t: any) => t.function.name);
+    expect(tools).toEqual(['find_tool', 'invoke_read_tool']);
+  });
+
+  it('still hides invoke_tool when the server setting is on but the request did not opt in', async () => {
+    configureChat(true);
+    stubLlm([() => ({ role: 'assistant', content: 'done.' })]);
+
+    await chatLoop([{ role: 'user', content: 'hi' }], { client: freshClient() });
+    const tools = requests[0].body.tools.map((t: any) => t.function.name);
+    expect(tools).toEqual(['find_tool', 'invoke_read_tool']);
+  });
+
+  it('offers invoke_tool only when setting AND per-request allowWrite are both on', async () => {
+    configureChat(true);
+    stubLlm([() => ({ role: 'assistant', content: 'done.' })]);
+
+    await chatLoop([{ role: 'user', content: 'reboot it' }], { client: freshClient(), allowWrite: true });
+    const tools = requests[0].body.tools.map((t: any) => t.function.name);
+    expect(tools).toEqual(['find_tool', 'invoke_read_tool', 'invoke_tool']);
+    const system = requests[0].body.messages[0];
+    expect(system.role).toBe('system');
+    expect(system.content).toContain('invoke_tool');
+  });
+
+  it('refuses a hallucinated invoke_tool without touching MCP', async () => {
+    configureChat(false);
+    stubLlm([
+      () => ({
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'c1',
+            type: 'function',
+            function: { name: 'invoke_tool', arguments: '{"name":"reboot_device","arguments":{}}' },
+          },
+        ],
+      }),
+      () => ({ role: 'assistant', content: 'That requires write mode — staying read-only.' }),
+    ]);
+
+    const { reply, transcript } = await chatLoop([{ role: 'user', content: 'reboot sw-01' }], {
+      client: freshClient(),
+    });
+
+    expect(reply).toBe('That requires write mode — staying read-only.');
+    expect(transcript).toHaveLength(1);
+    expect(transcript[0].tool).toBe('invoke_tool');
+    expect(transcript[0].ok).toBe(false);
+    expect(transcript[0].resultPreview).toMatch(/refused/);
+    // MCP was never called — the refusal happens before any centralmcp traffic.
+    expect(requests.every((r) => r.url === `${LLM_URL}/chat/completions`)).toBe(true);
+    // The refusal went back to the model as the tool message.
+    const secondCall = requests[1].body;
+    const toolMsg = secondCall.messages.find((m: any) => m.role === 'tool');
+    expect(toolMsg.content).toMatch(/refused/);
+  });
+});
+
+describe('chatLoop tool round-trip', () => {
+  function stubLlmAndMcp(mcpText: string): void {
+    let llmCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown, init?: RequestInit) => {
+        record(url, init);
+        if (String(url) === `${LLM_URL}/chat/completions`) {
+          llmCalls += 1;
+          if (llmCalls === 1) {
+            return llmMessage({
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call-1',
+                  type: 'function',
+                  function: { name: 'find_tool', arguments: '{"query":"list devices"}' },
+                },
+              ],
+            });
+          }
+          return llmMessage({ role: 'assistant', content: 'There are 3 switches.' });
+        }
+        const method = init?.body ? JSON.parse(String(init.body)).method : '';
+        if (method === 'initialize') {
+          return jsonResponse(jsonRpc({}, 1), { headers: { 'mcp-session-id': 'sess-loop' } });
+        }
+        if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+        if (method === 'tools/call') {
+          return sseResponse([jsonRpc({ content: [{ type: 'text', text: mcpText }] }, 2)]);
+        }
+        throw new Error(`unexpected MCP method ${method}`);
+      }),
+    );
+  }
+
+  it('runs tool_call → MCP → final answer, with a transcript entry', async () => {
+    configureChat(false);
+    stubLlmAndMcp('device_list tool found');
+
+    const { reply, transcript } = await chatLoop([{ role: 'user', content: 'how many switches?' }], {
+      client: freshClient(),
+    });
+
+    expect(reply).toBe('There are 3 switches.');
+    expect(transcript).toEqual([
+      {
+        tool: 'find_tool',
+        args: '{"query":"list devices"}',
+        resultPreview: 'device_list tool found',
+        ok: true,
+      },
+    ]);
+    // The LLM got the tool result back with the original tool_call_id.
+    const secondLlm = requests.filter((r) => r.url === `${LLM_URL}/chat/completions`)[1];
+    const toolMsg = secondLlm.body.messages.find((m: any) => m.role === 'tool');
+    expect(toolMsg.tool_call_id).toBe('call-1');
+    expect(toolMsg.content).toBe('device_list tool found');
+  });
+
+  it('caps tool output fed back to the LLM and previews in the transcript', async () => {
+    configureChat(false);
+    stubLlmAndMcp('x'.repeat(5000));
+
+    const { transcript } = await chatLoop([{ role: 'user', content: 'dump everything' }], {
+      client: freshClient(),
+    });
+
+    const secondLlm = requests.filter((r) => r.url === `${LLM_URL}/chat/completions`)[1];
+    const toolMsg = secondLlm.body.messages.find((m: any) => m.role === 'tool');
+    expect(toolMsg.content.length).toBeLessThanOrEqual(4001); // 4000 + '…'
+    expect(transcript[0].resultPreview.length).toBeLessThanOrEqual(301); // 300 + '…'
+  });
+
+  it('throws a clear error when the LLM is not configured', async () => {
+    settings.update({ llm: null });
+    await expect(
+      chatLoop([{ role: 'user', content: 'hi' }], { client: freshClient() }),
+    ).rejects.toThrow(/LLM is not configured/);
+    configureChat(false);
+  });
+
+  it('aborts an in-flight LLM request when the caller cancels', async () => {
+    configureChat(false);
+    let requestAborted = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: unknown, init?: RequestInit) => {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              requestAborted = true;
+              reject(new Error('aborted'));
+            },
+            { once: true },
+          );
+        });
+      }),
+    );
+
+    const controller = new AbortController();
+    const pending = chatLoop([{ role: 'user', content: 'hi' }], {
+      client: freshClient(),
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/request cancelled/);
+    expect(requestAborted).toBe(true);
+  });
+});

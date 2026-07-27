@@ -1,0 +1,14 @@
+/* App-level styles — tokens only. Component primitives live in nightdesk. */
+
+/* Launchpad rows (Overview): hairline rows that light up with a copper
+   left-rule on hover — the `style-hover` behaviour of the prototype. */
+.nt-rowlink {
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    border-color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-rowlink:hover {
+  background: var(--nd-bg-surface);
+  border-left-color: var(--nd-accent);
+}

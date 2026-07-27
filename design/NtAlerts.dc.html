@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Operate / Alerts" hint-size="240px,56px">Alerts</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">Every plane's alarms in one queue, de-duplicated and aged.</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="90px,26px">Acknowledge</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" onClick="{{ goTickets }}" hint-size="110px,26px">Raise ticket</x-import>
+</div>
+</div>
+<x-import component-from-global-scope="Nightdesk.Alert" tone="danger" title="Riverside Clinic is dark — and its plane is stale" hint-size="100%,90px">
+<span style="font-size:13px">WAN down 12 minutes. Central Classic last synced 6h ago, so device state there cannot be trusted. The local collector still answers on 10.51.0.0/24 — inspect sw-riv-1 over SSH instead.</span>
+</x-import>
+<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-bottom:4px">
+<div style="width:150px"><x-import component-from-global-scope="Nightdesk.Select" options="{{ sevOptions }}" value="{{ sev }}" onValueChange="{{ setSev }}" size="sm" aria-label="Severity" hint-size="150px,26px"></x-import></div>
+<div style="width:170px"><x-import component-from-global-scope="Nightdesk.Select" options="{{ planeOptions }}" value="{{ plane }}" onValueChange="{{ setPlane }}" size="sm" aria-label="Management plane" hint-size="170px,26px"></x-import></div>
+<div style="width:230px">
+<x-import component-from-global-scope="Nightdesk.Input" size="sm" mono="{{ true }}" placeholder="filter text…" value="{{ q }}" onChange="{{ setQ }}" hint-size="230px,26px"></x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Switch" label="Unacknowledged only" size="sm" checked="{{ unackedOnly }}" onCheckedChange="{{ setUnacked }}" hint-size="180px,20px"></x-import>
+<span style="margin-left:auto;font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ countLabel }}</span>
+</div>
+<x-import component-from-global-scope="Nightdesk.Table" density="{{ density }}" hint-size="100%,520px">
+<x-import component-from-global-scope="Nightdesk.Table.Head" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="48px,28px">Sev</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="360px,28px">Alert</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="170px,28px">Site</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Plane</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="90px,28px">State</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="60px,28px">Age</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="80px,28px"></x-import>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Body" hint-size="100%,480px">
+<sc-for list="{{ rows }}" as="a" hint-placeholder-count="10">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,36px">
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="48px,36px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ a.tone }}" dot="{{ true }}" hint-size="38px,18px">{{ a.sev }}</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="360px,36px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-size:13px;color:var(--nd-text-primary)">{{ a.title }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ a.detail }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="170px,36px">{{ a.site }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,36px">
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="neutral" hint-size="64px,18px">{{ a.plane }}</x-import>
+</sc-if>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="90px,36px">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:{{ a.stateColor }}">{{ a.state }}</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="60px,36px">{{ a.age }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="80px,36px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ a.open }}" hint-size="66px,26px">Inspect</x-import>
+</x-import>
+</x-import>
+</sc-for>
+</x-import>
+</x-import>
+<sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+<x-import component-from-global-scope="Nightdesk.EmptyState" title="Nothing matches that filter" description="Loosen the severity or plane filter to see the rest of the queue." hint-size="100%,180px"></x-import>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onGo&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(view: string) =&gt; void&quot;},&quot;onOpenDevice&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(device: string) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { sev: 'all', plane: 'all', q: '', unackedOnly: false };
+  data = [
+    { sev: 'P1', tone: 'danger', title: 'Riverside Clinic offline — WAN down', detail: 'wan1 down 12m · lte failover did not engage', site: 'Riverside Clinic', plane: 'CLASSIC', state: 'open', age: '12m', device: 'sw-core-a' },
+    { sev: 'P1', tone: 'danger', title: 'mm-lake-1 lost heartbeat from 3 controllers', detail: 'mc-lake-2, mc-lake-3, mc-lake-4 · cluster degraded', site: 'Lakeshore Medical', plane: 'AOS-8', state: 'open', age: '41m', device: 'mm-lake-1' },
+    { sev: 'P1', tone: 'danger', title: 'Central Classic sync stalled — inventory 6h stale', detail: 'api 429 rate-limited · 24 devices unverified', site: 'Riverside Clinic', plane: 'CLASSIC', state: 'open', age: '6h', device: 'sw-core-a' },
+    { sev: 'P2', tone: 'warning', title: 'DHCP pool 92% used on vlan 812', detail: 'scope 10.42.12.0/23 · 1,842 of 2,046 leases', site: 'Campus-01 HQ', plane: 'CENTRAL', state: 'open', age: '20m', device: 'sw-core-a' },
+    { sev: 'P2', tone: 'warning', title: 'gw-edge-1 tunnel flap ×14 in an hour', detail: 'ipsec to dc1 · mtu blackhole suspected', site: 'Campus-01 HQ', plane: 'AOS-10', state: 'open', age: '55m', device: 'gw-edge-1' },
+    { sev: 'P2', tone: 'warning', title: 'Wi-Fi drops, 3rd floor east — 22 clients', detail: 'ap-3f-12, ap-3f-14 · dfs radar events on 5GHz', site: 'Campus-02 Research', plane: 'MIST', state: 'acked', age: '2h', device: 'ap-3f-12' },
+    { sev: 'P2', tone: 'warning', title: 'sw-core-a PSU 2 absent — single supply', detail: 'chassis CX 8325 · psu2 removed 03:12', site: 'Campus-01 HQ', plane: 'LOCAL', state: 'open', age: '3h', device: 'sw-core-a' },
+    { sev: 'P2', tone: 'warning', title: 'uxi-cam01-2 sensor offline', detail: 'last test 04:50 · poe port 1/1/22 down', site: 'Campus-01 HQ', plane: 'UXI', state: 'open', age: '5h', device: 'sw-acc-3f-2' },
+    { sev: 'P3', tone: 'info', title: '34 AP subscriptions expire within 60 days', detail: 'greenlake workspace · foundation ap tier', site: 'Workspace', plane: 'GREENLAKE', state: 'open', age: '1d', device: 'sw-core-a' },
+    { sev: 'P3', tone: 'info', title: 'cppm-01 server certificate expires in 21 days', detail: 'radsec · issued by internal-ca', site: 'Core services', plane: 'CLEARPASS', state: 'acked', age: '2d', device: 'cppm-01' },
+    { sev: 'P3', tone: 'info', title: '6 CX switches still on 10.11 firmware', detail: 'target 10.13.1005 · maintenance window Sat 02:00', site: 'Multiple', plane: 'LOCAL', state: 'open', age: '3d', device: 'sw-acc-3f-2' },
+    { sev: 'P3', tone: 'info', title: 'Meraki MX uplink loss (third-party probe)', detail: 'read-only integration · 2m outage', site: 'Southpoint Clinic', plane: 'THIRD-PARTY', state: 'acked', age: '4h', device: 'sw-core-a' },
+  ];
+  renderVals() {
+    const { sev, plane, q, unackedOnly } = this.state;
+    const openDevice = this.props.onOpenDevice || (() => {});
+    const go = this.props.onGo || (() => {});
+    const ql = q.trim().toLowerCase();
+    const rows = this.data.filter((a) =>
+      (sev === 'all' || a.sev === sev) &&
+      (plane === 'all' || a.plane === plane) &&
+      (!unackedOnly || a.state === 'open') &&
+      (!ql || (a.title + a.detail + a.site).toLowerCase().includes(ql))
+    );
+    const planes = ['all'].concat(this.data.map((a) => a.plane).filter((p, i, arr) => arr.indexOf(p) === i));
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      sev, plane, q, unackedOnly,
+      goTickets: () => go('tickets'),
+      sevOptions: [{ value: 'all', label: 'All severities' }, { value: 'P1', label: 'P1 — critical' }, { value: 'P2', label: 'P2 — major' }, { value: 'P3', label: 'P3 — minor' }],
+      planeOptions: planes.map((p) => ({ value: p, label: p === 'all' ? 'All planes' : p })),
+      setSev: (v) => this.setState({ sev: v }),
+      setPlane: (v) => this.setState({ plane: v }),
+      setQ: (e) => this.setState({ q: e.target.value }),
+      setUnacked: (v) => this.setState({ unackedOnly: v }),
+      countLabel: rows.length + ' of ' + this.data.length + ' alerts',
+      empty: rows.length === 0,
+      rows: rows.map((a) => ({
+        ...a,
+        stateColor: a.state === 'open' ? 'var(--nd-text-secondary)' : 'var(--nd-text-muted)',
+        open: () => openDevice(a.device),
+      })),
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<!-- @template name="HPE Network Tools portal" description="Multi-platform network operations portal — one pane over Mist, Central, Central Classic, GreenLake, AOS-8/10 and local switches." -->
+<helmet><script src="./ds-base.js"></script><style>body{margin:0}*{box-sizing:border-box}::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--nd-border-default);border-radius:99px}::-webkit-scrollbar-track{background:transparent}a{color:var(--nd-accent-text);text-decoration:none}a:hover{color:var(--nd-accent-hover)}</style></helmet>
+<x-import component-from-global-scope="Nightdesk.NightdeskProvider" hint-size="100%,100vh">
+<div style="display:flex;min-height:100vh;background:var(--nd-bg-canvas);font-family:var(--nd-font-body)">
+<aside style="width:224px;flex:0 0 224px;background:var(--nd-bg-surface);border-right:1px solid var(--nd-border-subtle);padding:20px 12px 16px;display:flex;flex-direction:column;gap:22px;position:sticky;top:0;height:100vh;overflow:auto">
+<div style="padding:0 8px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.18em;color:var(--nd-accent-text);text-transform:uppercase">HPE</div>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:19px;color:var(--nd-text-primary);line-height:1.15;margin-top:2px">Network Tools</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:4px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;color:var(--nd-text-muted);text-transform:uppercase;padding:0 8px 4px">Operate</div>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Overview" active="{{ isOverview }}" onClick="{{ goOverview }}"></x-import>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Alerts" active="{{ isAlerts }}" onClick="{{ goAlerts }}"></x-import>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Tickets" active="{{ isTickets }}" onClick="{{ goTickets }}"></x-import>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Clients" active="{{ isClients }}" onClick="{{ goClients }}"></x-import>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Auth events" active="{{ isAuth }}" onClick="{{ goAuth }}"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:4px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;color:var(--nd-text-muted);text-transform:uppercase;padding:0 8px 4px">Inventory</div>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Sites" active="{{ isSites }}" onClick="{{ goSites }}"></x-import>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Devices" active="{{ isDevices }}" onClick="{{ goDevices }}"></x-import>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Licences" active="{{ isLicenses }}" onClick="{{ goLicenses }}"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:4px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;color:var(--nd-text-muted);text-transform:uppercase;padding:0 8px 4px">Govern</div>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Configure" active="{{ isConfigure }}" onClick="{{ goConfigure }}"></x-import>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Compliance" active="{{ isCompliance }}" onClick="{{ goCompliance }}"></x-import>
+<x-import component-from-global-scope="Nightdesk.AppShell.NavItem" label="Connected systems" active="{{ isSystems }}" onClick="{{ goSystems }}"></x-import>
+</div>
+<div style="margin-top:auto;padding:12px 8px 0;border-top:1px solid var(--nd-border-subtle);display:flex;flex-direction:column;gap:6px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;color:var(--nd-text-muted);text-transform:uppercase">Workspace</div>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+<span style="font-size:12.5px;color:var(--nd-text-secondary)">{{ workspaceName }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">GLK</span>
+</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">6 of 7 systems linked</div>
+</div>
+</aside>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<header style="display:flex;align-items:center;gap:16px;padding:10px 24px;border-bottom:1px solid var(--nd-border-subtle);position:sticky;top:0;background:var(--nd-bg-canvas);z-index:20">
+<x-import component-from-global-scope="Nightdesk.Breadcrumbs" items="{{ crumbs }}" hint-size="220px,20px"></x-import>
+<div style="margin-left:auto;position:relative;width:420px">
+<input type="text" placeholder="Jump to a site, device, MAC, IP or ticket…" value="{{ query }}" onChange="{{ onQuery }}" onFocus="{{ openSearch }}" onKeyDown="{{ onSearchKey }}" style="width:100%;height:32px;padding:0 74px 0 10px;background:var(--nd-bg-inset);border:1px solid var(--nd-border-default);border-radius:var(--nd-radius-md);color:var(--nd-text-primary);font-family:var(--nd-font-mono);font-size:12px;outline:none">
+<div style="position:absolute;right:8px;top:6px;display:flex;gap:4px;align-items:center;pointer-events:none">
+<x-import component-from-global-scope="Nightdesk.Kbd" hint-size="24px,18px">⌘</x-import>
+<x-import component-from-global-scope="Nightdesk.Kbd" hint-size="24px,18px">K</x-import>
+</div>
+<sc-if value="{{ searchOpen }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;top:38px;left:0;right:0;background:var(--nd-bg-raised);border:1px solid var(--nd-border-default);border-radius:var(--nd-radius-md);box-shadow:var(--nd-shadow-overlay);padding:6px;max-height:340px;overflow:auto;z-index:30">
+<sc-for list="{{ results }}" as="r" hint-placeholder-count="4">
+<button type="button" onClick="{{ r.open }}" style="width:100%;display:flex;align-items:center;gap:10px;background:none;border:none;text-align:left;padding:7px 8px;border-radius:var(--nd-radius-sm);cursor:pointer;color:var(--nd-text-primary)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.1em;color:var(--nd-text-muted);width:52px;flex:0 0 52px;text-transform:uppercase">{{ r.kind }}</span>
+<span style="font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.label }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ r.meta }}</span>
+</button>
+</sc-for>
+<sc-if value="{{ noResults }}" hint-placeholder-val="{{ false }}">
+<div style="padding:10px 8px;font-size:12.5px;color:var(--nd-text-muted);font-family:var(--nd-font-display);font-style:italic">Nothing matches that. Try a hostname, MAC prefix or site.</div>
+</sc-if>
+</div>
+</sc-if>
+</div>
+<div style="display:flex;align-items:center;gap:10px;padding-left:6px;border-left:1px solid var(--nd-border-subtle)">
+<div style="text-align:right;line-height:1.25">
+<div style="font-size:12.5px;color:var(--nd-text-primary)">R. Okafor</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);text-transform:uppercase;letter-spacing:.1em">Network engineer</div>
+</div>
+<x-import component-from-global-scope="Nightdesk.Avatar" name="R. Okafor" size="sm" hint-size="24px,24px"></x-import>
+</div>
+</header>
+<main onClick="{{ closeSearch }}" style="flex:1;min-width:0;padding:26px 28px 72px;max-width:1620px">
+<sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
+<dc-import name="NtOverview" density="{{ density }}" show-tags="{{ showPlatformTags }}" workspace-name="{{ workspaceName }}" on-go="{{ go }}" on-open-site="{{ openSite }}" on-open-device="{{ openDevice }}" hint-size="100%,900px"></dc-import>
+</sc-if>
+<sc-if value="{{ isAlerts }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtAlerts" density="{{ density }}" show-tags="{{ showPlatformTags }}" on-go="{{ go }}" on-open-device="{{ openDevice }}" hint-size="100%,800px"></dc-import>
+</sc-if>
+<sc-if value="{{ isTickets }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtTickets" density="{{ density }}" show-tags="{{ showPlatformTags }}" on-open-device="{{ openDevice }}" hint-size="100%,800px"></dc-import>
+</sc-if>
+<sc-if value="{{ isClients }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtClients" density="{{ density }}" show-tags="{{ showPlatformTags }}" on-go="{{ go }}" on-open-device="{{ openDevice }}" hint-size="100%,900px"></dc-import>
+</sc-if>
+<sc-if value="{{ isAuth }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtAuthEvents" density="{{ density }}" show-tags="{{ showPlatformTags }}" on-go="{{ go }}" on-open-device="{{ openDevice }}" hint-size="100%,900px"></dc-import>
+</sc-if>
+<sc-if value="{{ isSites }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtSites" density="{{ density }}" show-tags="{{ showPlatformTags }}" on-open-site="{{ openSite }}" hint-size="100%,800px"></dc-import>
+</sc-if>
+<sc-if value="{{ isSite }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtSiteDetail" density="{{ density }}" show-tags="{{ showPlatformTags }}" site-name="{{ siteName }}" on-open-device="{{ openDevice }}" on-go="{{ go }}" hint-size="100%,900px"></dc-import>
+</sc-if>
+<sc-if value="{{ isDevices }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtDevices" density="{{ density }}" show-tags="{{ showPlatformTags }}" inventory-view="{{ inventoryView }}" on-open-device="{{ openDevice }}" hint-size="100%,900px"></dc-import>
+</sc-if>
+<sc-if value="{{ isDevice }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtDeviceDetail" density="{{ density }}" show-tags="{{ showPlatformTags }}" device-name="{{ deviceName }}" on-go="{{ go }}" hint-size="100%,1000px"></dc-import>
+</sc-if>
+<sc-if value="{{ isLicenses }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtLicenses" density="{{ density }}" show-tags="{{ showPlatformTags }}" hint-size="100%,800px"></dc-import>
+</sc-if>
+<sc-if value="{{ isConfigure }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtConfigure" density="{{ density }}" show-tags="{{ showPlatformTags }}" hint-size="100%,900px"></dc-import>
+</sc-if>
+<sc-if value="{{ isCompliance }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtCompliance" density="{{ density }}" show-tags="{{ showPlatformTags }}" on-open-device="{{ openDevice }}" hint-size="100%,900px"></dc-import>
+</sc-if>
+<sc-if value="{{ isSystems }}" hint-placeholder-val="{{ false }}">
+<dc-import name="NtSystems" density="{{ density }}" show-tags="{{ showPlatformTags }}" hint-size="100%,900px"></dc-import>
+</sc-if>
+</main>
+</div>
+</div>
+</x-import>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;inventoryView&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Unified table&quot;,&quot;Platform lanes&quot;],&quot;default&quot;:&quot;Unified table&quot;,&quot;tsType&quot;:&quot;'Unified table' | 'Platform lanes'&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;showPlatformTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;workspaceName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Meridian Health&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Content&quot;}}">
+const NT_INDEX = [
+  { kind: 'site', label: 'Campus-01 — Meridian HQ', meta: '148 devices', view: 'site', arg: 'Campus-01 — Meridian HQ' },
+  { kind: 'site', label: 'Lakeshore Medical Center', meta: 'AOS-8 · 62 devices', view: 'site', arg: 'Lakeshore Medical Center' },
+  { kind: 'site', label: 'Riverside Clinic', meta: 'Central Classic', view: 'site', arg: 'Riverside Clinic' },
+  { kind: 'site', label: 'Warehouse-DC1', meta: 'local only', view: 'site', arg: 'Warehouse-DC1' },
+  { kind: 'device', label: 'sw-core-a', meta: 'CX 8325 · Campus-01', view: 'device', arg: 'sw-core-a' },
+  { kind: 'device', label: 'sw-core-b', meta: 'CX 8325 · Campus-01', view: 'device', arg: 'sw-core-b' },
+  { kind: 'device', label: 'sw-acc-3f-2', meta: 'CX 6300 · Campus-01', view: 'device', arg: 'sw-acc-3f-2' },
+  { kind: 'device', label: 'mm-lake-1', meta: 'AOS-8 master · Lakeshore', view: 'device', arg: 'mm-lake-1' },
+  { kind: 'device', label: 'gw-edge-1', meta: 'AOS-10 gateway · Campus-01', view: 'device', arg: 'gw-edge-1' },
+  { kind: 'device', label: 'ap-3f-12', meta: 'Mist AP43 · Campus-02', view: 'device', arg: 'ap-3f-12' },
+  { kind: 'mac', label: '3c:2a:f4:9b:11:08', meta: 'ap-3f-12 · port 1/1/14', view: 'device', arg: 'sw-acc-3f-2' },
+  { kind: 'client', label: 'm.okonjo — iPad, ward 3E', meta: 'clinical · ap-3f-12', view: 'clients', arg: null },
+  { kind: 'config', label: 'MRDN-Guest SSID — vlan 812', meta: 'edit ssid · central', view: 'configure', arg: null },
+  { kind: 'config', label: 'sw-core-a port 1/1/14', meta: 'edit port · local ssh', view: 'configure', arg: null },
+  { kind: 'client', label: '6e:41:0d:99:2b:af — 7 auth rejects', meta: 'quarantine · ap-3f-14', view: 'auth', arg: null },
+  { kind: 'ip', label: '10.42.8.11', meta: 'sw-core-a · vlan 8', view: 'device', arg: 'sw-core-a' },
+  { kind: 'ticket', label: 'NET-4188 — Wi-Fi drops, 3rd floor east', meta: 'P2 · open', view: 'tickets', arg: null },
+  { kind: 'ticket', label: 'NET-4173 — Classic sync stalled', meta: 'P1 · open', view: 'tickets', arg: null },
+];
+const NT_CRUMBS = {
+  overview: [{ label: 'Overview' }],
+  alerts: [{ label: 'Operate' }, { label: 'Alerts' }],
+  tickets: [{ label: 'Operate' }, { label: 'Tickets' }],
+  clients: [{ label: 'Operate' }, { label: 'Clients' }],
+  auth: [{ label: 'Operate' }, { label: 'Auth & policy events' }],
+  sites: [{ label: 'Inventory' }, { label: 'Sites' }],
+  devices: [{ label: 'Inventory' }, { label: 'Devices' }],
+  licenses: [{ label: 'Inventory' }, { label: 'Licences' }],
+  configure: [{ label: 'Govern' }, { label: 'Configuration' }],
+  compliance: [{ label: 'Govern' }, { label: 'Compliance' }],
+  systems: [{ label: 'Govern' }, { label: 'Connected systems' }],
+};
+class Component extends DCLogic {
+  state = { view: 'overview', deviceName: 'sw-core-a', siteName: 'Campus-01 — Meridian HQ', query: '', searchOpen: false };
+  componentDidMount() {
+    this._key = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        this.setState({ searchOpen: true });
+        const el = document.querySelector('input[placeholder^="Jump to"]');
+        if (el) el.focus();
+      }
+      if (e.key === 'Escape') this.setState({ searchOpen: false });
+    };
+    window.addEventListener('keydown', this._key);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this._key); }
+  go = (view) => this.setState({ view, searchOpen: false });
+  renderVals() {
+    const { view, query, searchOpen } = this.state;
+    const q = query.trim().toLowerCase();
+    const matches = q ? NT_INDEX.filter((r) => (r.label + ' ' + r.meta + ' ' + r.kind).toLowerCase().includes(q)) : NT_INDEX.slice(0, 6);
+    const workspaceName = this.props.workspaceName ?? 'Meridian Health';
+    const crumbs = [{ label: workspaceName }].concat(
+      view === 'site' ? [{ label: 'Sites' }, { label: this.state.siteName }]
+      : view === 'device' ? [{ label: 'Devices' }, { label: this.state.deviceName }]
+      : NT_CRUMBS[view] || [{ label: 'Overview' }]
+    );
+    return {
+      workspaceName, crumbs, query, searchOpen,
+      density: this.props.density ?? 'comfortable',
+      showPlatformTags: this.props.showPlatformTags ?? true,
+      inventoryView: this.props.inventoryView ?? 'Unified table',
+      siteName: this.state.siteName, deviceName: this.state.deviceName,
+      isOverview: view === 'overview', isAlerts: view === 'alerts', isTickets: view === 'tickets',
+      isClients: view === 'clients', isAuth: view === 'auth', isSites: view === 'sites', isSite: view === 'site', isDevices: view === 'devices',
+      isDevice: view === 'device', isLicenses: view === 'licenses',
+      isConfigure: view === 'configure', isCompliance: view === 'compliance', isSystems: view === 'systems',
+      go: this.go,
+      goOverview: () => this.go('overview'), goAlerts: () => this.go('alerts'), goTickets: () => this.go('tickets'),
+      goClients: () => this.go('clients'), goAuth: () => this.go('auth'), goSites: () => this.go('sites'), goDevices: () => this.go('devices'), goLicenses: () => this.go('licenses'),
+      goConfigure: () => this.go('configure'), goCompliance: () => this.go('compliance'), goSystems: () => this.go('systems'),
+      openSite: (siteName) => this.setState({ view: 'site', siteName, searchOpen: false }),
+      openDevice: (deviceName) => this.setState({ view: 'device', deviceName, searchOpen: false }),
+      onQuery: (e) => this.setState({ query: e.target.value, searchOpen: true }),
+      openSearch: () => this.setState({ searchOpen: true }),
+      closeSearch: () => { if (this.state.searchOpen) this.setState({ searchOpen: false }); },
+      onSearchKey: (e) => { if (e.key === 'Escape') this.setState({ searchOpen: false }); if (e.key === 'Enter' && matches[0]) { const r = matches[0]; this.setState(r.kind === 'ticket' ? { view: 'tickets', searchOpen: false } : r.view === 'site' ? { view: 'site', siteName: r.arg, searchOpen: false } : { view: 'device', deviceName: r.arg, searchOpen: false }); } },
+      noResults: matches.length === 0,
+      results: matches.map((r) => ({ ...r, open: () => this.setState(r.view === 'site' ? { view: 'site', siteName: r.arg, searchOpen: false, query: '' } : r.view === 'device' ? { view: 'device', deviceName: r.arg, searchOpen: false, query: '' } : { view: r.view, searchOpen: false, query: '' }) })),
+    };
+  }
+}
+</script>
+</body>
+</html>

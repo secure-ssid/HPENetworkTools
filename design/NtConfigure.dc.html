@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Configure / Changes" hint-size="260px,56px">Configuration</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">Edit the object, not the console — the portal renders it for whichever plane owns it.</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="120px,26px">Change history</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" onClick="{{ newVlan }}" hint-size="100px,26px">New VLAN</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="primary" size="sm" onClick="{{ newSsid }}" hint-size="100px,26px">New SSID</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;max-width:860px">
+<x-import component-from-global-scope="Nightdesk.Stat" label="Queued changes" value="3" delta="2 need a window" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Pushed today" value="6" delta="all ticket-stamped" deltaTone="positive" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Config objects" value="27" delta="5 ssid · 7 vlan · 12 port" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Drift open" value="12" delta="7 auto-remediable" deltaTone="negative" hint-size="140px,76px"></x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Alert" tone="info" title="Writes are brokered, never standing" hint-size="100%,80px">
+<span style="font-size:13px">Every push needs a ticket reference and holds a fifteen-minute lease. Central, the local collector and AOS-8 accept pushes from here; Mist and Classic are read-only, so those changes open in their own console with the payload pre-filled.</span>
+</x-import>
+<div style="display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:34px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:26px;min-width:0">
+<div style="display:flex;flex-direction:column;gap:0">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Wireless SSIDs</span>
+<button type="button" onClick="{{ newSsid }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.08em;color:var(--nd-accent-text);text-transform:uppercase">+ Add SSID</button>
+</div>
+<sc-for list="{{ ssids }}" as="w" hint-placeholder-count="5">
+<button type="button" onClick="{{ w.edit }}" style="display:flex;align-items:center;gap:16px;width:100%;text-align:left;background:none;border:none;border-bottom:1px solid var(--nd-border-subtle);border-left:2px solid transparent;padding:12px 10px" style-hover="background:var(--nd-bg-surface);border-left-color:var(--nd-accent)">
+<div style="width:150px;flex:0 0 150px;display:flex;flex-direction:column;gap:3px">
+<span style="font-family:var(--nd-font-mono);font-size:12.5px;color:var(--nd-text-primary)">{{ w.name }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ w.vlan }}</span>
+</div>
+<span style="width:160px;flex:0 0 160px;font-size:12px;color:var(--nd-text-secondary)">{{ w.security }}</span>
+<span style="flex:1;min-width:0;font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ w.targets }}</span>
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ w.tone }}" hint-size="70px,18px">{{ w.plane }}</x-import>
+</sc-if>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-accent-text);width:44px;text-align:right">Edit ▸</span>
+</button>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:0">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Switch ports</span>
+<button type="button" onClick="{{ newPort }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.08em;color:var(--nd-accent-text);text-transform:uppercase">+ Configure a port</button>
+</div>
+<sc-for list="{{ ports }}" as="p" hint-placeholder-count="6">
+<button type="button" onClick="{{ p.edit }}" style="display:flex;align-items:center;gap:16px;width:100%;text-align:left;background:none;border:none;border-bottom:1px solid var(--nd-border-subtle);border-left:2px solid transparent;padding:12px 10px" style-hover="background:var(--nd-bg-surface);border-left-color:var(--nd-accent)">
+<div style="width:150px;flex:0 0 150px;display:flex;flex-direction:column;gap:3px">
+<span style="font-family:var(--nd-font-mono);font-size:12.5px;color:var(--nd-text-primary)">{{ p.device }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">port {{ p.port }}</span>
+</div>
+<span style="width:160px;flex:0 0 160px;font-size:12px;color:var(--nd-text-secondary)">{{ p.desc }}</span>
+<span style="flex:1;min-width:0;font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ p.summary }}</span>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ p.tone }}" dot="{{ true }}" hint-size="58px,18px">{{ p.state }}</x-import>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-accent-text);width:44px;text-align:right">Edit ▸</span>
+</button>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:0">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">VLANs &amp; roles</span>
+<button type="button" onClick="{{ newVlan }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.08em;color:var(--nd-accent-text);text-transform:uppercase">+ Add VLAN</button>
+</div>
+<sc-for list="{{ vlans }}" as="v" hint-placeholder-count="6">
+<button type="button" onClick="{{ v.edit }}" style="display:flex;align-items:center;gap:16px;width:100%;text-align:left;background:none;border:none;border-bottom:1px solid var(--nd-border-subtle);border-left:2px solid transparent;padding:12px 10px" style-hover="background:var(--nd-bg-surface);border-left-color:var(--nd-accent)">
+<span style="width:60px;flex:0 0 60px;font-family:var(--nd-font-mono);font-size:12.5px;color:var(--nd-text-primary)">{{ v.id }}</span>
+<span style="width:150px;flex:0 0 150px;font-size:12.5px;color:var(--nd-text-secondary)">{{ v.name }}</span>
+<span style="flex:1;min-width:0;font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ v.detail }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);width:90px;text-align:right">{{ v.role }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-accent-text);width:44px;text-align:right">Edit ▸</span>
+</button>
+</sc-for>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:26px;min-width:0">
+<div style="display:flex;flex-direction:column;gap:0">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Queued changes</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">3</span>
+</div>
+<sc-for list="{{ queue }}" as="q" hint-placeholder-count="3">
+<div style="display:flex;flex-direction:column;gap:5px;padding:12px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ q.tone }}" hint-size="70px,18px">{{ q.state }}</x-import>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);margin-left:auto">{{ q.ticket }}</span>
+</div>
+<span style="font-size:12.5px;color:var(--nd-text-primary);line-height:1.4">{{ q.what }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ q.where }}</span>
+</div>
+</sc-for>
+<div style="display:flex;gap:8px;padding-top:12px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="110px,26px">Push queue</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="90px,26px">Discard</x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:0">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Where a change can go</div>
+<sc-for list="{{ capability }}" as="c" hint-placeholder-count="6">
+<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-primary)">{{ c.plane }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ c.note }}</span>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ c.tone }}" hint-size="66px,18px">{{ c.mode }}</x-import>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+<x-import component-from-global-scope="Nightdesk.Drawer" open="{{ editing }}" onOpenChange="{{ setEditing }}" width="lg" title="{{ editTitle }}" description="{{ editDesc }}" hint-size="100%,100%">
+<div style="display:flex;flex-direction:column;gap:18px">
+<sc-if value="{{ isSsid }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;flex-direction:column;gap:16px">
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">SSID name</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" value="{{ ssidName }}" onChange="{{ setSsidName }}" hint-size="100%,32px"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">VLAN</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" value="{{ ssidVlan }}" onChange="{{ setSsidVlan }}" hint-size="100%,32px"></x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Security</span>
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ securityOptions }}" value="{{ ssidSecurity }}" onValueChange="{{ setSsidSecurity }}" hint-size="100%,32px"></x-import>
+<span style="font-size:11.5px;color:var(--nd-text-muted)">Enterprise modes authenticate against ClearPass over RadSec; PSK and portal modes stay local to the plane.</span>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Target group</span>
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ groupOptions }}" value="{{ ssidGroup }}" onValueChange="{{ setSsidGroup }}" hint-size="100%,32px"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Bands</span>
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ bandOptions }}" value="{{ ssidBands }}" onValueChange="{{ setSsidBands }}" hint-size="100%,32px"></x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;padding:14px 0;border-top:1px solid var(--nd-border-subtle);border-bottom:1px solid var(--nd-border-subtle)">
+<x-import component-from-global-scope="Nightdesk.Switch" label="Broadcast the SSID" checked="{{ ssidBroadcast }}" onCheckedChange="{{ setSsidBroadcast }}" hint-size="100%,22px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Switch" label="Client isolation" checked="{{ ssidIsolate }}" onCheckedChange="{{ setSsidIsolate }}" hint-size="100%,22px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Switch" label="Exclude DFS channels (clinical floors)" checked="{{ ssidNoDfs }}" onCheckedChange="{{ setSsidNoDfs }}" hint-size="100%,22px"></x-import>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{ isPort }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:16px">
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Switch</span>
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ deviceOptions }}" value="{{ portDevice }}" onValueChange="{{ setPortDevice }}" hint-size="100%,32px"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Interface</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" value="{{ portId }}" onChange="{{ setPortId }}" hint-size="100%,32px"></x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Description</span>
+<x-import component-from-global-scope="Nightdesk.Input" value="{{ portDesc }}" onChange="{{ setPortDesc }}" hint-size="100%,32px"></x-import>
+</div>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Mode</span>
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ modeOptions }}" value="{{ portMode }}" onValueChange="{{ setPortMode }}" hint-size="100%,32px"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">VLAN</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" value="{{ portVlan }}" onChange="{{ setPortVlan }}" hint-size="100%,32px"></x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;padding:14px 0;border-top:1px solid var(--nd-border-subtle);border-bottom:1px solid var(--nd-border-subtle)">
+<x-import component-from-global-scope="Nightdesk.Switch" label="Power over Ethernet" checked="{{ portPoe }}" onCheckedChange="{{ setPortPoe }}" hint-size="100%,22px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Switch" label="802.1X port access (ClearPass)" checked="{{ portDot1x }}" onCheckedChange="{{ setPortDot1x }}" hint-size="100%,22px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Switch" label="MAC authentication fallback" checked="{{ portMab }}" onCheckedChange="{{ setPortMab }}" hint-size="100%,22px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Switch" label="Administratively up" checked="{{ portUp }}" onCheckedChange="{{ setPortUp }}" hint-size="100%,22px"></x-import>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{ isVlan }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:16px">
+<div style="display:grid;grid-template-columns:80px minmax(0,1fr);gap:14px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">ID</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" value="{{ vlanId }}" onChange="{{ setVlanId }}" hint-size="100%,32px"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Name</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" value="{{ vlanName }}" onChange="{{ setVlanName }}" hint-size="100%,32px"></x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">DHCP helpers</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" value="{{ vlanHelpers }}" onChange="{{ setVlanHelpers }}" hint-size="100%,32px"></x-import>
+<span style="font-size:11.5px;color:var(--nd-text-muted)">The CX baseline expects two helpers; the second one is the drift finding open on this VLAN.</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Apply to</span>
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ scopeOptions }}" value="{{ vlanScope }}" onValueChange="{{ setVlanScope }}" hint-size="100%,32px"></x-import>
+</div>
+</div>
+</sc-if>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">What gets pushed</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ previewMeta }}</span>
+</div>
+<x-import component-from-global-scope="Nightdesk.Code" block="{{ true }}" hint-size="100%,220px">{{ preview }}</x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Blast radius</div>
+<sc-for list="{{ radius }}" as="r" hint-placeholder-count="3">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-secondary)">{{ r.what }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ r.count }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Ticket reference (required for the write lease)</span>
+<x-import component-from-global-scope="Nightdesk.Input" mono="{{ true }}" value="{{ ticket }}" onChange="{{ setTicket }}" placeholder="NET-4166" hint-size="100%,32px"></x-import>
+</div>
+<sc-if value="{{ queued }}" hint-placeholder-val="{{ false }}">
+<x-import component-from-global-scope="Nightdesk.Alert" tone="success" title="Queued for push" hint-size="100%,76px">
+<span style="font-size:13px">{{ queuedNote }}</span>
+</x-import>
+</sc-if>
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+<x-import component-from-global-scope="Nightdesk.Button" variant="primary" size="md" disabled="{{ pushDisabled }}" onClick="{{ queueIt }}" hint-size="150px,32px">Queue the change</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="md" hint-size="130px,32px">Dry run</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="md" onClick="{{ closeEdit }}" hint-size="80px,32px">Cancel</x-import>
+</div>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);line-height:1.6">{{ pushNote }}</span>
+</div>
+</div>
+</x-import>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:940},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  state = {
+    kind: null, queued: false, ticket: '',
+    ssidName: 'MRDN-Staff', ssidVlan: '820', ssidSecurity: 'wpa3-enterprise', ssidGroup: 'clinical-floors', ssidBands: '5+6', ssidBroadcast: true, ssidIsolate: false, ssidNoDfs: true, ssidPlane: 'CENTRAL + MIST',
+    portDevice: 'sw-core-a', portId: '1/1/14', portDesc: 'ap-3f-12', portMode: 'access', portVlan: '812', portPoe: true, portDot1x: true, portMab: false, portUp: true,
+    vlanId: '812', vlanName: 'guest-wifi', vlanHelpers: '10.42.0.20', vlanScope: 'cx-campus-01',
+  };
+  ssids = [
+    { name: 'MRDN-Staff', vlan: 'vlan 820', security: 'WPA3-Enterprise', targets: 'clinical-floors, staff-wireless · 268 APs', plane: 'CENTRAL + MIST', tone: 'accent' },
+    { name: 'MRDN-Guest', vlan: 'vlan 812', security: 'PSK + captive portal', targets: 'guest-lobby, northgate-public · 96 APs', plane: 'CENTRAL', tone: 'accent' },
+    { name: 'MRDN-IoT', vlan: 'vlan 830', security: 'WPA2-PSK', targets: 'all groups · 268 APs', plane: 'CENTRAL + MIST', tone: 'accent' },
+    { name: 'LAKE-Clinical', vlan: 'vlan 848', security: 'WPA2-Enterprise', targets: 'lakeshore-medical · 44 APs', plane: 'AOS-8', tone: 'warning' },
+    { name: 'MRDN-Legacy', vlan: 'vlan 810', security: 'WPA2-Enterprise', targets: 'riverside only · retiring 12 Aug', plane: 'CLASSIC', tone: 'danger' },
+  ];
+  ports = [
+    { device: 'sw-core-a', port: '1/1/14', desc: 'ap-3f-12', summary: 'access vlan 812 · poe class · 802.1X', state: 'up', tone: 'success' },
+    { device: 'sw-acc-3f-2', port: '1/1/20', desc: 'infusion-4A-12', summary: 'access vlan 820 · poe 6.1 W · MAB', state: 'up', tone: 'success' },
+    { device: 'sw-acc-3f-3', port: '1/1/31', desc: 'printer-2f-04', summary: 'access vlan 818 · no poe · MAB', state: 'up', tone: 'success' },
+    { device: 'sw-core-a', port: '1/1/22', desc: 'uxi-cam01-2', summary: 'access vlan 99 · poe class · no carrier', state: 'down', tone: 'danger' },
+    { device: 'sw-lake-1', port: '1/3/4', desc: 'ct-scanner-b', summary: 'access vlan 848 · no poe · MAB', state: 'up', tone: 'success' },
+    { device: 'sw-wh1-1', port: '1/1/9', desc: 'badge-reader-14', summary: 'access vlan 860 · poe 3.2 W · MAB', state: 'up', tone: 'success' },
+  ];
+  vlans = [
+    { id: '8', name: 'mgmt', detail: '10.42.8.0/24 · switch management', role: 'infra' },
+    { id: '12', name: 'transit-wan', detail: '10.42.12.0/30 · core to gateway', role: 'infra' },
+    { id: '812', name: 'guest-wifi', detail: '10.42.12.0/23 · 92% of leases used', role: 'Guest' },
+    { id: '816', name: 'voice', detail: '10.42.16.0/24 · lldp-med voice', role: 'Voice' },
+    { id: '820', name: 'clinical-devices', detail: '10.42.30.0/23 · pumps, tablets', role: 'Clinical' },
+    { id: '848', name: 'imaging', detail: '10.48.30.0/24 · CT, x-ray carts', role: 'Medical' },
+    { id: '860', name: 'building-systems', detail: '10.60.2.0/24 · doors, HVAC', role: 'Building' },
+  ];
+  open(kind, patch) { this.setState(Object.assign({ kind, queued: false }, patch || {})); }
+  renderVals() {
+    const s = this.state;
+    const kind = s.kind;
+    const secLabel = { 'wpa3-enterprise': 'WPA3-Enterprise (802.1X)', 'wpa2-enterprise': 'WPA2-Enterprise (802.1X)', 'psk-portal': 'PSK + captive portal', 'wpa2-psk': 'WPA2-PSK', open: 'Open (no encryption)' };
+    const opmode = { 'wpa3-enterprise': 'wpa3-aes-ccm-128', 'wpa2-enterprise': 'wpa2-aes-128', 'psk-portal': 'wpa2-psk-aes', 'wpa2-psk': 'wpa2-psk-aes', open: 'opensystem' };
+    const bands = { '5+6': '5ghz 6ghz', all: '2.4ghz 5ghz 6ghz', '5': '5ghz' };
+    const ssidPreview = 'wlan ssid-profile "' + s.ssidName + '"\n    essid ' + s.ssidName + '\n    opmode ' + opmode[s.ssidSecurity] + '\n    vlan ' + s.ssidVlan +
+      (s.ssidSecurity.indexOf('enterprise') > -1 ? '\n    dot1x-server-group clearpass' : '\n    wpa-passphrase vault://meridian/wlan/' + s.ssidName.toLowerCase()) +
+      '\n    band ' + bands[s.ssidBands] + (s.ssidBroadcast ? '' : '\n    hide-ssid') + (s.ssidIsolate ? '\n    deny-inter-user-traffic' : '') +
+      '\n!\nap-group "' + s.ssidGroup + '"\n    virtual-ap "' + s.ssidName + '"' + (s.ssidNoDfs ? '\n    rf-band-profile exclude-dfs' : '') +
+      '\n!\n# central  → PUT /configuration/v2/wlan/' + s.ssidGroup + '\n# mist     → read-only, opens in console with this payload\n# clearpass→ no change needed (radsec trust exists)';
+    const portPreview = 'interface ' + s.portId + '\n    description ' + s.portDesc + '\n    ' + (s.portUp ? 'no shutdown' : 'shutdown') +
+      '\n    vlan ' + (s.portMode === 'access' ? 'access ' + s.portVlan : 'trunk native ' + s.portVlan + '\n    vlan trunk allowed ' + s.portVlan + ',820,816') +
+      (s.portPoe ? '\n    power-over-ethernet allocate-by class' : '\n    no power-over-ethernet') +
+      (s.portDot1x ? '\n    aaa authentication port-access dot1x authenticator\n        enable' : '') +
+      (s.portMab ? '\n    aaa authentication port-access mac-auth\n        enable' : '') +
+      '\n!\n# device   → ' + s.portDevice + ' (local collector, recorded session)\n# rollback → snapshot taken before the push, one-click revert for 24h';
+    const vlanPreview = 'vlan ' + s.vlanId + '\n    name ' + s.vlanName +
+      s.vlanHelpers.split(',').map((h) => '\n    ip helper-address ' + h.trim()).join('') +
+      '\n!\n# scope    → ' + s.vlanScope + ' (' + (s.vlanScope === 'cx-campus-01' ? '42 switches' : s.vlanScope === 'cx-all' ? '96 switches' : '2 core switches') + ')\n# baseline → CX switch baseline expects two helpers' +
+      (s.vlanHelpers.split(',').length > 1 ? ' — satisfied' : ' — still one, drift remains');
+    const preview = kind === 'port' ? portPreview : kind === 'vlan' ? vlanPreview : ssidPreview;
+    const titles = { ssid: 'Wireless SSID', port: 'Switch port', vlan: 'VLAN' };
+    const descs = {
+      ssid: 'Written to Central directly; the Mist half opens in its console with the same payload.',
+      port: 'Pushed over the recorded SSH session on the local collector, with a rollback snapshot.',
+      vlan: 'Applied to every switch in the selected scope through the local collector.',
+    };
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      ssids: this.ssids.map((w) => ({ ...w, edit: () => this.open('ssid', { ssidName: w.name, ssidVlan: w.vlan.replace('vlan ', ''), ssidPlane: w.plane }) })),
+      ports: this.ports.map((p) => ({ ...p, edit: () => this.open('port', { portDevice: p.device, portId: p.port, portDesc: p.desc, portVlan: (p.summary.split('vlan ')[1] || '812').split(' ')[0], portPoe: p.summary.indexOf('poe') > -1 && p.summary.indexOf('no poe') < 0, portMab: p.summary.indexOf('MAB') > -1, portDot1x: p.summary.indexOf('802.1X') > -1, portUp: p.state !== 'down' }) })),
+      vlans: this.vlans.map((v) => ({ ...v, edit: () => this.open('vlan', { vlanId: v.id, vlanName: v.name, vlanHelpers: v.id === '812' ? '10.42.0.20' : '10.42.0.20, 10.44.0.20' }) })),
+      newSsid: () => this.open('ssid', { ssidName: 'MRDN-New', ssidVlan: '830', ssidSecurity: 'wpa3-enterprise' }),
+      newPort: () => this.open('port', {}),
+      newVlan: () => this.open('vlan', { vlanId: '', vlanName: '', vlanHelpers: '10.42.0.20, 10.44.0.20' }),
+      editing: !!kind, isSsid: kind === 'ssid', isPort: kind === 'port', isVlan: kind === 'vlan',
+      editTitle: titles[kind] || 'Configuration',
+      editDesc: descs[kind] || '',
+      setEditing: (v) => { if (!v) this.setState({ kind: null }); },
+      closeEdit: () => this.setState({ kind: null }),
+      ssidName: s.ssidName, ssidVlan: s.ssidVlan, ssidSecurity: s.ssidSecurity, ssidGroup: s.ssidGroup, ssidBands: s.ssidBands,
+      ssidBroadcast: s.ssidBroadcast, ssidIsolate: s.ssidIsolate, ssidNoDfs: s.ssidNoDfs,
+      setSsidName: (e) => this.setState({ ssidName: e.target.value, queued: false }),
+      setSsidVlan: (e) => this.setState({ ssidVlan: e.target.value, queued: false }),
+      setSsidSecurity: (v) => this.setState({ ssidSecurity: v, queued: false }),
+      setSsidGroup: (v) => this.setState({ ssidGroup: v, queued: false }),
+      setSsidBands: (v) => this.setState({ ssidBands: v, queued: false }),
+      setSsidBroadcast: (v) => this.setState({ ssidBroadcast: v, queued: false }),
+      setSsidIsolate: (v) => this.setState({ ssidIsolate: v, queued: false }),
+      setSsidNoDfs: (v) => this.setState({ ssidNoDfs: v, queued: false }),
+      securityOptions: Object.keys(secLabel).map((k) => ({ value: k, label: secLabel[k] })),
+      groupOptions: [
+        { value: 'clinical-floors', label: 'clinical-floors (268 APs)' },
+        { value: 'staff-wireless', label: 'staff-wireless (96 APs)' },
+        { value: 'guest-lobby', label: 'guest-lobby (24 APs)' },
+        { value: 'lakeshore-medical', label: 'lakeshore-medical (44 APs, AOS-8)' },
+        { value: 'all-sites', label: 'all sites (268 APs, every plane)' },
+      ],
+      bandOptions: [{ value: '5+6', label: '5 GHz + 6 GHz' }, { value: 'all', label: '2.4 + 5 + 6 GHz' }, { value: '5', label: '5 GHz only' }],
+      portDevice: s.portDevice, portId: s.portId, portDesc: s.portDesc, portMode: s.portMode, portVlan: s.portVlan,
+      portPoe: s.portPoe, portDot1x: s.portDot1x, portMab: s.portMab, portUp: s.portUp,
+      setPortDevice: (v) => this.setState({ portDevice: v, queued: false }),
+      setPortId: (e) => this.setState({ portId: e.target.value, queued: false }),
+      setPortDesc: (e) => this.setState({ portDesc: e.target.value, queued: false }),
+      setPortMode: (v) => this.setState({ portMode: v, queued: false }),
+      setPortVlan: (e) => this.setState({ portVlan: e.target.value, queued: false }),
+      setPortPoe: (v) => this.setState({ portPoe: v, queued: false }),
+      setPortDot1x: (v) => this.setState({ portDot1x: v, queued: false }),
+      setPortMab: (v) => this.setState({ portMab: v, queued: false }),
+      setPortUp: (v) => this.setState({ portUp: v, queued: false }),
+      deviceOptions: ['sw-core-a', 'sw-core-b', 'sw-acc-3f-2', 'sw-acc-3f-3', 'sw-lake-1', 'sw-wh1-1', 'sw-riv-1'].map((d) => ({ value: d, label: d })),
+      modeOptions: [{ value: 'access', label: 'Access port' }, { value: 'trunk', label: 'Trunk port' }],
+      vlanId: s.vlanId, vlanName: s.vlanName, vlanHelpers: s.vlanHelpers, vlanScope: s.vlanScope,
+      setVlanId: (e) => this.setState({ vlanId: e.target.value, queued: false }),
+      setVlanName: (e) => this.setState({ vlanName: e.target.value, queued: false }),
+      setVlanHelpers: (e) => this.setState({ vlanHelpers: e.target.value, queued: false }),
+      setVlanScope: (v) => this.setState({ vlanScope: v, queued: false }),
+      scopeOptions: [
+        { value: 'cx-campus-01', label: 'CX switches at Campus-01 (42)' },
+        { value: 'cx-all', label: 'Every CX switch (96)' },
+        { value: 'core-only', label: 'Core switches only (2)' },
+      ],
+      preview,
+      previewMeta: kind === 'ssid' ? (s.ssidPlane || 'CENTRAL') + ' · RENDERED PER PLANE' : kind === 'port' ? s.portDevice.toUpperCase() + ' · CX CLI' : s.vlanScope.toUpperCase() + ' · CX CLI',
+      radius: kind === 'ssid' ? [
+        { what: 'Access points that reload the profile', count: s.ssidGroup === 'all-sites' ? '268' : s.ssidGroup === 'clinical-floors' ? '268' : s.ssidGroup === 'staff-wireless' ? '96' : '44' },
+        { what: 'Client sessions that will re-authenticate', count: '2,472' },
+        { what: 'Planes touched', count: (s.ssidPlane || 'CENTRAL') },
+      ] : kind === 'port' ? [
+        { what: 'Interfaces changed', count: '1' },
+        { what: 'Clients on this port right now', count: s.portId === '1/1/14' ? '1 (ap-3f-12, 38 wireless clients behind it)' : '1' },
+        { what: 'Rollback snapshot', count: 'taken before push' },
+      ] : [
+        { what: 'Switches in scope', count: s.vlanScope === 'cx-all' ? '96' : s.vlanScope === 'core-only' ? '2' : '42' },
+        { what: 'Clients on this VLAN', count: s.vlanId === '812' ? '1,842 leases' : 'n/a' },
+        { what: 'Compliance findings resolved', count: s.vlanHelpers.split(',').length > 1 ? '1' : '0' },
+      ],
+      ticket: s.ticket,
+      setTicket: (e) => this.setState({ ticket: e.target.value }),
+      pushDisabled: !s.ticket.trim(),
+      queued: s.queued,
+      queuedNote: 'Change queued against ' + (s.ticket || 'the ticket') + '. The write lease opens for fifteen minutes when you push the queue; a rollback snapshot is kept for 24 hours.',
+      queueIt: () => this.setState({ queued: true }),
+      pushNote: kind === 'ssid' ? 'Central accepts this push directly. The Mist half is read-only from here — the portal opens the Mist console with the payload pre-filled.' : kind === 'port' ? 'Pushed over the recorded SSH session; every keystroke and the resulting diff are attached to the ticket.' : 'Applied switch by switch with a verify step between each; the run stops on the first mismatch.',
+      queue: [
+        { state: 'ready', tone: 'success', what: 'Add DHCP helper 10.44.0.20 to vlan 812', where: '2 core switches · local collector', ticket: 'NET-4166' },
+        { state: 'needs window', tone: 'warning', what: 'Tunnel MTU 1400 on mc-lake-3', where: 'AOS-8 · window 01:00–04:00', ticket: 'NET-4149' },
+        { state: 'console', tone: 'neutral', what: 'Exclude DFS channels on clinical-floors', where: 'Mist · read-only, opens in console', ticket: 'NET-4188' },
+      ],
+      capability: [
+        { plane: 'HPE Aruba Central', note: 'wlan, groups, templates', mode: 'brokered', tone: 'accent' },
+        { plane: 'Local switch collector', note: 'ports, vlans, aaa', mode: 'brokered', tone: 'accent' },
+        { plane: 'AOS-8 master', note: 'recorded shell, window only', mode: 'ssh', tone: 'accent' },
+        { plane: 'Mist', note: 'payload pre-filled in console', mode: 'read only', tone: 'neutral' },
+        { plane: 'Central Classic', note: 'retiring 12 Aug', mode: 'read only', tone: 'neutral' },
+        { plane: 'ClearPass', note: 'policy edited in ClearPass', mode: 'read only', tone: 'neutral' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

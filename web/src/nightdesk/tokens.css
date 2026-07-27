@@ -1,0 +1,114 @@
+/* Nightdesk design tokens — exact values from the design spec. */
+:root {
+  /* backgrounds */
+  --nd-bg-canvas: #0d0f14;
+  --nd-bg-surface: #151821;
+  --nd-bg-raised: #1b1f2b;
+  --nd-bg-inset: #0a0c10;
+
+  /* borders (1px) */
+  --nd-border-subtle: #232837;
+  --nd-border-default: #2e3547;
+  --nd-border-strong: #3d4560;
+
+  /* text */
+  --nd-text-primary: #eef0f6;
+  --nd-text-secondary: #8b93a7;
+  --nd-text-muted: #5c6478;
+  --nd-text-inverse: #14100d;
+
+  /* accent (copper) */
+  --nd-accent: #d97757;
+  --nd-accent-hover: #e28a6c;
+  --nd-accent-active: #c96845;
+  --nd-accent-text: #e08a66;
+  --nd-accent-subtle: rgba(217, 119, 87, 0.14);
+  --nd-glow: rgba(217, 119, 87, 0.07);
+
+  /* semantic */
+  --nd-success: #57dc96;
+  --nd-success-subtle: rgba(87, 220, 150, 0.12);
+  --nd-warning: #f5c518;
+  --nd-warning-subtle: rgba(245, 197, 24, 0.12);
+  --nd-danger: #ff6b6b;
+  --nd-danger-subtle: rgba(255, 107, 107, 0.12);
+  --nd-info: #58b7ff;
+  --nd-info-subtle: rgba(88, 183, 255, 0.12);
+
+  /* focus / overlay */
+  --nd-ring-color: rgba(217, 119, 87, 0.4);
+  --nd-overlay-scrim: rgba(5, 6, 9, 0.66);
+
+  /* type families */
+  --nd-font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --nd-font-body: "Inter", -apple-system, system-ui, sans-serif;
+  --nd-font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+  /* type sizes (note: --nd-text-12 is 12.5px) */
+  --nd-text-10: 10px;
+  --nd-text-11: 11px;
+  --nd-text-12: 12.5px;
+  --nd-text-14: 14px;
+  --nd-text-16: 16px;
+  --nd-text-18: 18px;
+  --nd-text-22: 22px;
+  --nd-text-26: 26px;
+  --nd-text-34: 34px;
+  --nd-text-44: 44px;
+
+  /* spacing */
+  --nd-space-1: 4px;
+  --nd-space-2: 8px;
+  --nd-space-3: 12px;
+  --nd-space-4: 16px;
+  --nd-space-5: 20px;
+  --nd-space-6: 24px;
+  --nd-space-7: 32px;
+  --nd-space-8: 40px;
+  --nd-space-9: 48px;
+  --nd-space-10: 64px;
+
+  /* radius */
+  --nd-radius-sm: 3px;
+  --nd-radius-md: 4px;
+  --nd-radius-lg: 6px;
+  --nd-radius-xl: 8px;
+  --nd-radius-full: 999px;
+
+  /* shadow */
+  --nd-shadow-raised: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --nd-shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.5);
+
+  /* motion */
+  --nd-duration-fast: 120ms;
+  --nd-duration-base: 180ms;
+  --nd-duration-slow: 240ms;
+  --nd-ease: cubic-bezier(0.25, 0.6, 0.3, 1);
+
+  /* z-index */
+  --nd-z-overlay: 100;
+  --nd-z-dropdown: 120;
+  --nd-z-toast: 140;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--nd-bg-canvas);
+  color: var(--nd-text-primary);
+  font-family: var(--nd-font-body);
+  font-size: var(--nd-text-14);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

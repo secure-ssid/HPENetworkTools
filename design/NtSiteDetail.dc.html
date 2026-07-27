@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="{{ overline }}" hint-size="380px,56px">{{ site.name }}</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">{{ site.blurb }}</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goSites }}" hint-size="90px,26px">← All sites</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="130px,26px">{{ site.launch }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="primary" size="sm" onClick="{{ openCore }}" hint-size="120px,26px">Local terminal</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:18px">
+<x-import component-from-global-scope="Nightdesk.Stat" label="Devices" value="{{ site.deviceCount }}" delta="{{ site.deviceDelta }}" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Clients now" value="{{ site.clients }}" delta="{{ site.clientDelta }}" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Health" value="{{ site.health }}" delta="{{ site.healthNote }}" deltaTone="{{ site.healthTone }}" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Open alerts" value="{{ site.alertCount }}" delta="{{ site.alertNote }}" deltaTone="negative" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Config drift" value="{{ site.drift }}" delta="{{ site.driftNote }}" deltaTone="neutral" hint-size="140px,76px"></x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Divider" variant="flair" hint-size="40px,2px"></x-import>
+<div style="display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:34px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:10px;min-width:0">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Devices at this site</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">MIXED PLANES</span>
+</div>
+<x-import component-from-global-scope="Nightdesk.Table" density="{{ density }}" hint-size="100%,420px">
+<x-import component-from-global-scope="Nightdesk.Table.Head" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="140px,28px">Device</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="130px,28px">Model</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Managed by</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Role</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="90px,28px">State</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="80px,28px">Uptime</x-import>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Body" hint-size="100%,380px">
+<sc-for list="{{ devices }}" as="d" hint-placeholder-count="8">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,34px">
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="140px,34px">
+<button type="button" onClick="{{ d.open }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:12px;color:var(--nd-accent-text);text-align:left">{{ d.name }}</button>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="130px,34px">{{ d.model }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,34px">
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ d.planeTone }}" hint-size="64px,18px">{{ d.plane }}</x-import>
+</sc-if>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,34px">{{ d.role }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="90px,34px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ d.stateTone }}" dot="{{ true }}" hint-size="60px,18px">{{ d.state }}</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="80px,34px">{{ d.uptime }}</x-import>
+</x-import>
+</sc-for>
+</x-import>
+</x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:26px;min-width:0">
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Site facts</div>
+<sc-for list="{{ facts }}" as="f" hint-placeholder-count="6">
+<div style="display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--nd-text-muted);width:96px;flex:0 0 96px;padding-top:2px">{{ f.k }}</span>
+<span style="flex:1;min-width:0;font-size:13px;color:var(--nd-text-secondary)">{{ f.v }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Local reachability</div>
+<div style="display:flex;flex-direction:column;gap:12px;padding:2px 0 4px">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+<span style="font-size:13px;color:var(--nd-text-primary)">SSH collector</span>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ site.collectorTone }}" dot="{{ true }}" hint-size="70px,18px">{{ site.collector }}</x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Progress" value="{{ site.reachValue }}" label="Devices answering directly" showValue="{{ true }}" hint-size="100%,40px"></x-import>
+<div style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);line-height:1.5">{{ site.collectorNote }}</div>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" onClick="{{ openCore }}" hint-size="100%,26px">Open terminal on {{ site.core }}</x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Open here</span>
+<button type="button" onClick="{{ goAlerts }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.08em;color:var(--nd-accent-text);text-transform:uppercase">All alerts →</button>
+</div>
+<sc-for list="{{ alerts }}" as="a" hint-placeholder-count="3">
+<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ a.tone }}" dot="{{ true }}" hint-size="34px,18px">{{ a.sev }}</x-import>
+<div style="flex:1;min-width:0">
+<div style="font-size:12.5px;color:var(--nd-text-primary);line-height:1.4">{{ a.title }}</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ a.meta }}</div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:940},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;siteName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Campus-01 — Meridian HQ&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;onGo&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(view: string) =&gt; void&quot;},&quot;onOpenDevice&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(device: string) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  profiles = {
+    'Campus-01 — Meridian HQ': {
+      name: 'Campus-01 — Meridian HQ', blurb: 'Flagship campus: Central for wireless, local SSH for the CX fabric, AOS-10 gateways at the edge.',
+      launch: 'Open in Central', deviceCount: '148', deviceDelta: '96 ap · 42 sw · 6 gw', clients: '1,904', clientDelta: 'peak 2,140 at 10:20',
+      health: '98%', healthNote: '▼ 1% vs. yesterday', healthTone: 'negative', alertCount: '4', alertNote: '1 hardware', drift: '5', driftNote: 'vlan + ntp',
+      collector: 'healthy', collectorTone: 'success', reachValue: 96, core: 'sw-core-a',
+      collectorNote: 'collector-01 · 10.42.0.9 · polls every 30s · 42 of 42 switches answering, 4 uxi sensors idle',
+      facts: [
+        { k: 'Address', v: '1400 Meridian Parkway, Building A–D' },
+        { k: 'Subnets', v: '10.42.0.0/16 · guest 10.42.12.0/23' },
+        { k: 'WAN', v: '2 × 10G to DC1, LTE standby (unused 41d)' },
+        { k: 'Core', v: 'sw-core-a / sw-core-b · CX 8325 VSX pair' },
+        { k: 'Planes', v: 'Central (wireless), local SSH (wired), AOS-10' },
+        { k: 'On-site', v: 'M. Rossi (facilities), 24×7 escort for ward floors' },
+      ],
+      devices: [
+        { name: 'sw-core-a', model: 'CX 8325-48Y8C', plane: 'LOCAL', planeTone: 'neutral', role: 'core / vsx-1', state: 'degraded', stateTone: 'warning', uptime: '182d' },
+        { name: 'sw-core-b', model: 'CX 8325-48Y8C', plane: 'LOCAL', planeTone: 'neutral', role: 'core / vsx-2', state: 'up', stateTone: 'success', uptime: '182d' },
+        { name: 'sw-acc-3f-2', model: 'CX 6300M-48G', plane: 'LOCAL', planeTone: 'neutral', role: 'access 3F east', state: 'up', stateTone: 'success', uptime: '61d' },
+        { name: 'sw-acc-3f-3', model: 'CX 6300M-48G', plane: 'LOCAL', planeTone: 'neutral', role: 'access 3F west', state: 'up', stateTone: 'success', uptime: '61d' },
+        { name: 'gw-edge-1', model: 'AOS-10 9240', plane: 'AOS-10', planeTone: 'accent', role: 'edge gateway', state: 'flapping', stateTone: 'warning', uptime: '12d' },
+        { name: 'gw-edge-2', model: 'AOS-10 9240', plane: 'AOS-10', planeTone: 'accent', role: 'edge gateway', state: 'up', stateTone: 'success', uptime: '12d' },
+        { name: 'ap-1f-04', model: 'AP-635', plane: 'CENTRAL', planeTone: 'accent', role: 'lobby', state: 'up', stateTone: 'success', uptime: '44d' },
+        { name: 'ap-3f-08', model: 'AP-635', plane: 'CENTRAL', planeTone: 'accent', role: 'ward 3E', state: 'up', stateTone: 'success', uptime: '44d' },
+        { name: 'uxi-cam01-2', model: 'UXI G2', plane: 'UXI', planeTone: 'info', role: 'sensor 3F', state: 'offline', stateTone: 'danger', uptime: '—' },
+        { name: 'cppm-01', model: 'ClearPass C3010', plane: 'CLEARPASS', planeTone: 'neutral', role: 'policy manager', state: 'up', stateTone: 'success', uptime: '211d' },
+      ],
+      alerts: [
+        { sev: 'P2', tone: 'warning', title: 'sw-core-a PSU 2 absent', meta: 'local ssh · 3h' },
+        { sev: 'P2', tone: 'warning', title: 'gw-edge-1 tunnel flap ×14', meta: 'aos-10 · 55m' },
+        { sev: 'P2', tone: 'warning', title: 'uxi-cam01-2 sensor offline', meta: 'uxi · 5h' },
+        { sev: 'P2', tone: 'warning', title: 'DHCP pool 92% on vlan 812', meta: 'central · 20m' },
+      ],
+    },
+    'Lakeshore Medical Center': {
+      name: 'Lakeshore Medical Center', blurb: 'On-prem AOS-8 master-local cluster. No cloud plane here — the portal talks to the mobility master directly.',
+      launch: 'Open AOS-8 WebUI', deviceCount: '62', deviceDelta: '44 ap · 14 sw · 4 mc', clients: '744', clientDelta: 'peak 810 at 09:05',
+      health: '81%', healthNote: '▼ 14% since 08:00', healthTone: 'negative', alertCount: '3', alertNote: '2 critical', drift: '4', driftNote: 'mtu + firmware',
+      collector: 'healthy', collectorTone: 'success', reachValue: 100, core: 'sw-lake-1',
+      collectorNote: 'collector-03 · 10.48.0.9 · api to mm-lake-1 plus ssh to 14 switches · cluster heartbeat degraded',
+      facts: [
+        { k: 'Address', v: '89 Lakeshore Drive, towers 1–2' },
+        { k: 'Subnets', v: '10.48.0.0/16 · medical devices 10.48.30.0/24' },
+        { k: 'WAN', v: '1G primary + 1G diverse fibre' },
+        { k: 'Cluster', v: 'mm-lake-1 master · mc-lake-2/3/4 locals' },
+        { k: 'Planes', v: 'AOS-8 (8.10.0.10), local SSH for CX' },
+        { k: 'Constraint', v: 'Change window 01:00–04:00 only — clinical floors' },
+      ],
+      devices: [
+        { name: 'mm-lake-1', model: 'AOS-8 MM-VA', plane: 'AOS-8', planeTone: 'accent', role: 'mobility master', state: 'degraded', stateTone: 'warning', uptime: '96d' },
+        { name: 'mc-lake-2', model: '7210 controller', plane: 'AOS-8', planeTone: 'accent', role: 'local', state: 'no heartbeat', stateTone: 'danger', uptime: '9d' },
+        { name: 'mc-lake-3', model: '7210 controller', plane: 'AOS-8', planeTone: 'accent', role: 'local', state: 'no heartbeat', stateTone: 'danger', uptime: '9d' },
+        { name: 'mc-lake-4', model: '7205 controller', plane: 'AOS-8', planeTone: 'accent', role: 'local', state: 'no heartbeat', stateTone: 'danger', uptime: '9d' },
+        { name: 'sw-lake-1', model: 'CX 6400', plane: 'LOCAL', planeTone: 'neutral', role: 'core', state: 'up', stateTone: 'success', uptime: '240d' },
+        { name: 'ap-t1-12', model: 'AP-535', plane: 'AOS-8', planeTone: 'accent', role: 'tower 1 ward', state: 'up', stateTone: 'success', uptime: '9d' },
+        { name: 'ap-t2-04', model: 'AP-535', plane: 'AOS-8', planeTone: 'accent', role: 'tower 2 ICU', state: 'up', stateTone: 'success', uptime: '9d' },
+      ],
+      alerts: [
+        { sev: 'P1', tone: 'danger', title: 'mm-lake-1 lost heartbeat from 3 controllers', meta: 'aos-8 · 41m' },
+        { sev: 'P2', tone: 'warning', title: 'Tunnel MTU still 1500 on mc-lake-3', meta: 'compliance · 2d' },
+        { sev: 'P3', tone: 'info', title: '4 APs pending 8.10.0.10 upgrade', meta: 'aos-8 · 3d' },
+      ],
+    },
+    'Riverside Clinic': {
+      name: 'Riverside Clinic', blurb: 'Still on Central Classic. Cloud state is six hours stale, so trust the local collector until the migration lands.',
+      launch: 'Open Classic UI', deviceCount: '24', deviceDelta: '16 ap · 8 sw', clients: '188', clientDelta: 'last seen 03:12',
+      health: '—', healthNote: 'inventory stale', healthTone: 'negative', alertCount: '2', alertNote: '1 critical', drift: '3', driftNote: 'unverified',
+      collector: 'degraded', collectorTone: 'warning', reachValue: 100, core: 'sw-riv-1',
+      collectorNote: 'classic api 429-throttled · ssh probe reached 24 of 24 devices at 06:40 · migration to Central scheduled 12 Aug',
+      facts: [
+        { k: 'Address', v: '22 Riverside Way, single floor' },
+        { k: 'Subnets', v: '10.51.0.0/24' },
+        { k: 'WAN', v: '500M broadband, LTE failover (did not engage)' },
+        { k: 'Core', v: 'sw-riv-1 · CX 6200F-48G' },
+        { k: 'Planes', v: 'Central Classic (legacy), local SSH' },
+        { k: 'Migration', v: 'Planned 12 Aug — 24 devices to Central' },
+      ],
+      devices: [
+        { name: 'sw-riv-1', model: 'CX 6200F-48G', plane: 'LOCAL', planeTone: 'neutral', role: 'core / stack-1', state: 'up', stateTone: 'success', uptime: '312d' },
+        { name: 'sw-riv-2', model: 'CX 6200F-24G', plane: 'CLASSIC', planeTone: 'warning', role: 'access', state: 'unverified', stateTone: 'neutral', uptime: '?' },
+        { name: 'ap-riv-01', model: 'AP-515', plane: 'CLASSIC', planeTone: 'warning', role: 'reception', state: 'unverified', stateTone: 'neutral', uptime: '?' },
+        { name: 'ap-riv-06', model: 'AP-515', plane: 'CLASSIC', planeTone: 'warning', role: 'consult rooms', state: 'unverified', stateTone: 'neutral', uptime: '?' },
+      ],
+      alerts: [
+        { sev: 'P1', tone: 'danger', title: 'Riverside Clinic offline — WAN down', meta: 'classic · 12m' },
+        { sev: 'P1', tone: 'danger', title: 'Classic sync stalled, 24 devices stale', meta: 'classic · 6h' },
+      ],
+    },
+  };
+  fallback(name) {
+    return {
+      name, blurb: 'Local-only site: no cloud plane claims these devices, so the SSH collector is the source of truth.',
+      launch: 'Open local WebUI', deviceCount: '18', deviceDelta: '4 ap · 14 sw', clients: '96', clientDelta: 'peak 104',
+      health: '100%', healthNote: 'clear 30d', healthTone: 'positive', alertCount: '0', alertNote: 'none open', drift: '0', driftNote: 'matches baseline',
+      collector: 'healthy', collectorTone: 'success', reachValue: 100, core: 'sw-wh1-1',
+      collectorNote: 'collector-05 · polls every 30s · 14 of 14 switches answering over ssh',
+      facts: [
+        { k: 'Subnets', v: '10.60.0.0/22' },
+        { k: 'WAN', v: '1G to DC1' },
+        { k: 'Core', v: 'sw-wh1-1 · CX 6300 stack of 3' },
+        { k: 'Planes', v: 'Local SSH only' },
+        { k: 'Note', v: 'Candidate for Central onboarding in Q4' },
+      ],
+      devices: [
+        { name: 'sw-wh1-1', model: 'CX 6300M-24G', plane: 'LOCAL', planeTone: 'neutral', role: 'stack master', state: 'up', stateTone: 'success', uptime: '88d' },
+        { name: 'sw-wh1-2', model: 'CX 6300M-24G', plane: 'LOCAL', planeTone: 'neutral', role: 'stack member', state: 'up', stateTone: 'success', uptime: '88d' },
+        { name: 'sw-wh1-3', model: 'CX 6300M-24G', plane: 'LOCAL', planeTone: 'neutral', role: 'stack member', state: 'missing', stateTone: 'warning', uptime: '—' },
+        { name: 'ap-wh1-01', model: 'AP-505', plane: 'LOCAL', planeTone: 'neutral', role: 'dock area', state: 'up', stateTone: 'success', uptime: '88d' },
+      ],
+      alerts: [{ sev: 'P3', tone: 'info', title: 'Stack member 3 missing after reboot', meta: 'local ssh · 3d' }],
+    };
+  }
+  renderVals() {
+    const go = this.props.onGo || (() => {});
+    const openDevice = this.props.onOpenDevice || (() => {});
+    const name = this.props.siteName || 'Campus-01 — Meridian HQ';
+    const site = this.profiles[name] || this.fallback(name);
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      site, overline: 'Sites / ' + name,
+      facts: site.facts, alerts: site.alerts,
+      devices: site.devices.map((d) => ({ ...d, open: () => openDevice(d.name) })),
+      goSites: () => go('sites'), goAlerts: () => go('alerts'),
+      openCore: () => openDevice(site.core),
+    };
+  }
+}
+</script>
+</body>
+</html>

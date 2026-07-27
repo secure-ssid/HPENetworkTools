@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Inventory / Licences" hint-size="240px,56px">Licences &amp; subscriptions</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">GreenLake subscriptions, controller perpetuals and Mist SUBs, reconciled against what is actually racked.</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="110px,26px">Export CSV</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="primary" size="sm" hint-size="180px,26px">Reconcile with GreenLake</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:18px">
+<x-import component-from-global-scope="Nightdesk.Stat" label="Subscriptions" value="486" delta="4 platforms" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Assigned" value="452" delta="93% utilised" deltaTone="positive" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Unassigned" value="34" delta="▲ 6 this month" deltaTone="negative" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Expiring ≤60d" value="34" delta="renewal due 14 Sep" deltaTone="negative" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Devices unlicensed" value="14" delta="all local switches" deltaTone="neutral" hint-size="140px,76px"></x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Alert" tone="warning" title="Two reconciliation gaps worth money" hint-size="100%,86px">
+<span style="font-size:13px">Six Foundation AP subscriptions are still assigned to devices decommissioned in May — reclaim them before the September renewal. Fourteen Warehouse switches carry no GreenLake record at all, which is fine for local management but means no TAC entitlement.</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table" density="{{ density }}" hint-size="100%,400px">
+<x-import component-from-global-scope="Nightdesk.Table.Head" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="220px,28px">Subscription</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="120px,28px">Plane</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="130px,28px">Term</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="70px,28px">Qty</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="90px,28px">Assigned</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="140px,28px">Utilisation</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="100px,28px">Expires</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="90px,28px">Status</x-import>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Body" hint-size="100%,360px">
+<sc-for list="{{ rows }}" as="l" hint-placeholder-count="8">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,34px">
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="220px,34px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-size:13px;color:var(--nd-text-primary)">{{ l.name }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ l.sku }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="120px,34px">
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ l.planeTone }}" hint-size="70px,18px">{{ l.plane }}</x-import>
+</sc-if>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="130px,34px">{{ l.term }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="70px,34px">{{ l.qty }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="90px,34px">{{ l.assigned }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="140px,34px">
+<div style="display:flex;align-items:center;gap:8px">
+<div style="width:80px;height:3px;background:var(--nd-bg-inset);border-radius:99px;overflow:hidden">
+<div style="height:3px;border-radius:99px;width:{{ l.pct }};background:{{ l.pctColor }}"></div>
+</div>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ l.pct }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="100px,34px">{{ l.expires }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="90px,34px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ l.tone }}" hint-size="62px,18px">{{ l.status }}</x-import>
+</x-import>
+</x-import>
+</sc-for>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Divider" variant="flair" hint-size="40px,2px"></x-import>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:34px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Renewals, soonest first</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">NEXT 180 DAYS</span>
+</div>
+<sc-for list="{{ renewals }}" as="r" hint-placeholder-count="5">
+<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-secondary);width:78px;flex:0 0 78px">{{ r.date }}</span>
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-primary)">{{ r.what }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:{{ r.color }}">{{ r.days }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Orphans &amp; gaps</span>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="90px,26px">Reclaim all</x-import>
+</div>
+<sc-for list="{{ orphans }}" as="o" hint-placeholder-count="4">
+<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ o.tone }}" hint-size="52px,18px">{{ o.tag }}</x-import>
+<div style="flex:1;min-width:0">
+<div style="font-size:12.5px;color:var(--nd-text-primary);line-height:1.4">{{ o.what }}</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ o.detail }}</div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  rows = [
+    { name: 'Foundation AP', sku: 'R7G20AAE · greenlake', plane: 'GREENLAKE', planeTone: 'accent', term: '3 yr subscription', qty: '180', assigned: '174', pct: '97%', expires: '14 Sep 26', status: 'expiring', tone: 'warning' },
+    { name: 'Advanced AP', sku: 'R7G21AAE · greenlake', plane: 'GREENLAKE', planeTone: 'accent', term: '3 yr subscription', qty: '40', assigned: '40', pct: '100%', expires: '30 Nov 26', status: 'active', tone: 'success' },
+    { name: 'Advanced Switch 62xx/63xx', sku: 'R6U74AAE · greenlake', plane: 'GREENLAKE', planeTone: 'accent', term: '5 yr subscription', qty: '60', assigned: '46', pct: '77%', expires: '02 Mar 28', status: 'active', tone: 'success' },
+    { name: 'Advanced Gateway', sku: 'R7G30AAE · greenlake', plane: 'GREENLAKE', planeTone: 'accent', term: '3 yr subscription', qty: '8', assigned: '6', pct: '75%', expires: '30 Nov 26', status: 'active', tone: 'success' },
+    { name: 'Mist Wi-Fi SUB-WLAN', sku: 'SUB-WLAN-3Y · mist', plane: 'MIST', planeTone: 'info', term: '3 yr subscription', qty: '110', assigned: '108', pct: '98%', expires: '14 Sep 26', status: 'expiring', tone: 'warning' },
+    { name: 'Mist Wired SUB-SW', sku: 'SUB-SW-3Y · mist', plane: 'MIST', planeTone: 'info', term: '3 yr subscription', qty: '30', assigned: '26', pct: '87%', expires: '14 Sep 26', status: 'expiring', tone: 'warning' },
+    { name: 'AOS-8 AP capacity', sku: 'LIC-AP-96 · perpetual', plane: 'AOS-8', planeTone: 'accent', term: 'perpetual + support', qty: '96', assigned: '44', pct: '46%', expires: 'support 31 Jan 27', status: 'idle', tone: 'neutral' },
+    { name: 'ClearPass endpoints', sku: 'CP-5K · perpetual', plane: 'CLEARPASS', planeTone: 'neutral', term: 'perpetual + support', qty: '5,000', assigned: '4,182', pct: '84%', expires: 'support 15 Aug 26', status: 'expiring', tone: 'warning' },
+    { name: 'UXI sensor SUB', sku: 'UXI-SUB-1Y · greenlake', plane: 'UXI', planeTone: 'info', term: '1 yr subscription', qty: '12', assigned: '8', pct: '67%', expires: '01 Feb 27', status: 'active', tone: 'success' },
+    { name: 'Central Classic device licences', sku: 'legacy pool', plane: 'CLASSIC', planeTone: 'warning', term: 'legacy, ends at migration', qty: '24', assigned: '24', pct: '100%', expires: '12 Aug 26', status: 'retiring', tone: 'danger' },
+  ];
+  renderVals() {
+    const colorFor = (pct) => (parseInt(pct, 10) >= 95 ? 'var(--nd-warning)' : 'var(--nd-success)');
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      rows: this.rows.map((l) => ({ ...l, pctColor: colorFor(l.pct) })),
+      renewals: [
+        { date: '12 Aug 26', what: 'Central Classic legacy pool ends — migrate Riverside first', days: '18d', color: 'var(--nd-danger)' },
+        { date: '15 Aug 26', what: 'ClearPass support contract + server certificate', days: '21d', color: 'var(--nd-danger)' },
+        { date: '14 Sep 26', what: 'Foundation AP ×180, Mist WLAN ×110, Mist SW ×30', days: '51d', color: 'var(--nd-warning)' },
+        { date: '30 Nov 26', what: 'Advanced AP ×40 and Advanced Gateway ×8', days: '128d', color: 'var(--nd-text-muted)' },
+        { date: '01 Feb 27', what: 'UXI sensor subscriptions ×12', days: '191d', color: 'var(--nd-text-muted)' },
+      ],
+      orphans: [
+        { tag: 'orphan', tone: 'warning', what: '6 Foundation AP subscriptions on decommissioned devices', detail: 'ap-2f-01…06 · removed 14 May · reclaim before renewal' },
+        { tag: 'gap', tone: 'info', what: '14 Warehouse switches with no GreenLake record', detail: 'locally managed only · no TAC entitlement' },
+        { tag: 'gap', tone: 'info', what: '4 Mist wired SUBs unassigned', detail: 'purchased for Southpoint expansion, not yet claimed' },
+        { tag: 'idle', tone: 'neutral', what: 'AOS-8 AP capacity 52 unused of 96', detail: 'freed as Lakeshore migrates to AOS-10' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

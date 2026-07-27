@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Operate / Auth events" hint-size="260px,56px">Auth &amp; policy events</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">Every RADIUS decision, whichever plane asked the question.</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goClients }}" hint-size="100px,26px">Clients →</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="120px,26px">Live tail</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:18px">
+<x-import component-from-global-scope="Nightdesk.Stat" label="Auths / min" value="412" delta="peak 610 at 08:05" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Accept rate" value="98.6%" delta="▲ 0.3% vs. yesterday" deltaTone="positive" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Rejects / hour" value="24" delta="▲ 9 — one endpoint" deltaTone="negative" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="MAB fallbacks" value="61" delta="medical + printers" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Known endpoints" value="4,182" delta="of 5,000 licensed" deltaTone="neutral" hint-size="140px,76px"></x-import>
+</div>
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+<div style="width:250px">
+<x-import component-from-global-scope="Nightdesk.Input" size="sm" mono="{{ true }}" placeholder="user, MAC, reason, NAS…" value="{{ q }}" onChange="{{ setQ }}" hint-size="250px,26px"></x-import>
+</div>
+<div style="width:150px">
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ resultOptions }}" value="{{ result }}" onValueChange="{{ setResult }}" size="sm" aria-label="Result" hint-size="150px,26px"></x-import>
+</div>
+<div style="width:200px">
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ serviceOptions }}" value="{{ service }}" onValueChange="{{ setService }}" size="sm" aria-label="Service" hint-size="200px,26px"></x-import>
+</div>
+<div style="width:160px">
+<x-import component-from-global-scope="Nightdesk.Select" options="{{ planeOptions }}" value="{{ plane }}" onValueChange="{{ setPlane }}" size="sm" aria-label="Plane" hint-size="160px,26px"></x-import>
+</div>
+<span style="margin-left:auto;font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ countLabel }}</span>
+</div>
+<x-import component-from-global-scope="Nightdesk.Table" density="{{ density }}" hint-size="100%,560px">
+<x-import component-from-global-scope="Nightdesk.Table.Head" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="70px,28px">Time</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="170px,28px">Endpoint</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="180px,28px">Service</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="100px,28px">Method</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="90px,28px">Result</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="220px,28px">Reason / role</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="140px,28px">NAS device</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="100px,28px">Plane</x-import>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Body" hint-size="100%,520px">
+<sc-for list="{{ rows }}" as="e" hint-placeholder-count="12">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,36px">
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="70px,36px">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ e.time }}</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="170px,36px">
+<button type="button" onClick="{{ goClients }}" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;display:flex;flex-direction:column;gap:2px">
+<span style="font-size:12.5px;color:var(--nd-text-primary)">{{ e.who }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ e.mac }}</span>
+</button>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="180px,36px">{{ e.service }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="100px,36px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-secondary)">{{ e.method }}</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="90px,36px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ e.tone }}" dot="{{ true }}" hint-size="62px,18px">{{ e.result }}</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="220px,36px">
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-size:12px;color:var(--nd-text-secondary)">{{ e.reason }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ e.role }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="140px,36px">
+<button type="button" onClick="{{ e.openNas }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-accent-text);text-align:left">{{ e.nas }}</button>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="100px,36px">
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="neutral" hint-size="64px,18px">{{ e.plane }}</x-import>
+</sc-if>
+</x-import>
+</x-import>
+</sc-for>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Divider" variant="flair" hint-size="40px,2px"></x-import>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:34px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Why authentications failed</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">LAST 24 HOURS</span>
+</div>
+<sc-for list="{{ reasons }}" as="r" hint-placeholder-count="5">
+<div style="display:flex;flex-direction:column;gap:4px">
+<x-import component-from-global-scope="Nightdesk.Progress" value="{{ r.value }}" max="{{ 60 }}" label="{{ r.label }}" showValue="{{ false }}" hint-size="100%,40px"></x-import>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ r.note }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Policy services</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">AUTHS / HOUR</span>
+</div>
+<sc-for list="{{ services }}" as="s" hint-placeholder-count="6">
+<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<div style="flex:1;min-width:0">
+<div style="font-size:12.5px;color:var(--nd-text-primary)">{{ s.name }}</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ s.detail }}</div>
+</div>
+<span style="font-family:var(--nd-font-mono);font-size:11.5px;color:var(--nd-text-secondary);width:64px;text-align:right">{{ s.rate }}</span>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ s.tone }}" hint-size="56px,18px">{{ s.state }}</x-import>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:940},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onGo&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(view: string) =&gt; void&quot;},&quot;onOpenDevice&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(device: string) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { q: '', result: 'all', service: 'all', plane: 'all' };
+  events = [
+    { time: '09:41:22', who: 'm.okonjo', mac: '3c:22:fb:41:0a:19', service: 'MRDN Wireless 802.1X', method: 'EAP-TLS', result: 'accept', tone: 'success', reason: 'Certificate valid, AD group Clinical', role: 'role Clinical staff · vlan 820', nas: 'ap-3f-12', plane: 'MIST' },
+    { time: '09:41:04', who: 'infusion-4A-12', mac: '00:1b:c5:09:7f:22', service: 'MRDN Wired MAB', method: 'MAB', result: 'accept', tone: 'success', reason: 'Endpoint profiled as medical pump', role: 'role Medical device · vlan 820', nas: 'sw-acc-3f-2', plane: 'LOCAL' },
+    { time: '09:40:51', who: 'unknown', mac: '6e:41:0d:99:2b:af', service: 'MRDN Wireless 802.1X', method: 'EAP-TLS', result: 'reject', tone: 'danger', reason: 'Certificate not yet valid (clock skew)', role: 'role Quarantine', nas: 'ap-3f-14', plane: 'MIST' },
+    { time: '09:40:33', who: 'guest-4488', mac: '2c:33:61:8a:04:12', service: 'MRDN Guest Portal', method: 'PSK + portal', result: 'accept', tone: 'success', reason: 'Portal login accepted, sponsor auto-approve', role: 'role Guest · vlan 812', nas: 'ap-1f-04', plane: 'CENTRAL' },
+    { time: '09:40:12', who: 'j.alvarez', mac: '8c:85:90:22:d1:04', service: 'MRDN Wireless 802.1X', method: 'EAP-TLS', result: 'accept', tone: 'success', reason: 'AD group IT-Admins, MFA satisfied', role: 'role IT admin · vlan 810', nas: 'ap-3f-08', plane: 'CENTRAL' },
+    { time: '09:39:58', who: 'unknown', mac: '6e:41:0d:99:2b:af', service: 'MRDN Wireless 802.1X', method: 'EAP-TLS', result: 'reject', tone: 'danger', reason: 'Repeat failure — 6th attempt in 4 minutes', role: 'role Quarantine', nas: 'ap-3f-14', plane: 'MIST' },
+    { time: '09:39:31', who: 'xray-cart-2', mac: '00:0c:29:7a:41:88', service: 'AOS-8 Controller 802.1X', method: 'EAP-PEAP', result: 'accept', tone: 'success', reason: 'Machine auth, controller-terminated', role: 'role Medical device · vlan 848', nas: 'mm-lake-1', plane: 'AOS-8' },
+    { time: '09:39:02', who: 'printer-2f-04', mac: '00:17:c8:20:11:70', service: 'MRDN Wired MAB', method: 'MAB', result: 'accept', tone: 'success', reason: 'Static endpoint list', role: 'role Printer · vlan 818', nas: 'sw-acc-3f-3', plane: 'LOCAL' },
+    { time: '09:38:44', who: 's.mehta', mac: 'de:ad:0b:14:65:22', service: 'MRDN Wireless 802.1X', method: 'EAP-TLS', result: 'accept', tone: 'success', reason: 'Roamed from ap-3f-14, cached session reused', role: 'role Clinical staff · vlan 820', nas: 'ap-3f-12', plane: 'MIST' },
+    { time: '09:38:19', who: 'p.singh', mac: 'a4:83:e7:5f:00:31', service: 'Remote VIA / VPN', method: 'EAP-TLS', result: 'accept', tone: 'success', reason: 'Posture check passed (OnGuard)', role: 'role Remote worker · vlan 870', nas: 'gw-edge-1', plane: 'AOS-10' },
+    { time: '09:37:55', who: 'badge-reader-14', mac: '00:1e:c0:44:81:07', service: 'Building Systems MAB', method: 'MAB', result: 'accept', tone: 'success', reason: 'Local endpoint database', role: 'role Building system · vlan 860', nas: 'sw-wh1-1', plane: 'LOCAL' },
+    { time: '09:37:12', who: 'lab-laptop-7', mac: '48:2a:e3:11:07:c4', service: 'MRDN Wireless 802.1X', method: 'EAP-PEAP', result: 'reject', tone: 'danger', reason: 'Password expired in Active Directory', role: 'no role assigned', nas: 'ap-ng-02', plane: 'MIST' },
+    { time: '09:36:40', who: 'a.ferreira', mac: '9a:11:74:0c:33:81', service: 'AOS-8 Controller 802.1X', method: 'EAP-TLS', result: 'accept', tone: 'success', reason: 'Certificate valid, ICU floor policy', role: 'role Clinical staff · vlan 820', nas: 'mm-lake-1', plane: 'AOS-8' },
+    { time: '09:36:02', who: 'voip-3f-114', mac: '00:04:f2:aa:19:60', service: 'MRDN Voice 802.1X', method: 'EAP-MD5', result: 'accept', tone: 'success', reason: 'LLDP-MED voice VLAN assigned', role: 'role Voice · vlan 816', nas: 'sw-acc-3f-3', plane: 'LOCAL' },
+    { time: '09:35:41', who: 'ct-scanner-b', mac: '00:50:56:11:c4:07', service: 'MRDN Wired MAB', method: 'MAB', result: 'accept', tone: 'success', reason: 'Profiled as imaging device', role: 'role Medical device · vlan 848', nas: 'sw-lake-1', plane: 'LOCAL' },
+    { time: '09:35:08', who: 'guest-4471', mac: 'f0:18:98:5c:11:73', service: 'MRDN Guest Portal', method: 'PSK + portal', result: 'timeout', tone: 'warning', reason: 'Portal page abandoned, retried at 09:36', role: 'role Guest pending', nas: 'ap-1f-04', plane: 'CENTRAL' },
+    { time: '09:34:22', who: 'contractor-tab', mac: '7c:2e:bd:44:19:03', service: 'MRDN Wireless 802.1X', method: 'EAP-PEAP', result: 'reject', tone: 'danger', reason: 'Not a member of any authorised group', role: 'role Quarantine', nas: 'ap-1f-04', plane: 'CENTRAL' },
+    { time: '09:33:47', who: 'sw-riv-2 uplink', mac: '00:0b:86:41:22:19', service: 'Device Admin (TACACS)', method: 'TACACS+', result: 'accept', tone: 'success', reason: 'Portal collector service account', role: 'role read-only shell', nas: 'sw-riv-1', plane: 'LOCAL' },
+  ];
+  renderVals() {
+    const s = this.state;
+    const go = this.props.onGo || (() => {});
+    const openDevice = this.props.onOpenDevice || (() => {});
+    const ql = s.q.trim().toLowerCase();
+    const rows = this.events.filter((e) =>
+      (s.result === 'all' || e.result === s.result) &&
+      (s.service === 'all' || e.service === s.service) &&
+      (s.plane === 'all' || e.plane === s.plane) &&
+      (!ql || (e.who + e.mac + e.reason + e.nas + e.role).toLowerCase().includes(ql))
+    );
+    const uniq = (k) => this.events.map((e) => e[k]).filter((v, i, a) => a.indexOf(v) === i);
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      q: s.q, result: s.result, service: s.service, plane: s.plane,
+      resultOptions: [{ value: 'all', label: 'All results' }, { value: 'accept', label: 'Accepted' }, { value: 'reject', label: 'Rejected' }, { value: 'timeout', label: 'Timed out' }],
+      serviceOptions: [{ value: 'all', label: 'All services' }].concat(uniq('service').map((v) => ({ value: v, label: v }))),
+      planeOptions: [{ value: 'all', label: 'All planes' }].concat(uniq('plane').map((v) => ({ value: v, label: v }))),
+      setQ: (e) => this.setState({ q: e.target.value }),
+      setResult: (v) => this.setState({ result: v }),
+      setService: (v) => this.setState({ service: v }),
+      setPlane: (v) => this.setState({ plane: v }),
+      countLabel: rows.length + ' of ' + this.events.length + ' shown · 1,904 events indexed today',
+      rows: rows.map((e) => ({ ...e, openNas: () => openDevice(e.nas) })),
+      goClients: () => go('clients'),
+      reasons: [
+        { label: 'Certificate not yet valid', value: 42, note: '42 events · one endpoint with clock skew, 6e:41:0d:99:2b:af' },
+        { label: 'Password expired in AD', value: 11, note: '11 events · 4 users, all resolved after reset' },
+        { label: 'No authorised group', value: 8, note: '8 events · contractor tablets, expected' },
+        { label: 'Portal abandoned', value: 6, note: '6 events · guests who closed the page' },
+        { label: 'MAB endpoint unknown', value: 3, note: '3 events · new medical devices awaiting profiling' },
+      ],
+      services: [
+        { name: 'MRDN Wireless 802.1X', detail: 'Central + Mist · EAP-TLS preferred', rate: '8,910', state: 'ok', tone: 'success' },
+        { name: 'MRDN Wired 802.1X / MAB', detail: 'CX switches via local collector', rate: '1,204', state: 'ok', tone: 'success' },
+        { name: 'MRDN Guest Portal', detail: 'self-registration, sponsor approval', rate: '412', state: 'ok', tone: 'success' },
+        { name: 'AOS-8 Controller 802.1X', detail: 'Lakeshore + Airport Annex', rate: '744', state: 'ok', tone: 'success' },
+        { name: 'Remote VIA / VPN', detail: 'AOS-10 gateways, OnGuard posture', rate: '368', state: 'ok', tone: 'success' },
+        { name: 'Device Admin (TACACS)', detail: 'engineer + portal service accounts', rate: '96', state: 'ok', tone: 'success' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

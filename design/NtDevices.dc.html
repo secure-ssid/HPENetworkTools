@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Inventory / Devices" hint-size="240px,56px">Devices</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">418 devices, six inventories, one reconciled list.</div>
+</div>
+<div style="display:flex;align-items:center;gap:6px;padding:3px;border:1px solid var(--nd-border-subtle);border-radius:var(--nd-radius-md)">
+<sc-if value="{{ isTable }}" hint-placeholder-val="{{ true }}">
+<button type="button" onClick="{{ setTable }}" style="background:var(--nd-accent-subtle);color:var(--nd-accent-text);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Unified table</button>
+<button type="button" onClick="{{ setLanes }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Platform lanes</button>
+</sc-if>
+<sc-if value="{{ isLanes }}" hint-placeholder-val="{{ false }}">
+<button type="button" onClick="{{ setTable }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Unified table</button>
+<button type="button" onClick="{{ setLanes }}" style="background:var(--nd-accent-subtle);color:var(--nd-accent-text);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Platform lanes</button>
+</sc-if>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+<div style="width:250px">
+<x-import component-from-global-scope="Nightdesk.Input" size="sm" mono="{{ true }}" placeholder="name, model, serial, ip…" value="{{ q }}" onChange="{{ setQ }}" hint-size="250px,26px"></x-import>
+</div>
+<div style="width:140px"><x-import component-from-global-scope="Nightdesk.Select" options="{{ typeOptions }}" value="{{ type }}" onValueChange="{{ setType }}" size="sm" aria-label="Device type" hint-size="140px,26px"></x-import></div>
+<div style="width:150px"><x-import component-from-global-scope="Nightdesk.Select" options="{{ planeOptions }}" value="{{ plane }}" onValueChange="{{ setPlane }}" size="sm" aria-label="Managed by" hint-size="150px,26px"></x-import></div>
+<div style="width:190px"><x-import component-from-global-scope="Nightdesk.Select" options="{{ siteOptions }}" value="{{ site }}" onValueChange="{{ setSite }}" size="sm" aria-label="Site" hint-size="190px,26px"></x-import></div>
+<x-import component-from-global-scope="Nightdesk.Switch" label="Reconciliation issues only" size="sm" checked="{{ issuesOnly }}" onCheckedChange="{{ setIssues }}" hint-size="200px,20px"></x-import>
+<span style="margin-left:auto;font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ countLabel }}</span>
+</div>
+<x-import component-from-global-scope="Nightdesk.Alert" tone="warning" title="Reconciliation: 3 devices are claimed by two inventories, 14 by none" hint-size="100%,86px">
+<span style="font-size:13px">sw-riv-2, ap-riv-01 and ap-riv-06 exist in both Central Classic and the local collector with different firmware records. Fourteen Warehouse switches appear in no cloud plane at all — they are only visible over SSH.</span>
+</x-import>
+<sc-if value="{{ isTable }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Table" density="{{ density }}" hint-size="100%,600px">
+<x-import component-from-global-scope="Nightdesk.Table.Head" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="130px,28px">Device</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="130px,28px">Model</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="80px,28px">Type</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="170px,28px">Site</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Managed by</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="100px,28px">State</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Firmware</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="110px,28px">Licence</x-import>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Body" hint-size="100%,560px">
+<sc-for list="{{ rows }}" as="d" hint-placeholder-count="12">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,34px">
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="130px,34px">
+<button type="button" onClick="{{ d.open }}" style="background:none;border:none;padding:0;cursor:pointer;font-family:var(--nd-font-mono);font-size:12px;color:var(--nd-accent-text);text-align:left">{{ d.name }}</button>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="130px,34px">{{ d.model }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="80px,34px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);text-transform:uppercase">{{ d.type }}</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="170px,34px">{{ d.site }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,34px">
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ d.planeTone }}" hint-size="64px,18px">{{ d.plane }}</x-import>
+</sc-if>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="100px,34px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ d.stateTone }}" dot="{{ true }}" hint-size="66px,18px">{{ d.state }}</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,34px">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:{{ d.fwColor }}">{{ d.fw }}</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="110px,34px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ d.licence }}</span>
+</x-import>
+</x-import>
+</sc-for>
+</x-import>
+</x-import>
+</sc-if>
+<sc-if value="{{ isLanes }}" hint-placeholder-val="{{ false }}">
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:16px;align-items:start">
+<sc-for list="{{ lanes }}" as="l" hint-placeholder-count="6">
+<div style="display:flex;flex-direction:column;gap:10px;min-width:0">
+<div style="display:flex;flex-direction:column;gap:6px;padding-bottom:9px;border-bottom:2px solid {{ l.mark }}">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+<span style="font-family:var(--nd-font-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--nd-text-primary)">{{ l.name }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ l.count }}</span>
+</div>
+<div style="display:flex;align-items:center;gap:6px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ l.tone }}" dot="{{ true }}" hint-size="60px,18px">{{ l.sync }}</x-import>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ l.note }}</span>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px;max-height:520px;overflow:auto">
+<sc-for list="{{ l.devices }}" as="d" hint-placeholder-count="4">
+<button type="button" onClick="{{ d.open }}" style="display:flex;flex-direction:column;gap:3px;align-items:stretch;text-align:left;background:none;border:none;border-bottom:1px solid var(--nd-border-subtle);border-left:2px solid transparent;padding:9px 8px;cursor:pointer;width:100%" style-hover="background:var(--nd-bg-surface);border-left-color:var(--nd-accent)">
+<div style="display:flex;align-items:center;gap:6px">
+<span style="font-family:var(--nd-font-mono);font-size:11.5px;color:var(--nd-text-primary);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d.name }}</span>
+<span style="width:6px;height:6px;border-radius:99px;background:{{ d.dot }};flex:0 0 6px"></span>
+</div>
+<span style="font-size:11px;color:var(--nd-text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d.model }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d.site }}</span>
+</button>
+</sc-for>
+<sc-if value="{{ l.empty }}" hint-placeholder-val="{{ false }}">
+<div style="padding:12px 4px;font-family:var(--nd-font-display);font-style:italic;font-size:12.5px;color:var(--nd-text-muted)">Nothing in this lane matches the filter.</div>
+</sc-if>
+</div>
+</div>
+</sc-for>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:940},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;inventoryView&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Unified table&quot;,&quot;Platform lanes&quot;],&quot;default&quot;:&quot;Unified table&quot;,&quot;tsType&quot;:&quot;'Unified table' | 'Platform lanes'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onOpenDevice&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(device: string) =&gt; void&quot;}}">
+const NT_LANE_META = {
+  CENTRAL: { tone: 'success', sync: 'synced 40s', note: 'new central', mark: 'var(--nd-accent)' },
+  MIST: { tone: 'success', sync: 'synced 1m', note: 'cloud', mark: 'var(--nd-info)' },
+  CLASSIC: { tone: 'danger', sync: 'stale 6h', note: 'legacy', mark: 'var(--nd-danger)' },
+  'AOS-8': { tone: 'warning', sync: 'degraded', note: 'on-prem mm', mark: 'var(--nd-warning)' },
+  'AOS-10': { tone: 'success', sync: 'synced 50s', note: 'gateways', mark: 'var(--nd-accent)' },
+  LOCAL: { tone: 'success', sync: 'ssh 30s', note: 'no cloud plane', mark: 'var(--nd-border-strong)' },
+  CLEARPASS: { tone: 'success', sync: 'synced 55s', note: 'policy', mark: 'var(--nd-border-strong)' },
+  UXI: { tone: 'warning', sync: '1 offline', note: 'sensors', mark: 'var(--nd-info)' },
+};
+class Component extends DCLogic {
+  state = { q: '', type: 'all', plane: 'all', site: 'all', issuesOnly: false, override: null };
+  devices = [
+    { name: 'sw-core-a', model: 'CX 8325-48Y8C', type: 'switch', site: 'Campus-01 HQ', plane: 'LOCAL', planeTone: 'neutral', state: 'degraded', stateTone: 'warning', fw: '10.13.1005', fwOk: true, licence: 'n/a — local', issue: false },
+    { name: 'sw-core-b', model: 'CX 8325-48Y8C', type: 'switch', site: 'Campus-01 HQ', plane: 'LOCAL', planeTone: 'neutral', state: 'up', stateTone: 'success', fw: '10.13.1005', fwOk: true, licence: 'n/a — local', issue: false },
+    { name: 'sw-acc-3f-2', model: 'CX 6300M-48G', type: 'switch', site: 'Campus-01 HQ', plane: 'LOCAL', planeTone: 'neutral', state: 'up', stateTone: 'success', fw: '10.11.1030', fwOk: false, licence: 'n/a — local', issue: false },
+    { name: 'sw-acc-3f-3', model: 'CX 6300M-48G', type: 'switch', site: 'Campus-01 HQ', plane: 'LOCAL', planeTone: 'neutral', state: 'up', stateTone: 'success', fw: '10.11.1030', fwOk: false, licence: 'n/a — local', issue: false },
+    { name: 'gw-edge-1', model: 'AOS-10 9240', type: 'gateway', site: 'Campus-01 HQ', plane: 'AOS-10', planeTone: 'accent', state: 'flapping', stateTone: 'warning', fw: '10.6.0.2', fwOk: true, licence: 'Advanced', issue: false },
+    { name: 'gw-edge-2', model: 'AOS-10 9240', type: 'gateway', site: 'Campus-01 HQ', plane: 'AOS-10', planeTone: 'accent', state: 'up', stateTone: 'success', fw: '10.6.0.2', fwOk: true, licence: 'Advanced', issue: false },
+    { name: 'ap-1f-04', model: 'AP-635', type: 'ap', site: 'Campus-01 HQ', plane: 'CENTRAL', planeTone: 'accent', state: 'up', stateTone: 'success', fw: '10.6.0.2', fwOk: true, licence: 'Foundation', issue: false },
+    { name: 'ap-3f-08', model: 'AP-635', type: 'ap', site: 'Campus-01 HQ', plane: 'CENTRAL', planeTone: 'accent', state: 'up', stateTone: 'success', fw: '10.6.0.2', fwOk: true, licence: 'Foundation', issue: false },
+    { name: 'ap-3f-12', model: 'AP43', type: 'ap', site: 'Campus-02 Research', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', fw: '0.14.29', fwOk: true, licence: 'Wi-Fi SUB', issue: false },
+    { name: 'ap-3f-14', model: 'AP43', type: 'ap', site: 'Campus-02 Research', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', fw: '0.14.29', fwOk: true, licence: 'Wi-Fi SUB', issue: false },
+    { name: 'ap-ng-02', model: 'AP32', type: 'ap', site: 'Northgate Clinic', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', fw: '0.14.29', fwOk: true, licence: 'Wi-Fi SUB', issue: false },
+    { name: 'sw-cam02-1', model: 'EX4400-48P', type: 'switch', site: 'Campus-02 Research', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', fw: '23.4R2', fwOk: true, licence: 'Wired SUB', issue: false },
+    { name: 'mm-lake-1', model: 'AOS-8 MM-VA', type: 'controller', site: 'Lakeshore Medical', plane: 'AOS-8', planeTone: 'accent', state: 'degraded', stateTone: 'warning', fw: '8.10.0.10', fwOk: true, licence: 'MM perpetual', issue: false },
+    { name: 'mc-lake-2', model: '7210 controller', type: 'controller', site: 'Lakeshore Medical', plane: 'AOS-8', planeTone: 'accent', state: 'no heartbeat', stateTone: 'danger', fw: '8.10.0.10', fwOk: true, licence: 'AP-16 perpetual', issue: false },
+    { name: 'mc-lake-3', model: '7210 controller', type: 'controller', site: 'Lakeshore Medical', plane: 'AOS-8', planeTone: 'accent', state: 'no heartbeat', stateTone: 'danger', fw: '8.10.0.9', fwOk: false, licence: 'AP-16 perpetual', issue: false },
+    { name: 'mc-lake-4', model: '7205 controller', type: 'controller', site: 'Lakeshore Medical', plane: 'AOS-8', planeTone: 'accent', state: 'no heartbeat', stateTone: 'danger', fw: '8.10.0.10', fwOk: true, licence: 'AP-8 perpetual', issue: false },
+    { name: 'ap-t1-12', model: 'AP-535', type: 'ap', site: 'Lakeshore Medical', plane: 'AOS-8', planeTone: 'accent', state: 'up', stateTone: 'success', fw: '8.10.0.10', fwOk: true, licence: 'controller', issue: false },
+    { name: 'sw-lake-1', model: 'CX 6400', type: 'switch', site: 'Lakeshore Medical', plane: 'LOCAL', planeTone: 'neutral', state: 'up', stateTone: 'success', fw: '10.13.1005', fwOk: true, licence: 'n/a — local', issue: false },
+    { name: 'sw-riv-1', model: 'CX 6200F-48G', type: 'switch', site: 'Riverside Clinic', plane: 'LOCAL', planeTone: 'neutral', state: 'up', stateTone: 'success', fw: '10.10.1080', fwOk: false, licence: 'n/a — local', issue: false },
+    { name: 'sw-riv-2', model: 'CX 6200F-24G', type: 'switch', site: 'Riverside Clinic', plane: 'CLASSIC', planeTone: 'warning', state: 'double-claimed', stateTone: 'danger', fw: 'conflict', fwOk: false, licence: 'Classic', issue: true },
+    { name: 'ap-riv-01', model: 'AP-515', type: 'ap', site: 'Riverside Clinic', plane: 'CLASSIC', planeTone: 'warning', state: 'double-claimed', stateTone: 'danger', fw: 'conflict', fwOk: false, licence: 'Classic', issue: true },
+    { name: 'ap-riv-06', model: 'AP-515', type: 'ap', site: 'Riverside Clinic', plane: 'CLASSIC', planeTone: 'warning', state: 'double-claimed', stateTone: 'danger', fw: 'conflict', fwOk: false, licence: 'Classic', issue: true },
+    { name: 'sw-wh1-1', model: 'CX 6300M-24G', type: 'switch', site: 'Warehouse-DC1', plane: 'LOCAL', planeTone: 'neutral', state: 'up', stateTone: 'success', fw: '10.13.1005', fwOk: true, licence: 'not in greenlake', issue: true },
+    { name: 'sw-wh1-3', model: 'CX 6300M-24G', type: 'switch', site: 'Warehouse-DC1', plane: 'LOCAL', planeTone: 'neutral', state: 'missing', stateTone: 'warning', fw: 'unknown', fwOk: false, licence: 'not in greenlake', issue: true },
+    { name: 'sw-wh2-1', model: 'CX 6200F-48G', type: 'switch', site: 'Warehouse-DC2', plane: 'CLASSIC', planeTone: 'warning', state: 'stale', stateTone: 'neutral', fw: '10.09.1010', fwOk: false, licence: 'Classic', issue: true },
+    { name: 'cppm-01', model: 'ClearPass C3010', type: 'policy', site: 'Core services', plane: 'CLEARPASS', planeTone: 'neutral', state: 'up', stateTone: 'success', fw: '6.11.7', fwOk: true, licence: '5,000 endpoints', issue: false },
+    { name: 'uxi-cam01-2', model: 'UXI G2', type: 'sensor', site: 'Campus-01 HQ', plane: 'UXI', planeTone: 'info', state: 'offline', stateTone: 'danger', fw: '3.4.1', fwOk: true, licence: 'UXI SUB', issue: false },
+    { name: 'uxi-cam02-1', model: 'UXI G2', type: 'sensor', site: 'Campus-02 Research', plane: 'UXI', planeTone: 'info', state: 'up', stateTone: 'success', fw: '3.4.1', fwOk: true, licence: 'UXI SUB', issue: false },
+  ];
+  renderVals() {
+    const s = this.state;
+    const openDevice = this.props.onOpenDevice || (() => {});
+    const view = s.override || this.props.inventoryView || 'Unified table';
+    const ql = s.q.trim().toLowerCase();
+    const rows = this.devices.filter((d) =>
+      (s.type === 'all' || d.type === s.type) &&
+      (s.plane === 'all' || d.plane === s.plane) &&
+      (s.site === 'all' || d.site === s.site) &&
+      (!s.issuesOnly || d.issue) &&
+      (!ql || (d.name + d.model + d.site).toLowerCase().includes(ql))
+    );
+    const uniq = (k) => this.devices.map((d) => d[k]).filter((v, i, a) => a.indexOf(v) === i);
+    const dotFor = { success: 'var(--nd-success)', warning: 'var(--nd-warning)', danger: 'var(--nd-danger)', neutral: 'var(--nd-border-strong)' };
+    const decorate = (d) => ({
+      ...d,
+      open: () => openDevice(d.name),
+      dot: dotFor[d.stateTone] || 'var(--nd-border-strong)',
+      fwColor: d.fwOk ? 'var(--nd-text-secondary)' : 'var(--nd-warning)',
+    });
+    const laneNames = uniq('plane');
+    const lanes = laneNames.map((p) => {
+      const inLane = rows.filter((d) => d.plane === p);
+      const meta = NT_LANE_META[p] || { tone: 'neutral', sync: 'linked', note: '', mark: 'var(--nd-border-strong)' };
+      return {
+        name: p, ...meta,
+        count: inLane.length + ' shown',
+        empty: inLane.length === 0,
+        devices: inLane.map(decorate),
+      };
+    });
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      q: s.q, type: s.type, plane: s.plane, site: s.site, issuesOnly: s.issuesOnly,
+      isTable: view === 'Unified table', isLanes: view === 'Platform lanes',
+      setTable: () => this.setState({ override: 'Unified table' }),
+      setLanes: () => this.setState({ override: 'Platform lanes' }),
+      typeOptions: [{ value: 'all', label: 'All types' }].concat(uniq('type').map((t) => ({ value: t, label: t }))),
+      planeOptions: [{ value: 'all', label: 'All planes' }].concat(laneNames.map((p) => ({ value: p, label: p }))),
+      siteOptions: [{ value: 'all', label: 'All sites' }].concat(uniq('site').map((v) => ({ value: v, label: v }))),
+      setQ: (e) => this.setState({ q: e.target.value }),
+      setType: (v) => this.setState({ type: v }),
+      setPlane: (v) => this.setState({ plane: v }),
+      setSite: (v) => this.setState({ site: v }),
+      setIssues: (v) => this.setState({ issuesOnly: v }),
+      countLabel: rows.length + ' of ' + this.devices.length + ' indexed · 418 total incl. bulk APs',
+      rows: rows.map(decorate),
+      lanes, laneCount: lanes.length,
+    };
+  }
+}
+</script>
+</body>
+</html>

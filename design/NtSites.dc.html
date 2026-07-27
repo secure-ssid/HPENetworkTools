@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Inventory / Sites" hint-size="240px,56px">Sites</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">Ten sites, and the plane each one actually answers to.</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<div style="width:170px"><x-import component-from-global-scope="Nightdesk.Select" options="{{ planeOptions }}" value="{{ plane }}" onValueChange="{{ setPlane }}" size="sm" aria-label="Filter by plane" hint-size="170px,26px"></x-import></div>
+<div style="width:200px">
+<x-import component-from-global-scope="Nightdesk.Input" size="sm" mono="{{ true }}" placeholder="site name…" value="{{ q }}" onChange="{{ setQ }}" hint-size="200px,26px"></x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="90px,26px">Add site</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;max-width:820px">
+<x-import component-from-global-scope="Nightdesk.Stat" label="Sites" value="10" delta="2 legacy-managed" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Devices" value="418" delta="▲ 12 this month" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Clients" value="4,982" delta="peak 5,410" deltaTone="neutral" hint-size="140px,76px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Stat" label="Sites with alerts" value="4" delta="▲ 1 today" deltaTone="negative" hint-size="140px,76px"></x-import>
+</div>
+<x-import component-from-global-scope="Nightdesk.Divider" variant="flair" hint-size="40px,2px"></x-import>
+<x-import component-from-global-scope="Nightdesk.Table" density="{{ density }}" hint-size="100%,480px">
+<x-import component-from-global-scope="Nightdesk.Table.Head" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,28px">
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="230px,28px">Site</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="190px,28px">Managed by</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="150px,28px">Mix</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="70px,28px">Devices</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="70px,28px">Clients</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="120px,28px">Health</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" hint-size="90px,28px">Alerts</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.HeaderCell" numeric="{{ true }}" hint-size="80px,28px">Last sync</x-import>
+</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Body" hint-size="100%,440px">
+<sc-for list="{{ rows }}" as="s" hint-placeholder-count="10">
+<x-import component-from-global-scope="Nightdesk.Table.Row" hint-size="100%,40px">
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="230px,40px">
+<button type="button" onClick="{{ s.open }}" style="background:none;border:none;padding:0;cursor:pointer;text-align:left;display:flex;flex-direction:column;gap:2px">
+<span style="font-size:13.5px;color:var(--nd-text-primary)">{{ s.name }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ s.subnet }}</span>
+</button>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="190px,40px">
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;gap:4px;flex-wrap:wrap">
+<sc-for list="{{ s.planes }}" as="p" hint-placeholder-count="2">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ p.tone }}" hint-size="60px,18px">{{ p.name }}</x-import>
+</sc-for>
+</div>
+</sc-if>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="150px,40px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ s.mix }}</span>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="70px,40px">{{ s.devices }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="70px,40px">{{ s.clients }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="120px,40px">
+<div style="display:flex;align-items:center;gap:8px">
+<div style="width:70px;height:3px;background:var(--nd-bg-inset);border-radius:99px;overflow:hidden">
+<div style="height:3px;border-radius:99px;width:{{ s.healthPct }};background:{{ s.healthColor }}"></div>
+</div>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ s.health }}</span>
+</div>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" hint-size="90px,40px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ s.alertTone }}" hint-size="52px,18px">{{ s.alerts }}</x-import>
+</x-import>
+<x-import component-from-global-scope="Nightdesk.Table.Cell" numeric="{{ true }}" hint-size="80px,40px">{{ s.sync }}</x-import>
+</x-import>
+</sc-for>
+</x-import>
+</x-import>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:4px">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ countLabel }}</span>
+<x-import component-from-global-scope="Nightdesk.Pagination" page="{{ 1 }}" pageCount="{{ 1 }}" onPageChange="{{ noop }}" hint-size="160px,26px"></x-import>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:860},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onOpenSite&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(site: string) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { plane: 'all', q: '' };
+  sites = [
+    { name: 'Campus-01 — Meridian HQ', subnet: '10.42.0.0/16', planes: [{ name: 'CENTRAL', tone: 'accent' }, { name: 'LOCAL', tone: 'neutral' }], mix: '96 ap · 42 sw · 6 gw · 4 uxi', devices: 148, clients: '1,904', health: '98%', healthPct: '98%', tone: 'ok', alerts: '4 open', alertTone: 'warning', sync: '40s' },
+    { name: 'Campus-02 Research', subnet: '10.44.0.0/16', planes: [{ name: 'MIST', tone: 'info' }], mix: '72 ap · 22 sw · 2 gw', devices: 96, clients: '1,212', health: '94%', healthPct: '94%', tone: 'ok', alerts: '1 open', alertTone: 'warning', sync: '1m' },
+    { name: 'Lakeshore Medical Center', subnet: '10.48.0.0/16', planes: [{ name: 'AOS-8', tone: 'accent' }, { name: 'LOCAL', tone: 'neutral' }], mix: '44 ap · 14 sw · 4 mc', devices: 62, clients: '744', health: '81%', healthPct: '81%', tone: 'bad', alerts: '3 open', alertTone: 'danger', sync: '2m' },
+    { name: 'Riverside Clinic', subnet: '10.51.0.0/24', planes: [{ name: 'CLASSIC', tone: 'warning' }], mix: '16 ap · 8 sw', devices: 24, clients: '188', health: '—', healthPct: '4%', tone: 'stale', alerts: 'stale', alertTone: 'neutral', sync: '6h' },
+    { name: 'Northgate Clinic', subnet: '10.52.0.0/24', planes: [{ name: 'MIST', tone: 'info' }], mix: '12 ap · 4 sw', devices: 16, clients: '142', health: '99%', healthPct: '99%', tone: 'ok', alerts: 'clear', alertTone: 'success', sync: '1m' },
+    { name: 'Southpoint Clinic', subnet: '10.53.0.0/24', planes: [{ name: 'MIST', tone: 'info' }, { name: '3RD-PARTY', tone: 'neutral' }], mix: '10 ap · 4 sw · 1 mx', devices: 15, clients: '118', health: '97%', healthPct: '97%', tone: 'ok', alerts: '1 open', alertTone: 'warning', sync: '2m' },
+    { name: 'Warehouse-DC1', subnet: '10.60.0.0/22', planes: [{ name: 'LOCAL', tone: 'neutral' }], mix: '4 ap · 14 sw', devices: 18, clients: '96', health: '100%', healthPct: '100%', tone: 'ok', alerts: 'clear', alertTone: 'success', sync: '30s' },
+    { name: 'Warehouse-DC2', subnet: '10.61.0.0/22', planes: [{ name: 'CLASSIC', tone: 'warning' }, { name: 'LOCAL', tone: 'neutral' }], mix: '6 ap · 10 sw', devices: 16, clients: '78', health: '92%', healthPct: '92%', tone: 'ok', alerts: 'clear', alertTone: 'success', sync: '6h' },
+    { name: 'Airport Annex', subnet: '10.62.0.0/23', planes: [{ name: 'AOS-8', tone: 'accent' }, { name: 'LOCAL', tone: 'neutral' }], mix: '14 ap · 6 sw · 1 mc', devices: 21, clients: '132', health: '96%', healthPct: '96%', tone: 'ok', alerts: 'clear', alertTone: 'success', sync: '2m' },
+    { name: 'Remote & VPN users', subnet: '10.70.0.0/16', planes: [{ name: 'AOS-10', tone: 'accent' }, { name: 'CLEARPASS', tone: 'neutral' }], mix: '2 gw · 168 rap', devices: 2, clients: '368', health: '95%', healthPct: '95%', tone: 'ok', alerts: '1 open', alertTone: 'warning', sync: '50s' },
+  ];
+  renderVals() {
+    const { plane, q } = this.state;
+    const openSite = this.props.onOpenSite || (() => {});
+    const ql = q.trim().toLowerCase();
+    const colors = { ok: 'var(--nd-success)', bad: 'var(--nd-warning)', stale: 'var(--nd-border-strong)' };
+    const rows = this.sites.filter((s) =>
+      (plane === 'all' || s.planes.some((p) => p.name === plane)) && (!ql || s.name.toLowerCase().includes(ql))
+    );
+    const all = [];
+    this.sites.forEach((s) => s.planes.forEach((p) => { if (all.indexOf(p.name) < 0) all.push(p.name); }));
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      plane, q, noop: () => {},
+      planeOptions: [{ value: 'all', label: 'All planes' }].concat(all.map((p) => ({ value: p, label: p }))),
+      setPlane: (v) => this.setState({ plane: v }),
+      setQ: (e) => this.setState({ q: e.target.value }),
+      countLabel: rows.length + ' of ' + this.sites.length + ' sites · 418 devices indexed',
+      rows: rows.map((s) => ({ ...s, healthColor: colors[s.tone], open: () => openSite(s.name) })),
+    };
+  }
+}
+</script>
+</body>
+</html>

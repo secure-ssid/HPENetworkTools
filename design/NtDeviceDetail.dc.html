@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="{{ overline }}" hint-size="300px,56px">{{ dev.name }}</x-import>
+<div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ dev.stateTone }}" dot="{{ true }}" hint-size="70px,18px">{{ dev.state }}</x-import>
+<sc-if value="{{ showTags }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ dev.planeTone }}" hint-size="70px,18px">{{ dev.plane }}</x-import>
+</sc-if>
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-muted)">{{ dev.model }} · {{ dev.site }} · {{ dev.ip }}</span>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goDevices }}" hint-size="90px,26px">← Inventory</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="140px,26px">{{ dev.launch }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="120px,26px">Save config</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="danger" size="sm" hint-size="80px,26px">Reboot</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:18px">
+<sc-for list="{{ stats }}" as="s" hint-placeholder-count="5">
+<x-import component-from-global-scope="Nightdesk.Stat" label="{{ s.label }}" value="{{ s.value }}" delta="{{ s.delta }}" deltaTone="{{ s.tone }}" hint-size="140px,76px"></x-import>
+</sc-for>
+</div>
+<x-import component-from-global-scope="Nightdesk.Divider" variant="flair" hint-size="40px,2px"></x-import>
+<div style="display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:32px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:12px;min-width:0">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">{{ shellTitle }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ shellMeta }}</span>
+</div>
+<div style="background:var(--nd-bg-inset);border:1px solid var(--nd-border-default);border-radius:var(--nd-radius-md);overflow:hidden">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--nd-border-subtle);background:var(--nd-bg-surface)">
+<span style="width:7px;height:7px;border-radius:99px;background:{{ shellDot }}"></span>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-secondary)">{{ shellHeader }}</span>
+<span style="margin-left:auto;font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ shellRight }}</span>
+</div>
+<div ref="{{ scrollRef }}" style="height:352px;overflow:auto;padding:12px 14px;font-family:var(--nd-font-mono);font-size:11.5px;line-height:1.65">
+<sc-for list="{{ lines }}" as="l" hint-placeholder-count="8">
+<div style="white-space:pre-wrap;color:{{ l.color }}">{{ l.text }}</div>
+</sc-for>
+<sc-if value="{{ canShell }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;align-items:center;gap:6px;padding-top:2px">
+<span style="color:var(--nd-accent-text)">{{ prompt }}</span>
+<input type="text" value="{{ cmd }}" onChange="{{ onCmd }}" onKeyDown="{{ onKey }}" placeholder="type a command — try: show version" style="flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--nd-text-primary);font-family:var(--nd-font-mono);font-size:11.5px">
+</div>
+</sc-if>
+</div>
+<sc-if value="{{ canShell }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--nd-border-subtle);background:var(--nd-bg-surface);flex-wrap:wrap">
+<sc-for list="{{ quickCmds }}" as="c" hint-placeholder-count="4">
+<button type="button" onClick="{{ c.run }}" style="background:var(--nd-bg-raised);border:1px solid var(--nd-border-subtle);border-radius:var(--nd-radius-sm);padding:3px 8px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-secondary)">{{ c.label }}</button>
+</sc-for>
+<button type="button" onClick="{{ clear }}" style="margin-left:auto;background:none;border:none;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">clear</button>
+</div>
+</sc-if>
+</div>
+<sc-if value="{{ readOnly }}" hint-placeholder-val="{{ false }}">
+<x-import component-from-global-scope="Nightdesk.Alert" tone="info" title="No local shell on this device" hint-size="100%,80px">
+<span style="font-size:13px">{{ readOnlyNote }}</span>
+</x-import>
+</sc-if>
+<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:14px 0 8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Configuration</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ cfgMeta }}</span>
+</div>
+<div style="display:flex;align-items:center;gap:4px;padding:3px;border:1px solid var(--nd-border-subtle);border-radius:var(--nd-radius-md);width:fit-content">
+<sc-if value="{{ cfgRunning }}" hint-placeholder-val="{{ true }}">
+<button type="button" onClick="{{ showRunning }}" style="background:var(--nd-accent-subtle);color:var(--nd-accent-text);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Running</button>
+<button type="button" onClick="{{ showDiff }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Drift vs. baseline</button>
+<button type="button" onClick="{{ showHistory }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">History</button>
+</sc-if>
+<sc-if value="{{ cfgDiff }}" hint-placeholder-val="{{ false }}">
+<button type="button" onClick="{{ showRunning }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Running</button>
+<button type="button" onClick="{{ showDiff }}" style="background:var(--nd-accent-subtle);color:var(--nd-accent-text);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Drift vs. baseline</button>
+<button type="button" onClick="{{ showHistory }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">History</button>
+</sc-if>
+<sc-if value="{{ cfgHistory }}" hint-placeholder-val="{{ false }}">
+<button type="button" onClick="{{ showRunning }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Running</button>
+<button type="button" onClick="{{ showDiff }}" style="background:transparent;color:var(--nd-text-muted);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">Drift vs. baseline</button>
+<button type="button" onClick="{{ showHistory }}" style="background:var(--nd-accent-subtle);color:var(--nd-accent-text);border:none;border-radius:var(--nd-radius-sm);padding:5px 11px;cursor:pointer;font-family:var(--nd-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase">History</button>
+</sc-if>
+</div>
+<sc-if value="{{ cfgText }}" hint-placeholder-val="{{ true }}">
+<x-import component-from-global-scope="Nightdesk.Code" block="{{ true }}" hint-size="100%,220px">{{ cfgText }}</x-import>
+</sc-if>
+<sc-if value="{{ cfgHistory }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:0">
+<sc-for list="{{ history }}" as="h" hint-placeholder-count="5">
+<div style="display:flex;gap:14px;padding:11px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);width:88px;flex:0 0 88px">{{ h.when }}</span>
+<div style="flex:1;min-width:0">
+<div style="font-size:12.5px;color:var(--nd-text-primary);line-height:1.4">{{ h.what }}</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ h.who }}</div>
+</div>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ h.tone }}" hint-size="64px,18px">{{ h.tag }}</x-import>
+</div>
+</sc-for>
+</div>
+</sc-if>
+<div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:4px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="140px,26px">Snapshot config now</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goCompliance }}" hint-size="150px,26px">Push baseline fix</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="120px,26px">Download config</x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:26px;min-width:0">
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Identity</div>
+<sc-for list="{{ facts }}" as="f" hint-placeholder-count="8">
+<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--nd-text-muted);width:92px;flex:0 0 92px;padding-top:2px">{{ f.k }}</span>
+<span style="flex:1;min-width:0;font-family:var(--nd-font-mono);font-size:11.5px;color:var(--nd-text-secondary);overflow-wrap:anywhere">{{ f.v }}</span>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">{{ listTitle }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ listMeta }}</span>
+</div>
+<sc-for list="{{ ports }}" as="p" hint-placeholder-count="6">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-text-primary);width:74px;flex:0 0 74px">{{ p.id }}</span>
+<span style="flex:1;min-width:0;font-size:12px;color:var(--nd-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.what }}</span>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ p.tone }}" hint-size="52px,18px">{{ p.state }}</x-import>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Clients on this device</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ clientMeta }}</span>
+</div>
+<sc-for list="{{ clients }}" as="c" hint-placeholder-count="4">
+<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<div style="flex:1;min-width:0">
+<div style="font-size:12.5px;color:var(--nd-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.name }}</div>
+<div style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ c.detail }}</div>
+</div>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ c.tone }}" hint-size="60px,18px">{{ c.state }}</x-import>
+</div>
+</sc-for>
+<div style="padding-top:10px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goClients }}" hint-size="100%,26px">All clients →</x-import>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Compliance</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<sc-for list="{{ checks }}" as="c" hint-placeholder-count="4">
+<div style="display:flex;align-items:center;gap:10px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ c.tone }}" hint-size="52px,18px">{{ c.mark }}</x-import>
+<span style="flex:1;min-width:0;font-size:12.5px;color:var(--nd-text-secondary)">{{ c.label }}</span>
+</div>
+</sc-for>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ goCompliance }}" hint-size="100%,26px">Full compliance report</x-import>
+</div>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:980},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;deviceName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;sw-core-a&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;onGo&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(view: string) =&gt; void&quot;}}">
+const NT_SW_RESP = {
+  'show version': ['ArubaOS-CX', 'Version      : FL.10.13.1005', 'Build Date   : 2026-03-14 08:12:44 UTC', 'Build ID     : FL.10.13.1005-0-g7c1a', 'Active Image : primary', 'Service OS   : FL.01.13.0002', 'BIOS         : FL.01.0009'],
+  'show system': ['Hostname          : sw-core-a', 'System Contact    : netops@meridian.health', 'System Location   : Campus-01 / MDF-A / rack 3', 'Base MAC Address  : 88:3a:30:41:9c:00', 'Up Time           : 182 days, 4 hours, 11 minutes', 'CPU Util (%)      : 14', 'Memory Usage (%)  : 39', 'Power Supplies    : 1 of 2 present  <-- psu2 absent', 'Temperature       : 41.5C (normal)'],
+  'show interface brief': ['Port  Native  Mode    Type      Enabled Status  Reason      Speed   Description', '----- ------- ------- --------- ------- ------- ----------- ------- -----------------', '1/1/1     1   trunk   10GbT     yes     up      --          10000   uplink sw-core-b', '1/1/2     1   trunk   10GbT     yes     up      --          10000   uplink sw-core-b', '1/1/13   812   access  1GbT      yes     up      --           1000   ap-3f-08', '1/1/14   812   access  1GbT      yes     up      --           1000   ap-3f-12 (poe 22.1W)', '1/1/22    99   access  1GbT      yes     down    no-carrier      --   uxi-cam01-2', '1/1/47    12   trunk   1GbT      yes     up      --           1000   gw-edge-1', '1/1/48    12   trunk   1GbT      yes     up      --           1000   gw-edge-2'],
+  'show vlan': ['VLAN  Name              Status  Reason      Type    Ports', '----- ----------------- ------- ----------- ------- ------------------', '1     DEFAULT_VLAN_1    up      ok          default 1/1/1-1/1/2', '8     mgmt              up      ok          static  1/1/1-1/1/2,1/1/47', '12    transit-wan       up      ok          static  1/1/47-1/1/48', '99    infra-sensors     down    no_ports_up static  1/1/22', '812   guest-wifi        up      ok          static  1/1/13-1/1/14', '820   clinical-devices  up      ok          static  1/1/20-1/1/21'],
+  'show lldp neighbor': ['LOCAL-PORT  NEIGHBOR-CHASSIS-ID  PORT-ID  TTL  NEIGHBOR-SYSNAME', '----------- -------------------- -------- ---- ----------------', '1/1/1       88:3a:30:41:9d:00    1/1/1    120  sw-core-b', '1/1/14      3c:2a:f4:9b:11:08    eth0     120  ap-3f-12', '1/1/47      20:4c:03:11:aa:01    GE0/0/1  120  gw-edge-1'],
+  'show running-config vlan 812': ['vlan 812', '    name guest-wifi', '    description onboarded via portal 2026-07-25', '    ip helper-address 10.42.0.20', '    ip helper-address 10.42.0.21', '! drift: baseline expects a third helper 10.44.0.20'],
+};
+const NT_AOS_RESP = {
+  'show version': ['Aruba Operating System Software', 'ArubaOS (MODEL: ArubaMM-VA), Version 8.10.0.10', 'Website: https://www.arubanetworks.com', 'Compiled on 2026-02-02 at 04:11:09 UTC', 'Switch uptime is 96 days 2 hours 14 minutes'],
+  'show switches': ['All Switches', '-------------', 'IP Address    Name        Model      Status  Configuration State', '10.48.0.10    mm-lake-1   MM-VA      up      UPDATE SUCCESSFUL', '10.48.0.11    mc-lake-2   Aruba7210  DOWN    heartbeat missed (41m)', '10.48.0.12    mc-lake-3   Aruba7210  DOWN    heartbeat missed (41m)', '10.48.0.13    mc-lake-4   Aruba7205  DOWN    heartbeat missed (39m)'],
+  'show ap database': ['AP Database', '-----------', 'Name        Group     IP           Status  Flags  Switch IP', 'ap-t1-12    lakeshore 10.48.10.12  Up 9d   --     10.48.0.11', 'ap-t2-04    lakeshore 10.48.10.24  Up 9d   --     10.48.0.12', '44 APs total, 44 up, 0 down'],
+  'show datapath tunnel': ['Datapath Tunnel Table Entries', '-----------------------------', 'Source        Destination   Prt  Type  MTU   Flags', '10.48.0.11    10.48.0.10    47   GRE   1500  FYC   <-- mtu drift, baseline 1400', '10.48.0.12    10.48.0.10    47   GRE   1400  FYC'],
+};
+const NT_CFG = {
+  sw: {
+    meta: 'SNAPSHOT 06:00 · 4 CHANGES THIS WEEK',
+    running: 'hostname sw-core-a\nntp server 10.42.0.20 iburst\nsnmp-server vrf mgmt\nlogging 10.42.0.5\n!\nvsx\n    system-mac 02:01:00:00:01:00\n    inter-switch-link lag 256\n    role primary\n!\nvlan 8\n    name mgmt\nvlan 812\n    name guest-wifi\n    ip helper-address 10.42.0.20\nvlan 820\n    name clinical-devices\n!\ninterface lag 256\n    no shutdown\n    vlan trunk allowed all\ninterface 1/1/14\n    description ap-3f-12\n    no shutdown\n    vlan access 812\n    power-over-ethernet allocate-by class\n    aaa authentication port-access client-limit 5\n!\naaa group server radius clearpass\n    server 10.42.0.30',
+    diff: '  hostname sw-core-a\n  ntp server 10.42.0.20 iburst\n- ntp server 10.44.0.20 iburst          <- baseline requires two servers\n!\n  vlan 812\n      ip helper-address 10.42.0.20\n- ip helper-address 10.44.0.20          <- baseline\n!\n  logging 10.42.0.5\n- logging 10.42.0.21                    <- collector moved in April\n!\n  interface 1/1/22\n- description uxi-cam01-2               <- description missing\n\n3 findings · 2 auto-remediable · last scan 09:05',
+    history: [
+      { when: '25 Jul 09:22', what: 'vlan 812 ip helper-address 10.42.0.20 added', who: 'r.okafor · brokered write · ticket NET-4166', tag: 'push', tone: 'accent' },
+      { when: '22 Jul 01:40', what: 'Port 1/1/22 shut/no-shut during sensor swap', who: 'r.okafor · recorded shell', tag: 'shell', tone: 'neutral' },
+      { when: '19 Jul 02:10', what: 'Firmware FL.10.13.1005 activated, config migrated', who: 'orchestrated upgrade', tag: 'upgrade', tone: 'info' },
+      { when: '14 Jul 11:05', what: 'AAA server group pointed at cppm-01 + local fallback', who: 'j.alvarez · brokered write', tag: 'push', tone: 'accent' },
+      { when: '02 Jul 06:00', what: 'Baseline snapshot accepted as the CX reference', who: 'portal reconciler', tag: 'baseline', tone: 'success' },
+    ],
+  },
+  aos: {
+    meta: 'SNAPSHOT 06:00 · FROZEN UNTIL MIGRATION',
+    running: 'mm-name mm-lake-1\nclock timezone America/Chicago\n!\nap system-profile "lakeshore-ap"\n    lms-ip 10.48.0.11\n    bkup-lms-ip 10.48.0.12\n    heartbeat-interval 1000\n!\nwlan ssid-profile "MRDN-Staff"\n    essid MRDN-Staff\n    opmode wpa3-aes-ccm-128\n    max-clients 128\n!\naaa profile "clinical"\n    authentication-dot1x "default"\n    dot1x-server-group "clearpass"\n    initial-role "logon"\n!\ninterface tunnel 12\n    tunnel mtu 1500\n    tunnel source 10.48.0.11\n    tunnel destination 10.48.0.10',
+    diff: '  ap system-profile "lakeshore-ap"\n      lms-ip 10.48.0.11\n!\n  interface tunnel 12\n      tunnel mtu 1500\n- tunnel mtu 1400                       <- baseline (path mtu measured 1400)\n!\n  tacacs-server host 10.42.0.40\n- tacacs-server host 10.44.0.40         <- baseline requires a secondary\n\n2 findings · 1 auto-remediable · change window 01:00–04:00 only',
+    history: [
+      { when: '19 Jul 01:40', what: 'Tunnel MTU set to 1400 on mc-lake-4 (fix validated)', who: 'j.alvarez · change window', tag: 'shell', tone: 'neutral' },
+      { when: '12 Jul 02:00', what: 'AOS 8.10.0.10 activated on master and three locals', who: 'orchestrated upgrade', tag: 'upgrade', tone: 'info' },
+      { when: '30 Jun 01:20', what: 'WPA3 transition mode enabled on MRDN-Staff', who: 'j.alvarez', tag: 'push', tone: 'accent' },
+      { when: '02 Jul 06:00', what: 'Controller baseline frozen ahead of AOS-10 migration', who: 'portal reconciler', tag: 'baseline', tone: 'success' },
+    ],
+  },
+  none: {
+    meta: 'CLOUD TEMPLATE · READ-ONLY MIRROR',
+    running: '# Mist WLAN template applied to this AP (read-only mirror)\nsite: Campus-02 Research\nap_group: clinical-floors\nrf_template:\n  band_5:\n    channels: [36, 40, 44, 48, 149, 153]\n    disallowed: [116, 120, 124, 128]   # DFS excluded on clinical floors\n    power: auto (8–14 dBm)\nwlans:\n  - ssid: MRDN-Staff\n    auth: eap (radsec -> cppm-01)\n    vlan: 820\n  - ssid: MRDN-Guest\n    auth: psk + portal\n    vlan: 812\n  - ssid: MRDN-IoT\n    auth: psk\n    vlan: 830',
+    diff: '  rf_template.band_5.disallowed:\n      [116, 120, 124, 128]\n- applied value on this AP: []          <- DFS channels still permitted\n!\n  wlans[MRDN-Staff].auth: eap\n  wlans[MRDN-Guest].vlan: 812\n\n1 finding · auto-remediable in Mist · caused ticket NET-4188',
+    history: [
+      { when: '24 Jul 08:47', what: 'MRDN-Guest PSK rotated by Mist automation', who: 'mist automation', tag: 'cloud', tone: 'info' },
+      { when: '07 Jul 14:10', what: 'AP moved into the clinical-floors group', who: 'j.alvarez · mist console', tag: 'cloud', tone: 'info' },
+      { when: '02 Jul 06:00', what: 'RF template captured as the wireless baseline', who: 'portal reconciler', tag: 'baseline', tone: 'success' },
+    ],
+  },
+};
+const NT_DEV_CLIENTS = {
+  sw: { meta: '38 WIRED', rows: [
+    { name: 'infusion-4A-12', detail: 'port 1/1/20 · MAB · vlan 820', state: 'up', tone: 'success' },
+    { name: 'ap-3f-12 (AP uplink)', detail: 'port 1/1/14 · poe 22.1 W', state: 'up', tone: 'success' },
+    { name: 'voip-3f-114', detail: 'port 1/1/31 · 802.1X · vlan 816', state: 'up', tone: 'success' },
+    { name: 'uxi-cam01-2', detail: 'port 1/1/22 · no carrier since 04:50', state: 'down', tone: 'danger' },
+  ] },
+  aos: { meta: '744 WIRELESS', rows: [
+    { name: 'xray-cart-2', detail: 'ap-t1-12 · 802.1X · vlan 848', state: 'up', tone: 'success' },
+    { name: 'a.ferreira', detail: 'ap-t2-04 · EAP-TLS · vlan 820', state: 'up', tone: 'success' },
+    { name: '42 clients on mc-lake-2', detail: 'controller unreachable — state stale', state: 'stale', tone: 'warning' },
+  ] },
+  none: { meta: '38 ASSOCIATED', rows: [
+    { name: 'm.okonjo', detail: 'iPad · 5 GHz · −52 dBm · vlan 820', state: 'good', tone: 'success' },
+    { name: 's.mehta', detail: 'iPhone · 2.4 GHz · −71 dBm · sticky', state: 'weak', tone: 'warning' },
+    { name: '6e:41:0d:99:2b:af', detail: 'rejected ×7 · certificate not valid', state: 'reject', tone: 'danger' },
+  ] },
+};
+class Component extends DCLogic {
+  state = { lines: null, cmd: '', forName: null, cfg: 'running' };
+  scrollRef = React.createRef();
+  profile(name) {
+    const n = name || 'sw-core-a';
+    if (n.startsWith('mm-') || n.startsWith('mc-')) {
+      return {
+        name: n, model: 'AOS-8 MM-VA', site: 'Lakeshore Medical', ip: '10.48.0.10', plane: 'AOS-8', planeTone: 'accent',
+        state: 'degraded', stateTone: 'warning', launch: 'Open AOS-8 WebUI', kind: 'aos', prompt: '(' + n + ') [mynode] #',
+        stats: [
+          { label: 'Uptime', value: '96d', delta: 'since 8.10 upgrade', tone: 'neutral' },
+          { label: 'APs terminated', value: '44', delta: '0 down', tone: 'positive' },
+          { label: 'Locals up', value: '0 / 3', delta: '▼ heartbeat lost', tone: 'negative' },
+          { label: 'Clients', value: '744', delta: 'peak 810', tone: 'neutral' },
+          { label: 'CPU', value: '31%', delta: 'mem 44%', tone: 'neutral' },
+        ],
+        facts: [
+          { k: 'Serial', v: 'VA-9F41-LAKE-0001' },
+          { k: 'Role', v: 'Mobility master (master-local)' },
+          { k: 'Version', v: '8.10.0.10 (baseline: 8.10.0.10)' },
+          { k: 'Mgmt IP', v: '10.48.0.10 / vlan 1' },
+          { k: 'Licences', v: 'AP 96, PEF 96, RFP 96 (perpetual)' },
+          { k: 'Local access', v: 'SSH via portal jump host 10.48.0.9' },
+          { k: 'Last change', v: '19 Jul 01:40 — tunnel mtu on mc-lake-4' },
+          { k: 'Owner', v: 'J. Alvarez' },
+        ],
+        listTitle: 'Cluster members', listMeta: '3 DOWN',
+        ports: [
+          { id: 'mc-lake-2', what: '7210 · 16 APs · heartbeat missed 41m', state: 'down', tone: 'danger' },
+          { id: 'mc-lake-3', what: '7210 · 14 APs · heartbeat missed 41m', state: 'down', tone: 'danger' },
+          { id: 'mc-lake-4', what: '7205 · 14 APs · heartbeat missed 39m', state: 'down', tone: 'danger' },
+          { id: 'mm-lake-1', what: 'this node · config sync ok', state: 'up', tone: 'success' },
+        ],
+        checks: [
+          { mark: 'fail', tone: 'danger', label: 'Tunnel MTU 1500 on mc-lake-3 (baseline 1400)' },
+          { mark: 'pass', tone: 'success', label: 'AOS version matches approved 8.10.0.10' },
+          { mark: 'fail', tone: 'warning', label: 'TACACS server list missing secondary' },
+          { mark: 'pass', tone: 'success', label: 'Admin auth via ClearPass' },
+        ],
+      };
+    }
+    if (n.startsWith('ap-') || n.startsWith('uxi-')) {
+      return {
+        name: n, model: n.startsWith('uxi') ? 'UXI G2 sensor' : 'AP43 (Mist)', site: 'Campus-02 Research', ip: '10.44.10.12',
+        plane: n.startsWith('uxi') ? 'UXI' : 'MIST', planeTone: 'info', state: 'up', stateTone: 'success',
+        launch: 'Open in Mist', kind: 'none', prompt: '',
+        readOnlyNote: 'This device is cloud-claimed, so the portal exposes read-only telemetry and a remote-shell request instead of a direct SSH session. Approve the request in Mist and the session opens here.',
+        stats: [
+          { label: 'Uptime', value: '41d', delta: 'no reboots', tone: 'positive' },
+          { label: 'Clients', value: '38', delta: '▼ 22 at 07:41', tone: 'negative' },
+          { label: 'Channel', value: '36', delta: 'was 116 (DFS)', tone: 'negative' },
+          { label: 'Tx power', value: '11 dBm', delta: 'auto', tone: 'neutral' },
+          { label: 'PoE draw', value: '22.1 W', delta: 'port 1/1/14', tone: 'neutral' },
+        ],
+        facts: [
+          { k: 'Serial', v: 'A1234567890123' },
+          { k: 'MAC', v: '3c:2a:f4:9b:11:08' },
+          { k: 'Firmware', v: '0.14.29 (rolling)' },
+          { k: 'Wired to', v: 'sw-acc-3f-2 port 1/1/14' },
+          { k: 'Site', v: 'Campus-02 Research / 3F east' },
+          { k: 'Subscription', v: 'Wi-Fi SUB · expires 14 Sep 2026' },
+          { k: 'Local access', v: 'none — cloud-claimed device' },
+          { k: 'Last change', v: '24 Jul 08:47 — WLAN PSK rotation' },
+        ],
+        listTitle: 'Radios & SSIDs', listMeta: 'LIVE',
+        ports: [
+          { id: '5 GHz', what: 'ch 36 / 40MHz · 24 clients · 2 DFS events today', state: 'warn', tone: 'warning' },
+          { id: '2.4 GHz', what: 'ch 6 / 20MHz · 14 clients', state: 'up', tone: 'success' },
+          { id: 'MRDN-Staff', what: '802.1X · ClearPass · 31 clients', state: 'up', tone: 'success' },
+          { id: 'MRDN-Guest', what: 'PSK · vlan 812 · 7 clients', state: 'up', tone: 'success' },
+          { id: 'MRDN-IoT', what: 'PSK · vlan 820 · 0 clients', state: 'idle', tone: 'neutral' },
+        ],
+        checks: [
+          { mark: 'pass', tone: 'success', label: 'Firmware on the rolling train' },
+          { mark: 'fail', tone: 'warning', label: 'DFS channels not excluded for clinical floors' },
+          { mark: 'pass', tone: 'success', label: 'Guest SSID isolated to vlan 812' },
+        ],
+      };
+    }
+    if (n.startsWith('gw-')) {
+      return {
+        name: n, model: 'AOS-10 9240 gateway', site: 'Campus-01 HQ', ip: '10.42.12.1', plane: 'AOS-10', planeTone: 'accent',
+        state: 'flapping', stateTone: 'warning', launch: 'Open in Central', kind: 'aos', prompt: '(' + n + ') #',
+        stats: [
+          { label: 'Uptime', value: '12d', delta: 'last reload planned', tone: 'neutral' },
+          { label: 'Tunnels', value: '6', delta: '▲ 14 flaps / 1h', tone: 'negative' },
+          { label: 'Throughput', value: '1.9 Gb', delta: 'peak 3.1 Gb', tone: 'neutral' },
+          { label: 'Sessions', value: '48k', delta: 'nat 12k', tone: 'neutral' },
+          { label: 'CPU', value: '22%', delta: 'mem 51%', tone: 'neutral' },
+        ],
+        facts: [
+          { k: 'Serial', v: 'CX0921AB77' },
+          { k: 'Cluster', v: 'gw-edge-1 / gw-edge-2 (active-active)' },
+          { k: 'Version', v: '10.6.0.2' },
+          { k: 'Mgmt IP', v: '10.42.12.1 / vlan 12' },
+          { k: 'Licences', v: 'Advanced gateway · expires 30 Nov 2026' },
+          { k: 'Local access', v: 'SSH allowed from 10.42.0.9' },
+          { k: 'Last change', v: '25 Jul 07:15 — failover test' },
+          { k: 'Owner', v: 'R. Okafor' },
+        ],
+        listTitle: 'Tunnels', listMeta: '14 FLAPS',
+        ports: [
+          { id: 'ipsec-dc1', what: 'to 203.0.113.14 · 14 resets in 1h', state: 'flap', tone: 'danger' },
+          { id: 'ipsec-dc2', what: 'to 203.0.113.15 · stable 12d', state: 'up', tone: 'success' },
+          { id: 'gre-mist', what: 'overlay to Campus-02', state: 'up', tone: 'success' },
+          { id: 'wan1', what: '10G to DC1 · 1.9 Gb/s', state: 'up', tone: 'success' },
+        ],
+        checks: [
+          { mark: 'fail', tone: 'danger', label: 'Tunnel MTU 1500 — path MTU measured 1400' },
+          { mark: 'pass', tone: 'success', label: 'Role assignment matches Central template' },
+          { mark: 'pass', tone: 'success', label: 'Firmware on approved 10.6.0.2' },
+        ],
+      };
+    }
+    if (n.startsWith('cppm')) {
+      return {
+        name: n, model: 'ClearPass C3010', site: 'Core services', ip: '10.42.0.30', plane: 'CLEARPASS', planeTone: 'neutral',
+        state: 'up', stateTone: 'success', launch: 'Open ClearPass', kind: 'sw', prompt: '[appadmin@' + n + ']#',
+        stats: [
+          { label: 'Uptime', value: '211d', delta: 'cluster publisher', tone: 'positive' },
+          { label: 'Auths / min', value: '412', delta: 'peak 610', tone: 'neutral' },
+          { label: 'Reject rate', value: '1.4%', delta: '▼ 0.3%', tone: 'positive' },
+          { label: 'Endpoints', value: '4,182', delta: 'of 5,000 licensed', tone: 'neutral' },
+          { label: 'Cert', value: '21d', delta: 'expires 15 Aug', tone: 'negative' },
+        ],
+        facts: [
+          { k: 'Serial', v: 'CP3010-77A21' },
+          { k: 'Role', v: 'Publisher · 1 subscriber' },
+          { k: 'Version', v: '6.11.7 patch 2' },
+          { k: 'Mgmt IP', v: '10.42.0.30' },
+          { k: 'Licences', v: '5,000 endpoints, OnGuard 1,000' },
+          { k: 'Local access', v: 'appadmin CLI over SSH' },
+          { k: 'Last change', v: '22 Jul — guest role rewrite' },
+          { k: 'Owner', v: 'J. Alvarez' },
+        ],
+        listTitle: 'Services', listMeta: 'TOP 5',
+        ports: [
+          { id: '802.1X wired', what: 'CX switches · 1,204 auths/h', state: 'up', tone: 'success' },
+          { id: '802.1X wifi', what: 'Central + Mist · 8,910 auths/h', state: 'up', tone: 'success' },
+          { id: 'MAC auth', what: 'clinical devices vlan 820', state: 'up', tone: 'success' },
+          { id: 'Guest', what: 'self-registration · vlan 812', state: 'up', tone: 'success' },
+          { id: 'RadSec', what: 'to Mist org · cert expires 21d', state: 'warn', tone: 'warning' },
+        ],
+        checks: [
+          { mark: 'fail', tone: 'warning', label: 'Server certificate expires in 21 days' },
+          { mark: 'pass', tone: 'success', label: 'Backup completed 05:00 today' },
+          { mark: 'pass', tone: 'success', label: 'Admin MFA enforced' },
+        ],
+      };
+    }
+    return {
+      name: n, model: 'CX 8325-48Y8C', site: 'Campus-01 HQ', ip: '10.42.8.11', plane: 'LOCAL', planeTone: 'neutral',
+      state: 'degraded', stateTone: 'warning', launch: 'Open switch WebUI', kind: 'sw', prompt: n + '#',
+      stats: [
+        { label: 'Uptime', value: '182d', delta: 'no reload', tone: 'positive' },
+        { label: 'Ports up', value: '44 / 48', delta: '1 no-carrier', tone: 'neutral' },
+        { label: 'PoE draw', value: '318 W', delta: 'of 740 W budget', tone: 'neutral' },
+        { label: 'Temp', value: '41.5°C', delta: 'normal', tone: 'positive' },
+        { label: 'Power', value: '1 / 2', delta: '▼ psu2 absent', tone: 'negative' },
+      ],
+      facts: [
+        { k: 'Serial', v: 'SG09KLM4X2' },
+        { k: 'Role', v: 'Core · VSX primary with sw-core-b' },
+        { k: 'Firmware', v: 'FL.10.13.1005 (approved)' },
+        { k: 'Mgmt IP', v: '10.42.8.11 / vlan 8' },
+        { k: 'Base MAC', v: '88:3a:30:41:9c:00' },
+        { k: 'Managed by', v: 'No cloud plane — local SSH only' },
+        { k: 'Location', v: 'Campus-01 / MDF-A / rack 3 U12' },
+        { k: 'Last change', v: '25 Jul 09:22 — vlan 812 helper' },
+      ],
+      listTitle: 'Ports of interest', listMeta: '48 TOTAL',
+      ports: [
+        { id: '1/1/1-2', what: 'VSX ISL to sw-core-b · 20G lag', state: 'up', tone: 'success' },
+        { id: '1/1/14', what: 'ap-3f-12 · poe 22.1W · vlan 812', state: 'up', tone: 'success' },
+        { id: '1/1/22', what: 'uxi-cam01-2 · no carrier since 04:50', state: 'down', tone: 'danger' },
+        { id: '1/1/47-48', what: 'gw-edge-1 / gw-edge-2 transit', state: 'up', tone: 'success' },
+        { id: 'psu2', what: 'absent since 03:12 — single supply', state: 'fault', tone: 'warning' },
+      ],
+      checks: [
+        { mark: 'pass', tone: 'success', label: 'Firmware matches approved 10.13.1005' },
+        { mark: 'fail', tone: 'warning', label: 'vlan 812 missing helper 10.44.0.20' },
+        { mark: 'fail', tone: 'warning', label: 'NTP has one server, baseline expects two' },
+        { mark: 'pass', tone: 'success', label: 'AAA points at cppm-01 + local fallback' },
+      ],
+    };
+  }
+  banner(dev) {
+    if (dev.kind === 'aos') {
+      return [
+        { text: 'Connecting via portal jump host 10.48.0.9 …', tone: 'muted' },
+        { text: 'Last login: Fri Jul 25 09:12:04 2026 from 10.42.0.9', tone: 'muted' },
+        { text: 'ArubaOS 8.10.0.10 — session logged to ticket NET-4173', tone: 'muted' },
+        { text: '', tone: 'muted' },
+      ];
+    }
+    return [
+      { text: 'SSH session opened by r.okafor via collector-01 (10.42.0.9)', tone: 'muted' },
+      { text: 'ArubaOS-CX FL.10.13.1005 — all commands are recorded', tone: 'muted' },
+      { text: 'Type ? for the command list this portal can proxy.', tone: 'muted' },
+      { text: '', tone: 'muted' },
+    ];
+  }
+  respond(dev, raw) {
+    const cmd = raw.trim();
+    const table = dev.kind === 'aos' ? NT_AOS_RESP : NT_SW_RESP;
+    if (!cmd) return [];
+    if (cmd === '?' || cmd === 'help') {
+      return Object.keys(table).map((k) => ({ text: '  ' + k, tone: 'body' }));
+    }
+    if (cmd === 'clear') { return null; }
+    const hit = Object.keys(table).find((k) => k === cmd);
+    if (hit) return table[hit].map((t) => ({ text: t, tone: 'body' }));
+    const near = Object.keys(table).find((k) => k.startsWith(cmd) || cmd.startsWith(k));
+    if (near) return [{ text: 'Ambiguous — did you mean: ' + near, tone: 'warn' }];
+    return [{ text: (dev.kind === 'aos' ? '% Parse error at ' : 'Invalid input: ') + cmd, tone: 'warn' }, { text: 'Type ? for the proxied command list.', tone: 'muted' }];
+  }
+  componentDidUpdate() {
+    const el = this.scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }
+  submit(dev, text) {
+    const resp = this.respond(dev, text);
+    if (resp === null) { this.setState({ lines: this.banner(dev), cmd: '' }); return; }
+    const prior = this.state.lines || this.banner(dev);
+    this.setState({ lines: prior.concat([{ text: dev.prompt + ' ' + text, tone: 'in' }], resp, [{ text: '', tone: 'muted' }]), cmd: '' });
+  }
+  renderVals() {
+    const go = this.props.onGo || (() => {});
+    const name = this.props.deviceName || 'sw-core-a';
+    const dev = this.profile(name);
+    if (this.state.forName !== name) {
+      this._reset = true;
+    }
+    const lines = (this.state.forName === name && this.state.lines) || this.banner(dev);
+    const colors = { in: 'var(--nd-accent-text)', body: 'var(--nd-text-secondary)', muted: 'var(--nd-text-muted)', warn: 'var(--nd-warning)' };
+    const canShell = dev.kind !== 'none';
+    const cfg = NT_CFG[dev.kind] || NT_CFG.sw;
+    const clientSet = NT_DEV_CLIENTS[dev.kind] || NT_DEV_CLIENTS.sw;
+    const quick = dev.kind === 'aos' ? ['show version', 'show switches', 'show ap database', 'show datapath tunnel'] : ['show version', 'show system', 'show interface brief', 'show vlan', 'show lldp neighbor'];
+    return {
+      density: this.props.density ?? 'comfortable',
+      showTags: this.props.showTags ?? true,
+      dev, overline: 'Devices / ' + name,
+      stats: dev.stats, facts: dev.facts, ports: dev.ports, checks: dev.checks,
+      listTitle: dev.listTitle, listMeta: dev.listMeta,
+      goDevices: () => go('devices'), goCompliance: () => go('compliance'), goClients: () => go('clients'),
+      cfgMeta: cfg.meta,
+      cfgRunning: this.state.cfg === 'running', cfgDiff: this.state.cfg === 'diff', cfgHistory: this.state.cfg === 'history',
+      cfgText: this.state.cfg === 'running' ? cfg.running : this.state.cfg === 'diff' ? cfg.diff : '',
+      history: cfg.history,
+      showRunning: () => this.setState({ cfg: 'running' }),
+      showDiff: () => this.setState({ cfg: 'diff' }),
+      showHistory: () => this.setState({ cfg: 'history' }),
+      clients: clientSet.rows, clientMeta: clientSet.meta,
+      canShell, readOnly: !canShell, readOnlyNote: dev.readOnlyNote || '',
+      shellTitle: canShell ? 'Local terminal' : 'Read-only telemetry',
+      shellMeta: canShell ? 'SESSION RECORDED' : 'CLOUD-CLAIMED DEVICE',
+      shellHeader: canShell ? 'ssh r.okafor@' + dev.ip + ' — via collector' : 'no shell — ' + dev.plane + ' owns this device',
+      shellRight: canShell ? 'AES-256 · idle 14:52' : 'request remote shell ↗',
+      shellDot: canShell ? 'var(--nd-success)' : 'var(--nd-border-strong)',
+      prompt: dev.prompt,
+      cmd: this.state.cmd,
+      lines: lines.map((l) => ({ text: l.text, color: colors[l.tone] || colors.body })),
+      quickCmds: quick.map((c) => ({ label: c, run: () => { this.setState({ forName: name }); this.submit(dev, c); } })),
+      clear: () => this.setState({ forName: name, lines: this.banner(dev), cmd: '' }),
+      onCmd: (e) => this.setState({ forName: name, cmd: e.target.value }),
+      onKey: (e) => { if (e.key === 'Enter') { const v = this.state.cmd; this.setState({ forName: name }); this.submit(dev, v); } },
+    };
+  }
+}
+</script>
+</body>
+</html>

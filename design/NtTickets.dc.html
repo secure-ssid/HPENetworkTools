@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 2 }}" overline="Operate / Tickets" hint-size="240px,56px">Tickets</x-import>
+<div style="font-family:var(--nd-font-display);font-style:italic;font-size:15px;color:var(--nd-text-secondary);margin-top:6px">One ticket, one workspace — evidence pulled from whichever plane owns the device.</div>
+</div>
+<div style="display:grid;grid-template-columns:300px minmax(0,1fr);gap:32px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Queue</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">4 open</span>
+</div>
+<sc-for list="{{ tickets }}" as="t" hint-placeholder-count="5">
+<button type="button" onClick="{{ t.select }}" style="display:flex;flex-direction:column;gap:5px;align-items:stretch;text-align:left;border:none;border-bottom:1px solid var(--nd-border-subtle);border-left:2px solid {{ t.mark }};background:{{ t.bg }};padding:11px 10px;cursor:pointer">
+<div style="display:flex;align-items:center;gap:8px">
+<span style="font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-accent-text)">{{ t.id }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted);margin-left:auto">{{ t.age }}</span>
+</div>
+<span style="font-size:13px;color:var(--nd-text-primary);line-height:1.35">{{ t.title }}</span>
+<div style="display:flex;align-items:center;gap:6px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ t.tone }}" hint-size="30px,18px">{{ t.pri }}</x-import>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">{{ t.site }}</span>
+</div>
+</button>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:22px;min-width:0">
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+<span style="font-family:var(--nd-font-mono);font-size:12px;color:var(--nd-accent-text);letter-spacing:.06em">{{ cur.id }}</span>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="{{ cur.tone }}" dot="{{ true }}" hint-size="36px,18px">{{ cur.pri }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Badge" tone="neutral" hint-size="60px,18px">{{ cur.state }}</x-import>
+<span style="margin-left:auto;font-family:var(--nd-font-mono);font-size:11px;color:var(--nd-warning)">{{ cur.sla }}</span>
+</div>
+<x-import component-from-global-scope="Nightdesk.Heading" level="{{ 3 }}" hint-size="420px,26px">{{ cur.title }}</x-import>
+<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;padding:14px 0;border-top:1px solid var(--nd-border-subtle);border-bottom:1px solid var(--nd-border-subtle)">
+<div><div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Reported by</div><div style="font-size:13px;color:var(--nd-text-secondary);margin-top:3px">{{ cur.reporter }}</div></div>
+<div><div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Site</div><div style="font-size:13px;color:var(--nd-text-secondary);margin-top:3px">{{ cur.site }}</div></div>
+<div><div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Owner</div><div style="font-size:13px;color:var(--nd-text-secondary);margin-top:3px">{{ cur.owner }}</div></div>
+<div><div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--nd-text-muted)">Planes touched</div><div style="font-size:13px;color:var(--nd-text-secondary);margin-top:3px">{{ cur.planes }}</div></div>
+</div>
+</div>
+<x-import component-from-global-scope="Nightdesk.Alert" tone="info" title="{{ cur.causeTitle }}" hint-size="100%,80px">
+<span style="font-size:13px">{{ cur.cause }}</span>
+</x-import>
+<div style="display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:baseline;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">
+<span style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted)">Evidence, gathered across planes</span>
+<span style="font-family:var(--nd-font-mono);font-size:10px;color:var(--nd-text-muted)">AUTO-COLLECTED</span>
+</div>
+<sc-for list="{{ evidence }}" as="e" hint-placeholder-count="5">
+<div style="display:flex;gap:14px;padding:12px 0;border-bottom:1px solid var(--nd-border-subtle)">
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted);width:46px;flex:0 0 46px;padding-top:2px">{{ e.time }}</span>
+<div style="width:88px;flex:0 0 88px;padding-top:1px">
+<x-import component-from-global-scope="Nightdesk.Badge" tone="neutral" hint-size="70px,18px">{{ e.plane }}</x-import>
+</div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px">
+<span style="font-size:13px;color:var(--nd-text-primary);line-height:1.4">{{ e.finding }}</span>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">{{ e.raw }}</span>
+</div>
+<sc-if value="{{ e.device }}" hint-placeholder-val="{{ false }}">
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" onClick="{{ e.open }}" hint-size="76px,26px">{{ e.device }}</x-import>
+</sc-if>
+</div>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px">
+<div style="font-family:var(--nd-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--nd-text-muted);padding-bottom:8px;border-bottom:1px solid var(--nd-border-default)">Next actions</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<x-import component-from-global-scope="Nightdesk.Button" variant="primary" size="sm" onClick="{{ openPrimary }}" hint-size="150px,26px">{{ cur.action1 }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="150px,26px">{{ cur.action2 }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="150px,26px">{{ cur.action3 }}</x-import>
+<x-import component-from-global-scope="Nightdesk.Button" variant="ghost" size="sm" hint-size="150px,26px">Escalate to HPE support</x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;max-width:620px">
+<x-import component-from-global-scope="Nightdesk.Textarea" rows="{{ 3 }}" placeholder="Log a note — it posts to the ticket and to the device's history on its own plane." hint-size="100%,72px"></x-import>
+<div style="display:flex;align-items:center;gap:10px">
+<x-import component-from-global-scope="Nightdesk.Button" variant="secondary" size="sm" hint-size="90px,26px">Log note</x-import>
+<span style="font-family:var(--nd-font-mono);font-size:10.5px;color:var(--nd-text-muted)">Also mirrors to ServiceNow INC0094{{ cur.inc }}</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;comfortable&quot;,&quot;tsType&quot;:&quot;'comfortable' | 'compact'&quot;},&quot;showTags&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;onOpenDevice&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(device: string) =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { sel: 'NET-4188' };
+  tickets = [
+    { id: 'NET-4188', pri: 'P2', tone: 'warning', state: 'in progress', title: 'Wi-Fi drops, 3rd floor east ward', site: 'Campus-02 Research', age: '2h', reporter: 'Ward 3E station', owner: 'R. Okafor', planes: 'Mist · ClearPass · local', sla: 'SLA breach in 1h 12m', inc: '21', causeTitle: 'Likely cause: DFS radar events forcing channel changes',
+      cause: 'Both APs left channel 116 within 40 seconds of each other, and clients that failed to roam were re-authenticated by ClearPass. The switch ports show no errors, so this is radio, not wiring.', action1: 'Pin channels on ap-3f-12/14', action2: 'Open in Mist', action3: 'Compare to Campus-01 RF profile',
+      evidence: [
+        { time: '07:41', plane: 'MIST', finding: 'ap-3f-12 left channel 116 after DFS radar detect; 22 clients reconnected', raw: 'event=DFS_RADAR band=5 ch=116 → 36', device: 'ap-3f-12' },
+        { time: '07:41', plane: 'MIST', finding: 'ap-3f-14 followed 38s later — same radar signature', raw: 'event=DFS_RADAR band=5 ch=116 → 44', device: 'ap-3f-14' },
+        { time: '07:42', plane: 'CLEARPASS', finding: '14 re-authentications from the same MAC block, all successful', raw: 'auth=MAB+802.1X result=ACCEPT count=14', device: 'cppm-01' },
+        { time: '07:43', plane: 'LOCAL SSH', finding: 'Uplink ports on sw-acc-3f-2 clean — no CRC errors, PoE steady', raw: 'show interface 1/1/14 · errors 0 · poe 22.1W', device: 'sw-acc-3f-2' },
+        { time: '07:55', plane: 'UXI', finding: 'Sensor test passed on 2.4GHz, failed twice on 5GHz', raw: 'wifi-5 assoc timeout 2/6 tests', device: null },
+      ] },
+    { id: 'NET-4173', pri: 'P1', tone: 'danger', state: 'open', title: 'Central Classic sync stalled, inventory stale', site: 'Riverside Clinic', age: '6h', reporter: 'Portal watchdog', owner: 'Unassigned', planes: 'Central Classic · local', sla: 'SLA breach in 24m', inc: '18', causeTitle: 'Likely cause: API rate limit on the Classic tenant',
+      cause: 'The Classic collector is being 429-throttled every third poll, so 24 devices at Riverside have not reported for six hours. Local SSH still reaches them, so treat Classic state as unverified until the backfill completes.', action1: 'Re-key Classic API token', action2: 'Force full backfill', action3: 'Verify 24 devices over SSH',
+      evidence: [
+        { time: '03:12', plane: 'CLASSIC', finding: 'Poll rejected — HTTP 429, retry-after 600s', raw: 'GET /monitoring/v1/switches → 429', device: null },
+        { time: '03:12', plane: 'PORTAL', finding: 'Collector backed off to a 10-minute interval; queue depth now 41', raw: 'backoff=600s queue=41', device: null },
+        { time: '06:40', plane: 'LOCAL SSH', finding: '24 Riverside devices answered directly — all up, config unchanged', raw: 'ssh probe 24/24 ok', device: 'sw-core-a' },
+        { time: '09:05', plane: 'GREENLAKE', finding: 'Tenant shows two API clients sharing one token quota', raw: 'clients=portal-collector, legacy-scripts', device: null },
+      ] },
+    { id: 'NET-4166', pri: 'P2', tone: 'warning', state: 'waiting', title: 'Guest onboarding fails intermittently', site: 'Campus-01 HQ', age: '1d', reporter: 'Front desk', owner: 'J. Alvarez', planes: 'Central · ClearPass', sla: 'SLA breach in 6h', inc: '09', causeTitle: 'Likely cause: guest VLAN DHCP exhaustion',
+      cause: 'Failures cluster when the vlan 812 scope passes 90% utilisation. Onboarding succeeds on retry, which points at leases rather than policy.', action1: 'Widen vlan 812 scope', action2: 'Open in Central', action3: 'Shorten guest lease to 2h',
+      evidence: [
+        { time: '11:20', plane: 'CENTRAL', finding: 'DHCP scope 10.42.12.0/23 at 92% — 1,842 of 2,046 leases', raw: 'scope=guest-812 used=92%', device: 'sw-core-a' },
+        { time: '11:21', plane: 'CLEARPASS', finding: 'Guest policy applied correctly on every attempt', raw: 'role=guest result=ACCEPT', device: 'cppm-01' },
+        { time: '11:44', plane: 'LOCAL SSH', finding: 'sw-core-a relay counters show 61 discovers unanswered', raw: 'show dhcp-relay statistics', device: 'sw-core-a' },
+      ] },
+    { id: 'NET-4152', pri: 'P3', tone: 'info', state: 'open', title: 'Stack member 3 missing after reboot', site: 'Warehouse-DC1', age: '3d', reporter: 'R. Okafor', owner: 'R. Okafor', planes: 'local only', sla: 'No SLA — planned', inc: '02', causeTitle: 'Likely cause: stacking cable seated on the wrong port',
+      cause: 'This site has no cloud plane at all, so everything here comes from the local collector over SSH. Member 3 never rejoined after the 02:00 reboot.', action1: 'SSH to sw-wh1-1', action2: 'Show stack topology', action3: 'Schedule on-site check',
+      evidence: [
+        { time: '02:03', plane: 'LOCAL SSH', finding: 'Stack reports 2 of 3 members after reload', raw: 'show stack · member 3 missing', device: 'sw-core-a' },
+        { time: '02:04', plane: 'PORTAL', finding: 'Collector flagged an inventory delta at Warehouse-DC1', raw: 'delta=-1 device', device: null },
+      ] },
+    { id: 'NET-4149', pri: 'P2', tone: 'success', state: 'resolved', title: 'AOS-8 AP tunnel resets after upgrade', site: 'Lakeshore Medical', age: '5d', reporter: 'Ops', owner: 'J. Alvarez', planes: 'AOS-8', sla: 'Closed', inc: '77', causeTitle: 'Resolved: MTU corrected on the controller uplink',
+      cause: 'Tunnel MTU was left at 1500 after the upgrade; setting it to 1400 stopped the resets. Kept here as the reference fix for the other two clusters.', action1: 'Apply fix to mc-lake-3', action2: 'Open in AOS-8', action3: 'Add to compliance baseline',
+      evidence: [
+        { time: 'Mon', plane: 'AOS-8', finding: 'GRE tunnels reset every 90s on mc-lake-2', raw: 'tunnel 12 flap count=48', device: 'mm-lake-1' },
+        { time: 'Mon', plane: 'LOCAL SSH', finding: 'Path MTU to controller measured at 1400', raw: 'ping df-bit size 1472 → fail', device: null },
+      ] },
+  ];
+  renderVals() {
+    const openDevice = this.props.onOpenDevice || (() => {});
+    const cur = this.tickets.find((t) => t.id === this.state.sel) || this.tickets[0];
+    return {
+      density: this.props.density ?? 'comfortable',
+      cur,
+      tickets: this.tickets.map((t) => ({
+        ...t,
+        select: () => this.setState({ sel: t.id }),
+        mark: t.id === cur.id ? 'var(--nd-accent)' : 'transparent',
+        bg: t.id === cur.id ? 'var(--nd-bg-raised)' : 'transparent',
+      })),
+      evidence: cur.evidence.map((e) => ({ ...e, open: () => e.device && openDevice(e.device) })),
+      openPrimary: () => openDevice(cur.evidence[0].device || 'sw-core-a'),
+    };
+  }
+}
+</script>
+</body>
+</html>
