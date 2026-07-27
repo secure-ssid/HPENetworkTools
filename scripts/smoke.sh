@@ -21,7 +21,7 @@ echo "== API =="
 check GET /api/health
 for r in overview alerts tickets clients auth-events sites devices \
          licenses configure compliance systems systems/state \
-         search-index settings chat/status configure/queue; do
+         search-index settings chat/status configure/queue configure/history; do
   check GET "/api/$r"
 done
 # Device detail: drill into the FIRST device the inventory actually serves —
