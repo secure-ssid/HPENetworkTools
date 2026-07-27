@@ -178,4 +178,26 @@ describe('ToastProvider / useToast', () => {
     expect(container.querySelectorAll('.nd-toast')).toHaveLength(2);
     expect(screen.getAllByText('Saved')).toHaveLength(2);
   });
+
+  it('clears pending dismiss timers on unmount, so a toast raised before a navigation cannot fire against a torn-down tree', () => {
+    vi.useFakeTimers();
+    const { unmount } = render(
+      <ToastProvider>
+        <ToastButton label="Push" title="Change pushed" />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Push' }));
+    expect(screen.getByText('Change pushed')).toBeTruthy();
+
+    unmount();
+    // Without the unmount cleanup the 4.2s dismiss timer survives and fires a
+    // setState against an unmounted provider. Advancing well past it must be
+    // inert.
+    expect(vi.getTimerCount()).toBe(0);
+    expect(() => {
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+    }).not.toThrow();
+  });
 });

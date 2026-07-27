@@ -173,6 +173,28 @@ describe('Progress', () => {
     expect(track.getAttribute('aria-valuemax')).toBe('60');
   });
 
+  /*
+   * REGRESSION GUARD — an unknown share must never read as "fully utilised and
+   * healthy". `value / max` is Infinity when max is 0 and NaN when either side
+   * is not a number; clamping Infinity used to yield 100%, painting a full bar
+   * for a reading the component does not have. This is the same inversion the
+   * Licences utilisation bar was audited and fixed for.
+   */
+  it('draws an unknown share empty rather than full when max is 0', () => {
+    const { container } = render(<Progress value={9} max={0} />);
+    expect(fillOf(container).style.width).toBe('0%');
+  });
+
+  it('draws an unknown share empty rather than full when the reading is NaN', () => {
+    const { container } = render(<Progress value={Number.NaN} />);
+    expect(fillOf(container).style.width).toBe('0%');
+  });
+
+  it('omits aria-valuenow for an unknown reading, so it announces as indeterminate', () => {
+    render(<Progress value={9} max={0} label="Utilisation" />);
+    expect(screen.getByRole('progressbar').hasAttribute('aria-valuenow')).toBe(false);
+  });
+
   it('omits the head row entirely when there is neither label nor note', () => {
     const { container } = render(<Progress value={50} />);
     expect(container.querySelector('.nd-progress__head')).toBeNull();

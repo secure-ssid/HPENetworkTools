@@ -79,7 +79,14 @@ export function Progress({
   tone?: 'accent' | 'success' | 'warning' | 'danger';
   className?: string;
 }) {
-  const pct = Math.max(0, Math.min(100, (value / max) * 100));
+  // An unknown share must never paint as a full bar. `value / max` is Infinity
+  // when max is 0 and NaN when either side is not a number, and clamping those
+  // used to yield 100% — i.e. "we have no idea" rendered as "fully utilised and
+  // healthy", the same inversion the Licences utilisation bar was fixed for.
+  // Unknown now renders empty, and the bar reports itself as indeterminate.
+  const raw = (value / max) * 100;
+  const known = Number.isFinite(raw);
+  const pct = known ? Math.max(0, Math.min(100, raw)) : 0;
   return (
     <div className={cx('nd-progress', className)}>
       {label || note ? (
@@ -91,7 +98,7 @@ export function Progress({
       <div
         className="nd-progress__track"
         role="progressbar"
-        aria-valuenow={value}
+        aria-valuenow={known ? value : undefined}
         aria-valuemin={0}
         aria-valuemax={max}
       >

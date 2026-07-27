@@ -169,4 +169,29 @@ describe('Table.Row interaction', () => {
     expect(row.className).toContain('nd-table__tr--interactive');
     expect(row.hasAttribute('tabindex')).toBe(false);
   });
+
+  it('does not navigate the row when Enter is pressed inside a nested control', () => {
+    // Enter in a filter input or a per-row button must do that control's job,
+    // not the row's. The handler gates on the event target being the row.
+    const onClick = vi.fn();
+    const { container } = render(
+      <Table>
+        <Table.Body>
+          <Table.Row onClick={onClick}>
+            <Table.Cell>
+              <input aria-label="Rename device" defaultValue="sw-core-a" />
+            </Table.Cell>
+          </Table.Row>
+        </Table.Body>
+      </Table>,
+    );
+
+    fireEvent.keyDown(screen.getByLabelText('Rename device'), { key: 'Enter' });
+    expect(onClick).not.toHaveBeenCalled();
+
+    // The row itself still navigates on Enter.
+    const row = container.querySelector('tbody tr') as HTMLTableRowElement;
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
 });
