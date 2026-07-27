@@ -26,10 +26,17 @@ const HEALTH_COLORS: Record<SiteHealthTone, string> = {
   stale: 'var(--nd-border-strong)',
 };
 
+/** Rows of the Sites preview — the design lists six of the estate. */
+const SITES_PREVIEW = 6;
+
 function hhmm(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
 export default function Overview() {
@@ -61,6 +68,21 @@ export default function Overview() {
       ? `SYNCED 09:41 · AUTO ${pollIntervalSec}s`
       : `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'} · AUTO ${pollIntervalSec}s`;
 
+  /* Section links and the subtitle are count-bearing (README §1), so a live or
+   * blended section counts the rows it actually carries — which is exactly what
+   * the linked screen goes on to render. The prototype's totals ("All 7 alerts",
+   * "All 10 sites" of which six are previewed) describe the fixture estate, not
+   * the payload, so they stay behind a demo-sourced section. */
+  const alertsLive = data.dataSource === 'live' || (data.blended?.includes('alerts') ?? false);
+  const sitesLive = data.dataSource === 'live' || (data.blended?.includes('sites') ?? false);
+  const planesLive = data.dataSource === 'live' || (data.blended?.includes('planes') ?? false);
+  const alertsLink = alertsLive ? `All ${plural(data.alerts.length, 'alert')} →` : 'All 7 alerts →';
+  const sitesLink = sitesLive ? `All ${plural(data.sites.length, 'site')} →` : 'All 10 sites →';
+  const subtitle =
+    sitesLive || planesLive
+      ? `${plural(data.sites.length, 'site')}, ${plural(data.planes.length, 'management plane')} — one queue of things that actually need you.`
+      : 'Ten sites, six management planes — one queue of things that actually need you.';
+
   const runLaunch = (l: LaunchpadRow) => {
     if (l.target.type === 'device') {
       navigate(`/devices/${encodeURIComponent(l.target.device)}`);
@@ -74,7 +96,7 @@ export default function Overview() {
       <ScreenHeader
         overline={`${workspaceName} / Single pane`}
         title="Operations"
-        subtitle="Ten sites, six management planes — one queue of things that actually need you."
+        subtitle={subtitle}
         actions={
           <>
             <span
@@ -123,7 +145,7 @@ export default function Overview() {
               label="Needs you now"
               meta={
                 <button type="button" className="nd-link" onClick={() => navigate('/alerts')}>
-                  All 7 alerts →
+                  {alertsLink}
                 </button>
               }
             />
@@ -201,7 +223,7 @@ export default function Overview() {
               label="Sites"
               meta={
                 <button type="button" className="nd-link" onClick={() => navigate('/sites')}>
-                  All 10 sites →
+                  {sitesLink}
                 </button>
               }
             />
@@ -217,7 +239,8 @@ export default function Overview() {
                 </Table.Row>
               </Table.Head>
               <Table.Body>
-                {data.sites.map((s) => (
+                {/* A preview, not the estate — the section link carries the total. */}
+                {data.sites.slice(0, SITES_PREVIEW).map((s) => (
                   <Table.Row key={s.name}>
                     <Table.Cell>
                       <button

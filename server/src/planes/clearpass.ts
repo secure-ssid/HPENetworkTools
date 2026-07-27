@@ -3,32 +3,66 @@
  *
  * The policy plane (README integration table: auth/accounting events,
  * endpoints, policy; read-only — policy is edited in ClearPass itself, the
- * portal never fakes an edit form). Static API-client token auth —
- * `Authorization: Bearer <token>` on every call, no token manager, nothing to
- * refresh — with auth logs mapped into the shared AuthEventRow so the poller
- * cache and /api/auth-events can consume them.
+ * portal never fakes an edit form). Auth logs are mapped into the shared
+ * AuthEventRow so the poller cache and /api/auth-events can consume them, and
+ * the endpoint repository total rides on the plane state as its device count.
  *
- * Endpoint candidates (Insight vs. older log APIs; 404 on a candidate is
- * tolerated by trying the next one and remembering which path worked):
+ * Auth (documented CPPM 6.x surface — "API Authorization / OAuth2" on
+ * developer.arubanetworks.com/cppm): API clients mint their own token with
+ *   POST /api/oauth   {grant_type: client_credentials, client_id, client_secret}
+ * which answers {access_token, expires_in: 28800}. Tokens are cached via the
+ * shared TokenManager (refresh at expiry−60s, single-flight, invalidate +
+ * retry once on 401), exactly like central/greenlake/uxi. A pre-minted
+ * `token` credential is still honoured as the legacy path — that one cannot
+ * self-heal, so a 401 on it is NOT retried.
+ * Credential keys: publisher (the key the connect drawer writes) / host /
+ * baseUrl for the publisher node, then clientId + clientSecret, or token.
  *
- *   section     candidates (tried in order)
- *   authEvents  /api-insight/v1/auth/logs
- *               /api/auth-logs
- *               /tips/api/auth/events
+ * Endpoint candidates (tried in order, 404 on one is tolerated by trying the
+ * next and remembering which path worked). Both are documented CPPM 6.x REST
+ * resources and both are the calls the design records for this plane
+ * (design/NtSystems.dc.html:386-388):
+ *
+ *   section     candidates                          paging
+ *   authEvents  /api/session                        offset/limit 100, filter
+ *                                                   on acctstarttime, sort
+ *                                                   -acctstarttime
+ *               /api/insight/endpoint/auth-events   offset/limit 100 with an
+ *                                                   epoch start/end window
+ *   endpoints   /api/endpoint?limit=500             count only (the fact on
+ *                                                   the Systems plane row)
+ *
+ * ASSUMPTION (unverifiable without a live CPPM): the Insight variant's window
+ * parameters are `start_time`/`end_time` in epoch seconds, and /api/session
+ * accepts CPPM's JSON `filter` vocabulary. A build that rejects either answers
+ * 400/422 rather than 404, so the first page is retried once WITHOUT any query
+ * string and the unparameterised style is remembered — an old build still
+ * syncs, it just gets the vendor's default page.
  *
  * Failure policy (mirrors central):
  *   - 404 on every candidate → pull() fails naming the section — the auth feed
  *     is this plane's whole dataset, so there is nothing honest to degrade to.
+ *   - a 200 whose payload has no readable row container → pull() fails naming
+ *     the path. Reporting "0 auth events" for a body we could not parse would
+ *     stamp an unreadable sync as a healthy quiet network (README honesty
+ *     rule 1) — degraded is the truthful answer.
  *   - any other HTTP/network error → pull() throws naming the section, so the
  *     poller marks the plane degraded and keeps serving the last good cache.
- *   - a 401 is NOT retried: a static token cannot self-heal.
+ *   - the endpoint-count fetch is best-effort: it refreshes at most every 5
+ *     minutes (the design's cadence) and a failure drops one fact, never the
+ *     auth feed.
  *
  * Mapping decisions:
+ *   - payload container: HAL first (`_embedded.items` — the container every
+ *     CPPM collection answers with), then a well-known top-level list key,
+ *     then a nested envelope, then the first array-valued key.
  *   - result forced onto the design's closed union: accept/success →
  *     accept (success); reject/denied/fail → reject (danger); timeout /
  *     no-response → timeout (warning). An unrecognised vocabulary keeps the
  *     row as timeout/warning with the raw value preserved in reason —
- *     dropping data silently is worse than an imperfect bucket.
+ *     dropping data silently is worse than an imperfect bucket. An accounting
+ *     session row with no verdict at all is an accept: the session only exists
+ *     because RADIUS already answered Access-Accept.
  *   - method normalised to 802.1X / MAB / TACACS+; unfamiliar values pass
  *     through unchanged.
  *   - mac normalised to aa:bb:cc:dd:ee:ff (any separator, any case); values
@@ -41,15 +75,17 @@
  *     language); none → 'no role assigned'.
  *   - rows with neither a username nor a MAC are junk → dropped.
  *   - newest 200 kept (sorted by tsMs descending) — the screen shows the
- *     freshest decisions; the feed can be far larger.
+ *     freshest decisions; the feed can be far larger, so the request itself is
+ *     windowed, sorted newest-first and paged only as deep as that cap.
  *
  * Security: the token travels in the Authorization header only, never in a
- * URL; the call log records method + path + ms + status, never headers.
+ * URL; client credentials live only in the /api/oauth POST body; the call log
+ * records method + path + ms + status, never headers and never a body.
  */
 
 import type { AuthEvent, AuthEventRow, Tone } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
-import { parseTimestamp, type FetchLike, type RecordCallFn } from './central';
+import { parseTimestamp, TokenManager, type FetchLike, type RecordCallFn } from './central';
 import type { PlaneAdapter, PlanePull, PlaneState } from './types';
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
@@ -57,7 +93,52 @@ const OUTBOUND_TIMEOUT_MS = 10_000;
 /** The feed can be far larger than the screen's needs — keep the freshest. */
 export const MAX_AUTH_EVENTS = 200;
 
-const CANDIDATES = ['/api-insight/v1/auth/logs', '/api/auth-logs', '/tips/api/auth/events'];
+/** Per-page size and the page cap, so a large tenant cannot stall a poll tick. */
+const AUTH_PAGE_LIMIT = 100;
+const AUTH_MAX_PAGES = 5;
+
+/** How far back the auth feed asks for — bounded, so the request stays cheap. */
+const AUTH_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Documented CPPM token endpoint; expiry when the response omits expires_in. */
+const TOKEN_PATH = '/api/oauth';
+const TOKEN_DEFAULT_TTL_SEC = 28_800; // CPPM mints 8-hour tokens
+
+/** Endpoint repository: the design pulls it every 5m with limit 500. */
+const ENDPOINT_PATH = '/api/endpoint';
+const ENDPOINT_PAGE_LIMIT = 500;
+const ENDPOINT_REFRESH_MS = 5 * 60 * 1000;
+
+/** One auth-log resource: its path and the query string for one page. */
+interface AuthCandidate {
+  path: string;
+  query: (offset: number, limit: number, sinceMs: number, nowMs: number) => string;
+}
+
+const AUTH_CANDIDATES: AuthCandidate[] = [
+  {
+    // The documented, filterable, paged session resource (design records
+    // `GET /api/session?filter=recent`).
+    path: '/api/session',
+    query: (offset, limit, sinceMs) => {
+      const filter = JSON.stringify({ acctstarttime: { $gte: new Date(sinceMs).toISOString() } });
+      return (
+        `?filter=${encodeURIComponent(filter)}&sort=-acctstarttime` +
+        `&offset=${offset}&limit=${limit}&calculate_count=true`
+      );
+    },
+  },
+  {
+    // The Insight variant (design records `GET /api/insight/endpoint/auth-events`).
+    path: '/api/insight/endpoint/auth-events',
+    query: (offset, limit, sinceMs, nowMs) =>
+      `?start_time=${Math.floor(sinceMs / 1000)}&end_time=${Math.ceil(nowMs / 1000)}` +
+      `&offset=${offset}&limit=${limit}`,
+  },
+];
+
+/** Whether the resolved path takes our paging vocabulary or must go bare. */
+type ParamStyle = 'query' | 'bare';
 
 // ---------------------------------------------------------------------------
 // Defensive field readers — unknown/extra fields ignored, missing → null
@@ -66,6 +147,12 @@ const CANDIDATES = ['/api-insight/v1/auth/logs', '/api/auth-logs', '/tips/api/au
 function str(v: unknown): string | null {
   if (typeof v === 'string' && v.trim().length > 0) return v.trim();
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  return null;
+}
+
+function num(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim().length > 0 && !Number.isNaN(Number(v))) return Number(v);
   return null;
 }
 
@@ -118,27 +205,42 @@ export function authMethodFor(raw: string | null): string {
   return raw as string;
 }
 
-/** ClearPass auth-log row (Insight or legacy shape) → AuthEventRow (+ tsMs hint). */
+/** ClearPass auth row (Insight, /api/session accounting or legacy shape) → AuthEventRow. */
 export function mapClearPassAuthEvent(raw: unknown): ClearPassAuthEventRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
-  const tsMs = parseTimestamp(r.timestamp ?? r.auth_time ?? r.time ?? r['@timestamp'] ?? r.logged_at ?? r.date);
+  const tsMs = parseTimestamp(
+    r.timestamp ??
+      r.auth_time ??
+      r.time ??
+      r['@timestamp'] ??
+      r.logged_at ??
+      r.date ??
+      r.acctstarttime ?? // /api/session: accounting start beats the update stamp
+      r.acctupdatetimestamp ??
+      r.start_time,
+  );
   const who = str(r.username ?? r.user ?? r.auth_username ?? r.subject);
-  const macRaw = str(r.mac ?? r.mac_address ?? r.endpoint_mac ?? r.calling_station_id ?? r.client_mac);
+  const macRaw = str(r.mac ?? r.mac_address ?? r.macaddress ?? r.endpoint_mac ?? r.calling_station_id ?? r.client_mac);
   if (!who && !macRaw) return null; // an auth event with no identity at all is junk
-  const { result, tone } = authResultFor(str(r.result ?? r.auth_result ?? r.status ?? r.response ?? r.outcome));
+  const rawResult = str(r.result ?? r.auth_result ?? r.status ?? r.response ?? r.outcome ?? r.auth_status);
+  // An /api/session row is an accounting session: it exists only because RADIUS
+  // already answered Access-Accept, so an absent verdict there is an accept —
+  // bucketing it as 'timeout' would report a live network at a 0% accept rate.
+  const isSession = r.acctsessionid !== undefined || r.acctstarttime !== undefined;
+  const { result, tone } = authResultFor(rawResult ?? (isSession ? 'accept' : null));
   const role = str(r.role ?? r.enforcement_profile ?? r.enforcement_profiles ?? r.profile);
   return {
     time: tsMs !== null ? hhmm(tsMs) : '—',
     who: who ?? 'unknown',
     mac: macRaw ? normalizeMac(macRaw) : '—',
     service: str(r.service ?? r.service_name ?? r.policy_service) ?? '—',
-    method: authMethodFor(str(r.auth_method ?? r.method ?? r.authentication_method ?? r.protocol)),
+    method: authMethodFor(str(r.auth_method ?? r.method ?? r.authentication_method ?? r.auth_type ?? r.protocol)),
     result,
     tone,
-    reason: str(r.reason ?? r.reject_reason ?? r.auth_details ?? r.message ?? r.detail) ?? '—',
+    reason: str(r.reason ?? r.reject_reason ?? r.auth_details ?? r.error_message ?? r.message ?? r.detail) ?? '—',
     role: role ? `role ${role}` : 'no role assigned',
-    nas: str(r.nas ?? r.nas_ip ?? r.nas_name ?? r.nas_identifier ?? r.source ?? r.nad) ?? '—',
+    nas: str(r.nas ?? r.nas_ip ?? r.nasipaddress ?? r.nas_name ?? r.nas_identifier ?? r.source ?? r.nad) ?? '—',
     plane: 'CLEARPASS',
     ...(tsMs !== null ? { tsMs } : {}),
   };
@@ -165,37 +267,95 @@ class SectionMissingError extends Error {
   }
 }
 
-/** Payload keys the auth-log endpoints use, tried before the first-array heuristic. */
-const PAYLOAD_KEYS = ['logs', 'events', 'items', 'results'];
+/** A 200 we could not read: never reported as an empty (healthy) feed. */
+class UnreadablePayloadError extends Error {
+  constructor(path: string) {
+    super(`200 from ${path} but no row container in the payload (no _embedded.items, no known list key)`);
+    this.name = 'UnreadablePayloadError';
+  }
+}
 
-/** Rows live under a well-known payload key, else the first array-valued key. */
-function extractRows(body: unknown): unknown[] {
+/** Payload keys the auth-log endpoints use, tried before the first-array heuristic. */
+const PAYLOAD_KEYS = ['logs', 'events', 'items', 'results', 'rows', 'sessions', 'endpoints', 'data'];
+
+/** Objects that wrap the row container one level down (HAL first). */
+const ENVELOPE_KEYS = ['_embedded', 'data', 'result', 'results', 'response'];
+
+/** A well-known payload key wins over an incidental array (e.g. `errors: []`). */
+function firstArrayIn(r: Record<string, unknown>): unknown[] | null {
+  for (const k of PAYLOAD_KEYS) {
+    if (Array.isArray(r[k])) return r[k];
+  }
+  for (const v of Object.values(r)) {
+    if (Array.isArray(v)) return v;
+  }
+  return null;
+}
+
+/**
+ * Rows out of a collection body, or null when the payload carries no row
+ * container at all — the caller turns that into a failed section rather than
+ * an empty feed. A HAL page that legitimately has nothing (`{count: 0,
+ * _links: {…}}` — CPPM omits `_embedded` when the page is empty) is an honest
+ * empty list, not an unreadable body.
+ */
+export function extractRows(body: unknown): unknown[] | null {
   if (Array.isArray(body)) return body;
   if (body && typeof body === 'object') {
     const r = body as Record<string, unknown>;
-    // A well-known payload key wins over an incidental array (e.g. `errors: []`)
-    // that happens to precede it — the heuristic alone would zero the section.
     for (const k of PAYLOAD_KEYS) {
       if (Array.isArray(r[k])) return r[k];
+    }
+    // HAL: CPPM answers collections as {count, _links, _embedded: {items: […]}}
+    for (const k of ENVELOPE_KEYS) {
+      const nested = r[k];
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+        const rows = firstArrayIn(nested as Record<string, unknown>);
+        if (rows) return rows;
+      }
     }
     for (const v of Object.values(r)) {
       if (Array.isArray(v)) return v;
     }
+    if (r._links !== undefined || num(r.count) !== null) return []; // an empty HAL page
   }
-  return [];
+  return null;
+}
+
+/** Repository total when the body states one; null when it cannot be proven. */
+function extractTotal(body: unknown, rows: unknown[], pageLimit: number): number | null {
+  const r = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  const total = num(r.total ?? r.total_count ?? r.item_count ?? r.count);
+  if (total !== null && total > rows.length) return total; // an explicit repository total
+  if (rows.length < pageLimit) return rows.length; // the whole repository fitted in one page
+  // A full page whose `count` only describes the page itself proves nothing
+  // about the repository size — say nothing rather than report the page as it.
+  return null;
 }
 
 function withScheme(base: string): string {
   return /^https?:\/\//i.test(base) ? base : `https://${base}`;
 }
 
+function filled(v: unknown): boolean {
+  return typeof v === 'string' && v.trim().length > 0;
+}
+
 export class ClearPassAdapter implements PlaneAdapter {
   readonly id = 'clearpass' as const;
 
   private readonly baseUrl: string;
-  private readonly token: string;
-  /** Candidate path that worked (tried first next time). */
-  private resolvedPath: string | null = null;
+  /** Legacy pre-minted token; null when the adapter mints its own. */
+  private readonly staticToken: string | null;
+  /** OAuth token manager; null on the legacy static-token path. */
+  private readonly tokens: TokenManager | null;
+  /** Optional CoA enforcement profile (only sent when configured). */
+  private readonly coaEnforcementProfile: string | null;
+  /** Candidate that worked, with the param style it accepted (tried first next time). */
+  private resolvedAuth: { candidate: AuthCandidate; paramStyle: ParamStyle } | null = null;
+  /** Endpoint repository total and when it was last proven (5m cadence). */
+  private endpointCount: number | null = null;
+  private endpointCountAtMs = 0;
 
   constructor(
     creds: PlaneCredentials,
@@ -204,17 +364,42 @@ export class ClearPassAdapter implements PlaneAdapter {
     private readonly fetchImpl: FetchLike = (url, init) => fetch(url, init),
   ) {
     if (!ClearPassAdapter.isComplete(creds)) {
-      throw new Error('clearpass requires host and token');
+      throw new Error('clearpass requires a publisher (or host) plus clientId + clientSecret, or a token');
     }
-    this.baseUrl = withScheme(creds.host).replace(/\/+$/, '');
-    this.token = creds.token;
+    // 'publisher' is the key the connect drawer writes (README:322, and the
+    // design's own credential record); host/baseUrl stay accepted.
+    const host = [creds.publisher, creds.host, creds.baseUrl].find(filled) as string;
+    this.baseUrl = withScheme(host).replace(/\/+$/, '');
+    this.coaEnforcementProfile = filled(creds.coaEnforcementProfile) ? creds.coaEnforcementProfile : null;
+    this.staticToken = filled(creds.token) && !ClearPassAdapter.hasOauthCreds(creds) ? creds.token : null;
+    this.tokens = ClearPassAdapter.hasOauthCreds(creds)
+      ? new TokenManager(async () => {
+          const res = await this.http('POST', TOKEN_PATH, {
+            body: {
+              grant_type: 'client_credentials',
+              client_id: creds.clientId,
+              client_secret: creds.clientSecret,
+            },
+          });
+          const record = res.body && typeof res.body === 'object' ? (res.body as Record<string, unknown>) : {};
+          const token = str(record.access_token);
+          if (res.status !== 200 || !token) {
+            throw new Error(`auth: ${TOKEN_PATH} answered HTTP ${res.status} without an access_token`);
+          }
+          return { accessToken: token, expiresInSec: num(record.expires_in) ?? TOKEN_DEFAULT_TTL_SEC };
+        })
+      : null;
+  }
+
+  /** API-client credentials — the path a real CPPM expects (POST /api/oauth). */
+  private static hasOauthCreds(creds: PlaneCredentials): boolean {
+    return filled(creds.clientId) && filled(creds.clientSecret);
   }
 
   static isComplete(creds: PlaneCredentials | null): boolean {
-    return (
-      !!creds &&
-      [creds.host, creds.token].every((v) => typeof v === 'string' && v.trim().length > 0)
-    );
+    if (!creds) return false;
+    const host = filled(creds.publisher) || filled(creds.host) || filled(creds.baseUrl);
+    return host && (ClearPassAdapter.hasOauthCreds(creds) || filled(creds.token));
   }
 
   state(): PlaneState {
@@ -241,9 +426,17 @@ export class ClearPassAdapter implements PlaneAdapter {
       .sort((a, b) => (b.tsMs ?? 0) - (a.tsMs ?? 0))
       .slice(0, MAX_AUTH_EVENTS);
 
+    // The endpoint repository is the plane's second dataset (README:465) and a
+    // slower pull (design: every 5m); it never fails the auth feed.
+    await this.refreshEndpointCount();
+
     const rejects = authEvents.filter((e) => e.result === 'reject').length;
-    this.stateRef.note =
-      `${authEvents.length.toLocaleString('en-US')} auth events · ${rejects.toLocaleString('en-US')} rejects`;
+    const parts = [
+      ...(this.endpointCount !== null ? [`${this.endpointCount.toLocaleString('en-US')} endpoints`] : []),
+      `${authEvents.length.toLocaleString('en-US')} auth events`,
+      `${rejects.toLocaleString('en-US')} rejects`,
+    ];
+    this.stateRef.note = parts.join(' · ');
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 
     return { authEvents };
@@ -253,83 +446,156 @@ export class ClearPassAdapter implements PlaneAdapter {
    * Trigger a CoA Disconnect-Request for an active session, by MAC — the one
    * sanctioned write on this read-only plane (CPPM SessionAction API, 6.8.7+):
    *   POST /api/session-action/disconnect/mac/{mac}
-   * The caller decides what the HTTP code means; this adapter only promises a
-   * timed, logged request. The MAC is normalised to aa:bb:cc:dd:ee:ff — the
-   * vocabulary the auth feed already uses.
+   * The vendor operation requires `async` in the body; `enforcement_profile`
+   * is only sent when the operator configured one (an unknown profile name
+   * turns a working disconnect into a 422). The caller decides what the HTTP
+   * code means; this adapter only promises a timed, logged request. The MAC is
+   * normalised to aa:bb:cc:dd:ee:ff — the vocabulary the auth feed uses.
    */
   async coaDisconnect(mac: string): Promise<{ status: number; body: unknown }> {
-    return this.post(`/api/session-action/disconnect/mac/${encodeURIComponent(normalizeMac(mac))}`, {});
+    const body: Record<string, unknown> = { async: false };
+    if (this.coaEnforcementProfile) body.enforcement_profile = this.coaEnforcementProfile;
+    return this.authed('POST', `/api/session-action/disconnect/mac/${encodeURIComponent(normalizeMac(mac))}`, body);
   }
 
   // -- internals -------------------------------------------------------------
 
-  /** Tolerate 404 by trying the next candidate path; remember the one that worked. */
+  /**
+   * Page one auth-log resource, tolerating 404 by trying the next candidate and
+   * a 400/422 by retrying the first page unparameterised. Remembers the path
+   * AND the param style that worked.
+   */
   private async fetchAuthEvents(): Promise<unknown[]> {
-    const resolved = this.resolvedPath;
-    const candidates = resolved ? [resolved, ...CANDIDATES.filter((c) => c !== resolved)] : CANDIDATES;
-    for (const path of candidates) {
-      const res = await this.get(path);
-      if (res.status === 404) continue; // Insight vs. legacy log APIs — try the next
-      if (res.status < 200 || res.status >= 300) throw new HttpStatusError(res.status, path);
-      this.resolvedPath = path;
-      return extractRows(res.body);
+    const now = Date.now();
+    const since = now - AUTH_WINDOW_MS;
+    const resolved = this.resolvedAuth;
+    const candidates = resolved
+      ? [resolved.candidate, ...AUTH_CANDIDATES.filter((c) => c !== resolved.candidate)]
+      : AUTH_CANDIDATES;
+
+    for (const candidate of candidates) {
+      let paramStyle: ParamStyle = resolved?.candidate === candidate ? resolved.paramStyle : 'query';
+      const urlFor = (offset: number): string =>
+        paramStyle === 'query'
+          ? `${candidate.path}${candidate.query(offset, AUTH_PAGE_LIMIT, since, now)}`
+          : candidate.path;
+
+      let firstPath = urlFor(0);
+      let first = await this.authedGet(firstPath);
+      // A build that does not know our paging/filter vocabulary rejects the
+      // query, not the resource — ask again bare rather than degrade the plane.
+      if ((first.status === 400 || first.status === 422) && paramStyle === 'query') {
+        paramStyle = 'bare';
+        firstPath = urlFor(0);
+        first = await this.authedGet(firstPath);
+      }
+      if (first.status === 404) continue; // release variance — try the next resource
+      if (first.status < 200 || first.status >= 300) throw new HttpStatusError(first.status, firstPath);
+
+      const rows = rowsOrThrow(first.body, firstPath);
+      let lastPageSize = rows.length;
+      let page = 1;
+      while (
+        paramStyle === 'query' &&
+        page < AUTH_MAX_PAGES &&
+        rows.length < MAX_AUTH_EVENTS &&
+        lastPageSize >= AUTH_PAGE_LIMIT
+      ) {
+        const path = urlFor(rows.length);
+        const res = await this.authedGet(path);
+        // Page 1 worked, so the path is valid: a failure here fails the section.
+        if (res.status < 200 || res.status >= 300) throw new HttpStatusError(res.status, path);
+        const pageRows = rowsOrThrow(res.body, path);
+        if (pageRows.length === 0) break;
+        rows.push(...pageRows);
+        lastPageSize = pageRows.length;
+        page += 1;
+      }
+      this.resolvedAuth = { candidate, paramStyle };
+      return rows;
     }
     throw new SectionMissingError();
   }
 
   /**
-   * Timed outbound GET recorded in the plane's call log. The log carries
-   * method + path + ms + status only — headers (and so the token) never.
+   * The endpoint repository total (the 'Endpoints' fact and the plane's device
+   * count). Best-effort by design: refreshed at most every 5 minutes, and any
+   * failure leaves the previous answer alone instead of failing the poll.
    */
-  private async get(path: string): Promise<{ status: number; body: unknown }> {
-    const started = Date.now();
-    let res: Response;
+  private async refreshEndpointCount(): Promise<void> {
+    const now = Date.now();
+    if (this.endpointCount !== null && now - this.endpointCountAtMs < ENDPOINT_REFRESH_MS) return;
+    const path = `${ENDPOINT_PATH}?offset=0&limit=${ENDPOINT_PAGE_LIMIT}&calculate_count=true`;
     try {
-      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        method: 'GET',
-        headers: {
-          accept: 'application/json',
-          authorization: `Bearer ${this.token}`,
-        },
-        signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
-      });
-    } catch (err) {
-      this.recordCall({ path: `GET ${path}`, ms: Date.now() - started, code: 'network-error' });
-      throw new Error(`GET ${path} failed: ${(err as Error).message}`);
-    }
-    this.recordCall({ path: `GET ${path}`, ms: Date.now() - started, code: String(res.status) });
-    let body: unknown = null;
-    try {
-      body = await res.json();
+      const res = await this.authedGet(path);
+      if (res.status < 200 || res.status >= 300) return; // one fact unavailable; auth feed unaffected
+      const rows = extractRows(res.body);
+      if (rows === null) return; // unreadable — say nothing rather than report 0 endpoints
+      const total = extractTotal(res.body, rows, ENDPOINT_PAGE_LIMIT);
+      if (total === null) return;
+      this.endpointCount = total;
+      this.endpointCountAtMs = now;
+      this.stateRef.deviceCount = total;
     } catch {
-      /* tolerate a non-JSON body — status is what we needed */
+      /* network error on a secondary fact — the auth feed is what pull() owes */
     }
-    return { status: res.status, body };
+  }
+
+  /** The bearer for the next call: a managed (minted) token, or the legacy static one. */
+  private async authToken(): Promise<string> {
+    return this.tokens ? this.tokens.get() : (this.staticToken as string);
   }
 
   /**
-   * Timed outbound POST recorded in the plane's call log — same rules as get():
-   * the log carries method + path + ms + status only, never the token.
+   * Authenticated request. A minted token is invalidated and retried once on a
+   * 401 (CPPM tokens expire after 8 hours); a static token is NOT retried —
+   * it cannot self-heal, so the plane must degrade and say so.
    */
-  private async post(path: string, body: unknown): Promise<{ status: number; body: unknown }> {
+  private async authed(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; body: unknown }> {
+    let res = await this.http(method, path, { token: await this.authToken(), body });
+    if (res.status === 401 && this.tokens) {
+      this.tokens.invalidate();
+      res = await this.http(method, path, { token: await this.authToken(), body });
+    }
+    return res;
+  }
+
+  private async authedGet(path: string): Promise<{ status: number; body: unknown }> {
+    return this.authed('GET', path);
+  }
+
+  /**
+   * Timed outbound call recorded in the plane's call log. The log carries
+   * method + path + ms + status only — headers (so the token) and bodies (so
+   * the client secret) never.
+   */
+  private async http(
+    method: 'GET' | 'POST',
+    path: string,
+    opts: { token?: string; body?: unknown } = {},
+  ): Promise<{ status: number; body: unknown }> {
     const started = Date.now();
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        method: 'POST',
+        method,
         headers: {
           accept: 'application/json',
-          'content-type': 'application/json',
-          authorization: `Bearer ${this.token}`,
+          ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
+          ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
         },
-        body: JSON.stringify(body),
+        ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
         signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
       });
     } catch (err) {
-      this.recordCall({ path: `POST ${path}`, ms: Date.now() - started, code: 'network-error' });
-      throw new Error(`POST ${path} failed: ${(err as Error).message}`);
+      this.recordCall({ path: `${method} ${path}`, ms: Date.now() - started, code: 'network-error' });
+      throw new Error(`${method} ${path} failed: ${(err as Error).message}`);
     }
-    this.recordCall({ path: `POST ${path}`, ms: Date.now() - started, code: String(res.status) });
+    this.recordCall({ path: `${method} ${path}`, ms: Date.now() - started, code: String(res.status) });
     let parsed: unknown = null;
     try {
       parsed = await res.json();
@@ -338,4 +604,11 @@ export class ClearPassAdapter implements PlaneAdapter {
     }
     return { status: res.status, body: parsed };
   }
+}
+
+/** Rows, or a failed section: a 200 we cannot read is never an empty feed. */
+function rowsOrThrow(body: unknown, path: string): unknown[] {
+  const rows = extractRows(body);
+  if (rows === null) throw new UnreadablePayloadError(path);
+  return rows;
 }

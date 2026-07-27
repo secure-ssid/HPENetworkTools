@@ -89,6 +89,11 @@ export default function Sites() {
       (plane === 'all' || s.planes.some((p) => p.name === plane)) &&
       (!ql || s.name.toLowerCase().includes(ql)),
   );
+  // Footer count: the estate total the rows themselves carry (418 across the
+  // ten fixtures), never a literal that a live inventory would contradict.
+  const indexedDevices = sites.reduce((n, s) => n + s.devices, 0);
+  // The authored "Ten sites" prose is demo copy — a live estate counts itself.
+  const sitesLive = data.dataSource === 'live' || (data.blended?.includes('sites') ?? false);
   const planeOptions = [{ value: 'all', label: 'All planes' }].concat(
     planeNames(sites).map((p) => ({ value: p, label: p })),
   );
@@ -113,7 +118,11 @@ export default function Sites() {
       <ScreenHeader
         overline="Inventory / Sites"
         title="Sites"
-        subtitle="Ten sites, and the plane each one actually answers to."
+        subtitle={
+          sitesLive
+            ? `${sites.length} site${sites.length === 1 ? '' : 's'}, and the plane each one actually answers to.`
+            : 'Ten sites, and the plane each one actually answers to.'
+        }
         actions={
           <>
             <div style={{ width: 170 }}>
@@ -141,17 +150,21 @@ export default function Sites() {
         }
       />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-          gap: 18,
-        }}
-      >
-        {data.stats.map((s) => (
-          <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
-        ))}
-      </div>
+      {/* The server computes this row in every mode; an older payload that
+          ships none must not leave a zero-height grid behind. */}
+      {data.stats.length > 0 ? (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+            gap: 18,
+          }}
+        >
+          {data.stats.map((s) => (
+            <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
+          ))}
+        </div>
+      ) : null}
 
       <Divider variant="flair" />
 
@@ -200,13 +213,27 @@ export default function Sites() {
               </Table.Cell>
               <Table.Cell>
                 {showPlatformTags ? (
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                    {s.planes.map((p) => (
-                      <Badge key={p.name} tone={p.tone}>
-                        {p.name}
-                      </Badge>
-                    ))}
-                  </div>
+                  s.planes.length > 0 ? (
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {s.planes.map((p) => (
+                        <Badge key={p.name} tone={p.tone}>
+                          {p.name}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    /* A site the plane reported without naming a manager —
+                       say so rather than leaving the cell blank. */
+                    <span
+                      style={{
+                        fontFamily: 'var(--nd-font-mono)',
+                        fontSize: 10.5,
+                        color: 'var(--nd-text-muted)',
+                      }}
+                    >
+                      not reported
+                    </span>
+                  )
                 ) : null}
               </Table.Cell>
               <Table.Cell>
@@ -287,7 +314,7 @@ export default function Sites() {
             color: 'var(--nd-text-muted)',
           }}
         >
-          {rows.length} of {sites.length} sites · 418 devices indexed
+          {rows.length} of {sites.length} sites · {indexedDevices} devices indexed
         </span>
         <Pagination page={1} total={1} onChange={() => {}} />
       </div>

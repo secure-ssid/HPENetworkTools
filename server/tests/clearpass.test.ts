@@ -1,12 +1,13 @@
 /**
  * server/tests/clearpass.test.ts — ClearPass adapter unit tests, NO network.
  *
- * The mapping helpers are tested against recorded ClearPass auth-log JSON
- * inlined here (Insight + legacy shapes, shape variance on purpose);
- * ClearPassAdapter.pull() is exercised end-to-end with an in-memory fake
- * `fetch` (FetchLike injection) to cover the static Bearer header on every
- * call, candidate-path fallback with a remembered working path, the newest-200
- * cap, error naming and the secret-free call log.
+ * The mapping helpers are tested against recorded ClearPass auth JSON inlined
+ * here (Insight, /api/session accounting and legacy shapes, shape variance on
+ * purpose); ClearPassAdapter.pull() is exercised end-to-end with an in-memory
+ * fake `fetch` (FetchLike injection) to cover OAuth token minting and the 401
+ * refresh, the HAL (_embedded.items) envelope, the windowed/paged request,
+ * candidate-path fallback with a remembered working path, the newest-200 cap,
+ * the endpoint-count fact, error naming and the secret-free call log.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -58,6 +59,19 @@ const ROW_TIMEOUT = {
   auth_method: 'portal',
   status: 'no-response',
   nas: 'ap-1f-04',
+};
+
+/** A /api/session accounting row — the documented CPPM shape, no verdict field. */
+const ROW_SESSION = {
+  id: 90_112,
+  acctsessionid: '5F2A-0001',
+  acctstarttime: '2026-07-25T09:44:02Z',
+  username: 'r.patel',
+  mac_address: '9c:8e:99:1a:2b:3c',
+  service_name: 'MRDN Wireless 802.1X',
+  auth_type: 'EAP-TLS',
+  nasipaddress: '10.42.3.19',
+  enforcement_profile: 'Clinical staff',
 };
 
 /** 'HH:MM' the way the adapter renders it (local wall-clock). */
@@ -153,23 +167,55 @@ describe('mapClearPassAuthEvent', () => {
     expect(mapClearPassAuthEvent(null)).toBeNull();
     expect(mapClearPassAuthEvent({ service: 'MRDN Wireless 802.1X' })).toBeNull();
   });
+
+  it('maps an /api/session accounting row — no verdict field means accept', () => {
+    // A session exists only because RADIUS already answered Access-Accept;
+    // bucketing it as 'timeout' would report a live network at 0% accept rate.
+    const e = mapClearPassAuthEvent(ROW_SESSION);
+    expect(e).not.toBeNull();
+    expect(e!.time).toBe(expectedHhmm(Date.parse(ROW_SESSION.acctstarttime)));
+    expect(e!.tsMs).toBe(Date.parse(ROW_SESSION.acctstarttime));
+    expect(e!.who).toBe('r.patel');
+    expect(e!.mac).toBe('9c:8e:99:1a:2b:3c');
+    expect(e!.method).toBe('802.1X'); // auth_type
+    expect(e!.nas).toBe('10.42.3.19'); // nasipaddress
+    expect(e!.role).toBe('role Clinical staff');
+    expect(e!.result).toBe('accept');
+    expect(e!.tone).toBe('success');
+  });
+
+  it('still buckets an explicit unknown verdict as timeout, session row or not', () => {
+    const e = mapClearPassAuthEvent({ ...ROW_SESSION, auth_status: 'something-new' });
+    expect(e!.result).toBe('timeout');
+    expect(e!.tone).toBe('warning');
+  });
 });
 
 // -- pull() with an in-memory fake fetch (no network) ---------------------------------
 
 type HandlerResult = { status?: number; body?: unknown };
-type Handler = (method: string, pathname: string, query: URLSearchParams) => HandlerResult | undefined;
+type Handler = (method: string, pathname: string, query: URLSearchParams, body: unknown) => HandlerResult | undefined;
 
-function fakeFetch(handler: Handler): { fn: FetchLike; calls: string[]; authHeaders: (string | null)[] } {
+interface FakeFetch {
+  fn: FetchLike;
+  calls: string[];
+  authHeaders: (string | null)[];
+  bodies: (string | null)[];
+}
+
+function fakeFetch(handler: Handler): FakeFetch {
   const calls: string[] = [];
   const authHeaders: (string | null)[] = [];
+  const bodies: (string | null)[] = [];
   const fn: FetchLike = async (url, init) => {
     const u = new URL(url);
     const method = (init?.method as string | undefined) ?? 'GET';
     calls.push(`${method} ${u.pathname}${u.search}`);
     const headers = (init?.headers ?? {}) as Record<string, string>;
     authHeaders.push(headers.authorization ?? null);
-    const result = handler(method, u.pathname, u.searchParams);
+    const raw = typeof init?.body === 'string' ? init.body : null;
+    bodies.push(raw);
+    const result = handler(method, u.pathname, u.searchParams, raw === null ? undefined : JSON.parse(raw));
     if (!result) {
       return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
     }
@@ -178,25 +224,41 @@ function fakeFetch(handler: Handler): { fn: FetchLike; calls: string[]; authHead
       headers: { 'content-type': 'application/json' },
     });
   };
-  return { fn, calls, authHeaders };
+  return { fn, calls, authHeaders, bodies };
 }
 
 function makeState(): PlaneState {
   return { id: 'clearpass', linked: true, health: 'warning', lastSync: null, deviceCount: null, callsToday: 0, note: null };
 }
 
+/** The legacy pre-minted-token credentials (still supported). */
 const CREDS = { host: 'https://cppm.example.com', token: 'cppm-token-shh' };
+/** What the connect drawer actually saves: publisher + API client credentials. */
+const OAUTH_CREDS = {
+  publisher: 'cppm-01.meridian.health',
+  clientId: 'portal-insight',
+  clientSecret: 'cppm-client-s3cr3t',
+};
 
-function makeAdapter(handler: Handler) {
-  const { fn, calls, authHeaders } = fakeFetch(handler);
+const AUTH_PATH = '/api/session';
+const INSIGHT_PATH = '/api/insight/endpoint/auth-events';
+
+function makeAdapter(handler: Handler, creds: Record<string, string> = CREDS) {
+  const { fn, calls, authHeaders, bodies } = fakeFetch(handler);
   const recorded: { path: string; ms: number; code: string }[] = [];
   const state = makeState();
-  const adapter = new ClearPassAdapter(CREDS, state, (c) => recorded.push(c), fn);
-  return { adapter, state, recorded, calls, authHeaders };
+  const adapter = new ClearPassAdapter(creds, state, (c) => recorded.push(c), fn);
+  return { adapter, state, recorded, calls, authHeaders, bodies };
+}
+
+/** The container a real CPPM answers a collection with. */
+function hal(items: unknown[], extra: Record<string, unknown> = {}): unknown {
+  return { count: items.length, _links: { self: { href: AUTH_PATH } }, _embedded: { items }, ...extra };
 }
 
 const HAPPY_ROUTES: Record<string, unknown> = {
-  'GET /api-insight/v1/auth/logs': { logs: [ROW_REJECT, ROW_TIMEOUT, ROW_ACCEPT] }, // unordered on purpose
+  // unordered on purpose, in the HAL envelope CPPM actually sends
+  [`GET ${AUTH_PATH}`]: hal([ROW_REJECT, ROW_TIMEOUT, ROW_ACCEPT]),
 };
 
 function routeHandler(routes: Record<string, unknown>): Handler {
@@ -207,7 +269,7 @@ function routeHandler(routes: Record<string, unknown>): Handler {
 }
 
 describe('ClearPassAdapter.pull()', () => {
-  it('pulls auth events, sorts newest first, and reports the summary note', async () => {
+  it('reads the HAL envelope, sorts newest first, and reports the summary note', async () => {
     const { adapter, state, recorded, authHeaders } = makeAdapter(routeHandler(HAPPY_ROUTES));
     const pull = await adapter.pull();
     expect(pull.authEvents).toHaveLength(3);
@@ -219,26 +281,102 @@ describe('ClearPassAdapter.pull()', () => {
     expect(authHeaders.every((h) => h === 'Bearer cppm-token-shh')).toBe(true);
     // …and never the recorded call log
     expect(JSON.stringify(recorded)).not.toContain('cppm-token-shh');
-    expect(recorded.some((c) => c.path === 'GET /api-insight/v1/auth/logs' && c.code === '200')).toBe(true);
+    expect(recorded.some((c) => c.path.startsWith(`GET ${AUTH_PATH}?`) && c.code === '200')).toBe(true);
+  });
+
+  it('asks for a bounded, sorted, paged window instead of the vendor default page', async () => {
+    const { adapter, calls } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    await adapter.pull();
+    const url = new URL(`https://cppm.example.com${calls.find((c) => c.startsWith(`GET ${AUTH_PATH}`))!.slice(4)}`);
+    expect(url.searchParams.get('limit')).toBe('100');
+    expect(url.searchParams.get('offset')).toBe('0');
+    expect(url.searchParams.get('sort')).toBe('-acctstarttime');
+    const filter = JSON.parse(url.searchParams.get('filter') as string) as { acctstarttime: { $gte: string } };
+    const since = Date.parse(filter.acctstarttime.$gte);
+    expect(Date.now() - since).toBeGreaterThan(0);
+    expect(Date.now() - since).toBeLessThanOrEqual(24 * 60 * 60 * 1000 + 5_000); // a 24h window
+  });
+
+  it('pages until the newest-200 cap is filled', async () => {
+    const base = Date.parse('2026-07-25T00:00:00Z');
+    const many = Array.from({ length: MAX_AUTH_EVENTS + 5 }, (_, i) => ({
+      timestamp: new Date(base + i * 60_000).toISOString(),
+      username: `u${i}`,
+      mac_address: i.toString(16).padStart(12, '0'),
+      service: 'svc',
+      auth_result: 'ACCEPT',
+    }));
+    const newestFirst = [...many].reverse(); // the server honours sort=-…, as CPPM does
+    const { adapter, calls } = makeAdapter((method, pathname, query) => {
+      if (method !== 'GET' || pathname !== AUTH_PATH) return undefined;
+      const offset = Number(query.get('offset') ?? '0');
+      const limit = Number(query.get('limit') ?? '25');
+      return { body: hal(newestFirst.slice(offset, offset + limit), { count: newestFirst.length }) };
+    });
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(MAX_AUTH_EVENTS);
+    expect(pull.authEvents![0].who).toBe(`u${MAX_AUTH_EVENTS + 4}`); // newest kept
+    expect(pull.authEvents![MAX_AUTH_EVENTS - 1].who).toBe('u5'); // oldest five dropped
+    // two pages of 100 — not one accidental page, and not an unbounded crawl
+    const pages = calls.filter((c) => c.startsWith(`GET ${AUTH_PATH}`));
+    expect(pages).toHaveLength(2);
+    expect(pages[1]).toContain('offset=100');
+  });
+
+  it('stops paging when a short page says the window is exhausted', async () => {
+    const rows = Array.from({ length: 40 }, (_, i) => ({ ...ROW_ACCEPT, username: `u${i}` }));
+    const { adapter, calls } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === AUTH_PATH ? { body: hal(rows) } : undefined,
+    );
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(40);
+    expect(calls.filter((c) => c.startsWith(`GET ${AUTH_PATH}`))).toHaveLength(1);
+  });
+
+  it('retries the first page bare when the build rejects the query vocabulary', async () => {
+    // An older build 400s on the filter/sort params but still serves the resource.
+    const { adapter, calls } = makeAdapter((method, pathname, query) => {
+      if (method !== 'GET' || pathname !== AUTH_PATH) return undefined;
+      if (query.has('filter')) return { status: 400, body: { detail: 'unknown parameter filter' } };
+      return { body: hal([ROW_ACCEPT]) };
+    });
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(1);
+    expect(calls).toContain(`GET ${AUTH_PATH}`); // the bare retry
+    // …and the bare style is remembered: the second pull does not re-probe with params
+    await adapter.pull();
+    expect(calls.filter((c) => c.startsWith(`GET ${AUTH_PATH}?`))).toHaveLength(1);
   });
 
   it('tolerates a 404 candidate and remembers the working path', async () => {
-    const routes = { ...HAPPY_ROUTES };
-    delete routes['GET /api-insight/v1/auth/logs'];
-    routes['GET /api/auth-logs'] = { events: [ROW_ACCEPT] };
-    const { adapter, calls } = makeAdapter(routeHandler(routes));
+    const { adapter, calls } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === INSIGHT_PATH ? { body: hal([ROW_ACCEPT]) } : undefined,
+    );
     const pull = await adapter.pull();
     expect(pull.authEvents).toHaveLength(1);
-    expect(calls.some((c) => c.startsWith('GET /api-insight/v1/auth/logs'))).toBe(true); // tried, 404
+    expect(calls.some((c) => c.startsWith(`GET ${AUTH_PATH}`))).toBe(true); // tried, 404
 
     await adapter.pull(); // resolved path goes first — the dead candidate is not retried
-    expect(calls.filter((c) => c.startsWith('GET /api-insight/v1/auth/logs'))).toHaveLength(1);
-    expect(calls.filter((c) => c.startsWith('GET /api/auth-logs'))).toHaveLength(2);
+    expect(calls.filter((c) => c.startsWith(`GET ${AUTH_PATH}`))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith(`GET ${INSIGHT_PATH}`))).toHaveLength(2);
+  });
+
+  it('sends the Insight candidate an epoch start/end window', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === INSIGHT_PATH ? { body: hal([ROW_ACCEPT]) } : undefined,
+    );
+    await adapter.pull();
+    const url = new URL(`https://cppm.example.com${calls.find((c) => c.startsWith(`GET ${INSIGHT_PATH}`))!.slice(4)}`);
+    const start = Number(url.searchParams.get('start_time'));
+    const end = Number(url.searchParams.get('end_time'));
+    expect(end - start).toBeGreaterThanOrEqual(24 * 60 * 60); // seconds, not ms
+    expect(end - start).toBeLessThanOrEqual(24 * 60 * 60 + 1); // ±1s from rounding the window edges
+    expect(url.searchParams.get('limit')).toBe('100');
   });
 
   it('accepts a bare-array body (first array-valued key tolerance)', async () => {
     const { adapter } = makeAdapter((method, pathname) => {
-      if (method === 'GET' && pathname === '/api-insight/v1/auth/logs') return { body: [ROW_ACCEPT, ROW_REJECT] };
+      if (method === 'GET' && pathname === AUTH_PATH) return { body: [ROW_ACCEPT, ROW_REJECT] };
       return undefined;
     });
     const pull = await adapter.pull();
@@ -248,7 +386,7 @@ describe('ClearPassAdapter.pull()', () => {
   it('prefers the logs payload key over an incidental array', async () => {
     // `{errors: [], logs: [...]}` — the first-array heuristic alone would zero the section.
     const { adapter } = makeAdapter((method, pathname) => {
-      if (method === 'GET' && pathname === '/api-insight/v1/auth/logs') return { body: { errors: [], logs: [ROW_ACCEPT] } };
+      if (method === 'GET' && pathname === AUTH_PATH) return { body: { errors: [], logs: [ROW_ACCEPT] } };
       return undefined;
     });
     const pull = await adapter.pull();
@@ -256,23 +394,25 @@ describe('ClearPassAdapter.pull()', () => {
     expect(pull.authEvents![0].who).toBe('m.okonjo');
   });
 
-  it('keeps only the newest 200 events', async () => {
-    const base = Date.parse('2026-07-25T00:00:00Z');
-    const many = Array.from({ length: MAX_AUTH_EVENTS + 5 }, (_, i) => ({
-      timestamp: new Date(base + i * 60_000).toISOString(),
-      username: `u${i}`,
-      mac_address: i.toString(16).padStart(12, '0'),
-      service: 'svc',
-      auth_result: 'ACCEPT',
-    }));
-    const { adapter } = makeAdapter((method, pathname) => {
-      if (method === 'GET' && pathname === '/api-insight/v1/auth/logs') return { body: { logs: many } };
+  it('reads an empty HAL page as an honest empty feed (CPPM omits _embedded)', async () => {
+    const { adapter, state } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === AUTH_PATH) return { body: { count: 0, _links: { self: { href: AUTH_PATH } } } };
       return undefined;
     });
     const pull = await adapter.pull();
-    expect(pull.authEvents).toHaveLength(MAX_AUTH_EVENTS);
-    expect(pull.authEvents![0].who).toBe(`u${MAX_AUTH_EVENTS + 4}`); // newest kept
-    expect(pull.authEvents![MAX_AUTH_EVENTS - 1].who).toBe('u5'); // oldest five dropped
+    expect(pull.authEvents).toEqual([]);
+    expect(state.note).toBe('0 auth events · 0 rejects');
+  });
+
+  it('fails the pull on a 200 whose payload has no row container — never a silent empty feed', async () => {
+    const { adapter, state } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === AUTH_PATH) return { body: { status: 'ok', detail: { note: 'nothing here' } } };
+      return undefined;
+    });
+    await expect(adapter.pull()).rejects.toThrow(/section 'authEvents' failed — 200 from \/api\/session/);
+    await expect(adapter.pull()).rejects.toThrow(/no row container/);
+    expect(state.health).toBe('warning'); // never promoted on an unreadable body
+    expect(state.note).toBeNull();
   });
 
   it('fails the pull naming the section when every candidate 404s', async () => {
@@ -281,37 +421,181 @@ describe('ClearPassAdapter.pull()', () => {
     await expect(adapter.pull()).rejects.toThrow(/404 on every candidate/);
   });
 
-  it('fails the pull naming the section on a non-404 error (401 included — no retry)', async () => {
-    const { adapter } = makeAdapter((method, pathname) => {
-      if (method === 'GET' && pathname === '/api-insight/v1/auth/logs') {
+  it('fails the pull naming the section on a non-404 error (a static token cannot self-heal on 401)', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === AUTH_PATH) {
         return { status: 401, body: { error: 'bad token' } };
       }
       return undefined;
     });
     await expect(adapter.pull()).rejects.toThrow(/section 'authEvents' failed — HTTP 401/);
+    expect(calls.filter((c) => c.startsWith(`GET ${AUTH_PATH}`))).toHaveLength(1); // no retry
+  });
+});
+
+// -- OAuth token minting (the credentials the product actually saves) ------------------
+
+describe('ClearPassAdapter OAuth', () => {
+  /** Mints numbered tokens so an invalidate + re-mint is visible. */
+  function oauthHandler(rest: Handler): { handler: Handler; minted: () => number } {
+    let n = 0;
+    const handler: Handler = (method, pathname, query, body) => {
+      if (method === 'POST' && pathname === '/api/oauth') {
+        expect(body).toMatchObject({ grant_type: 'client_credentials', client_id: 'portal-insight' });
+        n += 1;
+        return { body: { access_token: `minted-${n}`, expires_in: 28_800, token_type: 'Bearer' } };
+      }
+      return rest(method, pathname, query, body);
+    };
+    return { handler, minted: () => n };
+  }
+
+  it('mints a token at POST /api/oauth and bears it on the auth-log call', async () => {
+    const { handler, minted } = oauthHandler((method, pathname) =>
+      method === 'GET' && pathname === AUTH_PATH ? { body: hal([ROW_ACCEPT]) } : undefined,
+    );
+    const { adapter, calls, authHeaders, recorded } = makeAdapter(handler, OAUTH_CREDS);
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(1);
+    expect(calls[0]).toBe('POST /api/oauth');
+    expect(minted()).toBe(1);
+    expect(authHeaders.filter((h) => h !== null)).toContain('Bearer minted-1');
+    // one mint is shared by the whole poll — not one per call
+    await adapter.pull();
+    expect(minted()).toBe(1);
+    // the client secret never reaches the call log
+    expect(JSON.stringify(recorded)).not.toContain('cppm-client-s3cr3t');
+    expect(recorded.some((c) => c.path === 'POST /api/oauth')).toBe(true);
+  });
+
+  it('invalidates and re-mints exactly once on a 401 (CPPM tokens expire at 8h)', async () => {
+    let seenAuthCalls = 0;
+    const { handler, minted } = oauthHandler((method, pathname) => {
+      if (method !== 'GET' || pathname !== AUTH_PATH) return undefined;
+      seenAuthCalls += 1;
+      // the first call carries the (expired) first token
+      if (seenAuthCalls === 1) return { status: 401, body: { detail: 'token expired' } };
+      return { body: hal([ROW_ACCEPT]) };
+    });
+    const { adapter, authHeaders } = makeAdapter(handler, OAUTH_CREDS);
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(1);
+    expect(minted()).toBe(2); // mint, 401, re-mint
+    expect(authHeaders).toContain('Bearer minted-2');
+  });
+
+  it('fails the pull naming /api/oauth when the mint itself fails', async () => {
+    const { adapter } = makeAdapter(
+      (method, pathname) => (method === 'POST' && pathname === '/api/oauth' ? { status: 403, body: {} } : undefined),
+      OAUTH_CREDS,
+    );
+    await expect(adapter.pull()).rejects.toThrow(/\/api\/oauth answered HTTP 403 without an access_token/);
+  });
+
+  it('accepts the credential record the connect drawer writes', () => {
+    expect(ClearPassAdapter.isComplete({ ...OAUTH_CREDS, displayName: 'ClearPass', scopes: 'read:session' })).toBe(true);
+    expect(ClearPassAdapter.isComplete(CREDS)).toBe(true); // legacy host + token
+    expect(ClearPassAdapter.isComplete({ token: 'shh' })).toBe(false); // no publisher/host
+    expect(ClearPassAdapter.isComplete({ publisher: 'cppm-01' })).toBe(false); // no credentials
+    expect(ClearPassAdapter.isComplete({ publisher: 'cppm-01', clientId: 'x' })).toBe(false); // no secret
+    expect(ClearPassAdapter.isComplete(null)).toBe(false);
+  });
+});
+
+// -- The endpoint repository (the plane's second dataset) ------------------------------
+
+describe('ClearPassAdapter endpoints', () => {
+  const endpointRoutes: Handler = (method, pathname) => {
+    if (method === 'GET' && pathname === AUTH_PATH) return { body: hal([ROW_ACCEPT]) };
+    if (method === 'GET' && pathname === '/api/endpoint') {
+      return { body: hal([{ id: 1, mac_address: 'aabbccddeeff' }], { count: 4182 }) };
+    }
+    return undefined;
+  };
+
+  it('reports the endpoint total as the plane device count and in the note', async () => {
+    const { adapter, state, calls } = makeAdapter(endpointRoutes);
+    await adapter.pull();
+    expect(state.deviceCount).toBe(4182);
+    expect(state.note).toBe('4,182 endpoints · 1 auth events · 0 rejects');
+    expect(calls.some((c) => c.startsWith('GET /api/endpoint?'))).toBe(true);
+
+    // the repository is a 5-minute pull, not a 60-second one
+    await adapter.pull();
+    expect(calls.filter((c) => c.startsWith('GET /api/endpoint'))).toHaveLength(1);
+  });
+
+  it('drops the endpoint fact without failing the auth feed when /api/endpoint errors', async () => {
+    const { adapter, state } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === AUTH_PATH) return { body: hal([ROW_ACCEPT]) };
+      if (method === 'GET' && pathname === '/api/endpoint') return { status: 500, body: { detail: 'boom' } };
+      return undefined;
+    });
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(1);
+    expect(state.deviceCount).toBeNull();
+    expect(state.note).toBe('1 auth events · 0 rejects');
+  });
+});
+
+// -- The one sanctioned write ----------------------------------------------------------
+
+describe('ClearPassAdapter.coaDisconnect()', () => {
+  it('sends the vendor-required body and no enforcement profile by default', async () => {
+    const { adapter, calls, bodies } = makeAdapter(() => ({ status: 200, body: {} }));
+    const res = await adapter.coaDisconnect('3C-22-FB-41-0A-19');
+    expect(res.status).toBe(200);
+    expect(calls[0]).toBe('POST /api/session-action/disconnect/mac/3c%3A22%3Afb%3A41%3A0a%3A19');
+    expect(JSON.parse(bodies[0] as string)).toEqual({ async: false });
+  });
+
+  it('forwards a configured enforcement profile', async () => {
+    const { adapter, bodies } = makeAdapter(() => ({ status: 200, body: {} }), {
+      ...CREDS,
+      coaEnforcementProfile: 'Quarantine',
+    });
+    await adapter.coaDisconnect('3c:22:fb:41:0a:19');
+    expect(JSON.parse(bodies[0] as string)).toEqual({ async: false, enforcement_profile: 'Quarantine' });
   });
 });
 
 // -- Registry wiring --------------------------------------------------------------------
 
 describe('registry wiring', () => {
-  it('builds the real ClearPassAdapter when credentials are complete', async () => {
+  async function buildRegistry(creds: Record<string, string>) {
     const tmpDir = mkdtempSync(join(tmpdir(), 'hpe-clearpass-'));
     process.env.HPE_SETTINGS_PATH = join(tmpDir, 'settings.json');
     try {
       const { SettingsStore } = await import('../src/config/settings');
       const { PlaneRegistry } = await import('../src/planes/registry');
       const store = new SettingsStore();
-      store.update({ planes: { clearpass: { host: 'https://cppm.example.com', token: 'shh' } } });
+      store.update({ planes: { clearpass: creds } });
       const reg = new PlaneRegistry(store);
-      expect(reg.get('clearpass')).toBeInstanceOf(ClearPassAdapter);
-      const state = reg.state('clearpass');
-      expect(state.linked).toBe(true);
-      expect(state.health).toBe('warning');
-      expect(state.note).toBe('credentials saved — first sync pending');
+      return { adapter: reg.get('clearpass'), state: reg.state('clearpass') };
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
       delete process.env.HPE_SETTINGS_PATH;
     }
+  }
+
+  it('builds the real ClearPassAdapter when credentials are complete', async () => {
+    const { adapter, state } = await buildRegistry({ host: 'https://cppm.example.com', token: 'shh' });
+    expect(adapter).toBeInstanceOf(ClearPassAdapter);
+    expect(state.linked).toBe(true);
+    expect(state.health).toBe('warning');
+    expect(state.note).toBe('credentials saved — first sync pending');
+  });
+
+  it('builds the real adapter from the exact payload the connect drawer saves', async () => {
+    // publisher + clientId + clientSecret — no host, no pre-minted token.
+    const { adapter, state } = await buildRegistry({
+      displayName: 'ClearPass',
+      publisher: 'cppm-01.meridian.health',
+      clientId: 'portal-insight',
+      clientSecret: 'vault-secret',
+      scopes: 'read:session,read:endpoint,read:policy',
+    });
+    expect(adapter).toBeInstanceOf(ClearPassAdapter);
+    expect(state.note).toBe('credentials saved — first sync pending');
   });
 });

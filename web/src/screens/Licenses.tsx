@@ -2,7 +2,8 @@
  * web/src/screens/Licenses.tsx — GreenLake subscriptions, controller
  * perpetuals and Mist SUBs reconciled against what is racked. High-fidelity
  * port of design/NtLicenses.dc.html: five Stats, a warning Alert naming the
- * two gaps that cost money, the open subscriptions table (name + mono SKU,
+ * gaps that cost money (the authored two-gap prose on the demo path, otherwise
+ * derived from data.orphans), the open subscriptions table (name + mono SKU,
  * plane Badge, term, numeric qty/assigned, 80×3px utilisation bar amber ≥95%,
  * mono expires, status Badge), then flair → two columns: "Renewals, soonest
  * first" (mono date, what, mono days coloured by urgency) and "Orphans & gaps"
@@ -13,7 +14,18 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Alert, Badge, Button, Divider, SectionHeader, Spinner, Stat, Table, useToast } from '../nightdesk';
+import {
+  Alert,
+  Badge,
+  Button,
+  Divider,
+  EmptyState,
+  SectionHeader,
+  Spinner,
+  Stat,
+  Table,
+  useToast,
+} from '../nightdesk';
 import { getLicenses } from '../api/client';
 import type { LicensesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
@@ -67,6 +79,14 @@ export default function Licenses() {
 
   const reclaimAll = () => toast('Reclaim runs on GreenLake — hand-off queued');
 
+  // The authored two-gap prose describes the fixture ORPHANS rows, so it may
+  // only run on the authored path; a blended licences payload is real GreenLake
+  // data pasted into this page and must not carry demo counts above it.
+  const isDemo = data.dataSource === 'demo' && !(data.blended?.includes('licenses') ?? false);
+  // Gaps that cost money are the orphaned and unlicensed rows; an `idle` row is
+  // spare capacity, not a reconciliation gap.
+  const gaps = data.orphans.filter((o) => o.tag !== 'idle');
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <ScreenHeader
@@ -85,10 +105,12 @@ export default function Licenses() {
         }
       />
 
+      {/* Five tiles on the authored path; a payload that carries fewer lays them
+          out evenly rather than leaving a dead track in the grid. */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+          gridTemplateColumns: `repeat(${data.stats.length || 5}, minmax(0, 1fr))`,
           gap: 18,
         }}
       >
@@ -97,13 +119,31 @@ export default function Licenses() {
         ))}
       </div>
 
-      <Alert tone="warning" title="Two reconciliation gaps worth money">
-        <span style={{ fontSize: 13 }}>
-          Six Foundation AP subscriptions are still assigned to devices decommissioned in May —
-          reclaim them before the September renewal. Fourteen Warehouse switches carry no GreenLake
-          record at all, which is fine for local management but means no TAC entitlement.
-        </span>
-      </Alert>
+      {isDemo ? (
+        <Alert tone="warning" title="Two reconciliation gaps worth money">
+          <span style={{ fontSize: 13 }}>
+            Six Foundation AP subscriptions are still assigned to devices decommissioned in May —
+            reclaim them before the September renewal. Fourteen Warehouse switches carry no GreenLake
+            record at all, which is fine for local management but means no TAC entitlement.
+          </span>
+        </Alert>
+      ) : gaps.length > 0 ? (
+        <Alert
+          tone="warning"
+          title={`${gaps.length} reconciliation gap${gaps.length === 1 ? '' : 's'} worth money`}
+        >
+          <span style={{ fontSize: 13 }}>
+            {gaps.map((g) => `${g.what} — ${g.detail}`).join('. ')}.
+          </span>
+        </Alert>
+      ) : (
+        <Alert tone="info" title="Reconciliation gaps are not reported by this plane">
+          <span style={{ fontSize: 13 }}>
+            The subscriptions feed carries seat totals but no device assignments, so orphaned
+            subscriptions and unlicensed devices cannot be computed from live data.
+          </span>
+        </Alert>
+      )}
 
       <Table density={density}>
         <Table.Head>
@@ -119,7 +159,14 @@ export default function Licenses() {
           </Table.Row>
         </Table.Head>
         <Table.Body>
-          {data.subscriptions.map((l) => (
+          {data.subscriptions.map((l) => {
+            // GreenLake emits '—' when it reports no quantity or assignment
+            // count. That is not a CSS length, so feeding it to the fill div
+            // used to paint a full green bar — an unknown utilisation reading
+            // as a healthy, fully-used pool. Parse once and leave the track
+            // empty when there is no figure; the mono label still says '—'.
+            const pctNum = /^\d+(\.\d+)?%$/.test(l.pct) ? Number.parseFloat(l.pct) : null;
+            return (
             <Table.Row key={l.sku}>
               <Table.Cell>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -156,9 +203,9 @@ export default function Licenses() {
                       style={{
                         height: 3,
                         borderRadius: 99,
-                        width: l.pct,
+                        width: pctNum === null ? 0 : `${Math.min(pctNum, 100)}%`,
                         background:
-                          parseInt(l.pct, 10) >= 95 ? 'var(--nd-warning)' : 'var(--nd-success)',
+                          pctNum !== null && pctNum >= 95 ? 'var(--nd-warning)' : 'var(--nd-success)',
                       }}
                     />
                   </div>
@@ -178,9 +225,20 @@ export default function Licenses() {
                 <Badge tone={l.tone}>{l.status}</Badge>
               </Table.Cell>
             </Table.Row>
-          ))}
+            );
+          })}
         </Table.Body>
       </Table>
+      {data.subscriptions.length === 0 ? (
+        <EmptyState
+          title="No subscriptions in the cache"
+          description={
+            data.dataSource === 'live'
+              ? 'GreenLake has not returned a subscription list yet — check the plane on Connected systems.'
+              : 'This payload carries no subscription rows.'
+          }
+        />
+      ) : null}
 
       <Divider variant="flair" />
 
@@ -230,13 +288,24 @@ export default function Licenses() {
               </span>
             </div>
           ))}
+          {data.renewals.length === 0 ? (
+            <EmptyState
+              title="No dated renewals"
+              description="No subscription in the cache carries an expiry date, so nothing can be ranked by urgency."
+            />
+          ) : null}
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <SectionHeader
             label="Orphans & gaps"
             meta={
-              <Button variant="ghost" size="sm" onClick={reclaimAll}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={reclaimAll}
+                disabled={data.orphans.length === 0}
+              >
                 Reclaim all
               </Button>
             }
@@ -275,6 +344,16 @@ export default function Licenses() {
               </div>
             </div>
           ))}
+          {data.orphans.length === 0 ? (
+            <EmptyState
+              title="Nothing to reclaim"
+              description={
+                data.dataSource === 'live'
+                  ? 'The subscriptions feed carries no device assignments, so orphans and gaps cannot be computed.'
+                  : 'No orphaned assignments or licensing gaps in this payload.'
+              }
+            />
+          ) : null}
         </div>
       </div>
     </div>

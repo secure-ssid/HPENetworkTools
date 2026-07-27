@@ -12,6 +12,10 @@
  * params 404. profile: null renders an honest EmptyState with a hand-off to
  * Connected systems, and a 404 renders a not-found state — never the
  * authored local-only fallback for a site the portal does not actually know.
+ * A live/blend row carries the same two per-site sections a profile does —
+ * "Devices at this site" and "Open here" — so they render from whichever
+ * source answered, and the header states which source that was and how fresh
+ * it is (demo fixtures are never dressed up as a live sync).
  */
 
 import { useEffect, useState } from 'react';
@@ -30,10 +34,202 @@ import {
 } from '../nightdesk';
 import { getSiteDetail, type SiteDetailData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
+import type { Density } from '../app/SettingsContext';
 import { SITE_CHAIN, buildSiteTopology } from '../../../shared';
+import type { SiteAlertRow, SiteDeviceRow } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { SiteTopologyDiagram } from './SiteTopology';
+
+/** The two per-site sections the live/blend envelope carries alongside the
+ *  site row (server: liveSiteSections). Optional on the wire — a server that
+ *  does not send them leaves the sections honestly empty rather than blank. */
+type LiveSiteSections = {
+  devices?: SiteDeviceRow[];
+  alerts?: SiteAlertRow[];
+};
+
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** Design rule 1: say which source answered and when it last succeeded. Demo
+ *  fixtures carry a synthetic syncedAt, so they are labelled, never timed. */
+function provenance(detail: SiteDetailData): string {
+  const live = detail.dataSource === 'live' || (detail.blended?.includes('sites') ?? false);
+  if (!live) return 'DEMO FIXTURE';
+  return `LIVE · SYNCED ${detail.syncedAt ? hhmm(detail.syncedAt) : 'NEVER'}`;
+}
+
+function ProvenanceNote({ label }: { label: string }) {
+  return (
+    <span
+      style={{
+        fontFamily: 'var(--nd-font-mono)',
+        fontSize: 'var(--nd-text-10)',
+        color: 'var(--nd-text-muted)',
+        letterSpacing: '.08em',
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+/**
+ * "Devices at this site" (README §7) — one open table shared by both branches:
+ * the authored profile's rows in demo, the reconciled per-site projection the
+ * API sends with a live/blend row. Fields a plane does not report arrive as
+ * '—' from the server and render as such; nothing is invented here.
+ */
+function SiteDeviceTable({
+  devices,
+  density,
+  showPlatformTags,
+  onOpen,
+}: {
+  devices: SiteDeviceRow[];
+  density: Density;
+  showPlatformTags: boolean;
+  onOpen: (name: string) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+      <SectionHeader label="Devices at this site" meta="MIXED PLANES" />
+      <Table density={density}>
+        <Table.Head>
+          <Table.Row>
+            <Table.HeaderCell>Device</Table.HeaderCell>
+            <Table.HeaderCell>Model</Table.HeaderCell>
+            <Table.HeaderCell>Managed by</Table.HeaderCell>
+            <Table.HeaderCell>Role</Table.HeaderCell>
+            <Table.HeaderCell>State</Table.HeaderCell>
+            <Table.HeaderCell numeric>Uptime</Table.HeaderCell>
+          </Table.Row>
+        </Table.Head>
+        <Table.Body>
+          {devices.map((d) => (
+            <Table.Row key={d.name}>
+              <Table.Cell>
+                <button
+                  type="button"
+                  onClick={() => onOpen(d.name)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-12)',
+                    color: 'var(--nd-accent-text)',
+                    textAlign: 'left',
+                  }}
+                >
+                  {d.name}
+                </button>
+              </Table.Cell>
+              <Table.Cell>{d.model}</Table.Cell>
+              <Table.Cell>
+                {showPlatformTags ? <Badge tone={d.planeTone}>{d.plane}</Badge> : null}
+              </Table.Cell>
+              <Table.Cell>{d.role}</Table.Cell>
+              <Table.Cell>
+                <Badge tone={d.stateTone} dot>
+                  {d.state}
+                </Badge>
+              </Table.Cell>
+              <Table.Cell numeric>{d.uptime}</Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table>
+      {devices.length === 0 ? (
+        <div
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 10.5,
+            color: 'var(--nd-text-muted)',
+          }}
+        >
+          no device claimed this site in the last pull
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** "Open here" (README §7) — the site's open alerts, from whichever source
+ *  answered, with the jump-out to the filtered queue. */
+function OpenHereList({
+  alerts,
+  onAllAlerts,
+}: {
+  alerts: SiteAlertRow[];
+  onAllAlerts: () => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <SectionHeader
+        label="Open here"
+        meta={
+          <button type="button" className="nd-link" onClick={onAllAlerts}>
+            All alerts →
+          </button>
+        }
+      />
+      {alerts.map((a) => (
+        <div
+          key={a.title}
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 10,
+            padding: '10px 0',
+            borderBottom: '1px solid var(--nd-border-subtle)',
+          }}
+        >
+          <Badge tone={a.tone} dot>
+            {a.sev}
+          </Badge>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 'var(--nd-text-12)',
+                color: 'var(--nd-text-primary)',
+                lineHeight: 1.4,
+              }}
+            >
+              {a.title}
+            </div>
+            <div
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-10)',
+                color: 'var(--nd-text-muted)',
+              }}
+            >
+              {a.meta}
+            </div>
+          </div>
+        </div>
+      ))}
+      {alerts.length === 0 ? (
+        <div
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 10.5,
+            color: 'var(--nd-text-muted)',
+            padding: '10px 0',
+          }}
+        >
+          nothing open here
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export default function SiteDetail() {
   const navigate = useNavigate();
@@ -63,9 +259,13 @@ export default function SiteDetail() {
   if (detail.apiError) return <ApiErrorState message={detail.apiError} />;
 
   const { site, profile } = detail;
+  const sections = detail as SiteDetailData & LiveSiteSections;
+  const source = provenance(detail);
 
-  if (site === null && profile === null) {
-    // Answered 404: no fixture and no live inventory row knows this param.
+  if (site === null) {
+    // Answered 404, or a bookkeeping id ('core-services', 'workspace',
+    // 'multiple') that no inventory row backs: without a site row there is
+    // nothing to show, and a profile on its own would be a fabricated page.
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div>
@@ -95,6 +295,8 @@ export default function SiteDetail() {
       { k: 'Device mix', v: site.mix === '—' ? 'Not reported' : site.mix },
       { k: 'Last sync', v: site.sync === '—' ? 'Not reported' : site.sync },
     ];
+    const liveDevices = sections.devices ?? [];
+    const liveAlerts = sections.alerts ?? [];
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
         <ScreenHeader
@@ -102,9 +304,12 @@ export default function SiteDetail() {
           title={name}
           subtitle="Live summary from linked plane inventory. Profile, topology, and local reachability are not reported by the current feeds."
           actions={
-            <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
-              ← All sites
-            </Button>
+            <>
+              <ProvenanceNote label={source} />
+              <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
+                ← All sites
+              </Button>
+            </>
           }
         />
 
@@ -129,57 +334,71 @@ export default function SiteDetail() {
 
         <Divider variant="flair" />
 
+        {/* Same two columns as the authored branch (README §7): the per-site
+            device table on the left, facts / topology / open alerts on the
+            right — the API sends both projections with a live site row. */}
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
-            gap: 32,
+            gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)',
+            gap: 34,
             alignItems: 'start',
           }}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <SectionHeader label="Live site facts" />
-            {facts.map((fact) => (
-              <div
-                key={fact.k}
-                style={{
-                  display: 'flex',
-                  gap: 12,
-                  padding: '9px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <span
+          <SiteDeviceTable
+            devices={liveDevices}
+            density={density}
+            showPlatformTags={showPlatformTags}
+            onOpen={(deviceName) => navigate(`/devices/${encodeURIComponent(deviceName)}`)}
+          />
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <SectionHeader label="Live site facts" />
+              {facts.map((fact) => (
+                <div
+                  key={fact.k}
                   style={{
-                    width: 100,
-                    flex: '0 0 100px',
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10,
-                    color: 'var(--nd-text-muted)',
-                    textTransform: 'uppercase',
+                    display: 'flex',
+                    gap: 12,
+                    padding: '9px 0',
+                    borderBottom: '1px solid var(--nd-border-subtle)',
                   }}
                 >
-                  {fact.k}
-                </span>
-                <span style={{ color: 'var(--nd-text-secondary)' }}>{fact.v}</span>
-              </div>
-            ))}
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <SectionHeader label="Topology and reachability" meta="NOT REPORTED" />
-            <div
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-                lineHeight: 1.6,
-              }}
-            >
-              No linked source supplied uplinks, device-level topology, configuration drift, or
-              collector reachability for this site. The portal will not substitute the demo site
-              profile.
+                  <span
+                    style={{
+                      width: 100,
+                      flex: '0 0 100px',
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 10,
+                      color: 'var(--nd-text-muted)',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {fact.k}
+                  </span>
+                  <span style={{ color: 'var(--nd-text-secondary)' }}>{fact.v}</span>
+                </div>
+              ))}
             </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <SectionHeader label="Topology and reachability" meta="NOT REPORTED" />
+              <div
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 'var(--nd-text-11)',
+                  color: 'var(--nd-text-muted)',
+                  lineHeight: 1.6,
+                }}
+              >
+                No linked source supplied uplinks, device-level topology, configuration drift, or
+                collector reachability for this site. The portal will not substitute the demo site
+                profile.
+              </div>
+            </div>
+
+            <OpenHereList alerts={liveAlerts} onAllAlerts={() => navigate('/alerts')} />
           </div>
         </div>
       </div>
@@ -202,6 +421,7 @@ export default function SiteDetail() {
         }
         actions={
           <>
+            <ProvenanceNote label={source} />
             <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
               ← All sites
             </Button>
@@ -310,56 +530,12 @@ export default function SiteDetail() {
             }}
           >
             {/* ---------------- left column ---------------- */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
-              <SectionHeader label="Devices at this site" meta="MIXED PLANES" />
-              <Table density={density}>
-                <Table.Head>
-                  <Table.Row>
-                    <Table.HeaderCell>Device</Table.HeaderCell>
-                    <Table.HeaderCell>Model</Table.HeaderCell>
-                    <Table.HeaderCell>Managed by</Table.HeaderCell>
-                    <Table.HeaderCell>Role</Table.HeaderCell>
-                    <Table.HeaderCell>State</Table.HeaderCell>
-                    <Table.HeaderCell numeric>Uptime</Table.HeaderCell>
-                  </Table.Row>
-                </Table.Head>
-                <Table.Body>
-                  {profile.devices.map((d) => (
-                    <Table.Row key={d.name}>
-                      <Table.Cell>
-                        <button
-                          type="button"
-                          onClick={() => navigate(`/devices/${encodeURIComponent(d.name)}`)}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            padding: 0,
-                            cursor: 'pointer',
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 'var(--nd-text-12)',
-                            color: 'var(--nd-accent-text)',
-                            textAlign: 'left',
-                          }}
-                        >
-                          {d.name}
-                        </button>
-                      </Table.Cell>
-                      <Table.Cell>{d.model}</Table.Cell>
-                      <Table.Cell>
-                        {showPlatformTags ? <Badge tone={d.planeTone}>{d.plane}</Badge> : null}
-                      </Table.Cell>
-                      <Table.Cell>{d.role}</Table.Cell>
-                      <Table.Cell>
-                        <Badge tone={d.stateTone} dot>
-                          {d.state}
-                        </Badge>
-                      </Table.Cell>
-                      <Table.Cell numeric>{d.uptime}</Table.Cell>
-                    </Table.Row>
-                  ))}
-                </Table.Body>
-              </Table>
-            </div>
+            <SiteDeviceTable
+              devices={profile.devices}
+              density={density}
+              showPlatformTags={showPlatformTags}
+              onOpen={(deviceName) => navigate(`/devices/${encodeURIComponent(deviceName)}`)}
+            />
 
             {/* ---------------- right column ---------------- */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
@@ -444,52 +620,7 @@ export default function SiteDetail() {
                 </div>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <SectionHeader
-                  label="Open here"
-                  meta={
-                    <button type="button" className="nd-link" onClick={() => navigate('/alerts')}>
-                      All alerts →
-                    </button>
-                  }
-                />
-                {profile.alerts.map((a) => (
-                  <div
-                    key={a.title}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: 10,
-                      padding: '10px 0',
-                      borderBottom: '1px solid var(--nd-border-subtle)',
-                    }}
-                  >
-                    <Badge tone={a.tone} dot>
-                      {a.sev}
-                    </Badge>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 'var(--nd-text-12)',
-                          color: 'var(--nd-text-primary)',
-                          lineHeight: 1.4,
-                        }}
-                      >
-                        {a.title}
-                      </div>
-                      <div
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-10)',
-                          color: 'var(--nd-text-muted)',
-                        }}
-                      >
-                        {a.meta}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <OpenHereList alerts={profile.alerts} onAllAlerts={() => navigate('/alerts')} />
             </div>
           </div>
         </>

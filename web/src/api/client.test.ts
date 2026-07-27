@@ -1,13 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEFAULT_SETTINGS,
   getDeviceDetail,
   getDevices,
   getChatStatus,
   getOverview,
+  getSettings,
+  getSiteDetail,
   getTerminalSession,
   getTerminalSessions,
+  saveSettings,
   syncSystems,
 } from './client';
+import type { Settings } from './client';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -128,5 +133,90 @@ describe('screen API source handling', () => {
 
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
     await expect(getChatStatus()).resolves.toBeNull();
+  });
+
+  it('passes the live per-site device and alert sections through the site-detail envelope', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        site: { id: 'campus-01', name: 'Campus-01' },
+        profile: null,
+        devices: [
+          {
+            name: 'sw-core-a',
+            model: 'CX 6400',
+            plane: 'CENTRAL',
+            planeTone: 'info',
+            role: '—',
+            state: 'up',
+            stateTone: 'ok',
+            uptime: '—',
+          },
+        ],
+        alerts: [{ sev: 'MAJOR', tone: 'warning', title: 'AP down', meta: 'campus-01' }],
+      },
+    });
+
+    const data = await getSiteDetail('campus-01');
+    expect(data.profile).toBeNull();
+    expect(data.devices?.map((d) => d.name)).toEqual(['sw-core-a']);
+    expect(data.alerts?.map((a) => a.title)).toEqual(['AP down']);
+  });
+});
+
+describe('shell settings', () => {
+  it('keeps only the five shell keys out of the full masked settings store', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        density: 'compact',
+        inventoryView: 'Platform lanes',
+        showPlatformTags: false,
+        workspaceName: 'Meridian Health',
+        pollIntervalSec: 30,
+        demoMode: true,
+        blendLive: true,
+        sectionMode: { devices: 'live' },
+        hiddenDemoDevices: ['ap-3f-01'],
+        planes: { central: { token: '••••' } },
+        mcp: { url: 'http://localhost:9000' },
+        llm: { model: 'claude' },
+      },
+    });
+
+    const settings = await getSettings();
+    expect(settings).toEqual({
+      density: 'compact',
+      inventoryView: 'Platform lanes',
+      showPlatformTags: false,
+      workspaceName: 'Meridian Health',
+      pollIntervalSec: 30,
+    });
+  });
+
+  it('PUTs only the shell preferences, never demoMode or plane credentials', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: vi.fn().mockResolvedValue({}) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const wider = {
+      ...DEFAULT_SETTINGS,
+      density: 'compact',
+      demoMode: true,
+      sectionMode: { devices: 'live' },
+      planes: { central: { token: '••••' } },
+    } as unknown as Settings;
+    const result = await saveSettings(wider);
+
+    expect(result.ok).toBe(true);
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([
+      'density',
+      'inventoryView',
+      'pollIntervalSec',
+      'showPlatformTags',
+      'workspaceName',
+    ]);
+    expect(body.density).toBe('compact');
   });
 });

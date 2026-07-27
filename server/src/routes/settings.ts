@@ -66,15 +66,25 @@ settingsRouter.put('/settings', (req, res) => {
     res.status(400).json({ error: bodyError });
     return;
   }
-  const before = settings.get().pollIntervalSec;
+  const previous = settings.get();
+  const before = previous.pollIntervalSec;
+  // Snapshot each plane's stored record so we can tell a real credential save
+  // from a shell preference PUT that merely echoed `planes` back at us.
+  const wasCreds = new Map<PlaneId, string>();
+  for (const id of PLANE_IDS) wasCreds.set(id, JSON.stringify(previous.planes[id] ?? null));
+
   const updated = settings.update(req.body);
   // Keep the registry and cache in sync when plane credentials change through
   // here. Clear first so old rows cannot be attributed to the rebuilt adapter.
+  // Only for planes whose record ACTUALLY changed — a density or workspace-name
+  // write that round-trips the whole settings blob must not wipe every plane's
+  // live cache and freshness stamps.
   const planes = (req.body as Record<string, unknown> | undefined)?.planes;
   if (planes && typeof planes === 'object' && !Array.isArray(planes)) {
     for (const id of Object.keys(planes)) {
       if ((PLANE_IDS as readonly string[]).includes(id)) {
         const plane = id as PlaneId;
+        if (JSON.stringify(updated.planes[plane] ?? null) === wasCreds.get(plane)) continue;
         poller.clearPlane(plane);
         registry.reinitPlane(plane);
       }

@@ -5,9 +5,12 @@
  * setting (the prototype's local-override bug is not carried over), filter
  * row (search, type, plane, site, "Reconciliation issues only" Switch, mono
  * `N of M indexed` count), warning Alert with the reconciliation truth
- * (counts computed from the loaded rows), then either the open unified table
- * or the platform-lanes grid (one lane per plane present, meta from the
- * shared LANE_META, 2px bottom rule in the plane's mark colour, 520px own
+ * (counts from the payload's reconciliation block — live reconciler totals, or
+ * the authored estate figures in demo, never a tally of the sample rows), then
+ * either the open unified table (every claiming plane in Managed by, plus a
+ * double-claimed / no-cloud-plane marker beside State) or the platform-lanes
+ * grid (one lane per plane present, meta from the payload's lanes map, 2px
+ * bottom rule in the plane's mark colour, 520px own
  * scroll). Filters are local, instant and additive (AND), and apply to both
  * presentations; an empty table shows the EmptyState.
  * Data: getDevices() — live /api/devices when the server is up, fixtures otherwise.
@@ -32,7 +35,8 @@ import type { DevicesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { InventoryView } from '../app/SettingsContext';
 import { planeFilterForParam } from '../app/nav';
-import type { LaneMeta, Plane, Tone } from '../../../shared';
+import { DEVICE_RECONCILIATION } from '../../../shared';
+import type { DeviceRow, LaneMeta, Plane, Tone } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import '../app/app.css';
@@ -57,13 +61,31 @@ const DOT_COLORS: Record<Tone, string> = {
   accent: 'var(--nd-accent)',
 };
 
-/** Prototype fallback for planes missing from LANE_META. */
+/** Fallback for a plane the payload carries no lane meta for. Honesty rule 1:
+ *  a lane with no freshness stamp says so — it never claims to be linked. */
 const FALLBACK_LANE: LaneMeta = {
   tone: 'neutral',
-  sync: 'linked',
-  note: '',
+  sync: 'no sync stamp',
+  note: 'freshness not reported',
   mark: 'var(--nd-border-strong)',
 };
+
+/** Every plane that claims this row. The reconciler ships `claimedBy` on live
+ *  rows; the authored fixtures encode the double claim in `state` instead and
+ *  carry no claimant list, so they fall back to the single display plane. */
+function claimantsOf(d: DeviceRow): Plane[] {
+  return d.claimedBy?.length ? d.claimedBy : [d.plane];
+}
+
+/** Row-level reconciliation marker (design rule 2 — one flagged row, never a
+ *  duplicate), or null when the row reconciles cleanly. Only rows carrying a
+ *  claimant list get one: the fixtures already say 'double-claimed' in State. */
+function reconciliationMark(d: DeviceRow): { label: string; tone: Tone } | null {
+  if (!d.claimedBy || !d.reconciliationIssue) return null;
+  return d.claimedBy.length > 1
+    ? { label: 'double-claimed', tone: 'danger' }
+    : { label: 'no cloud plane', tone: 'warning' };
+}
 
 export default function Devices() {
   const navigate = useNavigate();
@@ -166,12 +188,15 @@ export default function Devices() {
     })),
   );
 
-  // Reconciliation truth, counted from the loaded rows: double-claimed devices
-  // carry the 'double-claimed' state; unclaimed ones have no GreenLake record.
+  // Reconciliation truth. Live mode always ships real counts; demo falls back
+  // to the authored estate figures (the 28 fixture rows are a SAMPLE of 418,
+  // so counting them would undercount — the prose below says "Fourteen").
+  const reconciliation = data.reconciliation ?? (isDemo ? DEVICE_RECONCILIATION : undefined);
   const doubleClaimed =
-    data.reconciliation?.doubleClaimed ?? devices.filter((d) => d.state === 'double-claimed').length;
+    reconciliation?.doubleClaimed ??
+    devices.filter((d) => d.state === 'double-claimed' || (d.claimedBy?.length ?? 0) > 1).length;
   const unclaimed =
-    data.reconciliation?.unclaimed ?? devices.filter((d) => d.licence === 'not in greenlake').length;
+    reconciliation?.unclaimed ?? devices.filter((d) => d.licence === 'not in greenlake').length;
 
   // One lane per plane present in the inventory, ordered by LANE_META; planes
   // present in the data but missing from LANE_META append with fallback meta.
@@ -298,114 +323,129 @@ export default function Devices() {
               </Table.Row>
             </Table.Head>
             <Table.Body>
-              {rows.map((d) => (
-                <Table.Row key={d.name}>
-                  <Table.Cell>
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/devices/${encodeURIComponent(d.name)}`)}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        padding: 0,
-                        cursor: 'pointer',
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-12)',
-                        color: 'var(--nd-accent-text)',
-                        textAlign: 'left',
-                      }}
-                    >
-                      {d.name}
-                    </button>
-                  </Table.Cell>
-                  <Table.Cell>{displayField(d.model)}</Table.Cell>
-                  <Table.Cell>
-                    <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 10.5,
-                        color: 'var(--nd-text-muted)',
-                        textTransform: 'uppercase',
-                      }}
-                    >
-                      {d.type}
-                    </span>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/sites/${encodeURIComponent(d.siteId)}`)}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        padding: 0,
-                        cursor: 'pointer',
-                        fontFamily: 'var(--nd-font-body)',
-                        fontSize: 'var(--nd-text-12)',
-                        color: 'var(--nd-text-primary)',
-                        textAlign: 'left',
-                      }}
-                    >
-                      {displayField(d.siteName)}
-                    </button>
-                  </Table.Cell>
-                  <Table.Cell>
-                    {showPlatformTags ? <Badge tone={d.planeTone}>{d.plane}</Badge> : null}
-                  </Table.Cell>
-                  <Table.Cell>
-                    <Badge tone={d.stateTone} dot>
-                      {d.state}
-                    </Badge>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-11)',
-                        color:
-                          displayField(d.firmware) === 'Not reported' || d.firmwareApproved
-                            ? 'var(--nd-text-secondary)'
-                            : 'var(--nd-warning)',
-                      }}
-                    >
-                      {displayField(d.firmware)}
-                    </span>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 10.5,
-                        color: 'var(--nd-text-muted)',
-                      }}
-                    >
-                      {displayField(d.licence)}
-                    </span>
-                  </Table.Cell>
-                  {isDemo ? (
+              {rows.map((d) => {
+                const claims = claimantsOf(d);
+                const mark = reconciliationMark(d);
+                return (
+                  <Table.Row key={d.name}>
                     <Table.Cell>
                       <button
                         type="button"
-                        onClick={() => void hideDevice(d.name)}
-                        aria-label={`Hide ${d.name} from the demo inventory`}
+                        onClick={() => navigate(`/devices/${encodeURIComponent(d.name)}`)}
                         style={{
                           background: 'none',
                           border: 'none',
                           padding: 0,
                           cursor: 'pointer',
                           fontFamily: 'var(--nd-font-mono)',
+                          fontSize: 'var(--nd-text-12)',
+                          color: 'var(--nd-accent-text)',
+                          textAlign: 'left',
+                        }}
+                      >
+                        {d.name}
+                      </button>
+                    </Table.Cell>
+                    <Table.Cell>{displayField(d.model)}</Table.Cell>
+                    <Table.Cell>
+                      <span
+                        style={{
+                          fontFamily: 'var(--nd-font-mono)',
                           fontSize: 10.5,
+                          color: 'var(--nd-text-muted)',
                           textTransform: 'uppercase',
-                          letterSpacing: '0.06em',
+                        }}
+                      >
+                        {d.type}
+                      </span>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/sites/${encodeURIComponent(d.siteId)}`)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          padding: 0,
+                          cursor: 'pointer',
+                          fontFamily: 'var(--nd-font-body)',
+                          fontSize: 'var(--nd-text-12)',
+                          color: 'var(--nd-text-primary)',
+                          textAlign: 'left',
+                        }}
+                      >
+                        {displayField(d.siteName)}
+                      </button>
+                    </Table.Cell>
+                    <Table.Cell>
+                      {showPlatformTags ? (
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          {claims.map((p) => (
+                            <Badge key={p} tone={p === d.plane ? d.planeTone : 'neutral'}>
+                              {p}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : null}
+                    </Table.Cell>
+                    <Table.Cell>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                        <Badge tone={d.stateTone} dot>
+                          {d.state}
+                        </Badge>
+                        {mark ? <Badge tone={mark.tone}>{mark.label}</Badge> : null}
+                      </div>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <span
+                        style={{
+                          fontFamily: 'var(--nd-font-mono)',
+                          fontSize: 'var(--nd-text-11)',
+                          color:
+                            displayField(d.firmware) === 'Not reported' || d.firmwareApproved
+                              ? 'var(--nd-text-secondary)'
+                              : 'var(--nd-warning)',
+                        }}
+                      >
+                        {displayField(d.firmware)}
+                      </span>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <span
+                        style={{
+                          fontFamily: 'var(--nd-font-mono)',
+                          fontSize: 10.5,
                           color: 'var(--nd-text-muted)',
                         }}
                       >
-                        hide
-                      </button>
+                        {displayField(d.licence)}
+                      </span>
                     </Table.Cell>
-                  ) : null}
-                </Table.Row>
-              ))}
+                    {isDemo ? (
+                      <Table.Cell>
+                        <button
+                          type="button"
+                          onClick={() => void hideDevice(d.name)}
+                          aria-label={`Hide ${d.name} from the demo inventory`}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            padding: 0,
+                            cursor: 'pointer',
+                            fontFamily: 'var(--nd-font-mono)',
+                            fontSize: 10.5,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.06em',
+                            color: 'var(--nd-text-muted)',
+                          }}
+                        >
+                          hide
+                        </button>
+                      </Table.Cell>
+                    ) : null}
+                  </Table.Row>
+                );
+              })}
             </Table.Body>
           </Table>
           {rows.length === 0 ? (

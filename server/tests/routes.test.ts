@@ -276,6 +276,54 @@ describe('routes', () => {
     expect(missing.status).toBe(404);
   });
 
+  it('demo site detail derives a profile from the site’s own row, never Warehouse-DC1’s', async () => {
+    const dc2 = await getJson('/api/sites/warehouse-dc2');
+    expect(dc2.status).toBe(200);
+    expect(dc2.body.profile.name).toBe('Warehouse-DC2');
+    expect(dc2.body.profile.siteId).toBe('warehouse-dc2');
+    // The old local-only fallback answered with Warehouse-DC1's authored 18
+    // devices / 96 clients for every site without a deep profile.
+    expect(dc2.body.profile.deviceCount).toBe(String(dc2.body.site.devices));
+    expect(dc2.body.profile.deviceCount).not.toBe('18');
+    expect(dc2.body.profile.clients).toBe(dc2.body.site.clients);
+    expect(dc2.body.profile.facts.find((f: any) => f.k === 'Subnets').v).toBe(dc2.body.site.subnet);
+  });
+
+  it('pseudo-site ids have no inventory row, so the site page 404s instead of fabricating one', async () => {
+    for (const pseudo of ['core-services', 'workspace', 'multiple']) {
+      const { status, body } = await getJson(`/api/sites/${pseudo}`);
+      expect(status).toBe(404);
+      expect(body.error).toMatch(/unknown site/i);
+    }
+  });
+
+  it('POST /api/tickets/raise accepts a site-level alert that names no device or detail', async () => {
+    const raise = await fetch(`${base}/api/tickets/raise`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: 'WAN down at Northgate — no device named',
+        sev: 'P1',
+        siteName: 'Northgate Clinic',
+        plane: 'CENTRAL',
+        age: '3m',
+        state: 'open',
+      }),
+    });
+    expect(raise.status).toBe(200);
+    const ticket = ((await raise.json()) as any).ticket;
+    expect(ticket.pri).toBe('P1');
+    expect(ticket.siteName).toBe('Northgate Clinic');
+
+    // Identity fields are still required — this is a relaxation, not a hole.
+    const bad = await fetch(`${base}/api/tickets/raise`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sev: 'P1', siteName: 'Northgate Clinic', plane: 'CENTRAL', age: '3m', state: 'open' }),
+    });
+    expect(bad.status).toBe(400);
+  });
+
   it('GET /api/devices/:name returns an honest demo 404 for an unknown fixture', async () => {
     const missing = await getJson('/api/devices/no-such-device');
     expect(missing.status).toBe(404);
@@ -579,7 +627,9 @@ describe('live-mode screen contracts', () => {
     const { status, body } = await getJson('/api/overview');
     expect(status).toBe(200);
     expect(body.dataSource).toBe('live');
-    expect(body.alerts[0].meta).toBe('ap-1 flapping on channel 36');
+    // The row has no Site column, so meta must lead with the site (the
+    // fixtures do the same) — otherwise a live alert cannot say where it is.
+    expect(body.alerts[0].meta).toBe('Campus-01 — Meridian HQ · ap-1 flapping on channel 36');
     expect(body.alerts[0].plane).toBe('CENTRAL');
     const site = (body.sites as any[]).find((s) => s.siteId === 'campus-01');
     expect(site).toBeDefined();
@@ -744,6 +794,231 @@ describe('live-mode screen contracts', () => {
     const ok = await getJson('/api/sites');
     expect((ok.body.sites as any[]).find((s) => s.id === 'campus-01').tone).toBe('ok');
   });
+
+  it('live /api/sites carries the four-Stat row, computed from the same merge', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE], sites: [SITE] });
+    const bare = await getJson('/api/sites');
+    expect((bare.body.stats as any[]).map((s) => s.label)).toEqual([
+      'Sites',
+      'Devices',
+      'Clients',
+      'Sites with alerts',
+    ]);
+    expect(bare.body.stats[0].value).toBe('1');
+    expect(bare.body.stats[1].value).toBe('1');
+    expect(bare.body.stats[2].value).toBe('—'); // no client roster reported — never a false zero
+    expect(bare.body.stats[3].value).toBe('—');
+
+    contributions.set('central', {
+      devices: [DEVICE],
+      sites: [SITE],
+      clients: [clientRow('AA:BB:CC:DD:EE:FF', 'CENTRAL')],
+      alerts: [alertRow({ alertId: 'a-1' })],
+    });
+    const full = await getJson('/api/sites');
+    expect(full.body.stats[2].value).toBe('1');
+    expect(full.body.stats[3]).toMatchObject({ value: '1', tone: 'negative' });
+  });
+
+  it('live site rows badge every claiming plane and take Last sync from plane freshness', async () => {
+    contributions.clear();
+    contributions.set('central', { sites: [SITE], devices: [DEVICE] });
+    contributions.set('aos8', {
+      devices: [{ ...DEVICE, name: 'mc-lake-1', plane: 'AOS-8', planeTone: 'accent' }],
+    });
+    const withRow = await getJson('/api/sites');
+    const site = (withRow.body.sites as any[]).find((s) => s.id === 'campus-01');
+    // AOS-8 only ever appears through its devices — the adapter site rows
+    // name Central alone, and dropping the badge destroys the whole point of
+    // the "Managed by" column.
+    expect((site.planes as any[]).map((p) => p.name).sort()).toEqual(['AOS-8', 'CENTRAL']);
+    expect(site.sync).toBe('1m'); // an adapter that really stamps a per-site sync still wins
+
+    contributions.delete('aos8');
+    contributions.set('central', { devices: [DEVICE] }); // device-discovered site, no adapter row
+    const skeleton = await getJson('/api/sites');
+    // Central is linked but has never completed a sync: the column says so
+    // rather than the structurally-dead '—' it could only ever print before.
+    expect((skeleton.body.sites as any[])[0].sync).toBe('never');
+  });
+
+  it('live site detail carries "Devices at this site" and "Open here"', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      devices: [DEVICE],
+      alerts: [alertRow({ alertId: 'a-1' }), alertRow({ alertId: 'a-2', state: 'acked', title: 'Already acked' })],
+    });
+    const { status, body } = await getJson('/api/sites/campus-01');
+    expect(status).toBe(200);
+    expect(body.profile).toBeNull(); // no plane reports an authored profile
+    expect(body.devices).toEqual([
+      {
+        name: 'sw-test-1',
+        model: 'CX 8325',
+        plane: 'CENTRAL',
+        planeTone: 'accent',
+        role: '—',
+        state: 'up',
+        stateTone: 'success',
+        uptime: '—',
+      },
+    ]);
+    expect(body.alerts).toEqual([{ sev: 'P2', tone: 'warning', title: 'AP flapping', meta: 'central · 5m' }]);
+  });
+
+  it('live /api/devices sends real per-plane lane freshness, not an empty map', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE] });
+    const { body } = await getJson('/api/devices');
+    expect(body.lanes.CENTRAL).toMatchObject({ mark: 'var(--nd-accent)', sync: 'never synced' });
+    expect(typeof body.lanes.CENTRAL.note).toBe('string');
+    expect(body.lanes.MIST).toBeUndefined(); // not linked — no lane claims otherwise
+  });
+
+  it('live licences emit all five Stat tiles the five-column grid needs', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE] });
+    const { body } = await getJson('/api/licenses');
+    expect((body.stats as any[]).map((s) => s.label)).toEqual([
+      'Subscriptions',
+      'Assigned',
+      'Unassigned',
+      'Expiring <90d',
+      'Devices unlicensed',
+    ]);
+    expect(body.stats[4]).toMatchObject({ value: '0', tone: 'positive' });
+
+    contributions.set('central', { devices: [{ ...DEVICE, licence: 'unknown' }] });
+    const unknown = await getJson('/api/licenses');
+    expect(unknown.body.stats[4]).toMatchObject({ value: '—', delta: 'no plane reports entitlements' });
+  });
+
+  it("live overview's Config drift comes from the evidence engine, not a hardwired dash", async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [{ ...DEVICE, firmware: '' }] });
+    const { body } = await getJson('/api/overview');
+    const drift = (body.stats as any[]).find((s) => s.label === 'Config drift');
+    expect(drift).toMatchObject({ value: '1', delta: 'live evidence coverage findings', tone: 'negative' });
+  });
+
+  it('live launchpad offers only planes and devices this estate actually has', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [{ ...DEVICE, localShell: true }] });
+    const { body } = await getJson('/api/overview');
+    const labels = (body.launchpad as any[]).map((row) => row.label);
+    expect(labels).toContain('SSH to sw-test-1');
+    expect(labels).toContain('Run compliance scan');
+    expect(labels.some((l: string) => l.includes('Mist'))).toBe(false); // Mist is not linked
+    expect(labels).not.toContain('Reconcile licences with GreenLake'); // GreenLake is not linked
+  });
+
+  it('a local-only device is coverage, not an ownership-reconciliation finding', async () => {
+    contributions.clear();
+    contributions.set('local', {
+      devices: [{ ...DEVICE, name: 'sw-local-1', plane: 'LOCAL', planeTone: 'neutral' }],
+    });
+    const localOnly = await getJson('/api/compliance');
+    expect((localOnly.body.findings as any[]).filter((f) => f.rule === 'inventory.reconciliation')).toEqual([]);
+
+    // A genuine cross-plane double claim still is one.
+    contributions.set('mist', {
+      devices: [{ ...DEVICE, name: 'sw-local-1', plane: 'MIST', planeTone: 'info' }],
+    });
+    const doubled = await getJson('/api/compliance');
+    const conflict = (doubled.body.findings as any[]).find((f) => f.rule === 'inventory.reconciliation');
+    expect(conflict).toBeDefined();
+    expect(conflict.detail).toBe('Two planes claim this device identity');
+  });
+
+  it('live systems rows project the plane pull, its sync log and the masked credential record', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      devices: [DEVICE],
+      sites: [SITE],
+      clients: [clientRow('AA:BB:CC:DD:EE:FF', 'CENTRAL')],
+    });
+    const { body } = await getJson('/api/systems');
+    const central = (body.systems as any[]).find((s) => s.planeId === 'central');
+    expect(central.sites).toEqual([
+      { siteId: 'campus-01', name: 'Campus-01 — Meridian HQ', detail: '1 device · 1 client' },
+    ]);
+    expect(central.live).toEqual([
+      { value: '1', label: 'devices claimed' },
+      { value: '1', label: 'client sessions' },
+    ]);
+    // The Configuration tab's credential record — masked, never the secret.
+    expect(central.configText).toContain('gatewayBaseUrl: http://127.0.0.1:1');
+    expect(central.configText).toContain('clientId: stored-id');
+    expect(central.configText).toContain('clientSecret: ••••••');
+    expect(central.configText).not.toContain('stored-secret');
+    expect(central.configText).toContain('scope: read only');
+    expect(central.scope).toBe('read only'); // no write scope granted for this plane
+
+    const unlinked = (body.systems as any[]).find((s) => s.planeId === 'mist');
+    expect(unlinked.sites).toEqual([]);
+    expect(unlinked.live).toEqual([]);
+    expect(unlinked.scopeNote).toBe('no credentials stored');
+  });
+
+  it('the live capability matrix describes this deployment, not the fixture estate', async () => {
+    const { body } = await getJson('/api/configure');
+    const rows = body.capabilities as any[];
+    const local = rows.find((r) => r.plane === 'Local switch collector');
+    expect(local).toMatchObject({ mode: 'read only', note: 'not linked — no credentials stored' });
+    const aos8 = rows.find((r) => r.plane === 'AOS-8 mobility master');
+    expect(aos8.mode).toBe('read only'); // the fixture matrix advertises an ssh write path
+    expect(rows.every((r) => typeof r.plane === 'string' && r.note.length > 0)).toBe(true);
+  });
+
+  it('a granted write scope promotes the plane on BOTH the systems badge and the matrix', async () => {
+    await fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ planes: { central: { scopes: 'read write:brokered' } } }),
+    });
+    try {
+      const systems = await getJson('/api/systems');
+      const central = (systems.body.systems as any[]).find((s) => s.planeId === 'central');
+      expect(central.scope).toBe('read + broker');
+      expect(central.scopeTone).toBe('accent');
+
+      const configure = await getJson('/api/configure');
+      const row = (configure.body.capabilities as any[]).find((r) => r.plane === 'HPE Aruba Central');
+      expect(row).toMatchObject({ mode: 'brokered', tone: 'accent' });
+    } finally {
+      await fetch(`${base}/api/settings`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ planes: { central: { scopes: '' } } }),
+      });
+    }
+  });
+
+  it("a degraded plane's alerts and sessions are served unverified, never as current", async () => {
+    const { registry } = await import('../src/planes/registry');
+    contributions.clear();
+    contributions.set('central', {
+      alerts: [alertRow({ alertId: 'a-1' })],
+      clients: [{ ...clientRow('AA:BB:CC:DD:EE:FF', 'CENTRAL'), quality: 20 }],
+    });
+    const fresh = await getJson('/api/alerts');
+    expect(fresh.body.alerts[0].stale).toBeUndefined();
+    expect((await getJson('/api/clients')).body.stats[4].value).toBe('1'); // poor experience, asserted
+
+    registry.markSyncResult('central', false, { note: 'poll failed — showing last good data' });
+    try {
+      const stale = await getJson('/api/alerts');
+      expect(stale.body.alerts[0].stale).toBe(true);
+      expect(stale.body.alerts[0].age).toBe('5m'); // frozen at pull time, and now flagged as such
+
+      const clients = await getJson('/api/clients');
+      expect(clients.body.clients[0]).toMatchObject({ health: 'unverified', healthTone: 'neutral', problem: false });
+      expect(clients.body.stats[4].value).toBe('0'); // an unverified session asserts nothing
+    } finally {
+      registry.reinitPlane('central'); // restore the plane's state for later tests
+    }
+  });
 });
 
 describe('blend mode (demoMode + blendLive)', () => {
@@ -818,9 +1093,13 @@ describe('blend mode (demoMode + blendLive)', () => {
     // Stats + planes swap too — with central linked they derive from the
     // registry, and the fixture strip (404/418 devices, 6/7 planes) would
     // contradict the live estate.
+    // The launchpad swaps too: the authored rows offer a Mist console and an
+    // SSH target this estate does not have, and its device row would 404
+    // against the swapped device section.
     const overview = await getJson('/api/overview');
-    expect(overview.body.blended).toEqual(['stats', 'alerts', 'planes', 'changes']);
-    expect(overview.body.alerts[0].meta).toBe('gw-edge-1 tunnel down');
+    expect(overview.body.blended).toEqual(['stats', 'alerts', 'planes', 'changes', 'launchpad']);
+    expect(overview.body.alerts[0].meta).toBe('Campus-01 — Meridian HQ · gw-edge-1 tunnel down');
+    expect((overview.body.launchpad as any[]).some((row) => row.label === 'SSH to sw-core-a')).toBe(false);
     expect((overview.body.sites as any[]).some((s) => s.siteId === 'campus-01')).toBe(true);
   });
 
@@ -885,6 +1164,11 @@ describe('blend mode (demoMode + blendLive)', () => {
     expect(byId.body.profile).toBeNull(); // no plane reports a site profile — honest null
     expect(byId.body.site.name).toBe('Campus-01 — Meridian HQ');
 
+    // The two core sections ride along with the live row — they are pure
+    // per-site projections of the merge, not authored profile data.
+    expect((byId.body.devices as any[]).map((d) => d.name)).toEqual(['sw-blend-1']);
+    expect(Array.isArray(byId.body.alerts)).toBe(true);
+
     const byName = await getJson(`/api/sites/${encodeURIComponent('Campus-01 — Meridian HQ')}`);
     expect(byName.status).toBe(200);
     expect(byName.body.site.id).toBe('campus-01');
@@ -893,6 +1177,59 @@ describe('blend mode (demoMode + blendLive)', () => {
     const bogus = await getJson('/api/sites/no-such-place');
     expect(bogus.status).toBe(404);
     expect(bogus.body.error).toContain('not in the live inventory');
+  });
+
+  it('configure and compliance blend too — they were the last fixture-only screens', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      devices: [DEVICE],
+      clients: [
+        {
+          name: 'blend-client',
+          model: 'ThinkPad X1',
+          type: 'laptop',
+          mac: 'AA:BB:CC:DD:EE:01',
+          ip: '10.1.4.60',
+          medium: 'wireless',
+          siteId: 'campus-01',
+          siteName: 'Campus-01 — Meridian HQ',
+          group: 'default',
+          attach: 'MRDN-Corp',
+          where: 'ap-blend · radio 1',
+          plane: 'CENTRAL',
+          planeTone: 'neutral',
+          auth: 'dot1x',
+          authBy: 'ClearPass',
+          role: 'employee',
+          vlan: '110',
+          health: 'good',
+          healthTone: 'success',
+          session: '2h',
+          problem: false,
+          link: 'up',
+          rssi: '-52',
+          snr: '38',
+          retries: '2%',
+          tput: '120 Mb',
+          roams: '1',
+          quality: 88,
+          zone: '3rd floor',
+          closet: 'IDF-3',
+        },
+      ],
+    });
+
+    const compliance = await getJson('/api/compliance');
+    expect(compliance.body.blended).toEqual(['compliance']);
+    expect(compliance.body.evidenceMode).toBe('coverage');
+    expect(compliance.body.diff).toContain('Live evidence coverage');
+
+    const configure = await getJson('/api/configure');
+    expect(configure.body.blended).toEqual(['configure']);
+    expect(configure.body.inventoryMode).toBe('observed');
+    expect((configure.body.ssids as any[]).every((s) => s.origin === 'observed')).toBe(true);
+    const local = (configure.body.capabilities as any[]).find((r) => r.plane === 'Local switch collector');
+    expect(local).toMatchObject({ mode: 'read only', note: 'not linked — no credentials stored' });
   });
 
   it('blend off ignores live rows entirely', async () => {

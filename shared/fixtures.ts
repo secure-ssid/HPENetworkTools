@@ -21,12 +21,14 @@ import type {
   CapabilityRow,
   ChangeLogEntry,
   ClientRow,
+  ConnectField,
   CrumbMap,
   DeviceCfg,
   DeviceClientSet,
   DeviceProfile,
   DeviceRow,
   EndpointVariant,
+  Fact,
   FailReasonRow,
   FindingRow,
   LaneMeta,
@@ -37,12 +39,15 @@ import type {
   OverviewPlaneRow,
   OverviewSiteRow,
   Plane,
+  PlaneKey,
   PolicyServiceRow,
   PortObject,
   QueuedChangeRow,
   RenewalRow,
   SearchIndexEntry,
+  SiteAlertRow,
   SiteChain,
+  SiteDeviceRow,
   SiteId,
   SiteProfile,
   SiteRow,
@@ -63,6 +68,7 @@ import type {
   TimelineVariant,
   VlanObject,
   SelectOption,
+  WriteMode,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -508,6 +514,17 @@ export const SITES: SiteRow[] = [
   { id: 'remote-vpn', name: 'Remote & VPN users', subnet: '10.70.0.0/16', planes: [{ name: 'AOS-10', tone: 'accent' }, { name: 'CLEARPASS', tone: 'neutral' }], mix: '2 gw · 168 rap', devices: 2, clients: '368', health: '95%', healthPct: '95%', tone: 'ok', alerts: '1 open', alertTone: 'warning', sync: '50s' },
 ];
 
+/** The site ids that name a physical site. SITE_IDS also carries the
+ *  bookkeeping pseudo-sites ('core-services', 'workspace', 'multiple') that
+ *  alert/device rows use — those have no inventory row, so a site page must
+ *  404 for them rather than fabricate one. */
+export const REAL_SITE_IDS: SiteId[] = SITES.map((s) => s.id);
+
+/** True only for a site the portal actually has an inventory row for. */
+export function isRealSiteId(id: string): id is SiteId {
+  return (REAL_SITE_IDS as readonly string[]).includes(id);
+}
+
 // ---------------------------------------------------------------------------
 // Site detail — NtSiteDetail.dc.html (the `profiles` map + fallback())
 // ---------------------------------------------------------------------------
@@ -639,6 +656,99 @@ export function siteProfileFor(siteName: string): SiteProfile {
   return profile ?? buildLocalOnlySiteProfile(siteName);
 }
 
+/** Inventory row → the site-detail device table's row shape. `role` and
+ *  `uptime` are not on a DeviceRow, so they read '—' rather than invented. */
+export function toSiteDeviceRow(d: DeviceRow): SiteDeviceRow {
+  return {
+    name: d.name,
+    model: d.model,
+    plane: d.plane,
+    planeTone: d.planeTone,
+    role: '—',
+    state: d.state,
+    stateTone: d.stateTone,
+    uptime: '—',
+  };
+}
+
+/** Alert queue row → the site-detail "Open here" row shape (plane · age meta,
+ *  the same composition the authored profiles use). */
+export function toSiteAlertRow(a: AlertRow): SiteAlertRow {
+  return { sev: a.sev, tone: a.tone, title: a.title, meta: `${a.plane.toLowerCase()} · ${a.age}` };
+}
+
+/** Console label per claiming plane — the `launch` button copy. */
+const SITE_LAUNCH_LABEL: Partial<Record<Plane, string>> = {
+  CENTRAL: 'Open in Central',
+  'AOS-10': 'Open in Central',
+  MIST: 'Open in Mist',
+  CLASSIC: 'Open Classic UI',
+  'AOS-8': 'Open AOS-8 WebUI',
+  LOCAL: 'Open local WebUI',
+  CLEARPASS: 'Open ClearPass',
+  UXI: 'Open UXI dashboard',
+};
+
+/**
+ * Site profile derived from the portal's own inventory for a site that has no
+ * authored deep profile — every value traces back to the SITES row, the
+ * recorded forwarding chain, and the device/alert rows filed under that site.
+ * Facts the portal does not hold (config drift, client peak, per-device role
+ * and uptime) read '—' rather than borrowing another site's numbers.
+ *
+ * Returns null for a pseudo-site with no inventory row; callers should 404.
+ * `core` is '' when no switch is filed at the site — render the terminal
+ * button disabled rather than dialling a device from somewhere else.
+ */
+export function deriveSiteProfile(id: SiteId): SiteProfile | null {
+  const site = SITES.find((s) => s.id === id);
+  if (!site) return null;
+  const chain = SITE_CHAIN[id];
+  const rows = DEVICES.filter((d) => d.siteId === id);
+  const open = ALERTS.filter((a) => a.siteId === id && a.state === 'open');
+  const planeNames = site.planes.map((p) => p.name);
+  const critical = open.filter((a) => a.sev === 'P1').length;
+  const answering = rows.filter((d) => d.state === 'up').length;
+  const core = chain?.core ?? rows.find((d) => d.type === 'switch')?.name ?? '';
+  const local = planeNames.includes('LOCAL');
+  const facts: Fact[] = [
+    { k: 'Subnets', v: site.subnet },
+    { k: 'WAN', v: chain ? chain.wan : '—' },
+    { k: 'Core', v: chain ? `${chain.core} · ${chain.coreRole}` : '—' },
+    { k: 'Planes', v: planeNames.join(', ') },
+    { k: 'Mix', v: site.mix },
+  ];
+  return {
+    name: site.name,
+    siteId: id,
+    blurb:
+      `${planeNames.join(' + ')} ${planeNames.length > 1 ? 'claim' : 'claims'} this site. ` +
+      'Everything below is the portal’s own inventory record — this site has no authored deep profile.',
+    launch: SITE_LAUNCH_LABEL[site.planes[0]?.name ?? 'LOCAL'] ?? 'Open plane console',
+    deviceCount: String(site.devices),
+    deviceDelta: site.mix,
+    clients: site.clients,
+    clientDelta: 'no peak recorded',
+    health: site.health,
+    healthNote: site.health === null ? 'inventory stale' : `synced ${site.sync}`,
+    healthTone: site.tone === 'ok' ? 'neutral' : 'negative',
+    alertCount: String(open.length),
+    alertNote: critical > 0 ? `${critical} critical` : open.length > 0 ? 'open now' : 'none open',
+    drift: '—',
+    driftNote: 'no baseline scan for this site',
+    collector: local ? 'healthy' : 'none',
+    collectorTone: local ? 'success' : 'neutral',
+    reachValue: rows.length > 0 ? Math.round((answering / rows.length) * 100) : 0,
+    core,
+    collectorNote: local
+      ? `local ssh collector · ${answering} of ${rows.length} recorded devices answering`
+      : 'no local collector at this site — plane inventory only',
+    facts,
+    devices: rows.map(toSiteDeviceRow),
+    alerts: open.map(toSiteAlertRow),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Devices — NtDevices.dc.html
 // ---------------------------------------------------------------------------
@@ -693,6 +803,29 @@ export const LANE_META: Partial<Record<Plane, LaneMeta>> = {
   CLEARPASS: { tone: 'success', sync: 'synced 55s', note: 'policy', mark: 'var(--nd-border-strong)' },
   UXI: { tone: 'warning', sync: '1 offline', note: 'sensors', mark: 'var(--nd-info)' },
 };
+
+/** The 2px lane-rule colour per plane, lifted out of LANE_META so a live lane
+ *  header built from registry state uses the same colour as the demo one.
+ *  The eight LANE_META values are reproduced verbatim; GREENLAKE and
+ *  THIRD-PARTY never own a device lane, so they take the neutral rule. */
+export const PLANE_MARK: Record<Plane, string> = {
+  CENTRAL: 'var(--nd-accent)',
+  CLASSIC: 'var(--nd-danger)',
+  MIST: 'var(--nd-info)',
+  GREENLAKE: 'var(--nd-border-strong)',
+  'AOS-8': 'var(--nd-warning)',
+  'AOS-10': 'var(--nd-accent)',
+  LOCAL: 'var(--nd-border-strong)',
+  CLEARPASS: 'var(--nd-border-strong)',
+  UXI: 'var(--nd-info)',
+  'THIRD-PARTY': 'var(--nd-border-strong)',
+};
+
+/** Authored reconciliation truth for the demo estate — README:237 and
+ *  design/NtDevices.dc.html:38 ("3 devices are claimed by two inventories,
+ *  14 by none"). The 28 DEVICES rows are a SAMPLE of a 418-device estate, so
+ *  these counts cannot be re-derived by counting sample rows. */
+export const DEVICE_RECONCILIATION = { doubleClaimed: 3, unclaimed: 14 };
 
 // ---------------------------------------------------------------------------
 // Device detail — NtDeviceDetail.dc.html
@@ -1071,6 +1204,23 @@ export const CAPABILITY_MATRIX: CapabilityRow[] = [
   { plane: 'ClearPass', note: 'policy edited in ClearPass', mode: 'read only', tone: 'neutral' },
 ];
 
+/** What the write broker can actually do per plane — the single source the
+ *  capability matrix and the Systems scope badge must both read, so the two
+ *  screens can never disagree. Central is the brokered write target, the
+ *  local collector and the AOS-8 master write over recorded SSH, everything
+ *  else is read only. */
+export const PLANE_WRITE_MODE: Record<PlaneKey, WriteMode> = {
+  central: 'brokered',
+  aos10: 'brokered', // brokered through Central, not separately credentialed
+  local: 'ssh',
+  aos8: 'ssh',
+  classic: 'read only',
+  mist: 'read only',
+  greenlake: 'read only',
+  clearpass: 'read only',
+  uxi: 'read only',
+};
+
 // -- Edit-drawer form seeds & select options (state + option arrays) ---------
 
 /** Initial form models from the component state. */
@@ -1443,6 +1593,60 @@ export const CONNECT_ENDPOINTS: Record<SystemTypeKey, EndpointVariant> = {
   local: { label: 'Collector agent address', help: 'The agent dials out; this is for verification only.', hint: '10.42.0.9:8443' },
   clearpass: { label: 'ClearPass publisher URL', help: 'Publisher node, API client credentials.', hint: 'cppm-01.meridian.health' },
   uxi: { label: 'UXI API base — optional', help: 'Defaults to api.capenetworks.com; auth is always HPE SSO client credentials.', hint: 'api.capenetworks.com' },
+};
+
+/**
+ * The credential fields each plane needs BEYOND the endpoint variant above and
+ * the shared clientId/clientSecret pair. Keys are the exact ones the adapters'
+ * `isComplete()` reads (server/src/planes/*.ts) — a drawer that saves under any
+ * other key produces a linked-but-stubbed plane that silently never syncs.
+ *
+ * The endpoint input itself must save under CONNECT_ENDPOINT_KEY below.
+ */
+export const CONNECT_FIELDS: Record<SystemTypeKey, ConnectField[]> = {
+  central: [],
+  mist: [
+    { key: 'orgId', label: 'Org ID', help: 'Mist organisation UUID.' },
+    { key: 'token', label: 'API token', help: 'Org API token — sent as Authorization: Token.', secret: true },
+  ],
+  classic: [],
+  greenlake: [
+    { key: 'workspaceId', label: 'Workspace ID', help: 'Platform workspace, not the application instance.' },
+  ],
+  aos8: [
+    { key: 'username', label: 'Username', help: 'Read-only management account on the master.' },
+    { key: 'password', label: 'Password', help: 'Stored with the plane credentials.', secret: true },
+  ],
+  local: [
+    { key: 'username', label: 'SSH username', help: 'Account the collector opens recorded sessions with.' },
+    { key: 'password', label: 'SSH password', help: 'Omit when a private key is supplied.', secret: true, optional: true },
+    { key: 'privateKey', label: 'SSH private key', help: 'PEM body; preferred over a password.', secret: true, optional: true },
+    { key: 'passphrase', label: 'Key passphrase', help: 'Only when the private key is encrypted.', secret: true, optional: true },
+    { key: 'port', label: 'Jump host port', help: 'Defaults to 22.', optional: true },
+  ],
+  clearpass: [
+    { key: 'token', label: 'API token', help: 'OAuth access token for the publisher API client.', secret: true },
+  ],
+  uxi: [],
+};
+
+/**
+ * Settings key the connect drawer's endpoint input must save under, per plane
+ * — read straight off each adapter's `isComplete()` / constructor:
+ *   central.ts:670 gatewayBaseUrl · mist.ts:181 apiHost · greenlake.ts:302
+ *   workspaceId · aos8.ts:264 master · clearpass.ts:213 host · uxi.ts:190
+ *   baseUrl (optional) · terminal.ts:410 host (the collector's jump box).
+ * `classic` has no adapter yet; its record keeps the generic baseUrl key.
+ */
+export const CONNECT_ENDPOINT_KEY: Record<SystemTypeKey, string> = {
+  central: 'gatewayBaseUrl',
+  mist: 'apiHost',
+  classic: 'baseUrl',
+  greenlake: 'workspaceId',
+  aos8: 'master',
+  local: 'host',
+  clearpass: 'host',
+  uxi: 'baseUrl',
 };
 
 /** Success alert body after "Test connection" — `testResult`. */

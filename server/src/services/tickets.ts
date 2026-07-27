@@ -9,32 +9,97 @@
  * on its first note/resolve, so its log survives).
  *
  * Evidence collection: a raise snapshots what the portal already knows about
- * the alert's device — current state from the poller cache (live mode), the
- * newest brokered writes naming it from the change log, and its recorded
- * shell sessions (data/shell-logs). A snapshot, not a live join: the ticket
- * keeps what was true when it was raised.
+ * the alert's device — current state from the RECONCILED poller cache (live
+ * mode), the newest brokered writes naming it from the change log, and its
+ * recorded shell sessions (data/shell-logs). A snapshot, not a live join: the
+ * ticket keeps what was true when it was raised. Reconciled, not raw: a
+ * device whose only claiming plane is stale is quoted as 'unverified', and a
+ * double-claimed device gets its own evidence row (design rules 1 and 2).
+ *
+ * Timing: a raised ticket persists `raisedAt`/`slaDueAt` (ISO) and its `age`
+ * and `sla` strings are recomputed from those on every read — a ticket raised
+ * days ago must not still render "now" with a fresh SLA countdown. The
+ * authored fixtures carry no timestamps, so their authored strings stand.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { siteIdFor, TICKETS, type AlertRow, type DeviceRow, type SiteId, type TicketEvidence, type TicketNote, type TicketRow, type Tone } from '../../../shared';
+import { registry } from '../planes/registry';
+import { PLANE_IDS, type PlaneId } from '../planes/types';
 import { poller } from './poller';
+import { reconcileDevices, type ReconciledDeviceRow } from './reconcile';
 import { terminalManager, type SessionInfo } from './terminal';
 import type { BrokerLogEntry } from './writeBroker';
 
 const SEV_TONE: Record<string, Tone> = { P1: 'danger', P2: 'warning', P3: 'info' };
 
+/** Hours until SLA breach per severity — the deadline stamped at raise time. */
+const SLA_HOURS: Record<string, number> = { P1: 4, P2: 8, P3: 24 };
+
 /** Evidence feeds — injectable for tests; defaults are the live singletons. */
 export interface EvidenceSources {
   changeLog?: () => BrokerLogEntry[];
   sessions?: () => SessionInfo[];
-  devices?: () => DeviceRow[];
+  devices?: () => ReconciledDeviceRow[];
 }
 
 function hhmmOf(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** Planes currently failing and serving last-good data — "stale" for reconcile. */
+function stalePlanes(): Set<PlaneId> {
+  const out = new Set<PlaneId>();
+  for (const id of PLANE_IDS) {
+    if (registry.state(id).health === 'degraded') out.add(id);
+  }
+  return out;
+}
+
+/** The poller cache read the way every screen reads it: one row per physical
+ *  device, stale-only claims downgraded to 'unverified', double claims flagged. */
+function reconciledDevices(): ReconciledDeviceRow[] {
+  const byPlane: Partial<Record<PlaneId, readonly DeviceRow[]>> = {};
+  for (const [id, pull] of poller.contributionsByPlane()) {
+    if (pull.devices) byPlane[id] = pull.devices;
+  }
+  return reconcileDevices(byPlane, stalePlanes()).devices;
+}
+
+/** Elapsed time in the fixtures' age vocabulary ('now', '12m', '6h', '2d'). */
+function formatAge(ms: number): string {
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/** SLA line in the fixtures' vocabulary: 'SLA breach in 1h 12m' / breached. */
+function formatSla(msLeft: number): string {
+  const mins = Math.round(Math.abs(msLeft) / 60_000);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const span = h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+  return msLeft >= 0 ? `SLA breach in ${span}` : `SLA breached ${span} ago`;
+}
+
+/**
+ * Recompute `age`/`sla` for an operator-raised ticket from its stored
+ * timestamps. A ticket without `raisedAt` is an authored fixture (or a row
+ * written before timestamps existed) — its authored strings are authoritative
+ * and pass through untouched.
+ */
+export function withDerivedTiming(ticket: TicketRow, now: number = Date.now()): TicketRow {
+  const raisedAt = ticket.raisedAt ? Date.parse(ticket.raisedAt) : NaN;
+  if (Number.isNaN(raisedAt)) return { ...ticket };
+  const dueAt = ticket.slaDueAt ? Date.parse(ticket.slaDueAt) : NaN;
+  const sla = ticket.state === 'resolved' ? 'Closed' : Number.isNaN(dueAt) ? ticket.sla : formatSla(dueAt - now);
+  return { ...ticket, age: formatAge(now - raisedAt), sla };
 }
 
 export class TicketStore {
@@ -48,7 +113,7 @@ export class TicketStore {
     this.sources = {
       changeLog: sources.changeLog ?? (() => this.readChangeLog()),
       sessions: sources.sessions ?? (() => terminalManager.listSessions()),
-      devices: sources.devices ?? (() => poller.getCache().devices),
+      devices: sources.devices ?? (() => reconciledDevices()),
     };
   }
 
@@ -56,7 +121,8 @@ export class TicketStore {
     return path.join(this.dataDir, 'tickets.json');
   }
 
-  list(): TicketRow[] {
+  /** Rows exactly as persisted — the basis for every mutation and write. */
+  private stored(): TicketRow[] {
     if (this.tickets !== null) return this.tickets.map((t) => ({ ...t }));
     this.tickets = [];
     try {
@@ -67,12 +133,18 @@ export class TicketStore {
         console.error(`tickets: unreadable store, starting empty: ${(err as Error).message}`);
       }
     }
-    return this.list();
+    return this.stored();
+  }
+
+  /** The queue as it should read right now: `age`/`sla` on raised tickets are
+   *  derived from their timestamps, never served frozen at the raise moment. */
+  list(): TicketRow[] {
+    return this.stored().map((t) => withDerivedTiming(t));
   }
 
   /** Highest id so far across stored + fixture-series tickets (NET-4xxx). */
   private nextId(): string {
-    const max = this.list().reduce((m, t) => {
+    const max = this.stored().reduce((m, t) => {
       const n = Number(/^NET-(\d+)$/.exec(t.id)?.[1]);
       return Number.isFinite(n) ? Math.max(m, n) : m;
     }, 4200); // fixture series ends at NET-4188; raised tickets start above it
@@ -83,15 +155,16 @@ export class TicketStore {
   raiseFromAlert(alert: AlertRow): TicketRow {
     // The device rides on evidence[0] (the alert snapshot written below) — the
     // same title on another device is a different incident, not a duplicate.
-    const existing = this.list().find(
+    const existing = this.stored().find(
       (t) => t.state !== 'resolved' && t.title === alert.title && t.evidence[0]?.device === alert.device,
     );
-    if (existing) return existing;
+    if (existing) return withDerivedTiming(existing);
 
     const id = this.nextId();
     const siteId = siteIdFor(alert.siteName) ?? ('multiple' as SiteId);
     const now = new Date();
     const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const slaDueAt = new Date(now.getTime() + (SLA_HOURS[alert.sev] ?? 24) * 3_600_000);
     const ticket: TicketRow = {
       id,
       pri: alert.sev,
@@ -100,11 +173,15 @@ export class TicketStore {
       title: alert.title,
       siteId,
       siteName: alert.siteName,
+      // age/sla are derived from the timestamps below on every read — these are
+      // the raise-moment values, not a frozen claim about the present.
       age: 'now',
       reporter: 'portal — raised from the alert queue',
       owner: 'unassigned',
       planes: alert.plane,
-      sla: alert.sev === 'P1' ? 'SLA breach in 4h' : alert.sev === 'P2' ? 'SLA breach in 8h' : 'SLA breach in 24h',
+      sla: formatSla(slaDueAt.getTime() - now.getTime()),
+      raisedAt: now.toISOString(),
+      slaDueAt: slaDueAt.toISOString(),
       inc: id.slice(4),
       causeTitle: 'Likely cause: see the alert detail below',
       cause: alert.detail,
@@ -122,8 +199,8 @@ export class TicketStore {
         ...this.collectEvidence(alert),
       ],
     };
-    this.save([ticket, ...this.list()]);
-    return ticket;
+    this.save([ticket, ...this.stored()]);
+    return withDerivedTiming(ticket);
   }
 
   /**
@@ -138,14 +215,28 @@ export class TicketStore {
 
     const live = this.sources.devices().find((d) => d.name === device);
     if (live) {
-      const serial = (live as { serial?: string }).serial;
+      const claimedBy = live.claimedBy ?? [];
       out.push({
         time: 'now',
         plane: live.plane,
         finding: `current state: ${live.state} · ${live.model} · firmware ${live.firmware}`,
-        raw: `source=poller.cache${serial ? ` serial=${serial}` : ''}`,
+        raw: `source=poller.reconciled${live.serial ? ` serial=${live.serial}` : ''}${claimedBy.length ? ` claimed_by=${claimedBy.join(',')}` : ''}`,
         device,
       });
+      // Rule 2: a device two planes both claim (or one no management plane
+      // claims) is evidence in its own right, not something to quietly drop.
+      if (live.reconciliationIssue) {
+        out.push({
+          time: 'now',
+          plane: live.plane,
+          finding:
+            claimedBy.length > 1
+              ? `reconciliation: double-claimed by ${claimedBy.join(', ')}`
+              : 'reconciliation: claimed by no management plane (local collector only)',
+          raw: `source=poller.reconciled claimed_by=${claimedBy.join(',') || 'none'}`,
+          device,
+        });
+      }
     }
 
     const want = device.toLowerCase();
@@ -204,7 +295,7 @@ export class TicketStore {
    * fixture queue. Returns the updated ticket, or null for an unknown id.
    */
   addNote(id: string, text: string, kind: TicketNote['kind'] = 'note'): TicketRow | null {
-    const tickets = this.list();
+    const tickets = this.stored();
     let idx = tickets.findIndex((t) => t.id === id);
     if (idx === -1) {
       const fixture = TICKETS.find((t) => t.id === id);
@@ -218,7 +309,7 @@ export class TicketStore {
     const updated: TicketRow = { ...cur, notes: [...(cur.notes ?? []), note] };
     tickets[idx] = updated;
     this.save(tickets);
-    return { ...updated };
+    return withDerivedTiming(updated);
   }
 
   /**
@@ -228,7 +319,7 @@ export class TicketStore {
    * unchanged (no duplicate note). Returns null for an unknown id.
    */
   resolve(id: string): TicketRow | null {
-    const tickets = this.list();
+    const tickets = this.stored();
     let idx = tickets.findIndex((t) => t.id === id);
     if (idx === -1) {
       const fixture = TICKETS.find((t) => t.id === id);
@@ -238,12 +329,12 @@ export class TicketStore {
     }
     const cur = tickets[idx];
     if (!cur) return null;
-    if (cur.state === 'resolved') return { ...cur };
+    if (cur.state === 'resolved') return withDerivedTiming(cur);
     const note: TicketNote = { ts: new Date().toISOString(), kind: 'action', text: 'Ticket resolved' };
     const updated: TicketRow = { ...cur, state: 'resolved', notes: [...(cur.notes ?? []), note] };
     tickets[idx] = updated;
     this.save(tickets);
-    return { ...updated };
+    return withDerivedTiming(updated);
   }
 
   private save(tickets: TicketRow[]): void {

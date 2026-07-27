@@ -16,10 +16,16 @@ import type {
   ConfigForm,
   ConfigKind,
   DeviceProfile,
+  DeviceRow,
   PathHop,
   PathHopView,
+  PlaneDatasetKey,
+  PlaneFreshness,
+  PlaneKey,
+  PlaneScope,
   PortForm,
   PortObject,
+  Sev,
   SiteChain,
   SiteDeviceRow,
   SiteId,
@@ -28,6 +34,7 @@ import type {
   SsidForm,
   SsidObject,
   SsidSecurity,
+  SyncOutcome,
   TerminalKind,
   TerminalLine,
   TimelineStep,
@@ -43,6 +50,7 @@ import {
   AP_UPLINK,
   DEVICE_PROFILE_BUILDERS,
   FALLBACK_CHAIN,
+  PLANE_WRITE_MODE,
   SITE_CHAIN,
   SW_TERMINAL_RESPONSES,
   TIMELINES,
@@ -294,15 +302,31 @@ export function blastRadiusFor(kind: ConfigKind, form: ConfigForm): BlastRadiusR
   ];
 }
 
+/** Seeding options — `live` drops the prototype's authored fallbacks so a real
+ *  row never inherits fixture values the plane did not report. */
+export interface SeedFormOptions {
+  live?: boolean;
+}
+
 /**
  * Form seeding when an Edit row opens — the `edit:` patches in renderVals.
  * Returns a partial form to merge over the current form state (fields not
  * mentioned keep their current values, exactly as in the prototype).
+ *
+ * In demo mode the authored fallbacks are part of the fixture (VLAN '812' for
+ * a port whose summary carries no vlan token, the Meridian DHCP helpers for a
+ * VLAN row). Pass `{ live: true }` for a row read back off a real plane: the
+ * unknown fields come back empty so nothing fictional can reach a push
+ * preview or the write broker.
  */
-export function seedFormFromRow(kind: 'ssid', row: SsidObject): Partial<SsidForm>;
-export function seedFormFromRow(kind: 'port', row: PortObject): Partial<PortForm>;
-export function seedFormFromRow(kind: 'vlan', row: VlanObject): Partial<VlanForm>;
-export function seedFormFromRow(kind: ConfigKind, row: SsidObject | PortObject | VlanObject): Partial<ConfigForm> {
+export function seedFormFromRow(kind: 'ssid', row: SsidObject, opts?: SeedFormOptions): Partial<SsidForm>;
+export function seedFormFromRow(kind: 'port', row: PortObject, opts?: SeedFormOptions): Partial<PortForm>;
+export function seedFormFromRow(kind: 'vlan', row: VlanObject, opts?: SeedFormOptions): Partial<VlanForm>;
+export function seedFormFromRow(
+  kind: ConfigKind,
+  row: SsidObject | PortObject | VlanObject,
+  opts: SeedFormOptions = {},
+): Partial<ConfigForm> {
   if (kind === 'ssid') {
     const w = row as SsidObject;
     return { name: w.name, vlan: w.vlan.replace('vlan ', ''), plane: w.plane };
@@ -313,7 +337,7 @@ export function seedFormFromRow(kind: ConfigKind, row: SsidObject | PortObject |
       device: p.device,
       id: p.port,
       desc: p.desc,
-      vlan: (p.summary.split('vlan ')[1] || '812').split(' ')[0],
+      vlan: (p.summary.split('vlan ')[1] || (opts.live ? '' : '812')).split(' ')[0],
       poe: p.summary.indexOf('poe') > -1 && p.summary.indexOf('no poe') < 0,
       mab: p.summary.indexOf('MAB') > -1,
       dot1x: p.summary.indexOf('802.1X') > -1,
@@ -321,7 +345,11 @@ export function seedFormFromRow(kind: ConfigKind, row: SsidObject | PortObject |
     };
   }
   const v = row as VlanObject;
-  return { id: v.id, name: v.name, helpers: v.id === '812' ? '10.42.0.20' : '10.42.0.20, 10.44.0.20' };
+  return {
+    id: v.id,
+    name: v.name,
+    helpers: opts.live ? '' : v.id === '812' ? '10.42.0.20' : '10.42.0.20, 10.44.0.20',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +519,126 @@ export function buildSiteTopology(
     : 'no forwarding-chain record for this site — device layers only, no uplink edges beyond recorded data';
   void siteId; // reserved for per-site overrides; layers are device-driven today
   return { layers, nodes: sorted, edges: liveEdges, note };
+}
+
+// ---------------------------------------------------------------------------
+// Freshness, ages and sync outcomes — README design rule 1
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact relative age in the fixtures' own vocabulary ('40s', '12m', '6h',
+ * '3d'), '—' when there is no timestamp to age from. Same shape the authored
+ * rows use, so a live row and a demo row read identically.
+ */
+export function relativeAge(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return '—';
+  const ms = now - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 60_000) return `${Math.max(1, Math.floor(ms / 1000))}s`;
+  const min = Math.floor(ms / 60_000);
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
+}
+
+/** SLA window per severity — the table the ticket raiser already applies. */
+export const SLA_HOURS: Record<Sev, number> = { P1: 4, P2: 8, P3: 24 };
+
+/**
+ * Live SLA line for a ticket: 'SLA breach in 1h 12m' while there is time left,
+ * 'SLA breached 40m ago' once the deadline has passed. Returns null when the
+ * ticket carries no deadline (the authored fixtures) so the caller keeps the
+ * authored string instead of inventing a countdown.
+ */
+export function slaCountdown(dueAt: string | null | undefined, now: number = Date.now()): string | null {
+  if (!dueAt) return null;
+  const due = new Date(dueAt).getTime();
+  if (!Number.isFinite(due)) return null;
+  const min = Math.round(Math.abs(due - now) / 60_000);
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  const span = h > 0 ? `${h}h ${m}m` : `${m}m`;
+  return due >= now ? `SLA breach in ${span}` : `SLA breached ${span} ago`;
+}
+
+/**
+ * Age a plane's last successful sync and decide whether it has expired.
+ * A plane that has never synced is stale by definition — its devices must
+ * read `unverified`, never `up` (design rule 1). `staleAfterSec` is the
+ * window the caller considers current, typically a few poll intervals.
+ */
+export function planeFreshness(
+  lastSync: string | null,
+  staleAfterSec: number,
+  now: number = Date.now(),
+): PlaneFreshness {
+  if (!lastSync) return { lastSync: null, ageSec: null, stale: true };
+  const ts = new Date(lastSync).getTime();
+  if (!Number.isFinite(ts)) return { lastSync, ageSec: null, stale: true };
+  const ageSec = Math.max(0, Math.round((now - ts) / 1000));
+  return { lastSync, ageSec, stale: ageSec > staleAfterSec };
+}
+
+/**
+ * Classify one pull so the registry can stamp what actually happened rather
+ * than a binary ok/fail. The case the honesty rules exist for is `empty`: the
+ * plane answered and reported nothing, which must not be recorded as a
+ * healthy sync carrying data, nor be presented as an authoritative zero.
+ */
+export function syncOutcomeFor(pull: {
+  ok: boolean;
+  reported: readonly PlaneDatasetKey[];
+  missing?: readonly PlaneDatasetKey[];
+  rows: number;
+}): SyncOutcome {
+  if (!pull.ok) return 'failed';
+  if (pull.missing && pull.missing.length > 0) return 'partial';
+  if (pull.reported.length === 0 || pull.rows === 0) return 'empty';
+  return 'ok';
+}
+
+// ---------------------------------------------------------------------------
+// Device identity — the inventory row is authoritative over the profile
+// ---------------------------------------------------------------------------
+
+/**
+ * Overlay the reconciled inventory row's identity onto a name-prefix device
+ * profile, so a detail page can never contradict the row that linked to it
+ * (README:239-241: the header is `state Badge, plane Badge, model · site · IP`
+ * for THAT device). Only identity fields the row actually carries are
+ * overridden — `ip`, `prompt`, `stats`, `ports` and `checks` stay as authored
+ * unless the row supplies a better value.
+ */
+export function applyDeviceRowToProfile(profile: DeviceProfile, row: DeviceRow | null | undefined): DeviceProfile {
+  if (!row) return profile;
+  return {
+    ...profile,
+    model: row.model || profile.model,
+    site: row.siteName || profile.site,
+    siteId: row.siteId ?? profile.siteId,
+    ip: row.ip || profile.ip,
+    plane: row.plane,
+    planeTone: row.planeTone,
+    state: row.state,
+    stateTone: row.stateTone,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Write model — one source for the capability matrix and the scope badge
+// ---------------------------------------------------------------------------
+
+/**
+ * The scope badge for a plane, derived from what the broker can actually do
+ * (PLANE_WRITE_MODE) and what the operator granted. An unlinked plane, or a
+ * brokered plane without a write scope, is honestly `read only`.
+ */
+export function scopeForPlane(plane: PlaneKey, opts: { linked: boolean; scopes?: string | null } = { linked: false }): PlaneScope {
+  if (!opts.linked) return 'read only';
+  const mode = PLANE_WRITE_MODE[plane];
+  if (mode === 'ssh') return 'read + ssh';
+  if (mode === 'brokered' && (opts.scopes ?? '').includes('write')) return 'read + broker';
+  return 'read only';
 }
 
 /** Lower rank = worse tone (for group roll-ups). */

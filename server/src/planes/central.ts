@@ -21,10 +21,24 @@
  * extraQuery so they never leak onto the v1alpha1 paths, which 400 on unknown
  * params — one section error fails the whole pull, so a stray param is fatal.
  *
+ * Paging: only an explicitly-total-named key ('total'/'total_count') is trusted
+ * as the grand total. `count` is NOT — the v1alpha1 payloads report it as the
+ * number of rows in THIS response, so reading it as the total stops the walk
+ * after page one (500 of 4,982 clients). With no total the loop falls back to
+ * the full-page heuristic, which terminates on the first short page.
+ *
  * Failure policy:
  *   - all candidates 404 → section "missing": devices sub-sections tolerate it
- *     individually (but all three missing → pull fails), other sections
- *     contribute an empty array and the plane note says what was skipped.
+ *     individually (but all three missing → pull fails); every other missing
+ *     section is OMITTED from the PlanePull rather than reported as an empty
+ *     array, because "we could not read it" is not "there are none" — the
+ *     poller's datasetReported()/lastSyncFor() must see it as unknown.
+ *   - a section whose walk hit the page cap (or handed over fewer rows than it
+ *     reported) is "truncated": the rows are kept, the note says so.
+ *   - either case holds the plane at 'warning' — a partial read never stamps
+ *     itself healthy and complete (README honesty rule 1).
+ *   - 429 is retried with backoff (Retry-After honoured) before it counts as a
+ *     failure, and pages are paced so one section is not a burst.
  *   - any other HTTP/network error → pull() throws naming the section, so the
  *     poller marks the plane degraded and keeps serving the last good cache.
  *
@@ -71,8 +85,21 @@ import type { PlaneAdapter, PlanePull, PlaneState } from './types';
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
 
+/** 429 backoff: attempts after the first, exponential floor, and a hard cap. */
+const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_BASE_MS = 1_000;
+const RATE_LIMIT_CAP_MS = 30_000;
+/** Pacing between pages of one section so a 10-page walk is not a burst. */
+const PAGE_PACING_MS = 150;
+
 export type RecordCallFn = (call: { path: string; ms: number; code: string }) => void;
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+export type SleepFn = (ms: number) => Promise<void>;
+
+const realSleep: SleepFn = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 export type CentralDeviceRow = DeviceRow & DeviceIdentityHints;
 
@@ -506,6 +533,12 @@ interface SectionSpec {
   maxPages: number;
 }
 
+/** One section's rows plus whether the walk finished (see fetchSection). */
+interface SectionResult {
+  rows: unknown[];
+  truncated: boolean;
+}
+
 const SECTIONS: Record<SectionKey, SectionSpec> = {
   aps: { candidates: [{ path: '/monitoring/v1/aps' }, { path: '/network-monitoring/v1alpha1/aps' }], limit: 200, maxPages: 25 },
   switches: { candidates: [{ path: '/monitoring/v1/switches' }, { path: '/network-monitoring/v1alpha1/switches' }], limit: 200, maxPages: 25 },
@@ -534,6 +567,17 @@ const SECTIONS: Record<SectionKey, SectionSpec> = {
     maxPages: 5,
   },
 };
+
+/**
+ * One outbound response. `retryAfterMs` is additive — callers that only read
+ * { status, body } (the write broker, reboot/disconnect/ackAlert) are
+ * unaffected; only the 429 backoff in authedGet consumes it.
+ */
+interface HttpResult {
+  status: number;
+  body: unknown;
+  retryAfterMs?: number;
+}
 
 class HttpStatusError extends Error {
   constructor(
@@ -571,12 +615,31 @@ function extractRows(body: unknown): unknown[] {
   return [];
 }
 
+/**
+ * Grand total of the section, or null when the payload does not state one.
+ * Deliberately does NOT read `count`: the v1alpha1 payloads report it as the
+ * row count of the current response (see the fixture in central.test.ts —
+ * `total: 1, count: 1, next: 1`), so trusting it as the total makes
+ * `offset < total` false after page one and truncates the section to a single
+ * page. Null is the honest answer; the paging loop then uses the full-page
+ * heuristic, which terminates on the first short page.
+ */
 function extractTotal(body: unknown): number | null {
   if (body && typeof body === 'object') {
     const b = body as Record<string, unknown>;
-    return num(b.total) ?? num(b.count);
+    return num(b.total) ?? num(b.total_count) ?? num(b.totalCount);
   }
   return null;
+}
+
+/** Retry-After is delta-seconds or an HTTP-date; both → ms, anything else null. */
+export function parseRetryAfterMs(header: string | null, nowMs: number = Date.now()): number | null {
+  const raw = str(header);
+  if (!raw) return null;
+  const secs = num(raw);
+  if (secs !== null) return Math.max(0, secs * 1000);
+  const at = Date.parse(raw);
+  return Number.isNaN(at) ? null : Math.max(0, at - nowMs);
 }
 
 function withScheme(base: string): string {
@@ -632,6 +695,8 @@ export class CentralAdapter implements PlaneAdapter {
     private readonly stateRef: PlaneState,
     private readonly recordCall: RecordCallFn,
     private readonly fetchImpl: FetchLike = (url, init) => fetch(url, init),
+    /** Injectable so tests exercise backoff/pacing without real wall time. */
+    private readonly sleep: SleepFn = realSleep,
   ) {
     if (!CentralAdapter.isComplete(creds)) {
       throw new Error('central requires gatewayBaseUrl, clientId and clientSecret');
@@ -681,7 +746,8 @@ export class CentralAdapter implements PlaneAdapter {
   }
 
   async pull(): Promise<PlanePull> {
-    const missing: string[] = [];
+    const missing: SectionKey[] = [];
+    const truncated: SectionKey[] = [];
 
     // Devices: the three classic inventory endpoints, merged. A sub-endpoint
     // that 404s on every candidate is tolerated (tenant/release may not have
@@ -689,7 +755,9 @@ export class CentralAdapter implements PlaneAdapter {
     const deviceParts = await Promise.all(
       (['aps', 'switches', 'gateways'] as const).map(async (key) => {
         try {
-          return await this.fetchSection(key);
+          const section = await this.fetchSection(key);
+          if (section.truncated) truncated.push(key);
+          return section.rows;
         } catch (err) {
           if (err instanceof SectionMissingError) {
             missing.push(key);
@@ -706,9 +774,9 @@ export class CentralAdapter implements PlaneAdapter {
     const [apRows, switchRows, gatewayRows] = deviceParts;
 
     const [siteRows, clientRows, notificationRows] = await Promise.all([
-      this.optionalSection('sites', missing),
-      this.optionalSection('clients', missing),
-      this.optionalSection('notifications', missing),
+      this.optionalSection('sites', missing, truncated),
+      this.optionalSection('clients', missing, truncated),
+      this.optionalSection('notifications', missing, truncated),
     ]);
 
     const devices = [
@@ -724,24 +792,47 @@ export class CentralAdapter implements PlaneAdapter {
     // which mapCentralNotification reads as nowMs — every age became '0s'.
     const alerts = notificationRows.map((r) => mapCentralNotification(r)).filter((a): a is AlertRow => a !== null);
 
-    const summary = [
-      `${devices.length.toLocaleString('en-US')} devices`,
-      `${sites.length.toLocaleString('en-US')} sites`,
-      `${clients.length.toLocaleString('en-US')} clients`,
-    ];
+    // A count is an assertion of fact, so only sections we actually read get
+    // one — "0 clients" for a section that 404'd would be a lie.
+    const summary = [`${devices.length.toLocaleString('en-US')} devices`];
+    if (!missing.includes('sites')) summary.push(`${sites.length.toLocaleString('en-US')} sites`);
+    if (!missing.includes('clients')) summary.push(`${clients.length.toLocaleString('en-US')} clients`);
     if (missing.length > 0) summary.push(`not available: ${missing.join(', ')}`);
+    if (truncated.length > 0) summary.push(`truncated: ${truncated.join(', ')}`);
     this.stateRef.note = summary.join(' · ');
-    if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
+    if (missing.length > 0 || truncated.length > 0) {
+      // A dataset we could not read — or could not finish reading — must not
+      // stamp the plane healthy and complete. 'warning' survives the poller's
+      // markSyncResult(), which only restores a 'degraded' plane.
+      this.stateRef.health = 'warning';
+    } else if (this.stateRef.health === 'warning') {
+      this.stateRef.health = 'healthy'; // first sync done
+    }
 
-    return { devices, sites, clients, alerts };
+    // Missing sections are OMITTED, not emptied: downstream datasetReported()
+    // /lastSyncFor() must read them as unknown rather than as an authoritative
+    // zero with a fresh sync stamp. `devices` always ships — an all-404
+    // inventory already threw above, so a partial merge is a real read.
+    return {
+      devices,
+      ...(missing.includes('sites') ? {} : { sites }),
+      ...(missing.includes('clients') ? {} : { clients }),
+      ...(missing.includes('notifications') ? {} : { alerts }),
+    };
   }
 
   // -- internals -------------------------------------------------------------
 
   /** Missing (all-404) → empty + note; anything else → throw naming the section. */
-  private async optionalSection(section: SectionKey, missing: string[]): Promise<unknown[]> {
+  private async optionalSection(
+    section: SectionKey,
+    missing: SectionKey[],
+    truncated: SectionKey[],
+  ): Promise<unknown[]> {
     try {
-      return await this.fetchSection(section);
+      const result = await this.fetchSection(section);
+      if (result.truncated) truncated.push(section);
+      return result.rows;
     } catch (err) {
       if (err instanceof SectionMissingError) {
         missing.push(section);
@@ -753,9 +844,12 @@ export class CentralAdapter implements PlaneAdapter {
 
   /**
    * Page through one section, tolerating 404 by trying the next candidate
-   * path. Returns the merged rows of every page. Remembers the working path.
+   * path. Returns the merged rows of every page plus whether the walk actually
+   * finished — hitting the page cap, or being handed fewer rows than the
+   * endpoint claims exist, is silent data loss unless it is reported.
+   * Remembers the working path.
    */
-  private async fetchSection(section: SectionKey): Promise<unknown[]> {
+  private async fetchSection(section: SectionKey): Promise<SectionResult> {
     const spec = SECTIONS[section];
     const resolved = this.resolvedPath.get(section);
     const candidates = resolved
@@ -774,6 +868,9 @@ export class CentralAdapter implements PlaneAdapter {
       let lastPageSize = rows.length;
       let page = 1;
       while (page < spec.maxPages && lastPageSize >= spec.limit && (total === null || offset < total)) {
+        // Pace the walk: the gateway is quota'd and a 10-page client pull
+        // fired back-to-back is exactly what earns the 429.
+        await this.sleep(PAGE_PACING_MS);
         const path = `${cand.path}?offset=${offset}&limit=${spec.limit}${cand.extraQuery ?? ''}`;
         const res = await this.authedGet(path);
         // Page 1 worked, so the path is valid: a failure here fails the section.
@@ -786,19 +883,33 @@ export class CentralAdapter implements PlaneAdapter {
         page += 1;
       }
       this.resolvedPath.set(section, cand);
-      return rows;
+      // Incomplete either way: the page cap cut a still-full walk short, or the
+      // endpoint stated a total it never handed over.
+      const cappedOut = page >= spec.maxPages && lastPageSize >= spec.limit;
+      const shortOfTotal = total !== null && rows.length < total;
+      return { rows, truncated: cappedOut || shortOfTotal };
     }
     throw new SectionMissingError(section);
   }
 
-  /** GET with a bearer token; one invalidation + retry on 401. */
+  /**
+   * GET with a bearer token; one invalidation + retry on 401, and a bounded
+   * backoff on 429 so a rate limit paces the poll instead of destroying the
+   * whole cycle. Retry-After (delta-seconds or HTTP-date) wins over the
+   * exponential floor; every attempt is still recorded, so the Activity tab
+   * shows the real 429s.
+   */
   private async authedGet(path: string): Promise<{ status: number; body: unknown }> {
-    let res = await this.http('GET', path, { token: await this.tokens.get() });
-    if (res.status === 401) {
-      this.tokens.invalidate();
-      res = await this.http('GET', path, { token: await this.tokens.get() });
+    for (let attempt = 0; ; attempt += 1) {
+      let res = await this.http('GET', path, { token: await this.tokens.get() });
+      if (res.status === 401) {
+        this.tokens.invalidate();
+        res = await this.http('GET', path, { token: await this.tokens.get() });
+      }
+      if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return res;
+      const backoffMs = RATE_LIMIT_BASE_MS * 2 ** attempt;
+      await this.sleep(Math.min(res.retryAfterMs ?? backoffMs, RATE_LIMIT_CAP_MS));
     }
-    return res;
   }
 
   /**
@@ -829,7 +940,7 @@ export class CentralAdapter implements PlaneAdapter {
     method: 'GET' | 'POST' | 'PUT',
     path: string,
     opts: { token?: string; body?: unknown } = {},
-  ): Promise<{ status: number; body: unknown }> {
+  ): Promise<HttpResult> {
     return this.httpAbsolute(method, `${this.baseUrl}${path}`, opts);
   }
 
@@ -843,7 +954,7 @@ export class CentralAdapter implements PlaneAdapter {
     method: 'GET' | 'POST' | 'PUT',
     url: string,
     opts: { token?: string; body?: unknown; formEncoded?: boolean } = {},
-  ): Promise<{ status: number; body: unknown }> {
+  ): Promise<HttpResult> {
     const started = Date.now();
     const label = `${method} ${url.replace(/^https?:\/\/[^/]+/i, '') || '/'}`;
     let res: Response;
@@ -876,6 +987,8 @@ export class CentralAdapter implements PlaneAdapter {
     } catch {
       /* tolerate a non-JSON body — status is what we needed */
     }
-    return { status: res.status, body };
+    // Additive field: existing callers ({ status, body }) are unaffected.
+    const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
+    return { status: res.status, body, ...(retryAfterMs !== null ? { retryAfterMs } : {}) };
   }
 }

@@ -11,12 +11,27 @@
 import { describe, expect, it } from 'vitest';
 import type { PlaneState } from '../src/planes/types';
 import type { FetchLike } from '../src/planes/uxi';
-import { MAX_SENSOR_STATUSES, UxiAdapter, mapUxiIssue, mapUxiSensor } from '../src/planes/uxi';
+import { MAX_SENSOR_STATUSES, UxiAdapter, mapUxiIssue, mapUxiSensor, uxiSevFor } from '../src/planes/uxi';
 
 // -- Recorded fixtures (shapes as the UXI APIs return them) -------------------
 
-const SENSOR_A = { id: 'sen-001', name: 'uxi-cam01-2', model: 'UXI G2', mac_address: 'aa:bb:cc:00:11:22', firmware_version: '3.4.1' };
-const SENSOR_B = { id: 'sen-002', name: 'uxi-cam02-1', model: 'UXI G2' };
+// SensorsGetItem, exactly as the spec's own example item is shaped: camelCase,
+// site in `groupName`, model in `modelNumber`, MACs split ethernet/wifi.
+const SENSOR_A = {
+  id: 'sen-001',
+  serial: 'UX2F5C00171',
+  name: 'uxi-cam01-2',
+  groupName: 'Campus-01 — Meridian HQ',
+  groupPath: '/root/Campus-01 — Meridian HQ',
+  modelNumber: 'UX-F5C',
+  ethernetMacAddress: 'aa:bb:cc:00:11:22',
+  wifiMacAddress: 'aa:bb:cc:00:11:23',
+  pcapMode: 'off',
+  type: 'UXI',
+};
+const SENSOR_B = { id: 'sen-002', serial: 'UX2F5C00172', name: 'uxi-cam02-1', groupName: 'Campus-02 Research', modelNumber: 'UX-F5C' };
+/** A proxied/older deployment that still emits the snake_case variants. */
+const SENSOR_LEGACY = { id: 'sen-009', name: 'uxi-lake-1', model: 'UXI G2', mac_address: 'aa:bb:cc:00:99:01', firmware_version: '3.4.1' };
 
 const STATUS_ONLINE_ISSUE = {
   isOnline: true,
@@ -25,13 +40,21 @@ const STATUS_ONLINE_ISSUE = {
     {
       code: 'DHCP_FAILURE',
       id: 'iss-1',
-      severity: 'HIGH',
+      severity: 'ERROR',
       status: 'open',
       timestamp: '2026-07-26T04:50:00Z',
-      context: { sensorId: 'sen-001', networkName: 'clinical-ssid', serviceTestName: 'dhcp' },
+      context: {
+        sensorId: 'sen-001',
+        groupName: 'Campus-01 — Meridian HQ',
+        networkName: 'clinical-ssid',
+        serviceTestName: 'dhcp',
+      },
     },
   ],
 };
+
+/** The sensor an issue was read from, as pull() threads it into the mapper. */
+const SENSOR_A_REF = { name: 'uxi-cam01-2', siteId: 'campus-01' as const, siteName: 'Campus-01 — Meridian HQ' };
 
 function state(): PlaneState {
   return { id: 'uxi', linked: true, health: 'warning', lastSync: null, deviceCount: null, callsToday: 0, note: null };
@@ -83,17 +106,38 @@ function makeAdapter(fetchImpl: FetchLike): { adapter: UxiAdapter; calls: Array<
 // -- mapping -------------------------------------------------------------------
 
 describe('mapUxiSensor', () => {
-  it('maps a sensor with online status', () => {
+  // The live item names model/MAC/serial with the spec's own keys — reading
+  // anything else drops the reconcile identity hints entirely.
+  it('maps a sensor from the live SensorsGetItem shape', () => {
     const d = mapUxiSensor(SENSOR_A, true);
     expect(d).toMatchObject({
       name: 'uxi-cam01-2',
+      model: 'UX-F5C',
       type: 'sensor',
       plane: 'UXI',
       state: 'up',
       stateTone: 'success',
-      firmware: '3.4.1',
       localShell: false,
+      serial: 'UX2F5C00171',
       mac: 'aa:bb:cc:00:11:22',
+    });
+    // The sensor item publishes no firmware — 'unknown' is the honest answer.
+    expect(d?.firmware).toBe('unknown');
+  });
+
+  // Without this the whole UXI lane lands on the 'multiple' pseudo-site and no
+  // site mix can ever contain 'uxi'.
+  it('resolves the site from groupName', () => {
+    expect(mapUxiSensor(SENSOR_A, true)).toMatchObject({ siteId: 'campus-01', siteName: 'Campus-01 — Meridian HQ' });
+    expect(mapUxiSensor(SENSOR_B, true)).toMatchObject({ siteId: 'campus-02' });
+    expect(mapUxiSensor({ id: 'sen-x', name: 'uxi-x' }, true)).toMatchObject({ siteId: 'multiple' });
+  });
+
+  it('still tolerates the snake_case variants', () => {
+    expect(mapUxiSensor(SENSOR_LEGACY, true)).toMatchObject({
+      model: 'UXI G2',
+      mac: 'aa:bb:cc:00:99:01',
+      firmware: '3.4.1',
     });
   });
 
@@ -103,7 +147,25 @@ describe('mapUxiSensor', () => {
   });
 
   it('drops a row with neither name nor id', () => {
-    expect(mapUxiSensor({ model: 'UXI G2' }, true)).toBeNull();
+    expect(mapUxiSensor({ modelNumber: 'UX-F5C' }, true)).toBeNull();
+  });
+});
+
+describe('uxiSevFor', () => {
+  // The live enum is ERROR | WARNING | INFO; an ERROR is a failed synthetic
+  // test, which is P1 evidence, not a P3 footnote.
+  it('maps the live severity enum', () => {
+    expect(uxiSevFor('ERROR')).toBe('P1');
+    expect(uxiSevFor('WARNING')).toBe('P2');
+    expect(uxiSevFor('INFO')).toBe('P3');
+  });
+
+  it('keeps the HIGH/MEDIUM/LOW variants and defers on anything else', () => {
+    expect(uxiSevFor('HIGH')).toBe('P1');
+    expect(uxiSevFor('MEDIUM')).toBe('P2');
+    expect(uxiSevFor('LOW')).toBe('P3');
+    expect(uxiSevFor('critical')).toBe('P1');
+    expect(uxiSevFor(null)).toBe('P3');
   });
 });
 
@@ -111,7 +173,7 @@ describe('mapUxiIssue', () => {
   const NOW = Date.parse('2026-07-26T05:00:00Z');
 
   it('maps an ongoing issue onto the alert vocabulary', () => {
-    const a = mapUxiIssue(STATUS_ONLINE_ISSUE.issues[0], 'uxi-cam01-2', NOW);
+    const a = mapUxiIssue(STATUS_ONLINE_ISSUE.issues[0], SENSOR_A_REF, NOW);
     expect(a).toMatchObject({
       title: 'DHCP_FAILURE',
       plane: 'UXI',
@@ -119,16 +181,23 @@ describe('mapUxiIssue', () => {
       device: 'uxi-cam01-2',
       sev: 'P1',
       tone: 'danger',
+      siteId: 'campus-01',
     });
     expect(a?.detail).toContain('dhcp');
     expect(a?.age).not.toBe('—');
   });
 
+  it('inherits the sensor site when the issue context names no group', () => {
+    const a = mapUxiIssue({ code: 'DNS_FAILURE', severity: 'ERROR', status: 'open' }, SENSOR_A_REF, NOW);
+    expect(a).toMatchObject({ siteId: 'campus-01', siteName: 'Campus-01 — Meridian HQ' });
+  });
+
   it('treats a resolved issue as acked and drops junk rows', () => {
+    const ref = { name: 's', siteId: 'multiple' as const, siteName: 'Multiple' };
     expect(
-      mapUxiIssue({ code: 'X', severity: 'LOW', status: 'resolved', timestamp: '2026-07-26T04:00:00Z' }, 's', NOW)?.state,
+      mapUxiIssue({ code: 'X', severity: 'INFO', status: 'resolved', timestamp: '2026-07-26T04:00:00Z' }, ref, NOW)?.state,
     ).toBe('acked');
-    expect(mapUxiIssue({}, 's', NOW)).toBeNull();
+    expect(mapUxiIssue({}, ref, NOW)).toBeNull();
   });
 });
 
@@ -141,10 +210,16 @@ describe('UxiAdapter.pull', () => {
     const pull = await adapter.pull();
     expect(seenAuth.value).toBe(`Basic ${Buffer.from('uxi-client:uxi-secret').toString('base64')}`);
     expect(pull.devices).toHaveLength(2);
-    expect(pull.devices?.[0]).toMatchObject({ name: 'uxi-cam01-2', state: 'up' });
-    expect(pull.devices?.[1]).toMatchObject({ name: 'uxi-cam02-1', state: 'offline' });
+    expect(pull.devices?.[0]).toMatchObject({ name: 'uxi-cam01-2', state: 'up', siteId: 'campus-01' });
+    expect(pull.devices?.[1]).toMatchObject({ name: 'uxi-cam02-1', state: 'offline', siteId: 'campus-02' });
     expect(pull.alerts).toHaveLength(1);
-    expect(pull.alerts?.[0]).toMatchObject({ title: 'DHCP_FAILURE', plane: 'UXI', device: 'uxi-cam01-2' });
+    expect(pull.alerts?.[0]).toMatchObject({
+      title: 'DHCP_FAILURE',
+      plane: 'UXI',
+      device: 'uxi-cam01-2',
+      sev: 'P1',
+      siteId: 'campus-01',
+    });
     expect(st.note).toContain('2 sensors');
     expect(st.note).toContain('push-only');
     expect(st.health).toBe('healthy');
@@ -163,6 +238,36 @@ describe('UxiAdapter.pull', () => {
     );
     const pull = await adapter.pull();
     expect(pull.devices).toHaveLength(2);
+  });
+
+  // isOnline is `boolean | null` and the body may omit it — the portal must
+  // not turn "the sensor did not say" into a red offline row.
+  it('keeps a sensor unknown when the status body declines to say isOnline', async () => {
+    const { adapter } = makeAdapter(
+      fakeFetch({
+        statuses: {
+          'sen-001': { status: 200, body: { issues: [] } },
+          'sen-002': { status: 200, body: { isOnline: null, isTesting: null, issues: [] } },
+        },
+      }),
+    );
+    const pull = await adapter.pull();
+    expect(pull.devices?.[0]).toMatchObject({ name: 'uxi-cam01-2', state: 'unknown', stateTone: 'neutral' });
+    expect(pull.devices?.[1]).toMatchObject({ name: 'uxi-cam02-1', state: 'unknown', stateTone: 'neutral' });
+  });
+
+  it('names sensors that are online but running no tests', async () => {
+    const { adapter, st } = makeAdapter(
+      fakeFetch({
+        statuses: {
+          'sen-001': { status: 200, body: { isOnline: true, isTesting: false, issues: [] } },
+          'sen-002': { status: 200, body: { isOnline: true, isTesting: true, issues: [] } },
+        },
+      }),
+    );
+    const pull = await adapter.pull();
+    expect(pull.devices?.every((d) => d.state === 'up')).toBe(true);
+    expect(st.note).toContain('1 idle (online, not testing)');
   });
 
   it('keeps a sensor unknown when its status read fails, and says so', async () => {

@@ -3,21 +3,36 @@
  *
  * The mapping helpers are tested against AOS-8-style showcommand tables
  * inlined here; Aos8Adapter.pull() is exercised end-to-end with an in-memory
- * fake `fetch` (FetchLike injection) to cover the UIDARUBA login flow, session
- * caching + re-login on status != "0", table extraction across body shapes,
- * section-named failures, and the redacted call log (no UID, no password).
+ * fake `fetch` (FetchLike injection) to cover the UIDARUBA + SESSION cookie
+ * login flow, session caching + re-login on 401/403 and on status != "0",
+ * table extraction across body shapes, the non-JSON and empty-inventory
+ * refusals, the additive client table, section-named failures, and the
+ * redacted call log (no UID, no password).
  */
 
 import { describe, expect, it } from 'vitest';
 import type { PlaneState } from '../src/planes/types';
 import type { FetchLike } from '../src/planes/aos8';
-import { Aos8Adapter, mapAos8Ap, mapAos8Switch } from '../src/planes/aos8';
+import { Aos8Adapter, mapAos8Ap, mapAos8Client, mapAos8Switch } from '../src/planes/aos8';
 
 // -- Recorded fixtures (shapes as the MM API returns them) ----------------------
 
 const AP_UP = { Name: 'ap-t1-12', Group: 'lake-tower', 'AP Type': 'AP-535', 'IP Address': '10.48.1.42', Status: 'Up 9d:02:14:03' };
 const AP_DOWN = { Name: 'ap-t1-19', Group: 'lake-tower', 'AP Type': 'AP-535', 'IP Address': '10.48.1.57', Status: 'Down' };
 const SWITCH_ROW = { Name: 'mc-lake-2', 'IP Address': '10.48.0.12', Model: '7210', Version: '8.10.0.10', Status: 'up', Type: 'MD' };
+const USER_ROW = {
+  IP: '10.44.12.31',
+  MAC: '9c:3e:53:aa:01:22',
+  Name: 'k.ortega',
+  Role: 'clinical-staff',
+  'Age(d:h:m)': '00:04:12',
+  Auth: '802.1x',
+  'AP name': 'ap-t1-12',
+  'Essid/Bssid/Phy': 'MERIDIAN-CLIN/9c:3e:53:aa:0f:10/6GHz',
+  Profile: 'clinical-aaa',
+  Type: 'Win 11',
+};
+const USER_ROW_WIRED = { IP: '10.44.9.4', MAC: 'b0:22:7a:11:90:03', Name: 'lab-printer', Role: 'printers', Auth: 'MAC' };
 
 const LOGIN_OK = { _global_result: { status: '0', status_str: 'Login successful', UIDARUBA: 'uid-abc-123' } };
 
@@ -27,6 +42,9 @@ function apDatabaseBody(aps: unknown[]): unknown {
 function switchesBody(switches: unknown[]): unknown {
   return { _global_result: { status: '0' }, _data: { Switches: switches } }; // nested variant
 }
+function usersBody(users: unknown[]): unknown {
+  return { _global_result: { status: '0' }, 'Global Users': users };
+}
 
 function state(): PlaneState {
   return { id: 'aos8', linked: true, health: 'warning', lastSync: null, deviceCount: null, callsToday: 0, note: null };
@@ -34,33 +52,61 @@ function state(): PlaneState {
 
 const CREDS = { master: '10.48.0.10:4343', username: 'portal-read', password: 's3cret' };
 
-/** Fake fetch answering the login POST and the two showcommand GETs. */
+/** What the fake fetch records so header/auth material can be asserted. */
+interface Seen {
+  urls: string[];
+  loginBodies: string[];
+  cookies: Array<string | null>;
+}
+
+function seenLog(): Seen {
+  return { urls: [], loginBodies: [], cookies: [] };
+}
+
+/** Fake fetch answering the login POST and the three showcommand GETs. */
 function fakeFetch(opts: {
   loginStatus?: number;
   loginBodies?: unknown[];
+  /** Raw `Set-Cookie` value the login answer carries (undefined = none). */
+  loginSetCookie?: string;
   apBodies?: Array<{ status: number; body: unknown }>;
+  /** Raw (possibly non-JSON) AP answers — takes precedence over apBodies. */
+  apRaw?: Array<{ status: number; text: string }>;
   switchBodies?: Array<{ status: number; body: unknown }>;
-  seen?: { urls: string[]; loginBodies: string[] };
+  userBodies?: Array<{ status: number; body: unknown }>;
+  seen?: Seen;
 }): FetchLike {
   const apBodies = opts.apBodies ?? [{ status: 200, body: apDatabaseBody([AP_UP, AP_DOWN]) }];
   const switchBodies = opts.switchBodies ?? [{ status: 200, body: switchesBody([SWITCH_ROW]) }];
+  const userBodies = opts.userBodies ?? [{ status: 200, body: usersBody([USER_ROW, USER_ROW_WIRED]) }];
   const loginBodies = opts.loginBodies ?? [LOGIN_OK];
   let loginIdx = 0;
   let apIdx = 0;
   let swIdx = 0;
+  let userIdx = 0;
   return async (url, init) => {
     const u = String(url);
+    const headers = (init?.headers ?? {}) as Record<string, string>;
     if (opts.seen) {
       opts.seen.urls.push(u);
+      if (u.includes('showcommand')) opts.seen.cookies.push(headers.cookie ?? null);
       if (u.includes('/v1/api/login') && typeof init?.body === 'string') opts.seen.loginBodies.push(init.body);
     }
     if (u.includes('/v1/api/login')) {
       const status = opts.loginStatus ?? 200;
       const body = loginBodies[Math.min(loginIdx, loginBodies.length - 1)];
       loginIdx += 1;
-      return new Response(JSON.stringify(body), { status });
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: opts.loginSetCookie ? { 'set-cookie': opts.loginSetCookie } : undefined,
+      });
     }
     if (u.includes('showcommand') && u.includes(encodeURIComponent('show ap database long'))) {
+      if (opts.apRaw) {
+        const raw = opts.apRaw[Math.min(apIdx, opts.apRaw.length - 1)];
+        apIdx += 1;
+        return new Response(raw.text, { status: raw.status, headers: { 'content-type': 'text/html' } });
+      }
       const b = apBodies[Math.min(apIdx, apBodies.length - 1)];
       apIdx += 1;
       return new Response(JSON.stringify(b.body), { status: b.status });
@@ -68,6 +114,11 @@ function fakeFetch(opts: {
     if (u.includes('showcommand') && u.includes(encodeURIComponent('show switches'))) {
       const b = switchBodies[Math.min(swIdx, switchBodies.length - 1)];
       swIdx += 1;
+      return new Response(JSON.stringify(b.body), { status: b.status });
+    }
+    if (u.includes('showcommand') && u.includes(encodeURIComponent('show global-user-table list'))) {
+      const b = userBodies[Math.min(userIdx, userBodies.length - 1)];
+      userIdx += 1;
       return new Response(JSON.stringify(b.body), { status: b.status });
     }
     return new Response('{}', { status: 404 });
@@ -108,6 +159,13 @@ describe('mapAos8Ap', () => {
     expect(mapAos8Ap({ Status: 'Up 1d' })).toBeNull();
     expect(mapAos8Ap(null)).toBeNull();
   });
+
+  // The recorded-SSH terminal dials this address; without it the live gate
+  // refuses rather than guessing a fixture IP.
+  it('carries the management IP through, and omits it when the table has none', () => {
+    expect(mapAos8Ap(AP_UP)?.ip).toBe('10.48.1.42');
+    expect(mapAos8Ap({ Name: 'ap-x', Status: 'Up 1d' })?.ip).toBeUndefined();
+  });
 });
 
 describe('mapAos8Switch', () => {
@@ -125,18 +183,57 @@ describe('mapAos8Switch', () => {
   it('maps a down controller', () => {
     expect(mapAos8Switch({ ...SWITCH_ROW, Status: 'DOWN' })).toMatchObject({ state: 'down', stateTone: 'danger' });
   });
+
+  it('carries the management IP through', () => {
+    expect(mapAos8Switch(SWITCH_ROW)?.ip).toBe('10.48.0.12');
+  });
+});
+
+describe('mapAos8Client', () => {
+  it('maps a wireless user off the global user table', () => {
+    expect(mapAos8Client(USER_ROW)).toMatchObject({
+      name: 'k.ortega',
+      mac: '9c:3e:53:aa:01:22',
+      ip: '10.44.12.31',
+      medium: 'wireless',
+      type: 'laptop',
+      plane: 'AOS-8',
+      planeTone: 'accent',
+      siteId: 'multiple',
+      role: 'clinical-staff',
+      auth: '802.1x',
+      group: 'clinical-aaa',
+      attach: 'ap-t1-12',
+      where: 'MERIDIAN-CLIN/9c:3e:53:aa:0f:10/6GHz',
+      session: '00:04:12',
+    });
+  });
+
+  it('reads a user with no ESSID as wired and asserts nothing the MM did not say', () => {
+    const c = mapAos8Client(USER_ROW_WIRED);
+    expect(c).toMatchObject({ medium: 'wired', health: '—', quality: null, problem: false, rssi: '—' });
+    expect(c?.where).toBe('—');
+  });
+
+  it('drops a row without a MAC', () => {
+    expect(mapAos8Client({ IP: '10.44.0.9', Role: 'guest' })).toBeNull();
+    expect(mapAos8Client(null)).toBeNull();
+  });
 });
 
 // -- pull() end-to-end -------------------------------------------------------------
 
 describe('Aos8Adapter.pull', () => {
-  it('logs in, pulls both tables and keeps secrets out of the call log', async () => {
-    const seen = { urls: [] as string[], loginBodies: [] as string[] };
+  it('logs in, pulls every table and keeps secrets out of the call log', async () => {
+    const seen = seenLog();
     const { adapter, calls, st } = makeAdapter(fakeFetch({ seen }));
     const pull = await adapter.pull();
     expect(pull.devices).toHaveLength(3);
     expect(pull.devices?.[0]).toMatchObject({ name: 'ap-t1-12', type: 'ap', state: 'up' });
     expect(pull.devices?.[2]).toMatchObject({ name: 'mc-lake-2', type: 'controller' });
+    // README integration table: the AOS-8 plane reads clients, not just inventory.
+    expect(pull.clients).toHaveLength(2);
+    expect(pull.clients?.[0]).toMatchObject({ name: 'k.ortega', plane: 'AOS-8', medium: 'wireless' });
     // Login carried the credentials; showcommand carried the UID, redacted in the log.
     expect(seen.loginBodies[0]).toContain('username=portal-read');
     expect(seen.loginBodies[0]).toContain('password=s3cret');
@@ -144,18 +241,36 @@ describe('Aos8Adapter.pull', () => {
     expect(calls.every((c) => !c.path.includes('uid-abc-123') && !c.path.includes('s3cret'))).toBe(true);
     expect(st.note).toContain('2 APs · 1 controllers via showcommand');
     expect(st.note).toContain('1 down');
+    expect(st.note).toContain('2 clients');
     expect(st.health).toBe('healthy');
   });
 
-  it('caches the session across the two sections (one login per pull)', async () => {
-    const seen = { urls: [] as string[], loginBodies: [] as string[] };
+  // The MM authenticates /v1/configuration/* with BOTH halves: the SESSION
+  // cookie minted at login and the UIDARUBA parameter.
+  it('sends the SESSION cookie from the login answer on every showcommand', async () => {
+    const seen = seenLog();
+    const { adapter } = makeAdapter(fakeFetch({ seen, loginSetCookie: 'SESSION=sess-xyz-789; Path=/; HttpOnly' }));
+    await adapter.pull();
+    expect(seen.cookies.length).toBeGreaterThan(0);
+    expect(seen.cookies.every((c) => c === 'SESSION=sess-xyz-789')).toBe(true);
+  });
+
+  it('falls back to SESSION=<uid> when the master sends no readable cookie', async () => {
+    const seen = seenLog();
+    const { adapter } = makeAdapter(fakeFetch({ seen }));
+    await adapter.pull();
+    expect(seen.cookies.every((c) => c === 'SESSION=uid-abc-123')).toBe(true);
+  });
+
+  it('caches the session across the sections (one login per pull)', async () => {
+    const seen = seenLog();
     const { adapter } = makeAdapter(fakeFetch({ seen }));
     await adapter.pull();
     expect(seen.loginBodies).toHaveLength(1);
   });
 
   it('re-logs in once when the MM answers status != 0', async () => {
-    const seen = { urls: [] as string[], loginBodies: [] as string[] };
+    const seen = seenLog();
     const { adapter } = makeAdapter(
       fakeFetch({
         seen,
@@ -168,6 +283,62 @@ describe('Aos8Adapter.pull', () => {
     const pull = await adapter.pull();
     expect(pull.devices?.some((d) => d.name === 'ap-t1-12')).toBe(true);
     expect(seen.loginBodies).toHaveLength(2);
+  });
+
+  // 401/403 is the MM saying the session is gone, not that the pull is dead.
+  it('treats a 401 as session expiry and retries after one re-login', async () => {
+    const seen = seenLog();
+    const { adapter } = makeAdapter(
+      fakeFetch({
+        seen,
+        apBodies: [
+          { status: 401, body: {} },
+          { status: 200, body: apDatabaseBody([AP_UP]) },
+        ],
+      }),
+    );
+    const pull = await adapter.pull();
+    expect(pull.devices?.some((d) => d.name === 'ap-t1-12')).toBe(true);
+    expect(seen.loginBodies).toHaveLength(2);
+  });
+
+  it('fails naming the section when the 401 survives the re-login', async () => {
+    const { adapter } = makeAdapter(fakeFetch({ apBodies: [{ status: 403, body: {} }] }));
+    await expect(adapter.pull()).rejects.toThrow(
+      "section 'show ap database long' failed — HTTP 403 from showcommand 'show ap database long' after re-login",
+    );
+  });
+
+  // An unauthenticated MM answers a /v1/configuration GET with the WebUI login
+  // HTML at HTTP 200 — that must fail the pull, not become an empty inventory.
+  it('refuses a non-JSON showcommand body instead of publishing zero devices', async () => {
+    const { adapter, st } = makeAdapter(
+      fakeFetch({ apRaw: [{ status: 200, text: '<html><body>Aruba login</body></html>' }] }),
+    );
+    await expect(adapter.pull()).rejects.toThrow(/non-JSON body from showcommand 'show ap database long'/);
+    expect(st.health).not.toBe('healthy');
+  });
+
+  it('refuses to publish an empty inventory as a good sync', async () => {
+    const { adapter, st } = makeAdapter(
+      fakeFetch({
+        apBodies: [{ status: 200, body: apDatabaseBody([]) }],
+        switchBodies: [{ status: 200, body: switchesBody([]) }],
+      }),
+    );
+    await expect(adapter.pull()).rejects.toThrow(/refusing to publish an empty inventory as current/);
+    expect(st.health).not.toBe('healthy');
+  });
+
+  // Clients are additive: losing them must not lose the inventory, but the
+  // gap is named rather than silently reported as "no clients".
+  it('keeps the inventory when the client table fails, and says so in the note', async () => {
+    const { adapter, st } = makeAdapter(fakeFetch({ userBodies: [{ status: 500, body: {} }] }));
+    const pull = await adapter.pull();
+    expect(pull.devices).toHaveLength(3);
+    expect(pull.clients).toBeUndefined();
+    expect(st.note).toContain('client table unavailable');
+    expect(st.note).toContain("section 'show global-user-table list' failed");
   });
 
   it('fails the pull naming the section when login is rejected', async () => {

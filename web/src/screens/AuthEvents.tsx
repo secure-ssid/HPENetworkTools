@@ -45,6 +45,12 @@ function uniq<K extends keyof AuthEventRow>(events: AuthEventRow[], k: K): strin
   return events.map((e) => String(e[k])).filter((v, i, a) => a.indexOf(v) === i);
 }
 
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 export default function AuthEvents() {
   const navigate = useNavigate();
   const { density, showPlatformTags } = useSettings();
@@ -101,6 +107,12 @@ export default function AuthEvents() {
     uniq(events, 'plane').map((v) => ({ value: v, label: v })),
   );
 
+  /* This screen is fed by one plane (ClearPass), and the poller keeps serving a
+   * degraded plane's last-good rows — so the header has to say when they were
+   * pulled, and whether they are fixtures at all (README design rule 1). */
+  const sectionLive = data.dataSource === 'live' || (data.blended?.includes('authEvents') ?? false);
+  const synced = sectionLive ? `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'}` : 'SYNCED 09:41';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <ScreenHeader
@@ -109,6 +121,17 @@ export default function AuthEvents() {
         subtitle="Every RADIUS decision, whichever plane asked the question."
         actions={
           <>
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-10)',
+                color: 'var(--nd-text-muted)',
+                letterSpacing: '.08em',
+              }}
+            >
+              {synced}
+            </span>
+            {data.blended?.includes('authEvents') ? <Badge tone="info">LIVE</Badge> : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/clients')}>
               Clients →
             </Button>
@@ -176,7 +199,9 @@ export default function AuthEvents() {
             color: 'var(--nd-text-muted)',
           }}
         >
-          {rows.length} of {events.length} shown · 1,904 events indexed today
+          {/* The daily-indexed tail is a fixture total the API never returns —
+              a live/blended feed shows only what it actually holds. */}
+          {rows.length} of {events.length} shown{sectionLive ? '' : ' · 1,904 events indexed today'}
         </span>
       </div>
 

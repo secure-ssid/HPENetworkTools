@@ -121,4 +121,38 @@ describe('Clients live sparse detail', () => {
     expect(screen.getByText(/will not substitute the demo topology/)).toBeTruthy();
     expect(screen.getByText(/will not substitute the demo timeline/)).toBeTruthy();
   });
+
+  it('counts only the sessions the poller returned — no fixture estate total', async () => {
+    render(
+      <MemoryRouter initialEntries={['/clients']}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText('1 of 1 sampled')).toBeTruthy());
+    expect(screen.queryByText(/4,982 live sessions/)).toBeNull();
+  });
+
+  it('keeps the authored estate total for a demo-sourced section', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [SPARSE_LIVE_CLIENT],
+      dataSource: 'demo',
+    });
+    render(
+      <MemoryRouter initialEntries={['/clients']}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText('1 of 1 sampled · 4,982 live sessions')).toBeTruthy());
+  });
 });

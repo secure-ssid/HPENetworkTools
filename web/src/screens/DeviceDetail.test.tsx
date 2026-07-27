@@ -12,6 +12,13 @@
  *                    "Device not in the live cache" empty state.
  *   (c) TRANSCRIPT RACE — clicking session A then B while A's transcript
  *                    resolves LATE leaves B's transcript shown, never A's.
+ *   (d) RECONCILED IDENTITY — the inventory row the API ships alongside the
+ *                    authored profile wins the header, and a flagged row says
+ *                    so on both the demo and the live render.
+ *   (e) LIVE RECORDINGS — recorded transcripts (and their load error) reach
+ *                    the live branch, not just the demo one.
+ *   (f) TERMINAL LIFECYCLE — server prompt, dead transport, recording refresh
+ *                    and the reconnect affordance.
  *
  * These tests caught a real regression: the reboot hooks used to live below
  * the `if (!data)` early return, so React threw "Rendered more hooks than
@@ -337,66 +344,192 @@ describe('DeviceDetail — recorded session transcript race', () => {
       });
     });
 
-    describe('DeviceDetail — live terminal lifecycle', () => {
-      it('uses the server prompt, clears a dead transport, refreshes recordings, and offers reconnect', async () => {
-        const profile = deviceProfile('sw-core-a');
-        const device = DEVICES.find((d) => d.name === 'sw-core-a') ?? null;
-        mockGetDeviceDetail.mockResolvedValue({
-          device,
-          profile,
-          config: DEVICE_CONFIGS[profile.kind],
-          clients: DEVICE_CLIENT_SETS[profile.kind],
-          dataSource: 'demo',
-        });
-        mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
-        mockGetTerminalSession.mockResolvedValue(null);
-        mockGetTerminalSessions
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([
-            {
-              file: 'new-recording.jsonl',
-              device: 'sw-core-a',
-              user: 'netops',
-              target: '10.42.8.11',
-              openedAt: '2026-07-26T22:00:00Z',
-            },
-          ]);
-
-        let disconnect: ((reason: string) => void) | undefined;
-        mockCreateWsTransport.mockImplementationOnce((_name, opts) => {
-          disconnect = opts?.onDisconnect;
-          return {
-            transport: {
-              banner: () => [],
-              respond: () => [],
-              respondAsync: () => Promise.resolve([]),
-            },
-            connect: async () => {
-              opts?.onPrompt?.('actual-sw-core-a#');
-              return true;
-            },
-            close: () => {},
-          };
-        });
-
-        renderDeviceDetail('sw-core-a');
-
-        expect(await screen.findByText('actual-sw-core-a#')).toBeTruthy();
-        await act(async () => {
-          disconnect?.('shell closed');
-        });
-
-        expect(await screen.findByRole('button', { name: 'Reconnect live terminal' })).toBeTruthy();
-        expect(await screen.findByText('netops@10.42.8.11')).toBeTruthy();
-        expect(mockGetTerminalSessions).toHaveBeenCalledTimes(2);
-      });
-    });
-
     await waitFor(() => {
       expect(screen.queryByText('A-TRANSCRIPT-OUTPUT')).toBeNull();
     });
     expect(screen.getByText('B-TRANSCRIPT-OUTPUT')).toBeTruthy();
     // B's row is the one offering to hide its transcript.
     expect(screen.getByRole('button', { name: 'Hide transcript' })).toBeTruthy();
+  });
+});
+
+describe('DeviceDetail — live terminal lifecycle', () => {
+  it('uses the server prompt, clears a dead transport, refreshes recordings, and offers reconnect', async () => {
+    const profile = deviceProfile('sw-core-a');
+    const device = DEVICES.find((d) => d.name === 'sw-core-a') ?? null;
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTerminalSessions
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          file: 'new-recording.jsonl',
+          device: 'sw-core-a',
+          user: 'netops',
+          target: '10.42.8.11',
+          openedAt: '2026-07-26T22:00:00Z',
+        },
+      ]);
+
+    let disconnect: ((reason: string) => void) | undefined;
+    mockCreateWsTransport.mockImplementationOnce((_name, opts) => {
+      disconnect = opts?.onDisconnect;
+      return {
+        transport: {
+          banner: () => [],
+          respond: () => [],
+          respondAsync: () => Promise.resolve([]),
+        },
+        connect: async () => {
+          opts?.onPrompt?.('actual-sw-core-a#');
+          return true;
+        },
+        close: () => {},
+      };
+    });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('actual-sw-core-a#')).toBeTruthy();
+    await act(async () => {
+      disconnect?.('shell closed');
+    });
+
+    expect(await screen.findByRole('button', { name: 'Reconnect live terminal' })).toBeTruthy();
+    expect(await screen.findByText('netops@10.42.8.11')).toBeTruthy();
+    expect(mockGetTerminalSessions).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (d) RECONCILED IDENTITY — the row is authoritative, the flag is visible
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — reconciled identity', () => {
+  it('renders the inventory row identity in the demo header, not the name-prefix fixture', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-riv-2');
+    if (!device) throw new Error('fixture missing');
+    const profile = deviceProfile('sw-riv-2');
+    // The name-prefix heuristic falls through to the CX-switch profile, which
+    // is a different model, site, plane and state from the row.
+    expect(profile.model).toBe('CX 8325-48Y8C');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-riv-2');
+
+    expect(await screen.findByText(/CX 6200F-24G · Riverside Clinic/)).toBeTruthy();
+    expect(screen.queryByText(/CX 8325-48Y8C · Campus-01 HQ/)).toBeNull();
+    // Header badges follow the row, and the Managed-by fact follows it too.
+    expect(screen.getByText('double-claimed')).toBeTruthy();
+    expect(screen.getAllByText('CLASSIC').length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText('No cloud plane — local SSH only')).toBeNull();
+    expect(
+      screen.getByText('Double-claimed — more than one inventory reports this device'),
+    ).toBeTruthy();
+  });
+
+  it('names every claiming plane, the management IP and the identity evidence in live mode', async () => {
+    const base = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!base) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device: {
+        ...base,
+        plane: 'CENTRAL',
+        planeTone: 'accent',
+        claimedBy: ['CENTRAL', 'CLASSIC'],
+        reconciliationIssue: true,
+        ip: '10.42.8.11',
+        serial: 'SG09KLM4X2',
+      },
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('CENTRAL + CLASSIC')).toBeTruthy();
+    expect(screen.getAllByText('10.42.8.11').length).toBeGreaterThan(0);
+    expect(screen.getByText('SG09KLM4X2')).toBeTruthy();
+    expect(
+      screen.getByText('Double-claimed — more than one inventory reports this device'),
+    ).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (e) LIVE RECORDINGS — fetched for every device, so they must render there
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — recorded sessions in live mode', () => {
+  it('lists recorded transcripts on a live device', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([
+      {
+        file: 'live.jsonl',
+        device: 'sw-core-a',
+        user: 'netops',
+        target: '10.42.8.11',
+        openedAt: '2026-07-26T22:00:00Z',
+      },
+    ]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('netops@10.42.8.11')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'View transcript' })).toBeTruthy();
+  });
+
+  it('surfaces a recorded-session load failure instead of swallowing it', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockRejectedValue(new Error('shell-log store unreadable'));
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(
+      await screen.findByText(
+        'Recorded sessions could not be loaded: shell-log store unreadable',
+      ),
+    ).toBeTruthy();
   });
 });

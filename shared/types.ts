@@ -197,6 +197,14 @@ export interface Device {
   licence: string;
   reconciliationIssue: boolean; // double-claimed OR in no cloud plane
   localShell: boolean; // false for cloud-claimed devices
+  /** Management IP as the plane reports it. Optional: not every plane
+   *  publishes one, and a device without it renders '—' rather than a guess. */
+  ip?: string;
+  /** Identity hints adapters attach so reconciliation can match one physical
+   *  device across planes (serial/MAC beat name matching). Optional — the
+   *  authored fixtures carry neither. */
+  serial?: string;
+  mac?: string;
 }
 
 export type ClientType =
@@ -515,6 +523,17 @@ export interface AlertRow extends Omit<Alert, 'site'> {
   siteId: SiteId;
   siteName: string; // display string as authored in this fixture
   alertId?: string; // the plane's own key — what an acknowledge write addresses
+  /** The source plane is behind (design rule 1): `age` was frozen at pull time
+   *  and the row is unverified, not current. Absent = the source is fresh. */
+  stale?: boolean;
+}
+
+/** The derived `danger` banner over the alert queue — the worst finding
+ *  crossed with plane freshness (README §5). Null when there is nothing to
+ *  correlate; never authored prose in live mode. */
+export interface AlertCorrelation {
+  title: string;
+  body: string;
 }
 
 // -- Tickets (NtTickets) --
@@ -531,6 +550,12 @@ export interface TicketRow extends Omit<Ticket, 'site'> {
   siteId: SiteId;
   siteName: string;
   notes?: TicketNote[]; // persisted operator log — present once the first note/action lands
+  /** When the ticket was raised (ISO). Set on operator-raised tickets so `age`
+   *  can be recomputed on read instead of frozen at raise time; absent on the
+   *  authored fixtures, whose `age`/`sla` strings stay authoritative. */
+  raisedAt?: string;
+  /** SLA deadline (ISO) the `sla` countdown is rendered from. */
+  slaDueAt?: string;
 }
 
 // -- Clients (NtClients) --
@@ -693,6 +718,11 @@ export interface DeviceRow extends Omit<Device, 'site'> {
   siteName: string;
   planeTone: Tone;
   stateTone: Tone;
+  /** Every plane that claims this device, worst-to-best display priority.
+   *  `length > 1` is the double-claim of design rule 2 — the row stays one
+   *  row and is flagged, never duplicated. Absent on the authored fixtures,
+   *  which encode the double-claim in `state` instead. */
+  claimedBy?: Plane[];
 }
 
 /** Platform-lane header metadata (NT_LANE_META) — `mark` is the 2px rule colour. */
@@ -878,6 +908,19 @@ export interface EndpointVariant {
   hint: string;
 }
 
+/**
+ * One credential input in the connect drawer beyond the endpoint variant.
+ * `key` is the exact settings key the plane's adapter `isComplete()` reads —
+ * saving a field under any other key produces a linked-but-stubbed plane.
+ */
+export interface ConnectField {
+  key: string;
+  label: string;
+  help: string;
+  secret?: boolean; // render as a password input and never echo back
+  optional?: boolean; // adapter works without it
+}
+
 /** Screens with their own demo/live source override (Connected systems grid). */
 export const SCREEN_SECTIONS = [
   'overview',
@@ -895,3 +938,79 @@ export type ScreenSection = (typeof SCREEN_SECTIONS)[number];
 
 /** Per-section source: absent = follow the portal-wide demoMode. */
 export type SectionMode = Partial<Record<ScreenSection, 'demo' | 'live'>>;
+
+// ---------------------------------------------------------------------------
+// Envelope, plane freshness and sync outcomes (README §"Design rules" 1)
+// ---------------------------------------------------------------------------
+
+/** Which source served a payload — every /api screen envelope carries it. */
+export type DataSource = 'demo' | 'live';
+
+/** The envelope fields that ride alongside every screen payload. Screens read
+ *  these to say where the rows came from and how fresh they are. */
+export interface EnvelopeMeta {
+  dataSource: DataSource;
+  /** Last successful sync for this section; null in live mode before the
+   *  first poll lands. Never stamped from an empty or failed pull. */
+  syncedAt?: string | null;
+  /** Sections whose fixtures were swapped for live rows in blend mode. */
+  blended?: string[];
+  /** Set when the backend answered but could not serve the screen. */
+  apiError?: string;
+}
+
+/** Registry plane ids — the same union the server's PLANE_IDS declares
+ *  (SystemTypeKey is the connect-drawer subset; aos10 is brokered, not
+ *  separately credentialed). */
+export type PlaneKey = SystemTypeKey | 'aos10';
+
+/** Datasets a plane can contribute — the keys of the server's PlanePull. */
+export const PLANE_DATASET_KEYS = [
+  'devices',
+  'sites',
+  'clients',
+  'alerts',
+  'authEvents',
+  'subscriptions',
+] as const;
+export type PlaneDatasetKey = (typeof PLANE_DATASET_KEYS)[number];
+
+/**
+ * What one pull actually achieved. The distinction the honesty rules need is
+ * 'ok' vs 'empty': a call that succeeded and returned no rows is NOT a healthy
+ * sync with data, and must not stamp a screen's freshness as current.
+ *   ok              — every requested dataset came back, at least one row
+ *   empty           — the plane answered, and reported nothing at all
+ *   partial         — some datasets read, others could not be (404 / unparsable)
+ *   failed          — the pull threw; last-good data is being served
+ *   not-implemented — a stub adapter: no sync happened, nothing to stamp
+ *   skipped         — not polled this cycle (in flight, unlinked, demo mode)
+ */
+export type SyncOutcome = 'ok' | 'empty' | 'partial' | 'failed' | 'not-implemented' | 'skipped';
+
+/** The result of one plane pull, in the form the registry stamps and the
+ *  Systems screen renders. `reported` is what actually came back; `missing`
+ *  is what the plane could not read — an absent dataset is unknown, never an
+ *  authoritative zero. */
+export interface PlaneSyncResult {
+  outcome: SyncOutcome;
+  at: string; // ISO — when the pull settled
+  reported: PlaneDatasetKey[];
+  missing: PlaneDatasetKey[];
+  rows: number; // total rows across the reported datasets
+  note: string | null;
+}
+
+/** Age of a plane's last successful sync, and whether it has expired.
+ *  A stale plane's devices read `unverified`, never `up` (design rule 1). */
+export interface PlaneFreshness {
+  lastSync: string | null;
+  ageSec: number | null; // null when the plane has never synced
+  stale: boolean; // never synced, or older than the staleness window
+}
+
+/** How a change can reach a plane — the capability-matrix `mode` vocabulary. */
+export type WriteMode = 'brokered' | 'ssh' | 'read only';
+
+/** Granted scope on a plane — the same vocabulary as System.scope. */
+export type PlaneScope = 'read only' | 'read + broker' | 'read + ssh';

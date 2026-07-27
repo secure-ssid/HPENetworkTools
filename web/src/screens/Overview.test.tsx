@@ -9,7 +9,12 @@
  *  (b) live mode with an ISO syncedAt → the stamp renders in hhmm format,
  *      not the raw ISO string;
  *  (c) live alert rows render their meta text and site rows render the
- *      plane label / navigate with their siteId.
+ *      plane label / navigate with their siteId;
+ *  (d) live mode derives the section links and the subtitle from the payload
+ *      instead of printing the prototype's "All 7 alerts" / "All 10 sites" /
+ *      "Ten sites, six management planes";
+ *  (e) a demo-sourced payload keeps the authored fixture prose verbatim;
+ *  (f) the Sites table stays a six-row preview while the link names the total.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -70,6 +75,22 @@ function liveData(over: Partial<OverviewData> = {}): OverviewData {
   };
 }
 
+/** N distinct site rows, so preview-slicing and count derivation are visible. */
+function siteRows(n: number): OverviewData['sites'] {
+  return Array.from({ length: n }, (_, i) => ({
+    name: `Site ${i + 1}`,
+    siteId: 'campus-01' as const,
+    plane: 'Central',
+    devices: 4,
+    clients: '10',
+    health: '99%',
+    healthPct: '99%',
+    tone: 'ok' as const,
+    alerts: 'clear',
+    alertTone: 'success' as const,
+  }));
+}
+
 /** Exposes the current pathname so navigation assertions stay honest. */
 function PathProbe() {
   const location = useLocation();
@@ -126,5 +147,55 @@ describe('Overview', () => {
     // The site name button addresses its target by siteId.
     fireEvent.click(screen.getByRole('button', { name: 'Campus 01' }));
     expect(screen.getByTestId('path').textContent).toBe('/sites/campus-01');
+  });
+
+  it('(d) live mode derives the section links and subtitle from the payload', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        alerts: [
+          { sev: 'P1', tone: 'danger', title: 'A', meta: 'm', plane: 'CENTRAL', age: '1m', device: 'd1' },
+          { sev: 'P2', tone: 'warning', title: 'B', meta: 'm', plane: 'CENTRAL', age: '2m', device: 'd2' },
+          { sev: 'P3', tone: 'info', title: 'C', meta: 'm', plane: 'CENTRAL', age: '3m', device: 'd3' },
+        ],
+        sites: siteRows(3),
+        planes: [
+          { name: 'Central', scope: 'GLOBAL', state: 'linked', tone: 'success', sync: '09:38' },
+          { name: 'ClearPass', scope: 'GLOBAL', state: 'linked', tone: 'success', sync: '09:37' },
+        ],
+      }),
+    );
+    renderOverview();
+
+    expect(await screen.findByText('All 3 alerts →')).toBeTruthy();
+    expect(screen.getByText('All 3 sites →')).toBeTruthy();
+    expect(
+      screen.getByText('3 sites, 2 management planes — one queue of things that actually need you.'),
+    ).toBeTruthy();
+    // None of the prototype's baked counts survive into a live render.
+    expect(screen.queryByText('All 7 alerts →')).toBeNull();
+    expect(screen.queryByText('All 10 sites →')).toBeNull();
+    expect(screen.queryByText(/Ten sites, six management planes/)).toBeNull();
+  });
+
+  it('(e) a demo-sourced payload keeps the authored fixture prose', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({ dataSource: 'demo', sites: siteRows(6) }),
+    );
+    renderOverview();
+
+    expect(await screen.findByText('All 7 alerts →')).toBeTruthy();
+    expect(screen.getByText('All 10 sites →')).toBeTruthy();
+    expect(
+      screen.getByText('Ten sites, six management planes — one queue of things that actually need you.'),
+    ).toBeTruthy();
+  });
+
+  it('(f) the Sites table previews six rows while the link names the estate total', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ sites: siteRows(9) }));
+    renderOverview();
+
+    expect(await screen.findByText('All 9 sites →')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Site 6' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Site 7' })).toBeNull();
   });
 });

@@ -1,22 +1,26 @@
 /**
  * server/src/planes/aos8.ts — AOS-8 mobility master adapter (read-only).
  *
- * The on-prem controller plane (README integration table: inventory +
- * controller health; read-only — configuration stays on the MM, the portal
- * never fakes an edit form). There is no cloud in the path: the portal talks
- * to the mobility master's own HTTPS API on :4343.
+ * The on-prem controller plane (README integration table: cluster, APs,
+ * clients; read-only — configuration stays on the MM, the portal never fakes
+ * an edit form). There is no cloud in the path: the portal talks to the
+ * mobility master's own HTTPS API on :4343.
  *
  * Verified surface (AOS-8 8.x API, the same calls the WebUI makes):
  *   login       POST /v1/api/login  form {username, password}
  *               → { _global_result: { status: "0", UIDARUBA: "…" } }
- *               The UID is a session cookie (~15 min TTL) — cached here and
- *               renewed at 14 min, or immediately when a call answers
- *               status != "0" (session expired), with ONE re-login retry.
+ *                 + `Set-Cookie: SESSION=…`
+ *               Every /v1/configuration/* call needs BOTH halves — the SESSION
+ *               cookie and the UIDARUBA parameter — exactly as the WebUI and
+ *               the vendor curl examples (`-c`/`-b` cookie jar) send them.
+ *               The session lives ~15 min — cached here and renewed at 14 min,
+ *               or immediately when a call answers 401/403 or status != "0"
+ *               (session expired), with ONE re-login retry.
  *   showcommand GET /v1/configuration/showcommand?command=<cli>&UIDARUBA=<uid>
  *               → the CLI table parsed to JSON: named arrays of row objects
  *               (top level, or nested one level under a `_data`-style key).
- *               Pulled: `show ap database long` (APs) and `show switches`
- *               (controllers).
+ *               Pulled: `show ap database long` (APs), `show switches`
+ *               (controllers) and `show global-user-table list` (clients).
  *
  * TLS: a factory MM serves a self-signed certificate, so the default
  * transport is a small node:https fetch with rejectUnauthorized OFF (set
@@ -24,13 +28,16 @@
  * records method + path + ms + status — the UID in the query string is
  * redacted, and the password only ever travels in the login POST body.
  *
- * Failure policy (mirrors clearpass/mist): login failing or either
- * showcommand section failing → pull() throws naming the section; the
- * inventory is this plane's whole dataset, nothing honest to degrade to.
+ * Failure policy (mirrors clearpass/mist): login failing, either inventory
+ * showcommand section failing, or a section answering something that is not
+ * JSON → pull() throws naming the section; an inventory nobody could parse is
+ * never published as an empty-but-healthy one. The clients section is additive
+ * (the inventory is what the plane is for), so its failure is non-fatal — but
+ * the gap is always named in the plane note, never swallowed.
  */
 
 import * as https from 'node:https';
-import type { DeviceRow, DeviceType, Tone } from '../../../shared';
+import type { ClientRow, ClientType, DeviceRow, DeviceType, Tone } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
 import { siteIdForName, type FetchLike, type RecordCallFn } from './central';
 import type { PlaneAdapter, PlanePull, PlaneState } from './types';
@@ -44,6 +51,9 @@ const SESSION_TTL_MS = 14 * 60 * 1000;
 
 const CMD_AP_DATABASE = 'show ap database long';
 const CMD_SWITCHES = 'show switches';
+/** MM-wide client table; falls back to the per-controller form when the MM rejects it. */
+const CMD_USERS = 'show global-user-table list';
+const CMD_USERS_FALLBACK = 'show user-table';
 
 // ---------------------------------------------------------------------------
 // Default transport: node:https so per-connection TLS verification can be
@@ -70,7 +80,18 @@ function httpsFetch(verifyTls: boolean): FetchLike {
           res.on('end', () => {
             const code = res.statusCode ?? 502;
             const status = code >= 200 && code <= 599 ? code : 502;
-            resolve(new Response(Buffer.concat(chunks), { status }));
+            // rawHeaders is a flat [name, value, name, value…] list — appending
+            // pairwise keeps every `set-cookie` the login answer carries, which
+            // is where the SESSION cookie showcommand needs lives.
+            const headers = new Headers();
+            for (let i = 0; i + 1 < res.rawHeaders.length; i += 2) {
+              try {
+                headers.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+              } catch {
+                /* a header this runtime refuses is dropped, never fatal */
+              }
+            }
+            resolve(new Response(Buffer.concat(chunks), { status, headers }));
           });
         },
       );
@@ -125,6 +146,7 @@ function baseRow(
   type: DeviceType,
   statusRaw: string | null,
   firmware: string | null,
+  ip: string | null,
 ): DeviceRow {
   const { state, stateTone } = stateForStatus(statusRaw);
   const site = siteIdForName(null); // AOS-8 tables carry no site concept — honest 'multiple'
@@ -143,6 +165,9 @@ function baseRow(
     licence: 'unknown', // licences live on the MM (show license), not pulled
     reconciliationIssue: false, // the reconcile service computes this
     localShell: false, // SSH sessions go through the terminal manager, not this adapter
+    // Both tables publish the management address; the recorded-SSH terminal
+    // dials it, so it must survive into the live inventory (never guessed).
+    ...(ip ? { ip } : {}),
   };
 }
 
@@ -150,7 +175,8 @@ function baseRow(
 export function mapAos8Ap(raw: unknown): DeviceRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
-  const name = pick(r, ['Name', 'name', 'AP Name', 'ap-name']) ?? pick(r, ['IP Address', 'IP', 'ip']);
+  const ip = pick(r, ['IP Address', 'IP', 'ip']);
+  const name = pick(r, ['Name', 'name', 'AP Name', 'ap-name']) ?? ip;
   if (!name) return null;
   return baseRow(
     name,
@@ -158,6 +184,7 @@ export function mapAos8Ap(raw: unknown): DeviceRow | null {
     'ap',
     pick(r, ['Status', 'status', 'State']),
     pick(r, ['Version', 'Firmware', 'fw']),
+    ip,
   );
 }
 
@@ -165,7 +192,8 @@ export function mapAos8Ap(raw: unknown): DeviceRow | null {
 export function mapAos8Switch(raw: unknown): DeviceRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
-  const name = pick(r, ['Name', 'name', 'Hostname']) ?? pick(r, ['IP Address', 'IP', 'Switch IP', 'ip']);
+  const ip = pick(r, ['IP Address', 'IP', 'Switch IP', 'ip']);
+  const name = pick(r, ['Name', 'name', 'Hostname']) ?? ip;
   if (!name) return null;
   const model = pick(r, ['Model', 'Type', 'model']);
   return baseRow(
@@ -174,7 +202,70 @@ export function mapAos8Switch(raw: unknown): DeviceRow | null {
     'controller',
     pick(r, ['Status', 'status', 'State']),
     pick(r, ['Version', 'Firmware', 'fw']),
+    ip,
   );
+}
+
+/** AOS-8 user-table "Type"/"Host Name" → the shared ClientType vocabulary. */
+function clientTypeFor(hint: string | null): ClientType {
+  const s = (hint ?? '').toLowerCase();
+  if (/ipad|tablet/.test(s)) return 'tablet';
+  if (/iphone|android|phone/.test(s)) return 'phone';
+  if (/win|mac ?os|osx|linux|ubuntu|chrome/.test(s)) return 'laptop';
+  if (/print/.test(s)) return 'printer';
+  if (/voip|voice|spectralink/.test(s)) return 'voip';
+  if (/camera|imaging|x-?ray/.test(s)) return 'imaging';
+  if (/medical|infusion|clinical/.test(s)) return 'medical';
+  if (/sensor|thermostat|lighting|iot/.test(s)) return 'building';
+  return 'unknown';
+}
+
+/**
+ * `show global-user-table list` / `show user-table` row → ClientRow. The table
+ * is flat CLI columns; every field the MM does not publish stays '—' rather
+ * than being invented (no health score, no RF detail, no closet).
+ */
+export function mapAos8Client(raw: unknown): ClientRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const mac = pick(r, ['MAC', 'mac', 'MAC Address', 'macaddr']);
+  if (!mac) return null; // a client row without a MAC is junk
+  const site = siteIdForName(null); // the user table carries no site concept — honest 'multiple'
+  const essid = pick(r, ['Essid/Bssid/Phy', 'Essid', 'ESSID', 'essid']);
+  const kind = pick(r, ['Device Type', 'Type', 'User Type']);
+  return {
+    name: pick(r, ['Name', 'User Name', 'name', 'Host Name', 'hostname']) ?? mac,
+    model: kind ?? 'unknown',
+    type: clientTypeFor(kind ?? pick(r, ['Host Name'])),
+    mac,
+    ip: pick(r, ['IP', 'IP Address', 'ip']) ?? 'pending',
+    // An MM user with no ESSID/BSSID terminated on a wired port, not a radio.
+    medium: essid ? 'wireless' : 'wired',
+    siteId: site.siteId,
+    siteName: site.siteName,
+    group: pick(r, ['Profile', 'AAA Profile', 'profile']) ?? '—',
+    attach: pick(r, ['AP name', 'AP Name', 'ap-name', 'Switch IP']) ?? '—',
+    where: essid ?? pick(r, ['Port', 'port']) ?? '—',
+    plane: 'AOS-8',
+    planeTone: 'accent',
+    healthTone: 'neutral',
+    auth: pick(r, ['Auth', 'auth', 'Authentication']) ?? '—',
+    authBy: '—', // the user table does not name the authenticator; ClearPass rows will
+    role: pick(r, ['Role', 'role']) ?? '—',
+    vlan: pick(r, ['VLAN', 'vlan', 'Vlan']) ?? '—',
+    health: '—', // the MM publishes no client health score — nothing to assert
+    session: pick(r, ['Age(d:h:m)', 'Age', 'age']) ?? '—',
+    problem: false,
+    link: '—',
+    rssi: '—',
+    snr: '—',
+    retries: '—',
+    tput: '—',
+    roams: '—',
+    quality: null,
+    zone: '—',
+    closet: '—',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +316,23 @@ function extractTables(body: unknown): unknown[] {
   return out;
 }
 
+/**
+ * The `SESSION=…` pair out of a login answer's Set-Cookie headers. AOS-8 8.x
+ * mints `SESSION=<uid>`, so a master that answers without a readable cookie
+ * (or a transport that cannot expose one) still authenticates off the UID.
+ */
+function sessionCookieFrom(res: Response, uid: string): string {
+  const raw =
+    typeof res.headers.getSetCookie === 'function'
+      ? res.headers.getSetCookie()
+      : [res.headers.get('set-cookie') ?? ''];
+  for (const line of raw) {
+    const m = /(?:^|[,;]\s*)(SESSION=[^;,\s]+)/i.exec(line ?? '');
+    if (m) return m[1];
+  }
+  return `SESSION=${uid}`;
+}
+
 function withScheme(base: string): string {
   if (/^https:\/\//i.test(base)) return base;
   // The login POST carries the password — a plaintext scheme is a config error,
@@ -245,7 +353,7 @@ export class Aos8Adapter implements PlaneAdapter {
   private readonly baseUrl: string;
   private readonly username: string;
   private readonly password: string;
-  private session: { uid: string; expiresAt: number } | null = null;
+  private session: { uid: string; cookie: string; expiresAt: number } | null = null;
 
   constructor(
     creds: PlaneCredentials,
@@ -289,30 +397,84 @@ export class Aos8Adapter implements PlaneAdapter {
     const aps = apRows.map(mapAos8Ap).filter((d): d is DeviceRow => d !== null);
     const switches = switchRows.map(mapAos8Switch).filter((d): d is DeviceRow => d !== null);
     const devices = [...aps, ...switches];
+    if (devices.length === 0) {
+      // A live MM always answers `show switches` with at least itself. Zero
+      // rows across both sections means the answer was not the one we asked
+      // for — publishing it would stamp an empty inventory as a good sync.
+      throw new Error(
+        `aos8 pull: sections '${CMD_AP_DATABASE}' and '${CMD_SWITCHES}' both returned no rows — refusing to publish an empty inventory as current`,
+      );
+    }
+
+    // Clients are additive (README: cluster, APs, clients): a failing client
+    // table must not lose the inventory, but the gap is named in the note.
+    let clients: ClientRow[] | null = null;
+    let clientsError: string | null = null;
+    try {
+      clients = (await this.clientRows()).map(mapAos8Client).filter((c): c is ClientRow => c !== null);
+    } catch (err) {
+      clientsError = (err as Error).message;
+    }
 
     const down = devices.filter((d) => d.state === 'down').length;
     this.stateRef.note =
       `${aps.length.toLocaleString('en-US')} APs · ${switches.length.toLocaleString('en-US')} controllers via showcommand` +
-      (down > 0 ? ` · ${down.toLocaleString('en-US')} down` : '');
+      (down > 0 ? ` · ${down.toLocaleString('en-US')} down` : '') +
+      (clients !== null
+        ? ` · ${clients.length.toLocaleString('en-US')} clients`
+        : ` · client table unavailable (${clientsError})`);
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 
-    return { devices };
+    return clients !== null ? { devices, clients } : { devices };
   }
 
   // -- internals -------------------------------------------------------------
 
   /**
-   * One CLI command through the showcommand API. A status != "0" answer means
-   * the session died (or the CLI errored) — drop the cached UID, re-login
-   * once, retry once.
+   * The client table: the MM-wide form first, falling back to the
+   * per-controller one when the master rejects the global command (older
+   * images, or a standalone controller answering on the same API).
+   */
+  private async clientRows(): Promise<unknown[]> {
+    try {
+      return await this.showcommand(CMD_USERS);
+    } catch (err) {
+      try {
+        return await this.showcommand(CMD_USERS_FALLBACK);
+      } catch {
+        throw new Error(`section '${CMD_USERS}' failed — ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * One CLI command through the showcommand API. A 401/403, or a 2xx carrying
+   * status != "0", means the session died (or the CLI errored) — drop the
+   * cached session, re-login once, retry once. A body that is not JSON is a
+   * failure, never an empty table: an unauthenticated MM answers the WebUI
+   * login HTML with a 200.
    */
   private async showcommand(command: string): Promise<unknown[]> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const uid = await this.login();
-      const path = `/v1/configuration/showcommand?command=${encodeURIComponent(command)}&UIDARUBA=${encodeURIComponent(uid)}`;
-      const res = await this.get(path, `GET /v1/configuration/showcommand?command=${command}&UIDARUBA=…`);
+      const session = await this.login();
+      const path = `/v1/configuration/showcommand?command=${encodeURIComponent(command)}&UIDARUBA=${encodeURIComponent(session.uid)}`;
+      const res = await this.get(
+        path,
+        `GET /v1/configuration/showcommand?command=${command}&UIDARUBA=…`,
+        session.cookie,
+      );
+      // 401/403 is the MM saying the session is gone (reboot, aaa change, an
+      // admin clearing management sessions) — that is expiry, not fatal.
+      if (res.status === 401 || res.status === 403) {
+        this.session = null;
+        if (attempt === 0) continue;
+        throw new Error(`HTTP ${res.status} from showcommand '${command}' after re-login`);
+      }
       if (res.status < 200 || res.status >= 300) {
         throw new Error(`HTTP ${res.status} from showcommand '${command}'`);
+      }
+      if (res.parseError) {
+        throw new Error(`non-JSON body from showcommand '${command}' (HTTP ${res.status}, ${res.parseError})`);
       }
       const status = globalStatus(res.body);
       if (status !== null && status !== '0') {
@@ -325,10 +487,13 @@ export class Aos8Adapter implements PlaneAdapter {
     throw new Error(`unreachable retry state for '${command}'`);
   }
 
-  /** Cached UIDARUBA login; renews at 14 min or when the cache was dropped. */
-  private async login(): Promise<string> {
-    const now = Date.now();
-    if (this.session && this.session.expiresAt > now) return this.session.uid;
+  /**
+   * Cached login; renews at 14 min or when the cache was dropped. Returns both
+   * halves of the MM's auth material — the UIDARUBA parameter and the SESSION
+   * cookie — because /v1/configuration/* wants both.
+   */
+  private async login(): Promise<{ uid: string; cookie: string }> {
+    if (this.session && this.session.expiresAt > Date.now()) return this.session;
 
     const started = Date.now();
     let res: Response;
@@ -355,18 +520,28 @@ export class Aos8Adapter implements PlaneAdapter {
     }
     const uid = uidFrom(body);
     if (!uid) throw new Error('login failed: no UIDARUBA in the response body');
-    this.session = { uid, expiresAt: now + SESSION_TTL_MS };
-    return uid;
+    // The clock starts when the MM answered, not when we asked — a slow login
+    // must not eat into the window the cached session is trusted for.
+    this.session = { uid, cookie: sessionCookieFrom(res, uid), expiresAt: Date.now() + SESSION_TTL_MS };
+    return this.session;
   }
 
-  /** Timed outbound GET recorded in the plane's call log (path pre-redacted). */
-  private async get(path: string, logPath: string): Promise<{ status: number; body: unknown }> {
+  /**
+   * Timed outbound GET recorded in the plane's call log (path pre-redacted).
+   * `parseError` distinguishes "the MM sent no JSON" from "the MM sent an
+   * empty table" — the caller must not read the second as the first.
+   */
+  private async get(
+    path: string,
+    logPath: string,
+    cookie: string,
+  ): Promise<{ status: number; body: unknown; parseError: string | null }> {
     const started = Date.now();
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method: 'GET',
-        headers: { accept: 'application/json' },
+        headers: { accept: 'application/json', cookie },
         signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
       });
     } catch (err) {
@@ -375,11 +550,12 @@ export class Aos8Adapter implements PlaneAdapter {
     }
     this.recordCall({ path: logPath, ms: Date.now() - started, code: String(res.status) });
     let body: unknown = null;
+    let parseError: string | null = null;
     try {
       body = await res.json();
-    } catch {
-      /* tolerate a non-JSON body — status is what we needed */
+    } catch (err) {
+      parseError = `${res.headers.get('content-type') ?? 'no content-type'}: ${(err as Error).message}`;
     }
-    return { status: res.status, body };
+    return { status: res.status, body, parseError };
   }
 }

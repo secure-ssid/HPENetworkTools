@@ -13,9 +13,15 @@
  *            → Bearer, cached via the shared TokenManager (refresh at
  *            expiry−60s, single-flight, invalidate + retry once on 401).
  *   sensors  GET /networking-uxi/v1alpha1/sensors
+ *            → SensorsGetItem{id, serial, name, groupName, groupPath,
+ *              modelNumber, wifiMacAddress, ethernetMacAddress, addressNote,
+ *              longitude, latitude, notes, pcapMode, type} — the site lives in
+ *              `groupName`, and serial/MAC are the reconcile identity hints.
  *   status   GET /networking-uxi/v1alpha1/sensors/{id}/status
  *            → {isOnline, isTesting, issues[{code, severity, status, timestamp,
- *              context{networkName, serviceTestName, …}}]}
+ *              context{groupName, networkName, serviceTestName, …}}]}
+ *              isOnline/isTesting are `boolean | null` and only `issues` is
+ *              required — an omitted/null isOnline means "no answer", not down.
  *   paging   cursor: {items, count, next} — follow ?next= until null (≤10 pages).
  *
  * Honest gaps the note surfaces: there is NO historical test-results pull —
@@ -34,8 +40,9 @@
  * never in a URL; the call log records method + path + ms + status only.
  */
 
-import type { AlertRow, DeviceRow, Sev, Tone } from '../../../shared';
+import type { AlertRow, DeviceRow, Sev, SiteId, Tone } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
+import type { DeviceIdentityHints } from '../services/reconcile';
 import {
   TokenManager,
   ageString,
@@ -62,12 +69,17 @@ export const MAX_SENSOR_STATUSES = 50;
 
 const SEV_TONE: Record<Sev, Tone> = { P1: 'danger', P2: 'warning', P3: 'info' };
 
-/** UXI severity vocabulary (HIGH/MEDIUM/LOW) → the design's P1/P2/P3; anything else defers to central's sevFor. */
+/**
+ * UXI severity vocabulary → the design's P1/P2/P3. The live enum
+ * (`SensorStatusIssueSeverity`) is ERROR | WARNING | INFO — a failed synthetic
+ * test is P1 evidence, not a P3 footnote. HIGH/MEDIUM/LOW are kept as tolerated
+ * variants; anything else defers to central's sevFor.
+ */
 export function uxiSevFor(raw: string | null): Sev {
   const s = (raw ?? '').trim().toLowerCase();
-  if (s === 'high') return 'P1';
-  if (s === 'medium') return 'P2';
-  if (s === 'low') return 'P3';
+  if (s === 'error' || s === 'high') return 'P1';
+  if (s === 'warning' || s === 'medium') return 'P2';
+  if (s === 'info' || s === 'low') return 'P3';
   return sevFor(raw);
 }
 
@@ -81,12 +93,17 @@ function str(v: unknown): string | null {
   return null;
 }
 
+/** A vendor `boolean | null` field — anything that is not a boolean is "no answer". */
+function bool(v: unknown): boolean | null {
+  return typeof v === 'boolean' ? v : null;
+}
+
 // ---------------------------------------------------------------------------
 // Row mapping (pure, exported for tests)
 // ---------------------------------------------------------------------------
 
-/** Identity hint for the reconcile service (the pattern central uses for serial/mac). */
-export type UxiDeviceRow = DeviceRow & { mac?: string };
+/** Identity hints for the reconcile service (the pattern central uses for serial/mac). */
+export type UxiDeviceRow = DeviceRow & DeviceIdentityHints;
 
 /** UXI sensor list item (+ optional status) → DeviceRow. */
 export function mapUxiSensor(raw: unknown, online: boolean | null): UxiDeviceRow | null {
@@ -94,36 +111,51 @@ export function mapUxiSensor(raw: unknown, online: boolean | null): UxiDeviceRow
   const r = raw as Record<string, unknown>;
   const name = str(r.name) ?? str(r.id);
   if (!name) return null;
-  const site = siteIdForName(str(r.site ?? r.site_name ?? r.group_name));
-  const mac = str(r.mac_address ?? r.macAddress ?? r.mac);
+  // The live item names its site in `groupName`; the snake_case forms are
+  // tolerated variants from older/proxied deployments.
+  const site = siteIdForName(str(r.groupName ?? r.site ?? r.site_name ?? r.group_name));
+  // Ethernet first — it is the MAC the switch/ClearPass planes see for a
+  // wired sensor, so it is the one reconcile can match on.
+  const mac = str(r.ethernetMacAddress ?? r.wifiMacAddress ?? r.mac_address ?? r.macAddress ?? r.mac);
+  const serial = str(r.serial);
   const state =
     online === null ? { state: 'unknown', stateTone: 'neutral' as Tone }
     : online ? { state: 'up', stateTone: 'success' as Tone }
     : { state: 'offline', stateTone: 'danger' as Tone };
   return {
     name,
-    model: str(r.model) ?? 'UXI sensor',
+    model: str(r.modelNumber ?? r.model) ?? 'UXI sensor',
     type: 'sensor',
     siteId: site.siteId,
     siteName: site.siteName,
     plane: 'UXI',
     planeTone: 'info',
     ...state,
-    firmware: str(r.firmware_version ?? r.firmware) ?? 'unknown',
+    // The sensor item publishes no firmware field — 'unknown' is the honest
+    // answer; the variants only catch a proxy that adds one.
+    firmware: str(r.firmwareVersion ?? r.firmware_version ?? r.firmware) ?? 'unknown',
     firmwareApproved: true, // the UXI API does not publish an approved train — honest default
     licence: 'unknown', // UXI licensing lives in GreenLake, not in this API
     reconciliationIssue: false, // the reconcile service computes this
     localShell: false, // sensors are cloud-managed; no portal shell
+    ...(serial ? { serial } : {}),
     ...(mac ? { mac } : {}),
   };
 }
 
+/** The sensor an issue was read from — its display name and resolved site. */
+export interface UxiIssueSensor {
+  name: string;
+  siteId: SiteId;
+  siteName: string;
+}
+
 /**
- * One sensor-status issue → AlertRow. `sensorName` resolves the context's
- * sensor id to the display name; `nowMs` anchors the age string (injected
- * for tests).
+ * One sensor-status issue → AlertRow. `sensor` carries the display name the
+ * alert is attributed to and the site it inherits when the issue's own context
+ * names no group; `nowMs` anchors the age string (injected for tests).
  */
-export function mapUxiIssue(raw: unknown, sensorName: string, nowMs: number = Date.now()): AlertRow | null {
+export function mapUxiIssue(raw: unknown, sensor: UxiIssueSensor, nowMs: number = Date.now()): AlertRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const code = str(r.code);
@@ -137,7 +169,10 @@ export function mapUxiIssue(raw: unknown, sensorName: string, nowMs: number = Da
   const sev = uxiSevFor(str(r.severity));
   const ts = parseTimestamp(r.timestamp ?? r.created_at ?? r.time);
   const statusRaw = (str(r.status) ?? '').toLowerCase();
-  const site = siteIdForName(str(ctx.site ?? ctx.site_name));
+  // The issue context names the site in `groupName`; with none, the alert
+  // inherits the site already resolved for the sensor it came from.
+  const ctxSite = str(ctx.groupName ?? ctx.site ?? ctx.site_name);
+  const site = ctxSite !== null ? siteIdForName(ctxSite) : { siteId: sensor.siteId, siteName: sensor.siteName };
   return {
     sev,
     tone: SEV_TONE[sev],
@@ -148,7 +183,7 @@ export function mapUxiIssue(raw: unknown, sensorName: string, nowMs: number = Da
     plane: 'UXI',
     state: /resolv|clos|clear/.test(statusRaw) ? 'acked' : 'open',
     age: ts !== null ? ageString(ts, nowMs) : '—',
-    device: sensorName,
+    device: sensor.name,
   };
 }
 
@@ -242,8 +277,11 @@ export class UxiAdapter implements PlaneAdapter {
 
     // Per-sensor status: sequential (the 5 req/s budget never comes close),
     // capped, and per-sensor failures are non-fatal — that sensor just keeps
-    // state 'unknown' and contributes no issues.
-    const onlineByName = new Map<string, boolean>();
+    // state 'unknown' and contributes no issues. isOnline/isTesting are
+    // `boolean | null` and the body may omit them entirely, so both are kept
+    // tri-state: null is "the sensor did not say", never "down".
+    const onlineByName = new Map<string, boolean | null>();
+    const testingByName = new Map<string, boolean | null>();
     const issues: Array<{ issue: unknown; sensorName: string }> = [];
     let statusFailures = 0;
     const named = sensors
@@ -258,7 +296,8 @@ export class UxiAdapter implements PlaneAdapter {
           continue;
         }
         const body = res.body && typeof res.body === 'object' ? (res.body as Record<string, unknown>) : {};
-        onlineByName.set(s.name, body.isOnline === true || body.is_online === true);
+        onlineByName.set(s.name, bool(body.isOnline ?? body.is_online));
+        testingByName.set(s.name, bool(body.isTesting ?? body.is_testing));
         if (Array.isArray(body.issues)) {
           for (const issue of body.issues) issues.push({ issue, sensorName: s.name });
         }
@@ -275,14 +314,27 @@ export class UxiAdapter implements PlaneAdapter {
       })
       .filter((d): d is UxiDeviceRow => d !== null);
 
+    // An issue inherits the site of the sensor it was read from unless its own
+    // context names a group — the sensor row is where groupName was resolved.
+    const sensorByName = new Map<string, UxiIssueSensor>(
+      devices.map((d) => [d.name, { name: d.name, siteId: d.siteId, siteName: d.siteName }]),
+    );
     const alerts = issues
-      .map(({ issue, sensorName }) => mapUxiIssue(issue, sensorName))
+      .map(({ issue, sensorName }) =>
+        mapUxiIssue(issue, sensorByName.get(sensorName) ?? { name: sensorName, ...siteIdForName(null) }),
+      )
       .filter((a): a is AlertRow => a !== null);
 
+    // Online but not testing is a real UXI condition — a sensor that is up and
+    // running nothing proves nothing, so the note says so rather than hiding it.
+    const idle = [...testingByName].filter(
+      ([name, testing]) => testing === false && onlineByName.get(name) === true,
+    ).length;
     const capped = named.length > MAX_SENSOR_STATUSES ? ` · status capped at ${MAX_SENSOR_STATUSES}` : '';
     const failed = statusFailures > 0 ? ` · ${statusFailures} status reads failed` : '';
+    const idleNote = idle > 0 ? ` · ${idle.toLocaleString('en-US')} idle (online, not testing)` : '';
     this.stateRef.note =
-      `${devices.length.toLocaleString('en-US')} sensors · ${alerts.length.toLocaleString('en-US')} ongoing issues${capped}${failed}` +
+      `${devices.length.toLocaleString('en-US')} sensors · ${alerts.length.toLocaleString('en-US')} ongoing issues${idleNote}${capped}${failed}` +
       ' · historical results are push-only (S3)';
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 

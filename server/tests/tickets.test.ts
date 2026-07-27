@@ -198,6 +198,43 @@ describe('TicketStore evidence collection', () => {
     expect(t.evidence.every((e) => e.device === 'sw-riv-1')).toBe(true);
   });
 
+  it('quotes a stale plane\'s device as unverified and flags a double claim', () => {
+    // What reconcileDevices() hands back for a device two planes claim while
+    // its only claimants are stale: state downgraded, claimedBy carried.
+    const store = new TicketStore(dir, {
+      devices: () => [
+        {
+          ...LIVE_DEVICE,
+          state: 'unverified',
+          stateTone: 'neutral' as const,
+          reconciliationIssue: true,
+          claimedBy: ['CLASSIC' as const, 'CENTRAL' as const],
+          serial: 'CN12AB34CD',
+        },
+      ],
+      changeLog: () => [],
+      sessions: () => [],
+    });
+
+    const t = store.raiseFromAlert(ALERT);
+    expect(t.evidence).toHaveLength(3);
+    expect(t.evidence[1].finding).toContain('current state: unverified');
+    expect(t.evidence[1].finding).not.toContain('current state: Down');
+    expect(t.evidence[1].raw).toBe('source=poller.reconciled serial=CN12AB34CD claimed_by=CLASSIC,CENTRAL');
+    expect(t.evidence[2].finding).toBe('reconciliation: double-claimed by CLASSIC, CENTRAL');
+  });
+
+  it('flags a device no management plane claims', () => {
+    const store = new TicketStore(dir, {
+      devices: () => [{ ...LIVE_DEVICE, plane: 'LOCAL' as const, reconciliationIssue: true, claimedBy: ['LOCAL' as const] }],
+      changeLog: () => [],
+      sessions: () => [],
+    });
+    const t = store.raiseFromAlert(ALERT);
+    expect(t.evidence).toHaveLength(3);
+    expect(t.evidence[2].finding).toBe('reconciliation: claimed by no management plane (local collector only)');
+  });
+
   it('is just the alert row when the feeds are empty', () => {
     const store = new TicketStore(dir, { devices: () => [], changeLog: () => [], sessions: () => [] });
     const t = store.raiseFromAlert(ALERT);
@@ -219,5 +256,76 @@ describe('TicketStore evidence collection', () => {
     expect(b.id).toBe(a.id);
     expect(b.evidence).toHaveLength(1);
     expect(writes).toBe(1); // collected once, at the first raise
+  });
+});
+
+describe('TicketStore age/SLA derivation', () => {
+  let dir: string;
+  let store: TicketStore;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpe-tickets-'));
+    store = new TicketStore(dir, { devices: () => [], changeLog: () => [], sessions: () => [] });
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Rewrite the persisted store as if the ticket had been raised hoursAgo. */
+  function backdate(id: string, hoursAgo: number, slaHours: number): TicketStore {
+    const file = path.join(dir, 'tickets.json');
+    const rows = JSON.parse(fs.readFileSync(file, 'utf8')) as Array<Record<string, unknown>>;
+    const raised = Date.now() - hoursAgo * 3_600_000;
+    for (const row of rows) {
+      if (row.id !== id) continue;
+      row.raisedAt = new Date(raised).toISOString();
+      row.slaDueAt = new Date(raised + slaHours * 3_600_000).toISOString();
+    }
+    fs.writeFileSync(file, JSON.stringify(rows, null, 2));
+    return new TicketStore(dir, { devices: () => [], changeLog: () => [], sessions: () => [] });
+  }
+
+  it('stamps raisedAt and slaDueAt from the severity table', () => {
+    const t = store.raiseFromAlert(ALERT); // P1 → 4h
+    expect(Date.parse(t.raisedAt ?? '')).not.toBeNaN();
+    expect(Date.parse(t.slaDueAt ?? '') - Date.parse(t.raisedAt ?? '')).toBe(4 * 3_600_000);
+    expect(t.age).toBe('now');
+    expect(t.sla).toBe('SLA breach in 4h');
+
+    const p3 = store.raiseFromAlert({ ...ALERT, sev: 'P3', title: 'low priority' });
+    expect(Date.parse(p3.slaDueAt ?? '') - Date.parse(p3.raisedAt ?? '')).toBe(24 * 3_600_000);
+  });
+
+  it('recomputes age and a breached SLA for a ticket raised days ago', () => {
+    const t = store.raiseFromAlert(ALERT);
+    const reopened = backdate(t.id, 50, 4); // raised 50h ago, SLA was 4h
+    const row = reopened.list().find((r) => r.id === t.id);
+    expect(row?.age).toBe('2d'); // not 'now'
+    expect(row?.sla).toBe('SLA breached 46h ago');
+  });
+
+  it('counts an SLA still running down in hours and minutes', () => {
+    const t = store.raiseFromAlert(ALERT);
+    const reopened = backdate(t.id, 1, 4); // 1h in, 4h SLA → 3h left
+    const row = reopened.list().find((r) => r.id === t.id);
+    expect(row?.age).toBe('1h');
+    expect(row?.sla).toBe('SLA breach in 3h');
+  });
+
+  it('closes the SLA countdown once the ticket is resolved', () => {
+    const t = store.raiseFromAlert(ALERT);
+    const reopened = backdate(t.id, 50, 4);
+    const resolved = reopened.resolve(t.id);
+    expect(resolved?.sla).toBe('Closed');
+    expect(reopened.list().find((r) => r.id === t.id)?.sla).toBe('Closed');
+  });
+
+  it('leaves authored fixture strings alone — they carry no timestamps', () => {
+    const promoted = store.addNote('NET-4188', 'watching this overnight');
+    expect(promoted?.raisedAt).toBeUndefined();
+    expect(promoted?.age).toBe('2h');
+    expect(promoted?.sla).toBe('SLA breach in 1h 12m');
+    expect(store.list()[0].age).toBe('2h');
   });
 });

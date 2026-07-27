@@ -41,9 +41,12 @@ import {
   OVERVIEW_SITES,
   OVERVIEW_STATS,
   PERMISSIONS,
+  PLANE_MARK,
+  PLANE_WRITE_MODE,
   POLICY_SERVICES,
   RENEWALS,
   SEARCH_INDEX,
+  SITE_PROFILES,
   SITE_STATS,
   SITES,
   SITE_IDS,
@@ -53,15 +56,20 @@ import {
   SYSTEMS,
   TICKETS,
   VLANS,
+  deriveSiteProfile,
   deviceProfile,
+  isRealSiteId,
+  scopeForPlane,
   siteDisplayName,
   siteIdFor,
-  siteProfileFor,
   terminalBanner,
   terminalQuickCommands,
+  toSiteAlertRow,
+  toSiteDeviceRow,
   ORPHANS,
   type AlertRow,
   type AuthEventRow,
+  type CapabilityRow,
   type ChangeLogEntry,
   type ClientRow,
   type BaselineProgressRow,
@@ -70,10 +78,14 @@ import {
   type DeviceType,
   type FailReasonRow,
   type FindingRow,
+  type LaneMeta,
+  type LaunchpadRow,
+  type LiveStat,
   type OverviewAlert,
   type OverviewPlaneRow,
   type OverviewSiteRow,
   type Plane,
+  type PlaneKey,
   type PolicyServiceRow,
   type QueuedChangeRow,
   type RenewalRow,
@@ -81,13 +93,17 @@ import {
   type ScreenSection,
   type Sev,
   type SsidObject,
+  type SiteAlertRow,
+  type SiteDeviceRow,
   type SiteId,
   type SitePlaneBadge,
   type SiteRow,
   type StatDef,
   type SubscriptionRow,
   type SyncHistoryRow,
+  type SystemEvent,
   type SystemRow,
+  type SystemSiteRow,
   type Tone,
   type PortObject,
   type VlanObject,
@@ -181,9 +197,12 @@ function syncedAtFor(section: ScreenSection): string | null {
       return poller.lastSyncFor('subscriptions');
     case 'systems':
       return poller.lastSyncAny();
+    // Both are derived from live rows (observed inventory / evidence
+    // coverage), so they carry the freshness of the datasets they read.
     case 'configure':
+      return poller.lastSyncFor('clients');
     case 'compliance':
-      return null;
+      return poller.lastSyncFor('devices');
   }
 }
 
@@ -217,6 +236,20 @@ function stalePlanes(): Set<PlaneId> {
     if (registry.state(id).health === 'degraded') out.add(id);
   }
   return out;
+}
+
+/** Display label → registry plane id (inverse of PLANE_LABEL). 'THIRD-PARTY'
+ *  owns no registry plane, so it resolves to undefined and never claims a
+ *  freshness stamp it cannot have. */
+const PLANE_ID_FOR: Partial<Record<Plane, PlaneId>> = Object.fromEntries(
+  PLANE_IDS.map((id) => [PLANE_LABEL[id], id]),
+) as Partial<Record<Plane, PlaneId>>;
+
+/** True when the plane behind this display label is currently serving stale
+ *  data (design rule 1). Labels with no registry plane are never asserted. */
+function planeIsStale(plane: Plane, stale: ReadonlySet<PlaneId>): boolean {
+  const id = PLANE_ID_FOR[plane];
+  return id !== undefined && stale.has(id);
 }
 
 /** Reconcile every plane's last good device list into one row per device. */
@@ -290,6 +323,46 @@ function dedupeAlerts(alerts: AlertRow[]): AlertRow[] {
   });
 }
 
+/**
+ * Live alert queue: every row carries whether the plane that reported it is
+ * currently behind. Design rule 1 — a degraded plane's last-good alert is
+ * unverified, not current, and its `age` was frozen at pull time; the row
+ * stays (an operator still needs to see it) but says so.
+ */
+function liveAlerts(): AlertRow[] {
+  const stale = stalePlanes();
+  const rows: AlertRow[] = [];
+  for (const [id, pull] of poller.contributionsByPlane()) {
+    if (!pull.alerts) continue;
+    const behind = stale.has(id);
+    for (const alert of pull.alerts) rows.push(behind ? { ...alert, stale: true } : alert);
+  }
+  return dedupeAlerts(rows);
+}
+
+/**
+ * Live client sessions with the same honesty rule the device path applies:
+ * a session last reported by a plane that is now degraded cannot be asserted
+ * as a healthy current session. Fresh planes' rows are deduped first so a
+ * fresh row always outranks a stale one for the same endpoint.
+ */
+function liveClients(): ClientRow[] {
+  const stale = stalePlanes();
+  const fresh: ClientRow[] = [];
+  const behind: ClientRow[] = [];
+  for (const [id, pull] of poller.contributionsByPlane()) {
+    if (!pull.clients) continue;
+    if (stale.has(id)) {
+      for (const client of pull.clients) {
+        behind.push({ ...client, health: 'unverified', healthTone: 'neutral', problem: false });
+      }
+    } else {
+      fresh.push(...pull.clients);
+    }
+  }
+  return dedupeClients([...fresh, ...behind]);
+}
+
 function reportedValue(value: string | null | undefined): boolean {
   if (!value) return false;
   const normal = value.trim().toLowerCase();
@@ -304,7 +377,7 @@ function displayParts(parts: Array<string | null | undefined>): string {
 function liveDeviceClients(deviceName: string): DeviceClientSet | null {
   if (!datasetReported('clients')) return null;
   const key = deviceName.trim().toLowerCase();
-  const clients = dedupeClients(poller.getCache().clients)
+  const clients = liveClients()
     .filter((client) => client.attach.trim().toLowerCase() === key)
     .map((client) => ({
       name: client.name,
@@ -418,9 +491,13 @@ function liveComplianceData(devices: ReconciledDeviceRow[]): LiveComplianceData 
       missing: (device: ReconciledDeviceRow) => !reportedValue(device.firmware),
     },
     {
+      // Only a CROSS-PLANE claim is a defect. `reconciliationIssue` also
+      // covers "claimed by the local collector alone", which README rule 2
+      // calls a first-class device, not drift — flagging those made every
+      // legitimately local-only switch a permanent, unfixable finding.
       label: 'Ownership reconciliation',
       rule: 'inventory.reconciliation',
-      missing: (device: ReconciledDeviceRow) => device.reconciliationIssue,
+      missing: (device: ReconciledDeviceRow) => (device.claimedBy?.length ?? 0) > 1,
     },
   ];
 
@@ -448,7 +525,7 @@ function liveComplianceData(devices: ReconciledDeviceRow[]): LiveComplianceData 
         tone: reconciliation ? 'warning' : 'info',
         title: reconciliation ? 'Device ownership needs reconciliation' : `${check.label} not reported`,
         detail: reconciliation
-          ? 'Live inventory has a duplicate or unclaimed device identity'
+          ? 'Two planes claim this device identity'
           : 'The linked plane did not supply this field in its current inventory response',
         rule: check.rule,
         plane,
@@ -525,6 +602,27 @@ function skeletonSite(id: SiteId, name: string): SiteRow {
 }
 
 /**
+ * "Last sync" for a merged site row: the OLDEST last-sync across the planes
+ * that claim it, because staleness is the point of the column (README §"State
+ * management": a plane 6h behind must say so). Planes that never synced, and
+ * labels with no registry plane, contribute nothing rather than a false '—'.
+ */
+function siteSyncFor(badges: Iterable<Plane>): string {
+  let oldest: string | null = null;
+  let anyClaim = false;
+  for (const label of badges) {
+    const id = PLANE_ID_FOR[label];
+    if (!id) continue;
+    anyClaim = true;
+    const last = registry.state(id).lastSync;
+    if (!last) return 'never'; // a claimant that has never answered decides
+    if (oldest === null || last < oldest) oldest = last;
+  }
+  if (!anyClaim) return '—';
+  return oldest === null ? '—' : relSync(oldest);
+}
+
+/**
  * Merge per-plane site rows by SiteId: the managed-by badges union across
  * planes (a site can answer to two planes — the design's point), while
  * device/client counts, the mix and the health bar are derived from the
@@ -563,6 +661,16 @@ function mergeLiveSites(
     for (const r of siteRows) {
       for (const b of r.planes) if (!badges.has(b.name)) badges.set(b.name, b);
     }
+    // The adapter site rows only ever name the planes that PUBLISH sites
+    // (Central, Mist today). Every claim on a device at this site is also a
+    // claim on the site — AOS-8 controllers, UXI sensors, the local collector
+    // and ClearPass must badge here too, or "Managed by" drops the exact fact
+    // it exists to show. Adapter badges stay first so their tone wins.
+    for (const d of devs) {
+      for (const name of d.claimedBy && d.claimedBy.length > 0 ? d.claimedBy : [d.plane]) {
+        if (!badges.has(name)) badges.set(name, { name, tone: name === d.plane ? d.planeTone : 'neutral' });
+      }
+    }
     const knownStateDevices = devs.filter((d) => d.state === 'up' || d.state === 'down');
     const up = knownStateDevices.filter((d) => d.state === 'up').length;
     const healthPct =
@@ -580,10 +688,58 @@ function mergeLiveSites(
       tone: healthPct === null ? 'stale' : healthPct >= 90 ? 'ok' : healthPct >= 70 ? 'warn' : 'bad',
       alerts: alertsReported ? (open.length > 0 ? `${open.length} open` : 'clear') : '—',
       alertTone: alertsReported ? (open.length > 0 ? 'warning' : 'success') : 'neutral',
-      sync: siteRows.map((r) => r.sync).find((s) => s && s !== '—') ?? '—',
+      // An adapter that genuinely stamps a per-site sync wins; otherwise the
+      // claiming planes' registry freshness fills the column (no plane adapter
+      // reports per-site sync today, so without this the column is dead).
+      sync: siteRows.map((r) => r.sync).find((s) => s && s !== '—') ?? siteSyncFor(badges.keys()),
     });
   }
   return merged;
+}
+
+/**
+ * The Sites screen's four headline Stats (README §6: Sites / Devices /
+ * Clients / Sites with alerts), computed from the same merge that feeds the
+ * table. Datasets no plane reported read '—' rather than a false zero, and
+ * unverified devices are named in the delta (design rule 1).
+ */
+function liveSiteStats(
+  sites: SiteRow[],
+  devices: ReconciledDeviceRow[],
+  clients: ClientRow[],
+  alerts: AlertRow[],
+): StatDef[] {
+  const clientsReported = datasetReported('clients');
+  const alertsReported = datasetReported('alerts');
+  const unverified = devices.filter((d) => d.state === 'unverified').length;
+  const stale = sites.filter((s) => s.tone === 'stale').length;
+  const withAlerts = new Set(alerts.filter((a) => a.state === 'open').map((a) => a.siteId)).size;
+  return [
+    {
+      label: 'Sites',
+      value: String(sites.length),
+      delta: stale > 0 ? `${stale} without verified health` : 'from the merged inventory',
+      tone: stale > 0 ? 'negative' : 'neutral',
+    },
+    {
+      label: 'Devices',
+      value: devices.length.toLocaleString('en-US'),
+      delta: unverified > 0 ? `▼ ${unverified} unverified` : 'all claims verified',
+      tone: unverified > 0 ? 'negative' : 'neutral',
+    },
+    {
+      label: 'Clients',
+      value: clientsReported ? clients.length.toLocaleString('en-US') : '—',
+      delta: clientsReported ? 'active sessions reported' : 'no client roster reported',
+      tone: 'neutral',
+    },
+    {
+      label: 'Sites with alerts',
+      value: alertsReported ? String(withAlerts) : '—',
+      delta: alertsReported ? (withAlerts > 0 ? 'open now' : 'none open') : 'no alert feed reported',
+      tone: alertsReported && withAlerts > 0 ? 'negative' : 'neutral',
+    },
+  ];
 }
 
 /** Sites + devices as the live merge presents them (shared by several routes). */
@@ -592,17 +748,19 @@ function liveMerged(): {
   doubleClaimed: number;
   unclaimed: number;
   sites: SiteRow[];
+  clients: ClientRow[];
   alerts: AlertRow[];
 } {
   const cache = poller.getCache();
   const { devices, doubleClaimed, unclaimed } = liveDeviceData();
-  const clients = dedupeClients(cache.clients);
-  const alerts = dedupeAlerts(cache.alerts);
+  const clients = liveClients();
+  const alerts = liveAlerts();
   return {
     devices,
     doubleClaimed,
     unclaimed,
     sites: mergeLiveSites(cache.sites, devices, clients, alerts),
+    clients,
     alerts: sortLiveAlerts(alerts),
   };
 }
@@ -646,6 +804,53 @@ function liveOverviewPlanes(): OverviewPlaneRow[] {
   return rows;
 }
 
+/**
+ * Platform-lane headers from the registry: one entry per linked plane, with
+ * its real freshness stamp and health tone. Unlinked planes are omitted so a
+ * lane that appears only because a device claims it falls through to the
+ * client's non-asserting fallback rather than claiming to be "linked".
+ * `mark` comes from the shared PLANE_MARK so live and demo lanes agree.
+ */
+function liveLaneMeta(): Partial<Record<Plane, LaneMeta>> {
+  const out: Partial<Record<Plane, LaneMeta>> = {};
+  for (const id of PLANE_IDS) {
+    const s = registry.state(id);
+    if (!s.linked) continue;
+    const label = PLANE_LABEL[id];
+    out[label] = {
+      tone: HEALTH_TONE[s.health],
+      sync: s.lastSync ? `synced ${relSync(s.lastSync)}` : 'never synced',
+      note: s.note ?? '',
+      mark: PLANE_MARK[label],
+    };
+  }
+  return out;
+}
+
+/**
+ * Live Launchpad — portal navigation the live estate can actually honour: a
+ * console hand-off per LINKED plane, an SSH row only when a live device
+ * really exposes a local shell, and the two portal reports. The authored
+ * rows (Mist org, Campus-01, sw-core-a) belong to the demo estate and would
+ * 404 against a real one.
+ */
+function liveLaunchpad(devices: ReconciledDeviceRow[]): LaunchpadRow[] {
+  const rows: LaunchpadRow[] = [];
+  for (const id of PLANE_IDS) {
+    const s = registry.state(id);
+    if (!s.linked) continue;
+    const name = settings.get().planes[id]?.displayName ?? PLANE_LABEL[id];
+    rows.push({ label: `Open ${name}`, hint: 'console ↗', target: { type: 'view', view: 'systems' } });
+  }
+  const shell = devices.find((d) => d.localShell);
+  if (shell) rows.push({ label: `SSH to ${shell.name}`, hint: 'terminal', target: { type: 'device', device: shell.name } });
+  rows.push({ label: 'Run compliance scan', hint: 'all sites', target: { type: 'view', view: 'compliance' } });
+  if (registry.state('greenlake').linked) {
+    rows.push({ label: 'Reconcile licences with GreenLake', hint: 'report', target: { type: 'view', view: 'licenses' } });
+  }
+  return rows;
+}
+
 function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts: AlertRow[] }): StatDef[] {
   const up = live.devices.filter((d) => d.state === 'up').length;
   const unverified = live.devices.filter((d) => d.state === 'unverified').length;
@@ -659,6 +864,10 @@ function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts: Alert
   const states = registry.states();
   const linked = PLANE_IDS.filter((id) => states[id].linked).length;
   const unhealthy = PLANE_IDS.map((id) => states[id]).find((s) => s.linked && s.health !== 'healthy');
+  // Config drift: the same live evidence-coverage engine Configure and
+  // Compliance already run, so the three screens cannot disagree. '—' only
+  // when no inventory has been reported at all.
+  const drift = live.devices.length > 0 ? liveComplianceData(live.devices).findings.length : null;
   return [
     {
       label: 'Devices reachable',
@@ -672,7 +881,12 @@ function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts: Alert
       delta: p1 > 0 ? `▲ ${p1} critical` : 'none critical',
       tone: open.length > 0 ? 'negative' : 'neutral',
     },
-    { label: 'Config drift', value: '—', delta: 'compliance engine not linked', tone: 'neutral' },
+    {
+      label: 'Config drift',
+      value: drift === null ? '—' : String(drift),
+      delta: drift === null ? 'no live inventory evidence' : 'live evidence coverage findings',
+      tone: drift !== null && drift > 0 ? 'negative' : 'neutral',
+    },
     {
       label: 'Licences ≤60d',
       value: String(expiring),
@@ -697,9 +911,17 @@ function liveOverviewChanges(): ChangeLogEntry[] {
   }));
 }
 
-/** Live alert → the "Needs you now" view model (meta carries the alert detail). */
+/**
+ * Live alert → the "Needs you now" view model. The row has no Site column
+ * (README §1), so `meta` is the only place the site can appear — the fixtures
+ * lead with it for exactly that reason. A detail that already names the site
+ * is left alone rather than doubled up.
+ */
 function liveOverviewAlert(a: AlertRow): OverviewAlert {
-  return { sev: a.sev, tone: a.tone, title: a.title, meta: a.detail, plane: a.plane, age: a.age, device: a.device };
+  const site = reportedValue(a.siteName) ? a.siteName : null;
+  const leads = site !== null && a.detail.trim().toLowerCase().startsWith(site.trim().toLowerCase());
+  const meta = site === null || leads ? a.detail : [site, a.detail].filter((part) => part.trim()).join(' · ');
+  return { sev: a.sev, tone: a.tone, title: a.title, meta, plane: a.plane, age: a.age, device: a.device };
 }
 
 /** Live site row → the Overview Sites-table view model (badges → a prose plane label). */
@@ -735,7 +957,27 @@ function renewalColor(daysLeft: number): string {
   return 'var(--nd-text-muted)';
 }
 
-function liveLicenseStats(subs: LiveSubscription[]): StatDef[] {
+/**
+ * The Licences screen's five Stats (README §10 — the grid is five columns
+ * wide, so a four-tile row leaves a hole). The fifth, "Devices unlicensed",
+ * counts reconciled devices whose plane reports no entitlement; when no plane
+ * reports a licence at all it reads '—' rather than claiming a clean estate.
+ */
+function liveUnlicensedStat(devices: ReconciledDeviceRow[]): StatDef {
+  const known = devices.filter((d) => reportedValue(d.licence));
+  if (devices.length === 0 || known.length === 0) {
+    return { label: 'Devices unlicensed', value: '—', delta: 'no plane reports entitlements', tone: 'neutral' };
+  }
+  const unlicensed = devices.length - known.length;
+  return {
+    label: 'Devices unlicensed',
+    value: String(unlicensed),
+    delta: `${known.length} of ${devices.length} devices carry an entitlement`,
+    tone: unlicensed > 0 ? 'negative' : 'positive',
+  };
+}
+
+function liveLicenseStats(subs: LiveSubscription[], devices: ReconciledDeviceRow[]): StatDef[] {
   const totalQty = subs.reduce((n, s) => n + (s.qtyValue ?? 0), 0);
   const totalAssigned = subs.reduce((n, s) => n + (s.assignedValue ?? 0), 0);
   const unassigned = Math.max(0, totalQty - totalAssigned);
@@ -766,6 +1008,7 @@ function liveLicenseStats(subs: LiveSubscription[]): StatDef[] {
       delta: soonest?.expiresAtMs !== undefined ? `next ${expiryDisplay(soonest.expiresAtMs)}` : 'none on the horizon',
       tone: expiring.length > 0 ? 'negative' : 'positive',
     },
+    liveUnlicensedStat(devices),
   ];
 }
 
@@ -960,7 +1203,10 @@ screensRouter.get('/overview', (_req, res) => {
             sites: blendSection('sites', live.sites.map(liveOverviewSite), OVERVIEW_SITES, blended),
             planes: blendSection('planes', livePlanes, OVERVIEW_PLANES, blended),
             changes: blendSection('changes', liveOverviewChanges(), OVERVIEW_CHANGES, blended),
-            launchpad: OVERVIEW_LAUNCHPAD,
+            // Once a plane is linked the authored rows would offer consoles
+            // and an SSH target this estate does not have — and the device
+            // row would 404 against the swapped device section.
+            launchpad: blendSection('launchpad', livePlanes.length > 0 ? liveLaunchpad(live.devices) : [], OVERVIEW_LAUNCHPAD, blended),
           }),
           blended,
         ),
@@ -989,7 +1235,7 @@ screensRouter.get('/overview', (_req, res) => {
       sites: live.sites.map(liveOverviewSite),
       planes: liveOverviewPlanes(),
       changes: liveOverviewChanges(),
-      launchpad: OVERVIEW_LAUNCHPAD,
+      launchpad: liveLaunchpad(live.devices),
     }),
   );
 });
@@ -1000,14 +1246,14 @@ screensRouter.get('/alerts', (_req, res) => {
   if (sourceFor('alerts') === 'demo') {
     if (blendFor('alerts')) {
       const blended: string[] = [];
-      const alerts = blendSection('alerts', sortLiveAlerts(dedupeAlerts(poller.getCache().alerts)), ALERTS, blended);
+      const alerts = blendSection('alerts', sortLiveAlerts(liveAlerts()), ALERTS, blended);
       res.json(withBlended(envelopeFor('alerts', { alerts }), blended));
       return;
     }
     res.json(envelopeFor('alerts', { alerts: ALERTS }));
     return;
   }
-  res.json(envelopeFor('alerts', { alerts: sortLiveAlerts(dedupeAlerts(poller.getCache().alerts)) }));
+  res.json(envelopeFor('alerts', { alerts: sortLiveAlerts(liveAlerts()) }));
 });
 
 screensRouter.get('/tickets', (_req, res) => {
@@ -1019,20 +1265,30 @@ screensRouter.get('/tickets', (_req, res) => {
   res.json(envelope({ tickets: [...raised, ...base] }));
 });
 
-/** Raise a ticket from an alert row {alert: AlertRow} — idempotent per title+device. */
+/**
+ * Raise a ticket from an alert row {alert: AlertRow} — idempotent per
+ * title+device.
+ *
+ * `detail` and `device` are OPTIONAL: real plane payloads legitimately leave
+ * them blank (a WAN/tenant/subscription alert names no device, and several
+ * feeds carry no summary line), and those are exactly the P1s an operator
+ * most wants ticketed. They default to '' / '—' rather than 400-ing.
+ */
 screensRouter.post('/tickets/raise', (req, res) => {
   const alert = (req.body ?? {}) as Record<string, unknown>;
-  const required = ['title', 'sev', 'detail', 'siteName', 'plane', 'device', 'age', 'state'] as const;
+  const required = ['title', 'sev', 'siteName', 'plane', 'age', 'state'] as const;
   if (
     required.some((field) => typeof alert[field] !== 'string' || !(alert[field] as string).trim()) ||
     (alert.sev !== 'P1' && alert.sev !== 'P2' && alert.sev !== 'P3')
   ) {
     res.status(400).json({
-      error: 'non-empty alert fields required: title, sev (P1|P2|P3), detail, siteName, plane, device, age, state',
+      error: 'non-empty alert fields required: title, sev (P1|P2|P3), siteName, plane, age, state',
     });
     return;
   }
-  res.json({ ticket: ticketStore.raiseFromAlert(alert as unknown as AlertRow) });
+  const detail = typeof alert.detail === 'string' && alert.detail.trim() ? alert.detail : '';
+  const device = typeof alert.device === 'string' && alert.device.trim() ? alert.device : '—';
+  res.json({ ticket: ticketStore.raiseFromAlert({ ...alert, detail, device } as unknown as AlertRow) });
 });
 
 /**
@@ -1087,17 +1343,17 @@ screensRouter.get('/clients', (_req, res) => {
   if (sourceFor('clients') === 'demo') {
     if (blendFor('clients')) {
       const blended: string[] = [];
-      const liveClients = dedupeClients(poller.getCache().clients);
-      if (liveClients.length > 0) {
+      const blendClients = liveClients();
+      if (blendClients.length > 0) {
         blended.push('clients');
-        res.json(withBlended(envelopeFor('clients', { stats: liveClientStats(liveClients), clients: liveClients }), blended));
+        res.json(withBlended(envelopeFor('clients', { stats: liveClientStats(blendClients), clients: blendClients }), blended));
         return;
       }
     }
     res.json(envelopeFor('clients', { stats: CLIENT_STATS, clients: CLIENTS }));
     return;
   }
-  const clients = dedupeClients(poller.getCache().clients);
+  const clients = liveClients();
   res.json(envelopeFor('clients', { stats: liveClientStats(clients), clients }));
 });
 
@@ -1105,8 +1361,11 @@ screensRouter.get('/clients', (_req, res) => {
 function liveClientStats(clients: ClientRow[]): StatDef[] {
   const wireless = clients.filter((c) => c.medium === 'wireless').length;
   const wired = clients.length - wireless;
-  const failing = clients.filter((c) => /auth/i.test(c.health)).length;
-  const poor = clients.filter(
+  // A session whose plane is behind reads 'unverified' (see liveClients) — it
+  // must not be counted as failing or poor, because nothing current says so.
+  const asserted = clients.filter((c) => c.health !== 'unverified');
+  const failing = asserted.filter((c) => /auth/i.test(c.health)).length;
+  const poor = asserted.filter(
     (c) => /poor|fair/i.test(c.health) || (c.quality !== null && c.quality < 50),
   ).length;
   const pct = clients.length > 0 ? Math.round((wireless / clients.length) * 100) : 0;
@@ -1165,18 +1424,48 @@ screensRouter.get('/sites', (_req, res) => {
   if (sourceFor('sites') === 'demo') {
     if (blendFor('sites')) {
       const blended: string[] = [];
-      const liveSites = liveMerged().sites;
-      if (liveSites.length > 0) {
+      const live = liveMerged();
+      if (live.sites.length > 0) {
         blended.push('sites');
-        res.json(withBlended(envelopeFor('sites', { stats: [], sites: liveSites }), blended));
+        res.json(
+          withBlended(
+            envelopeFor('sites', {
+              stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts),
+              sites: live.sites,
+            }),
+            blended,
+          ),
+        );
         return;
       }
     }
     res.json(envelopeFor('sites', { stats: SITE_STATS, sites: SITES }));
     return;
   }
-  res.json(envelopeFor('sites', { stats: [], sites: liveMerged().sites }));
+  const live = liveMerged();
+  res.json(
+    envelopeFor('sites', {
+      stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts),
+      sites: live.sites,
+    }),
+  );
 });
+
+/**
+ * The two per-site sections README §7 puts either side of the flair divider —
+ * "Devices at this site" and "Open here". Both are pure projections of the
+ * merge the route already computed, so a live site page carries them exactly
+ * like a demo one (the authored profiles embed the same two lists).
+ */
+function liveSiteSections(
+  live: { devices: ReconciledDeviceRow[]; alerts: AlertRow[] },
+  site: SiteRow,
+): { devices: SiteDeviceRow[]; alerts: SiteAlertRow[] } {
+  return {
+    devices: live.devices.filter((d) => d.siteId === site.id).map(toSiteDeviceRow),
+    alerts: live.alerts.filter((a) => a.siteId === site.id && a.state === 'open').map(toSiteAlertRow),
+  };
+}
 
 screensRouter.get('/sites/:siteId', (req, res) => {
   const param = req.params.siteId;
@@ -1188,38 +1477,44 @@ screensRouter.get('/sites/:siteId', (req, res) => {
     // the detail follows the section: live row (matched like the live
     // branch, by id OR name) or honest 404.
     if (blendFor('sites')) {
-      const liveSites = liveMerged().sites;
-      if (liveSites.length > 0) {
-        const site = liveSites.find((s) => s.id === id || s.name === param || String(s.id) === param) ?? null;
+      const live = liveMerged();
+      if (live.sites.length > 0) {
+        const site = live.sites.find((s) => s.id === id || s.name === param || String(s.id) === param) ?? null;
         if (!site) {
           res.status(404).json({ error: `site '${param}' not in the live inventory`, dataSource: 'demo', blended: ['sites'] });
           return;
         }
-        res.json(withBlended(envelopeFor('sites', { site, profile: null }), ['sites']));
+        res.json(withBlended(envelopeFor('sites', { site, profile: null, ...liveSiteSections(live, site) }), ['sites']));
         return;
       }
     }
-    if (!id) {
+    // 'core-services', 'workspace' and 'multiple' are bookkeeping ids that
+    // alert and device rows file under — they have no inventory row, so a
+    // site page for them would be a fabricated profile, not a site.
+    if (!id || !isRealSiteId(id)) {
       res.status(404).json({ error: `unknown site '${param}'`, dataSource: 'demo' });
       return;
     }
-    const display = siteDisplayName(id);
+    // The authored deep profile when this site has one; otherwise a profile
+    // derived from the portal's OWN inventory row for this site. The old
+    // local-only fallback answered with Warehouse-DC1's authored numbers for
+    // every other site, contradicting the SiteRow in the same response.
     res.json(
       envelopeFor('sites', {
         site: SITES.find((s) => s.id === id) ?? null,
-        profile: siteProfileFor(display),
+        profile: SITE_PROFILES[id] ?? deriveSiteProfile(id),
       }),
     );
     return;
   }
 
-  const site =
-    liveMerged().sites.find((s) => s.id === id || s.name === param || String(s.id) === param) ?? null;
+  const live = liveMerged();
+  const site = live.sites.find((s) => s.id === id || s.name === param || String(s.id) === param) ?? null;
   if (!site) {
     res.status(404).json({ error: `site '${param}' not in the live cache`, dataSource: 'live' });
     return;
   }
-  res.json(envelopeFor('sites', { site, profile: null }));
+  res.json(envelopeFor('sites', { site, profile: null, ...liveSiteSections(live, site) }));
 });
 
 // -- Devices ------------------------------------------------------------------
@@ -1230,7 +1525,10 @@ screensRouter.get('/devices', (_req, res) => {
       const { devices, doubleClaimed, unclaimed } = liveDeviceData();
       if (devices.length > 0) {
         res.json(
-          withBlended(envelopeFor('devices', { devices, lanes: {}, reconciliation: { doubleClaimed, unclaimed } }), ['devices']),
+          withBlended(
+            envelopeFor('devices', { devices, lanes: liveLaneMeta(), reconciliation: { doubleClaimed, unclaimed } }),
+            ['devices'],
+          ),
         );
         return;
       }
@@ -1249,7 +1547,7 @@ screensRouter.get('/devices', (_req, res) => {
     return;
   }
   const { devices, doubleClaimed, unclaimed } = liveDeviceData();
-  res.json(envelopeFor('devices', { devices, lanes: {}, reconciliation: { doubleClaimed, unclaimed } }));
+  res.json(envelopeFor('devices', { devices, lanes: liveLaneMeta(), reconciliation: { doubleClaimed, unclaimed } }));
 });
 
 screensRouter.get('/devices/:name', (req, res) => {
@@ -1315,7 +1613,7 @@ screensRouter.get('/licenses', (_req, res) => {
         res.json(
           withBlended(
             envelopeFor('licenses', {
-              stats: liveLicenseStats(subs),
+              stats: liveLicenseStats(subs, liveDeviceData().devices),
               subscriptions: subs,
               renewals: liveRenewals(subs),
               orphans: [],
@@ -1336,15 +1634,81 @@ screensRouter.get('/licenses', (_req, res) => {
   // subscriptions feed carries no device identities to reconcile against.
   const subs = poller.getCache().subscriptions as LiveSubscription[];
   res.json(
-    envelopeFor('licenses', { stats: liveLicenseStats(subs), subscriptions: subs, renewals: liveRenewals(subs), orphans: [] }),
+    envelopeFor('licenses', {
+      stats: liveLicenseStats(subs, liveDeviceData().devices),
+      subscriptions: subs,
+      renewals: liveRenewals(subs),
+      orphans: [],
+    }),
   );
 });
+
+/**
+ * "Where a change can go" for the real deployment: one row per registry
+ * plane, its mode taken from the SAME scopeForPlane() the Systems scope badge
+ * reads, so the two screens can never disagree. An unlinked plane cannot
+ * accept a change, and says so, instead of advertising the fixture estate's
+ * brokered collector and AOS-8 master.
+ */
+function liveCapabilityMatrix(): CapabilityRow[] {
+  const states = registry.states();
+  const stored = settings.get().planes;
+  return PLANE_IDS.filter((id) => SYSTEM_DISPLAY[id]).map((id) => {
+    const linked = states[id].linked;
+    const scope = scopeForPlane(id as PlaneKey, { linked, scopes: stored[id]?.scopes ?? null });
+    const mode: CapabilityRow['mode'] =
+      scope === 'read + broker' ? 'brokered' : scope === 'read + ssh' ? 'ssh' : 'read only';
+    const note = !linked
+      ? 'not linked — no credentials stored'
+      : states[id].health === 'degraded'
+        ? 'linked, but the plane is not answering'
+        : mode === 'brokered'
+          ? 'brokered write, ticket required'
+          : mode === 'ssh'
+            ? 'recorded shell, window only'
+            : 'payload pre-filled in the plane console';
+    return {
+      plane: stored[id]?.displayName ?? SYSTEM_DISPLAY[id]!,
+      note,
+      mode,
+      tone: mode === 'read only' ? 'neutral' : 'accent',
+    };
+  });
+}
 
 screensRouter.get('/configure', (_req, res) => {
   // Key names follow the web client's ConfigureData contract (queued /
   // capabilities). The broker queue is authoritative in every source mode;
   // demo fixtures only supply the read-only inventory examples.
   if (sourceFor('configure') === 'demo') {
+    // Blend: once a plane reports client sessions the authored SSID/port/VLAN
+    // examples describe an estate that is not there — swap the whole section
+    // to the observed inventory, the same rule every other screen follows.
+    if (blendFor('configure') && datasetReported('clients')) {
+      const blendQueue = liveConfigureQueue();
+      const observed = observedConfigureInventory(liveClients());
+      const blendCompliance = datasetReported('devices') ? liveComplianceData(liveDeviceData().devices) : null;
+      res.json(
+        withBlended(
+          envelopeFor('configure', {
+            stats: liveConfigureStats(
+              blendQueue,
+              observed.ssids.length + observed.ports.length + observed.vlans.length,
+              'observed from active client sessions',
+              blendCompliance ? blendCompliance.findings.length : null,
+            ),
+            ssids: observed.ssids,
+            ports: observed.ports,
+            vlans: observed.vlans,
+            inventoryMode: 'observed',
+            queued: blendQueue,
+            capabilities: liveCapabilityMatrix(),
+          }),
+          ['configure'],
+        ),
+      );
+      return;
+    }
     const queued = liveConfigureQueue();
     const configObjects = SSIDS.length + CONFIG_PORTS.length + VLANS.length;
     res.json(
@@ -1362,12 +1726,13 @@ screensRouter.get('/configure', (_req, res) => {
   }
   const queued = liveConfigureQueue();
   const clientsReported = datasetReported('clients');
-  const inventory = observedConfigureInventory(poller.getCache().clients);
+  const inventory = observedConfigureInventory(liveClients());
   const configObjects = inventory.ssids.length + inventory.ports.length + inventory.vlans.length;
   const compliance = datasetReported('devices') ? liveComplianceData(liveDeviceData().devices) : null;
   res.json(
-    // The capability matrix describes the portal's own write model, not plane
-    // data — it is static and safe to serve in live mode too.
+    // The capability matrix describes the portal's own write model — in live
+    // mode that means what THIS deployment's linked planes can accept, not
+    // the fixture estate's.
     envelopeFor('configure', {
       stats: liveConfigureStats(
         queued,
@@ -1380,13 +1745,23 @@ screensRouter.get('/configure', (_req, res) => {
       vlans: inventory.vlans,
       inventoryMode: clientsReported ? 'observed' : 'unavailable',
       queued,
-      capabilities: CAPABILITY_MATRIX,
+      capabilities: liveCapabilityMatrix(),
     }),
   );
 });
 
 screensRouter.get('/compliance', (_req, res) => {
   if (sourceFor('compliance') === 'demo') {
+    // Blend: the authored findings describe the demo estate's drift. Once a
+    // plane reports inventory, serve the live evidence-coverage run instead —
+    // Compliance was the last screen still pinned to fixtures under a blend.
+    if (blendFor('compliance') && datasetReported('devices')) {
+      const blendCompliance = liveComplianceData(liveDeviceData().devices);
+      res.json(
+        withBlended(envelopeFor('compliance', { ...blendCompliance, evidenceMode: 'coverage' }), ['compliance']),
+      );
+      return;
+    }
     res.json(
       envelopeFor('compliance', {
         stats: COMPLIANCE_STATS,
@@ -1436,35 +1811,94 @@ const SYSTEM_HEALTH_TONE: Record<PlaneHealth, Tone> = {
   unlinked: 'neutral',
 };
 
+const SCOPE_TONE: Record<ReturnType<typeof scopeForPlane>, Tone> = {
+  'read only': 'neutral',
+  'read + broker': 'accent',
+  'read + ssh': 'accent',
+};
+
+/** "Sites on this plane" — what THIS plane actually reported, never the merge. */
+function planeSites(pull: PlanePull | undefined): SystemSiteRow[] {
+  if (!pull) return [];
+  const byId = new Map<SiteId, { name: string; devices: number; clients: number }>();
+  const note = (siteId: SiteId, name: string): { name: string; devices: number; clients: number } => {
+    const seen = byId.get(siteId);
+    if (seen) return seen;
+    const fresh = { name, devices: 0, clients: 0 };
+    byId.set(siteId, fresh);
+    return fresh;
+  };
+  for (const row of pull.sites ?? []) note(row.id, row.name);
+  for (const row of pull.devices ?? []) note(row.siteId, row.siteName).devices += 1;
+  for (const row of pull.clients ?? []) note(row.siteId, row.siteName).clients += 1;
+  return [...byId.entries()].map(([siteId, s]) => ({
+    siteId,
+    name: s.name,
+    detail: `${s.devices} device${s.devices === 1 ? '' : 's'} · ${s.clients} client${s.clients === 1 ? '' : 's'}`,
+  }));
+}
+
+/** "Live on this plane" — one counter per dataset this plane contributes. */
+function planeLiveStats(pull: PlanePull | undefined): LiveStat[] {
+  if (!pull) return [];
+  const rows: LiveStat[] = [];
+  if (pull.devices) rows.push({ value: String(pull.devices.length), label: 'devices claimed' });
+  if (pull.clients) rows.push({ value: String(pull.clients.length), label: 'client sessions' });
+  if (pull.alerts) rows.push({ value: String(pull.alerts.filter((a) => a.state === 'open').length), label: 'open alerts' });
+  if (pull.subscriptions) rows.push({ value: String(pull.subscriptions.length), label: 'subscriptions' });
+  if (pull.authEvents) rows.push({ value: String(pull.authEvents.length), label: 'auth events' });
+  return rows;
+}
+
+/** "Recent events" — this plane's own entries in the poller's sync log. */
+function planeEvents(id: PlaneId): SystemEvent[] {
+  return poller
+    .history()
+    .filter((e) => e.plane === id)
+    .slice(0, 6)
+    .map((e) => ({ time: e.time.slice(11, 16), what: e.what, who: `poller · ${e.result}` }));
+}
+
 /**
- * One registry plane as a SystemRow — only what the registry actually knows:
- * link state, health, last sync, device count, calls today and the poll
- * cadence. Sites, call logs and events the registry does not track stay
- * honestly empty (the screen overlays the live call log from
- * /api/systems/state itself).
+ * One registry plane as a SystemRow. Everything comes from what the portal
+ * actually holds: the registry's link/health/freshness, the plane's own last
+ * good pull (its sites, its dataset counts), its entries in the sync log, and
+ * the MASKED credential record from settings. The call log is still overlaid
+ * client-side from /api/systems/state.
  */
-function liveSystemRow(id: PlaneId, s: PlaneState): SystemRow {
+function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | undefined): SystemRow {
   // The operator's stored displayName (set in the connect drawer) wins over
   // the registry default — a rename must survive onto the screen.
-  const displayName = settings.get().planes[id]?.displayName;
+  const stored = settings.get().planes[id];
+  const masked = settings.maskedView().planes[id];
+  const scope = scopeForPlane(id as PlaneKey, { linked: s.linked, scopes: stored?.scopes ?? null });
   return {
-    name: displayName ?? SYSTEM_DISPLAY[id]!,
+    name: stored?.displayName ?? SYSTEM_DISPLAY[id]!,
     planeId: id,
     kind: s.linked ? 'live plane registry' : 'not linked',
     state: s.health === 'unlinked' ? 'warning' : s.health,
     tone: SYSTEM_HEALTH_TONE[s.health],
-    scope: 'read only',
-    scopeTone: 'neutral',
-    scopeNote: s.linked ? 'brokered writes where the plane supports them' : 'no credentials stored',
+    // Derived from what the write broker can really do for this plane and
+    // what the operator granted — the same helper the capability matrix
+    // reads, so the two screens cannot contradict each other.
+    scope,
+    scopeTone: SCOPE_TONE[scope],
+    scopeNote: !s.linked
+      ? 'no credentials stored'
+      : scope === 'read only'
+        ? 'no write path from the portal to this plane'
+        : scope === 'read + ssh'
+          ? 'recorded shell, change window only'
+          : 'brokered writes, ticket required',
     facts: [
       { k: 'Last sync', v: s.lastSync ? relSync(s.lastSync) : 'never' },
       { k: 'Devices', v: s.deviceCount === null ? '—' : String(s.deviceCount) },
       { k: 'Calls today', v: String(s.callsToday) },
     ],
-    sites: [],
-    live: [],
+    sites: planeSites(pull),
+    live: planeLiveStats(pull),
     calls: [],
-    events: [],
+    events: planeEvents(id),
     pulls: [{ what: 'poll()', every: `every ${settings.get().pollIntervalSec}s`, mode: 'read', tone: 'neutral' }],
     configText: [
       `plane: ${id}`,
@@ -1474,6 +1908,14 @@ function liveSystemRow(id: PlaneId, s: PlaneState): SystemRow {
       s.deviceCount === null ? null : `devices: ${s.deviceCount}`,
       `calls_today: ${s.callsToday}`,
       s.note ? `note: ${s.note}` : null,
+      // The stored credential record, exactly as maskedView() renders it —
+      // endpoint, client id, workspace and scopes are the record the
+      // Configuration tab exists to show; secrets stay masked.
+      ...Object.entries(masked ?? {})
+        .filter(([key]) => key !== 'displayName')
+        .map(([key, value]) => `${key}: ${value}`),
+      `scope: ${scope}`,
+      `poll_interval: ${settings.get().pollIntervalSec}s`,
     ]
       .filter((line): line is string => line !== null)
       .join('\n'),
@@ -1493,7 +1935,8 @@ function liveSyncHistory(): SyncHistoryRow[] {
 
 /** The registry as SystemRows — the live half of the /api/systems payload. */
 function liveSystemRows(states: Record<PlaneId, PlaneState>): SystemRow[] {
-  return PLANE_IDS.filter((id) => SYSTEM_DISPLAY[id]).map((id) => liveSystemRow(id, states[id]));
+  const pulls = poller.contributionsByPlane();
+  return PLANE_IDS.filter((id) => SYSTEM_DISPLAY[id]).map((id) => liveSystemRow(id, states[id], pulls.get(id)));
 }
 
 screensRouter.get('/systems', (_req, res) => {
@@ -1560,7 +2003,7 @@ function liveSearchSections(): {
       view: 'device',
       arg: d.name,
     })),
-    clients: dedupeClients(poller.getCache().clients).map<SearchIndexEntry>((c) => ({
+    clients: liveClients().map<SearchIndexEntry>((c) => ({
       kind: 'client',
       label: c.name,
       meta: `${c.mac} · ${c.siteName}`,

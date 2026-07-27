@@ -5,6 +5,9 @@
  * "Unacknowledged only" Switch, right-aligned mono `N of M` count), open table
  * Sev/Alert/Site/Plane/State/Age/Inspect. Filters are local, instant and
  * additive (AND); an empty result shows the EmptyState.
+ * The banner is authored prose only for a demo-sourced queue — a live/blended
+ * queue derives its own correlation from the rows (correlate()), and rows from
+ * a plane that is behind read `unverified`, never a current age.
  * Data: getAlerts() — live /api/alerts when the server is up, fixtures otherwise.
  */
 
@@ -36,6 +39,52 @@ const SEV_OPTIONS = [
   { value: 'P2', label: 'P2 — major' },
   { value: 'P3', label: 'P3 — minor' },
 ];
+
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** The authored banner from design/NtAlerts.dc.html — demo fixtures only. */
+const DEMO_BANNER: Banner = {
+  tone: 'danger',
+  title: 'Riverside Clinic is dark — and its plane is stale',
+  body:
+    'WAN down 12 minutes. Central Classic last synced 6h ago, so device state there cannot be ' +
+    'trusted. The local collector still answers on 10.51.0.0/24 — inspect sw-riv-1 over SSH instead.',
+};
+
+interface Banner {
+  tone: 'danger' | 'warning';
+  title: string;
+  body: string;
+}
+
+/**
+ * The danger banner is a correlation over the queue (README §2 — "correlates the
+ * two worst findings"), not prose: the worst open alert crossed with the worst
+ * open row whose source plane is behind (`stale`, design rule 1). Every word is
+ * read off the rows; nothing is asserted about a site the portal never fetched.
+ * Null when the queue holds nothing open — then no banner renders at all.
+ */
+function correlate(alerts: AlertRow[]): Banner | null {
+  const open = alerts.filter((a) => a.state === 'open');
+  const worst = open.find((a) => a.sev === 'P1') ?? open.find((a) => a.sev === 'P2') ?? open[0];
+  if (!worst) return null;
+  // Second finding: the worst other open row served by a plane that is behind —
+  // same site first, since that is the pair an operator must read together.
+  const behind = open.filter((a) => a !== worst && a.stale);
+  const partner = behind.find((a) => a.siteId === worst.siteId) ?? behind[0];
+  const lead = `${worst.detail} · ${worst.siteName} · ${worst.plane} · ${worst.age}.`;
+  return {
+    tone: worst.sev === 'P1' ? 'danger' : 'warning',
+    title: partner ? `${worst.title} — and ${partner.plane} is stale` : worst.title,
+    body: partner
+      ? `${lead} Second finding: ${partner.title} — ${partner.plane} is behind, so that row's age was frozen at pull time and its state is unverified, not current.`
+      : lead,
+  };
+}
 
 export default function Alerts() {
   const navigate = useNavigate();
@@ -138,6 +187,12 @@ export default function Alerts() {
   );
   const planeOptions = planes.map((p) => ({ value: p, label: p === 'all' ? 'All planes' : p }));
 
+  /* Provenance: the section leads with real rows when the portal is live OR when
+   * blend mode swapped this section in (README — the envelope's `blended` list). */
+  const sectionLive = data.dataSource === 'live' || (data.blended?.includes('alerts') ?? false);
+  const synced = sectionLive ? `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'}` : 'SYNCED 09:41';
+  const banner = sectionLive ? correlate(data.alerts) : DEMO_BANNER;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <ScreenHeader
@@ -146,6 +201,17 @@ export default function Alerts() {
         subtitle="Every plane's alarms in one queue, de-duplicated and aged."
         actions={
           <>
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-10)',
+                color: 'var(--nd-text-muted)',
+                letterSpacing: '.08em',
+              }}
+            >
+              {synced}
+            </span>
+            {data.blended?.includes('alerts') ? <Badge tone="info">LIVE</Badge> : null}
             <Button
               variant="ghost"
               size="sm"
@@ -164,7 +230,13 @@ export default function Alerts() {
               variant="secondary"
               size="sm"
               onClick={async () => {
-                const top = rows.find((a) => a.state === 'open') ?? rows[0];
+                // Prefer an open row that names a device: site/tenant-class live
+                // alerts are honestly device-less, and the raise route wants the
+                // most specific evidence it can get.
+                const top =
+                  rows.find((a) => a.state === 'open' && a.device.trim()) ??
+                  rows.find((a) => a.state === 'open') ??
+                  rows[0];
                 if (!top) {
                   toast('No alert in view to raise from', { tone: 'info' });
                   return;
@@ -185,13 +257,11 @@ export default function Alerts() {
         }
       />
 
-      <Alert tone="danger" title="Riverside Clinic is dark — and its plane is stale">
-        <span style={{ fontSize: 13 }}>
-          WAN down 12 minutes. Central Classic last synced 6h ago, so device state there cannot be
-          trusted. The local collector still answers on 10.51.0.0/24 — inspect sw-riv-1 over SSH
-          instead.
-        </span>
-      </Alert>
+      {banner ? (
+        <Alert tone={banner.tone} title={banner.title}>
+          <span style={{ fontSize: 13 }}>{banner.body}</span>
+        </Alert>
+      ) : null}
 
       {ackTarget ? (
         <div
@@ -282,7 +352,7 @@ export default function Alerts() {
             color: 'var(--nd-text-muted)',
           }}
         >
-          {rows.length} of {data.alerts.length} alerts
+          {rows.length} of {data.alerts.length} alerts · {sectionLive ? 'live' : 'demo fixtures'}
         </span>
       </div>
 
@@ -321,7 +391,18 @@ export default function Alerts() {
                 </div>
               </Table.Cell>
               <Table.Cell>{a.siteName}</Table.Cell>
-              <Table.Cell>{showPlatformTags ? <Badge tone="neutral">{a.plane}</Badge> : null}</Table.Cell>
+              <Table.Cell>
+                {/* A row from a plane that is behind carries the design-rule-1
+                    marker next to its plane badge — unverified, not current. */}
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {showPlatformTags ? <Badge tone="neutral">{a.plane}</Badge> : null}
+                  {a.stale ? (
+                    <Badge tone="warning" dot>
+                      stale
+                    </Badge>
+                  ) : null}
+                </span>
+              </Table.Cell>
               <Table.Cell>
                 <span
                   style={{
@@ -334,7 +415,13 @@ export default function Alerts() {
                   {a.state}
                 </span>
               </Table.Cell>
-              <Table.Cell numeric>{a.age}</Table.Cell>
+              <Table.Cell numeric>
+                {a.stale ? (
+                  <span style={{ color: 'var(--nd-text-muted)' }}>{a.age} · unverified</span>
+                ) : (
+                  a.age
+                )}
+              </Table.Cell>
               <Table.Cell>
                 <Button
                   variant="ghost"

@@ -1,13 +1,23 @@
 /**
  * web/src/screens/Systems.tsx — connected systems (the live one).
- * High-fidelity port of design/NtSystems.dc.html, with the fixture descriptors
- * from getSystems() MERGED with live per-plane registry state from
- * getSystemsState() (GET /api/systems/state): when the backend answers, the
- * state Badge shows the registry health (healthy/degraded/warning/unlinked),
- * the fact strip overrides Last sync / Devices / Calls today with live
- * values, the drawer's Activity tab lists the real recent-call log, and Sync
- * history comes from the poller. Backend unreachable → fixture-only plus a
- * small mono "backend offline — fixture state" note.
+ * High-fidelity port of design/NtSystems.dc.html, with the descriptors from
+ * getSystems() MERGED with live per-plane registry state from
+ * getSystemsState() (GET /api/systems/state) — but only when the systems
+ * section is actually live-sourced (dataSource 'live', or blended): a demo
+ * payload is authored data and renders as authored, never stamped with the
+ * empty registry ("unlinked / never / 0" beside a fixture device count).
+ * On a live section the state Badge shows the registry health
+ * (healthy/degraded/warning/unlinked), the fact strip overrides Last sync /
+ * the plane's count fact / Calls today with live values, the throttling
+ * Alert is derived from the plane's own 429s, the drawer's Activity tab
+ * lists the real recent-call log, and Sync history comes from the poller.
+ * Backend unreachable → fixture-only plus a small mono "backend offline —
+ * fixture state" note.
+ * The connect drawer renders the endpoint variant plus the per-plane
+ * credential fields the chosen adapter needs (shared CONNECT_FIELDS) and
+ * saves every value under the settings key that adapter's isComplete()
+ * reads (CONNECT_ENDPOINT_KEY) — a record under any other key links a plane
+ * to a stub that never syncs.
  * Mutations are real: Test connection POSTs the entered credentials to
  * /api/systems/:plane/test and surfaces the server's message verbatim (a 502
  * {ok:false,message} is a normal result); Save and index is gated on a
@@ -55,7 +65,14 @@ import type {
   SystemsData,
   SystemsState,
 } from '../api/client';
-import { CONNECT_ENDPOINTS, CONNECT_TYPE_OPTIONS, SCREEN_SECTIONS, type ScreenSection } from '../../../shared';
+import {
+  CONNECT_ENDPOINTS,
+  CONNECT_ENDPOINT_KEY,
+  CONNECT_FIELDS,
+  CONNECT_TYPE_OPTIONS,
+  SCREEN_SECTIONS,
+  type ScreenSection,
+} from '../../../shared';
 import type { Fact, SyncHistoryRow, SystemRow, SystemTypeKey, Tone } from '../../../shared';
 import { useSettings } from '../app/SettingsContext';
 import type { Density } from '../app/SettingsContext';
@@ -80,18 +97,6 @@ const HEALTH_TONE: Record<LivePlaneState['health'], Tone> = {
   warning: 'warning',
   degraded: 'danger',
   unlinked: 'neutral',
-};
-
-/** Endpoint form field → credential key the server's tester looks for. */
-const ENDPOINT_CRED_KEY: Record<SystemTypeKey, string> = {
-  central: 'gatewayBaseUrl',
-  mist: 'apiHost',
-  classic: 'baseUrl',
-  greenlake: 'endpoint',
-  aos8: 'master',
-  local: 'address',
-  clearpass: 'publisher',
-  uxi: 'baseUrl',
 };
 
 /**
@@ -176,15 +181,54 @@ function codeTone(code: string): Tone {
 
 // -- fixture ⇄ live merge ------------------------------------------------------
 
-/** Fact strip: live values override the matching fixture facts when present. */
+/** Fact keys that carry a plane's indexed-object count — GreenLake counts
+ *  subscriptions and ClearPass endpoints, so keying the live override off
+ *  'Devices' alone would never reach them. */
+const COUNT_FACT_KEYS = ['Devices', 'Subscriptions', 'Endpoints'];
+
+/** Fact strip: live values override the matching facts when present. Only
+ *  called for a live-sourced row — a demo row keeps its authored facts. */
 function mergedFacts(s: SystemRow, live: LivePlaneState | null): Fact[] {
   if (!live) return s.facts;
-  return s.facts.map((f) => {
+  let counted = false;
+  const facts = s.facts.map((f) => {
     if (f.k === 'Last sync') return { ...f, v: relTime(live.lastSync) };
-    if (f.k === 'Devices' && live.deviceCount != null) return { ...f, v: String(live.deviceCount) };
     if (f.k === 'Calls today') return { ...f, v: String(live.callsToday) };
+    if (COUNT_FACT_KEYS.includes(f.k) && live.deviceCount != null) {
+      counted = true;
+      return { ...f, v: String(live.deviceCount) };
+    }
     return f;
   });
+  // A plane whose row has no count fact at all still gets one appended.
+  if (!counted && live.deviceCount != null) facts.push({ k: 'Devices', v: String(live.deviceCount) });
+  return facts;
+}
+
+/**
+ * The throttling banner (README §13) derived from the registry rather than
+ * authored: a linked plane whose recent-call ring buffer holds 429s really is
+ * being rate-limited, so name it and quote its own count. Everything else —
+ * including an unlinked Classic that the portal has never called — gets no
+ * banner at all.
+ */
+interface ThrottleBanner {
+  title: string;
+  body: string;
+}
+
+function throttleBanner(views: Array<{ row: SystemRow; live: LivePlaneState | null }>): ThrottleBanner | null {
+  for (const v of views) {
+    if (!v.live?.linked) continue;
+    const total = v.live.recentCalls.length;
+    const rate = v.live.recentCalls.filter((c) => c.code === '429').length;
+    if (rate === 0) continue;
+    return {
+      title: `${v.row.name} is throttling us`,
+      body: `${rate} of the last ${total} calls to this plane came back 429, so inventory from it falls behind.${v.live.note ? ` Registry note: ${v.live.note}.` : ''}`,
+    };
+  }
+  return null;
 }
 
 interface CallRow {
@@ -215,6 +259,23 @@ interface HistoryRow {
   what: string;
   result: string;
   tone: Tone;
+}
+
+/** A drawer section that clears to zero rows says so — README §Interactions:
+ *  zero results show an empty state, never a heading over nothing. */
+function NothingReported({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        fontFamily: 'var(--nd-font-mono)',
+        fontSize: 10.5,
+        color: 'var(--nd-text-muted)',
+        padding: '8px 0',
+      }}
+    >
+      {label}
+    </div>
+  );
 }
 
 /** Sync history: the live poller log when present, else the fixture rows. */
@@ -733,6 +794,9 @@ export default function Systems() {
   const [endpoint, setEndpoint] = useState('');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  // The per-plane credential fields CONNECT_FIELDS declares, keyed by the
+  // settings key the adapter's isComplete() actually reads.
+  const [extraCreds, setExtraCreds] = useState<Record<string, string>>({});
   const [scopes, setScopes] = useState<ScopeFlags>(DEFAULT_SCOPES);
   const [testing, setTesting] = useState(false);
   const [testedOk, setTestedOk] = useState(false);
@@ -773,11 +837,16 @@ export default function Systems() {
   if (liveState?.apiError) return <ApiErrorState message={liveState.apiError} />;
 
   // -- merged per-plane view ---------------------------------------------------
+  // The server decides demo-vs-live per section: a demo payload is the
+  // authored SYSTEMS rows and must render as authored. Overlaying the registry
+  // on them stamps every row 'unlinked / never / 0' next to a fixture device
+  // count on a stock demo install, which reads as a broken screen.
+  const systemsLive = data.dataSource === 'live' || (data.blended?.includes('systems') ?? false);
   const views = data.systems.map((row) => {
     // Live rows carry the registry planeId — trust it over the name reverse-
     // lookup, which breaks the moment an operator renames a plane.
     const planeId = (row.planeId as SystemTypeKey | undefined) ?? PLANE_ID_BY_NAME[row.name] ?? null;
-    const live = (planeId && liveState?.planes[planeId]) || null;
+    const live = (systemsLive && planeId && liveState?.planes[planeId]) || null;
     return {
       row,
       planeId,
@@ -788,11 +857,14 @@ export default function Systems() {
     };
   });
   const linkedCount = views.filter((v) => v.live?.linked).length;
+  const throttle = systemsLive ? throttleBanner(views) : null;
 
   const cur = data.systems.find((s) => s.name === detailName) ?? null;
   const curView = views.find((v) => v.row.name === detailName) ?? null;
   const curCalls = cur && curView ? callsFor(cur, curView.live) : [];
-  const history = historyRows(liveState?.history ?? null, data.syncHistory);
+  // Same rule as the rows: the poller log belongs to a live section, the
+  // authored log to a demo one — never the two spliced together.
+  const history = historyRows(systemsLive ? (liveState?.history ?? null) : null, data.syncHistory);
 
   // -- header / drawer actions --------------------------------------------------
   const syncAll = async () => {
@@ -815,6 +887,7 @@ export default function Systems() {
     setEndpoint('');
     setClientId('');
     setClientSecret('');
+    setExtraCreds({});
     setScopes(DEFAULT_SCOPES);
     setTesting(false);
     setTestedOk(false);
@@ -859,12 +932,19 @@ export default function Systems() {
     return out;
   };
 
+  /* Saved under the exact keys each adapter's isComplete() reads (shared
+   * CONNECT_ENDPOINT_KEY / CONNECT_FIELDS) — a record written under any other
+   * key links the plane to a stub that never syncs. */
   const credPayload = (): Record<string, string> => {
     const out: Record<string, string> = {};
     if (displayName.trim()) out.displayName = displayName.trim();
-    if (endpoint.trim()) out[ENDPOINT_CRED_KEY[newType]] = endpoint.trim();
+    if (endpoint.trim()) out[CONNECT_ENDPOINT_KEY[newType]] = endpoint.trim();
     if (clientId.trim()) out.clientId = clientId.trim();
     if (clientSecret.trim()) out.clientSecret = clientSecret.trim();
+    CONNECT_FIELDS[newType].forEach((f) => {
+      const v = (extraCreds[f.key] ?? '').trim();
+      if (v) out[f.key] = v;
+    });
     const sc = selectedScopes();
     if (sc.length > 0) out.scopes = sc.join(',');
     return out;
@@ -913,13 +993,21 @@ export default function Systems() {
         }
       />
 
-      <Alert tone="danger" title="Central Classic is throttling us" dismissible>
-        <span style={{ fontSize: 13 }}>
-          Two API clients share one token quota on the Classic tenant, so every third poll returns
-          429 and inventory falls behind. Re-key the portal client, or retire the legacy scripts
-          still using it.
-        </span>
-      </Alert>
+      {/* Authored on the demo section; derived from the registry's own 429s on
+          a live one — never an incident on a plane that was never configured. */}
+      {!systemsLive ? (
+        <Alert tone="danger" title="Central Classic is throttling us" dismissible>
+          <span style={{ fontSize: 13 }}>
+            Two API clients share one token quota on the Classic tenant, so every third poll returns
+            429 and inventory falls behind. Re-key the portal client, or retire the legacy scripts
+            still using it.
+          </span>
+        </Alert>
+      ) : throttle ? (
+        <Alert tone="danger" title={throttle.title} dismissible>
+          <span style={{ fontSize: 13 }}>{throttle.body}</span>
+        </Alert>
+      ) : null}
 
       {liveState === null ? (
         <div
@@ -938,7 +1026,7 @@ export default function Systems() {
         <SectionHeader
           label="Planes"
           meta={
-            liveState
+            systemsLive && liveState
               ? `${linkedCount} LINKED · SELECT ONE FOR DETAIL`
               : '7 LINKED · SELECT ONE FOR DETAIL'
           }
@@ -1283,6 +1371,9 @@ export default function Systems() {
                       </span>
                     </div>
                   ))}
+                  {cur.sites.length === 0 ? (
+                    <NothingReported label="no sites reported by this plane yet" />
+                  ) : null}
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -1314,6 +1405,9 @@ export default function Systems() {
                       </span>
                     </div>
                   ))}
+                  {cur.live.length === 0 ? (
+                    <NothingReported label="no sessions, devices or alerts sourced here yet" />
+                  ) : null}
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 12 }}>
                     <Button
                       variant="ghost"
@@ -1448,6 +1542,9 @@ export default function Systems() {
                       </div>
                     </div>
                   ))}
+                  {cur.events.length === 0 ? (
+                    <NothingReported label="no brokered writes, token rotations or cluster changes recorded" />
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -1551,6 +1648,9 @@ export default function Systems() {
               value={newType}
               onValueChange={(v) => {
                 setNewType(v as SystemTypeKey);
+                // Another plane's fields would be saved under keys this one
+                // never reads — start its credential record clean.
+                setExtraCreds({});
                 invalidate();
               }}
             />
@@ -1621,6 +1721,28 @@ export default function Systems() {
               />
             </FormField>
           </div>
+
+          {/* What this plane's adapter needs beyond the endpoint and the
+              client pair — without these the record saves, the plane links,
+              and the poller runs a stub that never returns a row. */}
+          {CONNECT_FIELDS[newType].map((f) => (
+            <FormField
+              key={f.key}
+              label={f.optional ? `${f.label} — optional` : f.label}
+              help={f.help}
+            >
+              <Input
+                mono
+                type={f.secret ? 'password' : undefined}
+                placeholder={f.secret ? '••••••••••••' : f.key}
+                value={extraCreds[f.key] ?? ''}
+                onChange={(e) => {
+                  setExtraCreds({ ...extraCreds, [f.key]: e.target.value });
+                  invalidate();
+                }}
+              />
+            </FormField>
+          ))}
 
           <div
             style={{

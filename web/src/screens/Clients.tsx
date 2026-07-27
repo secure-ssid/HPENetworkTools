@@ -136,6 +136,9 @@ export default function Clients() {
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
   const clients = data.clients;
+  /* Provenance for every derivation below: the section leads with real rows when
+   * the portal is live OR when blend mode swapped it in. */
+  const sectionLive = data.dataSource === 'live' || (data.blended?.includes('clients') ?? false);
   const ql = q.trim().toLowerCase();
   const rows = clients.filter(
     (c) =>
@@ -201,7 +204,6 @@ export default function Clients() {
         // For a live client they would fabricate hops through devices the
         // estate doesn't have (sw-core-a, gw-edge-1…) — once the section
         // leads with live rows, serve an honest empty state instead.
-        const sectionLive = data.dataSource === 'live' || (data.blended?.includes('clients') ?? false);
         const path = sectionLive ? [] : pathFor(cur);
         const weakHops = path.filter((h) => h.tone === 'warning' || h.tone === 'danger').length;
         const wired = cur.medium === 'wired';
@@ -373,7 +375,10 @@ export default function Clients() {
             color: 'var(--nd-text-muted)',
           }}
         >
-          {rows.length} of {clients.length} sampled · 4,982 live sessions
+          {/* The estate total is a fixture figure; a live feed counts only what
+              the poller returned, so the tail drops rather than contradict the
+              `Clients now` Stat above it. */}
+          {rows.length} of {clients.length} sampled{sectionLive ? '' : ' · 4,982 live sessions'}
         </span>
       </div>
 

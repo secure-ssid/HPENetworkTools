@@ -2,7 +2,11 @@
  * server/tests/greenlake.test.ts — GreenLake adapter unit tests, NO network.
  *
  * The mapping helpers are tested against recorded GLP-style subscription JSON
- * inlined here; GreenLakeAdapter.pull() is exercised end-to-end with an
+ * inlined here — both the flat snake_case shapes and the camelCase/nested
+ * shapes a live workspace actually returns (v1 skuDescription/availableQuantity/
+ * endTime, v1alpha1 productDescription/appointment); GreenLakeAdapter.pull() is
+ * exercised end-to-end (including offset/limit paging of the real
+ * `{items, count, offset, total}` envelope) with an
  * in-memory fake `fetch` (FetchLike injection) to cover the OAuth2 token flow
  * (documented /authorization/v2/oauth2/{workspaceId}/token first, legacy
  * /oauth2/token and /token as 404-tolerated fallbacks), form-encoded token
@@ -67,6 +71,45 @@ const SUB_RETIRING = {
   quantity: 24,
   assigned: 24,
   end_date: '2026-08-12T00:00:00Z', // 18 days after NOW — retiring still wins
+};
+
+/**
+ * Recorded verbatim from a live GLP v1 /subscriptions/v1/subscriptions row
+ * (identifiers redacted): camelCase throughout, counts as strings, no name
+ * field at all (skuDescription is the only human label), startTime/endTime
+ * rather than *_date, and only the complement of the assigned count.
+ */
+const SUB_GLP_V1 = {
+  id: '05975b22-564f-5f0b-bd47-f8cdbcde9c74',
+  type: 'subscriptions/subscription',
+  subscriptionType: 'CENTRAL_SWITCH',
+  createdAt: '2026-03-16T07:02:48.206Z',
+  updatedAt: '2026-03-16T07:02:48.207Z',
+  key: 'K1B2C3D4E5F6A7B8C9',
+  quantity: '5',
+  availableQuantity: '2',
+  isEval: true,
+  sku: 'JZ540-EVALS',
+  skuDescription: 'Aruba Central 8/9/10xxx A EVAL',
+  startTime: '2026-03-16T00:00:00.000Z',
+  endTime: '2027-08-03T00:00:00.000Z',
+  subscriptionStatus: 'STARTED',
+  tags: {},
+  productType: 'DEVICE',
+  tier: 'ADVANCED_SWITCH_8XXX_9XXX_10XXX',
+  tierDescription: 'Advanced-Switch-Class-5',
+};
+
+/** The v1alpha1 spelling of the same endpoint: nested product + appointment. */
+const SUB_GLP_V1ALPHA1 = {
+  id: 'sub-v1alpha1',
+  subscriptionKey: 'K9Z8Y7X6W5V4U3T2S1',
+  productDescription: 'Advanced AP Subscription',
+  productSku: 'R7G21AAE',
+  quantity: 200,
+  availableQuantity: 24,
+  subscriptionStatus: 'ACTIVE',
+  appointment: { subscriptionStart: '2024-06-01T00:00:00Z', subscriptionEnd: '2026-09-23T00:00:00Z' },
 };
 
 // -- Pure helpers --------------------------------------------------------------
@@ -178,6 +221,58 @@ describe('mapGreenLakeSubscription', () => {
     expect(mapGreenLakeSubscription(null, NOW)).toBeNull();
     expect(mapGreenLakeSubscription({ sku: 'R7G20AAE' }, NOW)).toBeNull(); // no name at all
   });
+
+  it('maps a real camelCase GLP v1 row (no *_name key anywhere)', () => {
+    const s = mapGreenLakeSubscription(SUB_GLP_V1, NOW);
+    expect(s).not.toBeNull(); // the whole workspace used to be dropped here
+    expect(s!.name).toBe('Aruba Central 8/9/10xxx A EVAL'); // skuDescription
+    expect(s!.sku).toBe('JZ540-EVALS');
+    expect(s!.qty).toBe('5'); // string '5' coerced
+    expect(s!.assigned).toBe('3'); // quantity − availableQuantity
+    expect(s!.pct).toBe('60%');
+    expect(s!.expires).toBe('Aug 2027'); // endTime
+    expect(s!.expiresAtMs).toBe(Date.parse(SUB_GLP_V1.endTime));
+    expect(s!.daysLeft).toBe(Math.floor((Date.parse(SUB_GLP_V1.endTime) - NOW) / 86_400_000));
+    expect(s!.qtyValue).toBe(5);
+    expect(s!.assignedValue).toBe(3);
+    expect(s!.term).toBe('1 yr subscription'); // derived from startTime/endTime
+    expect(s!.status).toBe('active');
+  });
+
+  it('maps the v1alpha1 spelling (productDescription + appointment dates)', () => {
+    const s = mapGreenLakeSubscription(SUB_GLP_V1ALPHA1, NOW);
+    expect(s!.name).toBe('Advanced AP Subscription');
+    expect(s!.sku).toBe('R7G21AAE'); // productSku
+    expect(s!.assigned).toBe('176'); // 200 − 24
+    expect(s!.pct).toBe('88%');
+    expect(s!.expires).toBe('Sep 2026'); // appointment.subscriptionEnd
+    expect(s!.daysLeft).toBe(60);
+    expect(s!.status).toBe('expiring'); // < 90d — dead before the dates were read
+    expect(s!.term).toBe('2 yr subscription'); // derived from the appointment span
+  });
+
+  it('a fully consumed GLP row reports 100% rather than an unknown', () => {
+    const s = mapGreenLakeSubscription({ ...SUB_GLP_V1, availableQuantity: '0' }, NOW);
+    expect(s!.assigned).toBe('5');
+    expect(s!.pct).toBe('100%');
+  });
+
+  it('an unused GLP row is idle, and a reported count beats the complement', () => {
+    const idle = mapGreenLakeSubscription({ ...SUB_GLP_V1, availableQuantity: '5' }, NOW);
+    expect(idle!.assigned).toBe('0');
+    expect(idle!.status).toBe('idle');
+    // a directly reported count wins over the quantity − availableQuantity path
+    const direct = mapGreenLakeSubscription({ ...SUB_GLP_V1, assignedQuantity: 4 }, NOW);
+    expect(direct!.assigned).toBe('4');
+  });
+
+  it("GLP subscriptionStatus 'ENDED' retires the row; 'EXTENDED' does not", () => {
+    const ended = mapGreenLakeSubscription({ ...SUB_GLP_V1, subscriptionStatus: 'ENDED' }, NOW);
+    expect(ended!.status).toBe('retiring');
+    expect(ended!.tone).toBe('danger');
+    const extended = mapGreenLakeSubscription({ ...SUB_GLP_V1, subscriptionStatus: 'EXTENDED' }, NOW);
+    expect(extended!.status).toBe('active');
+  });
 });
 
 // -- pull() with an in-memory fake fetch (no network) ----------------------------
@@ -230,6 +325,20 @@ function routeHandler(routes: Record<string, unknown>): Handler {
   return (method, pathname) => {
     const body = routes[`${method} ${pathname}`];
     return body === undefined ? undefined : { body };
+  };
+}
+
+/** Serves `rows` through the real GLP envelope, honouring offset/limit. */
+function pagingHandler(rows: unknown[]): Handler {
+  return (method, pathname, query) => {
+    if (method === 'POST' && pathname === TOKEN_PATH) return { body: { access_token: 'gl-tok-1', expires_in: 7200 } };
+    if (method === 'GET' && pathname === '/subscriptions/v1/subscriptions') {
+      const offset = Number(query.get('offset') ?? '0');
+      const limit = Number(query.get('limit') ?? '100');
+      const items = rows.slice(offset, offset + limit);
+      return { body: { items, errors: [], count: items.length, offset, total: rows.length } };
+    }
+    return undefined;
   };
 }
 
@@ -339,6 +448,36 @@ describe('GreenLakeAdapter.pull()', () => {
       return body === undefined ? undefined : { body };
     });
     await expect(adapter.pull()).rejects.toThrow(/section 'subscriptions' failed — HTTP 500/);
+  });
+
+  it('pages the real GLP envelope until total, merging every page', async () => {
+    const rows = Array.from({ length: 250 }, (_, i) => ({ ...SUB_GLP_V1, id: `sub-${i}`, key: `KEY-${i}` }));
+    const { adapter, calls, state } = makeAdapter(pagingHandler(rows));
+    const pull = await adapter.pull();
+    expect(pull.subscriptions).toHaveLength(250); // page 1 alone would have been 100
+    expect(state.note).toBe('250 subscriptions · 0 expiring < 90d');
+    const subsCalls = calls.filter((c) => c.startsWith('GET /subscriptions/v1/subscriptions'));
+    expect(subsCalls).toHaveLength(3);
+    expect(subsCalls[0]).toContain('offset=0&limit=100');
+    expect(subsCalls[0]).toContain('workspace_id=ws-1'); // scoping survives paging
+    expect(subsCalls[1]).toContain('offset=100&limit=100');
+    expect(subsCalls[2]).toContain('offset=200&limit=100');
+  });
+
+  it('stops on a short page without asking for one past the end', async () => {
+    const rows = Array.from({ length: 40 }, (_, i) => ({ ...SUB_GLP_V1, id: `sub-${i}`, key: `KEY-${i}` }));
+    const { adapter, calls } = makeAdapter(pagingHandler(rows));
+    const pull = await adapter.pull();
+    expect(pull.subscriptions).toHaveLength(40);
+    expect(calls.filter((c) => c.startsWith('GET /subscriptions/v1/subscriptions'))).toHaveLength(1);
+  });
+
+  it('declares a page-capped read partial rather than asserting the count', async () => {
+    const rows = Array.from({ length: 2600 }, (_, i) => ({ ...SUB_GLP_V1, id: `sub-${i}`, key: `KEY-${i}` }));
+    const { adapter, state } = makeAdapter(pagingHandler(rows));
+    const pull = await adapter.pull();
+    expect(pull.subscriptions).toHaveLength(2500); // 25 pages × 100
+    expect(state.note).toBe('2,500 subscriptions · 0 expiring < 90d · partial (page cap 25)');
   });
 
   it('retries once with a fresh token on 401', async () => {

@@ -6,7 +6,8 @@
  * (classic monitoring/v1 + central/v2 shapes). CentralAdapter.pull() is
  * exercised end-to-end with an in-memory fake `fetch` (FetchLike injection)
  * to cover candidate-path fallback, missing sections, section failures,
- * pagination and the secret-free call log.
+ * pagination, 429 backoff and the secret-free call log. Sleeps are injected
+ * (SleepFn) so backoff and page pacing cost no wall time here.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,6 +26,7 @@ import {
   mapCentralNotification,
   mapCentralSite,
   parseApprovedFirmware,
+  parseRetryAfterMs,
   parseTimestamp,
   sevFor,
   siteIdForName,
@@ -205,6 +207,16 @@ describe('pure helpers', () => {
     expect(sevFor('Critical')).toBe('P1');
     expect(sevFor('Warning')).toBe('P2');
     expect(sevFor('Informational')).toBe('P3');
+  });
+
+  it('parseRetryAfterMs reads both Retry-After forms and rejects junk', () => {
+    const now = 1_753_000_000_000;
+    expect(parseRetryAfterMs('30', now)).toBe(30_000); // delta-seconds
+    expect(parseRetryAfterMs('  5 ', now)).toBe(5_000);
+    expect(parseRetryAfterMs(new Date(now + 12_000).toUTCString(), now)).toBe(12_000); // HTTP-date
+    expect(parseRetryAfterMs(new Date(now - 12_000).toUTCString(), now)).toBe(0); // never negative
+    expect(parseRetryAfterMs('soon', now)).toBeNull();
+    expect(parseRetryAfterMs(null, now)).toBeNull();
   });
 });
 
@@ -542,7 +554,7 @@ describe('mapCentralNotification', () => {
 
 // -- pull() with an in-memory fake fetch (no network) ------------------------------
 
-type HandlerResult = { status?: number; body?: unknown };
+type HandlerResult = { status?: number; body?: unknown; headers?: Record<string, string> };
 type Handler = (method: string, pathname: string, query: URLSearchParams) => HandlerResult | undefined;
 
 function fakeFetch(handler: Handler): { fn: FetchLike; calls: string[] } {
@@ -557,7 +569,7 @@ function fakeFetch(handler: Handler): { fn: FetchLike; calls: string[] } {
     }
     return new Response(JSON.stringify(result.body ?? {}), {
       status: result.status ?? 200,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(result.headers ?? {}) },
     });
   };
   return { fn, calls };
@@ -573,8 +585,13 @@ function makeAdapter(handler: Handler) {
   const { fn, calls } = fakeFetch(handler);
   const recorded: { path: string; ms: number; code: string }[] = [];
   const state = makeState();
-  const adapter = new CentralAdapter(CREDS, state, (c) => recorded.push(c), fn);
-  return { adapter, state, recorded, calls };
+  // Sleeps are recorded, never awaited for real — backoff and page pacing are
+  // asserted on the requested delays, so the suite stays instant.
+  const slept: number[] = [];
+  const adapter = new CentralAdapter(CREDS, state, (c) => recorded.push(c), fn, async (ms) => {
+    slept.push(ms);
+  });
+  return { adapter, state, recorded, calls, slept };
 }
 
 const HAPPY_ROUTES: Record<string, unknown> = {
@@ -652,13 +669,32 @@ describe('CentralAdapter.pull()', () => {
     await expect(adapter.pull()).rejects.toThrow(/section 'sites' failed/);
   });
 
-  it('missing notifications section → empty alerts with a note, not a failure', async () => {
+  it('missing notifications section → the key is omitted with a note, not a failure', async () => {
     const routes = { ...HAPPY_ROUTES };
     delete routes['GET /central/v1/notifications'];
     const { adapter, state } = makeAdapter(routeHandler(routes));
     const pull = await adapter.pull();
-    expect(pull.alerts).toEqual([]);
+    // Omitted, NOT []: an empty array is an authoritative "no alerts", which is
+    // a claim about a dataset that never answered. Undefined = unknown, which
+    // is what datasetReported()/lastSyncFor() need to see.
+    expect(pull.alerts).toBeUndefined();
+    expect('alerts' in pull).toBe(false);
+    expect(pull.devices).toHaveLength(2); // the sections that did answer still ship
     expect(state.note).toContain('not available: notifications');
+  });
+
+  it('a missing section holds the plane at warning and never claims a zero count', async () => {
+    const routes = { ...HAPPY_ROUTES };
+    delete routes['GET /monitoring/v1/clients'];
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    expect(pull.clients).toBeUndefined();
+    // '0 clients' would be an assertion of fact about data we could not read.
+    expect(state.note).not.toContain('clients ·');
+    expect(state.note).not.toContain('0 clients');
+    expect(state.note).toContain('not available: clients');
+    // Not promoted to 'healthy': a partial read is not a complete sync.
+    expect(state.health).toBe('warning');
   });
 
   it('paginates until the reported total is covered', async () => {
@@ -676,6 +712,111 @@ describe('CentralAdapter.pull()', () => {
     expect(pull.devices!.filter((d) => d.type === 'ap')).toHaveLength(201);
     expect(calls.some((c) => c.includes('offset=0'))).toBe(true);
     expect(calls.some((c) => c.includes('offset=200'))).toBe(true);
+  });
+
+  it('keeps paging when the payload reports `count` (rows in THIS response), not `total`', async () => {
+    // Regression: `count` was read as the grand total, so page 1 of a full
+    // 500-row client response set total=500, offset=500, and 500 < 500 exited
+    // the loop — 4,982 clients silently truncated to the first page.
+    const manyClients = Array.from({ length: 1_100 }, (_, i) => ({
+      macaddr: `aa:bb:cc:00:${String(Math.floor(i / 256)).padStart(2, '0')}:${String(i % 256).padStart(2, '0')}`,
+      username: `user-${i}`,
+      site: 'Campus-01 HQ',
+    }));
+    const { adapter, state, calls } = makeAdapter((method, pathname, query) => {
+      if (method === 'GET' && pathname === '/monitoring/v1/clients') {
+        const offset = Number(query.get('offset') ?? 0);
+        const limit = Number(query.get('limit') ?? 500);
+        const page = manyClients.slice(offset, offset + limit);
+        return { body: { clients: page, count: page.length } }; // no `total` key at all
+      }
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    const pull = await adapter.pull();
+    expect(pull.clients).toHaveLength(1_100);
+    expect(calls.some((c) => c.includes('/clients?offset=500'))).toBe(true);
+    expect(calls.some((c) => c.includes('/clients?offset=1000'))).toBe(true);
+    expect(state.note).toContain('1,100 clients');
+    expect(state.note).not.toContain('truncated');
+  });
+
+  it('paces the pages of a section instead of bursting them', async () => {
+    const manyAps = Array.from({ length: 401 }, (_, i) => ({ ...AP_ROW, name: `ap-${i}`, serial: `SN${i}` }));
+    const { adapter, slept } = makeAdapter((method, pathname, query) => {
+      if (method === 'GET' && pathname === '/monitoring/v1/aps') {
+        const offset = Number(query.get('offset') ?? 0);
+        return { body: { aps: manyAps.slice(offset, offset + 200), total: manyAps.length } };
+      }
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    await adapter.pull();
+    // Three pages → two follow-up requests, each preceded by a pacing delay.
+    expect(slept.filter((ms) => ms === 150)).toHaveLength(2);
+  });
+
+  it('reports truncation when the page cap cuts a still-full walk short', async () => {
+    // notifications caps at 5 pages x 100; a tenant with more must not present
+    // the first 500 as the whole alert queue without saying so.
+    const manyAlerts = Array.from({ length: 900 }, (_, i) => ({
+      ...NOTIFICATION_ROW,
+      id: `alert-${i}`,
+    }));
+    const { adapter, state } = makeAdapter((method, pathname, query) => {
+      if (method === 'GET' && pathname === '/central/v1/notifications') {
+        const offset = Number(query.get('offset') ?? 0);
+        return { body: { notifications: manyAlerts.slice(offset, offset + 100) } };
+      }
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    const pull = await adapter.pull();
+    expect(pull.alerts).toHaveLength(500); // 5 pages, the cap
+    expect(state.note).toContain('truncated: notifications');
+    expect(state.health).toBe('warning'); // an incomplete read never stamps healthy
+  });
+
+  it('reports truncation when the endpoint hands over fewer rows than its own total', async () => {
+    const routes = {
+      ...HAPPY_ROUTES,
+      'GET /central/v2/sites': { sites: [SITE_ROW], total: 12 }, // claims 12, gives 1
+    };
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    expect(pull.sites).toHaveLength(1);
+    expect(state.note).toContain('truncated: sites');
+    expect(state.health).toBe('warning');
+  });
+
+  it('backs off and retries on 429, honouring Retry-After, instead of failing the pull', async () => {
+    let apsCalls = 0;
+    const { adapter, state, recorded, slept } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/monitoring/v1/aps') {
+        apsCalls += 1;
+        if (apsCalls <= 2) return { status: 429, body: {}, headers: { 'retry-after': '2' } };
+      }
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    const pull = await adapter.pull();
+    expect(pull.devices!.some((d) => d.name === 'ap-lobby-01')).toBe(true);
+    expect(apsCalls).toBe(3); // two 429s, then the real answer
+    expect(slept.filter((ms) => ms === 2_000)).toHaveLength(2); // Retry-After wins over the floor
+    // README: the real 429s stay visible in the Activity tab.
+    expect(recorded.filter((c) => c.code === '429')).toHaveLength(2);
+    expect(state.health).toBe('healthy'); // a survived rate limit is not a failed sync
+  });
+
+  it('gives up after the bounded 429 retries and fails the section honestly', async () => {
+    const { adapter, slept } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/monitoring/v1/aps') return { status: 429, body: {} };
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    await expect(adapter.pull()).rejects.toThrow(/section 'devices\/aps' failed.*429/);
+    // Exponential floor when no Retry-After header is offered: 1s, 2s, 4s.
+    expect(slept).toEqual([1_000, 2_000, 4_000]);
   });
 
   it('prefers the well-known payload key over an incidental array', async () => {

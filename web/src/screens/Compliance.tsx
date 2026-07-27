@@ -20,6 +20,7 @@ import {
   Badge,
   Button,
   Divider,
+  EmptyState,
   Progress,
   SectionHeader,
   Select,
@@ -146,14 +147,6 @@ export default function Compliance() {
                 size="sm"
                 aria-label="Baseline"
               />
-
-              {data.evidenceMode === 'unavailable' ? (
-                <Alert tone="warning" title="No live inventory evidence is available">
-                  <span>
-                    The portal is in live mode, so authored findings and baseline results are intentionally hidden.
-                  </span>
-                </Alert>
-              ) : null}
             </div>
             <Button variant="secondary" size="sm" onClick={() => setShowDrift((v) => !v)} disabled={!data.diff}>
               {data.evidenceMode === 'coverage' ? 'Evidence text' : 'Diff selected'}
@@ -165,6 +158,7 @@ export default function Compliance() {
         }
       />
 
+      {/* Page-level status Alerts sit in the body, not in the header action row. */}
       {data.evidenceMode === 'coverage' ? (
         <Alert tone="info" title="Coverage findings are not configuration drift">
           <span>
@@ -172,21 +166,34 @@ export default function Compliance() {
             ownership. The portal does not claim a device is compliant when its running configuration was not reported.
           </span>
         </Alert>
+      ) : data.evidenceMode === 'unavailable' ? (
+        <Alert tone="warning" title="No live inventory evidence is available">
+          <span>
+            The portal is in live mode, so authored findings and baseline results are intentionally hidden. Link a plane
+            that reports device inventory on Connected systems, then run the scan again.
+          </span>
+        </Alert>
       ) : null}
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
-          gap: 18,
-        }}
-      >
-        {data.stats.map((s) => (
-          <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
-        ))}
-      </div>
+      {/* Five tiles on the authored path; an evidence payload that carries none
+          skips the grid rather than laying out an empty five-track row. */}
+      {data.stats.length > 0 ? (
+        <>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: `repeat(${data.stats.length}, minmax(0, 1fr))`,
+              gap: 18,
+            }}
+          >
+            {data.stats.map((s) => (
+              <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
+            ))}
+          </div>
 
-      <Divider variant="flair" />
+          <Divider variant="flair" />
+        </>
+      ) : null}
 
       <div
         style={{
@@ -273,6 +280,18 @@ export default function Compliance() {
               ))}
             </Table.Body>
           </Table>
+          {rows.length === 0 ? (
+            <EmptyState
+              title={findings.length === 0 ? 'No findings to report' : 'Nothing matches that baseline'}
+              description={
+                findings.length > 0
+                  ? 'Choose All baselines to see the rest of the open findings.'
+                  : data.evidenceMode === 'unavailable'
+                    ? 'No linked plane returned device inventory, so no evidence check could run.'
+                    : 'Every check in this snapshot passed.'
+              }
+            />
+          ) : null}
         </div>
 
         {/* ---------------- right column ---------------- */}
@@ -293,6 +312,16 @@ export default function Compliance() {
                 </span>
               </div>
             ))}
+            {data.baselines.length === 0 ? (
+              <EmptyState
+                title="No baseline results"
+                description={
+                  data.evidenceMode === 'unavailable'
+                    ? 'Baselines are scored from live evidence; none was returned by the linked planes.'
+                    : 'This payload carries no scored baselines.'
+                }
+              />
+            ) : null}
           </div>
 
           {showDrift && data.diff ? (

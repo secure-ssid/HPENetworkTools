@@ -85,6 +85,8 @@ import type {
   RenewalRow,
   SearchIndexEntry,
   SectionMode,
+  SiteAlertRow,
+  SiteDeviceRow,
   SiteId,
   SiteProfile,
   SiteRow,
@@ -151,6 +153,10 @@ export interface SitesData extends ScreenEnvelope {
 export interface SiteDetailData extends ScreenEnvelope {
   site: SiteRow | null; // null = the API does not know this site at all (404)
   profile: SiteProfile | null; // null = live/blend row only — no authored profile exists
+  /** README §7's two per-site sections, sent alongside a null profile in
+   *  live/blend mode. In demo mode they live inside `profile` instead. */
+  devices?: SiteDeviceRow[];
+  alerts?: SiteAlertRow[];
 }
 
 export interface DevicesData extends ScreenEnvelope {
@@ -1186,13 +1192,32 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export const SETTINGS_STORAGE_KEY = 'nt-settings';
 
+/**
+ * Project the shell keys out of a settings payload. GET /api/settings answers
+ * with the WHOLE masked store (demoMode, blendLive, sectionMode,
+ * hiddenDemoDevices, planes, mcp, llm …), so spreading it wholesale would make
+ * the shell carry — and then PUT back — settings it does not own: a density
+ * change would echo a mount-time demoMode over whatever Connected systems set
+ * in the meantime, and echo `planes` back at the plane registry.
+ */
+function shellSettingsOnly(raw: Partial<Settings> | null | undefined): Settings {
+  const source = raw ?? {};
+  return {
+    density: source.density ?? DEFAULT_SETTINGS.density,
+    inventoryView: source.inventoryView ?? DEFAULT_SETTINGS.inventoryView,
+    showPlatformTags: source.showPlatformTags ?? DEFAULT_SETTINGS.showPlatformTags,
+    workspaceName: source.workspaceName ?? DEFAULT_SETTINGS.workspaceName,
+    pollIntervalSec: source.pollIntervalSec ?? DEFAULT_SETTINGS.pollIntervalSec,
+  };
+}
+
 export async function getSettings(): Promise<Settings> {
   const result = await fetchScreen<Partial<Settings>>('/api/settings');
-  if (result.kind === 'ok') return { ...DEFAULT_SETTINGS, ...result.data };
+  if (result.kind === 'ok') return shellSettingsOnly(result.data);
   if (result.kind === 'http-error') throw new Error(result.message);
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<Settings>) };
+    if (raw) return shellSettingsOnly(JSON.parse(raw) as Partial<Settings>);
   } catch {
     /* corrupted local copy — fall through to defaults */
   }
@@ -1200,8 +1225,11 @@ export async function getSettings(): Promise<Settings> {
 }
 
 export async function saveSettings(settings: Settings): Promise<SystemMutationResult> {
+  // Narrow patch, never the caller's state object: the PUT must change the
+  // five shell preferences and nothing else in the store.
+  const patch = shellSettingsOnly(settings);
   try {
-    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(patch));
   } catch {
     /* storage unavailable — the server copy may still succeed */
   }
@@ -1209,7 +1237,7 @@ export async function saveSettings(settings: Settings): Promise<SystemMutationRe
     const r = await fetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings),
+      body: JSON.stringify(patch),
     });
     if (r.ok) return { ok: true, message: 'settings saved' };
     return { ok: false, message: await serverMessage(r, `save failed — HTTP ${r.status}`) };

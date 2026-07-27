@@ -15,9 +15,14 @@
  * (Ports of interest / Cluster members / Radios & SSIDs / Tunnels / Services),
  * Clients on this device, Compliance.
  * Data: getDeviceDetail(name) — live /api/devices/:name when the server is up,
- * the shared deviceProfile() fixtures otherwise. Live mode carries only the
+ * the shared deviceProfile() fixtures otherwise. The route ships the reconciled
+ * inventory row alongside the authored profile, and that row is authoritative
+ * for identity in both modes, so the header can never contradict the Devices
+ * table it was opened from; a row the reconciler flagged carries a warning
+ * Alert naming its claiming planes. Live mode carries only the
  * reconciled inventory row: the authored profile/config/clients are demo
- * data, so the live view renders the real row plus honest "not available in
+ * data, so the live view renders the real row, its recorded shell sessions,
+ * plus honest "not available in
  * live mode" sections (a live 404 renders an EmptyState, never fixtures).
  */
 
@@ -25,6 +30,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
+  Alert,
   Badge,
   Button,
   Code,
@@ -44,7 +50,7 @@ import { getDeviceDetail, getTerminalSession, getTerminalSessions, getTickets, r
 import type { TerminalSession, TerminalSessionEvent } from '../api/client';
 import type { DeviceDetailData } from '../api/client';
 import { terminalQuickCommands } from '../../../shared';
-import type { CfgHistoryRow, TicketRow } from '../../../shared';
+import type { CfgHistoryRow, Fact, Plane, TicketRow } from '../../../shared';
 import { useSettings } from '../app/SettingsContext';
 import { TerminalPane, createCannedTransport } from '../lib/TerminalPane';
 import { createWsTransport } from '../lib/wsTerminal';
@@ -73,6 +79,125 @@ function LiveGapNote({ children }: { children: ReactNode }) {
       }}
     >
       {children}
+    </div>
+  );
+}
+
+/** Recorded shell transcripts on file for this device. Shared by the authored
+ *  profile view and the live view — every recorded session belongs to the
+ *  device it was opened against, whichever mode is rendering it. */
+function RecordedSessions({
+  sessions,
+  sessionsError,
+  expanded,
+  toggleTranscript,
+}: {
+  sessions: TerminalSession[];
+  sessionsError: string | null;
+  expanded: { file: string; events: TerminalSessionEvent[]; truncated: boolean } | null;
+  toggleTranscript: (file: string) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 10 }}>
+      <SectionHeader label="Recorded sessions" meta={sessions.length > 0 ? `${sessions.length} ON FILE` : undefined} />
+      {sessionsError ? (
+        <div
+          role="alert"
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 'var(--nd-text-10)',
+            color: 'var(--nd-danger)',
+            padding: '8px 0',
+          }}
+        >
+          {sessionsError}
+        </div>
+      ) : sessions.length === 0 ? (
+        <div
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 'var(--nd-text-10)',
+            color: 'var(--nd-text-muted)',
+            padding: '8px 0',
+          }}
+        >
+          No recorded sessions for this device — every session opened above is recorded to the portal.
+        </div>
+      ) : (
+        sessions.map((s) => (
+          <div key={s.file} style={{ borderBottom: '1px solid var(--nd-border-subtle)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
+              <span
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 'var(--nd-text-10)',
+                  color: 'var(--nd-text-muted)',
+                }}
+              >
+                {new Date(s.openedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              </span>
+              <span
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 'var(--nd-text-11)',
+                  color: 'var(--nd-text-secondary)',
+                }}
+              >
+                {s.user}@{s.target}
+              </span>
+              <Button variant="ghost" size="sm" style={{ marginLeft: 'auto' }} onClick={() => toggleTranscript(s.file)}>
+                {expanded?.file === s.file ? 'Hide transcript' : 'View transcript'}
+              </Button>
+            </div>
+            {expanded?.file === s.file ? (
+              <div
+                style={{
+                  maxHeight: 260,
+                  overflowY: 'auto',
+                  margin: '0 0 10px',
+                  padding: '10px 12px',
+                  border: '1px solid var(--nd-border-default)',
+                  background: 'var(--nd-bg-raised)',
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 'var(--nd-text-10)',
+                  lineHeight: 1.6,
+                  whiteSpace: 'pre-wrap',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {expanded.events.map((e, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      color:
+                        e.type === 'in'
+                          ? 'var(--nd-accent-text)'
+                          : e.type === 'blocked'
+                            ? 'var(--nd-warning)'
+                            : e.type === 'open' || e.type === 'close'
+                              ? 'var(--nd-text-muted)'
+                              : 'var(--nd-text-secondary)',
+                    }}
+                  >
+                    {e.type === 'in'
+                      ? `$ ${e.text ?? ''}`
+                      : e.type === 'blocked'
+                        ? `% blocked — ${e.text ?? ''} (${e.reason ?? 'policy'})`
+                        : e.type === 'open'
+                          ? `— session opened · ${e.text ?? ''}`
+                          : e.type === 'close'
+                            ? `— session closed · ${e.reason ?? ''}`
+                            : (e.text ?? '')}
+                  </div>
+                ))}
+                {expanded.truncated ? (
+                  <div style={{ color: 'var(--nd-warning)' }}>— transcript truncated at the read cap —</div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ))
+      )}
     </div>
   );
 }
@@ -309,6 +434,32 @@ export default function DeviceDetail() {
     </Drawer>
   );
 
+  // Reconciliation flag (design rule 2: one row, flagged — never duplicated).
+  // Live rows carry every claiming plane in `claimedBy`; the authored fixtures
+  // encode the double claim in `state` and carry no claimant list.
+  const claimants: Plane[] = device ? (device.claimedBy?.length ? device.claimedBy : [device.plane]) : [];
+  const doubleClaimed = claimants.length > 1 || device?.state === 'double-claimed';
+  const reconciliationAlert = device?.reconciliationIssue ? (
+    <Alert
+      tone="warning"
+      title={
+        doubleClaimed
+          ? 'Double-claimed — more than one inventory reports this device'
+          : 'In no cloud plane — this row comes from the local collector only'
+      }
+    >
+      <span style={{ fontSize: 13 }}>
+        {doubleClaimed
+          ? `Claimed by ${
+              claimants.length > 1
+                ? claimants.join(' + ')
+                : `${claimants[0]} and at least one other inventory`
+            }. The portal keeps one row and shows the highest-priority claimant, so firmware and state can disagree between the planes.`
+          : `No cloud plane reports ${device.name}. It stays a first-class row built from the local collector, which is why its licence and cloud telemetry read '—'.`}
+      </span>
+    </Alert>
+  ) : null;
+
   // Live mode carries the reconciled inventory row only — the authored
   // profile, config and client sets are demo data and are never substituted.
   if (!profile || !cfg || !clients) {
@@ -337,15 +488,20 @@ export default function DeviceDetail() {
 
     const reported = (value: string) =>
       value && value !== '—' && value.toLowerCase() !== 'unknown' ? value : 'Not reported';
+    // Header meta is model · site · IP (README §8); the plane's management IP
+    // is on the row when the plane publishes one, and is what the recorded-SSH
+    // bridge dials, so it is never dropped.
     const liveIdentity =
-      [device.model, device.siteName, device.firmware]
+      [device.model, device.siteName, device.ip ?? '']
         .filter((value) => reported(value) !== 'Not reported')
         .join(' · ') || 'Inventory details partial';
-    const liveFacts = [
+    const liveFacts: Fact[] = [
       { k: 'Model', v: reported(device.model) },
       { k: 'Type', v: reported(device.type) },
       { k: 'Site', v: reported(device.siteName) },
-      { k: 'Managed by', v: device.plane },
+      { k: 'Mgmt IP', v: reported(device.ip ?? '') },
+      { k: 'Managed by', v: claimants.join(' + ') },
+      { k: 'Identity', v: device.serial ?? device.mac ?? 'name match only' },
       { k: 'State', v: reported(device.state) },
       { k: 'Firmware', v: reported(device.firmware) },
       { k: 'Licence', v: reported(device.licence) },
@@ -395,6 +551,8 @@ export default function DeviceDetail() {
           </div>
         </div>
 
+        {reconciliationAlert}
+
         <Divider variant="flair" />
 
         <div
@@ -437,6 +595,17 @@ export default function DeviceDetail() {
                 ) : null}
               </div>
             )}
+
+            {/* Recorded transcripts are fetched for every device — a live
+                switch with sessions on file, or a failed load, must show. */}
+            {device.localShell || sessions.length > 0 || sessionsError ? (
+              <RecordedSessions
+                sessions={sessions}
+                sessionsError={sessionsError}
+                expanded={expanded}
+                toggleTranscript={toggleTranscript}
+              />
+            ) : null}
 
             <div style={{ paddingTop: 14 }}>
               <SectionHeader label="Configuration" />
@@ -549,6 +718,29 @@ export default function DeviceDetail() {
   const canShell = profile.kind !== 'none';
   const historyRows = [...extraHistory, ...cfg.history];
 
+  // The route ships the reconciled inventory row alongside the authored
+  // profile, and the row is authoritative for identity — the header has to
+  // agree with the Devices table this page was opened from. The profile only
+  // fills what a DeviceRow does not carry (the management IP).
+  const headerState = device?.state ?? profile.state;
+  const headerStateTone = device?.stateTone ?? profile.stateTone;
+  const headerPlane = device?.plane ?? profile.plane;
+  const headerPlaneTone = device?.planeTone ?? profile.planeTone;
+  const headerModel = device?.model ?? profile.model;
+  const headerSite = device?.siteName ?? profile.site;
+  const headerIp = device?.ip ?? profile.ip;
+  // Identity facts stay authored except where the row contradicts them.
+  const facts: Fact[] = profile.facts.map((f) => {
+    if (!device) return f;
+    if (f.k === 'Managed by' && device.plane !== profile.plane) {
+      return { k: f.k, v: claimants.join(' + ') };
+    }
+    if (f.k === 'Firmware' && !f.v.includes(device.firmware)) {
+      return { k: f.k, v: `${device.firmware} (${device.firmwareApproved ? 'approved' : 'not approved'})` };
+    }
+    return f;
+  });
+
   const snapshotNow = () => {
     toast('Snapshot stored', { description: 'Added to the history below as a local row.' });
     setExtraHistory((xs) => [
@@ -591,10 +783,10 @@ export default function DeviceDetail() {
           <div
             style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}
           >
-            <Badge tone={profile.stateTone} dot>
-              {profile.state}
+            <Badge tone={headerStateTone} dot>
+              {headerState}
             </Badge>
-            {showPlatformTags ? <Badge tone={profile.planeTone}>{profile.plane}</Badge> : null}
+            {showPlatformTags ? <Badge tone={headerPlaneTone}>{headerPlane}</Badge> : null}
             <span
               style={{
                 fontFamily: 'var(--nd-font-mono)',
@@ -602,7 +794,7 @@ export default function DeviceDetail() {
                 color: 'var(--nd-text-muted)',
               }}
             >
-              {profile.model} · {profile.site} · {profile.ip}
+              {headerModel} · {headerSite} · {headerIp}
             </span>
           </div>
         </div>
@@ -630,6 +822,8 @@ export default function DeviceDetail() {
           </Button>
         </div>
       </div>
+
+      {reconciliationAlert}
 
       <div
         style={{
@@ -685,107 +879,12 @@ export default function DeviceDetail() {
           ) : null}
 
           {canShell ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 10 }}>
-              <SectionHeader label="Recorded sessions" meta={sessions.length > 0 ? `${sessions.length} ON FILE` : undefined} />
-              {sessionsError ? (
-                <div
-                  role="alert"
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-danger)',
-                    padding: '8px 0',
-                  }}
-                >
-                  {sessionsError}
-                </div>
-              ) : sessions.length === 0 ? (
-                <div
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                    padding: '8px 0',
-                  }}
-                >
-                  No recorded sessions for this device — every session opened above is recorded to the portal.
-                </div>
-              ) : (
-                sessions.map((s) => (
-                  <div key={s.file} style={{ borderBottom: '1px solid var(--nd-border-subtle)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
-                      <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-10)',
-                          color: 'var(--nd-text-muted)',
-                        }}
-                      >
-                        {new Date(s.openedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-11)',
-                          color: 'var(--nd-text-secondary)',
-                        }}
-                      >
-                        {s.user}@{s.target}
-                      </span>
-                      <Button variant="ghost" size="sm" style={{ marginLeft: 'auto' }} onClick={() => toggleTranscript(s.file)}>
-                        {expanded?.file === s.file ? 'Hide transcript' : 'View transcript'}
-                      </Button>
-                    </div>
-                    {expanded?.file === s.file ? (
-                      <div
-                        style={{
-                          maxHeight: 260,
-                          overflowY: 'auto',
-                          margin: '0 0 10px',
-                          padding: '10px 12px',
-                          border: '1px solid var(--nd-border-default)',
-                          background: 'var(--nd-bg-raised)',
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-10)',
-                          lineHeight: 1.6,
-                          whiteSpace: 'pre-wrap',
-                          overflowWrap: 'anywhere',
-                        }}
-                      >
-                        {expanded.events.map((e, i) => (
-                          <div
-                            key={i}
-                            style={{
-                              color:
-                                e.type === 'in'
-                                  ? 'var(--nd-accent-text)'
-                                  : e.type === 'blocked'
-                                    ? 'var(--nd-warning)'
-                                    : e.type === 'open' || e.type === 'close'
-                                      ? 'var(--nd-text-muted)'
-                                      : 'var(--nd-text-secondary)',
-                            }}
-                          >
-                            {e.type === 'in'
-                              ? `$ ${e.text ?? ''}`
-                              : e.type === 'blocked'
-                                ? `% blocked — ${e.text ?? ''} (${e.reason ?? 'policy'})`
-                                : e.type === 'open'
-                                  ? `— session opened · ${e.text ?? ''}`
-                                  : e.type === 'close'
-                                    ? `— session closed · ${e.reason ?? ''}`
-                                    : (e.text ?? '')}
-                          </div>
-                        ))}
-                        {expanded.truncated ? (
-                          <div style={{ color: 'var(--nd-warning)' }}>— transcript truncated at the read cap —</div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ))
-              )}
-            </div>
+            <RecordedSessions
+              sessions={sessions}
+              sessionsError={sessionsError}
+              expanded={expanded}
+              toggleTranscript={toggleTranscript}
+            />
           ) : null}
 
           <div style={{ paddingTop: 14 }}>
@@ -868,7 +967,7 @@ export default function DeviceDetail() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <SectionHeader label="Identity" />
-            {profile.facts.map((f) => (
+            {facts.map((f) => (
               <div
                 key={f.k}
                 style={{

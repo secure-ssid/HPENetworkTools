@@ -46,6 +46,16 @@ const LIVE_COVERAGE: ComplianceData = {
   diff: 'Live evidence coverage\n- Firmware evidence: 0 of 1 devices have usable live evidence',
 };
 
+/** Live mode with no plane returning device inventory: nothing to score. */
+const LIVE_UNAVAILABLE: ComplianceData = {
+  dataSource: 'live',
+  evidenceMode: 'unavailable',
+  stats: [],
+  findings: [],
+  baselines: [],
+  diff: '',
+};
+
 function renderCompliance() {
   return render(
     <MemoryRouter>
@@ -77,5 +87,26 @@ describe('Compliance live evidence coverage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run scan now' }));
     await waitFor(() => expect(mockSyncSystems).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(mockGetCompliance).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('Compliance with no live evidence', () => {
+  it('explains the empty findings and baseline lists instead of rendering blank chrome', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_UNAVAILABLE);
+
+    renderCompliance();
+
+    expect(await screen.findByText('No findings to report')).toBeTruthy();
+    expect(screen.getByText('No linked plane returned device inventory, so no evidence check could run.')).toBeTruthy();
+    expect(screen.getByText('No baseline results')).toBeTruthy();
+  });
+
+  it('renders the unavailable Alert in the page body, not inside the 210px baseline Select', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_UNAVAILABLE);
+
+    renderCompliance();
+
+    const alert = await screen.findByText('No live inventory evidence is available');
+    expect(alert.closest('[style*="width: 210px"]')).toBeNull();
   });
 });
