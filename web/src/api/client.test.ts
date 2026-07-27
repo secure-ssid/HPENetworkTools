@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_SETTINGS,
   getAlerts,
+  getChangeHistory,
   getConfigure,
   getDeviceDetail,
   getDevices,
@@ -473,6 +474,51 @@ describe('screen API source handling', () => {
       expect(row.id ?? null).toBeNull();
       expect(row.expiresAt ?? null).toBeNull();
     }
+  });
+
+  it('returns the broker audit rows from the change-history envelope', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        events: [
+          {
+            ts: '2026-07-26T09:41:00.000Z',
+            event: 'push',
+            changeId: 'chg-7f21',
+            ticket: 'NET-4166',
+            kind: 'vlan',
+            result: 'applied',
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const events = await getChangeHistory();
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/configure/history?limit=50');
+    expect(Array.isArray(events) && events[0]).toMatchObject({
+      changeId: 'chg-7f21',
+      ticket: 'NET-4166',
+      result: 'applied',
+    });
+  });
+
+  it('surfaces an HTTP failure on the audit log instead of an empty history', async () => {
+    // An empty list would read as "nothing has ever been brokered here" —
+    // the opposite of what a 500 means.
+    mockFetch({ ok: false, status: 500, body: { error: 'audit log unreadable' } });
+
+    const events = await getChangeHistory();
+    expect(events).toEqual({ error: 'audit log unreadable' });
+  });
+
+  it('returns null (never fixtures) for the audit log when no backend answers', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    // There is no authored audit log: substituting one would be a fabricated
+    // record of changes this install never brokered.
+    expect(await getChangeHistory()).toBeNull();
   });
 
   it('passes the per-plane console URL through the systems envelope', async () => {

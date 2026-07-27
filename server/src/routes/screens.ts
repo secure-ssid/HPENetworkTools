@@ -127,7 +127,7 @@ import { ticketStore } from '../services/tickets';
 import { terminalManager } from '../services/terminal';
 import { writeBroker } from '../services/writeBroker';
 import { registry } from '../planes/registry';
-import { PLANE_LABEL, reconcileDevices, type ReconciledDeviceRow } from '../services/reconcile';
+import { PLANE_LABEL, planeIdForLabel, reconcileDevices, type ReconciledDeviceRow } from '../services/reconcile';
 import {
   PLANE_IDS,
   type PlaneHealth,
@@ -278,17 +278,12 @@ function stalePlanes(): Set<PlaneId> {
   return out;
 }
 
-/** Display label → registry plane id (inverse of PLANE_LABEL). 'THIRD-PARTY'
- *  owns no registry plane, so it resolves to undefined and never claims a
- *  freshness stamp it cannot have. */
-const PLANE_ID_FOR: Partial<Record<Plane, PlaneId>> = Object.fromEntries(
-  PLANE_IDS.map((id) => [PLANE_LABEL[id], id]),
-) as Partial<Record<Plane, PlaneId>>;
-
 /** True when the plane behind this display label is currently serving stale
- *  data (design rule 1). Labels with no registry plane are never asserted. */
+ *  data (design rule 1). Labels with no registry plane are never asserted —
+ *  planeIdForLabel() resolves 'THIRD-PARTY' to undefined, so such a label
+ *  never claims a freshness stamp it cannot have. */
 function planeIsStale(plane: Plane, stale: ReadonlySet<PlaneId>): boolean {
-  const id = PLANE_ID_FOR[plane];
+  const id = planeIdForLabel(plane);
   return id !== undefined && stale.has(id);
 }
 
@@ -516,7 +511,7 @@ function liveDeviceClients(deviceName: string): DeviceClientSet | null {
 function planeAllowsShell(device: ReconciledDeviceRow): boolean {
   const labels = device.claimedBy && device.claimedBy.length > 0 ? device.claimedBy : [device.plane];
   const claims = labels
-    .map((label) => PLANE_ID_FOR[label])
+    .map((label) => planeIdForLabel(label))
     .filter((id): id is PlaneId => id !== undefined)
     .map((id) => registry.state(id).capabilities?.localShell);
   if (claims.length === 0) return true; // no registry plane behind the label — the row decides
@@ -893,7 +888,7 @@ function siteSyncFor(badges: Iterable<Plane>): string {
   let oldest: string | null = null;
   let anyClaim = false;
   for (const label of badges) {
-    const id = PLANE_ID_FOR[label];
+    const id = planeIdForLabel(label);
     if (!id) continue;
     anyClaim = true;
     const last = registry.state(id).lastSync;

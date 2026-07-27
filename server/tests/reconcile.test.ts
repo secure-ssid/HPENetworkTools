@@ -145,6 +145,29 @@ describe('reconcileDevices', () => {
     expect(devices[0].claimedBy).toEqual(['CLASSIC', 'MIST']);
   });
 
+  it('localShell is a union across claimants — a cloud row saying false does not erase a peer saying true', () => {
+    // An AOS-8 controller (aos8 rows set localShell true for controllers) that
+    // Central also claims. Central outranks aos8 for DISPLAY fields, but its
+    // localShell:false means "Central provides no shell path", not "no shell
+    // exists" — taking the display literal would lose the collector's session.
+    const aos8 = row({ name: 'mm-lake-1', serial: 'SN-11', type: 'controller', plane: 'AOS-8', planeTone: 'accent', localShell: true, firmware: '8.10.0.10' });
+    const central = row({ name: 'mm-lake-1', serial: 'SN-11', type: 'controller', localShell: false, firmware: '8.10.0.11' });
+    const { devices } = reconcileDevices({ aos8: [aos8], central: [central] });
+    expect(devices).toHaveLength(1);
+    expect(devices[0].claimedBy).toEqual(['CENTRAL', 'AOS-8']);
+    expect(devices[0].firmware).toBe('8.10.0.11'); // display fields still come from central
+    expect(devices[0].localShell).toBe(true);
+  });
+
+  it('localShell stays false when no claimant reports a shell path', () => {
+    // The union must not read as "double-claimed therefore shellable".
+    const central = row({ name: 'ap-1f-04', serial: 'SN-12', type: 'ap', localShell: false });
+    const mist = row({ name: 'ap-1f-04', serial: 'SN-12', type: 'ap', plane: 'MIST', planeTone: 'info', localShell: false });
+    const { devices } = reconcileDevices({ central: [central], mist: [mist] });
+    expect(devices).toHaveLength(1);
+    expect(devices[0].localShell).toBe(false);
+  });
+
   it('identity is strictly single-keyed: serial wins, so a name-only twin does NOT merge', () => {
     // Spec: "serial if present else normalized MAC else lowercased name" — a
     // plane that reports serials and a plane that only reports names produce

@@ -367,7 +367,7 @@ describe('Systems plane drawer', () => {
   });
 });
 
-describe('Systems console hand-off', () => {
+describe('Systems drawer actions', () => {
   /** Open a plane's drawer and switch to the Configuration tab. */
   async function openConfigTab(planeName: string) {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
@@ -426,6 +426,17 @@ describe('Systems console hand-off', () => {
       expect(screen.getByText('Could not open the HPE Aruba Central console')).toBeTruthy(),
     );
     open.mockRestore();
+  });
+
+  it('carries the destructive intent of Retire plane in the button variant', async () => {
+    await openConfigTab('HPE Aruba Central');
+
+    const retire = screen.getByRole('button', { name: 'Retire plane' });
+    // The nightdesk danger variant, not a ghost button wearing an inline
+    // colour: hover/active/focus states come with the variant, and a silent
+    // regression back to ghost+inline would drop the destructive signal.
+    expect(retire.className.split(/\s+/)).toContain('nd-btn--danger');
+    expect(retire.getAttribute('style')).toBeNull();
   });
 });
 

@@ -18,6 +18,7 @@ import { ToastProvider } from '../nightdesk';
 import {
   discardChange,
   dryRunConfig,
+  getChangeHistory,
   getChangeQueue,
   getConfigure,
   pushChange,
@@ -31,6 +32,7 @@ vi.mock('../api/client', async (importOriginal) => {
     ...actual,
     getConfigure: vi.fn(),
     getChangeQueue: vi.fn(),
+    getChangeHistory: vi.fn(),
     queueChange: vi.fn(),
     pushChange: vi.fn(),
     discardChange: vi.fn(),
@@ -40,6 +42,7 @@ vi.mock('../api/client', async (importOriginal) => {
 
 const mockGetConfigure = vi.mocked(getConfigure);
 const mockGetChangeQueue = vi.mocked(getChangeQueue);
+const mockGetChangeHistory = vi.mocked(getChangeHistory);
 const mockQueueChange = vi.mocked(queueChange);
 const mockPushChange = vi.mocked(pushChange);
 const mockDiscardChange = vi.mocked(discardChange);
@@ -144,6 +147,7 @@ beforeEach(() => {
   });
   mockDiscardChange.mockResolvedValue({ ok: true, changeId: 'chg-server-1' });
   mockDryRunConfig.mockResolvedValue({ error: 'dry run not exercised here' });
+  mockGetChangeHistory.mockResolvedValue([]);
 });
 
 afterEach(cleanup);
@@ -397,5 +401,114 @@ describe('Configure — derived claims and empty states', () => {
     expect(screen.getByText('Impact evidence')).toBeTruthy();
     expect(screen.queryByText('Blast radius')).toBeNull();
     expect(screen.getAllByText('requires dry run').length).toBeGreaterThan(0);
+  });
+});
+
+// -- the Change history drawer (GET /api/configure/history) --------------------
+//
+// The header button used to be an honest toast ("not in this build"); the route
+// exists now, so the button opens the broker's real audit log. The row is
+// {ts,event,changeId,ticket,kind,result} and NOTHING else — shared/types.ts
+// pins that rendered configuration bodies are never part of it.
+
+const AUDIT_ROW = {
+  ts: '2026-07-26T09:41:00.000Z',
+  event: 'push',
+  changeId: 'chg-7f21',
+  ticket: 'NET-4166',
+  kind: 'vlan',
+  result: 'applied',
+};
+
+async function openHistoryDrawer() {
+  renderConfigure();
+  await waitFor(() => expect(screen.getByText('Queued changes')).toBeTruthy());
+  fireEvent.click(screen.getByRole('button', { name: 'Change history' }));
+}
+
+describe('Configure — change history drawer', () => {
+  it('renders the broker audit rows and never the rendered payload body', async () => {
+    mockGetChangeHistory.mockResolvedValue([
+      AUDIT_ROW,
+      {
+        ts: '2026-07-26T08:12:00.000Z',
+        event: 'dry-run',
+        changeId: 'chg-4a09',
+        ticket: 'NET-4149',
+        kind: 'ssid',
+        result: 'render-only (read-only plane)',
+      },
+    ]);
+
+    await openHistoryDrawer();
+
+    const dialog = await screen.findByRole('dialog');
+    const drawer = within(dialog);
+    // Wall-clock of the stamp in whatever zone the run is in — the drawer must
+    // show the operator's clock, not the raw ISO string.
+    await waitFor(() => expect(drawer.getByText('chg-7f21')).toBeTruthy());
+    expect(drawer.getByText(new Date(AUDIT_ROW.ts).toTimeString().slice(0, 5))).toBeTruthy();
+    expect(drawer.queryByText(AUDIT_ROW.ts)).toBeNull();
+    expect(drawer.getByText('push vlan')).toBeTruthy();
+    expect(drawer.getByText('NET-4166')).toBeTruthy();
+    expect(drawer.getByText('applied')).toBeTruthy();
+    expect(drawer.getByText('dry-run ssid')).toBeTruthy();
+    expect(drawer.getByText('render-only (read-only plane)')).toBeTruthy();
+    // The old honest-toast claim is gone — the route exists.
+    expect(screen.queryByText(/not in this build/)).toBeNull();
+    // SECURITY: the audit row carries no config body, and the drawer adds none.
+    expect(drawer.queryByText(/ip helper-address/)).toBeNull();
+    expect(dialog.querySelector('.nd-code-block')).toBeNull();
+  });
+
+  it('names the empty audit log rather than opening a blank panel', async () => {
+    mockGetChangeHistory.mockResolvedValue([]);
+
+    await openHistoryDrawer();
+
+    const drawer = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(drawer.getByText('No brokered changes recorded yet')).toBeTruthy());
+  });
+
+  it('says the audit log could not be read instead of showing an empty history', async () => {
+    mockGetChangeHistory.mockResolvedValue({ error: 'audit log unreadable' });
+
+    await openHistoryDrawer();
+
+    const drawer = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(drawer.getByText('The audit log could not be read')).toBeTruthy());
+    expect(drawer.getByText('audit log unreadable')).toBeTruthy();
+    // An error is not an empty log.
+    expect(drawer.queryByText('No brokered changes recorded yet')).toBeNull();
+  });
+
+  it('says the backend never answered rather than implying nothing was ever brokered', async () => {
+    mockGetChangeHistory.mockResolvedValue(null);
+
+    await openHistoryDrawer();
+
+    const drawer = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(drawer.getByText('The portal backend did not answer')).toBeTruthy());
+    expect(drawer.queryByText('No brokered changes recorded yet')).toBeNull();
+  });
+
+  it('re-reads the log on every open so a second visit is not a stale claim', async () => {
+    mockGetChangeHistory.mockResolvedValue([AUDIT_ROW]);
+
+    await openHistoryDrawer();
+    const first = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(first.getByText('chg-7f21')).toBeTruthy());
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    mockGetChangeHistory.mockResolvedValue([
+      AUDIT_ROW,
+      { ...AUDIT_ROW, ts: '2026-07-26T10:05:00.000Z', changeId: 'chg-9b02', result: 'rejected' },
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: 'Change history' }));
+
+    const second = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(second.getByText('chg-9b02')).toBeTruthy());
+    expect(mockGetChangeHistory).toHaveBeenCalledTimes(2);
   });
 });

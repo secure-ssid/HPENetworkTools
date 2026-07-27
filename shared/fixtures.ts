@@ -208,12 +208,25 @@ export const OVERVIEW_STATS: StatDef[] = [
 ];
 
 /** "Needs you now" — NT_ALERTS (5 rows; the prototype renders slice(0, 4)).
- *  Note: row 5's plane was authored 'GLK' — normalised to 'GREENLAKE'. */
+ *  Note: row 5's plane was authored 'GLK' — normalised to 'GREENLAKE'.
+ *
+ *  The three rows whose authored `meta` opens with a site also carry that site
+ *  as `siteName`/`siteId`, exactly as the live mapper sends it — so the demo
+ *  estate's "Needs you now" sites are openable too, instead of being prose the
+ *  operator cannot click. The prose prefix is KEPT: the renderer strips a
+ *  leading '<siteName> · ' when both are present, so the site is printed once
+ *  either way, and a renderer that only knows `meta` still says where.
+ *
+ *  Rows 1 and 5 stay field-less on purpose, and that is the honest reading of
+ *  what they say: 'classic.central' is a plane endpoint and 'GreenLake' is the
+ *  workspace, neither is a site the portal has an inventory row for. They also
+ *  keep the demo exercising the no-site branch that live rows take whenever
+ *  the alert cannot be mapped (siteName omitted, never blank). */
 export const OVERVIEW_ALERTS: OverviewAlert[] = [
   { sev: 'P1', tone: 'danger', title: 'Central Classic sync stalled — inventory 6h stale', meta: 'classic.central · api 429 rate-limited', plane: 'CLASSIC', age: '6h', device: 'sw-acc-3f-2' },
-  { sev: 'P1', tone: 'danger', title: 'mm-lake-1 lost heartbeat from 3 local controllers', meta: 'Lakeshore Medical Center · AOS-8 cluster', plane: 'AOS-8', age: '41m', device: 'mm-lake-1' },
-  { sev: 'P2', tone: 'warning', title: 'Wi-Fi drops, 3rd floor east — 22 clients affected', meta: 'Campus-02 Research · ap-3f-12, ap-3f-14', plane: 'MIST', age: '2h', device: 'ap-3f-12' },
-  { sev: 'P2', tone: 'warning', title: 'sw-core-a PSU 2 absent, running on single supply', meta: 'Campus-01 · CX 8325 · local SSH', plane: 'LOCAL', age: '3h', device: 'sw-core-a' },
+  { sev: 'P1', tone: 'danger', title: 'mm-lake-1 lost heartbeat from 3 local controllers', meta: 'Lakeshore Medical Center · AOS-8 cluster', siteName: 'Lakeshore Medical Center', siteId: 'lakeshore', plane: 'AOS-8', age: '41m', device: 'mm-lake-1' },
+  { sev: 'P2', tone: 'warning', title: 'Wi-Fi drops, 3rd floor east — 22 clients affected', meta: 'Campus-02 Research · ap-3f-12, ap-3f-14', siteName: 'Campus-02 Research', siteId: 'campus-02', plane: 'MIST', age: '2h', device: 'ap-3f-12' },
+  { sev: 'P2', tone: 'warning', title: 'sw-core-a PSU 2 absent, running on single supply', meta: 'Campus-01 · CX 8325 · local SSH', siteName: 'Campus-01', siteId: 'campus-01', plane: 'LOCAL', age: '3h', device: 'sw-core-a' },
   { sev: 'P3', tone: 'info', title: '34 AP subscriptions expire within 60 days', meta: 'GreenLake · Foundation AP licences', plane: 'GREENLAKE', age: '1d', device: 'sw-core-a' },
 ];
 

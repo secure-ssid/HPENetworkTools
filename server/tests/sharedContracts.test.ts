@@ -15,14 +15,18 @@
  *     byte-identical.
  *   - PlanePull's new channels (config, assignments, partial) and PlaneState's
  *     new optional facts.
+ *   - OVERVIEW_ALERTS: the demo "Needs you now" rows carry siteName/siteId
+ *     exactly as the live mapper sends them, and only for a real site.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
+  OVERVIEW_ALERTS,
   PLANE_DATASET_KEYS,
   PLANE_ROW_DATASET_KEYS,
   UNKNOWN_LANE_META,
   deviceTerminalKind,
+  isRealSiteId,
   laneSyncStamp,
   planeStaleness,
   ssidPreview,
@@ -237,5 +241,44 @@ describe('PlanePull / PlaneState — the new channels are additive and optional'
     };
     expect(state.capabilities?.localShell).toBe(true);
     expect(Object.keys(state.token ?? {})).toEqual(['expiresAt', 'source']);
+  });
+});
+
+describe('OVERVIEW_ALERTS — the demo "Needs you now" rows say where, the same way live rows do', () => {
+  it('every row that names a site carries it as fields, and the id is a real site', () => {
+    const withSite = OVERVIEW_ALERTS.filter((a) => a.siteName !== undefined);
+    expect(withSite.map((a) => a.siteName)).toEqual([
+      'Lakeshore Medical Center',
+      'Campus-02 Research',
+      'Campus-01',
+    ]);
+    for (const a of withSite) {
+      // A bookkeeping id ('workspace', 'multiple') would render a jump to a
+      // site page that has to 404 — only a real inventory row may be linked.
+      expect(isRealSiteId(a.siteId ?? '')).toBe(true);
+    }
+  });
+
+  it('the prose prefix is kept, so a meta-only renderer still says where', () => {
+    for (const a of OVERVIEW_ALERTS) {
+      if (a.siteName === undefined) continue;
+      expect(a.meta.startsWith(`${a.siteName} · `)).toBe(true);
+      // …and what is left once a site-aware renderer strips it is never empty,
+      // so the row does not lose its detail line to the de-duplication.
+      expect(a.meta.slice(a.siteName.length + 3).trim()).not.toBe('');
+    }
+  });
+
+  it('a row with no site field has no id either — never a blank or dead jump', () => {
+    for (const a of OVERVIEW_ALERTS) {
+      if (a.siteName !== undefined) continue;
+      expect(a.siteId).toBeUndefined();
+    }
+    // The two field-less rows are the plane-endpoint and workspace rows: they
+    // keep the demo exercising the same "cannot be mapped" branch live takes.
+    expect(OVERVIEW_ALERTS.filter((a) => a.siteName === undefined).map((a) => a.plane)).toEqual([
+      'CLASSIC',
+      'GREENLAKE',
+    ]);
   });
 });

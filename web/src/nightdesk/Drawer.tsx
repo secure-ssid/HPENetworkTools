@@ -23,6 +23,16 @@ export function Drawer({
   const titleId = useId();
   const descriptionId = useId();
 
+  // Held in a ref so the focus/keydown effect below does not depend on the
+  // callback's identity. Screens pass an inline lambda (Configure, Clients,
+  // Systems), which is a fresh function every render — depending on it tore the
+  // effect down on each keystroke and re-focused the close button, so a
+  // controlled field inside a drawer lost focus after one character.
+  const onOpenChangeRef = useRef(onOpenChange);
+  useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  });
+
   useEffect(() => {
     if (!open) return;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -34,7 +44,7 @@ export function Drawer({
         ) ?? [],
       );
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onOpenChange(false);
+      if (e.key === 'Escape') onOpenChangeRef.current(false);
       if (e.key === 'Tab') {
         const items = focusable();
         if (items.length === 0) {
@@ -64,7 +74,7 @@ export function Drawer({
       document.body.style.overflow = prevOverflow;
       previousFocus?.focus();
     };
-  }, [open, onOpenChange]);
+  }, [open]);
 
   if (!open) return null;
   const w = typeof width === 'number' ? width : DRAWER_WIDTHS[width];

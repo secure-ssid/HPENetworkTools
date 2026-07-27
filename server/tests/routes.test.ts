@@ -1409,6 +1409,35 @@ describe('live-mode screen contracts', () => {
     }
   });
 
+  it('a badge that names no registry plane asserts neither staleness nor a sync stamp', async () => {
+    const { registry } = await import('../src/planes/registry');
+    contributions.clear();
+    // 'THIRD-PARTY' is the one Plane label with no registry plane behind it.
+    // Both callers of the shared label→plane map (reconcile.planeIdForLabel)
+    // must resolve it to undefined: it can neither drag the site into 'stale'
+    // — the site's own alert feed answered, empty — nor supply the freshness
+    // stamp the adapter row declined to give ('—', never a borrowed one).
+    contributions.set('central', {
+      devices: [],
+      sites: [{ ...SITE, id: 'partner-lab', name: 'Partner Lab', planes: [{ name: 'THIRD-PARTY', tone: 'neutral' }], sync: '—' }],
+      alerts: [],
+    });
+    // Central is behind, but it badges nothing here, so it must not colour this row.
+    registry.markSyncResult('central', false, { note: 'poll failed — showing last good data' });
+    try {
+      const { body } = await getJson('/api/sites');
+      const site = (body.sites as any[]).find((s) => s.id === 'partner-lab');
+      expect(site).toBeDefined();
+      expect(site.planes).toEqual([{ name: 'THIRD-PARTY', tone: 'neutral' }]);
+      expect(site.alerts).toBe('clear');
+      expect(site.alertTone).toBe('success');
+      expect(site.sync).toBe('—'); // not 'never', and not central's stamp
+    } finally {
+      registry.reinitPlane('central');
+      contributions.clear();
+    }
+  });
+
   it('compliance names plane staleness as itself, and sorts findings by severity', async () => {
     const { registry } = await import('../src/planes/registry');
     contributions.clear();

@@ -78,6 +78,31 @@ const PLANE_ID_FOR: Partial<Record<Plane, PlaneId>> = Object.fromEntries(
 ) as Partial<Record<Plane, PlaneId>>;
 
 /**
+ * Fields the merge resolves as a UNION across every claimant instead of taking
+ * the display claimant's value.
+ *
+ * `localShell` is the only one today. It is not a display field: it says "a
+ * plane that claims this device reports the collector reaches it", and a cloud
+ * plane's `false` means "I do not provide a shell", NOT "no shell exists" —
+ * exactly the distinction services/terminal.ts draws for the plane-level
+ * PlaneCapabilities.localShell. Taking the display claimant's literal makes a
+ * higher-ranked cloud plane's disclaimer silently erase a peer's positive
+ * claim: an AOS-8 controller (aos8 rows set localShell true for controllers)
+ * that Central also claims would merge to false and lose its shell on both
+ * /api/devices and /api/devices/:name, which is the false-negative twin of the
+ * "gate can never open" defect.
+ *
+ * This is the row-level claim only. Whether the portal can open a session RIGHT
+ * NOW additionally needs the claiming planes' capabilities() and live local
+ * credentials, both of which are singleton/registry reads; the route layer ANDs
+ * them in (screens.ts canOpenShell). Doing it here would make this module
+ * impure and circular — terminal.ts imports planeIdForLabel from this file.
+ */
+function unionLocalShell(claims: readonly Claim[]): boolean {
+  return claims.some((c) => c.row.localShell === true);
+}
+
+/**
  * Display-field priority: central > classic > mist > local > others
  * (remaining planes in PLANE_IDS order). When two planes describe the same
  * device, the earlier plane's row supplies the display fields.
@@ -166,6 +191,9 @@ export function reconcileDevices(
     const merged: ReconciledDeviceRow = {
       ...display,
       claimedBy: claimantPlanes.map((p) => PLANE_LABEL[p]),
+      // Union, not display (see unionLocalShell): one claimant saying it has no
+      // shell path must not erase another claimant saying it does.
+      localShell: unionLocalShell(claims),
     };
 
     let issue = false;

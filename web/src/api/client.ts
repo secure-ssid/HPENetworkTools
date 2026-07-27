@@ -65,6 +65,7 @@ import type {
   AuthEventRow,
   BaselineProgressRow,
   BlastRadiusRow,
+  BrokerAuditEvent,
   CapabilityRow,
   ChangeLogEntry,
   ClientRow,
@@ -723,6 +724,27 @@ export async function queueChange(
 export async function getChangeQueue(): Promise<BrokeredChange[] | ApiError | null> {
   const result = await fetchScreen<{ changes: BrokeredChange[] }>('/api/configure/queue');
   if (result.kind === 'ok') return result.data.changes;
+  if (result.kind === 'http-error') return { error: result.message };
+  return null;
+}
+
+/**
+ * GET /api/configure/history — the broker's own audit log, newest first.
+ *
+ * Same rule as getChangeQueue(): null ONLY when no backend answered (there is
+ * no fixture audit log — an authored one would be a fabricated record of
+ * changes this install never brokered), and an HTTP error surfaces as {error}
+ * rather than turning into an empty list that reads as "nothing ever happened".
+ *
+ * SECURITY: BrokerAuditEvent is {ts,event,changeId,ticket,kind,result} —
+ * shared/types.ts pins that rendered configuration bodies are NOT part of the
+ * row. Nothing here may widen it.
+ */
+export async function getChangeHistory(limit = 50): Promise<BrokerAuditEvent[] | ApiError | null> {
+  const result = await fetchScreen<{ events: BrokerAuditEvent[] }>(
+    `/api/configure/history?limit=${encodeURIComponent(String(limit))}`,
+  );
+  if (result.kind === 'ok') return result.data.events;
   if (result.kind === 'http-error') return { error: result.message };
   return null;
 }

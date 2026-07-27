@@ -10,6 +10,10 @@
  * pushed" Code block recomputes LIVE on every keystroke/toggle through the
  * shared configPreviewFor/previewMetaFor/blastRadiusFor, with a required
  * ticket reference gating the primary button.
+ * The header's "Change history" opens a second drawer over the write broker's
+ * audit log (GET /api/configure/history): ts / event+kind / changeId / ticket /
+ * result, and never the rendered payload body — the log records what happened
+ * to a change, not what was in it.
  * Data: getConfigure() — live /api/configure when the server is up, fixtures
  * otherwise. Queue/dry-run/push/discard go through the write broker
  * (/api/configure/*) whenever the backend is reachable — the server queue is
@@ -38,6 +42,7 @@ import {
 import {
   discardChange,
   dryRunConfig,
+  getChangeHistory,
   getChangeQueue,
   getConfigure,
   isApiError,
@@ -65,6 +70,7 @@ import {
   seedFormFromRow,
 } from '../../../shared';
 import type {
+  BrokerAuditEvent,
   CapabilityRow,
   ConfigForm,
   ConfigKind,
@@ -109,6 +115,33 @@ const ROW: CSSProperties = {
   padding: '12px 10px',
   cursor: 'pointer',
 };
+
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * The broker writes its own outcome word into every audit row ('applied',
+ * 'rejected', 'lease-expired', 'render-only (read-only plane)', …). The badge
+ * colours the ones whose meaning is unambiguous and leaves everything else
+ * neutral — a word this screen does not recognise must not be painted green.
+ */
+function auditTone(result: string): 'success' | 'warning' | 'danger' | 'neutral' {
+  const r = result.toLowerCase();
+  if (r.startsWith('applied')) return 'success';
+  if (r === 'rejected' || r.includes('error') || r.includes('failed')) return 'danger';
+  if (r === 'lease-expired' || r === 'unverified-path' || r.startsWith('render-only')) return 'warning';
+  return 'neutral';
+}
+
+/** What the "Change history" drawer is showing right now. */
+type HistoryState =
+  | { kind: 'loading' }
+  | { kind: 'ok'; events: BrokerAuditEvent[] }
+  | { kind: 'error'; message: string }
+  | { kind: 'offline' };
 
 /** A queue row: brokered server-side (id set) or local offline fallback (id null).
  *  `expiresAt` is the broker's 15-minute write lease — an entry whose lease has
@@ -345,6 +378,8 @@ export default function Configure() {
   // Lease countdowns must not freeze at first paint — a 30s tick is enough
   // resolution for a fifteen-minute lease.
   const [now, setNow] = useState(() => Date.now());
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<HistoryState>({ kind: 'loading' });
   // Blend mode swaps this screen's inventory to observed live rows while the
   // envelope still reads 'demo' (README §blendLive), so every live-flavoured
   // affordance follows the section, not the envelope's overall dataSource.
@@ -465,6 +500,20 @@ export default function Configure() {
   const formFor = (k: ConfigKind): ConfigForm => (k === 'port' ? port : k === 'vlan' ? vlan : ssid);
   const readyCount = queue.filter((q) => q.state === 'ready').length;
 
+  /**
+   * Open the audit drawer and read the broker's log. Every open re-reads it —
+   * the log grows with each push, and a cached list would be a stale claim
+   * about what has been brokered.
+   */
+  const openHistory = async () => {
+    setHistoryOpen(true);
+    setHistory({ kind: 'loading' });
+    const r = await getChangeHistory();
+    if (isApiError(r)) setHistory({ kind: 'error', message: r.error });
+    else if (r === null) setHistory({ kind: 'offline' });
+    else setHistory({ kind: 'ok', events: r });
+  };
+
   /** Re-read the broker's queue; false when the backend dropped out from under us. */
   const refreshServerQueue = async (preserveLocal = true): Promise<boolean> => {
     const serverQueue = await getChangeQueue();
@@ -574,13 +623,7 @@ export default function Configure() {
         subtitle="Edit the object, not the console — the portal renders it for whichever plane owns it."
         actions={
           <>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() =>
-                toast('Change history is the broker audit log — not in this build')
-              }
-            >
+            <Button variant="ghost" size="sm" onClick={() => void openHistory()}>
               Change history
             </Button>
             <Button variant="secondary" size="sm" onClick={() => openVlan()}>
@@ -1338,6 +1381,100 @@ export default function Configure() {
             </div>
           </div>
         ) : null}
+      </Drawer>
+
+      {/* ---------------- change history (broker audit log) ----------------
+          GET /api/configure/history, newest first. SECURITY: the row is
+          {ts,event,changeId,ticket,kind,result} — what happened to a change,
+          never what was in it. Rendered payload bodies are not on the wire
+          (shared/types.ts BrokerAuditEvent) and must not be rendered here. */}
+      <Drawer
+        open={historyOpen}
+        onOpenChange={(v) => {
+          if (!v) setHistoryOpen(false);
+        }}
+        width="lg"
+        title="Change history"
+        description="The write broker's audit log: what happened to every brokered change, with the ticket it was raised against. Payload bodies are deliberately not recorded."
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <SectionHeader
+            label="Brokered changes"
+            meta={history.kind === 'ok' ? String(history.events.length) : undefined}
+          />
+          {history.kind === 'loading' ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 32 }}>
+              <Spinner size="sm" />
+            </div>
+          ) : null}
+          {history.kind === 'error' ? (
+            <Alert tone="danger" title="The audit log could not be read">
+              <span style={{ fontSize: 13 }}>{history.message}</span>
+            </Alert>
+          ) : null}
+          {history.kind === 'offline' ? (
+            <EmptyState
+              title="The portal backend did not answer"
+              description="The audit log lives on the server with the write broker; there is no local copy to show. Reconnect the backend and open this again."
+            />
+          ) : null}
+          {history.kind === 'ok'
+            ? history.events.map((e, i) => (
+                <div
+                  key={`${e.ts}-${e.changeId}-${e.event}-${i}`}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: '10px 0',
+                    borderBottom: '1px solid var(--nd-border-subtle)',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 10.5,
+                      color: 'var(--nd-text-muted)',
+                      width: 44,
+                      flex: '0 0 44px',
+                    }}
+                  >
+                    {hhmm(e.ts)}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <span style={{ fontSize: 12.5, color: 'var(--nd-text-primary)', lineHeight: 1.4 }}>
+                      {e.event} {e.kind}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: 'var(--nd-font-mono)',
+                        fontSize: 10,
+                        color: 'var(--nd-text-muted)',
+                      }}
+                    >
+                      {e.changeId}
+                    </span>
+                  </div>
+                  <span
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 10,
+                      color: 'var(--nd-text-muted)',
+                    }}
+                  >
+                    {e.ticket}
+                  </span>
+                  <Badge tone={auditTone(e.result)}>{e.result}</Badge>
+                </div>
+              ))
+            : null}
+          {history.kind === 'ok' && history.events.length === 0 ? (
+            <EmptyState
+              title="No brokered changes recorded yet"
+              description="Every dry run, queue, push and discard is written to the broker's audit log. Nothing has gone through it on this install."
+            />
+          ) : null}
+        </div>
       </Drawer>
     </div>
   );
