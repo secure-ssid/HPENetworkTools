@@ -690,6 +690,29 @@ describe('CentralAdapter.pull()', () => {
     expect(recorded.some((c) => c.path === 'POST /oauth2/token' && c.code === '200')).toBe(true);
   });
 
+  it('publishes the minted credential expiry on plane state (never the token)', async () => {
+    // The registry can only publish HOW a credential is obtained; only the
+    // adapter's token manager learns WHEN it dies, so the Systems 'Token' fact
+    // read 'no expiry published' for every OAuth plane.
+    const { adapter, state } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    const before = Date.now();
+    await adapter.pull();
+    expect(state.token?.source).toBe('oauth client_credentials');
+    const expiresAt = Date.parse(state.token!.expiresAt!);
+    expect(expiresAt).toBeGreaterThanOrEqual(before + 7200 * 1000);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 7200 * 1000);
+    // SECURITY: PlaneState is served unmasked — expiry + label only.
+    expect(JSON.stringify(state.token)).not.toContain('tok-1');
+    expect(JSON.stringify(state.token)).not.toContain('shh-secret');
+  });
+
+  it('a token answer without expires_in publishes no expiry rather than the pacing default', async () => {
+    const routes = { ...HAPPY_ROUTES, 'POST /oauth2/token': { access_token: 'tok-1' } };
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    await adapter.pull();
+    expect(state.token).toEqual({ expiresAt: null, source: 'oauth client_credentials' });
+  });
+
   it('caches the token across pulls (one token fetch for two pulls)', async () => {
     const { adapter, calls } = makeAdapter(routeHandler(HAPPY_ROUTES));
     await adapter.pull();

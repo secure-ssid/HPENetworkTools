@@ -366,7 +366,12 @@ export default function Configure() {
         setQueue(serverQueue.map(rowForChange));
         setQueueSource('server');
       } else if (!isApiError(serverQueue)) {
-        setQueue(d.queued.map((q) => ({ ...q, id: null })));
+        // The broker's own queue endpoint is unreachable, so the section
+        // payload's rows are all there is. QueuedChangeRow now carries the
+        // broker's `id` when the row came from the broker (null/absent on the
+        // authored fixtures, which is what correctly makes those unpushable) —
+        // honour it rather than flattening every row to a local, id-less one.
+        setQueue(d.queued.map((q) => ({ ...q, id: q.id ?? null })));
       }
     });
     return () => {
@@ -496,7 +501,12 @@ export default function Configure() {
     // Entries queued while the broker was unreachable have no server id.
     // Keep them visible until they can be submitted to the authoritative
     // broker; never claim a push happened without a server acknowledgement.
-    const local = queue.filter((q) => q.state === 'ready' && q.id === null);
+    // When the broker's own queue never answered, NOTHING above was pushed —
+    // an id-bearing row from the section payload is un-pushed too, and must
+    // not fall silently between the two branches.
+    const local = queue.filter(
+      (q) => q.state === 'ready' && (queueSource !== 'server' || q.id === null),
+    );
     if (local.length > 0) {
       toast(`${local.length} local change${local.length === 1 ? '' : 's'} not pushed`, {
         description: 'Reconnect the portal backend, then queue the change again so the broker can assign an id.',

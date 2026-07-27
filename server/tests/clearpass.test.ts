@@ -595,6 +595,32 @@ describe('ClearPassAdapter OAuth', () => {
     await expect(adapter.pull()).rejects.toThrow(/\/api\/oauth answered HTTP 403 without an access_token/);
   });
 
+  it('publishes the minted credential expiry on plane state (never the token)', async () => {
+    // The registry seeds PlaneState.token with the SOURCE only; the 8-hour
+    // CPPM grant's expiry is knowable here and nowhere else.
+    const { handler } = oauthHandler((method, pathname) =>
+      method === 'GET' && pathname === AUTH_PATH ? { body: hal([ROW_ACCEPT]) } : undefined,
+    );
+    const { adapter, state } = makeAdapter(handler, OAUTH_CREDS);
+    const before = Date.now();
+    await adapter.pull();
+    expect(state.token?.source).toBe('oauth client_credentials');
+    expect(Date.parse(state.token!.expiresAt!)).toBeGreaterThanOrEqual(before + 28_800 * 1000);
+    expect(JSON.stringify(state.token)).not.toContain('minted-1');
+    expect(JSON.stringify(state.token)).not.toContain('cppm-client-s3cr3t');
+  });
+
+  it('a mint without expires_in publishes no expiry rather than the 8h default', async () => {
+    const handler: Handler = (method, pathname) => {
+      if (method === 'POST' && pathname === '/api/oauth') return { body: { access_token: 'no-ttl' } };
+      if (method === 'GET' && pathname === AUTH_PATH) return { body: hal([ROW_ACCEPT]) };
+      return undefined;
+    };
+    const { adapter, state } = makeAdapter(handler, OAUTH_CREDS);
+    await adapter.pull();
+    expect(state.token).toEqual({ expiresAt: null, source: 'oauth client_credentials' });
+  });
+
   it('accepts the credential record the connect drawer writes', () => {
     expect(ClearPassAdapter.isComplete({ ...OAUTH_CREDS, displayName: 'ClearPass', scopes: 'read:session' })).toBe(true);
     expect(ClearPassAdapter.isComplete(CREDS)).toBe(true); // legacy host + token

@@ -332,6 +332,13 @@ describe('routes', () => {
     expect(missing.body.error).toBeDefined();
   });
 
+  it('demo device detail names its evidence source, so an empty list can never read as a clean pass', async () => {
+    const { body } = await getJson('/api/devices/sw-core-a');
+    expect(body.evidence.mode).toBe('demo'); // authored checks, and the payload says so
+    expect(body.evidence.checks).toEqual(body.profile.checks);
+    expect(body.terminal.quickCommands.length).toBeGreaterThan(0);
+  });
+
   it('live mode serves the reconciled shape (empty until planes actually sync)', async () => {
     await fetch(`${base}/api/settings`, {
       method: 'PUT',
@@ -687,6 +694,11 @@ describe('live-mode screen contracts', () => {
       const configure = await getJson('/api/configure');
       expect(configure.body.dataSource).toBe('live');
       expect((configure.body.queued as any[]).some((change) => change.ticket === 'NET-4188')).toBe(true);
+      // A server-listed change is only actionable if the row can name it: no
+      // id, and every change queued before a reload is unpushable forever.
+      const listed = (configure.body.queued as any[]).find((change) => change.ticket === 'NET-4188');
+      expect(listed.id).toBe(changeId);
+      expect(listed.expiresAt === null || typeof listed.expiresAt === 'string').toBe(true);
       expect(configure.body.stats).toHaveLength(4);
       expect(configure.body.stats[0]).toMatchObject({
         label: 'Queued changes',
@@ -870,6 +882,137 @@ describe('live-mode screen contracts', () => {
     expect(body.alerts).toEqual([{ sev: 'P2', tone: 'warning', title: 'AP flapping', meta: 'central · 5m' }]);
   });
 
+  it('live site detail derives the "Local reachability" panel instead of leaving it NOT REPORTED', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE] });
+    const { body } = await getJson('/api/sites/campus-01');
+    // No local collector credentials in this deployment: the panel asserts
+    // nothing at all, and the share is null — NOT 0%, which would claim every
+    // device here failed to answer a probe the portal never sent.
+    expect(body.reachability).toMatchObject({
+      collector: 'not linked',
+      collectorTone: 'neutral',
+      reachValue: null,
+      core: null,
+    });
+    expect(body.reachability.collectorNote).toContain('no device at this site has been probed directly');
+  });
+
+  it('live device detail carries per-device evidence and only ships a shell block it can honour', async () => {
+    contributions.clear();
+    const CONTROLLER = {
+      ...DEVICE,
+      name: 'mc-lake-1',
+      type: 'controller',
+      plane: 'AOS-8',
+      planeTone: 'accent',
+      localShell: true,
+    };
+    contributions.set('central', { devices: [{ ...DEVICE, firmware: '' }] });
+    const cloud = await getJson('/api/devices/sw-test-1');
+    // The same five rules /api/compliance runs, evaluated for this one device.
+    expect(cloud.body.evidence.mode).toBe('live');
+    expect((cloud.body.evidence.checks as any[]).map((c) => c.rule)).toEqual([
+      'scan.coverage.identity',
+      'scan.coverage.freshness',
+      'scan.coverage.reachability',
+      'scan.coverage.firmware',
+      'inventory.reconciliation',
+    ]);
+    const firmware = (cloud.body.evidence.checks as any[]).find((c) => c.rule === 'scan.coverage.firmware');
+    expect(firmware).toMatchObject({ mark: 'fail', label: 'CENTRAL reported no firmware version' });
+    expect((cloud.body.evidence.checks as any[]).find((c) => c.rule === 'scan.coverage.identity').mark).toBe('pass');
+    // localShell false — no banner may promise a session the bridge refuses.
+    expect(cloud.body.terminal).toBeUndefined();
+
+    contributions.clear();
+    contributions.set('aos8', { devices: [CONTROLLER] });
+    const shell = await getJson('/api/devices/mc-lake-1');
+    // Class comes from the row's device TYPE (controller → AOS chips), never
+    // the demo name-prefix rules, so route and screen cannot disagree.
+    expect(shell.body.terminal.quickCommands).toContain('show ap database');
+    expect(shell.body.terminal.banner.length).toBeGreaterThan(0);
+
+    contributions.set('aos8', { devices: [{ ...CONTROLLER, name: 'ap-test-1', type: 'ap' }] });
+    const ap = await getJson('/api/devices/ap-test-1');
+    expect(ap.body.terminal).toBeUndefined(); // cloud-claimed class has no shell at all
+  });
+
+  it('a plane that reports no local shell overrides a row that claims one', async () => {
+    contributions.clear();
+    // Mist's adapter answers capabilities().localShell === false: it describes
+    // hardware the portal has no bridge to. A row claiming otherwise cannot
+    // conjure a session, so the shell block stays off.
+    const saved = await fetch(`${base}/api/systems/mist/credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apiHost: 'api.mist.example.com', orgId: 'org-1', token: 'mist-token-1234' }),
+    });
+    expect(saved.status).toBe(200);
+    try {
+      contributions.set('mist', {
+        devices: [{ ...DEVICE, name: 'sw-mist-1', plane: 'MIST', planeTone: 'info', localShell: true }],
+      });
+      const { body } = await getJson('/api/devices/sw-mist-1');
+      expect(body.device.localShell).toBe(true); // the row is served as reported
+      expect(body.terminal).toBeUndefined(); // …but no shell block is offered
+    } finally {
+      await fetch(`${base}/api/systems/mist`, { method: 'DELETE' });
+      contributions.clear();
+    }
+  });
+
+  it('live auth rows badge the plane that owns the NAS, not the reporting policy plane', async () => {
+    contributions.clear();
+    const event = {
+      time: '09:41:02',
+      who: 'r.okafor',
+      mac: 'AA:BB:CC:DD:EE:01',
+      service: 'Corp dot1x',
+      method: 'dot1x',
+      result: 'accept',
+      reason: '—',
+      role: 'employee',
+      nas: 'sw-test-1',
+      plane: 'CLEARPASS',
+      tone: 'success',
+    };
+    contributions.set('clearpass', { authEvents: [event, { ...event, mac: 'AA:BB:CC:DD:EE:02', nas: 'unknown-nas' }] });
+    const noDevices = await getJson('/api/auth-events');
+    // Nothing to join against: the reporter's own truthful label stays.
+    expect((noDevices.body.events as any[]).map((e) => e.plane)).toEqual(['CLEARPASS', 'CLEARPASS']);
+
+    contributions.set('central', { devices: [DEVICE] });
+    const joined = await getJson('/api/auth-events');
+    expect((joined.body.events as any[])[0].plane).toBe('CENTRAL'); // unique match on the NAS name
+    expect((joined.body.events as any[])[1].plane).toBe('CLEARPASS'); // no match — never a guess
+  });
+
+  it('the live alert queue carries a derived correlation banner, or an explicit null', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE] });
+    const quiet = await getJson('/api/alerts');
+    expect(quiet.body.correlation).toBeNull(); // nothing open — no banner renders
+
+    contributions.set('central', {
+      alerts: [alertRow({ alertId: 'p1', sev: 'P1', tone: 'danger', title: 'Gateway down' })],
+    });
+    const p1 = await getJson('/api/alerts');
+    expect(p1.body.correlation).toMatchObject({ tone: 'danger', title: 'Gateway down' });
+    expect(p1.body.correlation.body).toContain('Campus-01 — Meridian HQ');
+
+    contributions.set('central', {
+      alerts: [
+        alertRow({ alertId: 'p1', sev: 'P1', tone: 'danger', title: 'Gateway down' }),
+        alertRow({ alertId: 'behind', title: 'AP offline', plane: 'MIST', stale: true }),
+      ],
+    });
+    const withStale = await getJson('/api/alerts');
+    // Second finding: a row whose plane is behind is unverified, not current.
+    expect(withStale.body.correlation.title).toBe('Gateway down — and MIST is stale');
+    expect(withStale.body.correlation.body).toContain('frozen at pull time');
+  });
+
   it('live /api/devices sends real per-plane lane freshness, not an empty map', async () => {
     contributions.clear();
     contributions.set('central', { devices: [DEVICE] });
@@ -898,6 +1041,60 @@ describe('live-mode screen contracts', () => {
     contributions.set('central', { devices: [{ ...DEVICE, licence: 'unknown' }] });
     const unknown = await getJson('/api/licenses');
     expect(unknown.body.stats[4]).toMatchObject({ value: '—', delta: 'no plane reports entitlements' });
+  });
+
+  it('the entitlement join drives "Devices unlicensed" and the orphan/gap rows', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      devices: [
+        { ...DEVICE, serial: 'SG01ABC123' },
+        { ...DEVICE, name: 'sw-test-2', serial: 'SG01ABC124' },
+        { ...DEVICE, name: 'sw-quiet-1', serial: 'SG01ABC125' },
+      ],
+    });
+    contributions.set('greenlake', {
+      subscriptions: [
+        {
+          name: 'Foundation AP',
+          sku: 'SUB-AP-FND',
+          plane: 'GREENLAKE',
+          term: '3y',
+          qty: '100',
+          assigned: '0',
+          pct: '0%',
+          expires: '2027-01-01',
+          status: 'idle',
+          planeTone: 'info',
+          tone: 'neutral',
+          assignedValue: 0,
+        },
+      ],
+      assignments: [
+        { serial: 'SG01ABC123', deviceName: 'sw-test-1', assigned: true, subscriptionKey: 'K1' },
+        // Racked and reported, but the entitlement plane says it holds none.
+        { serial: 'SG01ABC124', deviceName: 'sw-test-2', assigned: false, subscriptionKey: null },
+        // Reported by the entitlement plane, in no plane's inventory.
+        { serial: 'SG09ZZZ999', deviceName: 'sw-decommissioned', assigned: true, subscriptionKey: 'K2' },
+        // Tri-state: the plane never said. An unknown must not be counted as
+        // unlicensed, or every silent row inflates the tile.
+        { serial: 'SG01ABC125', deviceName: 'sw-quiet-1', subscriptionKey: 'K3' },
+      ],
+    });
+    const { body } = await getJson('/api/licenses');
+    expect(body.stats[4]).toMatchObject({ label: 'Devices unlicensed', value: '1', tone: 'negative' });
+    expect(body.stats[4].delta).toBe('3 of 4 assignments state an entitlement');
+    const tags = (body.orphans as any[]).map((o) => o.tag);
+    expect(tags).toEqual(['orphan', 'gap', 'idle']);
+    expect((body.orphans as any[])[0].detail).toContain('sw-decommissioned');
+    expect((body.orphans as any[])[1].what).toBe('1 device with no active subscription');
+
+    // A plane that could not read the feed sends no assignments key at all —
+    // the tile must fall back to what the device rows say, and the reclaim
+    // list must stay empty rather than claiming a clean estate.
+    contributions.set('greenlake', { subscriptions: [] });
+    const noFeed = await getJson('/api/licenses');
+    expect(noFeed.body.stats[4].delta).toBe('3 of 3 devices carry an entitlement');
+    expect(noFeed.body.orphans).toEqual([]);
   });
 
   it("live overview's Config drift comes from the evidence engine, not a hardwired dash", async () => {
@@ -1691,6 +1888,9 @@ describe('hidden demo devices', () => {
     expect(names).not.toContain('ap-riv-01');
     expect(names).toContain('sw-core-b'); // the rest of the fixture set stays
     expect(body.hiddenDevices).toEqual(['sw-core-a', 'ap-riv-01']);
+    // The demo estate's reconciliation counts ride on the payload like every
+    // other mode's, so the screen reads one key instead of a demo fallback.
+    expect(body.reconciliation).toEqual({ doubleClaimed: 3, unclaimed: 14 });
 
     await putSettings({ hiddenDemoDevices: [] });
     const restored = await getJson('/api/devices');

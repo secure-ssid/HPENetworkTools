@@ -28,6 +28,17 @@
  *     credentials record sets allowHostOverride: 'true' — otherwise the
  *     override is silently ignored (the recorded target is always the one
  *     actually used).
+ *   - Who provides the shell path is DISCLOSED, not guessed: when the plane
+ *     claiming the device reports capabilities().localShell === false, the
+ *     banner and the recording say so and name the local-plane credentials as
+ *     the path actually used. That capability is a plane-level statement about
+ *     the CLOUD plane ("Central cannot hand you a shell"), never a claim that
+ *     no shell exists — the collector is a different plane — so it is not a
+ *     veto: gating the bridge on it would close the terminal for every device
+ *     in a Central-only tenant, which is the very "gate can never open" defect
+ *     the audit filed. Reachability (type has a CLI, inventory names a
+ *     management IP, local credentials exist) is this module's call and is
+ *     exported as canShell() for the route layer.
  *
  * Credentials come from settings.planes.local (arbitrary string map, saved via
  * POST /api/systems/local/credentials):
@@ -81,8 +92,11 @@ import type { Duplex } from 'node:stream';
 import { Client, type ClientChannel, type ConnectConfig } from 'ssh2';
 import { WebSocketServer, WebSocket } from 'ws';
 import { deviceProfile, deviceTerminalKind } from '../../../shared';
-import type { DeviceType, TerminalKind } from '../../../shared';
+import type { DeviceType, Plane, TerminalKind } from '../../../shared';
 import { settings, type PlaneCredentials } from '../config/settings';
+import { registry } from '../planes/registry';
+import { PLANE_IDS, type PlaneCapabilities, type PlaneId } from '../planes/types';
+import { PLANE_LABEL } from './reconcile';
 import { poller } from './poller';
 
 // ---------------------------------------------------------------------------
@@ -261,18 +275,37 @@ class SessionRecorder {
     private readonly user: string,
     private readonly target: string,
     private readonly jumpHost: string | null,
+    /** Provenance of the shell path (see TerminalManager.shellPathNote) —
+     *  appended last so the `device= user= target=` prefix a transcript
+     *  listing parses stays exactly where it was. */
+    note: string | null = null,
     now: Date = new Date(),
   ) {
     fs.mkdirSync(logDir, { recursive: true });
     const stamp = now.toISOString().replace(/[:.]/g, '-');
     const safeDevice = device.replace(/[^A-Za-z0-9_.-]/g, '_');
-    this.filePath = path.join(logDir, `${safeDevice}-${stamp}.jsonl`);
-    // O_EXCL so a name collision can never clobber an earlier recording.
-    this.fd = fs.openSync(this.filePath, 'wx', 0o600);
+    // O_EXCL so a name collision can never clobber an earlier recording — and
+    // a collision is possible: two panes opened on the same device inside the
+    // same millisecond share the stamp. Take the next free suffix instead of
+    // failing the session (recording is mandatory, so an EEXIST here would
+    // refuse a legitimate second session).
+    let fd: number | null = null;
+    let filePath = '';
+    for (let attempt = 0; attempt < 20 && fd === null; attempt += 1) {
+      filePath = path.join(logDir, `${safeDevice}-${stamp}${attempt === 0 ? '' : `-${attempt + 1}`}.jsonl`);
+      try {
+        fd = fs.openSync(filePath, 'wx', 0o600);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      }
+    }
+    if (fd === null) throw new Error(`could not open a recording for ${device} — 20 name collisions`);
+    this.filePath = filePath;
+    this.fd = fd;
     this.event({
       type: 'open',
       at: now.toISOString(),
-      text: `device=${device} user=${user} target=${target}${jumpHost ? ` via=${jumpHost}` : ''}`,
+      text: `device=${device} user=${user} target=${target}${jumpHost ? ` via=${jumpHost}` : ''}${note ? ` note=${note}` : ''}`,
     });
   }
 
@@ -323,13 +356,24 @@ export interface LiveDeviceRef {
   name: string;
   ip?: string;
   type?: DeviceType;
+  /** Display label of the plane that claimed the row, when the caller knows
+   *  it. Used only to disclose who provides the shell path — see
+   *  shellPathNote(). Absent means "unattributed", never "no shell". */
+  plane?: Plane;
 }
+
+/** Display label → registry plane id (inverse of PLANE_LABEL). A label with no
+ *  registry plane ('THIRD-PARTY') resolves to undefined and claims nothing. */
+const PLANE_ID_FOR: Partial<Record<Plane, PlaneId>> = Object.fromEntries(
+  PLANE_IDS.map((id) => [PLANE_LABEL[id], id]),
+) as Partial<Record<Plane, PlaneId>>;
 
 export class TerminalManager {
   private readonly demoMode: () => boolean;
   private readonly liveDevices: () => LiveDeviceRef[];
   private readonly credsProvider: () => LocalCreds | null;
   private readonly connect: (target: string, creds: LocalCreds) => Promise<Client>;
+  private readonly planeCapabilities: (plane: Plane) => PlaneCapabilities | undefined;
 
   constructor(
     private readonly opts: {
@@ -340,12 +384,55 @@ export class TerminalManager {
       liveDevices?: () => LiveDeviceRef[]; // default: poller cache (live mode only)
       creds?: () => LocalCreds | null; // default: local-plane settings record
       connect?: (target: string, creds: LocalCreds) => Promise<Client>; // default: connectSsh
+      planeCapabilities?: (plane: Plane) => PlaneCapabilities | undefined; // default: registry
     } = {},
   ) {
     this.demoMode = opts.demoMode ?? (() => settings.get().demoMode);
     this.liveDevices = opts.liveDevices ?? (() => poller.getCache().devices);
     this.credsProvider = opts.creds ?? (() => this.readCreds());
     this.connect = opts.connect ?? ((target, creds) => this.connectSsh(target, creds));
+    this.planeCapabilities =
+      opts.planeCapabilities ??
+      ((plane) => {
+        const id = PLANE_ID_FOR[plane];
+        return id === undefined ? undefined : registry.state(id).capabilities;
+      });
+  }
+
+  /**
+   * Could the portal open a recorded shell to this device right now? The rule
+   * the route layer needs for DeviceRow.localShell on a LIVE row, kept here so
+   * it exists once (screens.ts asked for it rather than duplicating it):
+   *
+   *   - the device TYPE has a CLI worth proxying (deviceTerminalKind — an AP or
+   *     a UXI sensor never does),
+   *   - the inventory names a management IP that can actually be dialled, and
+   *   - local-plane credentials exist, because that record IS the shell path.
+   *
+   * The claiming plane's capabilities().localShell is deliberately NOT part of
+   * this: it states what the CLOUD plane can do, and the shell runs over the
+   * collector credentials instead. A caller that wants the plane's own claim as
+   * well reads it from the registry and ANDs the two — see shellPathNote() for
+   * how a session discloses which of the two is providing the path.
+   */
+  canShell(row: LiveDeviceRef): boolean {
+    if (deviceTerminalKind(row.type ? { type: row.type } : null, row.name) === 'none') return false;
+    if (!row.ip || row.ip === 'pending') return false;
+    return this.credsProvider() !== null;
+  }
+
+  /**
+   * One banner/recording line naming who provides the shell path, or null when
+   * there is nothing to disclose (demo mode, an unattributed row, a plane that
+   * claims the path itself). Honesty rule: the pane's own banner says the
+   * session was "opened via the portal", and for a cloud-claimed device that
+   * is only true because the operator's collector credentials made it so.
+   */
+  private shellPathNote(row: LiveDeviceRef | null): string | null {
+    if (!row?.plane) return null;
+    const caps = this.planeCapabilities(row.plane);
+    if (caps?.localShell !== false) return null; // claimed, or never stated — nothing to correct
+    return `${row.plane} reports no portal shell path for the devices it claims — this session is dialled through the local-plane credentials`;
   }
 
   private logDir(): string {
@@ -539,6 +626,7 @@ export class TerminalManager {
     let openedUser = '';
     let openedTarget = '';
     let openedVia: string | null = null;
+    let pathNote: string | null = null; // who actually provides the shell path
     let closed = false;
 
     const idleMs = this.opts.idleMs ?? IDLE_MS;
@@ -599,6 +687,7 @@ export class TerminalManager {
           const banner = [
             `SSH session opened by ${openedUser} via the portal — session recorded`,
             `target ${deviceName} — read-only lease: show / display / diagnostics only`,
+            ...(pathNote ? [pathNote] : []),
             ...motd,
             '',
           ];
@@ -651,14 +740,18 @@ export class TerminalManager {
       // refusing a real switch called 'ap-closet-sw'. Demo mode keeps the
       // prefix rules — that is the demo.
       //
-      // The gate is the device TYPE, not DeviceRow.localShell: every cloud
-      // adapter currently hardcodes localShell:false because it describes the
-      // cloud plane, not the collector, so gating on it would close the
-      // terminal for every live device. Whether this device can actually be
-      // dialled is resolveTarget()'s call, a few lines down.
+      // The gate is the device TYPE, not DeviceRow.localShell and not the
+      // claiming plane's capabilities().localShell: both describe the CLOUD
+      // plane rather than the collector, so gating on either would close the
+      // terminal for every live device in (say) a Central-only tenant. What
+      // the plane's claim IS good for is telling the operator whose path this
+      // session is riding — that is disclosed in the banner and the recording.
+      // Whether this device can actually be dialled is resolveTarget()'s call,
+      // a few lines down.
       const row = this.liveRow(deviceName);
       const known = this.demoMode() || row !== null;
       kind = deviceTerminalKind(row?.type ? { type: row.type } : null, deviceName);
+      pathNote = this.shellPathNote(row);
       if (known && kind === 'none') {
         fail(`device '${deviceName}' is cloud-claimed — no local shell (request a remote shell instead)`);
         return;
@@ -718,7 +811,7 @@ export class TerminalManager {
       });
 
       try {
-        recorder = new SessionRecorder(this.logDir(), deviceName, creds.username, target, creds.jumpHost);
+        recorder = new SessionRecorder(this.logDir(), deviceName, creds.username, target, creds.jumpHost, pathNote);
       } catch (err) {
         // Recording is mandatory — no recording, no session. Fail through the
         // normal path (error frame + teardown of the live connection); letting

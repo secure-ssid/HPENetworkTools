@@ -38,6 +38,18 @@ function hhmm(iso: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/**
+ * The renewals panel caption, read off the payload rather than asserted. The
+ * live route filters to a 180-day window, so the window may be named — but
+ * "nothing due" is only honest when at least one subscription carries a date;
+ * with none, the horizon was never observed and the caption says so.
+ */
+function renewalsMeta(data: LicensesData): string {
+  if (data.renewals.length > 0) return `NEXT 180 DAYS · ${data.renewals.length}`;
+  const dated = data.subscriptions.filter((s) => s.expires && s.expires !== '—').length;
+  return dated > 0 ? 'NEXT 180 DAYS · NOTHING DUE' : 'NO DATED SUBSCRIPTIONS';
+}
+
 export default function Licenses() {
   const { density, showPlatformTags } = useSettings();
   const { toast } = useToast();
@@ -278,15 +290,15 @@ export default function Licenses() {
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {/* 'NEXT 180 DAYS' is the authored window and true of the fixture
-              list; the live feed returns every dated subscription, so the
-              caption states what the payload actually carries. */}
+              list. The live route now enforces the same window server-side
+              (screens.ts RENEWAL_WINDOW_DAYS), so live mode may name it too —
+              with the count it actually holds. An empty live list is two
+              different facts: nothing falls due inside the window, or no
+              subscription carries an expiry date at all, and only the second
+              one leaves the horizon unknown. */}
           <SectionHeader
             label="Renewals, soonest first"
-            meta={
-              sectionLive
-                ? `${data.renewals.length} DATED SUBSCRIPTION${data.renewals.length === 1 ? '' : 'S'}`
-                : 'NEXT 180 DAYS'
-            }
+            meta={sectionLive ? renewalsMeta(data) : 'NEXT 180 DAYS'}
           />
           {/* Live expiry dates are month-precision, so two subscriptions
               expiring in the same month collide on `date` alone. */}

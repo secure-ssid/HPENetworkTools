@@ -378,7 +378,13 @@ export default function AuthEvents() {
                 lineHeight: 1.6,
               }}
             >
-              No rejected authentications in this window — nothing to break down.
+              {/* "No rejects" and "no feed at all" are different facts, and the
+                  first one reads as a healthy network. The Stat row already
+                  says '—' for an empty feed (server liveAuthStats), so the
+                  breakdown must not contradict it with a clean bill of health. */}
+              {events.length === 0
+                ? 'No policy plane reported a decision, so there are no rejects to break down — a missing feed, not a clean one.'
+                : 'No rejected authentications in this window — nothing to break down.'}
             </span>
           ) : null}
           {data.failReasons.map((r) => (

@@ -211,6 +211,117 @@ describe('Systems demo/live merge', () => {
   });
 });
 
+describe('Systems live registry facts', () => {
+  /** A single live Central row whose registry entry the test parameterises. */
+  function liveCentral(state: Partial<LivePlaneState>): void {
+    mockGetSystems.mockResolvedValue({
+      systems: [
+        {
+          name: 'HPE Aruba Central',
+          planeId: 'central',
+          kind: 'live plane registry',
+          state: 'healthy',
+          tone: 'success',
+          scope: 'read only',
+          scopeTone: 'neutral',
+          scopeNote: 'no write path from the portal to this plane',
+          facts: [
+            { k: 'Last sync', v: '—' },
+            { k: 'Devices', v: '—' },
+            { k: 'Calls today', v: '0' },
+          ],
+          sites: [],
+          live: [],
+          calls: [],
+          events: [],
+          pulls: [],
+          configText: 'plane: central',
+        },
+      ],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue(
+      registry({ central: unlinked('central', { linked: true, ...state }) }),
+    );
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+  }
+
+  it('reads "Calls today" against the served daily budget, not as a bare count', async () => {
+    liveCentral({
+      health: 'healthy',
+      lastSync: new Date().toISOString(),
+      callsToday: 1204,
+      callBudget: 20000,
+    });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Central')).toBeTruthy());
+    // The denominator the registry serves is what makes the count mean
+    // anything — the client merge must not overwrite it with '1204'.
+    expect(screen.getByText('1,204 / 20,000')).toBeTruthy();
+    expect(screen.queryByText('1204')).toBeNull();
+  });
+
+  it('keeps the bare count when the plane publishes no budget', async () => {
+    liveCentral({ health: 'healthy', lastSync: new Date().toISOString(), callsToday: 88 });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Central')).toBeTruthy());
+    expect(screen.getByText('88')).toBeTruthy();
+    // No tier is known, so no limit is invented.
+    expect(screen.queryByText(/88 \//)).toBeNull();
+  });
+
+  it('marks a plane the registry reports stale as unverified, and names its retry state', async () => {
+    liveCentral({
+      health: 'degraded',
+      lastSync: new Date(Date.now() - 6 * 3600_000).toISOString(),
+      deviceCount: 41,
+      callsToday: 12,
+      note: 'poll failed: 503',
+      stale: true,
+      ageSec: 6 * 3600,
+      consecutiveFailures: 3,
+      nextAttemptAt: new Date(Date.now() + 120_000).toISOString(),
+    });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Central')).toBeTruthy());
+    // The row's own count is last-good, not current — say so.
+    expect(screen.getByText('unverified')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('HPE Aruba Central'));
+    await waitFor(() => expect(screen.getByText('Sites on this plane')).toBeTruthy());
+    expect(screen.getAllByText('unverified').length).toBeGreaterThan(1);
+    expect(screen.getByText(/^3 consecutive failed polls · next attempt \d\d:\d\d$/)).toBeTruthy();
+  });
+
+  it('leaves a fresh live plane unmarked', async () => {
+    liveCentral({
+      health: 'healthy',
+      lastSync: new Date().toISOString(),
+      deviceCount: 41,
+      callsToday: 12,
+      stale: false,
+      ageSec: 12,
+      consecutiveFailures: 0,
+    });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Central')).toBeTruthy());
+    expect(screen.queryByText('unverified')).toBeNull();
+    expect(screen.queryByText(/consecutive failed poll/)).toBeNull();
+  });
+});
+
 describe('Systems plane drawer', () => {
   it('drills into a site the plane names and closes the drawer first', async () => {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);

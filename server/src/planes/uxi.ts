@@ -58,6 +58,7 @@ import type { DeviceIdentityHints } from '../services/reconcile';
 import {
   TokenManager,
   ageString,
+  mintedTokenInfo,
   parseRetryAfterMs,
   parseTimestamp,
   sevFor,
@@ -290,7 +291,12 @@ export class UxiAdapter implements PlaneAdapter {
       if (res.status !== 200 || !token) {
         throw new Error(`auth: token endpoint answered HTTP ${res.status} without an access_token`);
       }
-      return { accessToken: token, expiresInSec: Number.isFinite(expires) ? expires : 7200 };
+      // The credential's real expiry — the fact strip's fourth fact. A token
+      // answer without expires_in publishes no lifetime, so expiresAt stays
+      // null instead of inheriting the 7200 refresh-pacing default.
+      const published = Number.isFinite(expires) ? expires : null;
+      this.stateRef.token = mintedTokenInfo(published);
+      return { accessToken: token, expiresInSec: published ?? 7200 };
     });
   }
 

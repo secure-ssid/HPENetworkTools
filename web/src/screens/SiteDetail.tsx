@@ -12,10 +12,13 @@
  * params 404. profile: null renders an honest EmptyState with a hand-off to
  * Connected systems, and a 404 renders a not-found state — never the
  * authored local-only fallback for a site the portal does not actually know.
- * A live/blend row carries the same two per-site sections a profile does —
- * "Devices at this site" and "Open here" — so they render from whichever
- * source answered, and the header states which source that was and how fresh
- * it is (demo fixtures are never dressed up as a live sync). Its header
+ * A live/blend row carries the same per-site sections a profile does —
+ * "Devices at this site", "Open here" and, once the route derives it from the
+ * local collector's registry state, "Local reachability" (same component as
+ * the demo branch, with a null answering share rendering '—' rather than 0%)
+ * — so they render from whichever source answered, and the header states
+ * which source that was and how fresh it is (demo fixtures are never dressed
+ * up as a live sync). Its header
  * actions are derived, never hardcoded: "Open in <plane>" only when a plane
  * claimed the site, "Local terminal" only when a switch-like device row names
  * a target — an AP is not silently promoted to a terminal target.
@@ -39,17 +42,20 @@ import { getSiteDetail, type SiteDetailData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { Density } from '../app/SettingsContext';
 import { SITE_CHAIN, buildSiteTopology } from '../../../shared';
-import type { SiteAlertRow, SiteDeviceRow } from '../../../shared';
+import type { SiteAlertRow, SiteDeviceRow, SiteReachability } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { SiteTopologyDiagram } from './SiteTopology';
 
-/** The two per-site sections the live/blend envelope carries alongside the
- *  site row (server: liveSiteSections). Optional on the wire — a server that
- *  does not send them leaves the sections honestly empty rather than blank. */
+/** The per-site sections the live/blend envelope carries alongside the site
+ *  row (server: liveSiteSections). Optional on the wire — a server that does
+ *  not send them leaves the sections honestly empty rather than blank, and
+ *  `reachability` in particular is read structurally so the panel appears the
+ *  moment the route derives it, without waiting on a client-type widening. */
 type LiveSiteSections = {
   devices?: SiteDeviceRow[];
   alerts?: SiteAlertRow[];
+  reachability?: SiteReachability;
 };
 
 function hhmm(iso: string): string {
@@ -159,6 +165,84 @@ function SiteDeviceTable({
           no device claimed this site in the last pull
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * "Local reachability" (README §7) — the collector Badge, the "Devices
+ * answering directly" Progress and the terminal hand-off, from whichever
+ * source answered: the authored profile in demo, the route's derived
+ * SiteReachability block in live/blend.
+ *
+ * `reachValue: null` means the portal does not know the answering share, so
+ * the bar is replaced by an honest '—' rather than a 0% Progress, and a
+ * missing `core` offers no terminal instead of guessing a target.
+ */
+function LocalReachabilityPanel({
+  reachability,
+  onTerminal,
+}: {
+  reachability: SiteReachability;
+  onTerminal: (target: string) => void;
+}) {
+  const { collector, collectorTone, reachValue, collectorNote, core } = reachability;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <SectionHeader label="Local reachability" />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '2px 0 4px' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+          }}
+        >
+          <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>SSH collector</span>
+          <Badge tone={collectorTone} dot>
+            {collector}
+          </Badge>
+        </div>
+        {reachValue === null ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+            }}
+          >
+            <span className="nd-micro-label">Devices answering directly</span>
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-11)',
+                color: 'var(--nd-text-muted)',
+              }}
+            >
+              —
+            </span>
+          </div>
+        ) : (
+          <Progress value={reachValue} label="Devices answering directly" note={`${reachValue}%`} />
+        )}
+        <div
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 10.5,
+            color: 'var(--nd-text-muted)',
+            lineHeight: 1.5,
+          }}
+        >
+          {collectorNote}
+        </div>
+        {core ? (
+          <Button variant="secondary" size="sm" onClick={() => onTerminal(core)}>
+            Open terminal on {core}
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -300,12 +384,20 @@ export default function SiteDetail() {
     ];
     const liveDevices = sections.devices ?? [];
     const liveAlerts = sections.alerts ?? [];
+    // Derived server-side from the local collector's registry state plus the
+    // LOCAL-claimed share of this site's devices. Absent = the route does not
+    // compute it, and the panel stays the honest NOT REPORTED note below.
+    const reachability = sections.reachability ?? null;
     // README §7 header actions. The launch plane is whatever claimed the site —
     // never a hardcoded label, and no button at all when nothing claimed it.
     const launchPlane = site.planes[0]?.name ?? null;
     // "Local terminal" needs a real target. Only a switch-like row is offered;
     // pointing the terminal at the first AP would be a guess, so it is omitted.
+    // The route's own LOCAL-claimed target wins when it sends one — it knows
+    // which device the collector can actually take a shell on; the name/role
+    // heuristic is only the fallback for a payload without reachability.
     const terminalTarget =
+      reachability?.core ??
       liveDevices.find((d) => /core/i.test(`${d.role} ${d.name}`))?.name ??
       liveDevices.find((d) => /switch|\bsw\b|sw-/i.test(`${d.role} ${d.name}`))?.name ??
       null;
@@ -314,7 +406,11 @@ export default function SiteDetail() {
         <ScreenHeader
           overline={`Sites / ${name}`}
           title={name}
-          subtitle="Live summary from linked plane inventory. Profile, topology, and local reachability are not reported by the current feeds."
+          subtitle={
+            reachability
+              ? 'Live summary from linked plane inventory. Profile and topology are not reported by the current feeds.'
+              : 'Live summary from linked plane inventory. Profile, topology, and local reachability are not reported by the current feeds.'
+          }
           actions={
             <>
               <ProvenanceNote label={source} />
@@ -428,21 +524,49 @@ export default function SiteDetail() {
               ))}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <SectionHeader label="Topology and reachability" meta="NOT REPORTED" />
-              <div
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                  lineHeight: 1.6,
-                }}
-              >
-                No linked source supplied uplinks, device-level topology, configuration drift, or
-                collector reachability for this site. The portal will not substitute the demo site
-                profile.
+            {/* Reachability IS derivable from the local collector's registry
+                state; topology is not. So the two are only merged into one
+                NOT REPORTED note while the route sends no reachability block —
+                once it does, that half renders for real and only topology
+                stays unreported. */}
+            {reachability ? (
+              <>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <SectionHeader label="Topology" meta="NOT REPORTED" />
+                  <div
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 'var(--nd-text-11)',
+                      color: 'var(--nd-text-muted)',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    No linked source supplied uplinks, device-level topology or configuration drift
+                    for this site. The portal will not substitute the demo site profile.
+                  </div>
+                </div>
+                <LocalReachabilityPanel
+                  reachability={reachability}
+                  onTerminal={(target) => navigate(`/devices/${encodeURIComponent(target)}`)}
+                />
+              </>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <SectionHeader label="Topology and reachability" meta="NOT REPORTED" />
+                <div
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-11)',
+                    color: 'var(--nd-text-muted)',
+                    lineHeight: 1.6,
+                  }}
+                >
+                  No linked source supplied uplinks, device-level topology, configuration drift, or
+                  collector reachability for this site. The portal will not substitute the demo site
+                  profile.
+                </div>
               </div>
-            </div>
+            )}
 
             <OpenHereList alerts={liveAlerts} onAllAlerts={() => navigate('/alerts')} />
           </div>
@@ -625,46 +749,19 @@ export default function SiteDetail() {
                 ))}
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <SectionHeader label="Local reachability" />
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '2px 0 4px' }}>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 10,
-                    }}
-                  >
-                    <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>SSH collector</span>
-                    <Badge tone={profile.collectorTone} dot>
-                      {profile.collector}
-                    </Badge>
-                  </div>
-                  <Progress
-                    value={profile.reachValue}
-                    label="Devices answering directly"
-                    note={`${profile.reachValue}%`}
-                  />
-                  <div
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10.5,
-                      color: 'var(--nd-text-muted)',
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    {profile.collectorNote}
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => navigate(`/devices/${encodeURIComponent(profile.core)}`)}
-                  >
-                    Open terminal on {profile.core}
-                  </Button>
-                </div>
-              </div>
+              {/* Same component as the live branch, fed from the authored
+                  profile — the two sources can never phrase this panel
+                  differently. */}
+              <LocalReachabilityPanel
+                reachability={{
+                  collector: profile.collector,
+                  collectorTone: profile.collectorTone,
+                  reachValue: profile.reachValue,
+                  collectorNote: profile.collectorNote,
+                  core: profile.core,
+                }}
+                onTerminal={(target) => navigate(`/devices/${encodeURIComponent(target)}`)}
+              />
 
               <OpenHereList alerts={profile.alerts} onAllAlerts={() => navigate('/alerts')} />
             </div>

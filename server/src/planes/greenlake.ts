@@ -89,6 +89,7 @@
 import type { Subscription, SubscriptionAssignment, SubscriptionRow, Tone } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
 import {
+  mintedTokenInfo,
   parseRetryAfterMs,
   parseTimestamp,
   TokenManager,
@@ -538,7 +539,12 @@ export class GreenLakeAdapter implements PlaneAdapter {
           throw new Error(`auth: token endpoint answered HTTP ${res.status} without an access_token`);
         }
         this.resolvedTokenPath = path;
-        return { accessToken: token, expiresInSec: num(record.expires_in) ?? 7200 };
+        const published = num(record.expires_in);
+        // Only the token manager learns when this credential dies; the registry
+        // could publish the source alone. Absent expires_in stays null rather
+        // than inheriting the 7200 refresh-pacing default as a claimed expiry.
+        this.stateRef.token = mintedTokenInfo(published);
+        return { accessToken: token, expiresInSec: published ?? 7200 };
       }
       throw new Error(`auth: token endpoint answered HTTP ${lastStatus} without an access_token`);
     });

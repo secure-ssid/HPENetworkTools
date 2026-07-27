@@ -407,6 +407,24 @@ describe('GreenLakeAdapter.pull()', () => {
     expect(body).toContain('client_secret=shh-gl-secret');
   });
 
+  it('publishes the minted credential expiry on plane state (never the token)', async () => {
+    const { adapter, state } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    const before = Date.now();
+    await adapter.pull();
+    expect(state.token?.source).toBe('oauth client_credentials');
+    expect(Date.parse(state.token!.expiresAt!)).toBeGreaterThanOrEqual(before + 7200 * 1000);
+    // SECURITY: /api/systems/state serves PlaneState unmasked — expiry + label only.
+    expect(JSON.stringify(state.token)).not.toContain('gl-tok-1');
+    expect(JSON.stringify(state.token)).not.toContain('shh-gl-secret');
+  });
+
+  it('a token answer without expires_in publishes no expiry rather than the pacing default', async () => {
+    const routes = { ...HAPPY_ROUTES, [`POST ${TOKEN_PATH}`]: { access_token: 'gl-tok-1' } };
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    await adapter.pull();
+    expect(state.token).toEqual({ expiresAt: null, source: 'oauth client_credentials' });
+  });
+
   it('caches the token across pulls (one token fetch for two pulls)', async () => {
     const { adapter, calls } = makeAdapter(routeHandler(HAPPY_ROUTES));
     await adapter.pull();

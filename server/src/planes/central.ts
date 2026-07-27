@@ -106,7 +106,7 @@ import {
 } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState, PlaneTokenInfo } from './types';
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
 /** High-volume sections (500-row client pages, 200-row inventory pages) need
@@ -573,6 +573,28 @@ export class TokenManager {
   }
 }
 
+/**
+ * The credential-freshness fact for a token that was just minted: the REAL
+ * expiry the plane published (not the manager's earlier refresh point, which is
+ * an internal margin) plus a source label, so the Systems fact strip can read
+ * 'rotates 12 Aug' instead of 'no expiry published'. The registry seeds
+ * PlaneState.token with the source alone — only the adapter's token manager
+ * ever learns when the credential dies, so only it can fill the expiry in.
+ *
+ * SECURITY: expiry + label ONLY. /api/systems/state serves PlaneState unmasked,
+ * so the token itself (or any fragment of it) must never reach this struct.
+ * A plane that publishes no `expires_in` keeps `expiresAt: null` rather than
+ * having a lifetime invented for it.
+ */
+export function mintedTokenInfo(
+  expiresInSec: number | null,
+  source = 'oauth client_credentials',
+  nowMs: number = Date.now(),
+): PlaneTokenInfo {
+  const ttl = expiresInSec !== null && Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec : null;
+  return { expiresAt: ttl === null ? null : new Date(nowMs + ttl * 1000).toISOString(), source };
+}
+
 // ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
@@ -849,7 +871,13 @@ export class CentralAdapter implements PlaneAdapter {
           throw new Error(`auth: ${ep.label} answered HTTP ${status} without an access_token`);
         }
         this.resolvedToken = ep;
-        return { accessToken: token, expiresInSec: num(record.expires_in) ?? 3600 };
+        const published = num(record.expires_in);
+        // Publish WHEN this credential dies (the registry could only publish
+        // HOW it is obtained). A gateway that sends no expires_in leaves
+        // expiresAt null — the 3600 below is a refresh-pacing default, not a
+        // lifetime the plane ever claimed.
+        this.stateRef.token = mintedTokenInfo(published);
+        return { accessToken: token, expiresInSec: published ?? 3600 };
       }
       throw new Error(`auth: no token endpoint answered — ${lastMiss ?? 'no candidates'}`);
     });

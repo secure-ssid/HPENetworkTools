@@ -14,7 +14,9 @@
  *      count until the operator asks for them;
  *  (g) a device-less alert offers no Inspect action that lands nowhere;
  *  (h) an empty queue says so instead of blaming an unset filter;
- *  (i) rows sharing a title are keyed apart, so both render.
+ *  (i) rows sharing a title are keyed apart, so both render;
+ *  (j) a correlation served by the route wins over the derived one, tone included;
+ *  (k) …and its absence leaves the derived banner in place.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -203,6 +205,34 @@ describe('Alerts', () => {
       screen.getByText('No plane has reported yet — link one under Connected systems.'),
     ).toBeTruthy();
     expect(screen.queryByText('Nothing matches that filter')).toBeNull();
+  });
+
+  it('(j) renders a served correlation, with its own tone, ahead of the derived one', async () => {
+    // The route may compute the banner from facts no row carries (plane sync
+    // ages, call budgets) and state its own severity. When it does, the screen
+    // must show that one instead of re-deriving a weaker banner beside it.
+    mockGetAlerts.mockResolvedValue({
+      ...liveData(),
+      correlation: {
+        title: 'Two planes are behind and one site is dark',
+        body: 'Central last answered 6h ago; the local collector still reaches 10.51.0.0/24.',
+        tone: 'warning',
+      },
+    } as AlertsData);
+    const { container } = renderAlerts();
+
+    expect(await screen.findByText('Two planes are behind and one site is dark')).toBeTruthy();
+    // The row-derived banner is not rendered alongside it.
+    expect(screen.queryByText('gw-edge-1 unreachable — and CLASSIC is stale')).toBeNull();
+    expect(container.querySelector('.nd-alert--warning')).toBeTruthy();
+    expect(container.querySelector('.nd-alert--danger')).toBeNull();
+  });
+
+  it('(k) falls back to the derived banner when no correlation is served', async () => {
+    mockGetAlerts.mockResolvedValue({ ...liveData(), correlation: null } as AlertsData);
+    renderAlerts();
+
+    expect(await screen.findByText('gw-edge-1 unreachable — and CLASSIC is stale')).toBeTruthy();
   });
 
   it('(i) keys rows on the plane identity, so two rows sharing a title do not collide', async () => {

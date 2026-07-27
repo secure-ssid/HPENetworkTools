@@ -7,10 +7,13 @@
  * payload is authored data and renders as authored, never stamped with the
  * empty registry ("unlinked / never / 0" beside a fixture device count).
  * On a live section the state Badge shows the registry health
- * (healthy/degraded/warning/unlinked), the fact strip overrides Last sync /
- * the plane's count fact / Calls today with live values, the throttling
- * Alert is derived from the plane's own 429s, the drawer's Activity tab
- * lists the real recent-call log, and Sync history comes from the poller.
+ * (healthy/degraded/warning/unlinked) plus an `unverified` marker when the
+ * registry's own age-based `stale` flag is set, the fact strip overrides Last
+ * sync / the plane's count fact / Calls today (against the plane's served
+ * callBudget) with live values, the throttling Alert is derived from the
+ * plane's own 429s, the drawer's Activity tab lists the real recent-call log
+ * and names the consecutive-failure/retry state, and Sync history comes from
+ * the poller.
  * Backend unreachable → fixture-only plus a small mono "backend offline —
  * fixture state" note. The header carries the envelope's own provenance stamp
  * (DEMO FIXTURE vs LIVE · SYNCED hh:mm) and the Planes meta counts what is
@@ -189,6 +192,40 @@ function codeTone(code: string): Tone {
  *  'Devices' alone would never reach them. */
 const COUNT_FACT_KEYS = ['Devices', 'Subscriptions', 'Endpoints'];
 
+/**
+ * "Calls today" against the plane's own daily budget — the denominator the
+ * registry serves (LivePlaneState.callBudget) and the only thing that makes
+ * the count mean anything (Mist allows 20k/day). A plane whose tier the
+ * portal does not know renders the bare count rather than inventing a limit,
+ * exactly as the server formats the same fact (screens.ts liveSystemRow).
+ */
+function callsFactValue(live: LivePlaneState): string {
+  const budget = live.callBudget;
+  if (budget === undefined || budget === null) return String(live.callsToday);
+  return `${live.callsToday.toLocaleString('en-US')} / ${budget.toLocaleString('en-US')}`;
+}
+
+/**
+ * README honesty rule: a plane whose last good sync has aged past the
+ * registry's staleness window is behind, so what it reports is `unverified`
+ * rather than current — the same word Alerts and Clients use for a row
+ * sourced from such a plane. The flag is the registry's own age-based
+ * `stale` (shared/logic.ts planeStaleness), never re-derived here.
+ */
+function staleTitle(live: LivePlaneState): string {
+  const age = live.ageSec == null ? 'never' : relTime(live.lastSync);
+  return `last good sync ${age} — past the registry's staleness window, so this plane's rows are unverified, not current`;
+}
+
+/** Retry state for a plane the poller keeps failing on — served facts, not a
+ *  guess: how many consecutive polls failed and when the next one is due. */
+function retryNote(live: LivePlaneState): string | null {
+  const fails = live.consecutiveFailures ?? 0;
+  if (fails <= 0) return null;
+  const next = live.nextAttemptAt ? ` · next attempt ${hhmm(live.nextAttemptAt)}` : '';
+  return `${fails} consecutive failed poll${fails === 1 ? '' : 's'}${next}`;
+}
+
 /** Fact strip: live values override the matching facts when present. Only
  *  called for a live-sourced row — a demo row keeps its authored facts. */
 function mergedFacts(s: SystemRow, live: LivePlaneState | null): Fact[] {
@@ -196,7 +233,7 @@ function mergedFacts(s: SystemRow, live: LivePlaneState | null): Fact[] {
   let counted = false;
   const facts = s.facts.map((f) => {
     if (f.k === 'Last sync') return { ...f, v: relTime(live.lastSync) };
-    if (f.k === 'Calls today') return { ...f, v: String(live.callsToday) };
+    if (f.k === 'Calls today') return { ...f, v: callsFactValue(live) };
     if (COUNT_FACT_KEYS.includes(f.k) && live.deviceCount != null) {
       counted = true;
       return { ...f, v: String(live.deviceCount) };
@@ -1100,10 +1137,28 @@ export default function Systems() {
                 {v.row.kind}
               </span>
             </div>
-            <div style={{ width: 96, flex: '0 0 96px', paddingTop: 2 }}>
+            <div
+              style={{
+                width: 96,
+                flex: '0 0 96px',
+                paddingTop: 2,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                alignItems: 'flex-start',
+              }}
+            >
               <Badge tone={v.stateTone} dot>
                 {v.stateLabel}
               </Badge>
+              {/* The registry's own age-based flag, not a second opinion: a
+                  plane that is behind is marked here so its counts opposite
+                  are read as last-good, never as current. */}
+              {v.live?.stale ? (
+                <span title={staleTitle(v.live)}>
+                  <Badge tone="warning">unverified</Badge>
+                </span>
+              ) : null}
             </div>
             <div
               style={{
@@ -1308,6 +1363,11 @@ export default function Systems() {
               <Badge tone={curView.stateTone} dot>
                 {curView.stateLabel}
               </Badge>
+              {curView.live?.stale ? (
+                <span title={staleTitle(curView.live)}>
+                  <Badge tone="warning">unverified</Badge>
+                </span>
+              ) : null}
               <Badge tone={cur.scopeTone}>{cur.scope}</Badge>
               <span
                 style={{
@@ -1318,6 +1378,20 @@ export default function Systems() {
               >
                 {curView.live?.note ?? cur.scopeNote}
               </span>
+              {/* Why the plane is behind, when the registry knows: failed
+                  polls record no error on the row itself, so without this the
+                  drawer shows a stale plane with nothing to explain it. */}
+              {curView.live && retryNote(curView.live) ? (
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 11,
+                    color: 'var(--nd-warning)',
+                  }}
+                >
+                  {retryNote(curView.live)}
+                </span>
+              ) : null}
             </div>
 
             <SegmentedControl options={TAB_OPTIONS} value={tab} onValueChange={(v) => setTab(v as DetailTab)} />

@@ -684,6 +684,133 @@ describe('shell class comes from the live inventory row, not the demo name prefi
   });
 });
 
+describe('session recording — a second pane on the same device in the same millisecond', () => {
+  it('gets its own transcript instead of failing the session', async () => {
+    const before = new Set(readdirSync(tmpDir));
+    const mgr = (ssh: LiveShellClient) =>
+      new TerminalManager({
+        logDir: tmpDir,
+        demoMode: () => true,
+        creds: () => FAKE_CREDS,
+        connect: async () => ssh as unknown as Client,
+      });
+    const first = new LiveShellClient();
+    const second = new LiveShellClient();
+    const wsA = openSession(mgr(first), 'sw-twin');
+    const wsB = openSession(mgr(second), 'sw-twin');
+    await flush();
+    first.channel.emit('data', Buffer.from('sw-twin#'));
+    second.channel.emit('data', Buffer.from('sw-twin#'));
+
+    // Recording is mandatory, so an EEXIST on the timestamped name would
+    // refuse a legitimate concurrent session.
+    expect(wsA.errorFrame()).toBeNull();
+    expect(wsB.errorFrame()).toBeNull();
+    expect(wsA.frames.some((f) => f.type === 'ready')).toBe(true);
+    expect(wsB.frames.some((f) => f.type === 'ready')).toBe(true);
+    const files = readdirSync(tmpDir).filter((f) => !before.has(f) && f.startsWith('sw-twin-'));
+    expect(new Set(files).size).toBe(2); // two transcripts, neither clobbered
+    wsA.emit('close');
+    wsB.emit('close');
+  });
+});
+
+describe('canShell — the reachability rule the route layer needs for a live row', () => {
+  const mgr = (creds: typeof FAKE_CREDS | null = FAKE_CREDS) =>
+    new TerminalManager({ logDir: tmpDir, demoMode: () => false, creds: () => creds });
+
+  it('needs a CLI-bearing type, a dialable management IP and local credentials', () => {
+    const m = mgr();
+    expect(m.canShell({ name: 'sw-core-a', ip: '10.99.0.7', type: 'switch' })).toBe(true);
+    expect(m.canShell({ name: 'mm-lake-1', ip: '10.48.0.10', type: 'controller' })).toBe(true);
+    // an AP/sensor has no shell the portal proxies, however it is named
+    expect(m.canShell({ name: 'sw-looking-name', ip: '10.99.0.8', type: 'ap' })).toBe(false);
+    expect(m.canShell({ name: 'uxi-cam01-2', ip: '10.99.0.9', type: 'sensor' })).toBe(false);
+    // no dialable address → the button must not offer a session that cannot open
+    expect(m.canShell({ name: 'sw-core-a', type: 'switch' })).toBe(false);
+    expect(m.canShell({ name: 'sw-core-a', ip: 'pending', type: 'switch' })).toBe(false);
+  });
+
+  it('is false while no local-plane credentials are saved — the record IS the shell path', () => {
+    expect(mgr(null).canShell({ name: 'sw-core-a', ip: '10.99.0.7', type: 'switch' })).toBe(false);
+  });
+});
+
+describe('the session discloses which plane provides the shell path', () => {
+  const manager = (
+    row: { name: string; ip?: string; type?: 'switch' | 'controller'; plane?: 'CENTRAL' | 'AOS-8' },
+    localShell: boolean | undefined,
+    ssh: LiveShellClient,
+    creds: { username: string; password?: string; jumpHost: string | null; jumpPort: number; allowHostOverride: boolean } = FAKE_CREDS,
+  ) =>
+    new TerminalManager({
+      logDir: tmpDir,
+      demoMode: () => false,
+      liveDevices: () => [row],
+      creds: () => creds,
+      planeCapabilities: () => (localShell === undefined ? undefined : { localShell }),
+      connect: async () => ssh as unknown as Client,
+    });
+
+  const bannerLines = (ws: FakeWs): string[] =>
+    (ws.frames.find((f) => f.type === 'banner')?.lines as string[] | undefined) ?? [];
+
+  const openLine = (device: string, before: Set<string>): string => {
+    const file = readdirSync(tmpDir).find((name) => !before.has(name) && name.startsWith(`${device}-`));
+    expect(file, 'recording written').toBeTruthy();
+    return readFileSync(join(tmpDir, file!), 'utf8').split('\n', 1)[0];
+  };
+
+  it('names the collector when the claiming plane reports no portal shell path — and still opens', async () => {
+    const before = new Set(readdirSync(tmpDir));
+    const ssh = new LiveShellClient();
+    const mgr = manager({ name: 'sw-cloud-claimed', ip: '10.99.0.7', type: 'switch', plane: 'CENTRAL' }, false, ssh);
+    const ws = openSession(mgr, 'sw-cloud-claimed');
+    await flush();
+    ssh.channel.emit('data', Buffer.from('sw-cloud-claimed#'));
+
+    // A cloud plane's localShell:false describes the cloud plane, not the
+    // collector: the session opens, and says whose path it is riding.
+    expect(ws.frames.some((f) => f.type === 'ready')).toBe(true);
+    expect(bannerLines(ws).some((l) => l.includes('CENTRAL reports no portal shell path'))).toBe(true);
+    expect(openLine('sw-cloud-claimed', before)).toContain('note=CENTRAL reports no portal shell path');
+    ws.emit('close');
+  });
+
+  it('says nothing extra when the plane claims the path itself, and dials the AOS-8 controller via the jump host', async () => {
+    const before = new Set(readdirSync(tmpDir));
+    const ssh = new LiveShellClient();
+    const mgr = manager({ name: 'mm-lake-1', ip: '10.48.0.10', type: 'controller', plane: 'AOS-8' }, true, ssh, {
+      ...FAKE_CREDS,
+      jumpHost: 'collector-01',
+    });
+    const ws = openSession(mgr, 'mm-lake-1');
+    await flush();
+    ssh.channel.emit('data', Buffer.from('(mm-lake-1) [mynode] #'));
+
+    expect(bannerLines(ws).some((l) => l.includes('no portal shell path'))).toBe(false);
+    expect(ws.frames.find((f) => f.type === 'ready')).toMatchObject({ target: '10.48.0.10', via: 'collector-01' });
+    const line = openLine('mm-lake-1', before);
+    expect(line).toContain('target=10.48.0.10');
+    expect(line).toContain('via=collector-01');
+    expect(line).not.toContain('note=');
+    // AOS-8 controllers take the 'aos' lease, not the CX one.
+    ws.emit('message', Buffer.from(JSON.stringify({ type: 'cmd', cmd: 'show ap database' })));
+    expect(ssh.channel.writes).toEqual(['show ap database\n']);
+    ws.emit('close');
+  });
+
+  it('discloses nothing when the plane never stated a capability', async () => {
+    const ssh = new LiveShellClient();
+    const mgr = manager({ name: 'sw-unstated', ip: '10.99.0.7', type: 'switch', plane: 'CENTRAL' }, undefined, ssh);
+    const ws = openSession(mgr, 'sw-unstated');
+    await flush();
+    ssh.channel.emit('data', Buffer.from('sw-unstated#'));
+    expect(bannerLines(ws).some((l) => l.includes('no portal shell path'))).toBe(false);
+    ws.emit('close');
+  });
+});
+
 describe("the 'ready' frame attributes the session that is actually recorded", () => {
   it('carries the real SSH user, the resolved target and the jump host', async () => {
     const ssh = new LiveShellClient();

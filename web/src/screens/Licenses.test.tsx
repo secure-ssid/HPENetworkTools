@@ -111,9 +111,33 @@ describe('Licences reconciliation honesty', () => {
     renderLicenses();
 
     expect(await screen.findByText(/^GREENLAKE \d\d:\d\d$/)).toBeTruthy();
-    expect(screen.queryByText('NEXT 180 DAYS')).toBeNull();
-    expect(screen.getByText('2 DATED SUBSCRIPTIONS')).toBeTruthy();
+    // The route enforces the 180-day window, so the caption may name it — with
+    // the count the payload actually carries, never a bare literal.
+    expect(screen.getByText('NEXT 180 DAYS · 2')).toBeTruthy();
     expect(screen.getAllByText('Sep 2026')).toHaveLength(2);
+  });
+
+  it('separates "nothing falls due" from "nothing carries a date" in the renewals caption', async () => {
+    // Dated subscriptions exist, none inside the window: the horizon is known.
+    mockGetLicenses.mockResolvedValue({
+      ...LIVE,
+      subscriptions: [{ ...LIVE.subscriptions[0], expires: '14 Sep 28' }],
+      renewals: [],
+    });
+    renderLicenses();
+    expect(await screen.findByText('NEXT 180 DAYS · NOTHING DUE')).toBeTruthy();
+
+    // No row carries an expiry at all: the window was never observed, so the
+    // caption must not claim a clear 180 days.
+    cleanup();
+    mockGetLicenses.mockResolvedValue({
+      ...LIVE,
+      subscriptions: [{ ...LIVE.subscriptions[1], expires: '—' }],
+      renewals: [],
+    });
+    renderLicenses();
+    expect(await screen.findByText('NO DATED SUBSCRIPTIONS')).toBeTruthy();
+    expect(screen.queryByText(/NOTHING DUE/)).toBeNull();
   });
 
   it('keeps the authored 180-day caption and demo stamp on the fixture path', async () => {

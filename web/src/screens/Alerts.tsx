@@ -5,9 +5,10 @@
  * "Unacknowledged only" Switch, right-aligned mono `N of M` count), open table
  * Sev/Alert/Site/Plane/State/Age/Inspect. Filters are local, instant and
  * additive (AND); an empty result shows the EmptyState.
- * The banner is authored prose only for a demo-sourced queue — a live/blended
- * queue derives its own correlation from the rows (correlate()), and rows from
- * a plane that is behind read `unverified`, never a current age.
+ * The banner is a served correlation when the payload carries one, else
+ * authored prose for a demo-sourced queue and a correlation derived from the
+ * rows (correlate()) for a live/blended one; rows from a plane that is behind
+ * read `unverified`, never a current age.
  * Data: getAlerts() — live /api/alerts when the server is up, fixtures otherwise.
  */
 
@@ -28,7 +29,7 @@ import {
 } from '../nightdesk';
 import { ackAlert, getAlerts, getTickets, raiseTicket } from '../api/client';
 import type { AlertsData } from '../api/client';
-import type { AlertRow, TicketRow } from '../../../shared';
+import type { AlertCorrelation, AlertRow, TicketRow } from '../../../shared';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -56,9 +57,31 @@ const DEMO_BANNER: Banner = {
 };
 
 interface Banner {
-  tone: 'danger' | 'warning';
+  /** The nightdesk Alert tones; `accent` is not one of them. */
+  tone: 'danger' | 'warning' | 'info' | 'success' | 'neutral';
   title: string;
   body: string;
+}
+
+/**
+ * A correlation the SERVER computed, if the payload carries one. It outranks
+ * correlate() because it can see facts no alert row carries — a plane's sync
+ * age, its call budget, the sections that failed to fetch — and it states its
+ * own severity (shared/types.ts AlertCorrelation.tone), which the row-derived
+ * banner can only ever infer from a P1.
+ * The key is optional on the wire (and on `AlertsData`, which belongs to
+ * another file), so it is read defensively: an absent or empty correlation
+ * changes nothing, and a served one renders instead of a weaker banner
+ * derived beside it.
+ */
+function servedBanner(data: AlertsData): Banner | null {
+  const served = (data as AlertsData & { correlation?: AlertCorrelation | null }).correlation;
+  if (!served || !served.title) return null;
+  return {
+    tone: served.tone && served.tone !== 'accent' ? served.tone : 'danger',
+    title: served.title,
+    body: served.body,
+  };
 }
 
 /**
@@ -260,7 +283,7 @@ export default function Alerts() {
    * blend mode swapped this section in (README — the envelope's `blended` list). */
   const sectionLive = data.dataSource === 'live' || (data.blended?.includes('alerts') ?? false);
   const synced = sectionLive ? `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'}` : 'SYNCED 09:41';
-  const banner = sectionLive ? correlate(data.alerts) : DEMO_BANNER;
+  const banner = servedBanner(data) ?? (sectionLive ? correlate(data.alerts) : DEMO_BANNER);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>

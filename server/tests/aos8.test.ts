@@ -432,6 +432,32 @@ describe('Aos8Adapter.pull', () => {
     expect(logoutCalls[0].path).not.toContain('uid-abc-123');
   });
 
+  // A replaced adapter never rolls its session over again, so the credential
+  // save that replaced it would otherwise leak the UID until the MM's idle
+  // timer reaps it (registry.reinitPlane calls dispose() on the outgoing one).
+  it('dispose() hands the live UID back and is safe to call twice', async () => {
+    const seen = seenLog();
+    const { adapter, calls } = makeAdapter(fakeFetch({ seen }));
+    await adapter.pull();
+    expect(seen.urls.some((u) => u.includes('/v1/api/logout'))).toBe(false);
+    await adapter.dispose();
+    expect(seen.urls.some((u) => u.includes('/v1/api/logout?UIDARUBA=uid-abc-123'))).toBe(true);
+    expect(calls.filter((c) => c.path.startsWith('POST /v1/api/logout'))).toHaveLength(1);
+    // No session left to release — a second dispose() sends nothing.
+    await adapter.dispose();
+    expect(calls.filter((c) => c.path.startsWith('POST /v1/api/logout'))).toHaveLength(1);
+  });
+
+  it('dispose() never throws when the master is unreachable', async () => {
+    const base = fakeFetch({});
+    const { adapter } = makeAdapter(async (url, init) => {
+      if (String(url).includes('/v1/api/logout')) throw new Error('connection reset');
+      return base(url, init);
+    });
+    await adapter.pull();
+    await expect(adapter.dispose()).resolves.toBeUndefined();
+  });
+
   it('never lets a failing logout break the pull', async () => {
     const base = fakeFetch({});
     const { adapter } = makeAdapter(async (url, init) => {

@@ -213,6 +213,61 @@ describe('SiteDetail live summary', () => {
     await waitFor(() => expect(screen.getByText('device page sw-edge-3')).toBeTruthy());
   });
 
+  it('renders the derived Local reachability block when the route sends one', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      reachability: {
+        collector: 'healthy',
+        collectorTone: 'success',
+        reachValue: 64,
+        collectorNote: '9 of 14 devices at this site are claimed by the collector.',
+        core: 'sw-edge-3',
+      },
+    } as SiteDetailData);
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Local reachability')).toBeTruthy());
+    expect(screen.getByText('SSH collector')).toBeTruthy();
+    expect(screen.getByText('healthy')).toBeTruthy();
+    expect(screen.getByText('64%')).toBeTruthy();
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('64');
+    expect(screen.getByText('9 of 14 devices at this site are claimed by the collector.')).toBeTruthy();
+    // Reachability is now reported, so only topology stays unreported.
+    expect(screen.queryByText(/collector reachability for this site/)).toBeNull();
+    expect(screen.getByText('Topology')).toBeTruthy();
+    // The route's own LOCAL-claimed target drives the terminal, even though no
+    // device row was sent for the name heuristic to match.
+    fireEvent.click(screen.getByRole('button', { name: 'Local terminal' }));
+    await waitFor(() => expect(screen.getByText('device page sw-edge-3')).toBeTruthy());
+  });
+
+  it('reads an unknown answering share as — rather than drawing a 0% bar', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      reachability: {
+        collector: 'not linked',
+        collectorTone: 'neutral',
+        reachValue: null,
+        collectorNote: 'No local collector is linked, so no device answers directly.',
+      },
+    } as SiteDetailData);
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Local reachability')).toBeTruthy());
+    expect(screen.getByText('not linked')).toBeTruthy();
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.queryByText('0%')).toBeNull();
+    // No target was sent, so no terminal is offered against a guess.
+    expect(screen.queryByRole('button', { name: /^Open terminal on / })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Local terminal' })).toBeNull();
+  });
+
   it('labels an authored profile as demo rather than stamping it with a sync time', async () => {
     mockGetSiteDetail.mockResolvedValue({
       site: { ...LIVE_SITE, id: 'campus-01', name: 'Campus-01 — Meridian HQ' },

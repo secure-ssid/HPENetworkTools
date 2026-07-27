@@ -19,6 +19,9 @@
  *                    the live branch, not just the demo one.
  *   (f) TERMINAL LIFECYCLE — server prompt, dead transport, recording refresh
  *                    and the reconnect affordance.
+ *   (g) SERVED TERMINAL — the envelope's `terminal` banner/quickCommands are
+ *                    preferred over local re-derivation, with the shared
+ *                    helpers still covering a route that sent none.
  *
  * These tests caught a real regression: the reboot hooks used to live below
  * the `if (!data)` early return, so React threw "Rendered more hooks than
@@ -40,7 +43,15 @@ import {
 } from '../api/client';
 import type { TerminalTranscript } from '../api/client';
 import { createWsTransport } from '../lib/wsTerminal';
-import { DEVICE_CLIENT_SETS, DEVICE_CONFIGS, DEVICES, deviceProfile } from '../../../shared';
+import {
+  DEVICE_CLIENT_SETS,
+  DEVICE_CONFIGS,
+  DEVICES,
+  deviceProfile,
+  deviceTerminalKind,
+  terminalBanner,
+  terminalQuickCommands,
+} from '../../../shared';
 
 // ---------------------------------------------------------------------------
 // jsdom shims (kept local to this file)
@@ -736,5 +747,72 @@ describe('DeviceDetail — recorded sessions in live mode', () => {
         'Recorded sessions could not be loaded: shell-log store unreadable',
       ),
     ).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) SERVED TERMINAL PAYLOAD — the route's banner/chips win over local
+//     re-derivation, and the shared helpers still cover a route that sent none
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — served terminal payload', () => {
+  it('renders the banner and quick commands the route sent, not the locally derived pair', async () => {
+    const profile = deviceProfile('sw-core-a');
+    const device = DEVICES.find((d) => d.name === 'sw-core-a') ?? null;
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      terminal: {
+        banner: [{ text: 'SSH session opened by netops via collector-07', tone: 'muted' }],
+        quickCommands: ['show running-config'],
+      },
+      dataSource: 'demo',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('SSH session opened by netops via collector-07')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'show running-config' })).toBeTruthy();
+    // The shared-helper pair for this kind is the FALLBACK, not the render.
+    expect(screen.queryByText(terminalBanner(profile.kind)[0].text)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'show lldp neighbor' })).toBeNull();
+  });
+
+  it('falls back to the shared helpers when the route sent no terminal block', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    // Live branch only mounts the pane once the recorded-SSH bridge is up.
+    mockCreateWsTransport.mockImplementationOnce(() => ({
+      transport: {
+        banner: () => [],
+        respond: () => [],
+        respondAsync: () => Promise.resolve([]),
+      },
+      connect: () => Promise.resolve(true),
+      close: () => {},
+    }));
+
+    renderDeviceDetail('sw-core-a');
+
+    // Chips derive from the inventory row's class (switch), never from an
+    // empty list — the fallback is the shared allow-listed command set.
+    for (const cmd of terminalQuickCommands(deviceTerminalKind(device, device.name))) {
+      expect(await screen.findByRole('button', { name: cmd })).toBeTruthy();
+    }
   });
 });

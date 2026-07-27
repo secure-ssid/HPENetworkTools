@@ -574,6 +574,12 @@ export interface AlertRow extends Omit<Alert, 'site'> {
 export interface AlertCorrelation {
   title: string;
   body: string;
+  /** Severity of the banner itself. A correlation over a stale plane is a
+   *  'warning' ("we cannot see the estate"), one over live P1s is 'danger'
+   *  ("the estate is on fire") — the client-side correlate() could only ever
+   *  express the latter. Optional: absent keeps the renderer's existing
+   *  default ('danger'), so the authored/derived banners are unchanged. */
+  tone?: Tone;
 }
 
 // -- Tickets (NtTickets) --
@@ -715,6 +721,31 @@ export interface SiteProfile {
   alerts: SiteAlertRow[];
 }
 
+/**
+ * SiteDetail's "Local reachability" panel, derived rather than authored.
+ *
+ * In demo mode the four values live on SiteProfile; in live/blend mode there
+ * is no authored profile, so the route computes them from the local collector
+ * plane's registry state plus the LOCAL-claimed share of that site's devices
+ * and sends this block instead. Kept a separate shape (not a partial
+ * SiteProfile) because `reachValue` is nullable here: null = the portal does
+ * not know the answering share and the panel must read '—', never 0%.
+ */
+export interface SiteReachability {
+  /** Badge text for the collector row — the plane's health when linked,
+   *  'not linked' when it is not. Never a claim beyond registry state. */
+  collector: string;
+  collectorTone: Tone;
+  /** "Devices answering directly", 0-100. null = unknown (render '—'). */
+  reachValue: number | null;
+  /** The mono line under the bar: how the number was derived, or why there
+   *  is none. */
+  collectorNote: string;
+  /** Terminal target for the panel's button — a LOCAL-claimed device at this
+   *  site that can take a shell. null/absent = offer no terminal. */
+  core?: string | null;
+}
+
 // -- Site topology (SiteDetail topology section, computed — see logic.ts) --
 
 /** Vertical layers, rendered top (WAN side) → bottom (edge). */
@@ -803,6 +834,28 @@ export interface DeviceCheckRow {
   mark: string; // pass | fail
   tone: Tone;
   label: string;
+  /** The evidence rule this verdict came from ('scan.coverage.identity',
+   *  'inventory.reconciliation', …) — the same ids /api/compliance reports.
+   *  Optional: the authored profiles carry prose labels only. Renderers key
+   *  on it when present, because a label is not unique across planes. */
+  rule?: string;
+}
+
+/**
+ * Per-device evidence block for the device-detail "Compliance" panel.
+ *
+ * `mode` exists so an EMPTY `checks` list can never be read as "everything
+ * passes" (README honesty rule): 'unavailable' means no plane supplied the
+ * evidence, and the panel must say so rather than render a clean scorecard.
+ */
+export interface DeviceEvidence {
+  checks: DeviceCheckRow[];
+  /** live  — recomputed from the plane rows this device was reconciled from
+   *  demo  — the authored profile's checks
+   *  unavailable — no evidence source; `checks` is empty and stays empty */
+  mode: 'live' | 'demo' | 'unavailable';
+  /** Why, when mode is 'unavailable' — surfaced verbatim as the gap note. */
+  note?: string;
 }
 
 /** Full per-device profile produced by deviceProfile(name) in logic.ts. */
@@ -836,6 +889,20 @@ export interface TerminalLine {
 
 /** Canned command → output lines (NT_SW_RESP / NT_AOS_RESP). */
 export type TerminalResponseTable = Record<string, string[]>;
+
+/**
+ * The shell block /api/devices/:name serves alongside a device: the banner the
+ * pane opens with and the quick-command chips under it, as the ROUTE computed
+ * them. Declared here (not inline on the client envelope) so the demo branch,
+ * the live branch and the screen all name ONE shape — the demo branch has sent
+ * this since screens.ts:1587 while the live branch sent nothing, which is the
+ * drift this type closes. Absent payload = fall back to the shared helpers
+ * terminalBanner(kind) / terminalQuickCommands(kind).
+ */
+export interface DeviceTerminalPayload {
+  banner: TerminalLine[];
+  quickCommands: string[];
+}
 
 export interface CfgHistoryRow {
   when: string;
@@ -923,6 +990,16 @@ export interface QueuedChangeRow {
   what: string;
   where: string;
   ticket: string;
+  /** The write broker's own change id. Present on rows the broker queued, so
+   *  a change survives a reload and stays pushable; null/absent on the
+   *  authored fixture rows, which is exactly what makes them correctly
+   *  non-pushable (there is no queued change behind them). It is also the
+   *  only stable React key for a server-listed queue. */
+  id?: string | null;
+  /** ISO end of the change's push lease. Absent = the row carries no lease
+   *  (fixtures); an elapsed value means "re-queue before pushing", which the
+   *  screen must say rather than offering a push that will be rejected. */
+  expiresAt?: string | null;
 }
 
 /** "Where a change can go" capability-matrix row. */
@@ -962,6 +1039,11 @@ export interface SystemRow extends Omit<System, 'sites' | 'pulls'> {
   /** Registry plane id — present on live rows so the UI never reverse-maps a
    *  (possibly operator-renamed) display name to find the plane. */
   planeId?: string;
+  /** The vendor console this plane is administered in. Absent = the portal
+   *  holds no console URL for it (the local collector has none, and a live
+   *  plane only has one if the operator stored an endpoint) — "Open console"
+   *  must then be inert and say so, not claim a hand-off it cannot make. */
+  consoleUrl?: string;
   sites: SystemSiteRow[];
   pulls: SystemPullRow[];
 }

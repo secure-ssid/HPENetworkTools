@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_SETTINGS,
+  getAlerts,
   getDeviceDetail,
   getDevices,
   getChatStatus,
@@ -14,7 +15,13 @@ import {
   syncSystems,
 } from './client';
 import type { Settings } from './client';
-import { DEVICE_RECONCILIATION } from '../../../shared';
+import {
+  DEVICES,
+  DEVICE_RECONCILIATION,
+  deviceProfile,
+  terminalBanner,
+  terminalQuickCommands,
+} from '../../../shared';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -214,6 +221,129 @@ describe('screen API source handling', () => {
     const data = await getDeviceDetail('sw-core-a');
     expect(data.terminal?.quickCommands).toEqual(['show version', 'show vlan']);
     expect(data.terminal?.banner.map((l) => l.text)).toEqual(['Connecting …']);
+  });
+
+  it('sends the route’s terminal payload in the offline demo envelope too', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    const data = await getDeviceDetail(DEVICES[0].name);
+    const kind = deviceProfile(DEVICES[0].name).kind;
+    expect(data.dataSource).toBe('demo');
+    // Same envelope the demo ROUTE serves — the terminal panel must not change
+    // behaviour depending on whether the backend happens to be running.
+    expect(data.terminal?.quickCommands).toEqual(terminalQuickCommands(kind));
+    expect(data.terminal?.banner).toEqual(terminalBanner(kind));
+  });
+
+  it('passes the per-device evidence block through the device-detail envelope', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        device: { name: 'sw-core-a' },
+        profile: null,
+        config: null,
+        clients: null,
+        evidence: {
+          mode: 'live',
+          checks: [{ mark: 'fail', tone: 'warning', label: 'Plane freshness', rule: 'scan.coverage.freshness' }],
+        },
+      },
+    });
+
+    const data = await getDeviceDetail('sw-core-a');
+    expect(data.evidence?.mode).toBe('live');
+    expect(data.evidence?.checks.map((c) => c.rule)).toEqual(['scan.coverage.freshness']);
+  });
+
+  it('reads an empty bare checks list as "no evidence", never as an all-pass scorecard', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        device: { name: 'sw-core-a' },
+        profile: null,
+        config: null,
+        clients: null,
+        checks: [],
+      },
+    });
+
+    const data = await getDeviceDetail('sw-core-a');
+    expect(data.evidence?.mode).toBe('unavailable');
+    expect(data.evidence?.checks).toEqual([]);
+    expect(data.evidence?.note).toBeTruthy();
+    expect((data as { checks?: unknown }).checks).toBeUndefined();
+  });
+
+  it('normalizes a populated bare checks list into the live evidence block', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        device: { name: 'sw-core-a' },
+        profile: null,
+        config: null,
+        clients: null,
+        checks: [{ mark: 'pass', tone: 'success', label: 'Identity evidence', rule: 'scan.coverage.identity' }],
+      },
+    });
+
+    const data = await getDeviceDetail('sw-core-a');
+    expect(data.evidence).toEqual({
+      mode: 'live',
+      checks: [{ mark: 'pass', tone: 'success', label: 'Identity evidence', rule: 'scan.coverage.identity' }],
+    });
+  });
+
+  it('passes a server-derived alert correlation, tone and all, through the envelope', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        syncedAt: '2026-07-26T09:41:00.000Z',
+        alerts: [],
+        correlation: {
+          title: 'Two planes are behind',
+          body: 'The queue below is unverified, not quiet.',
+          tone: 'warning',
+        },
+      },
+    });
+
+    const data = await getAlerts();
+    expect(data.correlation?.tone).toBe('warning');
+    expect(data.correlation?.title).toBe('Two planes are behind');
+  });
+
+  it('leaves the alert correlation absent when the route sends none', async () => {
+    mockFetch({ ok: true, body: { dataSource: 'live', syncedAt: null, alerts: [] } });
+
+    const data = await getAlerts();
+    expect(data.correlation).toBeUndefined();
+  });
+
+  it('passes the live "Local reachability" block through the site-detail envelope', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        site: { id: 'campus-01', name: 'Campus-01' },
+        profile: null,
+        reachability: {
+          collector: 'not linked',
+          collectorTone: 'neutral',
+          reachValue: null,
+          collectorNote: 'No local collector is linked, so no device answers directly.',
+        },
+      },
+    });
+
+    const data = await getSiteDetail('campus-01');
+    expect(data.profile).toBeNull();
+    // null, not 0 — the panel renders '—' rather than an empty progress bar.
+    expect(data.reachability?.reachValue).toBeNull();
+    expect(data.reachability?.collector).toBe('not linked');
   });
 
   it('keeps the per-plane freshness the registry stamps on /api/systems/state', async () => {

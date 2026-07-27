@@ -474,6 +474,22 @@ export class Aos8Adapter implements PlaneAdapter {
     return { localShell: true, brokeredWrite: false, configRead: false };
   }
 
+  /**
+   * Hand the MM its session back before this adapter is dropped (credentials
+   * re-saved, plane unlinked). The rollover path inside login() already logs
+   * out, but a replaced adapter never rolls over again: without this the UID
+   * stays checked out against the controller's capped pool of concurrent
+   * management sessions until its idle timer reaps it.
+   *
+   * Never throws — logout() swallows its own errors — so a re-link is never
+   * blocked or failed by the controller being unreachable.
+   */
+  async dispose(): Promise<void> {
+    const session = this.session;
+    this.session = null;
+    if (session) await this.logout(session);
+  }
+
   async pull(): Promise<PlanePull> {
     let apRows: unknown[];
     let switchRows: unknown[];

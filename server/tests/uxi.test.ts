@@ -256,6 +256,19 @@ describe('UxiAdapter.pull', () => {
     expect(calls.every((c) => !c.path.includes('uxi-secret') && !c.path.includes('tok-1'))).toBe(true);
   });
 
+  it('publishes the minted credential expiry on plane state (never the token)', async () => {
+    // The registry could only publish the credential SOURCE; the expiry the
+    // Systems 'Token' fact renders is learned here, when the token is minted.
+    const { adapter, st } = makeAdapter(fakeFetch({}));
+    const before = Date.now();
+    await adapter.pull();
+    expect(st.token?.source).toBe('oauth client_credentials');
+    expect(Date.parse(st.token!.expiresAt!)).toBeGreaterThanOrEqual(before + 7200 * 1000);
+    // SECURITY: PlaneState is served unmasked — expiry + label only.
+    expect(JSON.stringify(st.token)).not.toContain('tok-1');
+    expect(JSON.stringify(st.token)).not.toContain('uxi-secret');
+  });
+
   it('follows the cursor until next is null', async () => {
     const { adapter } = makeAdapter(
       fakeFetch({

@@ -31,6 +31,7 @@ import {
   CONFIGURE_STATS,
   DEVICE_CLIENT_SETS,
   DEVICE_CONFIGS,
+  DEVICE_RECONCILIATION,
   DEVICES,
   FINDINGS,
   LANE_META,
@@ -60,6 +61,7 @@ import {
   VLANS,
   deriveSiteProfile,
   deviceProfile,
+  deviceTerminalKind,
   isRealSiteId,
   scopeForPlane,
   siteDisplayName,
@@ -69,13 +71,16 @@ import {
   toSiteAlertRow,
   toSiteDeviceRow,
   ORPHANS,
+  type AlertCorrelation,
   type AlertRow,
   type AuthEventRow,
   type CapabilityRow,
   type ChangeLogEntry,
   type ClientRow,
   type BaselineProgressRow,
+  type DeviceCheckRow,
   type DeviceClientSet,
+  type DeviceEvidence,
   type DeviceRow,
   type DeviceType,
   type FailReasonRow,
@@ -83,6 +88,7 @@ import {
   type LaneMeta,
   type LaunchpadRow,
   type LiveStat,
+  type OrphanRow,
   type OverviewAlert,
   type OverviewPlaneRow,
   type OverviewSiteRow,
@@ -100,13 +106,16 @@ import {
   type SiteId,
   type SitePlaneBadge,
   type SiteProfile,
+  type SiteReachability,
   type SiteRow,
   type StatDef,
+  type SubscriptionAssignment,
   type SubscriptionRow,
   type SyncHistoryRow,
   type SystemEvent,
   type SystemRow,
   type SystemSiteRow,
+  type TerminalLine,
   type Tone,
   type PortObject,
   type VlanObject,
@@ -370,6 +379,30 @@ function liveAlerts(): AlertRow[] {
 }
 
 /**
+ * The banner over the live alert queue (README §5): the worst open row,
+ * crossed with the worst OTHER open row whose plane is behind. Both halves are
+ * read off the rows — nothing is asserted about a site the portal never
+ * fetched — and the tone says which of the two facts is doing the talking: a
+ * P1 estate is 'danger', a queue whose second finding is only "we cannot see
+ * that plane" is 'warning'. Null when nothing is open, so no banner renders.
+ */
+function liveCorrelation(alerts: AlertRow[]): AlertCorrelation | null {
+  const open = alerts.filter((a) => a.state === 'open');
+  const worst = open.find((a) => a.sev === 'P1') ?? open.find((a) => a.sev === 'P2') ?? open[0];
+  if (!worst) return null;
+  const behind = open.filter((a) => a !== worst && a.stale);
+  const partner = behind.find((a) => a.siteId === worst.siteId) ?? behind[0];
+  const lead = `${worst.detail} · ${worst.siteName} · ${worst.plane} · ${worst.age}.`;
+  return {
+    tone: worst.sev === 'P1' ? 'danger' : 'warning',
+    title: partner ? `${worst.title} — and ${partner.plane} is stale` : worst.title,
+    body: partner
+      ? `${lead} Second finding: ${partner.title} — ${partner.plane} is behind, so that row's age was frozen at pull time and its state is unverified, not current.`
+      : lead,
+  };
+}
+
+/**
  * Live client sessions with the same honesty rule the device path applies:
  * a session last reported by a plane that is now degraded cannot be asserted
  * as a healthy current session. Fresh planes' rows are deduped first so a
@@ -466,6 +499,55 @@ function liveDeviceClients(deviceName: string): DeviceClientSet | null {
   };
 }
 
+/**
+ * Can the portal really open a recorded shell on this device?
+ *
+ * Three facts have to agree, and the weakest wins (README honesty rule — the
+ * shell block must never advertise a session the bridge cannot open):
+ *   - the device CLASS has a shell at all (deviceTerminalKind, from the live
+ *     row's `type`, never the demo name-prefix rules);
+ *   - the inventory row says the collector reaches it (`localShell`);
+ *   - no claiming plane's adapter says otherwise (PlaneCapabilities.localShell
+ *     false — a cloud plane describes hardware it cannot give a shell to).
+ * A plane that makes no capability claim is not treated as a refusal.
+ */
+function planeAllowsShell(device: ReconciledDeviceRow): boolean {
+  const labels = device.claimedBy && device.claimedBy.length > 0 ? device.claimedBy : [device.plane];
+  const claims = labels
+    .map((label) => PLANE_ID_FOR[label])
+    .filter((id): id is PlaneId => id !== undefined)
+    .map((id) => registry.state(id).capabilities?.localShell);
+  if (claims.length === 0) return true; // no registry plane behind the label — the row decides
+  if (claims.some((claim) => claim === true)) return true;
+  return !claims.every((claim) => claim === false);
+}
+
+/**
+ * The shell block /api/devices/:name serves next to a live device — the same
+ * `{banner, quickCommands}` pair the demo branch has always sent, so the two
+ * branches and the screen name ONE source (contract drift closed). The kind
+ * comes from the inventory row's device type via the shared helper the client
+ * also uses, so the two sides cannot disagree; a device with no shell gets no
+ * block at all rather than a banner promising a session.
+ */
+function liveTerminalPayload(
+  device: ReconciledDeviceRow,
+): { terminal: { banner: TerminalLine[]; quickCommands: string[] } } | Record<string, never> {
+  const kind = deviceTerminalKind(device, device.name);
+  if (kind === 'none' || !device.localShell || !planeAllowsShell(device)) return {};
+  return { terminal: { banner: terminalBanner(kind), quickCommands: terminalQuickCommands(kind) } };
+}
+
+/**
+ * The device-detail Compliance panel's evidence block. `mode` is what stops an
+ * empty list reading as a clean scorecard: a live row always yields five
+ * verdicts, so 'live' is honest here, while a name the merge does not hold
+ * never reaches this function at all.
+ */
+function liveDeviceEvidence(device: ReconciledDeviceRow): DeviceEvidence {
+  return { checks: evidenceChecksFor(device), mode: 'live' };
+}
+
 interface ObservedConfigureInventory {
   ssids: SsidObject[];
   ports: PortObject[];
@@ -560,46 +642,103 @@ interface LiveComplianceData {
   diff: string;
 }
 
+/**
+ * One live-evidence predicate. `label` names the check on the estate-wide
+ * Compliance screen; `pass`/`fail` are the per-DEVICE verdict lines the
+ * device-detail evidence panel renders, so a single device never has to be
+ * described with an estate-level sentence ("N of M devices …").
+ */
+interface EvidenceCheck {
+  label: string;
+  rule: string;
+  missing: (device: ReconciledDeviceRow) => boolean;
+  pass: (device: ReconciledDeviceRow) => string;
+  fail: (device: ReconciledDeviceRow) => string;
+}
+
+/**
+ * The live evidence rules — ONE definition, read by /api/compliance (grouped
+ * into findings and baselines) and by /api/devices/:name (one device's own
+ * verdicts). Two screens evaluating the same device under differently-worded
+ * copies of these predicates is the drift this list exists to prevent.
+ */
+const EVIDENCE_CHECKS: EvidenceCheck[] = [
+  {
+    label: 'Identity evidence',
+    rule: 'scan.coverage.identity',
+    missing: (device: ReconciledDeviceRow) => !reportedValue(device.model),
+    pass: (device) => `Identity reported by ${device.plane} — ${device.model}`,
+    fail: (device) => `${device.plane} reported no model for this device`,
+  },
+  {
+    // A device the reconcile step downgraded to 'unverified' is a DIFFERENT
+    // fact from a plane that never supplied a state: the plane did answer,
+    // the portal declined to trust it because that plane is behind (design
+    // rule 1). Folding the two together told the operator a field was
+    // missing and never that a plane was stale.
+    label: 'Plane freshness',
+    rule: 'scan.coverage.freshness',
+    missing: (device: ReconciledDeviceRow) => device.state === 'unverified',
+    pass: (device) => `${device.plane} is current — this row is verified`,
+    fail: (device) => `${device.plane} is behind — this row is unverified, not current`,
+  },
+  {
+    label: 'Reachability evidence',
+    rule: 'scan.coverage.reachability',
+    missing: (device: ReconciledDeviceRow) =>
+      device.state !== 'up' && device.state !== 'down' && device.state !== 'unverified',
+    pass: (device) => `Reachability reported — state '${device.state}'`,
+    fail: (device) => `No usable reachability state ('${device.state || 'not reported'}')`,
+  },
+  {
+    label: 'Firmware evidence',
+    rule: 'scan.coverage.firmware',
+    missing: (device: ReconciledDeviceRow) => !reportedValue(device.firmware),
+    pass: (device) => `Firmware reported — ${device.firmware}`,
+    fail: (device) => `${device.plane} reported no firmware version`,
+  },
+  {
+    // Only a CROSS-PLANE claim is a defect. `reconciliationIssue` also
+    // covers "claimed by the local collector alone", which README rule 2
+    // calls a first-class device, not drift — flagging those made every
+    // legitimately local-only switch a permanent, unfixable finding.
+    label: 'Ownership reconciliation',
+    rule: 'inventory.reconciliation',
+    missing: (device: ReconciledDeviceRow) => (device.claimedBy?.length ?? 0) > 1,
+    pass: () => 'One plane claims this device',
+    fail: (device) => `Claimed by ${(device.claimedBy ?? [device.plane]).join(' + ')} — needs reconciliation`,
+  },
+];
+
+/** Fail tone per rule: a contested claim or a stale plane is a warning; an
+ *  unreported field is information, not a defect the operator can fix. */
+const EVIDENCE_FAIL_TONE: Record<string, Tone> = {
+  'inventory.reconciliation': 'warning',
+  'scan.coverage.freshness': 'warning',
+};
+
+/**
+ * One device's own evidence verdicts — the per-device half of the same engine
+ * /api/compliance runs across the estate. Read-only: liveComplianceData's
+ * output is untouched, so the Compliance stats the smoke script and the web
+ * Compliance tests assert cannot move.
+ */
+function evidenceChecksFor(device: ReconciledDeviceRow): DeviceCheckRow[] {
+  return EVIDENCE_CHECKS.map((check) => {
+    const failed = check.missing(device);
+    return {
+      mark: failed ? 'fail' : 'pass',
+      tone: failed ? (EVIDENCE_FAIL_TONE[check.rule] ?? 'info') : 'success',
+      label: failed ? check.fail(device) : check.pass(device),
+      rule: check.rule,
+    };
+  });
+}
+
 function liveComplianceData(devices: ReconciledDeviceRow[]): LiveComplianceData {
   if (devices.length === 0) return { stats: [], findings: [], baselines: [], diff: '' };
 
-  const checks = [
-    {
-      label: 'Identity evidence',
-      rule: 'scan.coverage.identity',
-      missing: (device: ReconciledDeviceRow) => !reportedValue(device.model),
-    },
-    {
-      // A device the reconcile step downgraded to 'unverified' is a DIFFERENT
-      // fact from a plane that never supplied a state: the plane did answer,
-      // the portal declined to trust it because that plane is behind (design
-      // rule 1). Folding the two together told the operator a field was
-      // missing and never that a plane was stale.
-      label: 'Plane freshness',
-      rule: 'scan.coverage.freshness',
-      missing: (device: ReconciledDeviceRow) => device.state === 'unverified',
-    },
-    {
-      label: 'Reachability evidence',
-      rule: 'scan.coverage.reachability',
-      missing: (device: ReconciledDeviceRow) =>
-        device.state !== 'up' && device.state !== 'down' && device.state !== 'unverified',
-    },
-    {
-      label: 'Firmware evidence',
-      rule: 'scan.coverage.firmware',
-      missing: (device: ReconciledDeviceRow) => !reportedValue(device.firmware),
-    },
-    {
-      // Only a CROSS-PLANE claim is a defect. `reconciliationIssue` also
-      // covers "claimed by the local collector alone", which README rule 2
-      // calls a first-class device, not drift — flagging those made every
-      // legitimately local-only switch a permanent, unfixable finding.
-      label: 'Ownership reconciliation',
-      rule: 'inventory.reconciliation',
-      missing: (device: ReconciledDeviceRow) => (device.claimedBy?.length ?? 0) > 1,
-    },
-  ];
+  const checks = EVIDENCE_CHECKS;
 
   const findings: FindingRow[] = [];
   const baselines: BaselineProgressRow[] = [];
@@ -1143,7 +1282,32 @@ function renewalColor(daysLeft: number): string {
  * counts reconciled devices whose plane reports no entitlement; when no plane
  * reports a licence at all it reads '—' rather than claiming a clean estate.
  */
-function liveUnlicensedStat(devices: ReconciledDeviceRow[]): StatDef {
+function liveUnlicensedStat(
+  devices: ReconciledDeviceRow[],
+  assignments: SubscriptionAssignment[] | null,
+): StatDef {
+  // The entitlement plane's own device→subscription join answers this tile
+  // directly, so it wins over the per-row `licence` hint. `assigned` is
+  // TRI-STATE: undefined means the plane never said, and must not be counted
+  // as unlicensed — only an explicit false is a device without entitlement.
+  if (assignments !== null && assignments.length > 0) {
+    const stated = assignments.filter((a) => a.assigned !== undefined);
+    const unlicensed = assignments.filter((a) => a.assigned === false).length;
+    if (stated.length === 0) {
+      return {
+        label: 'Devices unlicensed',
+        value: '—',
+        delta: `${assignments.length} assignment${assignments.length === 1 ? '' : 's'} · none states an assignment`,
+        tone: 'neutral',
+      };
+    }
+    return {
+      label: 'Devices unlicensed',
+      value: String(unlicensed),
+      delta: `${stated.length} of ${assignments.length} assignment${assignments.length === 1 ? '' : 's'} state an entitlement`,
+      tone: unlicensed > 0 ? 'negative' : 'positive',
+    };
+  }
   const known = devices.filter((d) => reportedValue(d.licence));
   if (devices.length === 0 || known.length === 0) {
     return { label: 'Devices unlicensed', value: '—', delta: 'no plane reports entitlements', tone: 'neutral' };
@@ -1157,7 +1321,93 @@ function liveUnlicensedStat(devices: ReconciledDeviceRow[]): StatDef {
   };
 }
 
-function liveLicenseStats(subs: LiveSubscription[], devices: ReconciledDeviceRow[]): StatDef[] {
+/**
+ * The entitlement plane's device→subscription join, when it read one. A pull
+ * that could NOT read the feed declares it in `partial` and carries no
+ * `assignments` key at all, so absent stays absent here — never an empty array
+ * standing in for "nothing is unlicensed".
+ */
+function liveAssignments(): SubscriptionAssignment[] | null {
+  return poller.contributionsByPlane().get('greenlake')?.assignments ?? null;
+}
+
+/** '4 shown · +12 more' style sample line for a grouped reclaim row. */
+function assignmentSample(rows: SubscriptionAssignment[]): string {
+  const names = rows.slice(0, 4).map((a) => a.deviceName ?? a.serial);
+  const rest = rows.length - names.length;
+  return rest > 0 ? `${names.join(' · ')} · +${rest} more` : names.join(' · ');
+}
+
+/**
+ * "Orphans & gaps" — the reclaim list, derived from the entitlement join
+ * rather than authored. Three tags, exactly as the design uses them:
+ *   orphan — an assignment whose serial is in no plane's inventory (paying for
+ *            hardware the estate no longer has);
+ *   gap    — a device the plane says is unassigned, or holds no subscription;
+ *   idle   — a subscription with none of its seats assigned.
+ *
+ * Orphan detection is gated on the merged inventory actually carrying serials:
+ * against a plane that publishes none, every assignment would "match nothing"
+ * and the panel would invent a estate-wide reclaim list out of a missing field.
+ */
+function liveOrphans(
+  devices: ReconciledDeviceRow[],
+  subs: LiveSubscription[],
+  assignments: SubscriptionAssignment[] | null,
+): OrphanRow[] {
+  const rows: OrphanRow[] = [];
+  if (assignments !== null && assignments.length > 0) {
+    const serials = new Set(
+      devices.map((d) => d.serial?.trim().toUpperCase()).filter((s): s is string => !!s),
+    );
+    const orphaned =
+      serials.size > 0 ? assignments.filter((a) => a.serial && !serials.has(a.serial.trim().toUpperCase())) : [];
+    const orphanSerials = new Set(orphaned.map((a) => a.serial));
+    const gaps = assignments.filter(
+      (a) => !orphanSerials.has(a.serial) && (a.assigned === false || a.subscriptionKey === null),
+    );
+    if (orphaned.length > 0) {
+      rows.push({
+        tag: 'orphan',
+        tone: 'warning',
+        what: `${orphaned.length} entitlement${orphaned.length === 1 ? '' : 's'} on device${orphaned.length === 1 ? '' : 's'} no plane reports`,
+        detail: `${assignmentSample(orphaned)} · not in the merged inventory · reclaim before renewal`,
+      });
+    }
+    if (gaps.length > 0) {
+      rows.push({
+        tag: 'gap',
+        tone: 'info',
+        what: `${gaps.length} device${gaps.length === 1 ? '' : 's'} with no active subscription`,
+        detail: `${assignmentSample(gaps)} · reported unassigned by the entitlement plane`,
+      });
+    }
+  }
+  const idle = subs.filter((s) => s.assignedValue === 0);
+  for (const sub of idle.slice(0, 4)) {
+    rows.push({
+      tag: 'idle',
+      tone: 'neutral',
+      what: `${sub.name} — none of ${sub.qty} assigned`,
+      detail: `${sub.sku} · ${sub.expires}`,
+    });
+  }
+  if (idle.length > 4) {
+    rows.push({
+      tag: 'idle',
+      tone: 'neutral',
+      what: `+${idle.length - 4} more subscriptions with none assigned`,
+      detail: 'open the subscriptions table for the full list',
+    });
+  }
+  return rows;
+}
+
+function liveLicenseStats(
+  subs: LiveSubscription[],
+  devices: ReconciledDeviceRow[],
+  assignments: SubscriptionAssignment[] | null,
+): StatDef[] {
   const totalQty = subs.reduce((n, s) => n + (s.qtyValue ?? 0), 0);
   const totalAssigned = subs.reduce((n, s) => n + (s.assignedValue ?? 0), 0);
   const unassigned = Math.max(0, totalQty - totalAssigned);
@@ -1188,7 +1438,7 @@ function liveLicenseStats(subs: LiveSubscription[], devices: ReconciledDeviceRow
       delta: soonest?.expiresAtMs !== undefined ? `next ${expiryDisplay(soonest.expiresAtMs)}` : 'none on the horizon',
       tone: expiring.length > 0 ? 'negative' : 'positive',
     },
-    liveUnlicensedStat(devices),
+    liveUnlicensedStat(devices, assignments),
   ];
 }
 
@@ -1335,6 +1585,15 @@ const QUEUE_TONE: Record<QueuedChangeRow['state'], Tone> = {
   console: 'neutral',
 };
 
+/**
+ * The broker queue as display rows. `id` and `expiresAt` ride along because
+ * they are the only things that make a SERVER-listed change actionable: the
+ * screen can only push a change it can name, so without the id every change
+ * queued before a reload became permanently unpushable ("N local changes not
+ * pushed"), and without the lease it would offer a push the broker will
+ * reject. The authored fixture rows carry neither — which is exactly what
+ * makes them correctly non-pushable.
+ */
 function liveConfigureQueue(): QueuedChangeRow[] {
   return writeBroker.list().map((change) => ({
     state: change.state,
@@ -1342,6 +1601,8 @@ function liveConfigureQueue(): QueuedChangeRow[] {
     what: change.what,
     where: change.where,
     ticket: change.ticket,
+    id: change.id,
+    expiresAt: change.expiresAt,
   }));
 }
 
@@ -1485,13 +1746,23 @@ screensRouter.get('/alerts', (_req, res) => {
     if (blendFor('alerts')) {
       const blended: string[] = [];
       const alerts = blendSection('alerts', sortLiveAlerts(liveAlerts()), ALERTS, blended);
-      res.json(withBlended(envelopeFor('alerts', { alerts }), blended, 'alerts'));
+      // Only a swapped (real) queue gets a derived banner; the authored rows
+      // keep the authored one the design wrote for them.
+      const correlation = blended.includes('alerts') ? liveCorrelation(alerts) : undefined;
+      res.json(
+        withBlended(
+          envelopeFor('alerts', correlation === undefined ? { alerts } : { alerts, correlation }),
+          blended,
+          'alerts',
+        ),
+      );
       return;
     }
     res.json(envelopeFor('alerts', { alerts: ALERTS }));
     return;
   }
-  res.json(envelopeFor('alerts', { alerts: sortLiveAlerts(liveAlerts()) }));
+  const alerts = sortLiveAlerts(liveAlerts());
+  res.json(envelopeFor('alerts', { alerts, correlation: liveCorrelation(alerts) }));
 });
 
 screensRouter.get('/tickets', (_req, res) => {
@@ -1627,10 +1898,46 @@ function liveClientStats(clients: ClientRow[]): StatDef[] {
   ];
 }
 
+/**
+ * The Plane column on a live auth row always read CLEARPASS, because the
+ * policy plane is the only feed that produces auth events and it truthfully
+ * names itself — so the column carried no information at all. The event's
+ * `nas` names the switch/controller that asked, and the merged inventory knows
+ * which plane owns that device: on a UNIQUE match the row is re-badged with
+ * the owning plane, otherwise it keeps the reporter's own label rather than
+ * guessing between two devices with the same name.
+ *
+ * Rows are mapped into new objects — the poller's cached rows are shared by
+ * reference with every other reader.
+ */
+function withOwningPlane(events: LiveAuthEvent[]): LiveAuthEvent[] {
+  const devices = poller.getCache().devices;
+  if (devices.length === 0 || events.length === 0) return events;
+  const byKey = new Map<string, DeviceRow[]>();
+  const note = (key: string | undefined, row: DeviceRow): void => {
+    if (!reportedValue(key)) return;
+    const k = key!.trim().toLowerCase();
+    const rows = byKey.get(k);
+    if (rows) rows.push(row);
+    else byKey.set(k, [row]);
+  };
+  for (const row of devices) {
+    note(row.name, row);
+    note(row.ip, row);
+  }
+  return events.map((event) => {
+    if (!reportedValue(event.nas)) return event;
+    const matches = byKey.get(event.nas.trim().toLowerCase());
+    if (!matches || matches.length !== 1) return event;
+    const owner = matches[0]!;
+    return owner.plane === event.plane ? event : { ...event, plane: owner.plane };
+  });
+}
+
 screensRouter.get('/auth-events', (_req, res) => {
   if (sourceFor('authEvents') === 'demo') {
     if (blendFor('authEvents')) {
-      const events = poller.getCache().authEvents as LiveAuthEvent[];
+      const events = withOwningPlane(poller.getCache().authEvents as LiveAuthEvent[]);
       if (events.length > 0) {
         res.json(
           withBlended(
@@ -1657,7 +1964,7 @@ screensRouter.get('/auth-events', (_req, res) => {
     );
     return;
   }
-  const events = poller.getCache().authEvents as LiveAuthEvent[];
+  const events = withOwningPlane(poller.getCache().authEvents as LiveAuthEvent[]);
   res.json(
     envelopeFor('authEvents', {
       stats: liveAuthStats(events),
@@ -1719,6 +2026,49 @@ function liveSiteSections(
 }
 
 /**
+ * README §7's "Local reachability" panel for a live site — the third section
+ * the live branch had to leave as a fixed NOT REPORTED paragraph because the
+ * payload carried nothing to fill it with.
+ *
+ * Every value is read off the local collector's registry state plus the
+ * LOCAL-claimed share of this site's reconciled devices. Two honesty gates:
+ * an unlinked collector asserts nothing at all, and an unknown share sends
+ * `null` (rendered '—') rather than 0%, which would read as "no device here
+ * answers" — a much stronger claim than "we never asked".
+ */
+function liveSiteReachability(devices: ReconciledDeviceRow[], site: SiteRow): SiteReachability {
+  const state = registry.state('local');
+  const label = PLANE_LABEL.local;
+  if (!state.linked) {
+    return {
+      collector: 'not linked',
+      collectorTone: HEALTH_TONE.unlinked,
+      reachValue: null,
+      collectorNote: `No ${label} collector credentials are stored, so no device at this site has been probed directly.`,
+      core: null,
+    };
+  }
+  const siteDevices = devices.filter((d) => d.siteId === site.id);
+  const claimed = siteDevices.filter((d) => (d.claimedBy ?? []).includes(label) || d.plane === label);
+  const reachValue =
+    siteDevices.length > 0 ? Math.round((claimed.length / siteDevices.length) * 100) : null;
+  const sync = state.lastSync ? `last sync ${relSync(state.lastSync)}` : 'never synced';
+  return {
+    collector: state.health,
+    collectorTone: HEALTH_TONE[state.health],
+    reachValue,
+    collectorNote:
+      reachValue === null
+        ? `${label} collector is linked, but no device at this site is in the merged inventory yet · ${sync}`
+        : `${claimed.length} of ${siteDevices.length} device${siteDevices.length === 1 ? '' : 's'} at this site are claimed by the ${label} collector · ${sync}`,
+    // Only a device the collector both claims AND can shell into is offered as
+    // a terminal target; pointing the button at a cloud-claimed row would open
+    // a session the bridge refuses.
+    core: claimed.find((d) => d.localShell && planeAllowsShell(d))?.name ?? null,
+  };
+}
+
+/**
  * A demo device the operator pruned on /devices must not reappear as an
  * inventory row on its site page — the site table is the site's slice of the
  * same inventory, not an independent authored list. The headline device count
@@ -1760,7 +2110,16 @@ screensRouter.get('/sites/:siteId', (req, res) => {
           return;
         }
         res.json(
-          withBlended(envelopeFor('sites', { site, profile: null, ...liveSiteSections(live, site) }), ['sites'], 'sites'),
+          withBlended(
+            envelopeFor('sites', {
+              site,
+              profile: null,
+              reachability: liveSiteReachability(live.devices, site),
+              ...liveSiteSections(live, site),
+            }),
+            ['sites'],
+            'sites',
+          ),
         );
         return;
       }
@@ -1791,7 +2150,14 @@ screensRouter.get('/sites/:siteId', (req, res) => {
     res.status(404).json({ error: `site '${param}' not in the live cache`, dataSource: 'live' });
     return;
   }
-  res.json(envelopeFor('sites', { site, profile: null, ...liveSiteSections(live, site) }));
+  res.json(
+    envelopeFor('sites', {
+      site,
+      profile: null,
+      reachability: liveSiteReachability(live.devices, site),
+      ...liveSiteSections(live, site),
+    }),
+  );
 });
 
 // -- Devices ------------------------------------------------------------------
@@ -1819,6 +2185,10 @@ screensRouter.get('/devices', (_req, res) => {
       envelopeFor('devices', {
         devices: DEVICES.filter((d) => !hiddenSet.has(d.name)),
         lanes: LANE_META,
+        // The demo estate's authored reconciliation counts. Sent from the
+        // route like every other mode's counts, so the screen reads ONE key
+        // instead of keeping its own demo-mode fallback beside the payload.
+        reconciliation: DEVICE_RECONCILIATION,
         hiddenDevices: hidden,
       }),
     );
@@ -1845,7 +2215,14 @@ screensRouter.get('/devices/:name', (req, res) => {
         }
         res.json(
           withBlended(
-            envelopeFor('devices', { device, profile: null, config: null, clients: liveDeviceClients(name) }),
+            envelopeFor('devices', {
+              device,
+              profile: null,
+              config: null,
+              clients: liveDeviceClients(name),
+              evidence: liveDeviceEvidence(device),
+              ...liveTerminalPayload(device),
+            }),
             ['devices'],
             'devices',
           ),
@@ -1867,6 +2244,9 @@ screensRouter.get('/devices/:name', (req, res) => {
           banner: terminalBanner(profile.kind),
           quickCommands: terminalQuickCommands(profile.kind),
         },
+        // Same key as the live branch, so the panel reads one shape in both
+        // modes; `mode` says which estate the verdicts describe.
+        evidence: { checks: profile.checks, mode: 'demo' } satisfies DeviceEvidence,
         config: DEVICE_CONFIGS[profile.kind],
         clients: DEVICE_CLIENT_SETS[profile.kind],
       }),
@@ -1879,7 +2259,19 @@ screensRouter.get('/devices/:name', (req, res) => {
     res.status(404).json({ error: `device '${name}' not in the live cache`, dataSource: 'live' });
     return;
   }
-  res.json(envelopeFor('devices', { device, profile: null, config: null, clients: liveDeviceClients(name) }));
+  res.json(
+    envelopeFor('devices', {
+      device,
+      profile: null,
+      config: null,
+      clients: liveDeviceClients(name),
+      // The two facts the live pane was missing next to the reconciled row:
+      // this device's own evidence verdicts, and the shell block when the
+      // portal can really open one.
+      evidence: liveDeviceEvidence(device),
+      ...liveTerminalPayload(device),
+    }),
+  );
 });
 
 // -- Licences / configure / compliance ---------------------------------------
@@ -1889,13 +2281,15 @@ screensRouter.get('/licenses', (_req, res) => {
     if (blendFor('licenses')) {
       const subs = poller.getCache().subscriptions as LiveSubscription[];
       if (subs.length > 0) {
+        const blendDevices = liveDeviceData().devices;
+        const blendAssignments = liveAssignments();
         res.json(
           withBlended(
             envelopeFor('licenses', {
-              stats: liveLicenseStats(subs, liveDeviceData().devices),
+              stats: liveLicenseStats(subs, blendDevices, blendAssignments),
               subscriptions: subs,
               renewals: liveRenewals(subs),
-              orphans: [],
+              orphans: liveOrphans(blendDevices, subs, blendAssignments),
             }),
             ['licenses'],
             'licenses',
@@ -1910,22 +2304,47 @@ screensRouter.get('/licenses', (_req, res) => {
     return;
   }
   // GreenLake subscriptions from the poller cache, with stats + renewals
-  // computed from the rows' metric hints. Orphans stay honestly empty: the
-  // subscriptions feed carries no device identities to reconcile against.
+  // computed from the rows' metric hints, and the reclaim list derived from
+  // the plane's device→subscription join when it read one. A plane that did
+  // not publish assignments contributes no orphan/gap rows at all — the
+  // screen's own empty state then says why, instead of a confident '0'.
   const subs = poller.getCache().subscriptions as LiveSubscription[];
+  const devices = liveDeviceData().devices;
+  const assignments = liveAssignments();
   res.json(
     envelopeFor('licenses', {
-      stats: liveLicenseStats(subs, liveDeviceData().devices),
+      stats: liveLicenseStats(subs, devices, assignments),
       subscriptions: subs,
       renewals: liveRenewals(subs),
-      orphans: [],
+      orphans: liveOrphans(devices, subs, assignments),
     }),
   );
 });
 
 /**
+ * What the portal can ACTUALLY do with a plane: the scope the operator
+ * granted, crossed with the adapter's own capability claim.
+ *
+ * A credential scoped `write:brokered` against a plane whose adapter reports
+ * `brokeredWrite: false` still cannot take a change — the grant describes the
+ * token, the capability describes the code path. Only an EXPLICIT false
+ * downgrades; a plane that makes no claim is trusted with what it was granted
+ * (most adapters do not implement capabilities() at all).
+ */
+function effectiveScope(
+  state: PlaneState,
+  granted: ReturnType<typeof scopeForPlane>,
+): ReturnType<typeof scopeForPlane> {
+  const caps = state.capabilities;
+  if (!caps) return granted;
+  if (granted === 'read + broker' && caps.brokeredWrite === false) return 'read only';
+  if (granted === 'read + ssh' && caps.localShell === false) return 'read only';
+  return granted;
+}
+
+/**
  * "Where a change can go" for the real deployment: one row per registry
- * plane, its mode taken from the SAME scopeForPlane() the Systems scope badge
+ * plane, its mode taken from the SAME scope helper the Systems scope badge
  * reads, so the two screens can never disagree. An unlinked plane cannot
  * accept a change, and says so, instead of advertising the fixture estate's
  * brokered collector and AOS-8 master.
@@ -1934,19 +2353,26 @@ function liveCapabilityMatrix(): CapabilityRow[] {
   const states = registry.states();
   const stored = settings.get().planes;
   return PLANE_IDS.filter((id) => SYSTEM_DISPLAY[id]).map((id) => {
-    const linked = states[id].linked;
-    const scope = scopeForPlane(id as PlaneKey, { linked, scopes: stored[id]?.scopes ?? null });
+    const state = states[id];
+    const linked = state.linked;
+    const granted = scopeForPlane(id as PlaneKey, { linked, scopes: stored[id]?.scopes ?? null });
+    const scope = effectiveScope(state, granted);
     const mode: CapabilityRow['mode'] =
       scope === 'read + broker' ? 'brokered' : scope === 'read + ssh' ? 'ssh' : 'read only';
     const note = !linked
       ? 'not linked — no credentials stored'
-      : states[id].health === 'degraded'
+      : state.health === 'degraded'
         ? 'linked, but the plane is not answering'
         : mode === 'brokered'
           ? 'brokered write, ticket required'
           : mode === 'ssh'
             ? 'recorded shell, window only'
-            : 'payload pre-filled in the plane console';
+            : granted === scope
+              ? 'payload pre-filled in the plane console'
+              : // The credential grants a write scope this plane's adapter says
+                // it cannot carry out — the honest row is the capability, not
+                // the grant, or Configure offers a push that cannot happen.
+                'this plane reports no write path — payload pre-filled in its console';
     return {
       plane: stored[id]?.displayName ?? SYSTEM_DISPLAY[id]!,
       note,
@@ -2177,7 +2603,9 @@ function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | undefined):
   // the registry default — a rename must survive onto the screen.
   const stored = settings.get().planes[id];
   const masked = settings.maskedView().planes[id];
-  const scope = scopeForPlane(id as PlaneKey, { linked: s.linked, scopes: stored?.scopes ?? null });
+  // The granted scope, crossed with what this plane's adapter says it can
+  // carry out — the same helper /api/configure's capability matrix reads.
+  const scope = effectiveScope(s, scopeForPlane(id as PlaneKey, { linked: s.linked, scopes: stored?.scopes ?? null }));
   return {
     name: stored?.displayName ?? SYSTEM_DISPLAY[id]!,
     planeId: id,
@@ -2223,6 +2651,10 @@ function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | undefined):
       `last_sync: ${s.lastSync ?? 'never'}`,
       s.deviceCount === null ? null : `devices: ${s.deviceCount}`,
       `calls_today: ${s.callsToday}`,
+      // The denominator behind the "Calls today" fact, when the portal knows
+      // the plane's tier — an absent budget prints no line rather than a
+      // guessed quota (README:316).
+      s.callBudget === undefined || s.callBudget === null ? null : `rate_limit: ${s.callBudget}/day`,
       s.note ? `note: ${s.note}` : null,
       // The stored credential record, exactly as maskedView() renders it —
       // endpoint, client id, workspace and scopes are the record the

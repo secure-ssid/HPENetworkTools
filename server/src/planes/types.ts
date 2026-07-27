@@ -151,6 +151,18 @@ export interface PlaneAdapter {
    *  not implement it claims nothing, and callers default every capability to
    *  false. */
   capabilities?(): PlaneCapabilities;
+  /**
+   * Release anything held on the far side before this adapter is dropped —
+   * an AOS-8 session UID, a websocket, a keep-alive timer. The registry calls
+   * it on the OUTGOING adapter when credentials are re-saved or a plane is
+   * retired; without it a credential save leaks the live session on the
+   * controller until it ages out.
+   *
+   * Optional so no other adapter has to change, and it must never throw or
+   * hang: implementations swallow their own errors and the caller does not
+   * block a re-link on the result.
+   */
+  dispose?(): Promise<void>;
 }
 
 /** One recorded outbound API call (ring buffer, last 50 per plane). */

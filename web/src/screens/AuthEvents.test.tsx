@@ -9,7 +9,8 @@
  *  (b) a demo-sourced feed keeps that authored tail verbatim;
  *  (c) the header stamps the last sync so a degraded ClearPass's last-good
  *      cache cannot pass for current, and an em-dash stands in before the
- *      first successful poll.
+ *      first successful poll;
+ *  (g) an empty feed reads as a missing feed, never as "zero rejects, healthy".
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -154,6 +155,37 @@ describe('AuthEvents', () => {
 
     // The filter that is hiding everything names itself rather than rendering blank.
     expect(await screen.findByText('CLEARPASS (no events)')).toBeTruthy();
+  });
+
+  it('(g) an empty feed reads as a missing feed, not as zero rejects', async () => {
+    mockGetAuthEvents.mockResolvedValue(
+      // The server's liveAuthStats emits '—' / neutral for an empty feed; the
+      // breakdown beneath it must not contradict that with a clean bill.
+      liveData({
+        events: [],
+        stats: [
+          { label: 'Rejects / hour', value: '—', delta: 'no auth feed in this window', tone: 'neutral' },
+        ],
+      }),
+    );
+    renderAuthEvents();
+
+    expect(
+      await screen.findByText(
+        'No policy plane reported a decision, so there are no rejects to break down — a missing feed, not a clean one.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText('No rejected authentications in this window — nothing to break down.'),
+    ).toBeNull();
+
+    // A feed that DID answer and simply held no rejects keeps the quiet reading.
+    cleanup();
+    mockGetAuthEvents.mockResolvedValue(liveData());
+    renderAuthEvents();
+    expect(
+      await screen.findByText('No rejected authentications in this window — nothing to break down.'),
+    ).toBeTruthy();
   });
 
   it('(f) labels the failure breakdown by the window it actually measured', async () => {

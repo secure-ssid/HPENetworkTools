@@ -245,6 +245,12 @@ export class PlaneRegistry {
     const calls = prev ? prev.calls : [];
     const events = prev ? prev.events : [];
     const rt = this.buildRuntime(id, calls, events);
+    // Release whatever the OUTGOING adapter still holds on the far side (an
+    // AOS-8 management session UID, …) — the replaced object never rolls its
+    // own session over again, so without this a credential save leaks one on
+    // the controller until its idle timer reaps it. Deliberately not awaited:
+    // dispose() never throws and a re-link must not wait on the far side.
+    if (prev) void prev.adapter.dispose?.().catch(() => {});
     if (prev && prev.day === todayKey()) {
       rt.callsToday = prev.callsToday;
       rt.day = prev.day;

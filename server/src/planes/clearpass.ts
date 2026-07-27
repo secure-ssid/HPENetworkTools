@@ -100,6 +100,7 @@
 import type { AuthEvent, AuthEventRow, Tone } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
 import {
+  mintedTokenInfo,
   parseRetryAfterMs,
   parseTimestamp,
   TokenManager,
@@ -448,7 +449,12 @@ export class ClearPassAdapter implements PlaneAdapter {
           if (res.status !== 200 || !token) {
             throw new Error(`auth: ${TOKEN_PATH} answered HTTP ${res.status} without an access_token`);
           }
-          return { accessToken: token, expiresInSec: num(record.expires_in) ?? TOKEN_DEFAULT_TTL_SEC };
+          // CPPM's 8-hour grant expires; the registry only knew the source, so
+          // stamp the expiry here. No expires_in in the answer = no published
+          // lifetime, and the default below stays a refresh-pacing choice only.
+          const published = num(record.expires_in);
+          this.stateRef.token = mintedTokenInfo(published);
+          return { accessToken: token, expiresInSec: published ?? TOKEN_DEFAULT_TTL_SEC };
         })
       : null;
   }

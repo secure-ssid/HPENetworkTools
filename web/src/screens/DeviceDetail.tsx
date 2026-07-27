@@ -8,7 +8,9 @@
  * shell-capable devices first try the recorded-SSH WebSocket transport from
  * web/src/lib/wsTerminal.ts, falling back to the canned demo transport when
  * the bridge is unreachable; cloud-claimed devices get read-only telemetry,
- * no input/chips) and Configuration (SegmentedControl
+ * no input/chips; the banner and the quick-command chips come from the
+ * envelope's `terminal` block when the route sent one, and from the shared
+ * helpers otherwise) and Configuration (SegmentedControl
  * Running | Drift vs. baseline | History; drift rendered via DiffCode with
  * danger/success line colouring; Snapshot stores a local history row, Download
  * saves the running config as a file). Right: Identity facts, the class block
@@ -242,7 +244,18 @@ export default function DeviceDetail() {
   }, [name]);
 
   const kind = data?.profile?.kind ?? 'sw';
-  const cannedTransport = useMemo(() => createCannedTransport({ kind }), [kind]);
+  // The route computes the shell banner and the quick-command chips for the
+  // class it actually served (`terminal` on the envelope), so prefer that pair
+  // over re-deriving it here — the server stays the single authority and the
+  // two sides cannot disagree. The demo branch sends it today and the live
+  // branch does not, so both readers keep the shared-helper fallback (which is
+  // also the path the offline fixture fallback takes, where no route ran).
+  const servedBanner = data?.terminal?.banner;
+  const servedQuickCommands = data?.terminal?.quickCommands;
+  const cannedTransport = useMemo(() => {
+    const canned = createCannedTransport({ kind });
+    return servedBanner ? { ...canned, banner: () => servedBanner } : canned;
+  }, [kind, servedBanner]);
   const [liveTransport, setLiveTransport] = useState<AsyncTerminalTransport | null>(null);
   const [livePrompt, setLivePrompt] = useState<string | null>(null);
   const [terminalAttempt, setTerminalAttempt] = useState(0);
@@ -699,10 +712,13 @@ export default function DeviceDetail() {
                 }
                 titlebarRight="AES-256 · LIVE · recorded"
                 online
-                /* Chips come from the inventory row's device class, not the
-                   fixture name-prefix rules — every one of them is inside the
-                   server's read-only allow-list. */
-                quickCommands={terminalQuickCommands(deviceTerminalKind(device, device.name))}
+                /* Chips come from the route when it sent them, else from the
+                   inventory row's device class — never the fixture name-prefix
+                   rules. Every one of them is inside the server's read-only
+                   allow-list. */
+                quickCommands={
+                  servedQuickCommands ?? terminalQuickCommands(deviceTerminalKind(device, device.name))
+                }
               />
             ) : (
               <div>
@@ -1031,7 +1047,7 @@ export default function DeviceDetail() {
               canShell ? (liveSsh ? 'AES-256 · LIVE · recorded' : 'AES-256 · idle 14:52') : 'request remote shell ↗'
             }
             online={liveSsh}
-            quickCommands={canShell ? terminalQuickCommands(profile.kind) : []}
+            quickCommands={canShell ? (servedQuickCommands ?? terminalQuickCommands(profile.kind)) : []}
             readOnlyNote={canShell ? undefined : profile.readOnlyNote}
           />
           {canShell && terminalState === 'disconnected' ? (

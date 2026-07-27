@@ -1361,10 +1361,15 @@ export const COMPLIANCE_DIFF: string =
 // Connected systems — NtSystems.dc.html
 // ---------------------------------------------------------------------------
 
-/** Planes — the `systems` array (7 rows, full detail-drawer data). */
+/** Planes — the `systems` array (7 rows, full detail-drawer data).
+ *  Every cloud/on-prem plane carries the console it is administered in
+ *  (`consoleUrl`); the local switch collector deliberately carries none — it
+ *  has no console, so "Open console" must stay inert for it rather than
+ *  pretend a hand-off exists. */
 export const SYSTEMS: SystemRow[] = [
   {
     name: 'HPE Aruba Central', kind: 'cloud · new central · us-west-4', state: 'healthy', tone: 'success', scope: 'read + broker', scopeTone: 'accent', scopeNote: 'write expires per change',
+    consoleUrl: 'https://app-us4.central.arubanetworks.com',
     facts: [{ k: 'Last sync', v: '40s ago' }, { k: 'Devices', v: '164' }, { k: 'Calls today', v: '9,412 / 50k' }, { k: 'Token', v: 'rotates 12 Aug' }],
     sites: [
       { name: 'Campus-01 — Meridian HQ', siteId: 'campus-01', detail: '148 devices · wireless + gateways' },
@@ -1396,6 +1401,7 @@ export const SYSTEMS: SystemRow[] = [
   },
   {
     name: 'Mist', kind: 'cloud · global 01 · org meridian', state: 'healthy', tone: 'success', scope: 'read only', scopeTone: 'neutral', scopeNote: 'write via console',
+    consoleUrl: 'https://manage.mist.com',
     facts: [{ k: 'Last sync', v: '1m ago' }, { k: 'Devices', v: '128' }, { k: 'Calls today', v: '4,105 / 20k' }, { k: 'Token', v: 'rotates 01 Sep' }],
     sites: [
       { name: 'Campus-02 Research', siteId: 'campus-02', detail: '96 devices · AP43 + EX4400' },
@@ -1423,6 +1429,7 @@ export const SYSTEMS: SystemRow[] = [
   },
   {
     name: 'Central Classic', kind: 'legacy cloud · eu-central', state: 'degraded', tone: 'danger', scope: 'read only', scopeTone: 'neutral', scopeNote: '429 every third poll',
+    consoleUrl: 'https://eu-central.classic.arubanetworks.com',
     facts: [{ k: 'Last sync', v: '6h 12m ago' }, { k: 'Devices', v: '40 (stale)' }, { k: 'Calls today', v: '812 / 1k' }, { k: 'Retires', v: '12 Aug 26' }],
     sites: [
       { name: 'Riverside Clinic', siteId: 'riverside', detail: '24 devices · unverified' },
@@ -1449,6 +1456,7 @@ export const SYSTEMS: SystemRow[] = [
   },
   {
     name: 'GreenLake', kind: 'platform · workspace meridian-health', state: 'healthy', tone: 'success', scope: 'read only', scopeTone: 'neutral', scopeNote: 'licences + users',
+    consoleUrl: 'https://common.cloud.hpe.com',
     facts: [{ k: 'Last sync', v: '4m ago' }, { k: 'Subscriptions', v: '486' }, { k: 'Calls today', v: '210 / 5k' }, { k: 'Token', v: 'rotates 30 Sep' }],
     sites: [{ name: 'Workspace-wide', siteId: null, detail: 'licences, users, audit' }],
     live: [{ value: '486', label: 'subscription records reconciled' }, { value: '34', label: 'expiring within 60 days' }, { value: '6', label: 'orphaned assignments found' }],
@@ -1470,6 +1478,7 @@ export const SYSTEMS: SystemRow[] = [
   },
   {
     name: 'AOS-8 mobility master', kind: 'on-prem · mm-lake-1 · 8.10.0.10', state: 'warning', tone: 'warning', scope: 'read + ssh', scopeTone: 'accent', scopeNote: 'jump host 10.48.0.9',
+    consoleUrl: 'https://10.48.0.10:4343',
     facts: [{ k: 'Last sync', v: '2m ago' }, { k: 'Devices', v: '62' }, { k: 'Cluster', v: '1 of 4 up' }, { k: 'Auth', v: 'tacacs + key' }],
     sites: [
       { name: 'Lakeshore Medical Center', siteId: 'lakeshore', detail: '62 devices · master-local' },
@@ -1523,6 +1532,7 @@ export const SYSTEMS: SystemRow[] = [
   },
   {
     name: 'ClearPass', kind: 'on-prem · cppm-01 · 6.11.7', state: 'healthy', tone: 'success', scope: 'read only', scopeTone: 'neutral', scopeNote: 'auth telemetry',
+    consoleUrl: 'https://cppm-01.meridian.health/tips',
     facts: [{ k: 'Last sync', v: '55s ago' }, { k: 'Endpoints', v: '4,182' }, { k: 'Calls today', v: '1,904' }, { k: 'Cert', v: 'expires 15 Aug' }],
     sites: [{ name: 'Workspace-wide', siteId: null, detail: 'policy for every plane' }],
     live: [{ value: '412', label: 'authentications per minute' }, { value: '24', label: 'rejects in the last hour' }, { value: '4,182', label: 'known endpoints' }],
@@ -1544,6 +1554,7 @@ export const SYSTEMS: SystemRow[] = [
   },
   {
     name: 'UXI', kind: 'cloud · sensors · cape networks', state: 'warning', tone: 'warning', scope: 'read only', scopeTone: 'neutral', scopeNote: 'history is push-only',
+    consoleUrl: 'https://dashboard.capenetworks.com',
     facts: [{ k: 'Last sync', v: '50s ago' }, { k: 'Sensors', v: '8' }, { k: 'Calls today', v: '1,240' }, { k: 'Token', v: 'sso · hourly' }],
     sites: [
       { name: 'Campus-01 — Meridian HQ', siteId: 'campus-01', detail: '5 sensors · one offline (3F)' },
@@ -1642,6 +1653,11 @@ export const CONNECT_FIELDS: Record<SystemTypeKey, ConnectField[]> = {
   ],
   clearpass: [
     { key: 'token', label: 'API token', help: 'OAuth access token for the publisher API client.', secret: true },
+    // Read by clearpass.ts coaDisconnect(): sent as `enforcement_profile` on a
+    // CoA Disconnect-Request when set, omitted when not. Optional because an
+    // UNKNOWN profile name turns a working disconnect into a 422 — blank is
+    // the safe default, not a guess.
+    { key: 'coaEnforcementProfile', label: 'CoA enforcement profile', help: 'Sent on a CoA disconnect when set. Leave blank to use the publisher default — a wrong name fails the request.', optional: true },
   ],
   uxi: [],
 };

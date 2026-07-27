@@ -18,8 +18,10 @@ import {
   LANE_META,
   PLANE_MARK,
   PLANE_WRITE_MODE,
+  QUEUED_CHANGES,
   REAL_SITE_IDS,
   SITES,
+  SYSTEMS,
   applyDeviceRowToProfile,
   deriveSiteProfile,
   deviceProfile,
@@ -33,7 +35,18 @@ import {
   toSiteAlertRow,
   toSiteDeviceRow,
 } from '../../../shared';
-import type { AlertRow, DeviceRow, Plane, PortObject, VlanObject } from '../../../shared';
+import type {
+  AlertCorrelation,
+  AlertRow,
+  DeviceEvidence,
+  DeviceRow,
+  DeviceTerminalPayload,
+  Plane,
+  PortObject,
+  QueuedChangeRow,
+  SiteReachability,
+  VlanObject,
+} from '../../../shared';
 
 const NOW = Date.parse('2026-07-26T12:00:00.000Z');
 const ago = (ms: number): string => new Date(NOW - ms).toISOString();
@@ -240,10 +253,16 @@ describe('connect-drawer credential keys match what the adapters read', () => {
 
   it('supplies the extra required fields the endpoint alone cannot satisfy', () => {
     expect(CONNECT_FIELDS.mist.map((f) => f.key)).toEqual(['orgId', 'token']);
-    expect(CONNECT_FIELDS.clearpass.map((f) => f.key)).toEqual(['token']);
+    expect(CONNECT_FIELDS.clearpass.map((f) => f.key)).toEqual(['token', 'coaEnforcementProfile']);
     expect(CONNECT_FIELDS.aos8.map((f) => f.key)).toEqual(['username', 'password']);
     expect(CONNECT_FIELDS.local.filter((f) => !f.optional).map((f) => f.key)).toEqual(['username']);
     expect(CONNECT_FIELDS.clearpass[0].secret).toBe(true);
+    // The CoA profile is the one ClearPass field a working link does NOT need:
+    // clearpass.ts only sends `enforcement_profile` when it is set, and a
+    // wrong name 422s the disconnect. Required would gate every new link on a
+    // value the operator has to guess.
+    expect(CONNECT_FIELDS.clearpass.find((f) => f.key === 'coaEnforcementProfile')?.optional).toBe(true);
+    expect(CONNECT_FIELDS.clearpass.filter((f) => !f.optional).map((f) => f.key)).toEqual(['token']);
   });
 });
 
@@ -290,5 +309,91 @@ describe('DeviceRow carries the reconciliation fields the live path produces', (
     };
     expect(row.claimedBy).toHaveLength(2);
     expect(DEVICES[0].claimedBy).toBeUndefined(); // fixtures stay as authored
+  });
+});
+
+describe('the live-payload contracts the screens render from', () => {
+  it('lets a correlation banner state its own severity, defaulting to none', () => {
+    const stalePlanes: AlertCorrelation = {
+      title: 'Two planes are behind',
+      body: 'The queue below is unverified, not quiet.',
+      tone: 'warning',
+    };
+    const authored: AlertCorrelation = { title: 'P1 storm', body: 'Four criticals on one gateway.' };
+    expect(stalePlanes.tone).toBe('warning');
+    // Absent, not defaulted here: the renderer keeps its existing 'danger'.
+    expect(authored.tone).toBeUndefined();
+  });
+
+  it('keys a brokered queue row by the broker id, and the fixtures by nothing', () => {
+    const brokered: QueuedChangeRow = {
+      ...QUEUED_CHANGES[0],
+      id: 'chg-mfk3x9a1b2c3',
+      expiresAt: '2026-07-26T09:15:00.000Z',
+    };
+    expect(brokered.id).toBe('chg-mfk3x9a1b2c3');
+    // A fixture row carries no id, which is exactly what makes it correctly
+    // non-pushable — there is no queued change behind it.
+    expect(QUEUED_CHANGES.every((q) => q.id === undefined)).toBe(true);
+  });
+
+  it('reads an unknown reachability share as null, never as 0%', () => {
+    const unlinked: SiteReachability = {
+      collector: 'not linked',
+      collectorTone: 'neutral',
+      reachValue: null,
+      collectorNote: 'No local collector is linked, so no device answers directly.',
+    };
+    const linked: SiteReachability = {
+      collector: 'healthy',
+      collectorTone: 'success',
+      reachValue: 64,
+      collectorNote: '9 of 14 devices at this site are claimed by the collector.',
+      core: 'sw-core-a',
+    };
+    expect(unlinked.reachValue).toBeNull();
+    expect(unlinked.core).toBeUndefined(); // offer no terminal without a target
+    expect(linked.reachValue).toBe(64);
+  });
+
+  it('distinguishes "no evidence" from "every check passes"', () => {
+    const none: DeviceEvidence = {
+      checks: [],
+      mode: 'unavailable',
+      note: 'No plane reported evidence for this device.',
+    };
+    const live: DeviceEvidence = {
+      mode: 'live',
+      checks: [
+        { mark: 'pass', tone: 'success', label: 'Identity evidence', rule: 'scan.coverage.identity' },
+        { mark: 'fail', tone: 'warning', label: 'Plane freshness', rule: 'scan.coverage.freshness' },
+      ],
+    };
+    // Both have "no failing check rendered green"; only `mode` separates them.
+    expect(none.checks).toHaveLength(0);
+    expect(none.mode).toBe('unavailable');
+    expect(live.checks.map((c) => c.rule)).toEqual(['scan.coverage.identity', 'scan.coverage.freshness']);
+  });
+
+  it('names one shape for the shell payload both device-detail branches send', () => {
+    const terminal: DeviceTerminalPayload = {
+      banner: [{ text: 'connecting to sw-core-a…', tone: 'muted' }],
+      quickCommands: ['show version', 'show interface brief'],
+    };
+    expect(terminal.banner[0].tone).toBe('muted');
+    expect(terminal.quickCommands).toHaveLength(2);
+  });
+
+  it('records a console URL per plane, and none for the collector that has no console', () => {
+    const byName = new Map(SYSTEMS.map((s) => [s.name, s.consoleUrl]));
+    expect(byName.get('HPE Aruba Central')).toBe('https://app-us4.central.arubanetworks.com');
+    expect(byName.get('Mist')).toBe('https://manage.mist.com');
+    expect(byName.get('Local switch collector')).toBeUndefined();
+    expect(SYSTEMS.filter((s) => s.consoleUrl === undefined).map((s) => s.name)).toEqual([
+      'Local switch collector',
+    ]);
+    for (const s of SYSTEMS) {
+      if (s.consoleUrl) expect(s.consoleUrl.startsWith('https://')).toBe(true);
+    }
   });
 });

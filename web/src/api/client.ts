@@ -56,8 +56,11 @@ import {
   deviceProfile,
   isRealSiteId,
   siteIdFor,
+  terminalBanner,
+  terminalQuickCommands,
 } from '../../../shared';
 import type {
+  AlertCorrelation,
   AlertRow,
   AuthEventRow,
   BaselineProgressRow,
@@ -68,7 +71,9 @@ import type {
   ConfigForm,
   ConfigKind,
   DeviceCfg,
+  DeviceCheckRow,
   DeviceClientSet,
+  DeviceEvidence,
   DeviceProfile,
   DeviceRow,
   FailReasonRow,
@@ -92,6 +97,7 @@ import type {
   SiteDeviceRow,
   SiteId,
   SiteProfile,
+  SiteReachability,
   SiteRow,
   SsidObject,
   StatDef,
@@ -131,6 +137,13 @@ export interface OverviewData extends ScreenEnvelope {
 export interface AlertsData extends ScreenEnvelope {
   alerts: AlertRow[];
   syncedAt: string | null;
+  /** The danger/warning banner over the queue, when the ROUTE correlates it —
+   *  the server can cross the worst finding with plane freshness, which a
+   *  client-side correlate() over already-pulled rows cannot see. Absent (or
+   *  null) = no server correlation was sent and the screen's own correlate()
+   *  stays the single source; `tone` absent inside it keeps the renderer's
+   *  existing 'danger' default. */
+  correlation?: AlertCorrelation | null;
 }
 
 export interface TicketsData extends ScreenEnvelope {
@@ -161,6 +174,14 @@ export interface SiteDetailData extends ScreenEnvelope {
    *  live/blend mode. In demo mode they live inside `profile` instead. */
   devices?: SiteDeviceRow[];
   alerts?: SiteAlertRow[];
+  /** README §7's "Local reachability" panel in live/blend mode, where there is
+   *  no authored profile to read it from: the route derives it from the local
+   *  collector plane's registry state plus the LOCAL-claimed share of this
+   *  site's devices. `reachValue: null` means the portal does not know the
+   *  answering share — render '—', never 0%. Absent = the route sent nothing
+   *  and the panel keeps its honest NOT REPORTED state. In demo mode the same
+   *  four values live on `profile` instead. */
+  reachability?: SiteReachability;
 }
 
 export interface DevicesData extends ScreenEnvelope {
@@ -177,11 +198,18 @@ export interface DeviceDetailData extends ScreenEnvelope {
   config: DeviceCfg | null;
   clients: DeviceClientSet | null;
   /** Shell banner + quick-command chips as the ROUTE computes them. The demo
-   *  branch already sends this (screens.ts:1587); the screen may prefer it over
+   *  branch (and this client's offline demo fallback) sends it; the screen may prefer it over
    *  re-deriving the pair from the fixture profile, so the server stays the
    *  authority once the live branch serves a platform-correct command set.
    *  Absent = no payload sent; fall back to the shared helpers. */
   terminal?: { banner: TerminalLine[]; quickCommands: string[] };
+  /** Per-device evidence for the Compliance panel. `mode` is what keeps an
+   *  EMPTY list from reading as "everything passes": 'unavailable' means no
+   *  plane supplied evidence and the panel must say so. Absent = the route
+   *  sent nothing at all; in demo mode the authored `profile.checks` is the
+   *  source instead. Normalized by getDeviceDetail(), so the screen only ever
+   *  sees this one shape. */
+  evidence?: DeviceEvidence;
 }
 
 export interface LicensesData extends ScreenEnvelope {
@@ -483,11 +511,33 @@ export async function getDevices(): Promise<DevicesData> {
   };
 }
 
+/**
+ * The device-detail evidence block, normalized to one shape.
+ *
+ * The route may serve the four per-device checks either as the full
+ * `evidence: DeviceEvidence` block or as a bare `checks: DeviceCheckRow[]`.
+ * Collapsing both here means the screen has a single contract to render and
+ * never has to guess what an empty list means: a bare list that came back
+ * empty is 'unavailable' (no plane supplied evidence), NOT a clean scorecard.
+ */
+function normalizeEvidence(data: DeviceDetailData & { checks?: DeviceCheckRow[] }): DeviceDetailData {
+  const { checks, ...rest } = data;
+  if (rest.evidence || !checks) return rest;
+  return {
+    ...rest,
+    evidence: {
+      checks,
+      mode: checks.length === 0 ? 'unavailable' : rest.dataSource === 'demo' ? 'demo' : 'live',
+      ...(checks.length === 0 ? { note: 'No plane reported evidence for this device.' } : {}),
+    },
+  };
+}
+
 export async function getDeviceDetail(name: string): Promise<DeviceDetailData> {
-  const r = await fetchDetail<DeviceDetailData>(
+  const r = await fetchDetail<DeviceDetailData & { checks?: DeviceCheckRow[] }>(
     `/api/devices/${encodeURIComponent(name)}`,
   );
-  if (r.kind === 'ok') return r.data;
+  if (r.kind === 'ok') return normalizeEvidence(r.data);
   if (r.kind === 'answered') {
     if (r.status !== 404) {
       return apiFailure<DeviceDetailData>(r.message, {
@@ -516,6 +566,14 @@ export async function getDeviceDetail(name: string): Promise<DeviceDetailData> {
   return {
     device,
     profile,
+    // Mirror the server's own demo branch (screens.ts `terminal:` block) rather
+    // than a thinner offline shape: with no backend the screen must still get
+    // the same envelope it gets from the demo route, or the terminal panel
+    // silently changes behaviour depending on whether the server is running.
+    terminal: {
+      banner: terminalBanner(profile.kind),
+      quickCommands: terminalQuickCommands(profile.kind),
+    },
     config: DEVICE_CONFIGS[profile.kind],
     clients: DEVICE_CLIENT_SETS[profile.kind],
     dataSource: 'demo',
