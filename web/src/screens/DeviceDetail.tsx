@@ -21,9 +21,12 @@
  * table it was opened from; a row the reconciler flagged carries a warning
  * Alert naming its claiming planes. Live mode carries only the
  * reconciled inventory row: the authored profile/config/clients are demo
- * data, so the live view renders the real row, its recorded shell sessions,
- * plus honest "not available in
- * live mode" sections (a live 404 renders an EmptyState, never fixtures).
+ * data, so the live view renders the real row (header + console hand-off,
+ * five Stats derived only from fields the poller returned, Identity stamped
+ * with the envelope's syncedAt and carrying the firmware-vs-approved
+ * verdict), its recorded shell sessions, plus honest "not available in
+ * live mode" sections (a live 404 renders an EmptyState, never fixtures; an
+ * OFFLINE 404 says the portal is on fixtures rather than blaming a plane).
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -49,7 +52,7 @@ import {
 import { getDeviceDetail, getTerminalSession, getTerminalSessions, getTickets, rebootDevice } from '../api/client';
 import type { TerminalSession, TerminalSessionEvent } from '../api/client';
 import type { DeviceDetailData } from '../api/client';
-import { terminalQuickCommands } from '../../../shared';
+import { deviceTerminalKind, terminalQuickCommands } from '../../../shared';
 import type { CfgHistoryRow, Fact, Plane, TicketRow } from '../../../shared';
 import { useSettings } from '../app/SettingsContext';
 import { TerminalPane, createCannedTransport } from '../lib/TerminalPane';
@@ -65,6 +68,17 @@ const CFG_TABS = [
   { value: 'diff', label: 'Drift vs. baseline' },
   { value: 'history', label: 'History' },
 ];
+
+/** Envelope freshness stamp, same format the other live screens use. */
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** An Identity fact plus an optional colour override — a fact that carries a
+ *  judgement (firmware off the approved train) has to look like one. */
+type LiveFact = Fact & { tone?: string };
 
 /** Honest "no live feed" note under a section header — mono, muted, never a fixture stand-in. */
 function LiveGapNote({ children }: { children: ReactNode }) {
@@ -233,6 +247,10 @@ export default function DeviceDetail() {
   const [livePrompt, setLivePrompt] = useState<string | null>(null);
   const [terminalAttempt, setTerminalAttempt] = useState(0);
   const [terminalState, setTerminalState] = useState<'idle' | 'connecting' | 'live' | 'disconnected'>('idle');
+  // When this pane's own session went live. Used to tell the recording the
+  // portal just opened from someone else's older transcript — only the former
+  // may be named as "who is connected".
+  const [liveSince, setLiveSince] = useState<string | null>(null);
 
   // Recorded shell sessions on file for this device (empty when backend absent);
   // the expanded transcript loads on demand.
@@ -267,6 +285,7 @@ export default function DeviceDetail() {
   useEffect(() => {
     setLiveTransport(null);
     setLivePrompt(null);
+    setLiveSince(null);
     if (!data) {
       setTerminalState('idle');
       return;
@@ -296,6 +315,10 @@ export default function DeviceDetail() {
       if (ok) {
         setLiveTransport(session.transport);
         setTerminalState('live');
+        setLiveSince(new Date().toISOString());
+        // The bridge opens a recording as it connects — pull it in so the pane
+        // can name the account and target the session actually ran under.
+        setSessionsRefresh((n) => n + 1);
       } else {
         setTerminalState('disconnected');
       }
@@ -362,10 +385,26 @@ export default function DeviceDetail() {
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
   const { device, profile, config: cfg, clients } = data;
+  // Which source this screen is actually rendering (README §"Live/error
+  // behavior"): the offline fixture fallback answers `demo` too, so an unknown
+  // name means something different in each mode.
+  const isDemo = data.dataSource === 'demo' && !(data.blended?.includes('devices') ?? false);
+  // The recording THIS pane's session opened, if the store has caught up: the
+  // newest transcript that started at (or just before) the moment the bridge
+  // went live. Ordering is not part of the API contract, so sort. An older
+  // transcript belongs to another operator and is never presented as the
+  // current connection — in that case the pane names nobody.
+  const currentSession = liveSince
+    ? [...sessions]
+        .filter((s) => Date.parse(s.openedAt) >= Date.parse(liveSince) - 60_000)
+        .sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0]
+    : undefined;
 
   const saveConfig = () =>
-    toast('Snapshot queued', {
-      description: 'The persisted snapshot pipeline lands in a later build — this queues the request.',
+    toast('Config snapshot not available yet', {
+      description:
+        'No linked plane exposes a config-snapshot API through this portal, and nothing was queued. Use Download config for the running configuration shown here.',
+      tone: 'info',
     });
 
   const confirmReboot = async () => {
@@ -473,8 +512,12 @@ export default function DeviceDetail() {
             </Button>
           </div>
           <EmptyState
-            title="Device not in the live cache"
-            description={`No linked plane has reported '${name}'. It may be unmanaged, or the plane that owns it is not linked.`}
+            title={isDemo ? 'Device not in the demo inventory' : 'Device not in the live cache'}
+            description={
+              isDemo
+                ? `The portal is running on fixtures and '${name}' is not one of them. Nothing was asked of a plane, so this says nothing about your estate.`
+                : `No linked plane has reported '${name}'. It may be unmanaged, or the plane that owns it is not linked.`
+            }
           >
             <div style={{ marginTop: 16 }}>
               <Button variant="primary" size="sm" onClick={() => navigate('/systems')}>
@@ -495,7 +538,12 @@ export default function DeviceDetail() {
       [device.model, device.siteName, device.ip ?? '']
         .filter((value) => reported(value) !== 'Not reported')
         .join(' · ') || 'Inventory details partial';
-    const liveFacts: Fact[] = [
+    // Firmware carries a judgement the inventory table already paints amber
+    // (Devices.tsx colours an unapproved train) — the detail page has to agree.
+    // A plane that reported no firmware string gets no verdict at all.
+    const liveFirmware = reported(device.firmware);
+    const firmwareKnown = liveFirmware !== 'Not reported';
+    const liveFacts: LiveFact[] = [
       { k: 'Model', v: reported(device.model) },
       { k: 'Type', v: reported(device.type) },
       { k: 'Site', v: reported(device.siteName) },
@@ -503,9 +551,48 @@ export default function DeviceDetail() {
       { k: 'Managed by', v: claimants.join(' + ') },
       { k: 'Identity', v: device.serial ?? device.mac ?? 'name match only' },
       { k: 'State', v: reported(device.state) },
-      { k: 'Firmware', v: reported(device.firmware) },
+      {
+        k: 'Firmware',
+        v: !firmwareKnown
+          ? liveFirmware
+          : device.firmwareApproved
+            ? `${liveFirmware} (approved)`
+            : `${liveFirmware} — off the approved train`,
+        ...(firmwareKnown && !device.firmwareApproved ? { tone: 'var(--nd-warning)' } : {}),
+      },
       { k: 'Licence', v: reported(device.licence) },
       { k: 'Local shell', v: device.localShell ? 'yes — via collector' : 'no — cloud-claimed' },
+    ];
+
+    // Five Stats (README §9), every one of them a field the poller actually
+    // returned — a tile with nothing behind it reads 'Not reported' rather
+    // than inventing a number.
+    const liveStats: { label: string; value: string; delta: string }[] = [
+      { label: 'State', value: reported(device.state), delta: `as ${device.plane} reports it` },
+      {
+        label: 'Firmware',
+        value: liveFirmware,
+        delta: !firmwareKnown ? 'no version reported' : device.firmwareApproved ? 'approved train' : 'off approved train',
+      },
+      {
+        label: 'Claimed by',
+        value: `${claimants.length} plane${claimants.length === 1 ? '' : 's'}`,
+        delta: claimants.join(' + '),
+      },
+      {
+        label: 'Clients now',
+        value: clients === null ? 'Not reported' : String(clients.rows.length),
+        delta: clients === null ? 'no plane reported sessions' : 'from the poller snapshot',
+      },
+      {
+        label: 'Recorded shells',
+        value: sessionsError ? 'Not reported' : String(sessions.length),
+        delta: sessionsError
+          ? 'session store unreadable'
+          : device.localShell
+            ? 'transcripts recorded by the portal'
+            : 'cloud-claimed — no portal shell',
+      },
     ];
 
     return (
@@ -545,6 +632,26 @@ export default function DeviceDetail() {
             <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
               ← Inventory
             </Button>
+            {/* Design rule 4: a plane the portal cannot write to still gets an
+                honest console hand-off, never a fake edit form. The local
+                collector and third-party gear have no console to hand off to,
+                so they get no button rather than a dead one. `Save config`
+                stays out of the live branch — no linked plane reports a
+                running config here, so there is nothing to save. */}
+            {device.plane !== 'LOCAL' && device.plane !== 'THIRD-PARTY' ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() =>
+                  toast(`Open in ${device.plane} — console hand-off queued`, {
+                    description: 'Read-only plane: the portal opens its console pre-filled.',
+                    tone: 'info',
+                  })
+                }
+              >
+                Open in {device.plane}
+              </Button>
+            ) : null}
             <Button variant="ghost" size="sm" style={{ color: 'var(--nd-danger)' }} onClick={() => setRebootOpen(true)}>
               Reboot
             </Button>
@@ -552,6 +659,18 @@ export default function DeviceDetail() {
         </div>
 
         {reconciliationAlert}
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+            gap: 18,
+          }}
+        >
+          {liveStats.map((s) => (
+            <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} />
+          ))}
+        </div>
 
         <Divider variant="flair" />
 
@@ -573,10 +692,17 @@ export default function DeviceDetail() {
                 forName={device.name}
                 sectionTitle="Local terminal"
                 sectionMeta="SESSION RECORDED"
-                titlebar={`ssh ${device.name} — via collector`}
+                titlebar={
+                  currentSession
+                    ? `ssh ${currentSession.user}@${currentSession.target} — via collector`
+                    : `ssh ${device.name} — via collector`
+                }
                 titlebarRight="AES-256 · LIVE · recorded"
                 online
-                quickCommands={[]}
+                /* Chips come from the inventory row's device class, not the
+                   fixture name-prefix rules — every one of them is inside the
+                   server's read-only allow-list. */
+                quickCommands={terminalQuickCommands(deviceTerminalKind(device, device.name))}
               />
             ) : (
               <div>
@@ -618,7 +744,16 @@ export default function DeviceDetail() {
           {/* ---------------- right column ---------------- */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <SectionHeader label="Identity" meta="LIVE POLLER CACHE" />
+              {/* An 'unverified' row is only actionable next to the age of the
+                  cache it came from, so the envelope's stamp is rendered. */}
+              <SectionHeader
+                label="Identity"
+                meta={
+                  data.syncedAt
+                    ? `LIVE POLLER CACHE · ${hhmm(data.syncedAt)}`
+                    : 'LIVE POLLER CACHE · NO SYNC STAMP'
+                }
+              />
               {liveFacts.map((f) => (
                 <div
                   key={f.k}
@@ -649,7 +784,7 @@ export default function DeviceDetail() {
                       minWidth: 0,
                       fontFamily: 'var(--nd-font-mono)',
                       fontSize: 11.5,
-                      color: 'var(--nd-text-secondary)',
+                      color: f.tone ?? 'var(--nd-text-secondary)',
                       overflowWrap: 'anywhere',
                     }}
                   >
@@ -657,6 +792,17 @@ export default function DeviceDetail() {
                   </span>
                 </div>
               ))}
+            </div>
+
+            {/* The class block (Ports of interest / Cluster members / Radios &
+                SSIDs / Services) has no live source yet. README §9 requires the
+                section, and every other live gap on this screen declares
+                itself rather than vanishing. */}
+            <div>
+              <SectionHeader label="Ports of interest" />
+              <LiveGapNote>
+                Not available in live mode — no linked plane reports per-port state for this device.
+              </LiveGapNote>
             </div>
 
             <div>
@@ -694,6 +840,11 @@ export default function DeviceDetail() {
                   </div>
                 ))
               )}
+              <div style={{ paddingTop: 10 }}>
+                <Button variant="ghost" size="sm" onClick={() => navigate('/clients')}>
+                  All clients →
+                </Button>
+              </div>
             </div>
 
             <div>
@@ -742,12 +893,17 @@ export default function DeviceDetail() {
   });
 
   const snapshotNow = () => {
-    toast('Snapshot stored', { description: 'Added to the history below as a local row.' });
+    toast('Recorded locally — not persisted', {
+      description: 'Added to the history below as a local row; it is gone on reload.',
+      tone: 'info',
+    });
     setExtraHistory((xs) => [
       {
         when: 'just now',
         what: 'Config snapshot taken from the portal',
-        who: 'r.okafor · portal snapshot',
+        // Never attribute the action to the fixture operator: name the account
+        // the portal's own shell session ran under, or nobody at all.
+        who: currentSession ? `${currentSession.user} · portal snapshot` : 'portal snapshot · local only',
         tag: 'snapshot',
         tone: 'neutral',
       },
@@ -858,10 +1014,18 @@ export default function DeviceDetail() {
             sectionMeta={
               canShell ? (sessions.length > 0 ? `SESSION RECORDED · ${sessions.length} ON FILE` : 'SESSION RECORDED') : 'CLOUD-CLAIMED DEVICE'
             }
+            /* The authored `r.okafor@<fixture ip>` line is demo text. Once a
+               real recorded session is up the titlebar must name the account
+               and address the bridge actually dialled — the banner inside the
+               pane already does, and the two must not contradict. */
             titlebar={
-              canShell
-                ? `ssh r.okafor@${profile.ip} — via collector`
-                : `no shell — ${profile.plane} owns this device`
+              !canShell
+                ? `no shell — ${profile.plane} owns this device`
+                : !liveSsh
+                  ? `ssh r.okafor@${profile.ip} — via collector`
+                  : currentSession
+                    ? `ssh ${currentSession.user}@${currentSession.target} — via collector`
+                    : `ssh ${profile.name} — via collector`
             }
             titlebarRight={
               canShell ? (liveSsh ? 'AES-256 · LIVE · recorded' : 'AES-256 · idle 14:52') : 'request remote shell ↗'

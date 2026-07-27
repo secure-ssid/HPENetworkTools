@@ -25,6 +25,7 @@ import {
   CONFIG_PORTS,
   DEVICE_CLIENT_SETS,
   DEVICE_CONFIGS,
+  DEVICE_RECONCILIATION,
   DEVICES,
   FINDINGS,
   LANE_META,
@@ -43,6 +44,7 @@ import {
   SEARCH_INDEX,
   SITES,
   SITE_IDS,
+  SITE_PROFILES,
   SITE_STATS,
   SSIDS,
   SUBSCRIPTIONS,
@@ -50,10 +52,10 @@ import {
   SYSTEMS,
   TICKETS,
   VLANS,
+  deriveSiteProfile,
   deviceProfile,
-  siteDisplayName,
+  isRealSiteId,
   siteIdFor,
-  siteProfileFor,
 } from '../../../shared';
 import type {
   AlertRow,
@@ -79,6 +81,7 @@ import type {
   OverviewSiteRow,
   PermissionRow,
   Plane,
+  PlaneScope,
   PolicyServiceRow,
   PortObject,
   QueuedChangeRow,
@@ -95,6 +98,7 @@ import type {
   SubscriptionRow,
   SyncHistoryRow,
   SystemRow,
+  TerminalLine,
   TicketRow,
   VlanObject,
 } from '../../../shared';
@@ -172,6 +176,12 @@ export interface DeviceDetailData extends ScreenEnvelope {
   profile: DeviceProfile | null; // null in live mode — the authored profile is demo data
   config: DeviceCfg | null;
   clients: DeviceClientSet | null;
+  /** Shell banner + quick-command chips as the ROUTE computes them. The demo
+   *  branch already sends this (screens.ts:1587); the screen may prefer it over
+   *  re-deriving the pair from the fixture profile, so the server stays the
+   *  authority once the live branch serves a platform-correct command set.
+   *  Absent = no payload sent; fall back to the shared helpers. */
+  terminal?: { banner: TerminalLine[]; quickCommands: string[] };
 }
 
 export interface LicensesData extends ScreenEnvelope {
@@ -443,22 +453,34 @@ export async function getSiteDetail(param: string): Promise<SiteDetailData> {
       ...(r.blended ? { blended: r.blended } : {}),
     };
   }
-  // Backend absent: only canonical fixture ids have an offline demo profile.
+  // Backend absent: mirror the server's own demo branch (screens.ts:1493-1507)
+  // rather than the prototype's fallback(). 'core-services', 'workspace' and
+  // 'multiple' are bookkeeping ids that alert/device rows file under — they
+  // have no inventory row, so a page for them would be a fabricated site. And
+  // a real site with no authored profile gets one derived from the portal's
+  // OWN inventory row, never Warehouse-DC1's authored numbers.
   const id = (SITE_IDS as readonly string[]).includes(param) ? (param as SiteId) : siteIdFor(param);
-  return id
-    ? {
-        site: SITES.find((s) => s.id === id) ?? null,
-        profile: siteProfileFor(siteDisplayName(id)),
-        dataSource: 'demo',
-      }
-    : { site: null, profile: null, dataSource: 'demo' };
+  if (!id || !isRealSiteId(id)) return { site: null, profile: null, dataSource: 'demo' };
+  return {
+    site: SITES.find((s) => s.id === id) ?? null,
+    profile: SITE_PROFILES[id] ?? deriveSiteProfile(id),
+    dataSource: 'demo',
+  };
 }
 
 export async function getDevices(): Promise<DevicesData> {
   const result = await fetchScreen<DevicesData>('/api/devices');
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') return apiFailure<DevicesData>(result.message, { devices: [], lanes: {} });
-  return { devices: DEVICES, lanes: LANE_META, dataSource: 'demo' };
+  // Offline demo: carry the authored estate truth in the envelope so the
+  // reconciliation banner reads from the payload rather than the screen
+  // re-importing the fixture on its own.
+  return {
+    devices: DEVICES,
+    lanes: LANE_META,
+    reconciliation: DEVICE_RECONCILIATION,
+    dataSource: 'demo',
+  };
 }
 
 export async function getDeviceDetail(name: string): Promise<DeviceDetailData> {
@@ -710,7 +732,28 @@ export interface LiveApiCall {
   code: string;
 }
 
-/** Per-plane registry state (server PlaneState) + its recent call log. */
+/** Credential freshness for the fact strip — expiry + source, never a secret. */
+export interface LivePlaneToken {
+  expiresAt: string | null; // null = the plane publishes no expiry (static key)
+  source: string; // 'oauth client_credentials', 'static token', 'sso' …
+}
+
+/** What the portal can do with a plane (server PlaneCapabilities). */
+export interface LivePlaneCapabilities {
+  localShell?: boolean;
+  brokeredWrite?: boolean;
+  configRead?: boolean;
+}
+
+/**
+ * Per-plane registry state (server PlaneStateView) + its recent call log.
+ *
+ * Everything below `note` is optional because the registry fills it in as the
+ * adapters learn it — but it IS on the wire (registry.snapshot() spreads the
+ * whole PlaneState and stamps `stale`/`ageSec`), so the client must not strip
+ * it: staleness is part of the UI, and a screen that cannot see `stale` has to
+ * re-derive it from `lastSync` with its own idea of the window.
+ */
 export interface LivePlaneState {
   id: string;
   linked: boolean;
@@ -720,6 +763,21 @@ export interface LivePlaneState {
   callsToday: number;
   note: string | null;
   recentCalls: LiveApiCall[];
+  /** The last successful sync has aged past the registry's staleness window. */
+  stale?: boolean;
+  /** Seconds since that sync; null when the plane has never synced. */
+  ageSec?: number | null;
+  /** Daily outbound-call budget — the "Calls today" denominator. null = the
+   *  vendor tier is unknown, so the fact renders bare rather than inventing one. */
+  callBudget?: number | null;
+  token?: LivePlaneToken | null;
+  /** What the operator actually granted, parsed from the stored `scopes`. */
+  scope?: PlaneScope;
+  scopeNote?: string;
+  capabilities?: LivePlaneCapabilities;
+  /** Consecutive failed polls + the earliest time a scheduled poll retries. */
+  consecutiveFailures?: number;
+  nextAttemptAt?: string | null;
 }
 
 /** One poller sync-history entry (server SyncEvent). */
@@ -731,6 +789,10 @@ export interface LiveSyncEvent {
 }
 
 export interface SystemsState {
+  /** Always 'live' from the route — the registry has no fixture mode. */
+  dataSource?: DataSource;
+  /** Newest successful sync across every plane (ISO); null before the first. */
+  syncedAt?: string | null;
   demoMode: boolean;
   planes: Record<string, LivePlaneState>;
   history: LiveSyncEvent[];
@@ -742,7 +804,14 @@ export async function getSystemsState(): Promise<SystemsState | null> {
   const result = await fetchScreen<SystemsState>('/api/systems/state');
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') {
-    return { demoMode: false, planes: {}, history: [], apiError: result.message };
+    return {
+      dataSource: 'live',
+      syncedAt: null,
+      demoMode: false,
+      planes: {},
+      history: [],
+      apiError: result.message,
+    };
   }
   return null;
 }

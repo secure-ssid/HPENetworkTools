@@ -281,7 +281,11 @@ describe('manual systems sync', () => {
     try {
       const synced = await postJson('/api/systems/sync');
       expect(synced.status).toBe(200);
-      expect(synced.body).toEqual({ ok: true, started: ['classic'] });
+      // The manual sync reaches the linked plane even though the portal is in
+      // demo mode — and reports honestly what happened to it. 'classic' is
+      // still on the StubAdapter: it makes no outbound call and reads nothing,
+      // so it is SKIPPED rather than counted as a synced plane.
+      expect(synced.body).toEqual({ ok: true, started: [], skipped: ['classic'] });
     } finally {
       await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });
     }

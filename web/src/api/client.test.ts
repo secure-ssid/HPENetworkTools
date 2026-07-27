@@ -7,12 +7,14 @@ import {
   getOverview,
   getSettings,
   getSiteDetail,
+  getSystemsState,
   getTerminalSession,
   getTerminalSessions,
   saveSettings,
   syncSystems,
 } from './client';
 import type { Settings } from './client';
+import { DEVICE_RECONCILIATION } from '../../../shared';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -162,6 +164,92 @@ describe('screen API source handling', () => {
     expect(data.profile).toBeNull();
     expect(data.devices?.map((d) => d.name)).toEqual(['sw-core-a']);
     expect(data.alerts?.map((a) => a.title)).toEqual(['AP down']);
+  });
+
+  it('does not fabricate a site page for a bookkeeping pseudo-site id when the backend is unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    for (const pseudo of ['core-services', 'workspace', 'multiple']) {
+      const data = await getSiteDetail(pseudo);
+      expect(data).toEqual({ site: null, profile: null, dataSource: 'demo' });
+    }
+  });
+
+  it('derives the offline profile from the site’s own inventory row instead of Warehouse-DC1’s numbers', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    const data = await getSiteDetail('northgate');
+    expect(data.site?.id).toBe('northgate');
+    expect(data.profile?.siteId).toBe('northgate');
+    // The old fallback answered every unauthored site with the local-only
+    // profile: Warehouse-DC1's core switch, subnet and device count.
+    expect(data.profile?.core).not.toBe('sw-wh1-1');
+    expect(data.profile?.devices.map((d) => d.name)).not.toContain('sw-wh1-1');
+    expect(data.profile?.deviceCount).toBe(String(data.site?.devices));
+  });
+
+  it('carries the reconciliation counts in the offline device envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    const data = await getDevices();
+    expect(data.reconciliation).toEqual(DEVICE_RECONCILIATION);
+  });
+
+  it('passes the route’s terminal banner and chips through the device-detail envelope', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'demo',
+        device: { name: 'sw-core-a' },
+        profile: { kind: 'cx' },
+        config: null,
+        clients: null,
+        terminal: {
+          banner: [{ text: 'Connecting …', tone: 'muted' }],
+          quickCommands: ['show version', 'show vlan'],
+        },
+      },
+    });
+
+    const data = await getDeviceDetail('sw-core-a');
+    expect(data.terminal?.quickCommands).toEqual(['show version', 'show vlan']);
+    expect(data.terminal?.banner.map((l) => l.text)).toEqual(['Connecting …']);
+  });
+
+  it('keeps the per-plane freshness the registry stamps on /api/systems/state', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        syncedAt: '2026-07-26T09:41:00.000Z',
+        demoMode: false,
+        planes: {
+          central: {
+            id: 'central',
+            linked: true,
+            health: 'degraded',
+            lastSync: '2026-07-26T08:00:00.000Z',
+            deviceCount: 9,
+            callsToday: 42,
+            note: null,
+            recentCalls: [],
+            stale: true,
+            ageSec: 6060,
+            callBudget: 5000,
+            scope: 'read + broker',
+          },
+        },
+        history: [],
+      },
+    });
+
+    const state = await getSystemsState();
+    expect(state?.dataSource).toBe('live');
+    expect(state?.syncedAt).toBe('2026-07-26T09:41:00.000Z');
+    expect(state?.planes.central.stale).toBe(true);
+    expect(state?.planes.central.ageSec).toBe(6060);
+    expect(state?.planes.central.callBudget).toBe(5000);
+    expect(state?.planes.central.scope).toBe('read + broker');
   });
 });
 

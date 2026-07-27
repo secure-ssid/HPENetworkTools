@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 import Systems from './Systems';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -83,11 +83,20 @@ function renderSystems() {
     <MemoryRouter>
       <ToastProvider>
         <SettingsProvider>
-          <Systems />
+          <Routes>
+            <Route path="/" element={<Systems />} />
+            <Route path="/sites/:siteId" element={<SiteStub />} />
+          </Routes>
         </SettingsProvider>
       </ToastProvider>
     </MemoryRouter>,
   );
+}
+
+/** Stands in for SiteDetail so a drill-down is observable by its param. */
+function SiteStub() {
+  const { siteId } = useParams();
+  return <div>site page {siteId}</div>;
 }
 
 afterEach(() => {
@@ -111,7 +120,12 @@ describe('Systems demo/live merge', () => {
     expect(screen.getByText('164')).toBeTruthy();
     expect(screen.getByText('9,412 / 50k')).toBeTruthy();
     expect(screen.queryByText('never')).toBeNull();
-    expect(screen.getByText('7 LINKED · SELECT ONE FOR DETAIL')).toBeTruthy();
+    // The meta line counts the rows actually rendered — the authored set is
+    // eight planes, so the design's '7 LINKED' literal was a stale claim.
+    expect(screen.getByText(`${SYSTEMS.length} LINKED · SELECT ONE FOR DETAIL`)).toBeTruthy();
+    expect(screen.queryByText('7 LINKED · SELECT ONE FOR DETAIL')).toBeNull();
+    // An authored payload says so rather than borrowing a live sync stamp.
+    expect(screen.getByText('DEMO FIXTURE')).toBeTruthy();
     // Demo keeps the authored Classic incident.
     expect(screen.getByText('Central Classic is throttling us')).toBeTruthy();
   });
@@ -194,6 +208,51 @@ describe('Systems demo/live merge', () => {
     await waitFor(() => expect(screen.getByText('Connected systems')).toBeTruthy());
     expect(screen.queryByText('Central Classic is throttling us')).toBeNull();
     expect(screen.queryByText(/is throttling us$/)).toBeNull();
+  });
+});
+
+describe('Systems plane drawer', () => {
+  it('drills into a site the plane names and closes the drawer first', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Central')).toBeTruthy());
+    fireEvent.click(screen.getByText('HPE Aruba Central'));
+    await waitFor(() => expect(screen.getByText('Sites on this plane')).toBeTruthy());
+
+    // Every fixture site row here carries a siteId; a 'Workspace-wide' row
+    // (siteId null) stays inert, so only real sites are clickable.
+    fireEvent.click(screen.getByRole('button', { name: 'Campus-01 — Meridian HQ' }));
+
+    await waitFor(() => expect(screen.getByText('site page campus-01')).toBeTruthy());
+    expect(screen.queryByText('Sites on this plane')).toBeNull();
+  });
+
+  it('stamps a live payload with its own sync time rather than a demo label', async () => {
+    mockGetSystems.mockResolvedValue({
+      systems: [],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+    });
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connected systems')).toBeTruthy());
+    expect(screen.getByText(/^LIVE · SYNCED /)).toBeTruthy();
+    expect(screen.queryByText('DEMO FIXTURE')).toBeNull();
+    // No plane rows means no linked planes — the meta must not claim seven.
+    expect(screen.getByText('0 LINKED · SELECT ONE FOR DETAIL')).toBeTruthy();
   });
 });
 

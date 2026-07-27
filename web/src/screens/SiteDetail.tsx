@@ -15,7 +15,10 @@
  * A live/blend row carries the same two per-site sections a profile does —
  * "Devices at this site" and "Open here" — so they render from whichever
  * source answered, and the header states which source that was and how fresh
- * it is (demo fixtures are never dressed up as a live sync).
+ * it is (demo fixtures are never dressed up as a live sync). Its header
+ * actions are derived, never hardcoded: "Open in <plane>" only when a plane
+ * claimed the site, "Local terminal" only when a switch-like device row names
+ * a target — an AP is not silently promoted to a terminal target.
  */
 
 import { useEffect, useState } from 'react';
@@ -297,6 +300,15 @@ export default function SiteDetail() {
     ];
     const liveDevices = sections.devices ?? [];
     const liveAlerts = sections.alerts ?? [];
+    // README §7 header actions. The launch plane is whatever claimed the site —
+    // never a hardcoded label, and no button at all when nothing claimed it.
+    const launchPlane = site.planes[0]?.name ?? null;
+    // "Local terminal" needs a real target. Only a switch-like row is offered;
+    // pointing the terminal at the first AP would be a guess, so it is omitted.
+    const terminalTarget =
+      liveDevices.find((d) => /core/i.test(`${d.role} ${d.name}`))?.name ??
+      liveDevices.find((d) => /switch|\bsw\b|sw-/i.test(`${d.role} ${d.name}`))?.name ??
+      null;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
         <ScreenHeader
@@ -309,12 +321,35 @@ export default function SiteDetail() {
               <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
                 ← All sites
               </Button>
+              {launchPlane ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() =>
+                    toast(`Open in ${launchPlane} — console hand-off queued`, {
+                      description: 'Read-only plane: the portal opens its console pre-filled.',
+                      tone: 'info',
+                    })
+                  }
+                >
+                  Open in {launchPlane}
+                </Button>
+              ) : null}
+              {terminalTarget ? (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => navigate(`/devices/${encodeURIComponent(terminalTarget)}`)}
+                >
+                  Local terminal
+                </Button>
+              ) : null}
             </>
           }
         />
 
         <div
-          style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 18 }}
+          style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 18 }}
         >
           <Stat label="Devices" value={String(site.devices)} delta="reported inventory rows" deltaTone="neutral" />
           <Stat label="Clients now" value={site.clients} delta={site.clients === '—' ? 'not reported' : 'current rows'} deltaTone="neutral" />
@@ -329,6 +364,17 @@ export default function SiteDetail() {
             value={site.alerts}
             delta={site.alerts === '—' ? 'alert feed not reported' : 'current linked-plane rows'}
             deltaTone={site.alertTone === 'warning' ? 'negative' : 'neutral'}
+          />
+          {/* README §7 specifies five tiles. No feed reports per-site drift, so
+              the tile stays and says why — reusing the live Compliance drift
+              stat's own copy (server/src/routes/screens.ts) so the two screens
+              cannot disagree — rather than vanishing and silently changing the
+              row's shape between demo and live. */}
+          <Stat
+            label="Config drift"
+            value="—"
+            delta="no running-config baseline source"
+            deltaTone="neutral"
           />
         </div>
 

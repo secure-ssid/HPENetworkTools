@@ -821,6 +821,22 @@ export const PLANE_MARK: Record<Plane, string> = {
   'THIRD-PARTY': 'var(--nd-border-strong)',
 };
 
+/**
+ * The lane header for a plane the payload says nothing about — an inventory
+ * row claims the plane, but no lane meta was published for it (unlinked, or
+ * not in this deployment). Honesty rule 1: it states that it has no freshness
+ * stamp instead of inheriting a neutral header that reads as "linked".
+ * Shared so the server's live lane builder and the client's fallback cannot
+ * drift apart.
+ */
+export const UNKNOWN_LANE_META: LaneMeta = {
+  tone: 'neutral',
+  sync: 'no sync stamp',
+  note: 'freshness not reported',
+  mark: 'var(--nd-border-strong)',
+  state: 'unknown',
+};
+
 /** Authored reconciliation truth for the demo estate — README:237 and
  *  design/NtDevices.dc.html:38 ("3 devices are claimed by two inventories,
  *  14 by none"). The 28 DEVICES rows are a SAMPLE of a 418-device estate, so

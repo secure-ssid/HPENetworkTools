@@ -90,7 +90,10 @@ describe('Devices sparse live inventory', () => {
     );
 
     expect(await screen.findByText('1 of 1 indexed')).toBeTruthy();
-    expect(screen.queryByText(/418 total/)).toBeNull();
+    // No authored estate figure survives anywhere on a live render — the
+    // subtitle used to assert "418 devices, six inventories" unconditionally.
+    expect(screen.queryByText(/418/)).toBeNull();
+    expect(screen.getByText('1 device, 1 inventory, one reconciled list.')).toBeTruthy();
     expect(screen.queryByText(/sw-riv-2/)).toBeNull();
     expect(screen.getByText('Reconciliation: 1 device claimed by two inventories, 0 by none')).toBeTruthy();
     expect(screen.getAllByText('Not reported').length).toBeGreaterThanOrEqual(3);
@@ -162,6 +165,40 @@ describe('Devices reconciliation flags', () => {
         'Reconciliation: 3 devices claimed by two inventories, 14 by none',
       ),
     ).toBeTruthy();
+    // Demo keeps the authored prose verbatim.
+    expect(
+      screen.getByText('418 devices, six inventories, one reconciled list.'),
+    ).toBeTruthy();
+  });
+});
+
+describe('Devices search', () => {
+  it('matches the serial, MAC and management IP the placeholder advertises', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [
+        liveRow({ name: 'sw-a', serial: 'SG09KLM4X2', mac: 'aa:bb:cc:dd:ee:ff', ip: '10.42.8.11' }),
+        liveRow({ name: 'sw-b' }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderDevices();
+
+    const box = await screen.findByPlaceholderText('name, model, serial, ip…');
+
+    fireEvent.change(box, { target: { value: 'SG09KLM4X2' } });
+    expect(await screen.findByText('1 of 2 indexed')).toBeTruthy();
+    expect(screen.getByText('sw-a')).toBeTruthy();
+
+    fireEvent.change(box, { target: { value: '10.42.8.11' } });
+    expect(await screen.findByText('1 of 2 indexed')).toBeTruthy();
+
+    // A MAC pasted from another tool rarely uses the same separators.
+    fireEvent.change(box, { target: { value: 'AABB.CCDD.EEFF' } });
+    expect(await screen.findByText('1 of 2 indexed')).toBeTruthy();
+    expect(screen.getByText('sw-a')).toBeTruthy();
   });
 });
 
@@ -182,5 +219,48 @@ describe('Devices platform lanes', () => {
     expect(await screen.findByText('no sync stamp')).toBeTruthy();
     expect(screen.getByText('freshness not reported')).toBeTruthy();
     expect(screen.queryByText('linked')).toBeNull();
+  });
+
+  it('keeps a lane for a linked plane that reported no inventory at all', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [liveRow()],
+      lanes: {
+        CENTRAL: { tone: 'success', sync: 'synced 40s', note: '', mark: 'var(--nd-accent)' },
+        LOCAL: { tone: 'warning', sync: 'never synced', note: '', mark: 'var(--nd-border-strong)' },
+      },
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderDevices();
+
+    expect(await screen.findByText('1 of 1 indexed')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'Platform lanes' }));
+
+    // The empty plane is exactly the gap the lanes view exists to show — it
+    // must not disappear, and it must not read as "filtered out".
+    expect(await screen.findByText('never synced')).toBeTruthy();
+    expect(screen.getByText('No inventory reported by this plane.')).toBeTruthy();
+    expect(screen.queryByText('Nothing in this lane matches the filter.')).toBeNull();
+  });
+
+  it('distinguishes a filtered-out lane from a plane that reported nothing', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [liveRow({ name: 'sw-live-1' })],
+      lanes: {
+        CENTRAL: { tone: 'success', sync: 'synced 40s', note: '', mark: 'var(--nd-accent)' },
+      },
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderDevices();
+
+    const box = await screen.findByPlaceholderText('name, model, serial, ip…');
+    fireEvent.change(box, { target: { value: 'no-such-device' } });
+    fireEvent.click(screen.getByRole('tab', { name: 'Platform lanes' }));
+
+    expect(await screen.findByText('Nothing in this lane matches the filter.')).toBeTruthy();
+    expect(screen.queryByText('No inventory reported by this plane.')).toBeNull();
   });
 });

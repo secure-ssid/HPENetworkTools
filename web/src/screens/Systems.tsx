@@ -12,7 +12,10 @@
  * Alert is derived from the plane's own 429s, the drawer's Activity tab
  * lists the real recent-call log, and Sync history comes from the poller.
  * Backend unreachable → fixture-only plus a small mono "backend offline —
- * fixture state" note.
+ * fixture state" note. The header carries the envelope's own provenance stamp
+ * (DEMO FIXTURE vs LIVE · SYNCED hh:mm) and the Planes meta counts what is
+ * actually on screen, never a literal. A drawer site row that names a real
+ * site drills into it (closing the drawer first).
  * The connect drawer renders the endpoint variant plus the per-plane
  * credential fields the chosen adapter needs (shared CONNECT_FIELDS) and
  * saves every value under the settings key that adapter's isComplete()
@@ -983,6 +986,21 @@ export default function Systems() {
         subtitle="Every plane the portal speaks to, what it is allowed to do there, and when it last succeeded."
         actions={
           <>
+            {/* Design rule 1: the screen says which source answered and how
+                fresh it is. Same vocabulary as SiteDetail so the portal does
+                not invent a third phrasing for one state. */}
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-10)',
+                color: 'var(--nd-text-muted)',
+                letterSpacing: '.08em',
+              }}
+            >
+              {systemsLive
+                ? `LIVE · SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : 'NEVER'}`
+                : 'DEMO FIXTURE'}
+            </span>
             <Button variant="ghost" size="sm" onClick={() => void syncAll()} disabled={syncing}>
               {syncing ? 'Syncing…' : 'Sync all'}
             </Button>
@@ -1026,9 +1044,13 @@ export default function Systems() {
         <SectionHeader
           label="Planes"
           meta={
+            /* The meta line counts what is on screen. On a live section that
+               is the genuinely linked planes; on an authored one it is the
+               rows themselves — never a literal that goes stale the moment a
+               fixture plane is added (the authored set is eight, not seven). */
             systemsLive && liveState
               ? `${linkedCount} LINKED · SELECT ONE FOR DETAIL`
-              : '7 LINKED · SELECT ONE FOR DETAIL'
+              : `${data.systems.length} LINKED · SELECT ONE FOR DETAIL`
           }
         />
         {views.map((v) => (
@@ -1346,31 +1368,63 @@ export default function Systems() {
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <SectionHeader label="Sites on this plane" />
-                  {cur.sites.map((x) => (
-                    <div
-                      key={x.name}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 10,
-                        padding: '8px 0',
-                        borderBottom: '1px solid var(--nd-border-subtle)',
-                      }}
-                    >
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-primary)' }}>
-                        {x.name}
-                      </span>
-                      <span
+                  {cur.sites.map((x) => {
+                    const siteId = x.siteId;
+                    return (
+                      <div
+                        key={x.name}
                         style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 10.5,
-                          color: 'var(--nd-text-muted)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '8px 0',
+                          borderBottom: '1px solid var(--nd-border-subtle)',
                         }}
                       >
-                        {x.detail}
-                      </span>
-                    </div>
-                  ))}
+                        {/* A row that names a real site drills into it, closing
+                            the drawer first (README navigation rules). The
+                            'Workspace-wide' row carries siteId null and stays
+                            plain text — there is no page to open. */}
+                        {siteId ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDetailName(null);
+                              navigate(`/sites/${encodeURIComponent(siteId)}`);
+                            }}
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              background: 'none',
+                              border: 'none',
+                              padding: 0,
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              fontSize: 12.5,
+                              color: 'var(--nd-accent-text)',
+                            }}
+                          >
+                            {x.name}
+                          </button>
+                        ) : (
+                          <span
+                            style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-primary)' }}
+                          >
+                            {x.name}
+                          </span>
+                        )}
+                        <span
+                          style={{
+                            fontFamily: 'var(--nd-font-mono)',
+                            fontSize: 10.5,
+                            color: 'var(--nd-text-muted)',
+                          }}
+                        >
+                          {x.detail}
+                        </span>
+                      </div>
+                    );
+                  })}
                   {cur.sites.length === 0 ? (
                     <NothingReported label="no sites reported by this plane yet" />
                   ) : null}
@@ -1608,10 +1662,14 @@ export default function Systems() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      /* No plane row carries a console URL, so the portal
+                         cannot perform this hand-off — say so instead of
+                         reporting a queued action that never happens. */
                       onClick={() =>
-                        toast(`${cur.name} console — hand-off queued`, {
-                          description: 'The portal opens the plane console pre-authenticated.',
-                          tone: 'info',
+                        toast(`No console URL recorded for ${cur.name}`, {
+                          description:
+                            'The portal has no console endpoint for this plane, so it cannot hand off — open the vendor console directly.',
+                          tone: 'warning',
                         })
                       }
                     >

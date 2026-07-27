@@ -28,6 +28,20 @@
  *   limits   README:462 caps this plane at 20,000 calls/day; a 429 is paced
  *            with Retry-After rather than failing the cycle outright.
  *
+ * num_clients rides on every device-stats row and is summed per site: when the
+ * roster is unavailable (>CLIENT_SITE_BUDGET sites, or a failed walk) it is the
+ * only client fact this plane gives away for free, so the Sites 'Clients'
+ * column and the plane note report it — labelled 'reported by devices', never
+ * as a session roster.
+ *
+ * DEFERRED (needs a live Mist org to verify the shapes before it can ship):
+ *   subscriptions  GET /api/v1/orgs/{orgId}/licenses (+ /licenses/usages) —
+ *                  Mist DOES publish org entitlements, so the Licences screen
+ *                  loses the Mist SUB rows until this section lands. The
+ *                  device row's `licence: 'unknown'` says "not read", not
+ *                  "does not exist".
+ *   config         no SSID/VLAN read, so capabilities().configRead is false.
+ *
  * Failure policy: `sites` and `devices` are the inventory this plane exists
  * for — either failing throws, naming the section. `clients` and `alarms` are
  * additional datasets: a failure there OMITS the key (never an empty array),
@@ -39,7 +53,16 @@
  * URL; the call log records method + path + ms + status, never headers.
  */
 
-import type { AlertRow, ClientRow, ClientType, DeviceRow, DeviceType, SiteRow, Tone } from '../../../shared';
+import type {
+  AlertRow,
+  ClientRow,
+  ClientType,
+  DeviceRow,
+  DeviceType,
+  PlaneDatasetKey,
+  SiteRow,
+  Tone,
+} from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
 import {
   ageString,
@@ -52,7 +75,7 @@ import {
   type RecordCallFn,
   type SleepFn,
 } from './central';
-import type { PlaneAdapter, PlanePull, PlaneState } from './types';
+import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 
 // Re-exported so tests can type an in-memory fake fetch against this adapter.
 export type { FetchLike } from './central';
@@ -150,6 +173,7 @@ export function mapMistDevice(raw: unknown, siteNameById: ReadonlyMap<string, st
   const site = siteIdForName(siteUuid !== null ? (siteNameById.get(siteUuid) ?? null) : null);
   const serial = str(r.serial);
   const mac = str(r.mac);
+  const ip = str(r.ip);
   return {
     name,
     model: str(r.model) ?? 'unknown',
@@ -162,20 +186,35 @@ export function mapMistDevice(raw: unknown, siteNameById: ReadonlyMap<string, st
     stateTone,
     firmware: str(r.version) ?? 'unknown',
     firmwareApproved: true, // Mist's stats API does not publish an approved train — honest default
-    licence: 'unknown', // Mist subscriptions live in the Mist dashboard, not in this API
+    // Not reported by the device-stats row. Mist DOES publish org entitlements
+    // at GET /api/v1/orgs/{orgId}/licenses (+ /licenses/usages), which this
+    // adapter does not read yet — see the deferred subscriptions section — so
+    // 'unknown' is honest, not a statement that Mist has no licence API.
+    licence: 'unknown',
     reconciliationIssue: false, // the reconcile service computes this
     localShell: false, // cloud-claimed — no portal shell
     ...(serial ? { serial } : {}),
     ...(mac ? { mac } : {}),
+    // Management IP when the stats row carries one: the Devices search and the
+    // terminal's resolveTarget() both key on it. Absent stays absent.
+    ...(ip ? { ip } : {}),
   };
 }
 
 /**
  * Mist org site row → SiteRow. Device and client counts ride along from the
- * stats sections; `clientCount` null means the clients section was not read,
- * which renders '—' rather than a '0' the adapter cannot stand behind.
+ * stats sections; `clientCount` null means the clients section was not read
+ * AND no device reported a client total, which renders '—' rather than a '0'
+ * the adapter cannot stand behind. `sync` is the CALLER's stamp — the Mist
+ * site object has no per-site sync time, so pull() passes the plane's own last
+ * successful read (default '—' = never synced).
  */
-export function mapMistSite(raw: unknown, deviceCount: number, clientCount: number | null = null): SiteRow | null {
+export function mapMistSite(
+  raw: unknown,
+  deviceCount: number,
+  clientCount: number | null = null,
+  sync = '—',
+): SiteRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const name = str(r.name);
@@ -194,7 +233,7 @@ export function mapMistSite(raw: unknown, deviceCount: number, clientCount: numb
     tone: 'stale',
     alerts: '—',
     alertTone: 'neutral',
-    sync: '—',
+    sync,
   };
 }
 
@@ -208,11 +247,14 @@ function clientTypeFor(r: Record<string, unknown>): ClientType {
     .join(' ')
     .toLowerCase();
   if (/ipad|tablet/.test(s)) return 'tablet';
-  if (/iphone|android|phone/.test(s)) return 'phone';
+  // 'voip' BEFORE 'phone' (same reason as central's mapper): 'VoIP Phone' /
+  // 'IP Phone' / 'SIP handset' all contain 'phone', so a generic phone test
+  // first makes this branch unreachable. \b guards keep 'iPhone' out.
+  if (/voip|voice|\bsip\b|\bip ?phone\b|handset/.test(s)) return 'voip';
+  if (/iphone|android|smart ?phone|\bmobile\b|\bphone\b/.test(s)) return 'phone';
   if (/windows|mac ?os|linux|ubuntu|chrome/.test(s)) return 'laptop';
   if (/print/.test(s)) return 'printer';
   if (/roku|smart ?tv|television|audio|video|media/.test(s)) return 'media';
-  if (/voip|voice/.test(s)) return 'voip';
   if (/camera|imaging|x-?ray/.test(s)) return 'imaging';
   if (/medical|infusion|clinical/.test(s)) return 'medical';
   if (/sensor|building|thermostat|lighting|iot/.test(s)) return 'building';
@@ -381,6 +423,29 @@ interface FetchAllResult {
   truncated: boolean;
 }
 
+/** Section label → the shared dataset it feeds ('alarms' is Mist's word for alerts). */
+const SECTION_DATASET: Record<string, PlaneDatasetKey> = {
+  sites: 'sites',
+  devices: 'devices',
+  clients: 'clients',
+  alarms: 'alerts',
+};
+
+/**
+ * Datasets this pull could not read in full — a section that failed outright
+ * OR one whose paged walk did not finish. Both mean "not the whole picture",
+ * which is what PlanePull.partial exists to say; a truncated dataset still
+ * ships its rows, so omitting the key cannot express it.
+ */
+function partialDatasets(missing: readonly string[], truncated: readonly string[]): PlaneDatasetKey[] {
+  const out = new Set<PlaneDatasetKey>();
+  for (const s of [...missing, ...truncated]) {
+    const key = SECTION_DATASET[s];
+    if (key) out.add(key);
+  }
+  return [...out];
+}
+
 export class MistAdapter implements PlaneAdapter {
   readonly id = 'mist' as const;
 
@@ -402,6 +467,10 @@ export class MistAdapter implements PlaneAdapter {
     this.baseUrl = withScheme(creds.apiHost).replace(/\/+$/, '');
     this.orgId = creds.orgId.trim();
     this.token = creds.token;
+    // Publish the capability statement on the shared state too: nothing calls
+    // PlaneAdapter.capabilities() yet, and this plane must never be mistaken
+    // for one the portal can shell into or write to.
+    this.stateRef.capabilities = this.capabilities();
   }
 
   static isComplete(creds: PlaneCredentials | null): boolean {
@@ -409,6 +478,18 @@ export class MistAdapter implements PlaneAdapter {
       !!creds &&
       [creds.apiHost, creds.orgId, creds.token].every((v) => typeof v === 'string' && v.trim().length > 0)
     );
+  }
+
+  /**
+   * What the portal can do with Mist, stated honestly:
+   *   localShell    false — cloud-claimed hardware; no collector or jump-host
+   *                 path exists for it, so the recorded-SSH gate must not open.
+   *   brokeredWrite false — README integration table: read-only. Config stays
+   *                 in the Mist dashboard and the portal never fakes an edit.
+   *   configRead    false — pull() reads inventory/clients/alarms only.
+   */
+  capabilities(): PlaneCapabilities {
+    return { localShell: false, brokeredWrite: false, configRead: false };
   }
 
   state(): PlaneState {
@@ -453,11 +534,26 @@ export class MistAdapter implements PlaneAdapter {
       .filter((d): d is MistDeviceRow => d !== null);
 
     // MAC/id → inventory name, so a client's `attach` names the AP it is on
-    // rather than repeating a bare MAC.
+    // rather than repeating a bare MAC. The same walk sums the per-device
+    // `num_clients` the stats row already carries, keyed by the MAPPED site
+    // name: it is the only client fact this plane gives away for free (the
+    // roster costs one call per site and is refused past CLIENT_SITE_BUDGET),
+    // so it is what keeps the Sites 'Clients' column from reading '—'.
     const deviceNameByKey = new Map<string, string>();
+    const reportedClientsBySite = new Map<string, number>();
+    let reportedClientTotal = 0;
+    let reportedClientsSeen = false;
     for (const d of deviceRows) {
       if (!d || typeof d !== 'object') continue;
       const r = d as Record<string, unknown>;
+      const reported = num(r.num_clients);
+      if (reported !== null) {
+        reportedClientsSeen = true;
+        reportedClientTotal += reported;
+        const uuid = str(r.site_id);
+        const mapped = siteIdForName(uuid !== null ? (siteNameById.get(uuid) ?? null) : null);
+        reportedClientsBySite.set(mapped.siteName, (reportedClientsBySite.get(mapped.siteName) ?? 0) + reported);
+      }
       const name = str(r.name) ?? str(r.hostname);
       if (!name) continue;
       const mac = macKey(str(r.mac));
@@ -492,16 +588,26 @@ export class MistAdapter implements PlaneAdapter {
     // Key the lookup by the MAPPED site name (same mapping the devices use) —
     // an aliased Mist name would otherwise count 0, and two Mist sites that
     // alias to one canonical id merge into a single SiteRow.
+    // The site object has no per-site sync time, so the honest stamp is the
+    // plane's own: when this adapter last completed a read. lastSync is written
+    // by the poller AFTER pull() resolves, so cycle 1 legitimately says '—' and
+    // every later cycle reports the previous successful read.
+    const lastSyncMs = this.stateRef.lastSync !== null ? Date.parse(this.stateRef.lastSync) : Number.NaN;
+    const syncStamp = Number.isNaN(lastSyncMs) ? '—' : ageString(lastSyncMs);
     const sites: SiteRow[] = [];
     const seenSiteIds = new Set<string>();
     for (const s of siteRows) {
       const r = s && typeof s === 'object' ? (s as Record<string, unknown>) : {};
       const mapped = siteIdForName(str(r.name));
-      const row = mapMistSite(
-        s,
-        countBySite.get(mapped.siteName) ?? 0,
-        clients === null ? null : (clientsBySite.get(mapped.siteName) ?? 0),
-      );
+      // Roster count when we read the roster; otherwise the devices' own
+      // reported total, which is a real plane fact rather than an assumed 0.
+      const clientCount =
+        clients !== null
+          ? (clientsBySite.get(mapped.siteName) ?? 0)
+          : reportedClientsSeen
+            ? (reportedClientsBySite.get(mapped.siteName) ?? 0)
+            : null;
+      const row = mapMistSite(s, countBySite.get(mapped.siteName) ?? 0, clientCount, syncStamp);
       if (row === null || seenSiteIds.has(row.id)) continue;
       seenSiteIds.add(row.id);
       sites.push(row);
@@ -515,6 +621,11 @@ export class MistAdapter implements PlaneAdapter {
     ];
     if (down > 0) summary.push(`${down.toLocaleString('en-US')} down`);
     if (clients !== null) summary.push(`${clients.length.toLocaleString('en-US')} client sessions`);
+    else if (reportedClientsSeen) {
+      // Not a roster — the devices' own client totals. Said as such, because
+      // the note is user-visible on Connected systems and in the drawer.
+      summary.push(`${reportedClientTotal.toLocaleString('en-US')} clients reported by devices`);
+    }
     if (alerts !== null) {
       summary.push(`${alerts.filter((a) => a.state === 'open').length.toLocaleString('en-US')} open alarms`);
     }
@@ -530,11 +641,13 @@ export class MistAdapter implements PlaneAdapter {
       this.stateRef.health = 'healthy'; // first sync done
     }
 
+    const partial = partialDatasets(missing, truncated);
     return {
       devices,
       sites,
       ...(clients === null ? {} : { clients }),
       ...(alerts === null ? {} : { alerts }),
+      ...(partial.length > 0 ? { partial } : {}),
     };
   }
 

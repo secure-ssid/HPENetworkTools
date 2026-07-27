@@ -9,7 +9,16 @@
 
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Badge, Button, Divider, SectionHeader, Spinner, Stat, Table } from '../nightdesk';
+import {
+  Badge,
+  Button,
+  Divider,
+  EmptyState,
+  SectionHeader,
+  Spinner,
+  Stat,
+  Table,
+} from '../nightdesk';
 import { getOverview } from '../api/client';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
@@ -44,15 +53,32 @@ export default function Overview() {
   const { density, showPlatformTags, workspaceName, pollIntervalSec } = useSettings();
   const [data, setData] = useState<OverviewData | null>(null);
 
+  /* The header states a cadence ("AUTO 60s") that the server poller really runs
+   * at, so the screen has to honour it — a NOC-wall tab left open must not sit
+   * on a mount-time snapshot under a badge promising a refresh (design rule 1).
+   * One fetch at a time: a slow response never stacks up behind the interval. */
   useEffect(() => {
     let live = true;
-    void getOverview().then((d) => {
-      if (live) setData(d);
-    });
+    let inFlight = false;
+    const pull = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void getOverview()
+        .then((d) => {
+          if (live) setData(d);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    pull();
+    const every = Math.max(pollIntervalSec, 10) * 1000;
+    const id = setInterval(pull, every);
     return () => {
       live = false;
+      clearInterval(id);
     };
-  }, []);
+  }, [pollIntervalSec]);
 
   if (!data) {
     return (
@@ -63,8 +89,12 @@ export default function Overview() {
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
+  /* Blend mode ships `dataSource: 'demo'` with real rows swapped into the named
+   * sections, so the prototype's fixed 09:41 stamp would be asserted over live
+   * data. Only a queue with nothing blended keeps the authored stamp. */
+  const anyBlended = (data.blended?.length ?? 0) > 0;
   const synced =
-    data.dataSource === 'demo'
+    data.dataSource === 'demo' && !anyBlended
       ? `SYNCED 09:41 · AUTO ${pollIntervalSec}s`
       : `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'} · AUTO ${pollIntervalSec}s`;
 
@@ -83,6 +113,18 @@ export default function Overview() {
       ? `${plural(data.sites.length, 'site')}, ${plural(data.planes.length, 'management plane')} — one queue of things that actually need you.`
       : 'Ten sites, six management planes — one queue of things that actually need you.';
 
+  const changesLive = data.dataSource === 'live' || (data.blended?.includes('changes') ?? false);
+
+  /* Blend mode mixes fixture sections and live sections under identical chrome —
+   * the envelope names the swapped ones so the UI can say which is which
+   * (README §blendLive). Nothing to say when the whole payload is one source. */
+  const sourceBadge = (live: boolean) =>
+    anyBlended ? <Badge tone={live ? 'info' : 'neutral'}>{live ? 'LIVE' : 'DEMO'}</Badge> : null;
+
+  /* The API computes the workspace for this screen; the settings context is only
+   * a localStorage-seeded first-paint stand-in, so the server value wins. */
+  const overline = `${data.workspace ?? workspaceName} / Single pane`;
+
   const runLaunch = (l: LaunchpadRow) => {
     if (l.target.type === 'device') {
       navigate(`/devices/${encodeURIComponent(l.target.device)}`);
@@ -94,7 +136,7 @@ export default function Overview() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
       <ScreenHeader
-        overline={`${workspaceName} / Single pane`}
+        overline={overline}
         title="Operations"
         subtitle={subtitle}
         actions={
@@ -144,14 +186,29 @@ export default function Overview() {
             <SectionHeader
               label="Needs you now"
               meta={
-                <button type="button" className="nd-link" onClick={() => navigate('/alerts')}>
-                  {alertsLink}
-                </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  {sourceBadge(alertsLive)}
+                  <button type="button" className="nd-link" onClick={() => navigate('/alerts')}>
+                    {alertsLink}
+                  </button>
+                </span>
               }
             />
-            {data.alerts.slice(0, 4).map((a) => (
+            {data.alerts.length === 0 ? (
+              <EmptyState
+                title="Nothing needs you right now"
+                description={
+                  alertsLive
+                    ? 'No open alerts across the linked planes as of the last poll.'
+                    : 'No open alerts across the linked planes.'
+                }
+              />
+            ) : null}
+            {/* Titles repeat across devices in live data ('Config Out of Sync'),
+                so identity is the row, not its name. */}
+            {data.alerts.slice(0, 4).map((a, i) => (
               <div
-                key={a.title}
+                key={`${a.plane}|${a.device}|${a.title}|${i}`}
                 style={{
                   display: 'flex',
                   alignItems: 'flex-start',
@@ -222,11 +279,24 @@ export default function Overview() {
             <SectionHeader
               label="Sites"
               meta={
-                <button type="button" className="nd-link" onClick={() => navigate('/sites')}>
-                  {sitesLink}
-                </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  {sourceBadge(sitesLive)}
+                  <button type="button" className="nd-link" onClick={() => navigate('/sites')}>
+                    {sitesLink}
+                  </button>
+                </span>
               }
             />
+            {data.sites.length === 0 ? (
+              <EmptyState
+                title="No sites reported yet"
+                description="No linked plane has published a site — link one under Connected systems."
+              >
+                <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
+                  Connected systems
+                </Button>
+              </EmptyState>
+            ) : (
             <Table density={density}>
               <Table.Head>
                 <Table.Row>
@@ -313,13 +383,32 @@ export default function Overview() {
                 ))}
               </Table.Body>
             </Table>
+            )}
           </div>
         </div>
 
         {/* ---------------- right column ---------------- */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <SectionHeader label="Management planes" meta="LAST SYNC" />
+            <SectionHeader
+              label="Management planes"
+              meta={
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  {sourceBadge(planesLive)}
+                  <span>LAST SYNC</span>
+                </span>
+              }
+            />
+            {data.planes.length === 0 ? (
+              <EmptyState
+                title="No management planes linked"
+                description="The portal has nothing to poll until a plane is connected."
+              >
+                <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
+                  Connected systems
+                </Button>
+              </EmptyState>
+            ) : null}
             {data.planes.map((p) => (
               <div
                 key={p.name}
@@ -365,6 +454,12 @@ export default function Overview() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <SectionHeader label="Launchpad" />
+            {data.launchpad.length === 0 ? (
+              <EmptyState
+                title="No launch targets"
+                description="Launchpad rows are built from the linked planes and the devices they report."
+              />
+            ) : null}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
               {data.launchpad.map((l) => (
                 <button
@@ -406,7 +501,15 @@ export default function Overview() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <SectionHeader label="Change log" />
+            <SectionHeader label="Change log" meta={sourceBadge(changesLive)} />
+            {/* The change log is the write broker's audit tail — empty until the
+                first brokered change, which is a fact, not a failure. */}
+            {data.changes.length === 0 ? (
+              <EmptyState
+                title="No brokered changes yet"
+                description="Every write the portal makes lands here with its authorising ticket."
+              />
+            ) : null}
             {data.changes.map((c) => (
               <div
                 key={c.time + c.text}

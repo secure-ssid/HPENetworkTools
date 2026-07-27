@@ -28,6 +28,7 @@ import {
   COMPLIANCE_DIFF,
   COMPLIANCE_STATS,
   CONFIG_PORTS,
+  CONFIGURE_STATS,
   DEVICE_CLIENT_SETS,
   DEVICE_CONFIGS,
   DEVICES,
@@ -44,6 +45,7 @@ import {
   PLANE_MARK,
   PLANE_WRITE_MODE,
   POLICY_SERVICES,
+  QUEUED_CHANGES,
   RENEWALS,
   SEARCH_INDEX,
   SITE_PROFILES,
@@ -97,6 +99,7 @@ import {
   type SiteDeviceRow,
   type SiteId,
   type SitePlaneBadge,
+  type SiteProfile,
   type SiteRow,
   type StatDef,
   type SubscriptionRow,
@@ -170,9 +173,23 @@ function blendSection<T>(section: string, liveRows: readonly T[], fixture: T[], 
   return fixture;
 }
 
-/** Attach the blended-section list to an envelope payload (omit when empty). */
-function withBlended(payload: Record<string, unknown>, blended: string[]): Record<string, unknown> {
-  return blended.length > 0 ? { ...payload, blended } : payload;
+/**
+ * Attach the blended-section list to an envelope payload (omit when empty).
+ *
+ * A blended envelope keeps `dataSource: 'demo'` — the screen is still a demo
+ * screen — but its freshness stamp must be the POLL time of the rows it is
+ * actually serving. envelopeFor() stamps `now` for a demo source, which is
+ * true of fixtures and a lie about a live row last fetched hours ago (design
+ * rule 1). Callers that know their section pass it so the stamp can be fixed.
+ */
+function withBlended(
+  payload: Record<string, unknown>,
+  blended: string[],
+  section?: ScreenSection,
+): Record<string, unknown> {
+  if (blended.length === 0) return payload;
+  const stamped = { ...payload, blended };
+  return section === undefined ? stamped : { ...stamped, syncedAt: syncedAtFor(section) };
 }
 
 function syncedAt(): string | null {
@@ -229,11 +246,23 @@ function isSiteId(value: string): value is SiteId {
 // (rule 2), stale planes surface as 'unverified' state (rule 1), sites keep
 // every claiming plane's badge. Demo mode never touches any of this.
 
-/** Planes currently failing and serving last-good data — "stale" for reconcile. */
+/**
+ * Planes serving last-good data — "stale" for reconcile. Reading
+ * `health === 'degraded'` alone only ever caught a poll that THREW; the
+ * registry's shared age-based flag (shared/logic.ts planeStaleness) also
+ * covers the plane that quietly stopped updating ('aged-out') and the pull
+ * that came back half-read ('partial'), both of which serve rows that must
+ * render 'unverified' rather than 'up' (design rule 1).
+ *
+ * 'never-synced' is deliberately NOT stale here: a plane that has never
+ * answered contributes no rows to mark, so the flag would only ever downgrade
+ * rows that reached the cache by some other path.
+ */
 function stalePlanes(): Set<PlaneId> {
   const out = new Set<PlaneId>();
   for (const id of PLANE_IDS) {
-    if (registry.state(id).health === 'degraded') out.add(id);
+    const s = registry.state(id);
+    if (s.health === 'degraded' || (s.stale && s.reason !== 'never-synced')) out.add(id);
   }
   return out;
 }
@@ -360,7 +389,53 @@ function liveClients(): ClientRow[] {
       fresh.push(...pull.clients);
     }
   }
-  return dedupeClients([...fresh, ...behind]);
+  return enrichClientsWithAuth(dedupeClients([...fresh, ...behind]));
+}
+
+/**
+ * Newest auth decision per endpoint, keyed on the normalised MAC — the same
+ * key the client dedupe uses, so the two feeds join on one identity. Rows
+ * without a timestamp keep their feed order (first wins), which is how every
+ * adapter returns them: newest first.
+ */
+function authEventsByMac(): Map<string, LiveAuthEvent> {
+  const out = new Map<string, LiveAuthEvent>();
+  for (const event of poller.getCache().authEvents as LiveAuthEvent[]) {
+    if (!event.mac || event.mac === '—') continue;
+    const key = normalizeMac(event.mac);
+    const seen = out.get(key);
+    if (!seen) {
+      out.set(key, event);
+      continue;
+    }
+    if (event.tsMs !== undefined && (seen.tsMs === undefined || event.tsMs > seen.tsMs)) out.set(key, event);
+  }
+  return out;
+}
+
+/**
+ * The cross-plane stitch the Clients screen exists for: a cloud plane knows
+ * the session, the policy plane knows who authorised it. Central's mapper
+ * leaves `authBy` at '—' precisely because "ClearPass rows will" supply it —
+ * and nothing ever did. Only genuinely unreported fields are filled, so a
+ * plane that DOES name the authenticator always wins, and an endpoint with no
+ * matching decision keeps its '—' rather than being given an invented one.
+ */
+function enrichClientsWithAuth(clients: ClientRow[]): ClientRow[] {
+  const byMac = authEventsByMac();
+  if (byMac.size === 0) return clients;
+  return clients.map((client) => {
+    if (!client.mac || client.mac === '—') return client;
+    const event = byMac.get(normalizeMac(client.mac));
+    if (!event) return client;
+    const authBy = reportedValue(event.nas) ? event.nas : event.plane;
+    return {
+      ...client,
+      auth: reportedValue(client.auth) ? client.auth : reportedValue(event.method) ? event.method : client.auth,
+      authBy: reportedValue(client.authBy) ? client.authBy : authBy,
+      role: reportedValue(client.role) ? client.role : reportedValue(event.role) ? event.role : client.role,
+    };
+  });
 }
 
 function reportedValue(value: string | null | undefined): boolean {
@@ -433,6 +508,12 @@ function observedConfigureInventory(clients: ClientRow[]): ObservedConfigureInve
     };
   });
 
+  // An observed port row is INFERRED from a client session, never read back
+  // from the switch: the portal has not seen the interface's admin/oper state.
+  // Painting the client's health score into the port-state badge (green dot,
+  // '82'/'good') asserted a link state nothing verified — the same lie design
+  // rule 1 forbids for devices. The health that IS known moves into the
+  // summary, labelled as what it is.
   const ports: PortObject[] = [...portGroups.values()].map((rows) => {
     const first = rows[0]!;
     return {
@@ -441,9 +522,14 @@ function observedConfigureInventory(clients: ClientRow[]): ObservedConfigureInve
       device: first.attach,
       port: first.where.replace(/^port\s+/i, ''),
       desc: `${rows.length} active client${rows.length === 1 ? '' : 's'}`,
-      summary: displayParts([first.vlan, first.auth, String(first.ip)]),
-      state: first.health,
-      tone: first.healthTone,
+      summary: displayParts([
+        first.vlan,
+        first.auth,
+        String(first.ip),
+        reportedValue(first.health) ? `client health ${first.health}` : null,
+      ]),
+      state: 'unverified',
+      tone: 'neutral',
     };
   });
 
@@ -464,6 +550,9 @@ function observedConfigureInventory(clients: ClientRow[]): ObservedConfigureInve
   return { ssids, ports, vlans };
 }
 
+/** Findings read in severity order, like the alert queue reads in P-order. */
+const FINDING_SEV_RANK: Record<FindingRow['sev'], number> = { high: 0, med: 1, low: 2 };
+
 interface LiveComplianceData {
   stats: StatDef[];
   findings: FindingRow[];
@@ -481,9 +570,20 @@ function liveComplianceData(devices: ReconciledDeviceRow[]): LiveComplianceData 
       missing: (device: ReconciledDeviceRow) => !reportedValue(device.model),
     },
     {
+      // A device the reconcile step downgraded to 'unverified' is a DIFFERENT
+      // fact from a plane that never supplied a state: the plane did answer,
+      // the portal declined to trust it because that plane is behind (design
+      // rule 1). Folding the two together told the operator a field was
+      // missing and never that a plane was stale.
+      label: 'Plane freshness',
+      rule: 'scan.coverage.freshness',
+      missing: (device: ReconciledDeviceRow) => device.state === 'unverified',
+    },
+    {
       label: 'Reachability evidence',
       rule: 'scan.coverage.reachability',
-      missing: (device: ReconciledDeviceRow) => device.state !== 'up' && device.state !== 'down',
+      missing: (device: ReconciledDeviceRow) =>
+        device.state !== 'up' && device.state !== 'down' && device.state !== 'unverified',
     },
     {
       label: 'Firmware evidence',
@@ -520,23 +620,34 @@ function liveComplianceData(devices: ReconciledDeviceRow[]): LiveComplianceData 
     }
     for (const [plane, rows] of byPlane) {
       const reconciliation = check.rule === 'inventory.reconciliation';
+      const freshness = check.rule === 'scan.coverage.freshness';
       findings.push({
-        sev: reconciliation ? 'med' : 'low',
-        tone: reconciliation ? 'warning' : 'info',
-        title: reconciliation ? 'Device ownership needs reconciliation' : `${check.label} not reported`,
+        sev: reconciliation || freshness ? 'med' : 'low',
+        tone: reconciliation ? 'warning' : freshness ? 'warning' : 'info',
+        title: reconciliation
+          ? 'Device ownership needs reconciliation'
+          : freshness
+            ? 'Device state unverified — plane is stale'
+            : `${check.label} not reported`,
         detail: reconciliation
           ? 'Two planes claim this device identity'
-          : 'The linked plane did not supply this field in its current inventory response',
+          : freshness
+            ? `${rows.length} device${rows.length === 1 ? '' : 's'} cannot be verified while ${plane} is behind`
+            : 'The linked plane did not supply this field in its current inventory response',
         rule: check.rule,
         plane,
         count: String(rows.length),
         fix: reconciliation ? 'manual' : 'ssh scan',
-        fixColor: reconciliation ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
+        fixColor: reconciliation || freshness ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
         device: rows[0]!.name,
         baseline: 'Live evidence coverage',
       });
     }
   }
+  // The table leads with the Sev column, so it is the read order (the design
+  // lists high → med → low). Emitting in check order buried every med-severity
+  // row under the low-severity coverage ones.
+  findings.sort((a, b) => FINDING_SEV_RANK[a.sev] - FINDING_SEV_RANK[b.sev] || a.rule.localeCompare(b.rule));
 
   const sites = new Set(devices.map((device) => device.siteId));
   const affectedSites = new Set(
@@ -637,6 +748,7 @@ function mergeLiveSites(
 ): SiteRow[] {
   const clientsReported = datasetReported('clients');
   const alertsReported = datasetReported('alerts');
+  const stale = stalePlanes();
   const ids: SiteId[] = [];
   const byId = new Map<SiteId, SiteRow[]>();
   const note = (id: SiteId, row: SiteRow): void => {
@@ -675,6 +787,15 @@ function mergeLiveSites(
     const up = knownStateDevices.filter((d) => d.state === 'up').length;
     const healthPct =
       knownStateDevices.length > 0 ? Math.round((up / knownStateDevices.length) * 100) : null;
+    // This site's alert picture cannot be asserted when a plane that claims it
+    // is behind, or when nothing here has a verifiable state: the feed the
+    // 'clear' badge would be read off is last-good, not current. The fixture
+    // encodes the intended row for exactly this case (Riverside: alerts
+    // 'stale', neutral). Real open rows still win — a stale plane must never
+    // HIDE an alert, only stop the portal from claiming there are none.
+    const siteStale =
+      [...badges.keys()].some((name) => planeIsStale(name, stale)) ||
+      (devs.length > 0 && knownStateDevices.length === 0);
     merged.push({
       id,
       name: isSiteId(id) ? siteDisplayName(id) : siteRows[0].name,
@@ -686,8 +807,8 @@ function mergeLiveSites(
       health: healthPct === null ? null : `${healthPct}%`,
       healthPct: healthPct === null ? '—' : `${healthPct}%`,
       tone: healthPct === null ? 'stale' : healthPct >= 90 ? 'ok' : healthPct >= 70 ? 'warn' : 'bad',
-      alerts: alertsReported ? (open.length > 0 ? `${open.length} open` : 'clear') : '—',
-      alertTone: alertsReported ? (open.length > 0 ? 'warning' : 'success') : 'neutral',
+      alerts: alertsReported ? (open.length > 0 ? `${open.length} open` : siteStale ? 'stale' : 'clear') : '—',
+      alertTone: alertsReported ? (open.length > 0 ? 'warning' : siteStale ? 'neutral' : 'success') : 'neutral',
       // An adapter that genuinely stamps a per-site sync wins; otherwise the
       // claiming planes' registry freshness fills the column (no plane adapter
       // reports per-site sync today, so without this the column is dead).
@@ -776,11 +897,8 @@ const HEALTH_TONE: Record<PlaneHealth, Tone> = {
   unlinked: 'neutral',
 };
 
-/** Compact relative age for the plane rows ('40s', '6h', '—' when never). */
-function relSync(iso: string | null): string {
-  if (!iso) return '—';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return '—';
+/** Compact duration ('40s', '6h', '3d') — the fixtures' own vocabulary. */
+function relDuration(ms: number): string {
   if (ms < 60_000) return `${Math.max(1, Math.floor(ms / 1000))}s`;
   const min = Math.floor(ms / 60_000);
   if (min < 60) return `${min}m`;
@@ -788,20 +906,41 @@ function relSync(iso: string | null): string {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+/** Compact relative age for the plane rows ('40s', '6h', '—' when never). */
+function relSync(iso: string | null): string {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  return relDuration(ms);
+}
+
+/**
+ * "Management planes" — the WHOLE roster, linked first. The tile beside this
+ * panel counts "Planes linked N / 9"; omitting the unlinked ones made that
+ * fraction unreconcilable and hid the reason a plane is dark. The kicker is a
+ * coverage fact where the registry has one (what the plane actually claims),
+ * falling back to its status note — the note alone just repeated the state
+ * Badge next to it while deviceCount was thrown away.
+ */
 function liveOverviewPlanes(): OverviewPlaneRow[] {
   const rows: OverviewPlaneRow[] = [];
+  const unlinked: OverviewPlaneRow[] = [];
   for (const id of PLANE_IDS) {
     const s = registry.state(id);
-    if (!s.linked) continue;
-    rows.push({
+    const coverage =
+      s.deviceCount === null
+        ? null
+        : `${s.deviceCount.toLocaleString('en-US')} device${s.deviceCount === 1 ? '' : 's'} · ${s.callsToday} call${s.callsToday === 1 ? '' : 's'} today`;
+    const row: OverviewPlaneRow = {
       name: PLANE_LABEL[id],
-      scope: s.note ?? `${s.callsToday} calls today`,
-      state: s.health,
-      tone: HEALTH_TONE[s.health],
+      scope: s.linked ? (coverage ?? s.note ?? `${s.callsToday} calls today`) : (s.note ?? 'no credentials configured'),
+      state: s.linked ? s.health : 'not linked',
+      tone: HEALTH_TONE[s.linked ? s.health : 'unlinked'],
       sync: relSync(s.lastSync),
-    });
+    };
+    (s.linked ? rows : unlinked).push(row);
   }
-  return rows;
+  return [...rows, ...unlinked];
 }
 
 /**
@@ -860,7 +999,9 @@ function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts: Alert
   const open = live.alerts.filter((a) => a.state === 'open');
   const p1 = open.filter((a) => a.sev === 'P1').length;
   const subs = poller.getCache().subscriptions as LiveSubscription[];
-  const expiring = subs.filter((s) => s.daysLeft !== undefined && s.daysLeft >= 0 && s.daysLeft <= 60).length;
+  const expiring = subs.filter(
+    (s) => s.daysLeft !== undefined && s.daysLeft >= 0 && s.daysLeft <= LICENCE_HORIZON_DAYS,
+  ).length;
   const states = registry.states();
   const linked = PLANE_IDS.filter((id) => states[id].linked).length;
   const unhealthy = PLANE_IDS.map((id) => states[id]).find((s) => s.linked && s.health !== 'healthy');
@@ -872,7 +1013,14 @@ function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts: Alert
     {
       label: 'Devices reachable',
       value: `${up} / ${live.devices.length}`,
-      delta: down > 0 ? `▼ ${down} down` : unverified > 0 ? `▼ ${unverified} unverified` : 'all verified',
+      // Both halves of the gap between `up` and the total are named. The old
+      // exclusive ternary dropped the unverified count the moment one device
+      // was down — hiding the stale-plane signal exactly when the estate is
+      // in trouble. Down still leads: it is the harder fact.
+      delta:
+        [down > 0 ? `▼ ${down} down` : null, unverified > 0 ? `${unverified} unverified` : null]
+          .filter((part): part is string => part !== null)
+          .join(' · ') || 'all verified',
       tone: down > 0 || unverified > 0 ? 'negative' : 'neutral',
     },
     {
@@ -888,7 +1036,7 @@ function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts: Alert
       tone: drift !== null && drift > 0 ? 'negative' : 'neutral',
     },
     {
-      label: 'Licences ≤60d',
+      label: `Licences ≤${LICENCE_HORIZON_DAYS}d`,
       value: String(expiring),
       delta: expiring > 0 ? '▲ renewals due' : 'none due',
       tone: 'neutral',
@@ -902,13 +1050,32 @@ function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts: Alert
   ];
 }
 
-/** Change log = tail of the write broker's audit log; empty until the first change. */
+/** Local hh:mm for an ISO instant — the screen's own clock, not UTC. */
+function localHhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * Change log = tail of the write broker's audit log; empty until the first
+ * change. The audit entry carries only the change ID and its object kind, so
+ * the row is joined back to the queued change for the WHAT and WHERE the
+ * spec asks for ("vlan 812 added to sw-acc-3f-2"); an applied change that has
+ * left the queue falls back to the raw event line. Times are the operator's
+ * local clock — the header stamp on the same screen is local, and a UTC slice
+ * next to it reads as a change that happened hours from now.
+ */
 function liveOverviewChanges(): ChangeLogEntry[] {
-  return writeBroker.recentEvents(4).map((e) => ({
-    time: e.ts.slice(11, 16),
-    text: `${e.event} ${e.kind} — ${e.result}`,
-    who: `${e.ticket} · write broker`,
-  }));
+  const queued = new Map(writeBroker.list().map((change) => [change.id, change]));
+  return writeBroker.recentEvents(4).map((e) => {
+    const change = queued.get(e.changeId);
+    return {
+      time: localHhmm(e.ts),
+      text: change ? `${change.what} — ${change.where}` : `${e.event} ${e.kind} — ${e.result}`,
+      who: `${e.ticket} · write broker`,
+    };
+  });
 }
 
 /**
@@ -950,6 +1117,19 @@ function liveOverviewSite(s: SiteRow): OverviewSiteRow {
 type LiveSubscription = SubscriptionRow & SubscriptionMetricHints;
 type LiveAuthEvent = AuthEventRow & AuthEventTimeHint;
 
+/**
+ * The portal's ONE licence-expiry horizon, in days. Overview's "Licences
+ * ≤60d" tile and the Licences screen's "Expiring ≤60d" tile answer the same
+ * question and must never disagree (design/NtLicenses.dc.html:26 and the
+ * OVERVIEW/LICENSE_STATS fixtures both say ≤60d). greenlake's
+ * EXPIRING_SOON_DAYS (90) stays what it is — the per-subscription BADGE
+ * threshold, a different judgement made by the adapter.
+ */
+const LICENCE_HORIZON_DAYS = 60;
+
+/** How far ahead the "Renewals, soonest first" panel claims to look. */
+const RENEWAL_WINDOW_DAYS = 180;
+
 /** Renewal urgency colours, matching the fixtures' thresholds. */
 function renewalColor(daysLeft: number): string {
   if (daysLeft < 30) return 'var(--nd-danger)';
@@ -981,7 +1161,7 @@ function liveLicenseStats(subs: LiveSubscription[], devices: ReconciledDeviceRow
   const totalQty = subs.reduce((n, s) => n + (s.qtyValue ?? 0), 0);
   const totalAssigned = subs.reduce((n, s) => n + (s.assignedValue ?? 0), 0);
   const unassigned = Math.max(0, totalQty - totalAssigned);
-  const expiring = subs.filter((s) => s.daysLeft !== undefined && s.daysLeft >= 0 && s.daysLeft < EXPIRING_SOON_DAYS);
+  const expiring = subs.filter((s) => s.daysLeft !== undefined && s.daysLeft >= 0 && s.daysLeft <= LICENCE_HORIZON_DAYS);
   const idle = subs.filter((s) => s.assignedValue === 0);
   const soonest = expiring.reduce<LiveSubscription | null>(
     (a, s) => (a === null || (s.daysLeft ?? 0) < (a.daysLeft ?? 0) ? s : a),
@@ -1003,7 +1183,7 @@ function liveLicenseStats(subs: LiveSubscription[], devices: ReconciledDeviceRow
       tone: unassigned > 0 ? 'negative' : 'neutral',
     },
     {
-      label: `Expiring <${EXPIRING_SOON_DAYS}d`,
+      label: `Expiring ≤${LICENCE_HORIZON_DAYS}d`,
       value: String(expiring.length),
       delta: soonest?.expiresAtMs !== undefined ? `next ${expiryDisplay(soonest.expiresAtMs)}` : 'none on the horizon',
       tone: expiring.length > 0 ? 'negative' : 'positive',
@@ -1012,11 +1192,17 @@ function liveLicenseStats(subs: LiveSubscription[], devices: ReconciledDeviceRow
   ];
 }
 
-/** Renewals, soonest first — only rows that carry an expiry hint can be ranked. */
+/**
+ * Renewals, soonest first — only rows that carry an expiry hint can be ranked.
+ * The panel's header states a window ("NEXT 180 DAYS", design/NtLicenses),
+ * so the window is enforced here rather than left as a caption over an
+ * unbounded dump of every dated key in the workspace. Already-overdue rows
+ * (negative daysLeft) stay: they are the most urgent thing on the screen.
+ */
 function liveRenewals(subs: LiveSubscription[]): RenewalRow[] {
   return subs
     .filter((s): s is LiveSubscription & { expiresAtMs: number; daysLeft: number } =>
-      s.expiresAtMs !== undefined && s.daysLeft !== undefined,
+      s.expiresAtMs !== undefined && s.daysLeft !== undefined && s.daysLeft <= RENEWAL_WINDOW_DAYS,
     )
     .sort((a, b) => a.expiresAtMs - b.expiresAtMs)
     .map((s) => ({
@@ -1033,20 +1219,39 @@ function eventWindowMs(events: LiveAuthEvent[]): number {
   return stamps.length > 1 ? Math.max(...stamps) - Math.min(...stamps) : 0;
 }
 
+/**
+ * The five auth Stats. Two honesty rules run through them:
+ *  - No feed at all is not a quiet network. An empty event list means no
+ *    policy plane answered for this window, so every tile reads '—' rather
+ *    than a green zero-reject scorecard.
+ *  - A rate needs a measured window. When no row carries a parseable
+ *    timestamp the span is unknown, and dividing by a floor of one minute
+ *    invents a per-minute rate the portal never observed.
+ */
 function liveAuthStats(events: LiveAuthEvent[]): StatDef[] {
   const total = events.length;
+  if (total === 0) {
+    return [
+      { label: 'Auths / min', value: '—', delta: 'no auth feed in this window', tone: 'neutral' },
+      { label: 'Accept rate', value: '—', delta: 'no auth feed in this window', tone: 'neutral' },
+      { label: 'Rejects / hour', value: '—', delta: 'no auth feed in this window', tone: 'neutral' },
+      { label: 'MAB fallbacks', value: '—', delta: 'no auth feed in this window', tone: 'neutral' },
+      { label: 'Known endpoints', value: '—', delta: 'no auth feed in this window', tone: 'neutral' },
+    ];
+  }
   const accepts = events.filter((e) => e.result === 'accept').length;
   const rejects = events.filter((e) => e.result === 'reject').length;
   const mab = events.filter((e) => e.method === 'MAB').length;
   const endpoints = new Set(events.map((e) => e.mac).filter((m) => m !== '—')).size;
   const spanMs = eventWindowMs(events);
+  const spanKnown = spanMs > 0;
   const spanMin = Math.max(spanMs / 60_000, 1);
   const acceptRate = total > 0 ? (accepts / total) * 100 : null;
   return [
     {
       label: 'Auths / min',
-      value: String(Math.round(total / spanMin)),
-      delta: `${total} events in a ${Math.round(spanMin)} min window`,
+      value: spanKnown ? String(Math.round(total / spanMin)) : '—',
+      delta: spanKnown ? `${total} events in a ${Math.round(spanMin)} min window` : `${total} events · feed carries no timestamps`,
       tone: 'neutral',
     },
     {
@@ -1057,9 +1262,9 @@ function liveAuthStats(events: LiveAuthEvent[]): StatDef[] {
     },
     {
       label: 'Rejects / hour',
-      value: String(Math.round(rejects / Math.max(spanMs / 3_600_000, 1 / 60))),
-      delta: `${rejects} rejects in window`,
-      tone: rejects > 0 ? 'negative' : 'positive',
+      value: spanKnown ? String(Math.round(rejects / Math.max(spanMs / 3_600_000, 1 / 60))) : '—',
+      delta: spanKnown ? `${rejects} rejects in window` : `${rejects} rejects · feed carries no timestamps`,
+      tone: rejects > 0 ? 'negative' : spanKnown ? 'positive' : 'neutral',
     },
     {
       label: 'MAB fallbacks',
@@ -1140,6 +1345,33 @@ function liveConfigureQueue(): QueuedChangeRow[] {
   }));
 }
 
+/**
+ * The demo change queue: real brokered changes lead (they are user data, and
+ * the operator queued them in this portal), then the design's authored rows —
+ * a fixture row whose ticket a real change already carries drops out, exactly
+ * like the tickets queue promotes a noted fixture. Without this the demo
+ * screen renders the queue section as a bare '0' header while the fixtures
+ * the design specifies sit unused.
+ */
+function demoConfigureQueue(): QueuedChangeRow[] {
+  const brokered = liveConfigureQueue();
+  const tickets = new Set(brokered.map((change) => change.ticket));
+  return [...brokered, ...QUEUED_CHANGES.filter((change) => !tickets.has(change.ticket))];
+}
+
+/**
+ * Demo stats: the authored strip, with the two tiles that describe the
+ * PORTAL's own state (the queue, and what the broker really pushed today)
+ * computed. Config objects and Drift open keep the fixture's values and
+ * deltas — they describe the authored inventory demo mode is serving, and
+ * re-deriving them printed 'live evidence coverage findings' over fixtures.
+ */
+function demoConfigureStats(queue: QueuedChangeRow[]): StatDef[] {
+  const computed = liveConfigureStats(queue, null, '', null);
+  const pushedToday = Number(computed[1]!.value);
+  return [computed[0]!, pushedToday > 0 ? computed[1]! : CONFIGURE_STATS[1]!, CONFIGURE_STATS[2]!, CONFIGURE_STATS[3]!];
+}
+
 function liveConfigureStats(
   queue: QueuedChangeRow[],
   configObjects: number | null,
@@ -1187,7 +1419,12 @@ screensRouter.get('/overview', (_req, res) => {
     if (blendFor('overview')) {
       const live = liveMerged();
       const blended: string[] = [];
-      const livePlanes = liveOverviewPlanes();
+      // The plane roster now always has nine rows (unlinked planes included),
+      // so "is there live plane state to swap to?" is the LINKED count, not
+      // the row count — otherwise a blend with nothing connected would paint
+      // nine dark rows over the fixture panel.
+      const anyLinked = PLANE_IDS.some((id) => registry.state(id).linked);
+      const livePlanes = anyLinked ? liveOverviewPlanes() : [];
       // Stats are computed, not collected — swap them once a plane has
       // actually REPORTED rows (a linked-but-failing plane would otherwise
       // paint '0 / 0' over the fixture strip between syncs).
@@ -1209,6 +1446,7 @@ screensRouter.get('/overview', (_req, res) => {
             launchpad: blendSection('launchpad', livePlanes.length > 0 ? liveLaunchpad(live.devices) : [], OVERVIEW_LAUNCHPAD, blended),
           }),
           blended,
+          'overview',
         ),
       );
       return;
@@ -1247,7 +1485,7 @@ screensRouter.get('/alerts', (_req, res) => {
     if (blendFor('alerts')) {
       const blended: string[] = [];
       const alerts = blendSection('alerts', sortLiveAlerts(liveAlerts()), ALERTS, blended);
-      res.json(withBlended(envelopeFor('alerts', { alerts }), blended));
+      res.json(withBlended(envelopeFor('alerts', { alerts }), blended, 'alerts'));
       return;
     }
     res.json(envelopeFor('alerts', { alerts: ALERTS }));
@@ -1346,7 +1584,9 @@ screensRouter.get('/clients', (_req, res) => {
       const blendClients = liveClients();
       if (blendClients.length > 0) {
         blended.push('clients');
-        res.json(withBlended(envelopeFor('clients', { stats: liveClientStats(blendClients), clients: blendClients }), blended));
+        res.json(
+          withBlended(envelopeFor('clients', { stats: liveClientStats(blendClients), clients: blendClients }), blended, 'clients'),
+        );
         return;
       }
     }
@@ -1364,7 +1604,16 @@ function liveClientStats(clients: ClientRow[]): StatDef[] {
   // A session whose plane is behind reads 'unverified' (see liveClients) — it
   // must not be counted as failing or poor, because nothing current says so.
   const asserted = clients.filter((c) => c.health !== 'unverified');
-  const failing = asserted.filter((c) => /auth/i.test(c.health)).length;
+  // "Failing auth" cannot be read off a cloud plane's health string — Central
+  // never puts 'auth' in it. The policy plane's own decision for that endpoint
+  // is the fact, so a client whose newest ClearPass event is a reject counts,
+  // and the health-string heuristic stays for planes that do say so.
+  const rejected = authEventsByMac();
+  const failing = asserted.filter(
+    (c) =>
+      /auth/i.test(c.health) ||
+      (c.mac !== '—' && rejected.get(normalizeMac(c.mac))?.result === 'reject'),
+  ).length;
   const poor = asserted.filter(
     (c) => /poor|fair/i.test(c.health) || (c.quality !== null && c.quality < 50),
   ).length;
@@ -1392,6 +1641,7 @@ screensRouter.get('/auth-events', (_req, res) => {
               policyServices: livePolicyServices(events),
             }),
             ['authEvents'],
+            'authEvents',
           ),
         );
         return;
@@ -1434,6 +1684,7 @@ screensRouter.get('/sites', (_req, res) => {
               sites: live.sites,
             }),
             blended,
+            'sites',
           ),
         );
         return;
@@ -1467,6 +1718,30 @@ function liveSiteSections(
   };
 }
 
+/**
+ * A demo device the operator pruned on /devices must not reappear as an
+ * inventory row on its site page — the site table is the site's slice of the
+ * same inventory, not an independent authored list. The headline device count
+ * moves with it (it is the same estate), while the rest of the authored
+ * profile is untouched.
+ */
+function withoutHiddenDemoDevices(profile: SiteProfile | null): SiteProfile | null {
+  if (profile === null) return null;
+  const hidden = new Set(settings.get().hiddenDemoDevices ?? []);
+  if (hidden.size === 0) return profile;
+  const devices = profile.devices.filter((d) => !hidden.has(d.name));
+  const removed = profile.devices.length - devices.length;
+  if (removed === 0) return profile;
+  const total = Number(profile.deviceCount.replace(/,/g, ''));
+  return {
+    ...profile,
+    devices,
+    deviceCount: Number.isFinite(total)
+      ? Math.max(0, total - removed).toLocaleString('en-US')
+      : profile.deviceCount,
+  };
+}
+
 screensRouter.get('/sites/:siteId', (req, res) => {
   const param = req.params.siteId;
   const id: SiteId | undefined = isSiteId(param) ? param : siteIdFor(param);
@@ -1484,7 +1759,9 @@ screensRouter.get('/sites/:siteId', (req, res) => {
           res.status(404).json({ error: `site '${param}' not in the live inventory`, dataSource: 'demo', blended: ['sites'] });
           return;
         }
-        res.json(withBlended(envelopeFor('sites', { site, profile: null, ...liveSiteSections(live, site) }), ['sites']));
+        res.json(
+          withBlended(envelopeFor('sites', { site, profile: null, ...liveSiteSections(live, site) }), ['sites'], 'sites'),
+        );
         return;
       }
     }
@@ -1502,7 +1779,7 @@ screensRouter.get('/sites/:siteId', (req, res) => {
     res.json(
       envelopeFor('sites', {
         site: SITES.find((s) => s.id === id) ?? null,
-        profile: SITE_PROFILES[id] ?? deriveSiteProfile(id),
+        profile: withoutHiddenDemoDevices(SITE_PROFILES[id] ?? deriveSiteProfile(id)),
       }),
     );
     return;
@@ -1528,6 +1805,7 @@ screensRouter.get('/devices', (_req, res) => {
           withBlended(
             envelopeFor('devices', { devices, lanes: liveLaneMeta(), reconciliation: { doubleClaimed, unclaimed } }),
             ['devices'],
+            'devices',
           ),
         );
         return;
@@ -1569,6 +1847,7 @@ screensRouter.get('/devices/:name', (req, res) => {
           withBlended(
             envelopeFor('devices', { device, profile: null, config: null, clients: liveDeviceClients(name) }),
             ['devices'],
+            'devices',
           ),
         );
         return;
@@ -1619,6 +1898,7 @@ screensRouter.get('/licenses', (_req, res) => {
               orphans: [],
             }),
             ['licenses'],
+            'licenses',
           ),
         );
         return;
@@ -1705,15 +1985,15 @@ screensRouter.get('/configure', (_req, res) => {
             capabilities: liveCapabilityMatrix(),
           }),
           ['configure'],
+          'configure',
         ),
       );
       return;
     }
-    const queued = liveConfigureQueue();
-    const configObjects = SSIDS.length + CONFIG_PORTS.length + VLANS.length;
+    const queued = demoConfigureQueue();
     res.json(
       envelopeFor('configure', {
-        stats: liveConfigureStats(queued, configObjects, 'authored demo inventory', FINDINGS.length),
+        stats: demoConfigureStats(queued),
         ssids: SSIDS,
         ports: CONFIG_PORTS,
         vlans: VLANS,
@@ -1758,7 +2038,7 @@ screensRouter.get('/compliance', (_req, res) => {
     if (blendFor('compliance') && datasetReported('devices')) {
       const blendCompliance = liveComplianceData(liveDeviceData().devices);
       res.json(
-        withBlended(envelopeFor('compliance', { ...blendCompliance, evidenceMode: 'coverage' }), ['compliance']),
+        withBlended(envelopeFor('compliance', { ...blendCompliance, evidenceMode: 'coverage' }), ['compliance'], 'compliance'),
       );
       return;
     }
@@ -1850,13 +2130,39 @@ function planeLiveStats(pull: PlanePull | undefined): LiveStat[] {
   return rows;
 }
 
-/** "Recent events" — this plane's own entries in the poller's sync log. */
+/**
+ * "Recent events" — the plane's own event log (credential changes, poll
+ * failures, backoff, recovery: registry.recentEvents) merged with its entries
+ * in the poller's sync log, newest first. The registry log is the one that
+ * carries the events an operator opens this drawer for; the sync log alone
+ * only ever showed polls. Times are the operator's local clock, like every
+ * other stamp on the screen.
+ */
 function planeEvents(id: PlaneId): SystemEvent[] {
-  return poller
+  const fromRegistry = registry.recentEvents(id).map((e) => ({ time: e.time, what: e.what, who: e.who }));
+  const fromPoller = poller
     .history()
     .filter((e) => e.plane === id)
+    .map((e) => ({ time: e.time, what: e.what, who: `poller · ${e.result}` }));
+  return [...fromRegistry, ...fromPoller]
+    .sort((a, b) => (a.time === b.time ? 0 : a.time < b.time ? 1 : -1))
     .slice(0, 6)
-    .map((e) => ({ time: e.time.slice(11, 16), what: e.what, who: `poller · ${e.result}` }));
+    .map((e) => ({ time: localHhmm(e.time), what: e.what, who: e.who }));
+}
+
+/**
+ * The drawer's fourth fact: credential freshness — how the plane is
+ * authenticated and when that credential runs out. Never the secret, and
+ * never a claim: a plane that publishes no expiry says so.
+ */
+function tokenFact(s: PlaneState): string {
+  if (!s.linked) return 'no credentials stored';
+  const token = s.token;
+  if (!token) return 'not reported';
+  if (token.expiresAt === null) return `${token.source} · no expiry published`;
+  const ms = new Date(token.expiresAt).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return token.source;
+  return ms <= 0 ? `${token.source} · expired` : `${token.source} · expires in ${relDuration(ms)}`;
 }
 
 /**
@@ -1893,7 +2199,17 @@ function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | undefined):
     facts: [
       { k: 'Last sync', v: s.lastSync ? relSync(s.lastSync) : 'never' },
       { k: 'Devices', v: s.deviceCount === null ? '—' : String(s.deviceCount) },
-      { k: 'Calls today', v: String(s.callsToday) },
+      // The budget is the denominator that makes "Calls today" mean anything
+      // (Mist allows 20k/day); a plane whose tier the portal does not know
+      // renders the bare count rather than inventing a limit.
+      {
+        k: 'Calls today',
+        v:
+          s.callBudget === undefined || s.callBudget === null
+            ? String(s.callsToday)
+            : `${s.callsToday.toLocaleString('en-US')} / ${s.callBudget.toLocaleString('en-US')}`,
+      },
+      { k: 'Token', v: tokenFact(s) },
     ],
     sites: planeSites(pull),
     live: planeLiveStats(pull),
@@ -1949,7 +2265,7 @@ screensRouter.get('/systems', (_req, res) => {
   if (sourceFor('systems') === 'demo') {
     if (blendFor('systems') && PLANE_IDS.some((id) => states[id].linked)) {
       const payload = { systems: liveSystemRows(states), syncHistory: liveSyncHistory(), permissions: PERMISSIONS };
-      res.json(withBlended(envelopeFor('systems', payload), ['systems']));
+      res.json(withBlended(envelopeFor('systems', payload), ['systems'], 'systems'));
       return;
     }
     res.json(envelopeFor('systems', { systems: SYSTEMS, syncHistory: SYNC_HISTORY, permissions: PERMISSIONS }));
@@ -2056,6 +2372,15 @@ screensRouter.get('/search-index', (_req, res) => {
     ...(useLive.has('clients') ? live.clients : []),
     ...fixtures,
   ];
-  const payload = envelope({ entries });
+  // The envelope must describe what was actually served, not the portal-wide
+  // default: an index whose every entry came from the poller is a live index,
+  // and its freshness is the poll time — stamping `now` from the global
+  // demoMode would label live hits as demo furniture.
+  const liveContributed = useLive.size > 0 && (live.sites.length > 0 || live.devices.length > 0 || live.clients.length > 0);
+  const payload = {
+    dataSource: liveContributed && fixtures.length === 0 ? 'live' : dataSource(),
+    syncedAt: liveContributed ? poller.lastSyncFor('devices', 'sites', 'clients') : syncedAt(),
+    entries,
+  };
   res.json(blended.length > 0 ? withBlended(payload, blended) : payload);
 });

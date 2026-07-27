@@ -17,12 +17,15 @@ import type {
   ConfigKind,
   DeviceProfile,
   DeviceRow,
+  DeviceType,
   PathHop,
   PathHopView,
   PlaneDatasetKey,
   PlaneFreshness,
+  PlaneHealthKey,
   PlaneKey,
   PlaneScope,
+  PlaneStaleness,
   PortForm,
   PortObject,
   Sev,
@@ -54,6 +57,7 @@ import {
   SITE_CHAIN,
   SW_TERMINAL_RESPONSES,
   TIMELINES,
+  UNKNOWN_LANE_META,
 } from './fixtures';
 
 // ---------------------------------------------------------------------------
@@ -76,6 +80,27 @@ export function deviceProfile(name: string): DeviceProfile {
   if (n.startsWith('gw-')) return DEVICE_PROFILE_BUILDERS.aos10Gateway(n);
   if (n.startsWith('cppm')) return DEVICE_PROFILE_BUILDERS.clearpass(n);
   return DEVICE_PROFILE_BUILDERS.cxSwitch(n);
+}
+
+/**
+ * Terminal class for a device the portal actually holds a row for. The
+ * name-prefix rules in deviceProfile() are a DEMO convention: a real tenant
+ * names a Mist AP 'AP-Floor3' or 'Office-AP-12', which no lowercase 'ap-'
+ * prefix matches — the bridge would then classify a cloud-claimed radio as a
+ * CX switch and try to log into it. The inventory row knows better:
+ *   ap / sensor          → 'none' (cloud-claimed, no portal shell)
+ *   gateway / controller → 'aos'
+ *   switch / policy      → 'sw'
+ * Pass `null` (no live row — demo estate) to fall back to the prefix rules.
+ */
+export function deviceTerminalKind(
+  row: { type: DeviceType } | null | undefined,
+  fallbackName: string,
+): TerminalKind {
+  if (!row) return deviceProfile(fallbackName).kind;
+  if (row.type === 'ap' || row.type === 'sensor') return 'none';
+  if (row.type === 'gateway' || row.type === 'controller') return 'aos';
+  return 'sw';
 }
 
 /** Session banner lines — banner(). `clear` resets the buffer to this. */
@@ -226,13 +251,51 @@ const BANDS: Record<SsidBands, string> = {
   '5': '5ghz',
 };
 
+/**
+ * Deployment-specific parts of the SSID preview. Every field is optional and
+ * every default reproduces the authored demo estate byte-for-byte, so demo
+ * output (and the prototype-fidelity tests) are unchanged.
+ *
+ * Live callers pass these so the payload stops naming the fixture estate:
+ * `vault://meridian/...` is Meridian Health's secret store, `clearpass` is the
+ * demo server group, and the three trailing comment lines describe the demo's
+ * plane set. README:288-290 requires the live block to carry the API call per
+ * plane — that is what `planeNotes` is for, rather than stripping every '#'
+ * line and losing the annotation entirely.
+ */
+export interface SsidPreviewOptions {
+  /** Rendered after `wpa-passphrase` for PSK/portal modes. Default: the demo
+   *  estate's vault path. Pass the deployment's own secret reference (or a
+   *  'set in the plane console' placeholder) in live mode. */
+  passphraseRef?: string;
+  /** Rendered after `dot1x-server-group` for enterprise modes. Default:
+   *  'clearpass' — which is a lie when no ClearPass plane is linked. */
+  dot1xGroup?: string;
+  /** Trailing annotation lines, WITHOUT the leading '# '. Default: the demo's
+   *  three plane lines. Pass `[]` to omit annotations entirely. */
+  planeNotes?: string[];
+}
+
+/** The demo estate's authored annotation block (README's per-plane comments). */
+function demoSsidPlaneNotes(form: SsidForm): string[] {
+  return [
+    'central  → PUT /configuration/v2/wlan/' + form.group,
+    'mist     → read-only, opens in console with this payload',
+    'clearpass→ no change needed (radsec trust exists)',
+  ];
+}
+
 /** "What gets pushed" for an SSID — the ssidPreview template, verbatim. */
-export function ssidPreview(form: SsidForm): string {
+export function ssidPreview(form: SsidForm, opts: SsidPreviewOptions = {}): string {
+  const passphraseRef = opts.passphraseRef ?? 'vault://meridian/wlan/' + form.name.toLowerCase();
+  const dot1xGroup = opts.dot1xGroup ?? 'clearpass';
+  const notes = opts.planeNotes ?? demoSsidPlaneNotes(form);
+  const annotations = notes.length > 0 ? '\n' + notes.map((n) => '# ' + n).join('\n') : '';
   return 'wlan ssid-profile "' + form.name + '"\n    essid ' + form.name + '\n    opmode ' + OPMODE[form.security] + '\n    vlan ' + form.vlan +
-    (form.security.indexOf('enterprise') > -1 ? '\n    dot1x-server-group clearpass' : '\n    wpa-passphrase vault://meridian/wlan/' + form.name.toLowerCase()) +
+    (form.security.indexOf('enterprise') > -1 ? '\n    dot1x-server-group ' + dot1xGroup : '\n    wpa-passphrase ' + passphraseRef) +
     '\n    band ' + BANDS[form.bands] + (form.broadcast ? '' : '\n    hide-ssid') + (form.isolate ? '\n    deny-inter-user-traffic' : '') +
     '\n!\nap-group "' + form.group + '"\n    virtual-ap "' + form.name + '"' + (form.noDfs ? '\n    rf-band-profile exclude-dfs' : '') +
-    '\n!\n# central  → PUT /configuration/v2/wlan/' + form.group + '\n# mist     → read-only, opens in console with this payload\n# clearpass→ no change needed (radsec trust exists)';
+    '\n!' + annotations;
 }
 
 /** "What gets pushed" for a switch port — the portPreview template, verbatim. */
@@ -254,11 +317,11 @@ export function vlanPreview(form: VlanForm): string {
 }
 
 /** The prototype's preview dispatch: port → portPreview, vlan → vlanPreview, else ssidPreview. */
-export function configPreviewFor(kind: 'ssid', form: SsidForm): string;
+export function configPreviewFor(kind: 'ssid', form: SsidForm, opts?: SsidPreviewOptions): string;
 export function configPreviewFor(kind: 'port', form: PortForm): string;
 export function configPreviewFor(kind: 'vlan', form: VlanForm): string;
-export function configPreviewFor(kind: ConfigKind, form: ConfigForm): string {
-  return kind === 'port' ? portPreview(form as PortForm) : kind === 'vlan' ? vlanPreview(form as VlanForm) : ssidPreview(form as SsidForm);
+export function configPreviewFor(kind: ConfigKind, form: ConfigForm, opts: SsidPreviewOptions = {}): string {
+  return kind === 'port' ? portPreview(form as PortForm) : kind === 'vlan' ? vlanPreview(form as VlanForm) : ssidPreview(form as SsidForm, opts);
 }
 
 /** Mono meta note over the preview block — `previewMeta`. */
@@ -577,6 +640,63 @@ export function planeFreshness(
   if (!Number.isFinite(ts)) return { lastSync, ageSec: null, stale: true };
   const ageSec = Math.max(0, Math.round((now - ts) / 1000));
   return { lastSync, ageSec, stale: ageSec > staleAfterSec };
+}
+
+/**
+ * Poll intervals a plane may miss before its last sync reads stale, and the
+ * floor that keeps a very short interval from marking a plane stale during a
+ * single slow pull. The registry, the poller and the screen endpoints must all
+ * expire a plane at the same age — otherwise one screen renders `up` while
+ * another renders `unverified` from the same PlaneState.
+ */
+export const STALE_AFTER_INTERVALS = 3;
+export const STALE_AFTER_FLOOR_SEC = 90;
+
+/** The staleness window for a given poll interval — the ONE definition. */
+export function staleAfterSecFor(pollIntervalSec: number): number {
+  const interval = Number.isFinite(pollIntervalSec) ? pollIntervalSec : 0;
+  return Math.max(STALE_AFTER_FLOOR_SEC, STALE_AFTER_INTERVALS * Math.max(0, interval));
+}
+
+/**
+ * Age-based staleness for one plane, with the reason. This is what a consumer
+ * needs instead of keying on `health === 'degraded'`: a plane whose poller
+ * quietly stopped still reports 'healthy' with an hour-old lastSync, and its
+ * rows must read `unverified` (design rule 1).
+ *
+ * An unlinked plane is never "stale" — it contributes no rows to be stale.
+ * A linked plane that has never synced IS stale: there is nothing to present.
+ * `warning` (a partial pull: some datasets unread) is stale-with-reason
+ * 'partial', so a half-read Central cannot render its devices as verified.
+ */
+export function planeStaleness(
+  plane: { linked: boolean; health: PlaneHealthKey; lastSync: string | null },
+  staleAfterSec: number,
+  now: number = Date.now(),
+): PlaneStaleness {
+  const fresh = planeFreshness(plane.lastSync, staleAfterSec, now);
+  if (!plane.linked || plane.health === 'unlinked') {
+    return { ...fresh, stale: false, reason: null };
+  }
+  if (plane.health === 'degraded') return { ...fresh, stale: true, reason: 'degraded' };
+  if (fresh.lastSync === null) return { ...fresh, stale: true, reason: 'never-synced' };
+  if (fresh.stale) return { ...fresh, reason: 'aged-out' };
+  if (plane.health === 'warning') return { ...fresh, stale: true, reason: 'partial' };
+  return { ...fresh, reason: null };
+}
+
+/**
+ * The lane header's sync stamp, in the fixtures' own vocabulary, so a live
+ * lane and a demo lane read identically:
+ *   a stamp        → 'synced 40s'
+ *   null (linked)  → 'never synced'
+ *   undefined      → the non-asserting UNKNOWN_LANE_META.sync
+ * It never invents a stamp, and never says "linked".
+ */
+export function laneSyncStamp(lastSync: string | null | undefined, now: number = Date.now()): string {
+  if (lastSync === undefined) return UNKNOWN_LANE_META.sync;
+  if (lastSync === null) return 'never synced';
+  return `synced ${relativeAge(lastSync, now)}`;
 }
 
 /**

@@ -13,7 +13,14 @@
 import { describe, expect, it } from 'vitest';
 import type { PlaneState } from '../src/planes/types';
 import type { FetchLike } from '../src/planes/aos8';
-import { Aos8Adapter, mapAos8Ap, mapAos8Client, mapAos8Switch } from '../src/planes/aos8';
+import {
+  Aos8Adapter,
+  aos8FirmwareApproved,
+  aos8MasterVersion,
+  mapAos8Ap,
+  mapAos8Client,
+  mapAos8Switch,
+} from '../src/planes/aos8';
 
 // -- Recorded fixtures (shapes as the MM API returns them) ----------------------
 
@@ -144,9 +151,17 @@ describe('mapAos8Ap', () => {
       planeTone: 'accent',
       state: 'up',
       stateTone: 'success',
-      siteId: 'multiple',
+      // The AP database's Group is the only place column AOS-8 publishes —
+      // filing the whole plane under 'multiple' hid it from every site screen.
+      siteId: 'ext-lake-tower',
+      siteName: 'lake-tower',
+      // An AP terminates on its controller: no portal shell.
       localShell: false,
     });
+  });
+
+  it("falls back to the 'multiple' pseudo-site when the row carries no Group", () => {
+    expect(mapAos8Ap({ Name: 'ap-x', Status: 'Up 1d' })).toMatchObject({ siteId: 'multiple' });
   });
 
   it('maps down and unknown statuses honestly', () => {
@@ -186,6 +201,48 @@ describe('mapAos8Switch', () => {
 
   it('carries the management IP through', () => {
     expect(mapAos8Switch(SWITCH_ROW)?.ip).toBe('10.48.0.12');
+  });
+
+  // README: AOS-8 gets recorded SSH through the jump host. Reporting 'no local
+  // shell' for an on-prem controller is factually wrong and removes the
+  // terminal affordance the plane exists to offer.
+  it('offers a recorded shell for a controller and resolves its Location as the site', () => {
+    expect(mapAos8Switch({ ...SWITCH_ROW, Location: 'lake-tower' })).toMatchObject({
+      localShell: true,
+      siteId: 'ext-lake-tower',
+    });
+    expect(mapAos8Switch(SWITCH_ROW)).toMatchObject({ localShell: true, siteId: 'multiple' });
+  });
+});
+
+describe('AOS-8 firmware train', () => {
+  const MASTER = { Name: 'mm-lake-1', 'IP Address': '10.48.0.10', Type: 'master', Version: '8.10.0.10', Status: 'up' };
+
+  it('reads the approved train off the master row, and nothing when none says master', () => {
+    expect(aos8MasterVersion([MASTER, SWITCH_ROW])).toBe('8.10.0.10');
+    expect(aos8MasterVersion([SWITCH_ROW])).toBeNull(); // MD only — nothing declared the train
+  });
+
+  it('flags an MD that is off the master train and leaves matching peers alone', () => {
+    const onTrain = mapAos8Switch(SWITCH_ROW)!; // 8.10.0.10
+    const offTrain = mapAos8Switch({ ...SWITCH_ROW, Name: 'mc-lake-3', Version: '8.10.0.9' })!;
+    expect(aos8FirmwareApproved(onTrain, '8.10.0.10', [])).toBe(true);
+    expect(aos8FirmwareApproved(offTrain, '8.10.0.10', [])).toBe(false);
+  });
+
+  // We cannot know, and flagging every AP would be noise, not signal.
+  it('never flags unknown firmware, and leaves APs to their controller', () => {
+    const ap = mapAos8Ap(AP_UP)!; // the AP database publishes no version
+    expect(ap.firmware).toBe('unknown');
+    expect(aos8FirmwareApproved(ap, '8.10.0.10', [])).toBe(true);
+    const md = mapAos8Switch(SWITCH_ROW)!;
+    expect(aos8FirmwareApproved(md, null, [])).toBe(true); // no train declared
+  });
+
+  it('honours an operator-declared approved-firmware map on top', () => {
+    const md = mapAos8Switch(SWITCH_ROW)!; // 8.10.0.10, model 7210
+    expect(aos8FirmwareApproved(md, '8.10.0.10', [['7210', '8.11']])).toBe(false);
+    expect(aos8FirmwareApproved(md, '8.10.0.10', [['7210', '8.10']])).toBe(true);
   });
 });
 
@@ -339,6 +396,59 @@ describe('Aos8Adapter.pull', () => {
     expect(pull.clients).toBeUndefined();
     expect(st.note).toContain('client table unavailable');
     expect(st.note).toContain("section 'show global-user-table list' failed");
+  });
+
+  // AOS-8 requires every MD to run the master's train, so the master's own
+  // version IS the approved one — without this no AOS-8 row could ever render
+  // amber, however far out of step the estate was.
+  it('flags a controller off the master train and names the skew in the note', async () => {
+    const master = { Name: 'mm-lake-1', 'IP Address': '10.48.0.10', Type: 'master', Version: '8.10.0.10', Status: 'up' };
+    const skewed = { ...SWITCH_ROW, Name: 'mc-lake-3', Version: '8.10.0.9' };
+    const { adapter, st } = makeAdapter(
+      fakeFetch({ switchBodies: [{ status: 200, body: switchesBody([master, SWITCH_ROW, skewed]) }] }),
+    );
+    const pull = await adapter.pull();
+    const byName = new Map(pull.devices!.map((d) => [d.name, d]));
+    expect(byName.get('mm-lake-1')?.firmwareApproved).toBe(true);
+    expect(byName.get('mc-lake-2')?.firmwareApproved).toBe(true);
+    expect(byName.get('mc-lake-3')?.firmwareApproved).toBe(false);
+    expect(st.note).toContain('1 off the 8.10.0.10 train');
+  });
+
+  // The MM caps concurrent management sessions: abandoning a UID on every
+  // 14-minute rollover eventually earns 'maximum number of sessions reached'.
+  it('hands the old UID back before minting a new session', async () => {
+    const seen = seenLog();
+    const { adapter, calls } = makeAdapter(fakeFetch({ seen }));
+    await adapter.pull();
+    expect(seen.urls.some((u) => u.includes('/v1/api/logout'))).toBe(false); // nothing to release yet
+    // force the rollover the MM's 15-minute session lifetime causes
+    (adapter as unknown as { session: { expiresAt: number } | null }).session!.expiresAt = Date.now() - 1;
+    await adapter.pull();
+    expect(seen.urls.some((u) => u.includes('/v1/api/logout?UIDARUBA=uid-abc-123'))).toBe(true);
+    // recorded like any other call, with the UID redacted out of the log
+    const logoutCalls = calls.filter((c) => c.path.startsWith('POST /v1/api/logout'));
+    expect(logoutCalls).toHaveLength(1);
+    expect(logoutCalls[0].path).not.toContain('uid-abc-123');
+  });
+
+  it('never lets a failing logout break the pull', async () => {
+    const base = fakeFetch({});
+    const { adapter } = makeAdapter(async (url, init) => {
+      if (String(url).includes('/v1/api/logout')) throw new Error('connection reset');
+      return base(url, init);
+    });
+    await adapter.pull();
+    (adapter as unknown as { session: { expiresAt: number } | null }).session!.expiresAt = Date.now() - 1;
+    const pull = await adapter.pull();
+    expect(pull.devices).toHaveLength(3);
+  });
+
+  // The one plane the portal can give a shell to (README: recorded SSH,
+  // change window only) — configuration still stays on the MM.
+  it('claims a local shell, but no brokered write and no config read', () => {
+    const { adapter } = makeAdapter(fakeFetch({}));
+    expect(adapter.capabilities()).toEqual({ localShell: true, brokeredWrite: false, configRead: false });
   });
 
   it('fails the pull naming the section when login is rejected', async () => {

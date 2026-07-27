@@ -62,6 +62,36 @@ interface Banner {
 }
 
 /**
+ * Why a row cannot be cleared from the portal, in the plane's own vocabulary.
+ * Mirrors server/src/services/ackAlert.ts:129-142 so the screen states the truth
+ * BEFORE the operator picks a ticket rather than after a red 409 (design rule 4 —
+ * read-only planes are honest, the portal offers a hand-off, never a fake form).
+ * Null = the broker will accept this row.
+ */
+function ackBlocker(a: AlertRow): string | null {
+  if (a.plane !== 'CENTRAL') {
+    return a.plane === 'UXI'
+      ? 'close it in the UXI dashboard — the sensor API is read-only from here'
+      : `acknowledge it in the ${a.plane.toLowerCase()} console — that plane is read-only from here`;
+  }
+  if (!a.alertId) {
+    return 'no plane key on record for this row — acknowledge it in Central';
+  }
+  return null;
+}
+
+/**
+ * Stable row identity. Titles are NOT unique in live data — Central's v1alpha1
+ * feed titles every affected device 'Config Out of Sync', and dedupeAlerts keeps
+ * them all (two devices are two findings). Keying on the title collides, so an
+ * optimistic ack can visibly land on the wrong row. Match the server's dedupe
+ * key when the plane gave us one; fall back to the sorted position.
+ */
+function rowKey(a: AlertRow, i: number): string {
+  return a.alertId ? `${a.plane}|${a.alertId}` : `${a.plane}|${a.title}|${a.device}|${i}`;
+}
+
+/**
  * The danger banner is a correlation over the queue (README §2 — "correlates the
  * two worst findings"), not prose: the worst open alert crossed with the worst
  * open row whose source plane is behind (`stale`, design rule 1). Every word is
@@ -95,6 +125,9 @@ export default function Alerts() {
   const [plane, setPlane] = useState('all');
   const [q, setQ] = useState('');
   const [unackedOnly, setUnackedOnly] = useState(false);
+  /* Rows the plane itself considers resolved are not workload — they are out of
+   * the queue unless the operator asks for them (shared/types.ts:274). */
+  const [showCleared, setShowCleared] = useState(false);
 
   /* Ticket-gated acknowledge (Central's notifications clear API). The confirm
    * block lives inline under the header; it targets the first open alert in
@@ -103,6 +136,10 @@ export default function Alerts() {
   const [ackTickets, setAckTickets] = useState<TicketRow[]>([]);
   const [ackTicket, setAckTicket] = useState('');
   const [ackBusy, setAckBusy] = useState(false);
+  /* Distinguishes "still fetching" from "there is genuinely no open ticket" —
+   * a fresh live install has none, and a greyed-out button with an empty Select
+   * and no copy reads as a broken control. */
+  const [ticketsLoaded, setTicketsLoaded] = useState(false);
 
   useEffect(() => {
     if (!ackTarget) return;
@@ -114,11 +151,38 @@ export default function Alerts() {
       const sorted = [...open, ...rest];
       setAckTickets(sorted);
       setAckTicket((curId) => curId || (sorted[0]?.id ?? ''));
+      setTicketsLoaded(true);
     });
     return () => {
       live = false;
     };
   }, [ackTarget]);
+
+  /** Raise a ticket from an alert row; `goToQueue` follows it into /tickets. */
+  const raiseFor = async (top: AlertRow, goToQueue: boolean): Promise<string | null> => {
+    const r = await raiseTicket(top);
+    if ('ticket' in r) {
+      toast(`Ticket ${r.ticket.id} raised — ${top.title.slice(0, 48)}`, { tone: 'success' });
+      if (goToQueue) navigate(`/tickets?sel=${encodeURIComponent(r.ticket.id)}`);
+      return r.ticket.id;
+    }
+    toast(`Ticket raise unavailable (${r.error})${goToQueue ? ' — opening the queue' : ''}`, {
+      tone: 'info',
+    });
+    if (goToQueue) navigate('/tickets');
+    return null;
+  };
+
+  /** Re-read the queue so a just-raised ticket can authorise the acknowledge. */
+  const reloadTickets = async (prefer: string | null) => {
+    const d = await getTickets();
+    const open = d.tickets.filter((t) => !/resolved|closed/i.test(t.state));
+    const rest = d.tickets.filter((t) => /resolved|closed/i.test(t.state));
+    const sorted = [...open, ...rest];
+    setAckTickets(sorted);
+    setAckTicket(prefer ?? sorted[0]?.id ?? '');
+    setTicketsLoaded(true);
+  };
 
   const confirmAck = async () => {
     if (!ackTarget) return;
@@ -177,11 +241,16 @@ export default function Alerts() {
   const ql = q.trim().toLowerCase();
   const rows = data.alerts.filter(
     (a) =>
+      (showCleared || a.state !== 'cleared') &&
       (sev === 'all' || a.sev === sev) &&
       (plane === 'all' || a.plane === plane) &&
       (!unackedOnly || a.state === 'open') &&
       (!ql || (a.title + a.detail + a.siteName).toLowerCase().includes(ql)),
   );
+  /* The denominator is the queue, and a row the plane already resolved is not in
+   * it — counting cleared rows overstates the workload (README §2). */
+  const clearedCount = data.alerts.filter((a) => a.state === 'cleared').length;
+  const queueTotal = showCleared ? data.alerts.length : data.alerts.length - clearedCount;
   const planes = ['all'].concat(
     data.alerts.map((a) => a.plane).filter((p, i, arr) => arr.indexOf(p) === i),
   );
@@ -216,11 +285,25 @@ export default function Alerts() {
               variant="ghost"
               size="sm"
               onClick={() => {
-                const top = rows.find((a) => a.state === 'open');
-                if (!top) {
+                // A live queue is mostly rows the broker will refuse (ackAlert.ts
+                // is Central-with-a-plane-key only), so target one it will accept
+                // and hand off honestly when there is none — never open a confirm
+                // block that can only end in a 409.
+                const open = rows.filter((a) => a.state === 'open');
+                if (open.length === 0) {
                   toast('No open alert in view to acknowledge', { tone: 'info' });
                   return;
                 }
+                const top = sectionLive ? open.find((a) => !ackBlocker(a)) : open[0];
+                if (!top) {
+                  const first = open[0];
+                  toast(`${first.plane} alerts cannot be cleared from here`, {
+                    tone: 'info',
+                    description: ackBlocker(first) ?? undefined,
+                  });
+                  return;
+                }
+                setTicketsLoaded(false);
                 setAckTarget(top);
               }}
             >
@@ -241,14 +324,7 @@ export default function Alerts() {
                   toast('No alert in view to raise from', { tone: 'info' });
                   return;
                 }
-                const r = await raiseTicket(top);
-                if ('ticket' in r) {
-                  toast(`Ticket ${r.ticket.id} raised — ${top.title.slice(0, 48)}`, { tone: 'success' });
-                  navigate(`/tickets?sel=${encodeURIComponent(r.ticket.id)}`);
-                } else {
-                  toast(`Ticket raise unavailable (${r.error}) — opening the queue`, { tone: 'info' });
-                  navigate('/tickets');
-                }
+                await raiseFor(top, true);
               }}
             >
               Raise ticket
@@ -278,24 +354,57 @@ export default function Alerts() {
           <div style={{ flex: 1, minWidth: 240 }}>
             <FormField
               label="Authorising ticket"
-              help={`Clears "${ackTarget.title.slice(0, 64)}" on ${ackTarget.plane === 'CENTRAL' ? 'Central via the notifications API (202 = accepted)' : `the ${ackTarget.plane} plane`}; recorded against this ticket.`}
+              help={
+                sectionLive
+                  ? `Clears "${ackTarget.title.slice(0, 64)}" on Central via the notifications API (202 = accepted); recorded against this ticket.`
+                  : `Demo mode — the acknowledge is validated and audit-logged against this ticket; nothing is sent to ${ackTarget.plane}.`
+              }
             >
-              <Select
-                options={ackTickets.map((t) => ({ value: t.id, label: `${t.id} · ${t.title}` }))}
-                value={ackTicket}
-                onValueChange={setAckTicket}
-                aria-label="Authorising ticket"
-              />
+              {ticketsLoaded && ackTickets.length === 0 ? (
+                <span
+                  style={{
+                    display: 'block',
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-11)',
+                    color: 'var(--nd-text-muted)',
+                    lineHeight: 1.6,
+                    paddingTop: 4,
+                  }}
+                >
+                  No open ticket to authorise this acknowledge — writes are brokered, never
+                  standing. Raise one from this alert first.
+                </span>
+              ) : (
+                <Select
+                  options={ackTickets.map((t) => ({ value: t.id, label: `${t.id} · ${t.title}` }))}
+                  value={ackTicket}
+                  onValueChange={setAckTicket}
+                  aria-label="Authorising ticket"
+                />
+              )}
             </FormField>
           </div>
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={ackBusy || !ackTicket}
-            onClick={() => void confirmAck()}
-          >
-            {ackBusy ? 'Acknowledging…' : 'Acknowledge'}
-          </Button>
+          {ticketsLoaded && ackTickets.length === 0 ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={async () => {
+                const id = await raiseFor(ackTarget, false);
+                await reloadTickets(id);
+              }}
+            >
+              Raise ticket from this alert
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={ackBusy || !ackTicket}
+              onClick={() => void confirmAck()}
+            >
+              {ackBusy ? 'Acknowledging…' : 'Acknowledge'}
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={() => setAckTarget(null)}>
             Cancel
           </Button>
@@ -344,6 +453,14 @@ export default function Alerts() {
           checked={unackedOnly}
           onCheckedChange={setUnackedOnly}
         />
+        {clearedCount > 0 ? (
+          <Switch
+            label="Include cleared"
+            size="sm"
+            checked={showCleared}
+            onCheckedChange={setShowCleared}
+          />
+        ) : null}
         <span
           style={{
             marginLeft: 'auto',
@@ -352,7 +469,9 @@ export default function Alerts() {
             color: 'var(--nd-text-muted)',
           }}
         >
-          {rows.length} of {data.alerts.length} alerts · {sectionLive ? 'live' : 'demo fixtures'}
+          {`${rows.length} of ${queueTotal} alerts${
+            clearedCount > 0 && !showCleared ? ` · ${clearedCount} cleared hidden` : ''
+          } · ${sectionLive ? 'live' : 'demo fixtures'}`}
         </span>
       </div>
 
@@ -369,8 +488,8 @@ export default function Alerts() {
           </Table.Row>
         </Table.Head>
         <Table.Body>
-          {rows.map((a) => (
-            <Table.Row key={a.title}>
+          {rows.map((a, i) => (
+            <Table.Row key={rowKey(a, i)}>
               <Table.Cell>
                 <Badge tone={a.tone} dot>
                   {a.sev}
@@ -423,24 +542,60 @@ export default function Alerts() {
                 )}
               </Table.Cell>
               <Table.Cell>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => navigate(`/devices/${encodeURIComponent(a.device)}`)}
-                >
-                  Inspect
-                </Button>
+                {/* Site/WAN/tenant-class live alerts honestly name no device
+                    (central.ts:407-410) — Inspect would drop the operator on the
+                    full inventory, so say so instead of offering a dead action. */}
+                {a.device && a.device !== '—' ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => navigate(`/devices/${encodeURIComponent(a.device)}`)}
+                  >
+                    Inspect
+                  </Button>
+                ) : (
+                  <span
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 'var(--nd-text-11)',
+                      color: 'var(--nd-text-muted)',
+                    }}
+                  >
+                    no device
+                  </span>
+                )}
               </Table.Cell>
             </Table.Row>
           ))}
         </Table.Body>
       </Table>
 
+      {/* An empty queue and an empty filter result are different facts: blaming
+          a filter the operator never set implies alerts exist and are hidden. */}
       {rows.length === 0 ? (
-        <EmptyState
-          title="Nothing matches that filter"
-          description="Loosen the severity or plane filter to see the rest of the queue."
-        />
+        data.alerts.length === 0 ? (
+          <EmptyState
+            title="No alerts in the queue"
+            description={
+              sectionLive
+                ? data.syncedAt
+                  ? 'Nothing is open across the linked planes as of the last poll.'
+                  : 'No plane has reported yet — link one under Connected systems.'
+                : 'Nothing is open across the linked planes.'
+            }
+          >
+            {sectionLive && !data.syncedAt ? (
+              <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
+                Connected systems
+              </Button>
+            ) : null}
+          </EmptyState>
+        ) : (
+          <EmptyState
+            title="Nothing matches that filter"
+            description="Loosen the severity or plane filter to see the rest of the queue."
+          />
+        )
       ) : null}
     </div>
   );

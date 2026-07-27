@@ -126,4 +126,47 @@ describe('AuthEvents', () => {
     const stamp = await screen.findByText('SYNCED —');
     expect(stamp.textContent).not.toContain('null');
   });
+
+  it('(d) an empty live feed names the missing policy plane, not the filter', async () => {
+    mockGetAuthEvents.mockResolvedValue(liveData({ events: [] }));
+    renderAuthEvents();
+
+    expect(await screen.findByText('No auth events from any policy plane')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'ClearPass has not returned decisions for this window — check Connected systems.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('Nothing matches that filter')).toBeNull();
+  });
+
+  it('(e) a ?plane= deep-link with no rows stays visible and clearable in the Select', async () => {
+    mockGetAuthEvents.mockResolvedValue(liveData({ events: [] }));
+    render(
+      <MemoryRouter initialEntries={['/auth-events?plane=clearpass']}>
+        <ToastProvider>
+          <SettingsProvider>
+            <AuthEvents />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    // The filter that is hiding everything names itself rather than rendering blank.
+    expect(await screen.findByText('CLEARPASS (no events)')).toBeTruthy();
+  });
+
+  it('(f) labels the failure breakdown by the window it actually measured', async () => {
+    const reasons = [{ label: 'Certificate expired', value: 12, note: '12 rejects' }];
+    mockGetAuthEvents.mockResolvedValue(liveData({ failReasons: reasons }));
+    renderAuthEvents();
+
+    expect(await screen.findByText('CURRENT POLLER SNAPSHOT')).toBeTruthy();
+    expect(screen.queryByText('LAST 24 HOURS')).toBeNull();
+
+    cleanup();
+    mockGetAuthEvents.mockResolvedValue(liveData({ failReasons: reasons, dataSource: 'demo' }));
+    renderAuthEvents();
+    expect(await screen.findByText('LAST 24 HOURS')).toBeTruthy();
+  });
 });

@@ -115,9 +115,13 @@ const SUB_GLP_V1ALPHA1 = {
 // -- Pure helpers --------------------------------------------------------------
 
 describe('pure helpers', () => {
-  it("expiryDisplay renders the month-precision style ('Mar 2027')", () => {
-    expect(expiryDisplay(Date.parse('2027-03-15T10:00:00Z'))).toBe('Mar 2027');
-    expect(expiryDisplay(Date.parse('2027-09-14T00:00:00Z'))).toBe('Sep 2027');
+  // The design and the fixtures render '14 Sep 26', and blend mode puts live
+  // and fixture rows in ONE table — month precision both drifted from the
+  // reference and hid the difference between the 2nd and the 29th.
+  it("expiryDisplay renders the design's day-precision style ('14 Sep 26')", () => {
+    expect(expiryDisplay(Date.parse('2027-03-15T10:00:00Z'))).toBe('15 Mar 27');
+    expect(expiryDisplay(Date.parse('2026-09-14T00:00:00Z'))).toBe('14 Sep 26');
+    expect(expiryDisplay(Date.parse('2026-09-02T00:00:00Z'))).toBe('02 Sep 26');
   });
 
   it('subStatusFor applies retiring > expiring > idle > active', () => {
@@ -138,14 +142,14 @@ describe('mapGreenLakeSubscription', () => {
     const s = mapGreenLakeSubscription(SUB_ACTIVE, NOW);
     expect(s).not.toBeNull();
     expect(s!.name).toBe('Foundation AP');
-    expect(s!.sku).toBe('R7G20AAE');
+    expect(s!.sku).toBe('R7G20AAE · greenlake'); // the fixtures' '<key> · <plane>' convention
     expect(s!.plane).toBe('GREENLAKE');
     expect(s!.planeTone).toBe('accent');
     expect(s!.term).toBe('3 yr subscription'); // derived from term_months
     expect(s!.qty).toBe('180');
     expect(s!.assigned).toBe('174');
     expect(s!.pct).toBe('97%');
-    expect(s!.expires).toBe('Sep 2027');
+    expect(s!.expires).toBe('14 Sep 27');
     expect(s!.status).toBe('active');
     expect(s!.tone).toBe('success');
     expect(s!.expiresAtMs).toBe(Date.parse(SUB_ACTIVE.end_date));
@@ -169,7 +173,7 @@ describe('mapGreenLakeSubscription', () => {
     expect(s!.tone).toBe('neutral');
     expect(s!.assigned).toBe('0');
     expect(s!.pct).toBe('0%');
-    expect(s!.sku).toBe('UXI-SUB-1Y'); // part_number fallback
+    expect(s!.sku).toBe('UXI-SUB-1Y · greenlake'); // part_number fallback
   });
 
   it('an expired raw status maps to retiring/danger even with days left', () => {
@@ -226,11 +230,11 @@ describe('mapGreenLakeSubscription', () => {
     const s = mapGreenLakeSubscription(SUB_GLP_V1, NOW);
     expect(s).not.toBeNull(); // the whole workspace used to be dropped here
     expect(s!.name).toBe('Aruba Central 8/9/10xxx A EVAL'); // skuDescription
-    expect(s!.sku).toBe('JZ540-EVALS');
+    expect(s!.sku).toBe('JZ540-EVALS · greenlake');
     expect(s!.qty).toBe('5'); // string '5' coerced
     expect(s!.assigned).toBe('3'); // quantity − availableQuantity
     expect(s!.pct).toBe('60%');
-    expect(s!.expires).toBe('Aug 2027'); // endTime
+    expect(s!.expires).toBe('03 Aug 27'); // endTime
     expect(s!.expiresAtMs).toBe(Date.parse(SUB_GLP_V1.endTime));
     expect(s!.daysLeft).toBe(Math.floor((Date.parse(SUB_GLP_V1.endTime) - NOW) / 86_400_000));
     expect(s!.qtyValue).toBe(5);
@@ -242,10 +246,10 @@ describe('mapGreenLakeSubscription', () => {
   it('maps the v1alpha1 spelling (productDescription + appointment dates)', () => {
     const s = mapGreenLakeSubscription(SUB_GLP_V1ALPHA1, NOW);
     expect(s!.name).toBe('Advanced AP Subscription');
-    expect(s!.sku).toBe('R7G21AAE'); // productSku
+    expect(s!.sku).toBe('R7G21AAE · greenlake'); // productSku
     expect(s!.assigned).toBe('176'); // 200 − 24
     expect(s!.pct).toBe('88%');
-    expect(s!.expires).toBe('Sep 2026'); // appointment.subscriptionEnd
+    expect(s!.expires).toBe('23 Sep 26'); // appointment.subscriptionEnd
     expect(s!.daysLeft).toBe(60);
     expect(s!.status).toBe('expiring'); // < 90d — dead before the dates were read
     expect(s!.term).toBe('2 yr subscription'); // derived from the appointment span
@@ -277,7 +281,7 @@ describe('mapGreenLakeSubscription', () => {
 
 // -- pull() with an in-memory fake fetch (no network) ----------------------------
 
-type HandlerResult = { status?: number; body?: unknown };
+type HandlerResult = { status?: number; body?: unknown; headers?: Record<string, string> };
 type Handler = (method: string, pathname: string, query: URLSearchParams) => HandlerResult | undefined;
 
 function fakeFetch(handler: Handler): { fn: FetchLike; calls: string[]; tokenInits: RequestInit[] } {
@@ -294,7 +298,7 @@ function fakeFetch(handler: Handler): { fn: FetchLike; calls: string[]; tokenIni
     }
     return new Response(JSON.stringify(result.body ?? {}), {
       status: result.status ?? 200,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(result.headers ?? {}) },
     });
   };
   return { fn, calls, tokenInits };
@@ -310,15 +314,45 @@ function makeAdapter(handler: Handler) {
   const { fn, calls, tokenInits } = fakeFetch(handler);
   const recorded: { path: string; ms: number; code: string }[] = [];
   const state = makeState();
-  const adapter = new GreenLakeAdapter(CREDS, state, (c) => recorded.push(c), fn);
-  return { adapter, state, recorded, calls, tokenInits };
+  // Backoff delays are captured, never paid in wall time.
+  const slept: number[] = [];
+  const adapter = new GreenLakeAdapter(CREDS, state, (c) => recorded.push(c), fn, async (ms) => {
+    slept.push(ms);
+  });
+  return { adapter, state, recorded, calls, tokenInits, slept };
 }
 
 const TOKEN_PATH = '/authorization/v2/oauth2/ws-1/token';
 
+/**
+ * A GLP device row exactly as the live /devices/v1/devices envelope carries
+ * it: the device→entitlement join the Licences screen counts 'unlicensed' from.
+ */
+const DEVICE_ASSIGNED = {
+  id: 'dev-1',
+  serialNumber: 'SG01ABC123',
+  macAddress: '9c:8e:99:1a:2b:3c',
+  model: 'AP-635',
+  deviceType: 'AP',
+  deviceName: 'ap-3f-12',
+  archived: false,
+  assignedState: 'ASSIGNED_TO_SERVICE',
+  subscription: [{ key: 'K1B2C3D4E5F6A7B8C9', tierDescription: 'Advanced-AP', endTime: '2027-08-03T00:00:00.000Z' }],
+};
+const DEVICE_UNASSIGNED = {
+  id: 'dev-2',
+  serialNumber: 'SG01ABC124',
+  model: 'CX-6300',
+  deviceType: 'SWITCH',
+  archived: false,
+  assignedState: 'UNASSIGNED',
+  subscription: null,
+};
+
 const HAPPY_ROUTES: Record<string, unknown> = {
   [`POST ${TOKEN_PATH}`]: { access_token: 'gl-tok-1', expires_in: 7200 },
   'GET /subscriptions/v1/subscriptions': { subscriptions: [SUB_ACTIVE, SUB_EXPIRING, SUB_IDLE, SUB_RETIRING], total: 4 },
+  'GET /devices/v1/devices': { items: [DEVICE_ASSIGNED, DEVICE_UNASSIGNED], count: 2, offset: 0, total: 2 },
 };
 
 function routeHandler(routes: Record<string, unknown>): Handler {
@@ -332,6 +366,9 @@ function routeHandler(routes: Record<string, unknown>): Handler {
 function pagingHandler(rows: unknown[]): Handler {
   return (method, pathname, query) => {
     if (method === 'POST' && pathname === TOKEN_PATH) return { body: { access_token: 'gl-tok-1', expires_in: 7200 } };
+    if (method === 'GET' && pathname === '/devices/v1/devices') {
+      return { body: { items: [DEVICE_ASSIGNED, DEVICE_UNASSIGNED], count: 2, offset: 0, total: 2 } };
+    }
     if (method === 'GET' && pathname === '/subscriptions/v1/subscriptions') {
       const offset = Number(query.get('offset') ?? '0');
       const limit = Number(query.get('limit') ?? '100');
@@ -349,7 +386,7 @@ describe('GreenLakeAdapter.pull()', () => {
     expect(pull.subscriptions).toHaveLength(4);
     expect(pull.subscriptions![0].name).toBe('Foundation AP');
     expect(pull.subscriptions!.map((s) => s.status)).toEqual(['active', 'expiring', 'idle', 'retiring']);
-    expect(state.note).toBe('4 subscriptions · 1 expiring < 90d');
+    expect(state.note).toBe('4 subscriptions · 1 expiring < 90d · 2 devices · 1 unlicensed');
     expect(state.health).toBe('healthy'); // promoted from 'warning' on first success
     // the workspace scoping query is on the wire
     expect(calls.some((c) => c.includes('workspace_id=ws-1'))).toBe(true);
@@ -455,7 +492,7 @@ describe('GreenLakeAdapter.pull()', () => {
     const { adapter, calls, state } = makeAdapter(pagingHandler(rows));
     const pull = await adapter.pull();
     expect(pull.subscriptions).toHaveLength(250); // page 1 alone would have been 100
-    expect(state.note).toBe('250 subscriptions · 0 expiring < 90d');
+    expect(state.note).toBe('250 subscriptions · 0 expiring < 90d · 2 devices · 1 unlicensed');
     const subsCalls = calls.filter((c) => c.startsWith('GET /subscriptions/v1/subscriptions'));
     expect(subsCalls).toHaveLength(3);
     expect(subsCalls[0]).toContain('offset=0&limit=100');
@@ -477,7 +514,123 @@ describe('GreenLakeAdapter.pull()', () => {
     const { adapter, state } = makeAdapter(pagingHandler(rows));
     const pull = await adapter.pull();
     expect(pull.subscriptions).toHaveLength(2500); // 25 pages × 100
-    expect(state.note).toBe('2,500 subscriptions · 0 expiring < 90d · partial (page cap 25)');
+    expect(state.note).toBe('2,500 subscriptions · 0 expiring < 90d · partial (page cap 25) · 2 devices · 1 unlicensed');
+  });
+
+  // The device→entitlement join: without it the Licences screen can only
+  // guess at 'Devices unlicensed', and orphan/gap rows have no source.
+  it('reads the assignments feed and maps the device→subscription join', async () => {
+    const { adapter } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    const pull = await adapter.pull();
+    expect(pull.assignments).toHaveLength(2);
+    expect(pull.assignments![0]).toMatchObject({
+      serial: 'SG01ABC123',
+      mac: '9c:8e:99:1a:2b:3c',
+      deviceName: 'ap-3f-12',
+      deviceType: 'AP',
+      assigned: true,
+      subscriptionKey: 'K1B2C3D4E5F6A7B8C9',
+      subscriptionTier: 'Advanced-AP',
+      archived: false,
+    });
+    // 'UNASSIGNED' contains 'assigned' — the negative has to win, or every
+    // unlicensed device reads as licensed.
+    expect(pull.assignments![1]).toMatchObject({ serial: 'SG01ABC124', assigned: false, subscriptionKey: null });
+    expect(pull.partial).toBeUndefined();
+  });
+
+  it('refreshes the assignments feed on a slower cadence than the subscriptions', async () => {
+    const { adapter, calls } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    await adapter.pull();
+    await adapter.pull();
+    expect(calls.filter((c) => c.startsWith('GET /subscriptions/v1/subscriptions'))).toHaveLength(2);
+    expect(calls.filter((c) => c.startsWith('GET /devices/v1/devices'))).toHaveLength(1);
+  });
+
+  // An unread feed must never look like 'no unlicensed devices' — the pull
+  // says which dataset it could not read and the licence pull still lands.
+  it('declares the pull partial when the assignments feed cannot be read', async () => {
+    const routes = { ...HAPPY_ROUTES };
+    delete routes['GET /devices/v1/devices'];
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    expect(pull.subscriptions).toHaveLength(4); // the licence feed still lands
+    expect(pull.assignments).toBeUndefined();
+    expect(pull.partial).toEqual(['assignments']);
+    expect(state.note).toContain('assignments unavailable');
+  });
+
+  // A workspace whose devices endpoint does not exist must not be probed once
+  // a minute forever: the cadence gates attempts, not successes.
+  it('does not re-probe a missing assignments endpoint every poll', async () => {
+    const routes = { ...HAPPY_ROUTES };
+    delete routes['GET /devices/v1/devices'];
+    const { adapter, calls } = makeAdapter(routeHandler(routes));
+    await adapter.pull();
+    await adapter.pull();
+    expect(calls.filter((c) => c.startsWith('GET /devices/v1/devices'))).toHaveLength(1);
+  });
+
+  // 34 real subscriptions that all map to null used to publish as a healthy
+  // '0 subscriptions' — an operator reading 'this workspace owns nothing'.
+  it('fails the pull when rows came back but none could be mapped', async () => {
+    const routes = {
+      ...HAPPY_ROUTES,
+      'GET /subscriptions/v1/subscriptions': { subscriptions: [{ sku: 'R7G20AAE' }, { sku: 'R7G21AAE' }], total: 2 },
+    };
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    await expect(adapter.pull()).rejects.toThrow(/2 rows returned but none could be mapped/);
+    expect(state.health).not.toBe('healthy');
+  });
+
+  it('keeps a partly-readable page but names the rows it dropped', async () => {
+    const routes = {
+      ...HAPPY_ROUTES,
+      'GET /subscriptions/v1/subscriptions': { subscriptions: [SUB_ACTIVE, { sku: 'no-name-anywhere' }], total: 2 },
+    };
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    expect(pull.subscriptions).toHaveLength(1);
+    expect(state.note).toContain('1 rows unmapped');
+  });
+
+  it('leaves a genuinely empty workspace as an honest zero', async () => {
+    const routes = { ...HAPPY_ROUTES, 'GET /subscriptions/v1/subscriptions': { subscriptions: [], total: 0 } };
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    expect(pull.subscriptions).toEqual([]);
+    expect(state.health).toBe('healthy');
+  });
+
+  it('backs off and retries a 429, honouring Retry-After', async () => {
+    let throttled = 0;
+    const { adapter, state, slept } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/subscriptions/v1/subscriptions') {
+        throttled += 1;
+        if (throttled === 1) return { status: 429, body: {}, headers: { 'retry-after': '4' } };
+      }
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    const pull = await adapter.pull();
+    expect(pull.subscriptions).toHaveLength(4);
+    expect(slept).toEqual([4_000]);
+    expect(state.health).toBe('healthy'); // a survivable throttle is not a degraded plane
+  });
+
+  it('names rate limiting when the throttle outlives the backoff', async () => {
+    const { adapter, slept } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/subscriptions/v1/subscriptions') return { status: 429, body: {} };
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    await expect(adapter.pull()).rejects.toThrow(/rate limited, backoff exhausted/);
+    expect(slept).toEqual([1_000, 2_000]);
+  });
+
+  it('claims no shell, no brokered write and no config read', () => {
+    const { adapter } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: false, configRead: false });
   });
 
   it('retries once with a fresh token on 401', async () => {

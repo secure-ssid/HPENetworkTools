@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 import SiteDetail from './SiteDetail';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -70,6 +70,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** Stands in for DeviceDetail so a terminal hand-off is observable by target. */
+function DeviceStub() {
+  const { name } = useParams();
+  return <div>device page {name}</div>;
+}
+
 function renderDetail(path = '/sites/SecureSSID') {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -77,6 +83,7 @@ function renderDetail(path = '/sites/SecureSSID') {
         <SettingsProvider>
           <Routes>
             <Route path="/sites/:siteId" element={<SiteDetail />} />
+            <Route path="/devices/:name" element={<DeviceStub />} />
           </Routes>
         </SettingsProvider>
       </ToastProvider>
@@ -139,6 +146,71 @@ describe('SiteDetail live summary', () => {
     expect(screen.getByText(/^LIVE · SYNCED /)).toBeTruthy();
     expect(screen.getByText('no device claimed this site in the last pull')).toBeTruthy();
     expect(screen.getByText('nothing open here')).toBeTruthy();
+  });
+
+  it('keeps the fifth Config drift tile and says why it is unavailable', async () => {
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+    // README §7 specifies five tiles; live mode must not silently drop one.
+    expect(screen.getByText('Config drift')).toBeTruthy();
+    expect(screen.getByText('no running-config baseline source')).toBeTruthy();
+  });
+
+  it('derives the header hand-off from the claiming plane and omits it when none claims', async () => {
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Open in CENTRAL' })).toBeTruthy();
+    // No switch-like device row was sent, so no terminal target is invented.
+    expect(screen.queryByRole('button', { name: 'Local terminal' })).toBeNull();
+
+    cleanup();
+    mockGetSiteDetail.mockResolvedValue({
+      site: { ...LIVE_SITE, planes: [] },
+      profile: null,
+      dataSource: 'live',
+    });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /^Open in / })).toBeNull();
+  });
+
+  it('offers Local terminal only against a switch-like row the plane actually reported', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      devices: [
+        {
+          name: 'ap-live-1',
+          model: 'AP-635',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access point',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '—',
+        },
+        {
+          name: 'sw-edge-3',
+          model: 'CX 6300',
+          plane: 'LOCAL',
+          planeTone: 'neutral',
+          role: 'access switch',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '—',
+        },
+      ],
+    } as SiteDetailData);
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Devices at this site')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Local terminal' }));
+    await waitFor(() => expect(screen.getByText('device page sw-edge-3')).toBeTruthy());
   });
 
   it('labels an authored profile as demo rather than stamping it with a sync time', async () => {

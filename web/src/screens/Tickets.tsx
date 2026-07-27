@@ -21,6 +21,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Alert, Badge, Button, EmptyState, Heading, SectionHeader, Spinner, Textarea, useToast } from '../nightdesk';
 import { addTicketNote, getTickets, resolveTicket } from '../api/client';
 import type { TicketsData } from '../api/client';
+import { relativeAge, slaCountdown } from '../../../shared';
+import type { TicketRow } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 
@@ -31,6 +33,28 @@ function hhmm(iso: string): string {
   return Number.isNaN(d.getTime())
     ? iso
     : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * Age and SLA are rendered from the ticket's own timestamps whenever it has
+ * them, so a queue fetched an hour ago (or an operator-raised ticket read from
+ * the offline fixture path) cannot keep claiming a ticket raised days ago is
+ * minutes old. Authored fixtures carry no `raisedAt`/`slaDueAt` — their strings
+ * stay authoritative rather than being replaced by an invented countdown.
+ */
+function ageOf(t: TicketRow, now: number): string {
+  return t.raisedAt ? relativeAge(t.raisedAt, now) : t.age;
+}
+
+/** A closed ticket has no countdown left to run — README rule 1. */
+function slaOf(t: TicketRow, now: number): string {
+  if (t.state === 'resolved') return 'Closed';
+  return slaCountdown(t.slaDueAt, now) ?? t.sla;
+}
+
+/** Priority tone, neutralised once the ticket is closed (fixtures.ts NET-4149). */
+function priTone(t: TicketRow): TicketRow['tone'] {
+  return t.state === 'resolved' ? 'success' : t.tone;
 }
 
 export default function Tickets() {
@@ -78,6 +102,7 @@ export default function Tickets() {
   }
 
   const openCount = tickets.filter((t) => t.state !== 'resolved').length;
+  const now = Date.now();
   const notes = notesByTicket[cur.id] ?? cur.notes ?? [];
   const firstDevice = cur.evidence.find((e) => e.device)?.device ?? null;
 
@@ -109,6 +134,14 @@ export default function Tickets() {
     setBusy(false);
     if ('ticket' in res) {
       toast(`${cur.id} resolved`, { tone: 'success' });
+      // The refetched envelope is the single source of truth for the log —
+      // drop the optimistic copy or the store's 'Ticket resolved' action note
+      // stays invisible until a full reload.
+      setNotesByTicket((prev) => {
+        const next = { ...prev };
+        delete next[cur.id];
+        return next;
+      });
       setData(await getTickets()); // the queue's open count + state badge follow the store
     } else {
       toast(`not resolved — ${res.error}`, { tone: 'danger' });
@@ -173,14 +206,14 @@ export default function Tickets() {
                       marginLeft: 'auto',
                     }}
                   >
-                    {t.age}
+                    {ageOf(t, now)}
                   </span>
                 </div>
                 <span style={{ fontSize: 13, color: 'var(--nd-text-primary)', lineHeight: 1.35 }}>
                   {t.title}
                 </span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Badge tone={t.tone}>{t.pri}</Badge>
+                  <Badge tone={priTone(t)}>{t.pri}</Badge>
                   <span
                     style={{
                       fontFamily: 'var(--nd-font-mono)',
@@ -210,7 +243,7 @@ export default function Tickets() {
               >
                 {cur.id}
               </span>
-              <Badge tone={cur.tone} dot>
+              <Badge tone={priTone(cur)} dot>
                 {cur.pri}
               </Badge>
               <Badge tone="neutral">{cur.state}</Badge>
@@ -219,10 +252,10 @@ export default function Tickets() {
                   marginLeft: 'auto',
                   fontFamily: 'var(--nd-font-mono)',
                   fontSize: 11,
-                  color: 'var(--nd-warning)',
+                  color: cur.state === 'resolved' ? 'var(--nd-text-muted)' : 'var(--nd-warning)',
                 }}
               >
-                {cur.sla}
+                {slaOf(cur, now)}
               </span>
             </div>
             <Heading level={3}>{cur.title}</Heading>
@@ -375,7 +408,8 @@ export default function Tickets() {
                     color: 'var(--nd-text-muted)',
                   }}
                 >
-                  Persisted in the portal's ticket store — survives refresh
+                  Persisted in the portal's ticket store — survives refresh · ServiceNow ref
+                  INC0094{cur.inc} (correlation id only — nothing is mirrored from here)
                 </span>
               </div>
               {notes.length > 0 ? (

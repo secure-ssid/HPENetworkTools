@@ -59,24 +59,38 @@
  *   - result forced onto the design's closed union: accept/success →
  *     accept (success); reject/denied/fail → reject (danger); timeout /
  *     no-response → timeout (warning). An unrecognised vocabulary keeps the
- *     row as timeout/warning with the raw value preserved in reason —
- *     dropping data silently is worse than an imperfect bucket. An accounting
- *     session row with no verdict at all is an accept: the session only exists
- *     because RADIUS already answered Access-Accept.
+ *     row as timeout/warning AND carries the raw verdict into `reason`
+ *     ('unmapped result: <raw>') — dropping data silently is worse than an
+ *     imperfect bucket, and the operator must be able to see that the timeout
+ *     is ours, not CPPM's. An accounting session row with no verdict at all is
+ *     an accept: the session only exists because RADIUS already answered
+ *     Access-Accept.
  *   - method normalised to 802.1X / MAB / TACACS+; unfamiliar values pass
  *     through unchanged.
  *   - mac normalised to aa:bb:cc:dd:ee:ff (any separator, any case); values
  *     that are not 12 hex digits pass through lowercased.
- *   - time: ISO/epoch → 'HH:MM' local wall-clock; the exact instant rides
- *     along as the tsMs hint so /api/auth-events can compute rates and the
- *     stats window without re-parsing display strings (same pattern as
- *     central's serial/mac identity hints).
+ *   - time: ISO/epoch → 'HH:MM:SS' local wall-clock (the design's and the
+ *     fixtures' style — a burst of decisions inside one minute has to stay
+ *     orderable by eye); the exact instant rides along as the tsMs hint so
+ *     /api/auth-events can compute rates and the stats window without
+ *     re-parsing display strings (same pattern as central's serial/mac
+ *     identity hints).
  *   - role: enforcement profile → 'role <name>' (the fixtures' display
  *     language); none → 'no role assigned'.
  *   - rows with neither a username nor a MAC are junk → dropped.
- *   - newest 200 kept (sorted by tsMs descending) — the screen shows the
- *     freshest decisions; the feed can be far larger, so the request itself is
- *     windowed, sorted newest-first and paged only as deep as that cap.
+ *   - newest 200 kept (dated rows sorted by tsMs descending) — the screen
+ *     shows the freshest decisions; the feed can be far larger, so the request
+ *     itself is windowed, sorted newest-first and paged only as deep as that
+ *     cap. Rows whose timestamp key we did not recognise keep their arrival
+ *     order BEHIND the dated ones (they cannot be placed on the timeline) and
+ *     are counted in the plane note, so a build that renames the timestamp
+ *     field loses visibility, never the rows themselves.
+ *
+ * Rate limits: 429 (and the transient 502/503/504 gateway statuses) are
+ * retried with bounded exponential backoff, Retry-After honoured when CPPM
+ * sends one. Every attempt is still recorded in the call log, so the Systems
+ * Activity tab shows the real 429s (README:314) instead of a plane that just
+ * flaps degraded once a minute.
  *
  * Security: the token travels in the Authorization header only, never in a
  * URL; client credentials live only in the /api/oauth POST body; the call log
@@ -85,10 +99,29 @@
 
 import type { AuthEvent, AuthEventRow, Tone } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
-import { parseTimestamp, TokenManager, type FetchLike, type RecordCallFn } from './central';
-import type { PlaneAdapter, PlanePull, PlaneState } from './types';
+import {
+  parseRetryAfterMs,
+  parseTimestamp,
+  TokenManager,
+  type FetchLike,
+  type RecordCallFn,
+  type SleepFn,
+} from './central';
+import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
+
+/** 429/5xx backoff: attempts after the first, exponential floor, hard cap. */
+const RATE_LIMIT_RETRIES = 2;
+const RATE_LIMIT_BASE_MS = 1_000;
+const RATE_LIMIT_CAP_MS = 30_000;
+/** Statuses worth waiting out: a throttle or a gateway blip, not a verdict. */
+const TRANSIENT_STATUSES = new Set([429, 502, 503, 504]);
+
+const realSleep: SleepFn = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 /** The feed can be far larger than the screen's needs — keep the freshest. */
 export const MAX_AUTH_EVENTS = 200;
@@ -178,21 +211,31 @@ export function normalizeMac(v: string): string {
   return v.trim().toLowerCase();
 }
 
-/** Local wall-clock 'HH:MM' — the fixtures' display style. */
-function hhmm(ms: number): string {
+/**
+ * Local wall-clock 'HH:MM:SS' — the fixtures' and the design's display style
+ * (design/NtAuthEvents.dc.html: '09:41:22'). Seconds are not decoration here:
+ * the screen exists to expose bursts ('6th attempt in 4 minutes'), which
+ * collapse into identical strings at minute precision.
+ */
+function hhmmss(ms: number): string {
   const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((v) => String(v).padStart(2, '0')).join(':');
 }
 
-/** ClearPass result vocabulary → the design's closed union (+ badge tone). */
-export function authResultFor(raw: string | null): { result: AuthEvent['result']; tone: Tone } {
+/**
+ * ClearPass result vocabulary → the design's closed union (+ badge tone).
+ * `matched` says whether the bucket was earned or defaulted, so the caller can
+ * carry the raw verdict into the row instead of presenting our fallback as
+ * CPPM's own answer.
+ */
+export function authResultFor(raw: string | null): { result: AuthEvent['result']; tone: Tone; matched: boolean } {
   const s = (raw ?? '').toLowerCase();
-  if (/accept|success|allow/.test(s)) return { result: 'accept', tone: 'success' };
-  if (/reject|denied|deny|fail/.test(s)) return { result: 'reject', tone: 'danger' };
-  if (/timeout|timed|no.?response|discard|drop/.test(s)) return { result: 'timeout', tone: 'warning' };
-  // Unrecognised vocabulary: keep the row (raw value survives in reason),
-  // bucket it as timeout/warning rather than guess accept/reject.
-  return { result: 'timeout', tone: 'warning' };
+  if (/accept|success|allow/.test(s)) return { result: 'accept', tone: 'success', matched: true };
+  if (/reject|denied|deny|fail/.test(s)) return { result: 'reject', tone: 'danger', matched: true };
+  if (/timeout|timed|no.?response|discard|drop/.test(s)) return { result: 'timeout', tone: 'warning', matched: true };
+  // Unrecognised vocabulary: keep the row, bucket it as timeout/warning rather
+  // than guess accept/reject — and say so (the raw value lands in `reason`).
+  return { result: 'timeout', tone: 'warning', matched: false };
 }
 
 /** Method normalised to 802.1X / MAB / TACACS+; unfamiliar values pass through. */
@@ -228,17 +271,22 @@ export function mapClearPassAuthEvent(raw: unknown): ClearPassAuthEventRow | nul
   // already answered Access-Accept, so an absent verdict there is an accept —
   // bucketing it as 'timeout' would report a live network at a 0% accept rate.
   const isSession = r.acctsessionid !== undefined || r.acctstarttime !== undefined;
-  const { result, tone } = authResultFor(rawResult ?? (isSession ? 'accept' : null));
+  const { result, tone, matched } = authResultFor(rawResult ?? (isSession ? 'accept' : null));
   const role = str(r.role ?? r.enforcement_profile ?? r.enforcement_profiles ?? r.profile);
+  const reported = str(r.reason ?? r.reject_reason ?? r.auth_details ?? r.error_message ?? r.message ?? r.detail);
+  // A verdict we could not classify is bucketed as timeout — the evidence for
+  // that call has to travel with the row, or the operator reads a fabricated
+  // timeout with no way back to what CPPM actually said.
+  const unmapped = !matched && rawResult !== null ? `unmapped result: ${rawResult}` : null;
   return {
-    time: tsMs !== null ? hhmm(tsMs) : '—',
+    time: tsMs !== null ? hhmmss(tsMs) : '—',
     who: who ?? 'unknown',
     mac: macRaw ? normalizeMac(macRaw) : '—',
     service: str(r.service ?? r.service_name ?? r.policy_service) ?? '—',
     method: authMethodFor(str(r.auth_method ?? r.method ?? r.authentication_method ?? r.auth_type ?? r.protocol)),
     result,
     tone,
-    reason: str(r.reason ?? r.reject_reason ?? r.auth_details ?? r.error_message ?? r.message ?? r.detail) ?? '—',
+    reason: [reported, unmapped].filter((v): v is string => v !== null).join(' · ') || '—',
     role: role ? `role ${role}` : 'no role assigned',
     nas: str(r.nas ?? r.nas_ip ?? r.nasipaddress ?? r.nas_name ?? r.nas_identifier ?? r.source ?? r.nad) ?? '—',
     plane: 'CLEARPASS',
@@ -250,12 +298,24 @@ export function mapClearPassAuthEvent(raw: unknown): ClearPassAuthEventRow | nul
 // The adapter
 // ---------------------------------------------------------------------------
 
+/**
+ * One outbound response. `retryAfterMs` is additive — callers that only read
+ * { status, body } (coaDisconnect) are unaffected; only the backoff consumes it.
+ */
+interface HttpResult {
+  status: number;
+  body: unknown;
+  retryAfterMs?: number;
+}
+
 class HttpStatusError extends Error {
   constructor(
     readonly status: number,
     path: string,
   ) {
-    super(`HTTP ${status} from ${path}`);
+    // A throttle that survived the backoff is not "CPPM said no" — name it, so
+    // the plane note reads 'rate limited' rather than a bare HTTP code.
+    super(`HTTP ${status} from ${path}${status === 429 ? ' — rate limited, backoff exhausted' : ''}`);
     this.name = 'HttpStatusError';
   }
 }
@@ -362,6 +422,8 @@ export class ClearPassAdapter implements PlaneAdapter {
     private readonly stateRef: PlaneState,
     private readonly recordCall: RecordCallFn,
     private readonly fetchImpl: FetchLike = (url, init) => fetch(url, init),
+    /** Injectable so tests exercise the backoff without real wall time. */
+    private readonly sleep: SleepFn = realSleep,
   ) {
     if (!ClearPassAdapter.isComplete(creds)) {
       throw new Error('clearpass requires a publisher (or host) plus clientId + clientSecret, or a token');
@@ -406,6 +468,17 @@ export class ClearPassAdapter implements PlaneAdapter {
     return this.stateRef;
   }
 
+  /**
+   * ClearPass is a policy plane, not a transport: it gives the portal no shell
+   * to any device, the write broker cannot push configuration to it (policy is
+   * edited in ClearPass itself — README integration table), and it publishes
+   * no SSID/VLAN/port inventory. The one sanctioned write is coaDisconnect(),
+   * which is a session action, not a configuration push.
+   */
+  capabilities(): PlaneCapabilities {
+    return { localShell: false, brokeredWrite: false, configRead: false };
+  }
+
   async pull(): Promise<PlanePull> {
     let rows: unknown[];
     try {
@@ -419,12 +492,16 @@ export class ClearPassAdapter implements PlaneAdapter {
       throw new Error(`clearpass pull: section 'authEvents' failed — ${(err as Error).message}`);
     }
 
-    // Newest first, capped — the screen shows the freshest decisions.
-    const authEvents = rows
-      .map(mapClearPassAuthEvent)
-      .filter((e): e is ClearPassAuthEventRow => e !== null)
-      .sort((a, b) => (b.tsMs ?? 0) - (a.tsMs ?? 0))
-      .slice(0, MAX_AUTH_EVENTS);
+    // Newest first, capped — the screen shows the freshest decisions. A row
+    // whose timestamp key we did not recognise cannot be placed on that
+    // timeline, but it is still a real decision: keep it in arrival order
+    // behind the dated rows rather than sorting it to the back of a 200-row
+    // cap that then throws it away silently.
+    const mapped = rows.map(mapClearPassAuthEvent).filter((e): e is ClearPassAuthEventRow => e !== null);
+    const dated = mapped.filter((e) => e.tsMs !== undefined).sort((a, b) => (b.tsMs as number) - (a.tsMs as number));
+    const undated = mapped.filter((e) => e.tsMs === undefined);
+    const authEvents = [...dated, ...undated].slice(0, MAX_AUTH_EVENTS);
+    const undatedShown = authEvents.filter((e) => e.tsMs === undefined).length;
 
     // The endpoint repository is the plane's second dataset (README:465) and a
     // slower pull (design: every 5m); it never fails the auth feed.
@@ -435,6 +512,9 @@ export class ClearPassAdapter implements PlaneAdapter {
       ...(this.endpointCount !== null ? [`${this.endpointCount.toLocaleString('en-US')} endpoints`] : []),
       `${authEvents.length.toLocaleString('en-US')} auth events`,
       `${rejects.toLocaleString('en-US')} rejects`,
+      // Undated rows are kept but cannot be ordered or counted per minute —
+      // the gap belongs on the Systems row, not in silence.
+      ...(undatedShown > 0 ? [`${undatedShown.toLocaleString('en-US')} without timestamps`] : []),
     ];
     this.stateRef.note = parts.join(' · ');
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
@@ -551,11 +631,7 @@ export class ClearPassAdapter implements PlaneAdapter {
    * 401 (CPPM tokens expire after 8 hours); a static token is NOT retried —
    * it cannot self-heal, so the plane must degrade and say so.
    */
-  private async authed(
-    method: 'GET' | 'POST',
-    path: string,
-    body?: unknown,
-  ): Promise<{ status: number; body: unknown }> {
+  private async authed(method: 'GET' | 'POST', path: string, body?: unknown): Promise<HttpResult> {
     let res = await this.http(method, path, { token: await this.authToken(), body });
     if (res.status === 401 && this.tokens) {
       this.tokens.invalidate();
@@ -564,8 +640,20 @@ export class ClearPassAdapter implements PlaneAdapter {
     return res;
   }
 
-  private async authedGet(path: string): Promise<{ status: number; body: unknown }> {
-    return this.authed('GET', path);
+  /**
+   * Authenticated GET with a bounded backoff on a throttle (429) or a gateway
+   * blip (502/503/504): Retry-After wins over the exponential floor, capped so
+   * a poll tick can never be held hostage. Only reads are retried — the one
+   * write on this plane (coaDisconnect) is the caller's decision, not ours.
+   * Every attempt is recorded, so the Activity tab shows the real 429s.
+   */
+  private async authedGet(path: string): Promise<HttpResult> {
+    for (let attempt = 0; ; attempt += 1) {
+      const res = await this.authed('GET', path);
+      if (!TRANSIENT_STATUSES.has(res.status) || attempt >= RATE_LIMIT_RETRIES) return res;
+      const backoffMs = RATE_LIMIT_BASE_MS * 2 ** attempt;
+      await this.sleep(Math.min(res.retryAfterMs ?? backoffMs, RATE_LIMIT_CAP_MS));
+    }
   }
 
   /**
@@ -577,7 +665,7 @@ export class ClearPassAdapter implements PlaneAdapter {
     method: 'GET' | 'POST',
     path: string,
     opts: { token?: string; body?: unknown } = {},
-  ): Promise<{ status: number; body: unknown }> {
+  ): Promise<HttpResult> {
     const started = Date.now();
     let res: Response;
     try {
@@ -602,7 +690,9 @@ export class ClearPassAdapter implements PlaneAdapter {
     } catch {
       /* tolerate a non-JSON body — status is what we needed */
     }
-    return { status: res.status, body: parsed };
+    // Additive field: existing callers ({ status, body }) are unaffected.
+    const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
+    return { status: res.status, body: parsed, ...(retryAfterMs !== null ? { retryAfterMs } : {}) };
   }
 }
 

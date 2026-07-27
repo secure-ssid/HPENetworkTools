@@ -137,6 +137,51 @@ describe('Clients live sparse detail', () => {
     expect(screen.queryByText(/4,982 live sessions/)).toBeNull();
   });
 
+  it('marks a session whose source plane is behind as unverified, not as health', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [{ ...SPARSE_LIVE_CLIENT, health: 'unverified', healthTone: 'neutral' }],
+      syncedAt: '2026-07-26T09:05:00',
+      dataSource: 'live',
+    });
+    render(
+      <MemoryRouter initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    // Row-level marker, count line, and the drawer all name the behind plane.
+    await waitFor(() => expect(screen.getByText('CENTRAL behind')).toBeTruthy());
+    expect(screen.getByText('1 of 1 sampled · 1 unverified')).toBeTruthy();
+    expect(screen.getByText(/CENTRAL is behind, so this session was not re-confirmed/)).toBeTruthy();
+    // …and the freshness stamp says when the rows were pulled.
+    expect(screen.getByText('SYNCED 09:05')).toBeTruthy();
+  });
+
+  it('prints one VLAN label for a demo row that already carries the prefix', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [{ ...SPARSE_LIVE_CLIENT, vlan: 'vlan 820' }],
+      dataSource: 'demo',
+    });
+    render(
+      <MemoryRouter initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText('VLAN 820')).toBeTruthy());
+    expect(screen.queryByText('VLAN vlan 820')).toBeNull();
+  });
+
   it('keeps the authored estate total for a demo-sourced section', async () => {
     mockGetClients.mockResolvedValue({
       stats: [],

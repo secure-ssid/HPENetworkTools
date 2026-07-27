@@ -205,6 +205,12 @@ describe('mapMistDevice', () => {
     expect(d?.state).toBe('up');
   });
 
+  it('carries the management IP when the stats row has one, and omits it otherwise', () => {
+    // Devices search and terminal resolveTarget() both key on it.
+    expect(mapMistDevice({ ...AP_CONNECTED, ip: '10.44.1.20' }, sites)?.ip).toBe('10.44.1.20');
+    expect(mapMistDevice(AP_CONNECTED, sites)).not.toHaveProperty('ip');
+  });
+
   it('keeps an unrecognized status honest and drops nameless rows', () => {
     expect(mapMistDevice({ name: 'ap-x', status: 'upgrading' }, sites)).toMatchObject({
       state: 'upgrading',
@@ -228,8 +234,15 @@ describe('mapMistSite', () => {
     });
   });
 
-  it('renders an em dash, not 0, when the client roster was not read', () => {
+  it('renders an em dash, not 0, when no client count is known at all', () => {
     expect(mapMistSite(SITE_A, 3)?.clients).toBe('—');
+  });
+
+  it("carries the caller's sync stamp, and '—' when the plane has never synced", () => {
+    // Mist's site object has no per-site sync time, so the stamp is the
+    // plane's own freshness — the adapter must not invent one per site.
+    expect(mapMistSite(SITE_A, 3, 41, '45s')?.sync).toBe('45s');
+    expect(mapMistSite(SITE_A, 3)?.sync).toBe('—');
   });
 
   it('drops a site without a name', () => {
@@ -272,6 +285,17 @@ describe('mapMistClient', () => {
 
   it('falls back to the raw AP mac when the device is not in the inventory', () => {
     expect(mapMistClient(CLIENT_ROW, sites, new Map())?.attach).toBe('aabbcc001101');
+  });
+
+  it('types a desk handset as voip, not as a mobile phone', () => {
+    // Every VoIP vocabulary contains 'phone', so a generic phone test first
+    // made the 'voip' bucket unreachable and hid voice endpoints among mobiles.
+    const voip = { mac: 'aa:bb:cc:00:00:01', family: 'VoIP Phone', manufacture: 'Mitel' };
+    expect(mapMistClient(voip, sites)?.type).toBe('voip');
+    expect(mapMistClient({ mac: 'aa:bb:cc:00:00:02', family: 'IP Phone' }, sites)?.type).toBe('voip');
+    // …without swallowing the real mobiles.
+    expect(mapMistClient({ mac: 'aa:bb:cc:00:00:03', model: 'iPhone 15' }, sites)?.type).toBe('phone');
+    expect(mapMistClient({ mac: 'aa:bb:cc:00:00:04', family: 'Android Phone' }, sites)?.type).toBe('phone');
   });
 });
 
@@ -361,10 +385,31 @@ describe('MistAdapter.pull', () => {
     expect(pull.alerts).toBeUndefined();
     expect(pull.clients).toBeUndefined();
     expect(pull.devices).toHaveLength(2); // the inventory still lands
-    expect(pull.sites?.[0].clients).toBe('—');
+    // No roster, but the device-stats rows DO report num_clients (17 on the AP,
+    // absent on the switch) — a real plane fact, so the column reports it and
+    // the note says where it came from. It is never called a session roster.
+    expect(pull.sites?.[0].clients).toBe('17');
+    expect(st.note).toContain('17 clients reported by devices');
     expect(st.note).toContain('not available: alarms, clients');
     expect(st.note).not.toContain('client sessions');
     expect(st.health).toBe('warning'); // never promoted to healthy over a missing dataset
+    // The datasets that could not be read are named for the registry/poller.
+    expect(pull.partial).toEqual(expect.arrayContaining(['alerts', 'clients']));
+  });
+
+  it("reports '—', not 0, for a site whose devices report no client count at all", async () => {
+    // Same failure, but nothing on the wire carries num_clients: the adapter
+    // has no client fact to stand behind, so the column must stay empty.
+    const { adapter, st } = makeAdapter(
+      fakeFetch({
+        devicePages: [[{ ...AP_CONNECTED, num_clients: undefined }, SW_DISCONNECTED]],
+        alarmStatus: 500,
+        clientStatus: 403,
+      }),
+    );
+    const pull = await adapter.pull();
+    expect(pull.sites?.[0].clients).toBe('—');
+    expect(st.note).not.toContain('reported by devices');
   });
 
   it('refuses the client fan-out past the daily-call budget rather than reading half of it', async () => {
@@ -469,6 +514,24 @@ describe('MistAdapter.pull', () => {
     await expect(adapter.pull()).rejects.toThrow("mist pull: section 'devices' failed");
   });
 
+  it("stamps site rows with the plane's own freshness once it has synced", async () => {
+    const { adapter, st } = makeAdapter(fakeFetch({}));
+    // Cycle 1: the poller has not stamped lastSync yet, so '—' is the honest
+    // answer — the adapter must not invent a sync time it does not have.
+    expect((await adapter.pull()).sites?.[0].sync).toBe('—');
+    st.lastSync = new Date(Date.now() - 45_000).toISOString();
+    // Cycle 2 reports the previous successful read, which is what a relative
+    // "Last sync" means on the Sites screen.
+    expect((await adapter.pull()).sites?.[0].sync).toBe('45s');
+  });
+
+  it('claims no shell and no write: Mist is a read-only cloud plane', () => {
+    const { adapter, st } = makeAdapter(fakeFetch({}));
+    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: false, configRead: false });
+    // Published on the shared state too, so a consumer reading PlaneState sees it.
+    expect(st.capabilities).toEqual({ localShell: false, brokeredWrite: false, configRead: false });
+  });
+
   it('isComplete requires apiHost, orgId and token', () => {
     expect(MistAdapter.isComplete(CREDS)).toBe(true);
     expect(MistAdapter.isComplete({ apiHost: 'api.mist.com', token: 'x' })).toBe(false);
@@ -506,7 +569,10 @@ describe('registry wiring', () => {
       expect(st.linked).toBe(true);
       expect(st.health).toBe('warning');
       expect(st.note).toBe('credentials saved — first sync pending');
-      expect(st).toMatchObject({ stale: false, ageSec: null }); // never synced ≠ stale
+      // A linked plane that has never synced is serving no rows, so there is
+      // nothing on screen to mark unverified — `reason` carries the fact and
+      // the Sites "Last sync" column prints 'never' from lastSync.
+      expect(st).toMatchObject({ stale: false, ageSec: null, reason: 'never-synced' });
     });
   });
 
@@ -515,22 +581,28 @@ describe('registry wiring', () => {
     try {
       vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
       await withRegistry({ mist: CREDS }, (reg) => {
+        // A completed pull is what clears the 'first sync pending' warning —
+        // the adapter writes it on the state the registry handed it. Without
+        // this the plane is stale for a different reason ('partial'), which
+        // would hide the clock expiry this test is about.
         reg.markSyncResult('mist', true, { deviceCount: 2 });
-        expect(reg.state('mist')).toMatchObject({ stale: false, ageSec: 0 });
+        expect(reg.state('mist')).toMatchObject({ stale: true, reason: 'partial', ageSec: 0 });
+        reg.get('mist').state().health = 'healthy';
+        expect(reg.state('mist')).toMatchObject({ stale: false, ageSec: 0, reason: null });
         expect(reg.staleAfterSec()).toBe(180); // 3 × the 60s poll interval
 
         vi.setSystemTime(new Date('2026-01-01T00:02:00Z')); // 120s — inside the window
-        expect(reg.state('mist')).toMatchObject({ stale: false, ageSec: 120, health: 'warning' });
+        expect(reg.state('mist')).toMatchObject({ stale: false, ageSec: 120, health: 'healthy' });
 
         // 4 minutes with no successful poll and nothing thrown: skipped ticks
         // record no failure, so only the clock can catch this.
         vi.setSystemTime(new Date('2026-01-01T00:04:00Z'));
         const aged = reg.state('mist');
-        expect(aged).toMatchObject({ stale: true, ageSec: 240, health: 'degraded' });
+        expect(aged).toMatchObject({ stale: true, ageSec: 240, health: 'degraded', reason: 'aged-out' });
         expect(reg.states().mist.stale).toBe(true);
         // The STORED health is untouched, so the next good poll still restores it.
         reg.markSyncResult('mist', true, { deviceCount: 2 });
-        expect(reg.state('mist')).toMatchObject({ stale: false, health: 'warning' });
+        expect(reg.state('mist')).toMatchObject({ stale: false, health: 'healthy' });
       });
     } finally {
       vi.useRealTimers();

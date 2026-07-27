@@ -68,6 +68,9 @@ function fakeFetch(opts: {
   statuses?: Record<string, { status: number; body: unknown }>;
   tokenStatus?: number;
   seenAuth?: { value: string | null };
+  /** Statuses served for the sensors list before the pages start, in order. */
+  sensorListStatuses?: Array<{ status: number; retryAfter?: string }>;
+  urls?: string[];
 }): FetchLike {
   const pages = opts.sensorPages ?? [{ items: [SENSOR_A, SENSOR_B], next: null }];
   const statuses = opts.statuses ?? {
@@ -75,8 +78,10 @@ function fakeFetch(opts: {
     'sen-002': { status: 200, body: { isOnline: false, isTesting: false, issues: [] } },
   };
   let pageIdx = 0;
+  let listStatusIdx = 0;
   return async (url, init) => {
     const u = String(url);
+    opts.urls?.push(u);
     if (u.includes('token.oauth2')) {
       if (opts.seenAuth) opts.seenAuth.value = (init?.headers as Record<string, string>)?.authorization ?? null;
       const status = opts.tokenStatus ?? 200;
@@ -88,6 +93,14 @@ function fakeFetch(opts: {
       return new Response(JSON.stringify(s.body), { status: s.status });
     }
     if (u.includes('/sensors')) {
+      const forced = opts.sensorListStatuses?.[listStatusIdx];
+      if (forced) {
+        listStatusIdx += 1;
+        return new Response('{}', {
+          status: forced.status,
+          headers: forced.retryAfter ? { 'retry-after': forced.retryAfter } : undefined,
+        });
+      }
       const page = pages[Math.min(pageIdx, pages.length - 1)];
       pageIdx += 1;
       return new Response(JSON.stringify(page), { status: 200 });
@@ -96,11 +109,21 @@ function fakeFetch(opts: {
   };
 }
 
-function makeAdapter(fetchImpl: FetchLike): { adapter: UxiAdapter; calls: Array<{ path: string; code: string }>; st: PlaneState } {
+function makeAdapter(fetchImpl: FetchLike): {
+  adapter: UxiAdapter;
+  calls: Array<{ path: string; code: string }>;
+  st: PlaneState;
+  slept: number[];
+} {
   const calls: Array<{ path: string; code: string }> = [];
   const st = state();
-  const adapter = new UxiAdapter(CREDS, st, (c) => calls.push({ path: c.path, code: c.code }), fetchImpl);
-  return { adapter, calls, st };
+  // Pacing and backoff delays are captured, never paid in wall time — the test
+  // asserts the wait the adapter CHOSE.
+  const slept: number[] = [];
+  const adapter = new UxiAdapter(CREDS, st, (c) => calls.push({ path: c.path, code: c.code }), fetchImpl, async (ms) => {
+    slept.push(ms);
+  });
+  return { adapter, calls, st, slept };
 }
 
 // -- mapping -------------------------------------------------------------------
@@ -192,11 +215,17 @@ describe('mapUxiIssue', () => {
     expect(a).toMatchObject({ siteId: 'campus-01', siteName: 'Campus-01 — Meridian HQ' });
   });
 
-  it('treats a resolved issue as acked and drops junk rows', () => {
+  // 'cleared' is the plane resolving it; 'acked' is a human acknowledging it
+  // through the broker. UXI has no acknowledgement concept, so calling a
+  // resolved issue 'acked' credits an operator action that never happened.
+  it('treats a resolved issue as cleared (not acked) and drops junk rows', () => {
     const ref = { name: 's', siteId: 'multiple' as const, siteName: 'Multiple' };
-    expect(
-      mapUxiIssue({ code: 'X', severity: 'INFO', status: 'resolved', timestamp: '2026-07-26T04:00:00Z' }, ref, NOW)?.state,
-    ).toBe('acked');
+    for (const status of ['resolved', 'closed', 'cleared']) {
+      expect(
+        mapUxiIssue({ code: 'X', severity: 'INFO', status, timestamp: '2026-07-26T04:00:00Z' }, ref, NOW)?.state,
+      ).toBe('cleared');
+    }
+    expect(mapUxiIssue({ code: 'X', severity: 'INFO', status: 'open' }, ref, NOW)?.state).toBe('open');
     expect(mapUxiIssue({}, ref, NOW)).toBeNull();
   });
 });
@@ -270,12 +299,85 @@ describe('UxiAdapter.pull', () => {
     expect(st.note).toContain('1 idle (online, not testing)');
   });
 
-  it('keeps a sensor unknown when its status read fails, and says so', async () => {
+  // Every status read failing means the portal has NO live sensor state — the
+  // inventory is still real, but the freshness claim would be a lie.
+  it('degrades the plane when every status read fails, and says so', async () => {
     const { adapter, st } = makeAdapter(fakeFetch({ statuses: { 'sen-001': { status: 500, body: {} } } }));
     const pull = await adapter.pull();
     expect(pull.devices?.[0]).toMatchObject({ name: 'uxi-cam01-2', state: 'unknown' });
     expect(pull.devices?.[1]).toMatchObject({ name: 'uxi-cam02-1', state: 'unknown' });
-    expect(st.note).toContain('status reads failed');
+    expect(st.note).toContain('2 status reads failed');
+    expect(st.health).toBe('degraded');
+  });
+
+  it('stays healthy when one status read fails but another proves live state', async () => {
+    const { adapter, st } = makeAdapter(
+      fakeFetch({
+        statuses: {
+          'sen-001': { status: 500, body: {} },
+          'sen-002': { status: 200, body: { isOnline: true, isTesting: true, issues: [] } },
+        },
+      }),
+    );
+    const pull = await adapter.pull();
+    expect(pull.devices?.[1]).toMatchObject({ name: 'uxi-cam02-1', state: 'up' });
+    expect(st.note).toContain('1 status reads failed');
+    expect(st.health).toBe('healthy');
+  });
+
+  // The spec's maximum page size is 100 (default 50): asking for it halves the
+  // calls, and both params must ride the cursor or the server resets the size.
+  it('asks for the maximum page size and carries it onto the cursor', async () => {
+    const urls: string[] = [];
+    const { adapter } = makeAdapter(
+      fakeFetch({
+        urls,
+        sensorPages: [
+          { items: [SENSOR_A], next: 'cursor-2' },
+          { items: [SENSOR_B], next: null },
+        ],
+      }),
+    );
+    await adapter.pull();
+    const listCalls = urls.filter((u) => u.includes('/sensors?'));
+    expect(listCalls).toHaveLength(2);
+    expect(listCalls[0]).toContain('limit=100');
+    expect(listCalls[1]).toContain('limit=100');
+    expect(listCalls[1]).toContain('next=cursor-2');
+  });
+
+  // A walk that ends holding a cursor read PART of the estate; publishing it as
+  // the whole inventory makes every unread sensor look decommissioned.
+  it('names a page-capped walk as truncated instead of asserting the count', async () => {
+    const { adapter, st } = makeAdapter(
+      fakeFetch({ sensorPages: [{ items: [SENSOR_A], next: 'more-please' }] }), // never returns next: null
+    );
+    const pull = await adapter.pull();
+    expect(st.note).toContain('inventory truncated');
+    expect(st.note).toContain('page cap 10');
+    expect(pull.partial).toEqual(['devices']);
+  });
+
+  it('backs off once on a 429 and counts the throttle in the note', async () => {
+    const { adapter, st, slept } = makeAdapter(
+      fakeFetch({ sensorListStatuses: [{ status: 429, retryAfter: '3' }] }),
+    );
+    const pull = await adapter.pull();
+    expect(pull.devices).toHaveLength(2); // the retry succeeded
+    expect(slept).toContain(3_000); // Retry-After honoured over the 1s floor
+    expect(st.note).toContain('1 throttled (429)');
+  });
+
+  it('paces requests to the documented 5 req/s budget', async () => {
+    const { adapter, slept } = makeAdapter(fakeFetch({}));
+    await adapter.pull();
+    // list + two status reads: every request after the first waits its turn
+    expect(slept.filter((ms) => ms > 0 && ms <= 200).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('claims no shell, no brokered write and no config read', () => {
+    const { adapter } = makeAdapter(fakeFetch({}));
+    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: false, configRead: false });
   });
 
   it('fails the pull naming the section when the sensors list errors', async () => {

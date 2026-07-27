@@ -106,6 +106,12 @@ export default function AuthEvents() {
   const planeOptions = [{ value: 'all', label: 'All planes' }].concat(
     uniq(events, 'plane').map((v) => ({ value: v, label: v })),
   );
+  /* A ?plane= deep-link (Systems plane drawer) can name a plane that has no rows
+     in this feed. Without its own option the Select renders blank and the filter
+     hiding every row is invisible and unclearable — so union the active value in. */
+  if (plane !== 'all' && !planeOptions.some((o) => o.value === plane)) {
+    planeOptions.push({ value: plane, label: `${plane} (no events)` });
+  }
 
   /* This screen is fed by one plane (ClearPass), and the poller keeps serving a
    * degraded plane's last-good rows — so the header has to say when they were
@@ -320,11 +326,30 @@ export default function AuthEvents() {
         </Table.Body>
       </Table>
 
+      {/* An empty feed is a missing policy plane, not a tight filter — telling the
+          operator to loosen filters already at 'all' blames them for the gap. */}
       {rows.length === 0 ? (
-        <EmptyState
-          title="Nothing matches that filter"
-          description="Loosen the result, service or plane filter to see more of the log."
-        />
+        events.length === 0 ? (
+          <EmptyState
+            title="No auth events from any policy plane"
+            description={
+              sectionLive
+                ? 'ClearPass has not returned decisions for this window — check Connected systems.'
+                : 'No policy plane has recorded a decision in this window.'
+            }
+          >
+            {sectionLive ? (
+              <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
+                Connected systems
+              </Button>
+            ) : null}
+          </EmptyState>
+        ) : (
+          <EmptyState
+            title="Nothing matches that filter"
+            description="Loosen the result, service or plane filter to see more of the log."
+          />
+        )
       ) : null}
 
       <Divider variant="flair" />
@@ -338,7 +363,24 @@ export default function AuthEvents() {
         }}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <SectionHeader label="Why authentications failed" meta="LAST 24 HOURS" />
+          {/* The live bars count rejects out of the poller's ≤200-event page —
+              minutes of traffic, not a day. Only the fixture feed is a 24h cut. */}
+          <SectionHeader
+            label="Why authentications failed"
+            meta={sectionLive ? 'CURRENT POLLER SNAPSHOT' : 'LAST 24 HOURS'}
+          />
+          {data.failReasons.length === 0 ? (
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-11)',
+                color: 'var(--nd-text-muted)',
+                lineHeight: 1.6,
+              }}
+            >
+              No rejected authentications in this window — nothing to break down.
+            </span>
+          ) : null}
           {data.failReasons.map((r) => (
             <div key={r.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <Progress value={r.value} max={60} label={r.label} />
@@ -357,6 +399,19 @@ export default function AuthEvents() {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <SectionHeader label="Policy services" meta="AUTHS / HOUR" />
+          {data.policyServices.length === 0 ? (
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-11)',
+                color: 'var(--nd-text-muted)',
+                lineHeight: 1.6,
+                padding: '10px 0',
+              }}
+            >
+              No policy service reported by a linked plane.
+            </span>
+          ) : null}
           {data.policyServices.map((s) => (
             <div
               key={s.name}

@@ -610,7 +610,9 @@ describe('live-mode screen contracts', () => {
     expect(names).toContain('Mist');
     const central = (body.systems as any[]).find((s) => s.name === 'HPE Aruba Central');
     expect(central.planeId).toBe('central'); // live rows name their plane so renames can't break the UI
-    expect(central.facts.map((f: any) => f.k)).toEqual(['Last sync', 'Devices', 'Calls today']);
+    // Four facts, per the design: the fourth is credential freshness.
+    expect(central.facts.map((f: any) => f.k)).toEqual(['Last sync', 'Devices', 'Calls today', 'Token']);
+    expect(central.facts[3].v).not.toBe(''); // never blank — 'not reported' at worst
     expect(Array.isArray(central.pulls)).toBe(true);
     expect(typeof central.configText).toBe('string');
     expect(Array.isArray(body.syncHistory)).toBe(true);
@@ -707,7 +709,8 @@ describe('live-mode screen contracts', () => {
       expect(compliance.body.dataSource).toBe('live');
       expect(compliance.body.findings).toEqual([]);
       expect(compliance.body.evidenceMode).toBe('coverage');
-      expect(compliance.body.baselines).toHaveLength(4);
+      expect(compliance.body.baselines).toHaveLength(5); // + plane freshness
+      expect((compliance.body.baselines as any[]).map((b) => b.label)).toContain('Plane freshness');
       expect(compliance.body.stats[4]).toMatchObject({ label: 'Config drift', value: '—' });
       expect(compliance.body.diff).toContain('Running configuration drift cannot be evaluated');
     } finally {
@@ -884,7 +887,10 @@ describe('live-mode screen contracts', () => {
       'Subscriptions',
       'Assigned',
       'Unassigned',
-      'Expiring <90d',
+      // ONE expiry horizon across the portal: the Overview tile, the fixtures
+      // and design/NtLicenses all say ≤60d. greenlake's EXPIRING_SOON_DAYS
+      // (90) stays the per-subscription badge threshold, a different question.
+      'Expiring ≤60d',
       'Devices unlicensed',
     ]);
     expect(body.stats[4]).toMatchObject({ value: '0', tone: 'positive' });
@@ -1018,6 +1024,248 @@ describe('live-mode screen contracts', () => {
     } finally {
       registry.reinitPlane('central'); // restore the plane's state for later tests
     }
+  });
+
+  it('the live change log names what changed and where, in local time', async () => {
+    const { DEFAULT_VLAN_FORM } = await import('../../shared');
+    // A brokered write references a raised ticket; demo mode also accepts the
+    // fixture queue, so the change is queued there and read back live.
+    await setDemoMode(true);
+    const queued = await fetch(`${base}/api/configure/queue`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'vlan', form: DEFAULT_VLAN_FORM, ticket: 'NET-4188' }),
+    });
+    const changeId = ((await queued.json()) as any).id as string | undefined;
+    await setDemoMode(false);
+    try {
+      expect(typeof changeId).toBe('string');
+      const { body } = await getJson('/api/overview');
+      const entry = (body.changes as any[])[0];
+      const change = ((await (await fetch(`${base}/api/configure`)).json()) as any).queued.find(
+        (c: any) => c.ticket === 'NET-4188',
+      );
+      // The audit line alone read 'queue vlan — ready'; the broker knows the
+      // object and its blast radius, so the row says them.
+      expect(entry.text).toBe(`${change.what} — ${change.where}`);
+      expect(entry.who).toContain('NET-4188');
+      // Local clock, like the header stamp beside it — a UTC slice reads as a
+      // change that happened hours from now.
+      expect(entry.time).toMatch(/^\d{2}:\d{2}$/);
+      const expected = new Date();
+      expect(Number(entry.time.slice(0, 2))).toBe(expected.getHours());
+    } finally {
+      await fetch(`${base}/api/configure/discard`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ changeId }),
+      });
+    }
+  });
+
+  it("the plane drawer's Recent events carry the registry's own log, not just polls", async () => {
+    const { registry } = await import('../src/planes/registry');
+    registry.recordEvent('central', { what: 'credentials updated', who: 'settings · operator' });
+    const { body } = await getJson('/api/systems');
+    const central = (body.systems as any[]).find((s) => s.planeId === 'central');
+    const events = central.events as any[];
+    expect(events[0]).toMatchObject({ what: 'credentials updated', who: 'settings · operator' });
+    expect(events[0].time).toMatch(/^\d{2}:\d{2}$/); // local hh:mm, like every other stamp
+  });
+
+  it('a stale plane never lets a site claim its alerts are clear', async () => {
+    const { registry } = await import('../src/planes/registry');
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE], sites: [SITE], alerts: [] });
+
+    const fresh = await getJson('/api/sites');
+    expect((fresh.body.sites as any[])[0].alerts).toBe('clear'); // an answered, empty feed IS clear
+
+    registry.markSyncResult('central', false, { note: 'poll failed — showing last good data' });
+    try {
+      const stale = await getJson('/api/sites');
+      const site = (stale.body.sites as any[])[0];
+      // The feed the green badge would be read off is last-good, not current.
+      expect(site.alerts).toBe('stale');
+      expect(site.alertTone).toBe('neutral');
+
+      // A real open row still wins — a behind plane must never HIDE an alert.
+      contributions.set('central', {
+        devices: [DEVICE],
+        sites: [SITE],
+        alerts: [alertRow({ alertId: 'a-1' })],
+      });
+      const open = await getJson('/api/sites');
+      expect((open.body.sites as any[])[0].alerts).toBe('1 open');
+      expect((open.body.sites as any[])[0].alertTone).toBe('warning');
+    } finally {
+      registry.reinitPlane('central');
+    }
+  });
+
+  it('compliance names plane staleness as itself, and sorts findings by severity', async () => {
+    const { registry } = await import('../src/planes/registry');
+    contributions.clear();
+    contributions.set('central', { devices: [{ ...DEVICE, firmware: '' }] });
+    registry.markSyncResult('central', false, { note: 'poll failed — showing last good data' });
+    try {
+      const { body } = await getJson('/api/compliance');
+      const findings = body.findings as any[];
+      // med-severity rows lead: the table's first column is the Sev badge.
+      expect(findings[0]).toMatchObject({
+        sev: 'med',
+        rule: 'scan.coverage.freshness',
+        title: 'Device state unverified — plane is stale',
+        detail: '1 device cannot be verified while CENTRAL is behind',
+      });
+      expect(findings.every((f, i) => i === 0 || f.sev === 'low')).toBe(true);
+      // The old lump claimed the plane "did not supply this field" — false.
+      expect(findings.some((f) => f.rule === 'scan.coverage.reachability')).toBe(false);
+    } finally {
+      registry.reinitPlane('central');
+      contributions.clear();
+    }
+  });
+
+  it('live overview names both down and unverified devices in one delta', async () => {
+    const { registry } = await import('../src/planes/registry');
+    contributions.clear();
+    // One plane behind (its row cannot be asserted) and one answering with a
+    // device that is genuinely down.
+    contributions.set('central', { devices: [{ ...DEVICE, name: 'sw-behind-1' }] });
+    contributions.set('mist', {
+      devices: [{ ...DEVICE, name: 'sw-down-1', plane: 'MIST', planeTone: 'info', state: 'down', stateTone: 'danger' }],
+    });
+    registry.markSyncResult('central', false, { note: 'poll failed — showing last good data' });
+    try {
+      const { body } = await getJson('/api/overview');
+      const stat = (body.stats as any[]).find((s) => s.label === 'Devices reachable');
+      // Both halves of the gap between `up` and the total are named.
+      expect(stat.delta).toBe('▼ 1 down · 1 unverified');
+    } finally {
+      registry.reinitPlane('central');
+      contributions.clear();
+    }
+  });
+
+  it('the Management planes panel carries the whole roster, linked first', async () => {
+    contributions.clear();
+    const { body } = await getJson('/api/overview');
+    const planes = body.planes as any[];
+    // "Planes linked N / 9" beside it must be reconcilable with the list.
+    expect(planes).toHaveLength(9);
+    const central = planes[0];
+    expect(central.name).toBe('CENTRAL'); // linked planes lead
+    const mist = planes.find((p) => p.name === 'MIST');
+    expect(mist).toMatchObject({ state: 'not linked', tone: 'neutral' });
+    expect(mist.scope).toBe('no credentials configured'); // the reason it is dark
+  });
+
+  it('live client rows are stitched to the policy plane by MAC', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      clients: [{ ...clientRow('AA:BB:CC:DD:EE:FF', 'CENTRAL'), auth: '—', authBy: '—', role: '—' }],
+    });
+    contributions.set('clearpass', {
+      authEvents: [
+        {
+          time: '09:41',
+          who: 'r.okafor',
+          mac: 'aabb.ccdd.eeff', // same endpoint, ClearPass notation
+          service: 'Corp 802.1X',
+          method: 'EAP-TLS',
+          result: 'reject',
+          reason: 'certificate expired',
+          role: 'quarantine',
+          nas: 'sw-test-1',
+          plane: 'CLEARPASS',
+          tone: 'danger',
+        },
+      ],
+    });
+    const { body } = await getJson('/api/clients');
+    expect(body.clients[0]).toMatchObject({
+      auth: 'EAP-TLS', // the method the policy plane actually used
+      authBy: 'sw-test-1', // the NAD that asked
+      role: 'quarantine',
+    });
+    // Central never puts 'auth' in its health string — the decision is the fact.
+    expect((body.stats as any[]).find((s) => s.label === 'Failing auth').value).toBe('1');
+    contributions.clear();
+  });
+
+  it('observed Configure ports do not paint client health as a verified link state', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      clients: [
+        {
+          ...clientRow('AA:BB:CC:DD:EE:F1', 'CENTRAL'),
+          medium: 'wired',
+          attach: 'sw-test-1',
+          where: 'port 1/1/8',
+          health: '82',
+          healthTone: 'success',
+        },
+      ],
+    });
+    const { body } = await getJson('/api/configure');
+    const port = (body.ports as any[])[0];
+    expect(port).toMatchObject({ state: 'unverified', tone: 'neutral' });
+    expect(port.summary).toContain('client health 82'); // kept, but labelled
+    contributions.clear();
+  });
+
+  it('auth stats never read an absent feed as a quiet network, or invent a rate', async () => {
+    contributions.clear();
+    const empty = await getJson('/api/auth-events');
+    expect((empty.body.stats as any[]).map((s) => s.value)).toEqual(['—', '—', '—', '—', '—']);
+    expect((empty.body.stats as any[]).every((s) => s.tone === 'neutral')).toBe(true);
+
+    contributions.set('clearpass', {
+      authEvents: [
+        {
+          time: '—',
+          who: 'r.okafor',
+          mac: 'AA:BB:CC:DD:EE:F2',
+          service: 'Corp 802.1X',
+          method: 'EAP-TLS',
+          result: 'accept',
+          reason: '—',
+          role: 'employee',
+          nas: 'sw-test-1',
+          plane: 'CLEARPASS',
+          tone: 'success',
+        },
+      ],
+    });
+    const untimed = await getJson('/api/auth-events');
+    const stats = untimed.body.stats as any[];
+    expect(stats[0]).toMatchObject({ value: '—' }); // auths/min needs a measured window
+    expect(stats[0].delta).toContain('no timestamps');
+    expect(stats[2].value).toBe('—'); // rejects/hour likewise
+    expect(stats[1].value).toBe('100.0%'); // count-based tiles still answer
+    contributions.clear();
+  });
+
+  it('live renewals honour the window the panel header claims', async () => {
+    const { SUBSCRIPTIONS } = await import('../../shared');
+    const day = 24 * 60 * 60 * 1000;
+    contributions.clear();
+    contributions.set('greenlake', {
+      subscriptions: [
+        { ...SUBSCRIPTIONS[0], name: 'Due soon', daysLeft: 20, expiresAtMs: Date.now() + 20 * day },
+        { ...SUBSCRIPTIONS[0], name: 'Overdue', daysLeft: -3, expiresAtMs: Date.now() - 3 * day },
+        { ...SUBSCRIPTIONS[0], name: 'Years out', daysLeft: 1200, expiresAtMs: Date.now() + 1200 * day },
+      ],
+    });
+    const { body } = await getJson('/api/licenses');
+    const names = (body.renewals as any[]).map((r) => r.what);
+    expect(names.some((w: string) => w.startsWith('Overdue'))).toBe(true); // most urgent of all
+    expect(names.some((w: string) => w.startsWith('Due soon'))).toBe(true);
+    expect(names.some((w: string) => w.startsWith('Years out'))).toBe(false); // not "next 180 days"
+    // The same horizon the Overview tile counts.
+    expect((body.stats as any[])[3]).toMatchObject({ label: 'Expiring ≤60d', value: '1' });
+    contributions.clear();
   });
 });
 
@@ -1232,6 +1480,22 @@ describe('blend mode (demoMode + blendLive)', () => {
     expect(local).toMatchObject({ mode: 'read only', note: 'not linked — no credentials stored' });
   });
 
+  it('a blended envelope stamps the poll time, never "now"', async () => {
+    contributions.clear();
+    contributions.set('central', { alerts: [ALERT] });
+    const blended = await getJson('/api/alerts');
+    expect(blended.body.blended).toEqual(['alerts']);
+    // The rows are real ClearPass/Central records last fetched at the poller's
+    // stamp; a demo envelope's `now` would report them as just-synced. Nothing
+    // has completed a poll in this harness, so the honest answer is null.
+    expect(blended.body.syncedAt).toBeNull();
+
+    // A section still on fixtures keeps the demo stamp — fixtures are current.
+    const clients = await getJson('/api/clients');
+    expect(clients.body.blended).toBeUndefined();
+    expect(typeof clients.body.syncedAt).toBe('string');
+  });
+
   it('blend off ignores live rows entirely', async () => {
     contributions.set('central', { alerts: [ALERT] });
     await putSettings({ blendLive: false });
@@ -1432,5 +1696,41 @@ describe('hidden demo devices', () => {
     const restored = await getJson('/api/devices');
     expect((restored.body.devices as any[]).map((d) => d.name)).toContain('sw-core-a');
     expect(restored.body.hiddenDevices).toEqual([]);
+  });
+
+  it('a pruned fixture leaves the site page too — one inventory, two screens', async () => {
+    const before = await getJson('/api/sites/campus-01');
+    const names = (before.body.profile.devices as any[]).map((d) => d.name);
+    expect(names).toContain('sw-core-a');
+    const total = Number(before.body.profile.deviceCount.replace(/,/g, ''));
+
+    await putSettings({ hiddenDemoDevices: ['sw-core-a'] });
+    try {
+      const after = await getJson('/api/sites/campus-01');
+      expect((after.body.profile.devices as any[]).map((d) => d.name)).not.toContain('sw-core-a');
+      // The headline count moves with it — the two screens describe one estate.
+      expect(Number(after.body.profile.deviceCount.replace(/,/g, ''))).toBe(total - 1);
+    } finally {
+      await putSettings({ hiddenDemoDevices: [] });
+    }
+  });
+});
+
+describe('demo Configure serves the authored queue, not an empty broker', () => {
+  it('renders the design\'s three queued changes and keeps the fixture stat deltas', async () => {
+    const { QUEUED_CHANGES, CONFIGURE_STATS } = await import('../../shared');
+    const { status, body } = await getJson('/api/configure');
+    expect(status).toBe(200);
+    expect(body.dataSource).toBe('demo');
+    // Without this the section rendered a bare '0' header while the fixtures
+    // the design specifies sat unused.
+    const tickets = (body.queued as any[]).map((c) => c.ticket);
+    for (const change of QUEUED_CHANGES) expect(tickets).toContain(change.ticket);
+    expect(body.stats[0].value).toBe(String((body.queued as any[]).length));
+    expect(body.stats[0].delta).toContain('need a window');
+    // The authored inventory's own deltas survive — re-deriving them printed
+    // 'live evidence coverage findings' over a fixture screen.
+    expect(body.stats[2]).toEqual(CONFIGURE_STATS[2]);
+    expect(body.stats[3]).toEqual(CONFIGURE_STATS[3]);
   });
 });

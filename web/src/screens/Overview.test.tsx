@@ -198,4 +198,42 @@ describe('Overview', () => {
     expect(screen.getByRole('button', { name: 'Site 6' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Site 7' })).toBeNull();
   });
+
+  it('(g) blend mode stamps the real poll time and badges which sections are live', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        dataSource: 'demo',
+        blended: ['stats', 'alerts'],
+        syncedAt: '2026-07-26T09:05:00',
+      }),
+    );
+    renderOverview();
+
+    // Real rows are on screen, so the prototype's fixed stamp must not be asserted.
+    expect(await screen.findByText('SYNCED 09:05 · AUTO 60s')).toBeTruthy();
+    expect(screen.queryByText(/SYNCED 09:41/)).toBeNull();
+    // The envelope names the swapped sections; the chrome says which is which.
+    expect(screen.getByText('LIVE')).toBeTruthy();
+    expect(screen.getAllByText('DEMO').length).toBeGreaterThan(0);
+  });
+
+  it('(h) an empty live payload renders per-section empty states, not naked headers', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({ alerts: [], sites: [], planes: [], changes: [], launchpad: [] }),
+    );
+    renderOverview();
+
+    expect(await screen.findByText('Nothing needs you right now')).toBeTruthy();
+    expect(screen.getByText('No sites reported yet')).toBeTruthy();
+    expect(screen.getByText('No management planes linked')).toBeTruthy();
+    expect(screen.getByText('No brokered changes yet')).toBeTruthy();
+    expect(screen.getByText('No launch targets')).toBeTruthy();
+  });
+
+  it('(i) the overline names the workspace the API computed for this screen', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ workspace: 'Meridian Health' }));
+    renderOverview();
+
+    expect(await screen.findByText('Meridian Health / Single pane')).toBeTruthy();
+  });
 });

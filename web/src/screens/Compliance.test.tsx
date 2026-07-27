@@ -46,6 +46,26 @@ const LIVE_COVERAGE: ComplianceData = {
   diff: 'Live evidence coverage\n- Firmware evidence: 0 of 1 devices have usable live evidence',
 };
 
+/** One check, two planes: the live route emits one finding per (rule, plane). */
+const LIVE_SAME_RULE_TWO_PLANES: ComplianceData = {
+  ...LIVE_COVERAGE,
+  findings: [
+    { ...LIVE_COVERAGE.findings[0], plane: 'CENTRAL', device: 'ap-1', count: '1' },
+    { ...LIVE_COVERAGE.findings[0], plane: 'MIST', device: 'ap-9', count: '4' },
+    // A manual fix carries the server's amber token, not the muted one.
+    {
+      ...LIVE_COVERAGE.findings[0],
+      rule: 'inventory.reconciliation',
+      title: 'Device ownership needs reconciliation',
+      plane: 'CENTRAL',
+      device: 'sw-core-a',
+      count: '2',
+      fix: 'manual',
+      fixColor: 'var(--nd-warning)',
+    },
+  ],
+};
+
 /** Live mode with no plane returning device inventory: nothing to score. */
 const LIVE_UNAVAILABLE: ComplianceData = {
   dataSource: 'live',
@@ -87,6 +107,27 @@ describe('Compliance live evidence coverage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run scan now' }));
     await waitFor(() => expect(mockSyncSystems).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(mockGetCompliance).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('Compliance findings table', () => {
+  it('renders every (rule, plane) finding and colours the fix class from the payload token', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_SAME_RULE_TWO_PLANES);
+
+    const { container } = renderCompliance();
+    await screen.findByText('Device ownership needs reconciliation');
+
+    // Three findings share two rule strings — all three rows must survive.
+    const bodyRows = container.querySelectorAll('tbody tr');
+    expect(bodyRows).toHaveLength(3);
+    expect(screen.getByText('3 of 3 findings · poller snapshot not stamped yet')).toBeTruthy();
+
+    // fixColor is the payload's own token: muted → neutral, warning → warning.
+    const fixBadges = Array.from(container.querySelectorAll('tbody tr'))
+      .map((row) => row.querySelector('td:last-child .nd-badge'))
+      .map((badge) => badge?.className ?? '');
+    expect(fixBadges[0]).toContain('nd-badge--neutral');
+    expect(fixBadges[2]).toContain('nd-badge--warning');
   });
 });
 

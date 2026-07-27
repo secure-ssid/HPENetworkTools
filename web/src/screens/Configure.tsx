@@ -25,6 +25,7 @@ import {
   Button,
   Code,
   Drawer,
+  EmptyState,
   FormField,
   Input,
   SectionHeader,
@@ -64,6 +65,7 @@ import {
   seedFormFromRow,
 } from '../../../shared';
 import type {
+  CapabilityRow,
   ConfigForm,
   ConfigKind,
   PortForm,
@@ -108,8 +110,10 @@ const ROW: CSSProperties = {
   cursor: 'pointer',
 };
 
-/** A queue row: brokered server-side (id set) or local offline fallback (id null). */
-type QueueEntry = QueuedChangeRow & { id: string | null };
+/** A queue row: brokered server-side (id set) or local offline fallback (id null).
+ *  `expiresAt` is the broker's 15-minute write lease — an entry whose lease has
+ *  run out cannot be pushed (the broker answers 409), so the row has to say so. */
+type QueueEntry = QueuedChangeRow & { id: string | null; expiresAt?: string | null };
 
 const STATE_TONE: Record<QueuedChangeRow['state'], QueuedChangeRow['tone']> = {
   ready: 'success',
@@ -171,7 +175,7 @@ const LIVE_PUSH_NOTES: Record<ConfigKind, string> = {
   vlan: 'The broker resolves reachable switches during dry run; no device, client, or compliance count is assumed.',
 };
 
-function livePreview(kind: ConfigKind, form: ConfigForm): string {
+function livePreview(kind: ConfigKind, form: ConfigForm, capabilities: CapabilityRow[]): string {
   const rendered =
     kind === 'port'
       ? configPreviewFor('port', form as PortForm)
@@ -190,7 +194,22 @@ function livePreview(kind: ConfigKind, form: ConfigForm): string {
       : kind === 'port'
         ? (form as PortForm).device || 'device not entered'
         : (form as VlanForm).scope;
-  return `${body}\n# target → ${target}\n# exact endpoint and impact are resolved by the broker dry run`;
+  // The authored preview annotates the payload per plane ('# central → PUT
+  // …', '# mist → read-only'). Those lines describe the fixture estate, so
+  // live mode drops them rather than restating them for planes this
+  // deployment may not have linked; naming the real call per plane needs the
+  // broker's own pushPathFor (server-side) — see the handoff.
+  const writeTargets = capabilities.filter((c) => c.mode !== 'read only').map((c) => c.plane);
+  const writeLine =
+    writeTargets.length > 0
+      ? `# planes that can accept it → ${writeTargets.join(', ')}`
+      : '# no linked plane can accept this payload — it opens in the plane console';
+  return [
+    body,
+    `# target → ${target}`,
+    writeLine,
+    '# exact endpoint and impact are resolved by the broker dry run',
+  ].join('\n');
 }
 
 function liveRadius(kind: ConfigKind, form: ConfigForm) {
@@ -215,6 +234,44 @@ function liveRadius(kind: ConfigKind, form: ConfigForm) {
   ];
 }
 
+/** "a, b and c" — a plane list read as a sentence. */
+function listOf(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/**
+ * The brokered-write sentence, derived from the capability matrix the API
+ * sends rather than asserted. In live/blend mode that matrix is THIS
+ * deployment's linked planes (screens.ts liveCapabilityMatrix), so the
+ * authored "Central, the local collector and AOS-8 accept pushes…" claim
+ * would name planes this install has never been given credentials for.
+ */
+function writeSurfaceNote(capabilities: CapabilityRow[]): string {
+  const lease = 'Every push needs a ticket reference and holds a fifteen-minute lease.';
+  if (capabilities.length === 0) {
+    return `${lease} No plane has reported a write capability, so nothing here can be pushed until one is linked on Connected systems.`;
+  }
+  const writable = capabilities.filter((c) => c.mode !== 'read only').map((c) => c.plane);
+  const readOnly = capabilities.filter((c) => c.mode === 'read only').map((c) => c.plane);
+  const accepts =
+    writable.length > 0
+      ? `${listOf(writable)} accept${writable.length === 1 ? 's' : ''} pushes from here`
+      : 'No linked plane accepts a push from here';
+  if (readOnly.length === 0) return `${lease} ${accepts}.`;
+  return `${lease} ${accepts}; ${listOf(readOnly)} ${readOnly.length === 1 ? 'is' : 'are'} read-only, so those changes open in their own console with the payload pre-filled.`;
+}
+
+/** Remaining write lease on a queued change, or null when it carries none. */
+function leaseNote(entry: QueueEntry, now: number): string | null {
+  if (!entry.expiresAt) return entry.id === null ? 'not on the broker — no lease' : null;
+  const msLeft = Date.parse(entry.expiresAt) - now;
+  if (!Number.isFinite(msLeft)) return null;
+  if (msLeft <= 0) return 'lease expired — re-queue before pushing';
+  const mins = Math.floor(msLeft / 60_000);
+  return mins >= 1 ? `lease ${mins}m left` : `lease ${Math.floor(msLeft / 1000)}s left`;
+}
+
 function formForPreview(
   kind: ConfigKind | null,
   ssid: SsidForm,
@@ -233,6 +290,7 @@ function rowForChange(change: BrokeredChange): QueueEntry {
     what: change.what,
     where: change.where,
     ticket: change.ticket,
+    expiresAt: change.expiresAt,
   };
 }
 
@@ -284,7 +342,14 @@ export default function Configure() {
   const [dryRun, setDryRun] = useState<{ result?: DryRunResult; error?: string } | null>(null);
   const [dryRunning, setDryRunning] = useState(false);
   const [pushing, setPushing] = useState(false);
-  const liveMode = data?.dataSource === 'live';
+  // Lease countdowns must not freeze at first paint — a 30s tick is enough
+  // resolution for a fifteen-minute lease.
+  const [now, setNow] = useState(() => Date.now());
+  // Blend mode swaps this screen's inventory to observed live rows while the
+  // envelope still reads 'demo' (README §blendLive), so every live-flavoured
+  // affordance follows the section, not the envelope's overall dataSource.
+  const liveMode =
+    data?.dataSource === 'live' || (data?.blended?.includes('configure') ?? false);
 
   useEffect(() => {
     let live = true;
@@ -309,6 +374,11 @@ export default function Configure() {
     };
   }, []);
 
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+
   // A dry-run result is stale the moment the form or ticket changes — drop it.
   useEffect(() => {
     setDryRun(null);
@@ -322,11 +392,12 @@ export default function Configure() {
 
   // -- live preview: recomputed on every keystroke and toggle ---------------
   const preview = useMemo(() => {
-    if (liveMode) return livePreview(kind ?? 'ssid', formForPreview(kind, ssid, port, vlan));
+    if (liveMode)
+      return livePreview(kind ?? 'ssid', formForPreview(kind, ssid, port, vlan), data?.capabilities ?? []);
     if (kind === 'port') return configPreviewFor('port', port);
     if (kind === 'vlan') return configPreviewFor('vlan', vlan);
     return configPreviewFor('ssid', ssid);
-  }, [kind, liveMode, ssid, port, vlan]);
+  }, [data?.capabilities, kind, liveMode, ssid, port, vlan]);
   const previewMeta = useMemo(() => {
     if (liveMode) {
       if (kind === 'port') return `${port.device || 'DEVICE NOT ENTERED'} · TEMPLATE PREVIEW`;
@@ -517,6 +588,7 @@ export default function Configure() {
           display: 'grid',
           gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
           gap: 18,
+          maxWidth: 860,
         }}
       >
         {data.stats.map((s) => (
@@ -525,14 +597,10 @@ export default function Configure() {
       </div>
 
       <Alert tone="info" title="Writes are brokered, never standing">
-        <span style={{ fontSize: 13 }}>
-          Every push needs a ticket reference and holds a fifteen-minute lease. Central, the local
-          collector and AOS-8 accept pushes from here; Mist and Classic are read-only, so those
-          changes open in their own console with the payload pre-filled.
-        </span>
+        <span style={{ fontSize: 13 }}>{writeSurfaceNote(data.capabilities)}</span>
       </Alert>
 
-      {data.dataSource === 'live' && data.inventoryMode === 'unavailable' ? (
+      {liveMode && data.inventoryMode === 'unavailable' ? (
         <Alert tone="warning" title="Live configuration inventory is not available">
           <span style={{ fontSize: 13 }}>
             The broker queue is live, but the linked planes do not currently expose SSID, port, or VLAN inventory through
@@ -633,6 +701,16 @@ export default function Configure() {
                 </span>
               </button>
             ))}
+            {data.ssids.length === 0 ? (
+              <EmptyState
+                title="No SSIDs reported"
+                description={
+                  liveMode
+                    ? 'No linked plane reported wireless configuration. "+ Add SSID" still renders and queues a new one.'
+                    : 'This payload carries no SSID rows.'
+                }
+              />
+            ) : null}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
@@ -711,6 +789,16 @@ export default function Configure() {
                 </span>
               </button>
             ))}
+            {data.ports.length === 0 ? (
+              <EmptyState
+                title="No switch ports reported"
+                description={
+                  liveMode
+                    ? 'No linked plane reported port configuration. "+ Configure a port" still renders and queues a change.'
+                    : 'This payload carries no port rows.'
+                }
+              />
+            ) : null}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
@@ -780,6 +868,16 @@ export default function Configure() {
                 </span>
               </button>
             ))}
+            {data.vlans.length === 0 ? (
+              <EmptyState
+                title="No VLANs reported"
+                description={
+                  liveMode
+                    ? 'No linked plane reported VLAN configuration. "+ Add VLAN" still renders and queues a new one.'
+                    : 'This payload carries no VLAN rows.'
+                }
+              />
+            ) : null}
           </div>
         </div>
 
@@ -787,7 +885,10 @@ export default function Configure() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
             <SectionHeader label="Queued changes" meta={String(queue.length)} />
-            {queue.map((q) => (
+            {queue.map((q) => {
+              const lease = leaseNote(q, now);
+              const leaseGone = lease?.startsWith('lease expired') ?? false;
+              return (
               <div
                 key={q.id ?? `${q.ticket}-${q.what}`}
                 style={{
@@ -823,8 +924,26 @@ export default function Configure() {
                 >
                   {q.where}
                 </span>
+                {lease ? (
+                  <span
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 10,
+                      color: leaseGone ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
+                    }}
+                  >
+                    {lease}
+                  </span>
+                ) : null}
               </div>
-            ))}
+              );
+            })}
+            {queue.length === 0 ? (
+              <EmptyState
+                title="No changes queued"
+                description="Edit an SSID, port or VLAN to render a payload and queue it against a ticket."
+              />
+            ) : null}
             <div style={{ display: 'flex', gap: 8, paddingTop: 12 }}>
               <Button
                 variant="secondary"
@@ -1085,7 +1204,11 @@ export default function Configure() {
                 </div>
                 <FormField
                   label="DHCP helpers"
-                  help="The CX baseline expects two helpers; the second one is the drift finding open on this VLAN."
+                  help={
+                    liveMode
+                      ? 'Comma-separated helper addresses. The portal holds no baseline for this VLAN — the dry run reports what the plane currently has.'
+                      : 'The CX baseline expects two helpers; the second one is the drift finding open on this VLAN.'
+                  }
                 >
                   <Input
                     mono

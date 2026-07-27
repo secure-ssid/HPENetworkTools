@@ -4,7 +4,10 @@
  * Select + name Input + "Add site", a 4-Stat row, flair divider, the open
  * table (Site / Managed by — multiple plane Badges / Mix / Devices / Clients /
  * 70×3px Health bar / Alerts / Last sync), and a footer with the mono count
- * and a decorative one-page Pagination. Filters are local, instant, AND-combined.
+ * and a decorative one-page Pagination. The footer count is derived from the
+ * loaded rows and carries the envelope's own provenance stamp (DEMO FIXTURE vs
+ * LIVE · SYNCED hh:mm), so a fixture total is never read as a live estate.
+ * Filters are local, instant, AND-combined.
  * "Add site" opens a small honest drawer: sites are created on the managing
  * plane, so submitting hands off (toast) instead of fake-creating a row.
  * Data: getSites() — live /api/sites when the server is up, fixtures otherwise.
@@ -40,6 +43,12 @@ const HEALTH_COLORS: Record<SiteHealthTone, string> = {
   bad: 'var(--nd-danger)',
   stale: 'var(--nd-border-strong)',
 };
+
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
 
 function planeNames(sites: SiteRow[]): string[] {
   const all: string[] = [];
@@ -94,6 +103,11 @@ export default function Sites() {
   const indexedDevices = sites.reduce((n, s) => n + s.devices, 0);
   // The authored "Ten sites" prose is demo copy — a live estate counts itself.
   const sitesLive = data.dataSource === 'live' || (data.blended?.includes('sites') ?? false);
+  // Design rule 1: the footer count is a data claim, so it says which source
+  // made it. Same vocabulary as SiteDetail so the two never disagree.
+  const sourceLabel = sitesLive
+    ? `LIVE · SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : 'NEVER'}`
+    : 'DEMO FIXTURE';
   const planeOptions = [{ value: 'all', label: 'All planes' }].concat(
     planeNames(sites).map((p) => ({ value: p, label: p })),
   );
@@ -158,6 +172,7 @@ export default function Sites() {
             display: 'grid',
             gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
             gap: 18,
+            maxWidth: 820,
           }}
         >
           {data.stats.map((s) => (
@@ -250,17 +265,25 @@ export default function Sites() {
               <Table.Cell numeric>{s.devices}</Table.Cell>
               <Table.Cell numeric>{s.clients}</Table.Cell>
               <Table.Cell>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {s.healthPct !== '—' ? (
-                    <div
-                      style={{
-                        width: 70,
-                        height: 3,
-                        background: 'var(--nd-bg-inset)',
-                        borderRadius: 99,
-                        overflow: 'hidden',
-                      }}
-                    >
+                {/* The 70px rail stays mounted in every state so the column
+                    keeps its alignment; only the fill is dropped when the
+                    plane reported no percentage (design/NtSites.dc.html:70-74,
+                    which shows the stale site as an empty track + '—'). */}
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                  title={s.health === null ? 'health not reported by the managing plane' : undefined}
+                >
+                  <div
+                    style={{
+                      width: 70,
+                      flex: '0 0 70px',
+                      height: 3,
+                      background: 'var(--nd-bg-inset)',
+                      borderRadius: 99,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {s.healthPct !== '—' ? (
                       <div
                         style={{
                           height: 3,
@@ -269,8 +292,8 @@ export default function Sites() {
                           background: HEALTH_COLORS[s.tone],
                         }}
                       />
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
                   <span
                     style={{
                       fontFamily: 'var(--nd-font-mono)',
@@ -278,7 +301,7 @@ export default function Sites() {
                       color: 'var(--nd-text-muted)',
                     }}
                   >
-                    {s.health ?? 'not reported'}
+                    {s.health ?? '—'}
                   </span>
                 </div>
               </Table.Cell>
@@ -307,15 +330,27 @@ export default function Sites() {
           paddingTop: 4,
         }}
       >
-        <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 10.5,
-            color: 'var(--nd-text-muted)',
-          }}
-        >
-          {rows.length} of {sites.length} sites · {indexedDevices} devices indexed
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+          <span
+            style={{
+              fontFamily: 'var(--nd-font-mono)',
+              fontSize: 10.5,
+              color: 'var(--nd-text-muted)',
+            }}
+          >
+            {rows.length} of {sites.length} sites · {indexedDevices} devices indexed
+          </span>
+          <span
+            style={{
+              fontFamily: 'var(--nd-font-mono)',
+              fontSize: 'var(--nd-text-10)',
+              color: 'var(--nd-text-muted)',
+              letterSpacing: '.08em',
+            }}
+          >
+            {sourceLabel}
+          </span>
+        </div>
         <Pagination page={1} total={1} onChange={() => {}} />
       </div>
 

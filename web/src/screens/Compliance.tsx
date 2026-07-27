@@ -37,13 +37,39 @@ import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { DiffCode } from '../lib/DiffCode';
 
-/** Fix-class Badge tones: auto=success, manual=neutral, window=warning, ssh scan=info. */
+/**
+ * Fix-class colour. Every finding carries a `fixColor` token computed by the
+ * side that knows the fix class (design/NtCompliance.dc.html:72 paints the
+ * cell with it, and the live route sets it per check), so the payload's token
+ * wins here and a server-side fix class can change its own colour. The map
+ * below is only the fallback for a row that carries no token, and follows the
+ * design's semantics: auto is the only self-healing class (success), manual
+ * needs a human (warning), window and ssh scan are deferred (muted/neutral).
+ */
+const FIX_COLOR_TONES: Record<string, Tone> = {
+  'var(--nd-success)': 'success',
+  'var(--nd-warning)': 'warning',
+  'var(--nd-danger)': 'danger',
+  'var(--nd-info)': 'info',
+  'var(--nd-text-muted)': 'neutral',
+};
+
 const FIX_TONES: Record<FindingRow['fix'], Tone> = {
   auto: 'success',
-  manual: 'neutral',
-  window: 'warning',
-  'ssh scan': 'info',
+  manual: 'warning',
+  window: 'neutral',
+  'ssh scan': 'neutral',
 };
+
+function fixTone(f: FindingRow): Tone {
+  return FIX_COLOR_TONES[f.fixColor] ?? FIX_TONES[f.fix];
+}
+
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
 
 export default function Compliance() {
   const navigate = useNavigate();
@@ -75,6 +101,15 @@ export default function Compliance() {
 
   const findings = data.findings;
   const rows = findings.filter((f) => baseline === 'all' || f.baseline === baseline);
+  // Blend mode serves this screen's evidence run from live rows while the rest
+  // of the payload stays demo-sourced, so provenance follows the section, not
+  // the envelope's overall dataSource (README §blendLive).
+  const sectionLive = data.dataSource === 'live' || (data.blended?.includes('compliance') ?? false);
+  // 'scanned 09:05' is authored copy about the authored snapshot; a live or
+  // blended run reports the freshness the envelope actually carries.
+  const scannedNote = sectionLive
+    ? `poller snapshot ${data.syncedAt ? hhmm(data.syncedAt) : 'not stamped yet'}`
+    : 'scanned 09:05';
   const bases = findings.map((f) => f.baseline).filter((v, i, a) => a.indexOf(v) === i);
   const baselineOptions = [{ value: 'all', label: 'All baselines' }].concat(
     bases.map((b) => ({ value: b, label: b + ' baseline' })),
@@ -82,7 +117,9 @@ export default function Compliance() {
 
   const runScan = async () => {
     if (scanning) return;
-    if (data.dataSource === 'live') {
+    // A blended run is live evidence under demo chrome — refresh it through the
+    // poller like any other live section, never through the demo stopwatch.
+    if (sectionLive) {
       setScanning(true);
       const result = await syncSystems();
       if (!result.ok) {
@@ -106,7 +143,7 @@ export default function Compliance() {
   };
 
   const pushFix = () => {
-    if (data.dataSource === 'live') {
+    if (sectionLive) {
       toast('Live compliance remediation is not connected', { tone: 'warning' });
       return;
     }
@@ -117,7 +154,7 @@ export default function Compliance() {
   };
 
   const acceptException = () => {
-    if (data.dataSource === 'live') {
+    if (sectionLive) {
       toast('Live compliance exceptions are not connected', { tone: 'warning' });
       return;
     }
@@ -207,7 +244,7 @@ export default function Compliance() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
           <SectionHeader
             label="Findings"
-            meta={`${rows.length} of ${findings.length} findings · ${data.dataSource === 'live' ? 'current poller snapshot' : 'scanned 09:05'}`}
+            meta={`${rows.length} of ${findings.length} findings · ${scannedNote}`}
           />
           <Table density={density}>
             <Table.Head>
@@ -221,8 +258,11 @@ export default function Compliance() {
               </Table.Row>
             </Table.Head>
             <Table.Body>
-              {rows.map((f) => (
-                <Table.Row key={f.rule}>
+              {rows.map((f, i) => (
+                // A live check emits one finding per (rule, plane) pair, so the
+                // rule alone is not an identity — key on the pair plus the row
+                // position rather than letting React reuse the wrong <tr>.
+                <Table.Row key={`${f.rule}|${f.plane}|${f.device}|${i}`}>
                   <Table.Cell>
                     <Badge tone={f.tone} dot>
                       {f.sev}
@@ -274,7 +314,7 @@ export default function Compliance() {
                     </button>
                   </Table.Cell>
                   <Table.Cell>
-                    <Badge tone={FIX_TONES[f.fix]}>{f.fix}</Badge>
+                    <Badge tone={fixTone(f)}>{f.fix}</Badge>
                   </Table.Cell>
                 </Table.Row>
               ))}
@@ -328,7 +368,7 @@ export default function Compliance() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <SectionHeader label={data.evidenceMode === 'coverage' ? 'Evidence coverage, as text' : 'Drift, as text'} />
               <DiffCode text={data.diff} />
-              {data.dataSource === 'demo' ? (
+              {!sectionLive ? (
                 <div style={{ display: 'flex', gap: 8 }}>
                   <Button variant="secondary" size="sm" onClick={pushFix}>
                     Push fix to 2 devices

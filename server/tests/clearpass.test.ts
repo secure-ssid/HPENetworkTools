@@ -74,10 +74,10 @@ const ROW_SESSION = {
   enforcement_profile: 'Clinical staff',
 };
 
-/** 'HH:MM' the way the adapter renders it (local wall-clock). */
-function expectedHhmm(ms: number): string {
+/** 'HH:MM:SS' the way the adapter renders it (local wall-clock, design style). */
+function expectedHhmmss(ms: number): string {
   const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((v) => String(v).padStart(2, '0')).join(':');
 }
 
 // -- Pure helpers ------------------------------------------------------------------
@@ -92,12 +92,22 @@ describe('pure helpers', () => {
   });
 
   it('authResultFor maps the vocabulary onto accept|reject|timeout', () => {
-    expect(authResultFor('ACCEPT')).toEqual({ result: 'accept', tone: 'success' });
-    expect(authResultFor('Access-Accept')).toEqual({ result: 'accept', tone: 'success' });
-    expect(authResultFor('Access-Reject')).toEqual({ result: 'reject', tone: 'danger' });
-    expect(authResultFor('DENIED')).toEqual({ result: 'reject', tone: 'danger' });
-    expect(authResultFor('no-response')).toEqual({ result: 'timeout', tone: 'warning' });
-    expect(authResultFor('some-unrecognised-verdict')).toEqual({ result: 'timeout', tone: 'warning' });
+    expect(authResultFor('ACCEPT')).toEqual({ result: 'accept', tone: 'success', matched: true });
+    expect(authResultFor('Access-Accept')).toEqual({ result: 'accept', tone: 'success', matched: true });
+    expect(authResultFor('Access-Reject')).toEqual({ result: 'reject', tone: 'danger', matched: true });
+    expect(authResultFor('DENIED')).toEqual({ result: 'reject', tone: 'danger', matched: true });
+    expect(authResultFor('no-response')).toEqual({ result: 'timeout', tone: 'warning', matched: true });
+  });
+
+  // The bucket is a fallback, not CPPM's answer — the caller has to be able to
+  // tell the two apart so the raw verdict can travel with the row.
+  it('authResultFor reports an unrecognised verdict as unmatched', () => {
+    expect(authResultFor('some-unrecognised-verdict')).toEqual({
+      result: 'timeout',
+      tone: 'warning',
+      matched: false,
+    });
+    expect(authResultFor(null)).toEqual({ result: 'timeout', tone: 'warning', matched: false });
   });
 
   it('authMethodFor normalises to 802.1X / MAB / TACACS+', () => {
@@ -117,7 +127,7 @@ describe('mapClearPassAuthEvent', () => {
   it('maps a full Insight row', () => {
     const e = mapClearPassAuthEvent(ROW_ACCEPT);
     expect(e).not.toBeNull();
-    expect(e!.time).toBe(expectedHhmm(Date.parse(ROW_ACCEPT.timestamp)));
+    expect(e!.time).toBe(expectedHhmmss(Date.parse(ROW_ACCEPT.timestamp)));
     expect(e!.who).toBe('m.okonjo');
     expect(e!.mac).toBe('3c:22:fb:41:0a:19');
     expect(e!.service).toBe('MRDN Wireless 802.1X');
@@ -134,7 +144,7 @@ describe('mapClearPassAuthEvent', () => {
   it('maps a legacy reject row (epoch seconds, different keys)', () => {
     const e = mapClearPassAuthEvent(ROW_REJECT);
     expect(e).not.toBeNull();
-    expect(e!.time).toBe(expectedHhmm(1_753_000_000_000));
+    expect(e!.time).toBe(expectedHhmmss(1_753_000_000_000));
     expect(e!.who).toBe('lab-laptop-7');
     expect(e!.mac).toBe('48:2a:e3:11:07:c4');
     expect(e!.service).toBe('MRDN Wired MAB');
@@ -173,7 +183,7 @@ describe('mapClearPassAuthEvent', () => {
     // bucketing it as 'timeout' would report a live network at 0% accept rate.
     const e = mapClearPassAuthEvent(ROW_SESSION);
     expect(e).not.toBeNull();
-    expect(e!.time).toBe(expectedHhmm(Date.parse(ROW_SESSION.acctstarttime)));
+    expect(e!.time).toBe(expectedHhmmss(Date.parse(ROW_SESSION.acctstarttime)));
     expect(e!.tsMs).toBe(Date.parse(ROW_SESSION.acctstarttime));
     expect(e!.who).toBe('r.patel');
     expect(e!.mac).toBe('9c:8e:99:1a:2b:3c');
@@ -188,12 +198,33 @@ describe('mapClearPassAuthEvent', () => {
     const e = mapClearPassAuthEvent({ ...ROW_SESSION, auth_status: 'something-new' });
     expect(e!.result).toBe('timeout');
     expect(e!.tone).toBe('warning');
+    // …and the raw verdict travels with the row: an operator must never read a
+    // fabricated timeout with no evidence of what CPPM actually answered.
+    expect(e!.reason).toBe('unmapped result: something-new');
+  });
+
+  it('keeps a reported reason alongside the unmapped raw verdict', () => {
+    const e = mapClearPassAuthEvent({
+      username: 'x.chen',
+      mac: 'aa:bb:cc:00:11:22',
+      auth_status: 'Access-Challenge',
+      reason: 'EAP identity requested',
+    });
+    expect(e!.result).toBe('timeout');
+    expect(e!.reason).toBe('EAP identity requested · unmapped result: Access-Challenge');
+  });
+
+  it('renders the design HH:MM:SS time, so a burst inside one minute stays orderable', () => {
+    const first = mapClearPassAuthEvent({ ...ROW_ACCEPT, timestamp: '2026-07-25T09:41:22Z' });
+    const second = mapClearPassAuthEvent({ ...ROW_ACCEPT, timestamp: '2026-07-25T09:41:47Z' });
+    expect(first!.time).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    expect(first!.time).not.toBe(second!.time);
   });
 });
 
 // -- pull() with an in-memory fake fetch (no network) ---------------------------------
 
-type HandlerResult = { status?: number; body?: unknown };
+type HandlerResult = { status?: number; body?: unknown; headers?: Record<string, string> };
 type Handler = (method: string, pathname: string, query: URLSearchParams, body: unknown) => HandlerResult | undefined;
 
 interface FakeFetch {
@@ -221,7 +252,7 @@ function fakeFetch(handler: Handler): FakeFetch {
     }
     return new Response(JSON.stringify(result.body ?? {}), {
       status: result.status ?? 200,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(result.headers ?? {}) },
     });
   };
   return { fn, calls, authHeaders, bodies };
@@ -247,8 +278,13 @@ function makeAdapter(handler: Handler, creds: Record<string, string> = CREDS) {
   const { fn, calls, authHeaders, bodies } = fakeFetch(handler);
   const recorded: { path: string; ms: number; code: string }[] = [];
   const state = makeState();
-  const adapter = new ClearPassAdapter(creds, state, (c) => recorded.push(c), fn);
-  return { adapter, state, recorded, calls, authHeaders, bodies };
+  // The backoff sleep is captured, never actually awaited in wall time — the
+  // test asserts the delay the adapter CHOSE, without paying it.
+  const slept: number[] = [];
+  const adapter = new ClearPassAdapter(creds, state, (c) => recorded.push(c), fn, async (ms) => {
+    slept.push(ms);
+  });
+  return { adapter, state, recorded, calls, authHeaders, bodies, slept };
 }
 
 /** The container a real CPPM answers a collection with. */
@@ -419,6 +455,73 @@ describe('ClearPassAdapter.pull()', () => {
     const { adapter } = makeAdapter(() => undefined);
     await expect(adapter.pull()).rejects.toThrow(/section 'authEvents' failed/);
     await expect(adapter.pull()).rejects.toThrow(/404 on every candidate/);
+  });
+
+  // A build that names the timestamp field something we do not read still
+  // reports real decisions — sinking them to the back of the 200-row cap threw
+  // them away silently. They keep arrival order behind the dated rows instead.
+  it('keeps undated rows rather than sorting them off the end of the cap, and names them', async () => {
+    const dated = Array.from({ length: MAX_AUTH_EVENTS - 1 }, (_, i) => ({
+      timestamp: new Date(Date.parse('2026-07-25T00:00:00Z') + i * 60_000).toISOString(),
+      username: `dated-${i}`,
+      auth_result: 'ACCEPT',
+    }));
+    const undated = [
+      { occurred: '2026-07-25T09:00:00Z', username: 'undated-1', auth_result: 'ACCEPT' },
+      { occurred: '2026-07-25T09:01:00Z', username: 'undated-2', auth_result: 'ACCEPT' },
+    ];
+    const { adapter, state } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === AUTH_PATH ? { body: hal([...undated, ...dated]) } : undefined,
+    );
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(MAX_AUTH_EVENTS);
+    // dated rows first (newest first), then the undated ones in arrival order
+    expect(pull.authEvents![0].who).toBe(`dated-${MAX_AUTH_EVENTS - 2}`);
+    expect(pull.authEvents![MAX_AUTH_EVENTS - 1].who).toBe('undated-1');
+    expect(state.note).toContain('1 without timestamps');
+  });
+
+  // A throttle is not a verdict: back off (honouring Retry-After) and try
+  // again rather than degrading the plane every 60s.
+  it('backs off and retries a 429, honouring Retry-After', async () => {
+    let throttled = 0;
+    const { adapter, state, slept, calls } = makeAdapter((method, pathname) => {
+      if (method !== 'GET' || pathname !== AUTH_PATH) return undefined;
+      throttled += 1;
+      if (throttled === 1) return { status: 429, body: { detail: 'rate limit' }, headers: { 'retry-after': '2' } };
+      return { body: hal([ROW_ACCEPT]) };
+    });
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(1);
+    expect(slept).toEqual([2_000]); // Retry-After wins over the exponential floor
+    expect(state.health).toBe('healthy'); // not degraded by a survivable throttle
+    // every attempt is on the wire, so the Activity tab shows the real 429
+    expect(calls.filter((c) => c.startsWith(`GET ${AUTH_PATH}`))).toHaveLength(2);
+  });
+
+  it('names rate limiting when the throttle outlives the backoff', async () => {
+    const { adapter, slept } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === AUTH_PATH ? { status: 429, body: {} } : undefined,
+    );
+    await expect(adapter.pull()).rejects.toThrow(/rate limited, backoff exhausted/);
+    expect(slept).toEqual([1_000, 2_000]); // exponential floor, no Retry-After sent
+  });
+
+  it('rides out a transient 503 gateway blip', async () => {
+    let n = 0;
+    const { adapter } = makeAdapter((method, pathname) => {
+      if (method !== 'GET' || pathname !== AUTH_PATH) return undefined;
+      n += 1;
+      return n === 1 ? { status: 503, body: {} } : { body: hal([ROW_ACCEPT]) };
+    });
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(1);
+  });
+
+  // ClearPass describes policy, not a transport: no shell, no brokered push.
+  it('claims no shell, no brokered write and no config read', () => {
+    const { adapter } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: false, configRead: false });
   });
 
   it('fails the pull naming the section on a non-404 error (a static token cannot self-heal on 401)', async () => {

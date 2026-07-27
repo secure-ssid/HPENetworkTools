@@ -22,19 +22,31 @@
  *              context{groupName, networkName, serviceTestName, …}}]}
  *              isOnline/isTesting are `boolean | null` and only `issues` is
  *              required — an omitted/null isOnline means "no answer", not down.
- *   paging   cursor: {items, count, next} — follow ?next= until null (≤10 pages).
+ *   paging   cursor: {items, count, next} — `limit=100` (the spec's maximum;
+ *            the default is 50) followed through ?next= for ≤10 pages. A walk
+ *            that ends with a cursor still in hand is TRUNCATED and says so:
+ *            a partial inventory presented as a complete one makes every
+ *            missing sensor look decommissioned.
  *
  * Honest gaps the note surfaces: there is NO historical test-results pull —
- * results leave UXI through push destinations (S3) only. Rate limit is
- * 5 req/s per customer; status reads run sequentially, which stays under it
- * at any plausible sensor count, and the per-sensor status read is capped at
- * MAX_SENSOR_STATUSES with the cap named in the note when it bites.
+ * results leave UXI through push destinations (S3) only. The per-sensor status
+ * read is capped at MAX_SENSOR_STATUSES with the cap named in the note when it
+ * bites.
+ *
+ * Rate limits: the documented budget is 5 req/s per customer and the spec
+ * lists 429 as a first-class answer on /sensors. Requests are paced to
+ * REQUEST_GAP_MS apart and a 429 is retried once after Retry-After (capped),
+ * with throttled status reads counted separately in the note — being throttled
+ * is a different fact from a sensor that would not answer.
  *
  * Failure policy (mirrors clearpass):
  *   - the sensors list failing → pull() throws naming the section; there is
  *     nothing honest to degrade to.
  *   - one sensor's status read failing → that sensor keeps state 'unknown'
  *     and its issues are skipped (named in the note), never fatal.
+ *   - EVERY status read failing → the inventory is still published (it is
+ *     real), but the plane is left 'degraded': a sync that proved no live
+ *     sensor state must not read as a fresh, healthy one.
  *
  * Security: the client secret lives only in the token POST's Basic header —
  * never in a URL; the call log records method + path + ms + status only.
@@ -46,13 +58,15 @@ import type { DeviceIdentityHints } from '../services/reconcile';
 import {
   TokenManager,
   ageString,
+  parseRetryAfterMs,
   parseTimestamp,
   sevFor,
   siteIdForName,
   type FetchLike,
   type RecordCallFn,
+  type SleepFn,
 } from './central';
-import type { PlaneAdapter, PlanePull, PlaneState } from './types';
+import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 
 // Re-exported so tests can type an in-memory fake fetch against this adapter.
 export type { FetchLike } from './central';
@@ -64,8 +78,21 @@ const API_PREFIX = '/networking-uxi/v1alpha1';
 
 /** Follow the cursor at most this far — a runaway `next` must not loop forever. */
 const MAX_PAGES = 10;
+/** The spec's maximum page size (default 50) — half the calls for one walk. */
+const SENSOR_PAGE_LIMIT = 100;
 /** Per-sensor status reads are capped; sensors beyond this keep state 'unknown'. */
 export const MAX_SENSOR_STATUSES = 50;
+
+/** The documented budget is 5 req/s per customer: 200 ms between requests. */
+const REQUEST_GAP_MS = 200;
+/** A 429 is retried once, after Retry-After — capped so a tick cannot stall. */
+const RATE_LIMIT_RETRY_MS = 1_000;
+const RATE_LIMIT_CAP_MS = 5_000;
+
+const realSleep: SleepFn = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 const SEV_TONE: Record<Sev, Tone> = { P1: 'danger', P2: 'warning', P3: 'info' };
 
@@ -181,7 +208,11 @@ export function mapUxiIssue(raw: unknown, sensor: UxiIssueSensor, nowMs: number 
     siteId: site.siteId,
     siteName: site.siteName,
     plane: 'UXI',
-    state: /resolv|clos|clear/.test(statusRaw) ? 'acked' : 'open',
+    // 'cleared' = the plane resolved it; 'acked' = a human acknowledged it
+    // through the broker. UXI has no acknowledgement concept, so a closed
+    // issue is cleared — calling it 'acked' would credit an operator action
+    // that never happened (central.ts makes the same distinction).
+    state: /resolv|clos|clear/.test(statusRaw) ? 'cleared' : 'open',
     age: ts !== null ? ageString(ts, nowMs) : '—',
     device: sensor.name,
   };
@@ -213,11 +244,18 @@ export class UxiAdapter implements PlaneAdapter {
   private readonly baseUrl: string;
   private readonly tokens: TokenManager;
 
+  /** When the next outbound request may fire (the 5 req/s pacing gate). */
+  private nextRequestAt = 0;
+  /** 429s seen this pull — a throttle is a different fact from a dead sensor. */
+  private throttled = 0;
+
   constructor(
     creds: PlaneCredentials,
     private readonly stateRef: PlaneState,
     private readonly recordCall: RecordCallFn,
     private readonly fetchImpl: FetchLike = (url, init) => fetch(url, init),
+    /** Injectable so tests exercise pacing/backoff without real wall time. */
+    private readonly sleep: SleepFn = realSleep,
   ) {
     if (!UxiAdapter.isComplete(creds)) {
       throw new Error('uxi requires clientId and clientSecret');
@@ -267,15 +305,28 @@ export class UxiAdapter implements PlaneAdapter {
     return this.stateRef;
   }
 
+  /**
+   * UXI is a cloud sensor plane: the portal cannot open a shell on a sensor,
+   * the write broker has nothing to push to it (the API is read-only here) and
+   * it publishes no SSID/VLAN/port configuration.
+   */
+  capabilities(): PlaneCapabilities {
+    return { localShell: false, brokeredWrite: false, configRead: false };
+  }
+
   async pull(): Promise<PlanePull> {
+    this.throttled = 0;
     let sensors: unknown[];
+    let truncated = false;
     try {
-      sensors = await this.fetchAllSensors();
+      const page = await this.fetchAllSensors();
+      sensors = page.items;
+      truncated = page.truncated;
     } catch (err) {
       throw new Error(`uxi pull: section 'sensors' failed — ${(err as Error).message}`);
     }
 
-    // Per-sensor status: sequential (the 5 req/s budget never comes close),
+    // Per-sensor status: sequential and paced to the documented 5 req/s,
     // capped, and per-sensor failures are non-fatal — that sensor just keeps
     // state 'unknown' and contributes no issues. isOnline/isTesting are
     // `boolean | null` and the body may omit them entirely, so both are kept
@@ -332,48 +383,96 @@ export class UxiAdapter implements PlaneAdapter {
     ).length;
     const capped = named.length > MAX_SENSOR_STATUSES ? ` · status capped at ${MAX_SENSOR_STATUSES}` : '';
     const failed = statusFailures > 0 ? ` · ${statusFailures} status reads failed` : '';
+    const throttleNote = this.throttled > 0 ? ` · ${this.throttled} throttled (429)` : '';
     const idleNote = idle > 0 ? ` · ${idle.toLocaleString('en-US')} idle (online, not testing)` : '';
+    // The page cap stopping a walk that still had a cursor is silent data loss
+    // unless it is named: those sensors are not gone, they were never read.
+    const truncNote = truncated ? ` · inventory truncated at ${devices.length.toLocaleString('en-US')} (page cap ${MAX_PAGES})` : '';
     this.stateRef.note =
-      `${devices.length.toLocaleString('en-US')} sensors · ${alerts.length.toLocaleString('en-US')} ongoing issues${idleNote}${capped}${failed}` +
+      `${devices.length.toLocaleString('en-US')} sensors · ${alerts.length.toLocaleString('en-US')} ongoing issues${idleNote}${truncNote}${capped}${failed}${throttleNote}` +
       ' · historical results are push-only (S3)';
-    if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 
-    return { devices, alerts };
+    // A pull that read the inventory but proved NO live sensor state is not a
+    // healthy sync: the rows are real, their state is not. Degrading here is
+    // what makes the devices render 'unverified' rather than silently stale.
+    if (statusFailures > 0 && onlineByName.size === 0) {
+      this.stateRef.health = 'degraded';
+    } else if (this.stateRef.health === 'warning') {
+      this.stateRef.health = 'healthy'; // first sync done
+    }
+
+    return truncated ? { devices, alerts, partial: ['devices'] } : { devices, alerts };
   }
 
   // -- internals -------------------------------------------------------------
 
-  /** All sensors, following the {items, next} cursor up to MAX_PAGES. */
-  private async fetchAllSensors(): Promise<unknown[]> {
+  /**
+   * All sensors, at the spec's maximum page size, following the {items, next}
+   * cursor up to MAX_PAGES. `truncated` is true when the cap stopped the walk
+   * with a cursor still in hand — the caller must never publish that as a
+   * complete inventory.
+   */
+  private async fetchAllSensors(): Promise<{ items: unknown[]; truncated: boolean }> {
     const out: unknown[] = [];
-    let path: string | null = `${API_PREFIX}/sensors`;
-    for (let page = 0; page < MAX_PAGES && path !== null; page += 1) {
+    let path: string | null = `${API_PREFIX}/sensors?limit=${SENSOR_PAGE_LIMIT}`;
+    let page = 0;
+    for (; page < MAX_PAGES && path !== null; page += 1) {
       const res = await this.get(path);
       if (res.status < 200 || res.status >= 300) {
         throw new Error(`HTTP ${res.status} from ${path}`);
       }
       const parsed = parseSensorsPage(res.body);
       out.push(...parsed.items);
-      path = parsed.next !== null ? `${API_PREFIX}/sensors?next=${encodeURIComponent(parsed.next)}` : null;
+      // Both params ride the cursor path: dropping `limit` would silently
+      // reset the server to its default page size mid-walk.
+      path =
+        parsed.next !== null
+          ? `${API_PREFIX}/sensors?limit=${SENSOR_PAGE_LIMIT}&next=${encodeURIComponent(parsed.next)}`
+          : null;
     }
-    return out;
+    return { items: out, truncated: path !== null };
   }
 
-  /** GET with a bearer token; one invalidation + retry on 401. */
+  /**
+   * GET with a bearer token; one invalidation + retry on 401, and one retry
+   * after Retry-After on a 429 (capped, so a throttle paces the poll instead
+   * of failing it). Requests are paced to the documented 5 req/s.
+   */
   private async get(path: string): Promise<{ status: number; body: unknown }> {
-    let res = await this.http(path, { token: await this.tokens.get() });
+    let res = await this.paced(path);
     if (res.status === 401) {
       this.tokens.invalidate();
-      res = await this.http(path, { token: await this.tokens.get() });
+      res = await this.paced(path);
+    }
+    if (res.status === 429) {
+      this.throttled += 1;
+      await this.sleep(Math.min(res.retryAfterMs ?? RATE_LIMIT_RETRY_MS, RATE_LIMIT_CAP_MS));
+      res = await this.paced(path);
+      if (res.status === 429) this.throttled += 1;
     }
     return res;
+  }
+
+  /**
+   * One request, not before the pacing gate opens. The vendor budget is 5
+   * req/s per CUSTOMER, so a sequential loop of local-latency calls can breach
+   * it easily — the header used to claim otherwise.
+   */
+  private async paced(path: string): Promise<{ status: number; body: unknown; retryAfterMs?: number }> {
+    const wait = this.nextRequestAt - Date.now();
+    if (wait > 0) await this.sleep(wait);
+    this.nextRequestAt = Date.now() + REQUEST_GAP_MS;
+    return this.http(path, { token: await this.tokens.get() });
   }
 
   /**
    * Timed outbound call recorded in the plane's call log. The log carries
    * method + path + ms + status only — never a body, so never a secret.
    */
-  private async http(path: string, opts: { token: string }): Promise<{ status: number; body: unknown }> {
+  private async http(
+    path: string,
+    opts: { token: string },
+  ): Promise<{ status: number; body: unknown; retryAfterMs?: number }> {
     const started = Date.now();
     let res: Response;
     try {
@@ -396,6 +495,8 @@ export class UxiAdapter implements PlaneAdapter {
     } catch {
       /* tolerate a non-JSON body — status is what we needed */
     }
-    return { status: res.status, body };
+    // Additive: callers that read { status, body } are unaffected.
+    const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
+    return { status: res.status, body, ...(retryAfterMs !== null ? { retryAfterMs } : {}) };
   }
 }

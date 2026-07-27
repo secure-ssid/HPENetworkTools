@@ -24,6 +24,17 @@
  *   subscriptions  /subscriptions/v1/subscriptions (&workspace_id=…)  offset/limit 100
  *                  /subscription-manager/v1/subscriptions
  *                  /devices/v1/subscriptions
+ *   assignments    /devices/v1/devices                                offset/limit 100
+ *
+ * The assignments feed is the device→subscription join the Licences screen
+ * needs to count unlicensed devices and name orphans; a live probe returns
+ * `{items:[{serialNumber, macAddress, model, deviceType, deviceName, archived,
+ * assignedState, subscription}], errors, count, offset, total}` — the same
+ * envelope the subscriptions section pages. It is SECONDARY: it refreshes on a
+ * 5-minute cadence (the device inventory dwarfs the subscription list) and its
+ * failure never fails the pull. When it cannot be read the pull declares
+ * `partial: ['assignments']`, so the plane says 'half read' rather than
+ * letting the screen infer 'no unlicensed devices' from silence.
  *
  * Failure policy (mirrors central):
  *   - 404 on every candidate → pull() fails naming the section — the
@@ -31,6 +42,12 @@
  *     honest to degrade to.
  *   - any other HTTP/network error → pull() throws naming the section, so the
  *     poller marks the plane degraded and keeps serving the last good cache.
+ *   - rows that came back but NONE of which could be mapped → pull() throws:
+ *     '0 subscriptions' from a payload we misread is a licence screen that
+ *     says the workspace owns nothing, which is worse than a red plane. Some
+ *     rows dropping is survivable and named in the note ('N rows unmapped').
+ *   - 429 → bounded exponential backoff, Retry-After honoured, then the
+ *     section fails naming rate limiting rather than a bare HTTP code.
  * Pagination mirrors central's fetchSection: offset/limit pages merged until
  * the envelope's total is reached (GLP answers `{items, count, offset, total}`
  * and defaults to a bounded page), capped by MAX_PAGES. Hitting the cap is
@@ -43,10 +60,15 @@
  *     endTime, subscriptionStatus, tierDescription}`; v1alpha1 answers
  *     `productDescription`/`appointment.subscriptionStart`). Every reader
  *     accepts both spellings — the same tolerance central.ts carries.
- *   - expires: ISO/epoch → 'MMM YYYY' display ('Mar 2027', UTC month). The
- *     exact instant rides along in the expiresAtMs/daysLeft hints so
- *     /api/licenses can compute renewals and stats without re-parsing display
- *     strings — same pattern as central's serial/mac identity hints.
+ *   - expires: ISO/epoch → 'DD Mon YY' display ('14 Sep 26', UTC), the format
+ *     the design and the fixtures use — live and demo rows land in the SAME
+ *     table in blend mode, and month precision made a subscription ending on
+ *     the 2nd indistinguishable from one ending on the 29th. The exact instant
+ *     rides along in the expiresAtMs/daysLeft hints so /api/licenses can
+ *     compute renewals and stats without re-parsing display strings — same
+ *     pattern as central's serial/mac identity hints.
+ *   - sku carries its source ('R7G20AAE · greenlake'), matching the fixtures:
+ *     the Licences table mixes planes, so the column has to say whose key it is.
  *   - status precedence: retiring (raw status says expired/cancelled/EoL, or
  *     the expiry date is already past — danger) → expiring (<90d left —
  *     warning) → idle (0 assigned — neutral) → active (success).
@@ -64,10 +86,17 @@
  * in the recorded call log (method + path + ms + status only).
  */
 
-import type { Subscription, SubscriptionRow, Tone } from '../../../shared';
+import type { Subscription, SubscriptionAssignment, SubscriptionRow, Tone } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
-import { parseTimestamp, TokenManager, type FetchLike, type RecordCallFn } from './central';
-import type { PlaneAdapter, PlanePull, PlaneState } from './types';
+import {
+  parseRetryAfterMs,
+  parseTimestamp,
+  TokenManager,
+  type FetchLike,
+  type RecordCallFn,
+  type SleepFn,
+} from './central';
+import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 
 // Re-exported so tests can type an in-memory fake fetch against this adapter.
 export type { FetchLike } from './central';
@@ -79,6 +108,19 @@ const YEAR_MS = 365.25 * DAY_MS;
 
 /** A subscription this close to expiry renders as 'expiring' (warning). */
 export const EXPIRING_SOON_DAYS = 90;
+
+/** 429 backoff: attempts after the first, exponential floor, and a hard cap. */
+const RATE_LIMIT_RETRIES = 2;
+const RATE_LIMIT_BASE_MS = 1_000;
+const RATE_LIMIT_CAP_MS = 30_000;
+
+/** The device inventory is big and slow-moving — one read per 5 minutes. */
+const ASSIGNMENTS_REFRESH_MS = 5 * 60 * 1000;
+
+const realSleep: SleepFn = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 // ---------------------------------------------------------------------------
 // Defensive field readers — unknown/extra fields ignored, missing → null
@@ -126,10 +168,17 @@ export type GreenLakeSubscriptionRow = SubscriptionRow & SubscriptionMetricHints
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-/** Epoch ms → the month-precision expiry display ('Mar 2027'), UTC-based. */
+/**
+ * Epoch ms → the design's day-precision expiry display ('14 Sep 26'), UTC.
+ * Live and demo rows share one table in blend mode, so the two must render
+ * identically; month precision also hid the difference between a subscription
+ * ending on the 2nd and one ending on the 29th.
+ */
 export function expiryDisplay(ms: number): string {
   const d = new Date(ms);
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const year = String(d.getUTCFullYear()).slice(2);
+  return `${day} ${MONTHS[d.getUTCMonth()]} ${year}`;
 }
 
 /**
@@ -255,21 +304,23 @@ export function mapGreenLakeSubscription(raw: unknown, nowMs: number = Date.now(
   const daysLeft = expiresAtMs !== null ? Math.floor((expiresAtMs - nowMs) / DAY_MS) : null;
   const rawStatus = str(r.status ?? r.state ?? r.subscriptionStatus ?? r.subscription_status);
   const { status, tone } = subStatusFor(rawStatus, assigned, daysLeft);
+  const skuBase =
+    str(r.sku) ??
+    str(r.part_number) ??
+    str(r.partNumber) ??
+    str(r.productSku) ??
+    str(product.sku) ??
+    str(r.subscription_key) ??
+    str(r.subscriptionKey) ??
+    str(r.key) ??
+    str(r.subscription_id) ??
+    str(r.subscriptionId) ??
+    str(r.id);
   return {
     name,
-    sku:
-      str(r.sku) ??
-      str(r.part_number) ??
-      str(r.partNumber) ??
-      str(r.productSku) ??
-      str(product.sku) ??
-      str(r.subscription_key) ??
-      str(r.subscriptionKey) ??
-      str(r.key) ??
-      str(r.subscription_id) ??
-      str(r.subscriptionId) ??
-      str(r.id) ??
-      '—',
+    // The fixtures' convention: the key plus the plane that issued it, because
+    // the Licences table mixes GreenLake, Mist and perpetual rows.
+    sku: skuBase !== null ? `${skuBase} · greenlake` : '—',
     plane: 'GREENLAKE',
     planeTone: 'accent',
     term: termString(r),
@@ -285,6 +336,60 @@ export function mapGreenLakeSubscription(raw: unknown, nowMs: number = Date.now(
   };
 }
 
+/**
+ * GLP device row → SubscriptionAssignment (the device→entitlement join).
+ * `assigned` is tri-state on purpose: absent means the plane never said, which
+ * is not the same as 'UNASSIGNED' and must not be counted as an unlicensed
+ * device. A row with no serial is dropped — serial is the reconcile key.
+ */
+export function mapGreenLakeAssignment(raw: unknown): SubscriptionAssignment | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const serial = str(r.serialNumber ?? r.serial_number ?? r.serial);
+  if (!serial) return null;
+  // `subscription` is null (explicitly unlicensed), an object, or a list of
+  // consuming subscriptions — read the first either way.
+  const subRaw = Array.isArray(r.subscription) ? r.subscription[0] : r.subscription;
+  const sub = obj(subRaw ?? r.subscriptionDetails);
+  const subKey =
+    typeof subRaw === 'string'
+      ? str(subRaw)
+      : (str(sub.key ?? sub.subscriptionKey ?? sub.subscription_key ?? sub.id) ??
+        str(r.subscriptionKey ?? r.subscription_key));
+  const stateRaw = (str(r.assignedState ?? r.assigned_state ?? r.assignmentState) ?? '').toLowerCase();
+  // 'UNASSIGNED' contains 'assigned' — test the negative first or every
+  // unlicensed device reads as licensed.
+  const assigned =
+    stateRaw === '' ? null
+    : /^un(assigned)?/.test(stateRaw) || /not.?assigned/.test(stateRaw) ? false
+    : /assigned/.test(stateRaw) ? true
+    : null;
+  const endMs = parseTimestamp(sub.endTime ?? sub.end_date ?? sub.expiryDate ?? r.subscriptionEndTime);
+  const archived = typeof r.archived === 'boolean' ? r.archived : null;
+  return {
+    serial,
+    ...(str(r.macAddress ?? r.mac_address ?? r.mac) !== null
+      ? { mac: str(r.macAddress ?? r.mac_address ?? r.mac) as string }
+      : {}),
+    ...(str(r.model) !== null ? { model: str(r.model) as string } : {}),
+    ...(str(r.deviceName ?? r.device_name ?? r.hostname) !== null
+      ? { deviceName: str(r.deviceName ?? r.device_name ?? r.hostname) as string }
+      : {}),
+    ...(str(r.deviceType ?? r.device_type) !== null
+      ? { deviceType: str(r.deviceType ?? r.device_type) as string }
+      : {}),
+    ...(assigned !== null ? { assigned } : {}),
+    // null (not undefined) is a statement: the plane says this device consumes
+    // no subscription. Undefined would mean it never said.
+    ...(subKey !== null ? { subscriptionKey: subKey } : subRaw === null ? { subscriptionKey: null } : {}),
+    ...(str(sub.tierDescription ?? sub.tier) !== null
+      ? { subscriptionTier: str(sub.tierDescription ?? sub.tier) as string }
+      : {}),
+    ...(endMs !== null ? { expires: new Date(endMs).toISOString() } : {}),
+    ...(archived !== null ? { archived } : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
@@ -294,9 +399,20 @@ class HttpStatusError extends Error {
     readonly status: number,
     path: string,
   ) {
-    super(`HTTP ${status} from ${path}`);
+    // A throttle that outlived the backoff is not the workspace saying no.
+    super(`HTTP ${status} from ${path}${status === 429 ? ' — rate limited, backoff exhausted' : ''}`);
     this.name = 'HttpStatusError';
   }
+}
+
+/**
+ * One outbound response. `retryAfterMs` is additive — callers that read only
+ * { status, body } are unaffected; the 429 backoff is the sole consumer.
+ */
+interface HttpResult {
+  status: number;
+  body: unknown;
+  retryAfterMs?: number;
 }
 
 class SectionMissingError extends Error {
@@ -318,6 +434,13 @@ interface SectionCandidate {
 /** Page size and the cap that stops a runaway loop (mirrors central's spec). */
 const PAGE_LIMIT = 100;
 const MAX_PAGES = 25;
+
+/**
+ * The device inventory that carries the subscription join. Only the endpoint a
+ * live workspace was actually observed answering is listed — an invented
+ * candidate would spend a call per poll to learn nothing.
+ */
+const ASSIGNMENT_CANDIDATES: SectionCandidate[] = [{ path: '/devices/v1/devices' }];
 
 function extractRows(body: unknown): unknown[] {
   if (Array.isArray(body)) return body;
@@ -363,12 +486,19 @@ export class GreenLakeAdapter implements PlaneAdapter {
   private resolvedPath: SectionCandidate | null = null;
   /** Token endpoint that worked (tried first next time). */
   private resolvedTokenPath: string | null = null;
+  /** Last good assignments read and when it was taken (5-minute cadence). */
+  private assignments: SubscriptionAssignment[] | null = null;
+  private assignmentsAtMs = 0;
+  /** Why the assignments feed is missing, when it is — named in the note. */
+  private assignmentsError: string | null = null;
 
   constructor(
     creds: PlaneCredentials,
     private readonly stateRef: PlaneState,
     private readonly recordCall: RecordCallFn,
     private readonly fetchImpl: FetchLike = (url, init) => fetch(url, init),
+    /** Injectable so tests exercise the backoff without real wall time. */
+    private readonly sleep: SleepFn = realSleep,
   ) {
     if (!GreenLakeAdapter.isComplete(creds)) {
       throw new Error('greenlake requires workspaceId, clientId and clientSecret');
@@ -427,6 +557,15 @@ export class GreenLakeAdapter implements PlaneAdapter {
     return this.stateRef;
   }
 
+  /**
+   * GreenLake is the licence source of record: it owns no device transport, so
+   * there is no shell and nothing for the write broker to push, and it
+   * publishes no network configuration.
+   */
+  capabilities(): PlaneCapabilities {
+    return { localShell: false, brokeredWrite: false, configRead: false };
+  }
+
   async pull(): Promise<PlanePull> {
     let page: { rows: unknown[]; truncated: boolean };
     try {
@@ -445,16 +584,39 @@ export class GreenLakeAdapter implements PlaneAdapter {
       .map((r) => mapGreenLakeSubscription(r, now))
       .filter((s): s is GreenLakeSubscriptionRow => s !== null);
 
+    // The workspace answered with rows we could not read a single one of: the
+    // payload shape moved. Publishing '0 subscriptions' would tell an operator
+    // the workspace owns nothing — a red plane is the honest answer.
+    if (page.rows.length > 0 && subscriptions.length === 0) {
+      throw new Error(
+        `greenlake pull: section 'subscriptions' failed — ${page.rows.length.toLocaleString('en-US')} rows returned but none could be mapped (payload shape not recognised)`,
+      );
+    }
+    const unmapped = page.rows.length - subscriptions.length;
+
+    // Secondary and slower: the device→entitlement join. Never fails the pull.
+    const assignments = await this.refreshAssignments();
+
     const expiring = subscriptions.filter((s) => s.status === 'expiring').length;
+    const unlicensed = assignments?.filter((a) => a.assigned === false).length ?? null;
     this.stateRef.note =
       `${subscriptions.length.toLocaleString('en-US')} subscriptions · ` +
       `${expiring.toLocaleString('en-US')} expiring < ${EXPIRING_SOON_DAYS}d` +
+      // Rows we dropped are a gap in the licence picture, not a quiet workspace.
+      (unmapped > 0 ? ` · ${unmapped.toLocaleString('en-US')} rows unmapped` : '') +
       // A page-capped read is a partial inventory — say so rather than let the
       // count read as the whole truth.
-      (page.truncated ? ` · partial (page cap ${MAX_PAGES})` : '');
+      (page.truncated ? ` · partial (page cap ${MAX_PAGES})` : '') +
+      (assignments !== null
+        ? ` · ${assignments.length.toLocaleString('en-US')} devices` +
+          (unlicensed !== null ? ` · ${unlicensed.toLocaleString('en-US')} unlicensed` : '')
+        : ` · assignments unavailable (${this.assignmentsError ?? 'not read'})`);
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 
-    return { subscriptions };
+    return {
+      subscriptions,
+      ...(assignments !== null ? { assignments } : { partial: ['assignments' as const] }),
+    };
   }
 
   // -- internals -------------------------------------------------------------
@@ -469,6 +631,58 @@ export class GreenLakeAdapter implements PlaneAdapter {
     const candidates = resolved
       ? [resolved, ...this.candidates.filter((c) => c.path !== resolved.path)]
       : this.candidates;
+    const result = await this.pageCandidates(candidates);
+    if (result === null) throw new SectionMissingError();
+    this.resolvedPath = result.candidate;
+    return { rows: result.rows, truncated: result.truncated };
+  }
+
+  /**
+   * The device→subscription join, on a 5-minute cadence. Returns the last good
+   * read when it is still fresh, null when the feed could not be read at all
+   * (the caller then declares the pull partial — an unread feed must never be
+   * shown as 'no unlicensed devices'). Never throws: subscriptions are this
+   * plane's required section, assignments are additive.
+   */
+  private async refreshAssignments(): Promise<SubscriptionAssignment[] | null> {
+    const now = Date.now();
+    // The cadence gates ATTEMPTS, not successes: a workspace whose devices
+    // endpoint 404s must not be re-probed every 60s poll for nothing.
+    if (this.assignmentsAtMs !== 0 && now - this.assignmentsAtMs < ASSIGNMENTS_REFRESH_MS) {
+      return this.assignments;
+    }
+    this.assignmentsAtMs = now;
+    try {
+      const result = await this.pageCandidates(ASSIGNMENT_CANDIDATES);
+      if (result === null) {
+        this.assignmentsError = 'no devices endpoint answered (404)';
+        return this.assignments; // keep the last good read if there was one
+      }
+      const rows = result.rows.map(mapGreenLakeAssignment).filter((a): a is SubscriptionAssignment => a !== null);
+      if (result.rows.length > 0 && rows.length === 0) {
+        // Same rule as the subscriptions section: a payload we could not read
+        // is not an empty inventory.
+        this.assignmentsError = `${result.rows.length.toLocaleString('en-US')} device rows returned, none mappable`;
+        return this.assignments;
+      }
+      this.assignments = rows;
+      this.assignmentsError = null;
+      this.stateRef.deviceCount = rows.length;
+      return rows;
+    } catch (err) {
+      this.assignmentsError = (err as Error).message;
+      return this.assignments;
+    }
+  }
+
+  /**
+   * Page one section through its candidate paths, tolerating 404 by trying the
+   * next; null when every candidate 404s. `truncated` is true when the page
+   * cap stopped the loop before the envelope's total was read.
+   */
+  private async pageCandidates(
+    candidates: SectionCandidate[],
+  ): Promise<{ candidate: SectionCandidate; rows: unknown[]; truncated: boolean } | null> {
     for (const cand of candidates) {
       const firstPath = `${cand.path}?offset=0&limit=${PAGE_LIMIT}${cand.extraQuery ?? ''}`;
       const first = await this.authedGet(firstPath);
@@ -492,21 +706,30 @@ export class GreenLakeAdapter implements PlaneAdapter {
         lastPageSize = pageRows.length;
         pages += 1;
       }
-      this.resolvedPath = cand;
       const truncated = pages >= MAX_PAGES && lastPageSize >= PAGE_LIMIT && (total === null || offset < total);
-      return { rows, truncated };
+      return { candidate: cand, rows, truncated };
     }
-    throw new SectionMissingError();
+    return null;
   }
 
-  /** GET with a bearer token; one invalidation + retry on 401 (mirrors central). */
-  private async authedGet(path: string): Promise<{ status: number; body: unknown }> {
-    let res = await this.http('GET', path, { token: await this.tokens.get() });
-    if (res.status === 401) {
-      this.tokens.invalidate();
-      res = await this.http('GET', path, { token: await this.tokens.get() });
+  /**
+   * GET with a bearer token; one invalidation + retry on 401 (mirrors
+   * central), plus a bounded backoff on 429 so a rate-limited workspace paces
+   * the poll instead of degrading the plane every cycle. Retry-After wins over
+   * the exponential floor; every attempt is recorded, so the Activity tab
+   * shows the real 429s.
+   */
+  private async authedGet(path: string): Promise<HttpResult> {
+    for (let attempt = 0; ; attempt += 1) {
+      let res = await this.http('GET', path, { token: await this.tokens.get() });
+      if (res.status === 401) {
+        this.tokens.invalidate();
+        res = await this.http('GET', path, { token: await this.tokens.get() });
+      }
+      if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return res;
+      const backoffMs = RATE_LIMIT_BASE_MS * 2 ** attempt;
+      await this.sleep(Math.min(res.retryAfterMs ?? backoffMs, RATE_LIMIT_CAP_MS));
     }
-    return res;
   }
 
   /**
@@ -519,7 +742,7 @@ export class GreenLakeAdapter implements PlaneAdapter {
     method: 'GET' | 'POST',
     path: string,
     opts: { token?: string; body?: unknown; form?: Record<string, string> } = {},
-  ): Promise<{ status: number; body: unknown }> {
+  ): Promise<HttpResult> {
     const started = Date.now();
     let res: Response;
     try {
@@ -550,6 +773,8 @@ export class GreenLakeAdapter implements PlaneAdapter {
     } catch {
       /* tolerate a non-JSON body — status is what we needed */
     }
-    return { status: res.status, body };
+    // Additive field: callers reading { status, body } are unaffected.
+    const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
+    return { status: res.status, body, ...(retryAfterMs !== null ? { retryAfterMs } : {}) };
   }
 }

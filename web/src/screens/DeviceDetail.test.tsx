@@ -167,8 +167,10 @@ describe('DeviceDetail — live mode with profile/config/clients gaps', () => {
     // Header = the real device name (the screen used to crash before this).
     expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
 
-    // Identity facts come from the reconciled inventory row.
-    expect(screen.getByText('LIVE POLLER CACHE')).toBeTruthy();
+    // Identity facts come from the reconciled inventory row. The envelope in
+    // this payload carries no syncedAt, so the header says so rather than
+    // implying a fresh poll.
+    expect(screen.getByText('LIVE POLLER CACHE · NO SYNC STAMP')).toBeTruthy();
     expect(screen.getAllByText('CX 8325-48Y8C').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Campus-01 HQ').length).toBeGreaterThan(0);
     expect(screen.getByText('yes — via collector')).toBeTruthy();
@@ -226,6 +228,8 @@ describe('DeviceDetail — live mode with profile/config/clients gaps', () => {
     expect(await screen.findByText('printer-3f')).toBeTruthy();
     expect(screen.getByText('1 active session')).toBeTruthy();
     expect(screen.getByText(/aa:bb:cc:dd:ee:ff/)).toBeTruthy();
+    // The 'Clients now' Stat counts the same rows the section lists.
+    expect(screen.getByText('from the poller snapshot')).toBeTruthy();
   });
 
   it('renders the cloud-claimed shell note for a device without a local shell', async () => {
@@ -281,6 +285,141 @@ describe('DeviceDetail — live mode, device not in the cache', () => {
     ).toBeTruthy();
     // The empty state offers a path to Connected systems.
     expect(screen.getByRole('button', { name: 'Connected systems' })).toBeTruthy();
+  });
+
+  it('blames the fixtures, not the planes, when the portal is running offline on demo data', async () => {
+    // The offline fallback answers dataSource 'demo' with a null device: the
+    // backend was never reached, so nothing may be attributed to a plane.
+    mockGetDeviceDetail.mockResolvedValue({
+      device: null,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'demo',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('ghost-sw-1');
+
+    expect(await screen.findByText('Device not in the demo inventory')).toBeTruthy();
+    expect(screen.queryByText(/No linked plane has reported/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) LIVE VIEW COMPLETENESS — the sections README §9 requires, each backed by
+//     a field the payload really carried
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — live view completeness', () => {
+  const liveDevice = () => {
+    const base = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!base) throw new Error('fixture missing');
+    return base;
+  };
+
+  it('renders the Stat row, the console hand-off, the class-block gap and the freshness stamp', async () => {
+    mockGetDeviceDetail.mockResolvedValue({
+      device: {
+        ...liveDevice(),
+        plane: 'CENTRAL',
+        planeTone: 'accent',
+        firmware: '10.09.1010',
+        firmwareApproved: false,
+      },
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+      syncedAt: '2026-07-26T09:41:00',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    // Freshness: the stamp is the envelope's, rendered hhmm like every other
+    // live screen (no 'Z' in the fixture, so this is timezone-independent).
+    expect(await screen.findByText('LIVE POLLER CACHE · 09:41')).toBeTruthy();
+
+    // Five Stats, all derived from the row.
+    expect(screen.getByText('Claimed by')).toBeTruthy();
+    expect(screen.getByText('Recorded shells')).toBeTruthy();
+    expect(screen.getByText('off approved train')).toBeTruthy();
+
+    // Firmware fact agrees with the inventory table's amber verdict.
+    expect(screen.getByText('10.09.1010 — off the approved train')).toBeTruthy();
+
+    // Design rule 4: a read-only plane still gets a console hand-off.
+    expect(screen.getByRole('button', { name: 'Open in CENTRAL' })).toBeTruthy();
+
+    // The class block declares itself missing instead of vanishing.
+    expect(
+      screen.getByText(
+        'Not available in live mode — no linked plane reports per-port state for this device.',
+      ),
+    ).toBeTruthy();
+
+    // …and the clients section keeps its route out to the full list.
+    expect(screen.getByRole('button', { name: 'All clients →' })).toBeTruthy();
+  });
+
+  it('offers no console hand-off for a collector-only device — there is no console', async () => {
+    mockGetDeviceDetail.mockResolvedValue({
+      device: { ...liveDevice(), plane: 'LOCAL', planeTone: 'neutral', claimedBy: ['LOCAL'] },
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Open in / })).toBeNull();
+  });
+
+  it('marks an approved firmware train as approved', async () => {
+    mockGetDeviceDetail.mockResolvedValue({
+      device: { ...liveDevice(), firmware: 'FL.10.13.1005', firmwareApproved: true },
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('FL.10.13.1005 (approved)')).toBeTruthy();
+    expect(screen.queryByText(/off the approved train/)).toBeNull();
+  });
+
+  it('passes no firmware verdict when the plane reported no version', async () => {
+    mockGetDeviceDetail.mockResolvedValue({
+      device: { ...liveDevice(), firmware: 'unknown', firmwareApproved: false },
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
+    expect(screen.queryByText(/off the approved train/)).toBeNull();
+    expect(screen.getByText('no version reported')).toBeTruthy();
   });
 });
 
@@ -366,17 +505,17 @@ describe('DeviceDetail — live terminal lifecycle', () => {
     });
     mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
     mockGetTerminalSession.mockResolvedValue(null);
-    mockGetTerminalSessions
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          file: 'new-recording.jsonl',
-          device: 'sw-core-a',
-          user: 'netops',
-          target: '10.42.8.11',
-          openedAt: '2026-07-26T22:00:00Z',
-        },
-      ]);
+    // Mount sees nothing on file; every refresh after that (connect, then
+    // disconnect) sees the recording the bridge opened.
+    mockGetTerminalSessions.mockResolvedValueOnce([]).mockResolvedValue([
+      {
+        file: 'new-recording.jsonl',
+        device: 'sw-core-a',
+        user: 'netops',
+        target: '10.42.8.11',
+        openedAt: '2026-07-26T22:00:00Z',
+      },
+    ]);
 
     let disconnect: ((reason: string) => void) | undefined;
     mockCreateWsTransport.mockImplementationOnce((_name, opts) => {
@@ -404,7 +543,71 @@ describe('DeviceDetail — live terminal lifecycle', () => {
 
     expect(await screen.findByRole('button', { name: 'Reconnect live terminal' })).toBeTruthy();
     expect(await screen.findByText('netops@10.42.8.11')).toBeTruthy();
-    expect(mockGetTerminalSessions).toHaveBeenCalledTimes(2);
+    // Mount, the live connect (so the pane can name the real session), and the
+    // disconnect that closes the recording.
+    expect(mockGetTerminalSessions).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('DeviceDetail — live session attribution', () => {
+  it('names the account the live session really ran under, never the fixture operator', async () => {
+    const profile = deviceProfile('sw-core-a');
+    const device = DEVICES.find((d) => d.name === 'sw-core-a') ?? null;
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSession.mockResolvedValue(null);
+    // First load: only an OLD transcript from another operator. After the
+    // bridge connects, the store has the session the portal just opened.
+    mockGetTerminalSessions
+      .mockResolvedValueOnce([
+        {
+          file: 'old.jsonl',
+          device: 'sw-core-a',
+          user: 'someone.else',
+          target: '10.42.8.11',
+          openedAt: '2020-01-01T00:00:00Z',
+        },
+      ])
+      .mockResolvedValue([
+        {
+          file: 'old.jsonl',
+          device: 'sw-core-a',
+          user: 'someone.else',
+          target: '10.42.8.11',
+          openedAt: '2020-01-01T00:00:00Z',
+        },
+        {
+          file: 'now.jsonl',
+          device: 'sw-core-a',
+          user: 'netops',
+          target: '10.42.9.7',
+          openedAt: new Date().toISOString(),
+        },
+      ]);
+
+    mockCreateWsTransport.mockImplementationOnce(() => ({
+      transport: {
+        banner: () => [],
+        respond: () => [],
+        respondAsync: () => Promise.resolve([]),
+      },
+      connect: () => Promise.resolve(true),
+      close: () => {},
+    }));
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('ssh netops@10.42.9.7 — via collector')).toBeTruthy();
+    // The authored demo operator and the fixture IP are gone once live…
+    expect(screen.queryByText(/r\.okafor@/)).toBeNull();
+    // …and the older transcript is never presented as the current connection.
+    expect(screen.queryByText(/ssh someone\.else@/)).toBeNull();
   });
 });
 
@@ -468,7 +671,9 @@ describe('DeviceDetail — reconciled identity', () => {
 
     renderDeviceDetail('sw-core-a');
 
-    expect(await screen.findByText('CENTRAL + CLASSIC')).toBeTruthy();
+    // Named in the Managed-by fact and again as the 'Claimed by' Stat delta.
+    expect((await screen.findAllByText('CENTRAL + CLASSIC')).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('2 planes')).toBeTruthy();
     expect(screen.getAllByText('10.42.8.11').length).toBeGreaterThan(0);
     expect(screen.getByText('SG09KLM4X2')).toBeTruthy();
     expect(

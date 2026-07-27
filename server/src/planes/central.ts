@@ -39,8 +39,15 @@
  *     itself healthy and complete (README honesty rule 1).
  *   - 429 is retried with backoff (Retry-After honoured) before it counts as a
  *     failure, and pages are paced so one section is not a burst.
+ *   - a transport-level failure (abort/DNS/reset) on one page is retried once:
+ *     a single slow 500-row page must not discard the sections that already
+ *     succeeded. High-volume sections also get a longer timeout than the
+ *     10s default (SECTION_TIMEOUT_MS).
  *   - any other HTTP/network error → pull() throws naming the section, so the
  *     poller marks the plane degraded and keeps serving the last good cache.
+ *   - every missing/truncated section is also named in PlanePull.partial, so
+ *     the registry/poller can hold the plane at 'warning' and skip attributing
+ *     freshness to a dataset that was not fully read.
  *
  * Mapping decisions:
  *   - status 'Up'/'Down' → state 'up'/'down' with success/danger tones;
@@ -56,12 +63,29 @@
  *     union over the fixture sites and cannot name real estate; see
  *     externalSiteId). Rows with no site land on the 'multiple' pseudo-site.
  *   - licence: 'unknown' — Central's monitoring endpoints do not report
- *     licences; GreenLake is the licence reconciliation source.
+ *     licences; GreenLake is the licence reconciliation source today.
+ *
+ * DEFERRED (needs a live tenant to verify the shapes before it can ship):
+ *   licences  /platform/licensing/v1/subscriptions +
+ *             /platform/device_inventory/v1/devices → serial→licence map, so
+ *             the Devices Licence column stops reading "Not reported" for the
+ *             plane README:459 names as a licence source. Pair it with a
+ *             longer refresh than inventory: it is another paged section on a
+ *             quota'd gateway.
+ *   config    SSID/VLAN/port reads (PlanePull.config) — until then
+ *             capabilities().configRead is false and Configure honestly
+ *             labels its inventory 'observed'.
  *   - reconciliationIssue: false here — the reconcile service computes it.
  *   - localShell: false — cloud-claimed devices get no portal shell; shell is
- *     the local collector's job (README integration table).
+ *     the local collector's job (README integration table). capabilities()
+ *     states the same thing at plane level: no localShell, brokeredWrite yes
+ *     (this adapter IS the write broker's transport), no configRead yet.
  *   - serial/macaddr are attached as DeviceIdentityHints so reconcileDevices
- *     can key on serial/MAC instead of display name.
+ *     can key on serial/MAC instead of display name; the management IP rides
+ *     along as DeviceRow.ip when the plane reports one (search + terminal).
+ *   - site rows carry the plane's own freshness as `sync` — Central's site
+ *     object has no per-site sync time, but the adapter knows when it last
+ *     read the plane, which is what the Sites column means.
  *
  * Security: secrets live only in the token POST body — never in URLs, never
  * in the recorded call log (method + path + ms + status only).
@@ -74,6 +98,7 @@ import {
   type ClientRow,
   type ClientType,
   type DeviceRow,
+  type PlaneDatasetKey,
   type Sev,
   type SiteId,
   type SiteRow,
@@ -81,9 +106,15 @@ import {
 } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
-import type { PlaneAdapter, PlanePull, PlaneState } from './types';
+import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
+/** High-volume sections (500-row client pages, 200-row inventory pages) need
+ *  more than the default: an abort here costs the whole cycle, not one page. */
+const SECTION_TIMEOUT_MS = 30_000;
+/** Transport-level retries (abort/DNS/reset) per request, after the first try. */
+const NETWORK_RETRIES = 1;
+const NETWORK_RETRY_MS = 500;
 
 /** 429 backoff: attempts after the first, exponential floor, and a hard cap. */
 const RATE_LIMIT_RETRIES = 3;
@@ -260,6 +291,7 @@ export function mapCentralDevice(
   const site = siteIdForName(str(r.site ?? r.site_name ?? r.siteName));
   const serial = str(r.serial ?? r.serialNumber);
   const mac = str(r.macaddr ?? r.mac ?? r.macAddress);
+  const ip = str(r.ip_address ?? r.ip ?? r.ipAddress ?? r.ipv4);
   return {
     name,
     model,
@@ -272,16 +304,28 @@ export function mapCentralDevice(
     stateTone,
     firmware,
     firmwareApproved: firmwareIsApproved(kind, model, firmware, approved),
+    // Not on the monitoring row. Central DOES expose licensing
+    // (/platform/licensing/v1/subscriptions, /platform/device_inventory/v1/devices),
+    // which this adapter does not read — see the DEFERRED note in the header —
+    // so 'unknown' means "not read", never "this device is unlicensed".
     licence: 'unknown',
     reconciliationIssue: false, // the reconcile service computes this
     localShell: false, // cloud-claimed — shell only via the local collector
     ...(serial ? { serial } : {}),
     ...(mac ? { mac } : {}),
+    // The management IP is what the Devices search and the terminal's
+    // resolveTarget() need; absent stays absent rather than becoming a lie.
+    ...(ip ? { ip } : {}),
   };
 }
 
-/** central/v2/sites row → SiteRow (best effort; the live merge recomputes counts/health). */
-export function mapCentralSite(raw: unknown): SiteRow | null {
+/**
+ * central/v2/sites row → SiteRow (best effort; the live merge recomputes
+ * counts/health). `sync` is the CALLER's stamp: Central's site object carries
+ * no per-site sync time, so pull() passes the plane's own last successful read
+ * (the freshness the Sites column actually means). Default '—' = never synced.
+ */
+export function mapCentralSite(raw: unknown, sync = '—'): SiteRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   // v1alpha1 (/network-config/v1alpha1/sites) rows use scopeName/collectionName.
@@ -301,7 +345,7 @@ export function mapCentralSite(raw: unknown): SiteRow | null {
     tone: 'stale',
     alerts: '—',
     alertTone: 'neutral',
-    sync: '—',
+    sync,
   };
 }
 
@@ -317,11 +361,15 @@ function clientTypeFor(r: Record<string, unknown>, os: string | null): ClientTyp
     .join(' ')
     .toLowerCase();
   if (/ipad|tablet/.test(s)) return 'tablet';
-  if (/iphone|android|phone/.test(s)) return 'phone';
+  // 'voip' BEFORE 'phone': every VoIP vocabulary ('VoIP Phone', 'IP Phone',
+  // 'SIP handset', the literal 'phone system') contains 'phone', so a generic
+  // phone test first makes this branch unreachable and buries desk handsets
+  // among the mobiles. \b guards keep 'iPhone' out of the IP-phone alternative.
+  if (/voip|voice|\bsip\b|\bip ?phone\b|phone system|handset/.test(s)) return 'voip';
+  if (/iphone|android|smart ?phone|\bmobile\b|\bphone\b/.test(s)) return 'phone';
   if (/windows|mac ?os|linux|ubuntu|chrome/.test(s)) return 'laptop';
   if (/print/.test(s)) return 'printer';
   if (/roku|smart ?tv|television|audio|video|media streaming/.test(s)) return 'media';
-  if (/voip|voice|phone system/.test(s)) return 'voip';
   if (/camera|imaging|x-?ray/.test(s)) return 'imaging';
   if (/medical|infusion|clinical/.test(s)) return 'medical';
   if (/sensor|building|thermostat|lighting|iot/.test(s)) return 'building';
@@ -362,7 +410,9 @@ function clientHealth(r: Record<string, unknown>): {
 export function mapCentralClient(raw: unknown, nowMs: number = Date.now()): ClientRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
-  const mac = str(r.macaddr ?? r.mac);
+  // macAddress is the v1alpha1 spelling (mapCentralDevice reads all three):
+  // dropping it discarded EVERY row of a camelCase clients payload as junk.
+  const mac = str(r.macaddr ?? r.mac ?? r.macAddress);
   if (!mac) return null; // a client row without a MAC is junk
   // v1alpha1 rows are camelCase (userName/hostName/modelOs/siteName/ipv4/…).
   const os = str(r.os ?? r.os_type ?? r.modelOs);
@@ -371,8 +421,19 @@ export function mapCentralClient(raw: unknown, nowMs: number = Date.now()): Clie
   const sessionSec = num(r.session_age ?? r.session_seconds ?? r.uptime);
   // v1alpha1 reports no session seconds — derive it from connectedSince (ISO).
   const connectedSinceMs = sessionSec === null ? parseTimestamp(r.connectedSince) : null;
-  const rssi = num(r.rssi);
-  const snr = num(r.snr);
+  const rssi = num(r.rssi ?? r.signal_strength ?? r.signalStrength);
+  const snr = num(r.snr ?? r.signal_db ?? r.signalDb);
+  // Radio facts under BOTH shapes, like every other field here: the classic
+  // path is tried first, so camelCase-only reads left `link` at '—' for a
+  // classic tenant that had the band and channel on the wire.
+  const band = str(r.wirelessBand ?? r.band ?? r.radio_band);
+  const channel = str(r.wirelessChannel ?? r.channel);
+  // Only add units/prefixes to a BARE value — a plane that already says
+  // '5 GHz' or '149E (80 MHz)' is quoted verbatim.
+  const bandText = band === null ? null : /^\d+(\.\d+)?$/.test(band) ? `${band} GHz` : band;
+  const channelText = channel === null ? null : /^\d+$/.test(channel) ? `ch ${channel}` : channel;
+  // The classic clients endpoint reports `speed` in Mbps (v1alpha1: txRate).
+  const tput = num(r.speed ?? r.txRate ?? r.tx_rate);
   return {
     name: str(r.username ?? r.userName) ?? str(r.hostname ?? r.hostName) ?? str(r.name) ?? mac,
     model: os ?? 'unknown',
@@ -402,13 +463,11 @@ export function mapCentralClient(raw: unknown, nowMs: number = Date.now()): Clie
           ? durationString((nowMs - connectedSinceMs) / 1000)
           : (str(r.session) ?? '—'),
     problem,
-    link:
-      [str(r.wirelessBand), str(r.wirelessChannel)].filter((value): value is string => value !== null).join(' · ') ||
-      '—',
+    link: [bandText, channelText].filter((value): value is string => value !== null).join(' · ') || '—',
     rssi: rssi !== null ? `${rssi} dBm` : '—',
     snr: snr !== null ? `${snr} dB` : '—',
     retries: '—',
-    tput: '—',
+    tput: tput !== null ? `${tput} Mbps` : '—',
     roams: '—',
     quality,
     zone: '—',
@@ -531,6 +590,9 @@ interface SectionSpec {
   candidates: SectionCandidate[];
   limit: number;
   maxPages: number;
+  /** Per-section request timeout; absent = OUTBOUND_TIMEOUT_MS. A 500-row
+   *  client page legitimately takes longer than a 10s default allows. */
+  timeoutMs?: number;
 }
 
 /** One section's rows plus whether the walk finished (see fetchSection). */
@@ -540,9 +602,24 @@ interface SectionResult {
 }
 
 const SECTIONS: Record<SectionKey, SectionSpec> = {
-  aps: { candidates: [{ path: '/monitoring/v1/aps' }, { path: '/network-monitoring/v1alpha1/aps' }], limit: 200, maxPages: 25 },
-  switches: { candidates: [{ path: '/monitoring/v1/switches' }, { path: '/network-monitoring/v1alpha1/switches' }], limit: 200, maxPages: 25 },
-  gateways: { candidates: [{ path: '/monitoring/v1/gateways' }, { path: '/network-monitoring/v1alpha1/gateways' }], limit: 200, maxPages: 25 },
+  aps: {
+    candidates: [{ path: '/monitoring/v1/aps' }, { path: '/network-monitoring/v1alpha1/aps' }],
+    limit: 200,
+    maxPages: 25,
+    timeoutMs: SECTION_TIMEOUT_MS,
+  },
+  switches: {
+    candidates: [{ path: '/monitoring/v1/switches' }, { path: '/network-monitoring/v1alpha1/switches' }],
+    limit: 200,
+    maxPages: 25,
+    timeoutMs: SECTION_TIMEOUT_MS,
+  },
+  gateways: {
+    candidates: [{ path: '/monitoring/v1/gateways' }, { path: '/network-monitoring/v1alpha1/gateways' }],
+    limit: 200,
+    maxPages: 25,
+    timeoutMs: SECTION_TIMEOUT_MS,
+  },
   sites: {
     candidates: [{ path: '/central/v2/sites' }, { path: '/central/v1/sites' }, { path: '/network-config/v1alpha1/sites' }],
     // v1alpha1/sites 400s PAGE_LIMIT_SIZE_EXCEEDED at limit=200 — cap is 100.
@@ -556,6 +633,7 @@ const SECTIONS: Record<SectionKey, SectionSpec> = {
     ],
     limit: 500,
     maxPages: 25,
+    timeoutMs: SECTION_TIMEOUT_MS,
   },
   notifications: {
     candidates: [
@@ -589,6 +667,29 @@ class HttpStatusError extends Error {
   }
 }
 
+/** Section key → the shared dataset it feeds (three inventory endpoints, one
+ *  dataset; 'notifications' is the plane's word for the alerts dataset). */
+const SECTION_DATASET: Record<SectionKey, PlaneDatasetKey> = {
+  aps: 'devices',
+  switches: 'devices',
+  gateways: 'devices',
+  sites: 'sites',
+  clients: 'clients',
+  notifications: 'alerts',
+};
+
+/**
+ * Datasets this pull could not read in full — a 404-on-every-candidate section
+ * OR one whose paged walk did not finish. Both are "we do not have the whole
+ * picture", which is what PlanePull.partial exists to say; a truncated dataset
+ * still ships its rows, so omission alone cannot express it.
+ */
+function partialDatasets(missing: readonly SectionKey[], truncated: readonly SectionKey[]): PlaneDatasetKey[] {
+  const out = new Set<PlaneDatasetKey>();
+  for (const s of [...missing, ...truncated]) out.add(SECTION_DATASET[s]);
+  return [...out];
+}
+
 class SectionMissingError extends Error {
   constructor(readonly section: SectionKey) {
     super(`section '${section}': no candidate endpoint answered (all 404)`);
@@ -596,8 +697,26 @@ class SectionMissingError extends Error {
   }
 }
 
-/** Payload keys the section endpoints use, tried before the first-array heuristic. */
-const PAYLOAD_KEYS = ['aps', 'switches', 'gateways', 'sites', 'clients', 'notifications', 'items', 'results'];
+/**
+ * Payload keys the section endpoints use, tried before the first-array
+ * heuristic. Order matters: each section's OWN key is listed before the
+ * generic ones, so a devices payload that happens to carry a sibling
+ * `alerts: []` still resolves on `aps`/`switches`/`gateways`. 'alerts' is
+ * here because /network-notifications/v1/alerts — the third notifications
+ * candidate — returns its rows under it; without it that section fell through
+ * to "first array in property order" and could return `filters: []`.
+ */
+const PAYLOAD_KEYS = [
+  'aps',
+  'switches',
+  'gateways',
+  'sites',
+  'clients',
+  'notifications',
+  'alerts',
+  'items',
+  'results',
+];
 
 function extractRows(body: unknown): unknown[] {
   if (Array.isArray(body)) return body;
@@ -703,6 +822,10 @@ export class CentralAdapter implements PlaneAdapter {
     }
     this.baseUrl = withScheme(creds.gatewayBaseUrl).replace(/\/+$/, '');
     this.approved = parseApprovedFirmware(creds.approvedFirmware);
+    // Publish the capability statement on the shared state too: nothing calls
+    // PlaneAdapter.capabilities() yet, and an unset field reads as "claims
+    // nothing" — which for localShell is right, but brokeredWrite is real.
+    this.stateRef.capabilities = this.capabilities();
     this.tokens = new TokenManager(async () => {
       const candidates = tokenCandidates(this.baseUrl);
       const ordered = this.resolvedToken
@@ -745,6 +868,23 @@ export class CentralAdapter implements PlaneAdapter {
     return this.stateRef;
   }
 
+  /**
+   * What the portal can do with Central, stated honestly:
+   *   localShell    false — cloud-claimed hardware gets no portal shell; the
+   *                 recorded-SSH bridge is the local collector's / AOS-8
+   *                 master's path, not this plane's.
+   *   brokeredWrite true  — this adapter IS the write broker's transport
+   *                 (writeBroker.ts resolves the CentralAdapter and pushes
+   *                 through request()); the ticket + lease gate is the
+   *                 broker's, not a capability statement.
+   *   configRead    false — pull() reads monitoring only; PlanePull.config
+   *                 stays unset, so Configure keeps labelling its inventory
+   *                 'observed' instead of claiming a real config read.
+   */
+  capabilities(): PlaneCapabilities {
+    return { localShell: false, brokeredWrite: true, configRead: false };
+  }
+
   async pull(): Promise<PlanePull> {
     const missing: SectionKey[] = [];
     const truncated: SectionKey[] = [];
@@ -784,7 +924,15 @@ export class CentralAdapter implements PlaneAdapter {
       ...switchRows.map((r) => mapCentralDevice(r, 'switch', this.approved)),
       ...gatewayRows.map((r) => mapCentralDevice(r, 'gateway', this.approved)),
     ].filter((d): d is CentralDeviceRow => d !== null);
-    const sites = siteRows.map(mapCentralSite).filter((s): s is SiteRow => s !== null);
+    // The site object has no per-site sync time, so the honest stamp is the
+    // plane's own: when this adapter last completed a read. lastSync is written
+    // by the poller AFTER pull() resolves, so cycle 1 legitimately says '—' and
+    // every later cycle reports the previous successful read — which is exactly
+    // what a relative "Last sync" means. NOT .map(mapCentralSite): map passes
+    // the index as the 2nd arg, which mapCentralSite reads as `sync`.
+    const lastSyncMs = this.stateRef.lastSync !== null ? Date.parse(this.stateRef.lastSync) : Number.NaN;
+    const syncStamp = Number.isNaN(lastSyncMs) ? '—' : ageString(lastSyncMs);
+    const sites = siteRows.map((r) => mapCentralSite(r, syncStamp)).filter((s): s is SiteRow => s !== null);
     // NOT .map(mapCentralClient): map passes the index as the 2nd arg, which
     // mapCentralClient reads as nowMs — same leak that zeroed alert ages below.
     const clients = clientRows.map((r) => mapCentralClient(r)).filter((c): c is ClientRow => c !== null);
@@ -813,11 +961,13 @@ export class CentralAdapter implements PlaneAdapter {
     // /lastSyncFor() must read them as unknown rather than as an authoritative
     // zero with a fresh sync stamp. `devices` always ships — an all-404
     // inventory already threw above, so a partial merge is a real read.
+    const partial = partialDatasets(missing, truncated);
     return {
       devices,
       ...(missing.includes('sites') ? {} : { sites }),
       ...(missing.includes('clients') ? {} : { clients }),
       ...(missing.includes('notifications') ? {} : { alerts }),
+      ...(partial.length > 0 ? { partial } : {}),
     };
   }
 
@@ -858,7 +1008,7 @@ export class CentralAdapter implements PlaneAdapter {
 
     for (const cand of candidates) {
       const firstPath = `${cand.path}?offset=0&limit=${spec.limit}${cand.extraQuery ?? ''}`;
-      const first = await this.authedGet(firstPath);
+      const first = await this.authedGet(firstPath, spec.timeoutMs);
       if (first.status === 404) continue; // release variance — try the alternate namespace
       if (first.status < 200 || first.status >= 300) throw new HttpStatusError(first.status, firstPath);
 
@@ -872,7 +1022,7 @@ export class CentralAdapter implements PlaneAdapter {
         // fired back-to-back is exactly what earns the 429.
         await this.sleep(PAGE_PACING_MS);
         const path = `${cand.path}?offset=${offset}&limit=${spec.limit}${cand.extraQuery ?? ''}`;
-        const res = await this.authedGet(path);
+        const res = await this.authedGet(path, spec.timeoutMs);
         // Page 1 worked, so the path is valid: a failure here fails the section.
         if (res.status < 200 || res.status >= 300) throw new HttpStatusError(res.status, path);
         const pageRows = extractRows(res.body);
@@ -893,18 +1043,32 @@ export class CentralAdapter implements PlaneAdapter {
   }
 
   /**
-   * GET with a bearer token; one invalidation + retry on 401, and a bounded
+   * GET with a bearer token; one invalidation + retry on 401, a bounded
    * backoff on 429 so a rate limit paces the poll instead of destroying the
-   * whole cycle. Retry-After (delta-seconds or HTTP-date) wins over the
-   * exponential floor; every attempt is still recorded, so the Activity tab
-   * shows the real 429s.
+   * whole cycle, and ONE retry on a transport failure (abort/DNS/reset) so a
+   * single slow page does not discard the sections that already succeeded.
+   * Retry-After (delta-seconds or HTTP-date) wins over the exponential floor;
+   * every attempt is still recorded, so the Activity tab shows the real 429s
+   * and the real network errors.
    */
-  private async authedGet(path: string): Promise<{ status: number; body: unknown }> {
+  private async authedGet(path: string, timeoutMs?: number): Promise<{ status: number; body: unknown }> {
+    const opts = timeoutMs !== undefined ? { timeoutMs } : {};
+    let networkTries = 0;
     for (let attempt = 0; ; attempt += 1) {
-      let res = await this.http('GET', path, { token: await this.tokens.get() });
-      if (res.status === 401) {
-        this.tokens.invalidate();
-        res = await this.http('GET', path, { token: await this.tokens.get() });
+      let res: HttpResult;
+      try {
+        res = await this.http('GET', path, { ...opts, token: await this.tokens.get() });
+        if (res.status === 401) {
+          this.tokens.invalidate();
+          res = await this.http('GET', path, { ...opts, token: await this.tokens.get() });
+        }
+      } catch (err) {
+        // Transport-level, not a status: retry once, then let the section fail
+        // honestly (the failed attempt is already in the call log).
+        if (networkTries >= NETWORK_RETRIES) throw err;
+        networkTries += 1;
+        await this.sleep(NETWORK_RETRY_MS);
+        continue;
       }
       if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return res;
       const backoffMs = RATE_LIMIT_BASE_MS * 2 ** attempt;
@@ -939,7 +1103,7 @@ export class CentralAdapter implements PlaneAdapter {
   private async http(
     method: 'GET' | 'POST' | 'PUT',
     path: string,
-    opts: { token?: string; body?: unknown } = {},
+    opts: { token?: string; body?: unknown; timeoutMs?: number } = {},
   ): Promise<HttpResult> {
     return this.httpAbsolute(method, `${this.baseUrl}${path}`, opts);
   }
@@ -948,12 +1112,14 @@ export class CentralAdapter implements PlaneAdapter {
    * http() against a full URL — needed for the GreenLake SSO token endpoint,
    * which lives off-gateway. formEncoded switches the body to
    * application/x-www-form-urlencoded (PingFederate requires it; the gateway's
-   * own /oauth2/token takes JSON).
+   * own /oauth2/token takes JSON). `timeoutMs` is additive and defaults to
+   * OUTBOUND_TIMEOUT_MS, so the write broker / reboot / disconnect / ackAlert
+   * callers are unaffected.
    */
   private async httpAbsolute(
     method: 'GET' | 'POST' | 'PUT',
     url: string,
-    opts: { token?: string; body?: unknown; formEncoded?: boolean } = {},
+    opts: { token?: string; body?: unknown; formEncoded?: boolean; timeoutMs?: number } = {},
   ): Promise<HttpResult> {
     const started = Date.now();
     const label = `${method} ${url.replace(/^https?:\/\/[^/]+/i, '') || '/'}`;
@@ -974,7 +1140,7 @@ export class CentralAdapter implements PlaneAdapter {
             : opts.formEncoded
               ? new URLSearchParams(opts.body as Record<string, string>).toString()
               : JSON.stringify(opts.body),
-        signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? OUTBOUND_TIMEOUT_MS),
       });
     } catch (err) {
       this.recordCall({ path: label, ms: Date.now() - started, code: 'network-error' });

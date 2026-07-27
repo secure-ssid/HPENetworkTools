@@ -14,9 +14,12 @@
  *     reference, hold a short lease, are recorded"). There are no writes here
  *     at all; the allow-list is the lease.
  *
- * Target resolution:
- *   - Demo mode: the device IP comes from the shared device profile
- *     (deviceProfile(name).ip) — fixture IPs are fine there, that is the demo.
+ * Target resolution and shell class:
+ *   - Demo mode: the device IP and the shell class come from the shared device
+ *     profile (deviceProfile(name)) — fixture IPs and the 'ap-'/'uxi-' name
+ *     prefixes are fine there, that is the demo.
+ *   - Live mode: the shell class comes from the inventory row's device TYPE
+ *     (deviceTerminalKind), never from how the customer names their hardware.
  *   - Live mode: the IP comes from the live inventory (poller cache). A
  *     device the inventory does not know, or cannot name a management IP
  *     for, fails the open with an honest error — never dial a fixture IP
@@ -46,7 +49,12 @@
  *   client → {type:'open'}            begin; server resolves device + creds,
  *                                     opens SSH, waits for the first prompt
  *   server → {type:'banner', lines}   portal policy lines + device MOTD
- *   server → {type:'ready', prompt}   shell is live; prompt as seen on device
+ *   server → {type:'ready', prompt, user, target, via}
+ *                                     shell is live; prompt as seen on device,
+ *                                     plus the identity actually recorded (SSH
+ *                                     user, resolved target, jump host or null)
+ *                                     so the pane attributes the session to the
+ *                                     real actor. Never any secret.
  *   client → {type:'cmd', cmd}        run one command through the allow-list
  *   server → {type:'out', text}       one ANSI-stripped output line (streamed)
  *   server → {type:'warn', text}      policy refusal / notice line
@@ -72,8 +80,8 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { Client, type ClientChannel, type ConnectConfig } from 'ssh2';
 import { WebSocketServer, WebSocket } from 'ws';
-import { deviceProfile } from '../../../shared';
-import type { TerminalKind } from '../../../shared';
+import { deviceProfile, deviceTerminalKind } from '../../../shared';
+import type { DeviceType, TerminalKind } from '../../../shared';
 import { settings, type PlaneCredentials } from '../config/settings';
 import { poller } from './poller';
 
@@ -304,11 +312,17 @@ const IDLE_MS = 15 * 60 * 1000; // design: idle session is closed (titlebar coun
 const OPEN_FRAME_WAIT_MS = 10_000; // client must send {type:'open'} promptly
 const SSH_READY_MS = 10_000;
 
-/** What target resolution needs from the live inventory: the device name and,
- *  when a plane reported one, its management IP. */
+/**
+ * What the session needs from the live inventory: the device name, its
+ * management IP when a plane reported one, and its type — the type decides
+ * shell class (deviceTerminalKind), because the name-prefix rules in
+ * deviceProfile() are a DEMO naming convention and a real tenant's 'AP-Floor3'
+ * or 'ap-closet-sw' would be classified backwards by them.
+ */
 export interface LiveDeviceRef {
   name: string;
   ip?: string;
+  type?: DeviceType;
 }
 
 export class TerminalManager {
@@ -487,9 +501,16 @@ export class TerminalManager {
    * honestly instead of silently using the canned address — the recording
    * claims the requested device, so the session must actually land on it.
    */
+  /** The live inventory row for a device, or null in demo mode / when the
+   *  inventory does not know it. */
+  private liveRow(deviceName: string): LiveDeviceRef | null {
+    if (this.demoMode()) return null;
+    return this.liveDevices().find((d) => d.name === deviceName) ?? null;
+  }
+
   private resolveTarget(deviceName: string, profileIp: string): { target: string } | { error: string } {
     if (this.demoMode()) return { target: profileIp };
-    const row = this.liveDevices().find((d) => d.name === deviceName);
+    const row = this.liveRow(deviceName);
     if (!row) {
       return { error: `device '${deviceName}' is not in the live inventory — refusing to dial a fixture address` };
     }
@@ -516,6 +537,8 @@ export class TerminalManager {
     let motd: string[] = [];
     let echoPending: string | null = null;
     let openedUser = '';
+    let openedTarget = '';
+    let openedVia: string | null = null;
     let closed = false;
 
     const idleMs = this.opts.idleMs ?? IDLE_MS;
@@ -580,7 +603,12 @@ export class TerminalManager {
             '',
           ];
           send({ type: 'banner', lines: banner });
-          send({ type: 'ready', prompt: ev.text });
+          // The identity of the session that is actually recorded, so the
+          // pane's titlebar can attribute it to the real SSH user and the
+          // real target instead of a fixture operator/IP. Additive fields —
+          // a client that only reads `prompt` is unaffected. NEVER carries
+          // the password/key: username, resolved target and jump host only.
+          send({ type: 'ready', prompt: ev.text, user: openedUser, target: openedTarget, via: openedVia });
           motd = [];
           state = 'ready';
         }
@@ -616,8 +644,22 @@ export class TerminalManager {
 
     const openSsh = async (): Promise<void> => {
       const profile = deviceProfile(deviceName);
-      kind = profile.kind;
-      if (kind === 'none') {
+      // Shell class comes from the INVENTORY ROW when the portal holds one:
+      // deviceProfile()'s 'ap-'/'uxi-' prefixes are the demo estate's naming
+      // convention, and against a real tenant they classify a Mist AP called
+      // 'AP-Floor3' as a CX switch (and then try to log into a radio) while
+      // refusing a real switch called 'ap-closet-sw'. Demo mode keeps the
+      // prefix rules — that is the demo.
+      //
+      // The gate is the device TYPE, not DeviceRow.localShell: every cloud
+      // adapter currently hardcodes localShell:false because it describes the
+      // cloud plane, not the collector, so gating on it would close the
+      // terminal for every live device. Whether this device can actually be
+      // dialled is resolveTarget()'s call, a few lines down.
+      const row = this.liveRow(deviceName);
+      const known = this.demoMode() || row !== null;
+      kind = deviceTerminalKind(row?.type ? { type: row.type } : null, deviceName);
+      if (known && kind === 'none') {
         fail(`device '${deviceName}' is cloud-claimed — no local shell (request a remote shell instead)`);
         return;
       }
@@ -642,6 +684,8 @@ export class TerminalManager {
         fail(`refusing to dial unsafe target '${target}'`);
         return;
       }
+      openedTarget = target;
+      openedVia = creds.jumpHost;
 
       let conn: Client;
       try {

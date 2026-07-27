@@ -303,6 +303,13 @@ describe('mapCentralDevice', () => {
     expect(d!.serial).toBe('CN87654321');
     expect(d!.mac).toBe('AA:BB:CC:00:00:01');
   });
+
+  it('carries the management IP when the plane reports one, and omits it otherwise', () => {
+    // Devices search and the terminal's resolveTarget() both key on it.
+    expect(mapCentralDevice(AP_ROW, 'ap')!.ip).toBe('10.42.1.20');
+    expect(mapCentralDevice({ deviceName: 'ap-x', ipAddress: '10.9.9.9' }, 'ap')!.ip).toBe('10.9.9.9');
+    expect(mapCentralDevice({ name: 'ap-y' }, 'ap')).not.toHaveProperty('ip');
+  });
 });
 
 describe('mapCentralSite', () => {
@@ -319,6 +326,13 @@ describe('mapCentralSite', () => {
 
   it('generates ext- ids for sites outside the canonical union', () => {
     expect(mapCentralSite({ site_name: 'Zebra Kiosk' })!.id).toBe('ext-zebra-kiosk');
+  });
+
+  it("carries the caller's sync stamp, and '—' when the plane has never synced", () => {
+    // Central's site object has no per-site sync time, so the stamp is the
+    // plane's own freshness — never invented per site.
+    expect(mapCentralSite(SITE_ROW, '6h')!.sync).toBe('6h');
+    expect(mapCentralSite(SITE_ROW)!.sync).toBe('—');
   });
 
   it('returns null without a site name', () => {
@@ -389,6 +403,51 @@ describe('mapCentralClient', () => {
 
   it('returns null without a MAC', () => {
     expect(mapCentralClient({ username: 'nobody' })).toBeNull();
+  });
+
+  it('accepts the v1alpha1 macAddress spelling instead of discarding the row', () => {
+    // Regression: the reader knew macaddr/mac only, so a camelCase clients
+    // payload failed the !mac guard on EVERY row — 0 clients, plane healthy.
+    const c = mapCentralClient({ macAddress: 'aa:bb:cc:dd:ee:01', hostName: 'jane-laptop' });
+    expect(c).not.toBeNull();
+    expect(c!.mac).toBe('aa:bb:cc:dd:ee:01');
+    expect(c!.name).toBe('jane-laptop');
+  });
+
+  it('types a desk handset as voip, not as a mobile phone', () => {
+    // Every VoIP vocabulary contains 'phone', so a generic phone test first
+    // made the 'voip' bucket unreachable — the Clients type filter could never
+    // offer it in live mode.
+    expect(mapCentralClient({ mac: 'x', category: 'VoIP Phone', vendor: 'Mitel' })!.type).toBe('voip');
+    expect(mapCentralClient({ mac: 'x', function: 'IP Phone' })!.type).toBe('voip');
+    expect(mapCentralClient({ mac: 'x', category: 'phone system' })!.type).toBe('voip');
+    // …without swallowing the real mobiles or the tablets above them.
+    expect(mapCentralClient({ mac: 'x', os: 'iPhone OS 17' })!.type).toBe('phone');
+    expect(mapCentralClient({ mac: 'x', os: 'Android 14', category: 'Smartphone' })!.type).toBe('phone');
+    expect(mapCentralClient({ mac: 'x', os: 'iPadOS 17' })!.type).toBe('tablet');
+    expect(mapCentralClient(CLIENT_ROW)!.type).toBe('laptop');
+  });
+
+  it('reads the classic radio facts, not only the v1alpha1 camelCase ones', () => {
+    // The classic endpoint is tried FIRST, so band/channel under snake_case
+    // spellings left `link` at '—' with the facts on the wire.
+    const c = mapCentralClient({
+      macaddr: '11:22:33:44:55:66',
+      band: '5',
+      channel: 36,
+      signal_strength: -52,
+      signal_db: 41,
+      speed: 866,
+    });
+    expect(c!.link).toBe('5 GHz · ch 36'); // bare values get the design's units
+    expect(c!.rssi).toBe('-52 dBm');
+    expect(c!.snr).toBe('41 dB');
+    expect(c!.tput).toBe('866 Mbps');
+    // Nothing reported stays honestly empty rather than becoming '0'.
+    const bare = mapCentralClient({ macaddr: '11:22:33:44:55:66' });
+    expect(bare!.link).toBe('—');
+    expect(bare!.tput).toBe('—');
+    expect(bare!.rssi).toBe('—');
   });
 
   it('maps a v1alpha1 camelCase client row (userName/ipv4/connectedTo/vlanId/…)', () => {
@@ -825,6 +884,92 @@ describe('CentralAdapter.pull()', () => {
     const { adapter } = makeAdapter(routeHandler(routes));
     const pull = await adapter.pull();
     expect(pull.devices!.some((d) => d.name === 'ap-lobby-01')).toBe(true);
+  });
+
+  it('reads the /network-notifications/v1/alerts payload key instead of the first array', async () => {
+    // The third notifications candidate returns its rows under `alerts`; with
+    // that key unknown the heuristic returned `filters: []` — zero alerts, no
+    // error, plane healthy.
+    const routes = { ...HAPPY_ROUTES };
+    delete routes['GET /central/v1/notifications'];
+    routes['GET /network-notifications/v1/alerts'] = { count: 1, filters: [], alerts: [NOTIFICATION_ROW] };
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    expect(pull.alerts).toHaveLength(1);
+    expect(pull.alerts![0].title).toBe('AP disconnected');
+    expect(state.note).not.toContain('not available');
+  });
+
+  it("stamps site rows with the plane's own freshness once it has synced", async () => {
+    const { adapter, state } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    // Cycle 1: the poller has not stamped lastSync yet, so '—' is honest.
+    expect((await adapter.pull()).sites![0].sync).toBe('—');
+    state.lastSync = new Date(Date.now() - 6 * 3600_000).toISOString();
+    // Cycle 2 reports the previous successful read — what "Last sync" means.
+    expect((await adapter.pull()).sites![0].sync).toBe('6h');
+  });
+
+  it('names every dataset it could not read in full so the registry can hold warning', async () => {
+    const routes = { ...HAPPY_ROUTES };
+    delete routes['GET /monitoring/v1/clients'];
+    routes['GET /central/v2/sites'] = { sites: [SITE_ROW], total: 12 }; // claims 12, gives 1
+    const { adapter } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    // 'clients' could not be read at all; 'sites' was read but not in full —
+    // omission alone cannot express the second, which is what partial is for.
+    expect(pull.partial).toEqual(expect.arrayContaining(['clients', 'sites']));
+    expect(pull.partial).not.toContain('devices');
+  });
+
+  it('claims brokered write but no shell: cloud-claimed devices get no portal shell', async () => {
+    const { adapter, state } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: true, configRead: false });
+    expect(state.capabilities).toEqual({ localShell: false, brokeredWrite: true, configRead: false });
+  });
+
+  it('retries a transport failure on one page instead of losing the whole cycle', async () => {
+    let apsCalls = 0;
+    const { fn, calls } = fakeFetch(routeHandler(HAPPY_ROUTES));
+    const recorded: { path: string; ms: number; code: string }[] = [];
+    const state = makeState();
+    const slept: number[] = [];
+    const flaky: FetchLike = async (url, init) => {
+      if (String(url).includes('/monitoring/v1/aps')) {
+        apsCalls += 1;
+        if (apsCalls === 1) throw new Error('The operation was aborted due to timeout');
+      }
+      return fn(url, init);
+    };
+    const adapter = new CentralAdapter(CREDS, state, (c) => recorded.push(c), flaky, async (ms) => {
+      slept.push(ms);
+    });
+    const pull = await adapter.pull();
+    expect(pull.devices!.some((d) => d.name === 'ap-lobby-01')).toBe(true);
+    expect(apsCalls).toBe(2); // aborted once, retried once, then answered
+    // The failed attempt still shows up in the Activity tab.
+    expect(recorded.some((c) => c.code === 'network-error')).toBe(true);
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it('gives up after the bounded transport retry rather than retrying forever', async () => {
+    const state = makeState();
+    let apsCalls = 0;
+    const { fn } = fakeFetch(routeHandler(HAPPY_ROUTES));
+    const adapter = new CentralAdapter(
+      CREDS,
+      state,
+      () => {},
+      async (url, init) => {
+        if (String(url).includes('/monitoring/v1/aps')) {
+          apsCalls += 1;
+          throw new Error('ECONNRESET');
+        }
+        return fn(url, init);
+      },
+      async () => {},
+    );
+    await expect(adapter.pull()).rejects.toThrow(/section 'devices\/aps' failed/);
+    expect(apsCalls).toBe(2); // the first try plus exactly one retry
   });
 
   it('retries once with a fresh token on 401', async () => {

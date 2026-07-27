@@ -631,3 +631,81 @@ describe('live command framing and recording', () => {
     expect(events.some((e) => e.type === 'out' && e.text === 'sw-core-a#')).toBe(false);
   });
 });
+
+// -- shell class + session identity in live mode -------------------------------
+
+describe('shell class comes from the live inventory row, not the demo name prefix', () => {
+  const manager = (
+    liveDevices: Array<{ name: string; ip?: string; type?: 'ap' | 'switch' | 'gateway' | 'controller' | 'sensor' }>,
+    dialled: { target: string | null },
+  ) =>
+    new TerminalManager({
+      logDir: tmpDir,
+      demoMode: () => false,
+      liveDevices: () => liveDevices,
+      creds: () => FAKE_CREDS,
+      connect: async (target) => {
+        dialled.target = target;
+        return new FakeSshClient() as unknown as Client;
+      },
+    });
+
+  it("refuses a real AP whose name does not match the demo 'ap-' prefix", () => {
+    const dialled = { target: null as string | null };
+    const ws = openSession(manager([{ name: 'AP-Floor3', ip: '10.9.9.9', type: 'ap' }], dialled), 'AP-Floor3');
+    expect(ws.errorFrame()).toContain("device 'AP-Floor3' is cloud-claimed — no local shell");
+    expect(dialled.target).toBeNull(); // never dialled a radio
+  });
+
+  it("dials a real switch whose name happens to start with 'ap-'", async () => {
+    const dialled = { target: null as string | null };
+    const ws = openSession(manager([{ name: 'ap-closet-sw', ip: '10.9.9.10', type: 'switch' }], dialled), 'ap-closet-sw');
+    await flush();
+    expect(dialled.target).toBe('10.9.9.10');
+    expect(ws.errorFrame()).toContain('shell channel refused'); // got past the capability gate
+  });
+
+  it('still refuses an unknown device by inventory, not by name class', () => {
+    const dialled = { target: null as string | null };
+    const ws = openSession(manager([], dialled), 'AP-Floor3');
+    expect(ws.errorFrame()).toContain("device 'AP-Floor3' is not in the live inventory");
+    expect(dialled.target).toBeNull();
+  });
+
+  it('demo mode keeps the fixture prefix rules', () => {
+    const mgr = new TerminalManager({
+      logDir: tmpDir,
+      demoMode: () => true,
+      creds: () => FAKE_CREDS,
+      connect: async () => new FakeSshClient() as unknown as Client,
+    });
+    const ws = openSession(mgr, 'ap-3f-12');
+    expect(ws.errorFrame()).toContain("device 'ap-3f-12' is cloud-claimed — no local shell");
+  });
+});
+
+describe("the 'ready' frame attributes the session that is actually recorded", () => {
+  it('carries the real SSH user, the resolved target and the jump host', async () => {
+    const ssh = new LiveShellClient();
+    const mgr = new TerminalManager({
+      logDir: tmpDir,
+      demoMode: () => false,
+      liveDevices: () => [{ name: 'sw-core-a', ip: '10.99.0.7', type: 'switch' }],
+      creds: () => ({ ...FAKE_CREDS, username: 'r.okafor-real', jumpHost: 'collector-1' }),
+      connect: async () => ssh as unknown as Client,
+    });
+    const ws = openSession(mgr);
+    await flush();
+    ssh.channel.emit('data', Buffer.from('sw-core-a#'));
+    const ready = ws.frames.find((f) => f.type === 'ready');
+    expect(ready).toMatchObject({
+      prompt: 'sw-core-a#',
+      user: 'r.okafor-real',
+      target: '10.99.0.7',
+      via: 'collector-1',
+    });
+    // The frame is an attribution, never a credential channel.
+    expect(JSON.stringify(ready)).not.toContain('lab-password');
+    ws.emit('close');
+  });
+});

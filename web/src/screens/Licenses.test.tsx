@@ -96,6 +96,35 @@ describe('Licences reconciliation honesty', () => {
     expect(fills[1].style.width).toBe('0px');
   });
 
+  it('stamps GreenLake provenance and captions the renewals list with what it carries', async () => {
+    mockGetLicenses.mockResolvedValue({
+      ...LIVE,
+      syncedAt: '2026-07-26T09:41:00.000Z',
+      // Two subscriptions expiring in the same calendar month: the live feed's
+      // month-precision dates must not collapse into one rendered row.
+      renewals: [
+        { date: 'Sep 2026', what: 'Foundation AP', days: '50d', color: 'var(--nd-warning)' },
+        { date: 'Sep 2026', what: 'Advanced switch', days: '54d', color: 'var(--nd-warning)' },
+      ],
+    });
+
+    renderLicenses();
+
+    expect(await screen.findByText(/^GREENLAKE \d\d:\d\d$/)).toBeTruthy();
+    expect(screen.queryByText('NEXT 180 DAYS')).toBeNull();
+    expect(screen.getByText('2 DATED SUBSCRIPTIONS')).toBeTruthy();
+    expect(screen.getAllByText('Sep 2026')).toHaveLength(2);
+  });
+
+  it('keeps the authored 180-day caption and demo stamp on the fixture path', async () => {
+    mockGetLicenses.mockResolvedValue(DEMO);
+
+    renderLicenses();
+
+    expect(await screen.findByText('DEMO FIXTURES')).toBeTruthy();
+    expect(screen.getByText('NEXT 180 DAYS')).toBeTruthy();
+  });
+
   it('keeps the authored two-gap Alert on the demo path', async () => {
     mockGetLicenses.mockResolvedValue(DEMO);
 

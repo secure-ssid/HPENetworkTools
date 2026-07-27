@@ -32,6 +32,12 @@ import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 export default function Licenses() {
   const { density, showPlatformTags } = useSettings();
   const { toast } = useToast();
@@ -82,7 +88,14 @@ export default function Licenses() {
   // The authored two-gap prose describes the fixture ORPHANS rows, so it may
   // only run on the authored path; a blended licences payload is real GreenLake
   // data pasted into this page and must not carry demo counts above it.
-  const isDemo = data.dataSource === 'demo' && !(data.blended?.includes('licenses') ?? false);
+  const sectionLive = data.dataSource === 'live' || (data.blended?.includes('licenses') ?? false);
+  const isDemo = !sectionLive;
+  // Provenance is part of the answer on a screen fed by one read-only plane:
+  // fixtures, blended GreenLake rows and a fully live pull otherwise render
+  // identically (README design rule 1).
+  const stamp = sectionLive
+    ? `GREENLAKE ${data.syncedAt ? hhmm(data.syncedAt) : 'NOT SYNCED'}`
+    : 'DEMO FIXTURES';
   // Gaps that cost money are the orphaned and unlicensed rows; an `idle` row is
   // spare capacity, not a reconciliation gap.
   const gaps = data.orphans.filter((o) => o.tag !== 'idle');
@@ -95,6 +108,16 @@ export default function Licenses() {
         subtitle="GreenLake subscriptions, controller perpetuals and Mist SUBs, reconciled against what is actually racked."
         actions={
           <>
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-10)',
+                color: 'var(--nd-text-muted)',
+                letterSpacing: '.08em',
+              }}
+            >
+              {stamp}
+            </span>
             <Button variant="ghost" size="sm" onClick={exportCsv}>
               Export CSV
             </Button>
@@ -159,7 +182,7 @@ export default function Licenses() {
           </Table.Row>
         </Table.Head>
         <Table.Body>
-          {data.subscriptions.map((l) => {
+          {data.subscriptions.map((l, i) => {
             // GreenLake emits '—' when it reports no quantity or assignment
             // count. That is not a CSS length, so feeding it to the fill div
             // used to paint a full green bar — an unknown utilisation reading
@@ -167,7 +190,10 @@ export default function Licenses() {
             // empty when there is no figure; the mono label still says '—'.
             const pctNum = /^\d+(\.\d+)?%$/.test(l.pct) ? Number.parseFloat(l.pct) : null;
             return (
-            <Table.Row key={l.sku}>
+            // GreenLake's SKU is a product number, not a key: two subscription
+            // keys for the same product share it, and an unresolved one is '—'
+            // on every row. Key on the row's own identity plus its position.
+            <Table.Row key={`${l.sku}|${l.name}|${l.expires}|${i}`}>
               <Table.Cell>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{l.name}</span>
@@ -233,7 +259,7 @@ export default function Licenses() {
         <EmptyState
           title="No subscriptions in the cache"
           description={
-            data.dataSource === 'live'
+            sectionLive
               ? 'GreenLake has not returned a subscription list yet — check the plane on Connected systems.'
               : 'This payload carries no subscription rows.'
           }
@@ -251,10 +277,22 @@ export default function Licenses() {
         }}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <SectionHeader label="Renewals, soonest first" meta="NEXT 180 DAYS" />
-          {data.renewals.map((r) => (
+          {/* 'NEXT 180 DAYS' is the authored window and true of the fixture
+              list; the live feed returns every dated subscription, so the
+              caption states what the payload actually carries. */}
+          <SectionHeader
+            label="Renewals, soonest first"
+            meta={
+              sectionLive
+                ? `${data.renewals.length} DATED SUBSCRIPTION${data.renewals.length === 1 ? '' : 'S'}`
+                : 'NEXT 180 DAYS'
+            }
+          />
+          {/* Live expiry dates are month-precision, so two subscriptions
+              expiring in the same month collide on `date` alone. */}
+          {data.renewals.map((r, i) => (
             <div
-              key={r.date}
+              key={`${r.date}|${r.what}|${i}`}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -310,9 +348,9 @@ export default function Licenses() {
               </Button>
             }
           />
-          {data.orphans.map((o) => (
+          {data.orphans.map((o, i) => (
             <div
-              key={o.what}
+              key={`${o.tag}|${o.what}|${i}`}
               style={{
                 display: 'flex',
                 alignItems: 'flex-start',
@@ -348,7 +386,7 @@ export default function Licenses() {
             <EmptyState
               title="Nothing to reclaim"
               description={
-                data.dataSource === 'live'
+                sectionLive
                   ? 'The subscriptions feed carries no device assignments, so orphans and gaps cannot be computed.'
                   : 'No orphaned assignments or licensing gaps in this payload.'
               }

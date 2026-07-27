@@ -9,11 +9,16 @@
  *  (b) a row whose source plane is behind reads `unverified`, not a current age;
  *  (c) a live queue with nothing open renders no banner at all;
  *  (d) a demo-sourced queue keeps the authored fixture banner verbatim;
- *  (e) the header stamps the section's source and last sync.
+ *  (e) the header stamps the section's source and last sync;
+ *  (f) rows the plane already resolved are out of the queue and out of its
+ *      count until the operator asks for them;
+ *  (g) a device-less alert offers no Inspect action that lands nowhere;
+ *  (h) an empty queue says so instead of blaming an unset filter;
+ *  (i) rows sharing a title are keyed apart, so both render.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import Alerts from './Alerts';
 import { SettingsProvider } from '../app/SettingsContext';
@@ -151,5 +156,75 @@ describe('Alerts', () => {
 
     expect(await screen.findByText('SYNCED 09:05')).toBeTruthy();
     expect(screen.queryByText(/2026-07-26/)).toBeNull();
+  });
+
+  it('(f) keeps rows the plane resolved out of the queue and out of its count', async () => {
+    const CLEARED: AlertRow = {
+      sev: 'P3',
+      tone: 'info',
+      title: 'Config Out of Sync',
+      detail: 'resolved by Central 2h ago',
+      siteId: 'campus-01',
+      siteName: 'Campus-01 HQ',
+      plane: 'CENTRAL',
+      state: 'cleared',
+      age: '2h',
+      device: 'sw-acc-3f-1',
+    };
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [WORST, CLEARED] }));
+    renderAlerts();
+
+    // The resolved row is neither shown nor counted, and the queue says why.
+    await waitFor(() =>
+      expect(screen.getByText('1 of 1 alerts · 1 cleared hidden · live')).toBeTruthy(),
+    );
+    expect(screen.queryByText('resolved by Central 2h ago')).toBeNull();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Include cleared' }));
+    await waitFor(() => expect(screen.getByText('2 of 2 alerts · live')).toBeTruthy());
+    expect(screen.getByText('resolved by Central 2h ago')).toBeTruthy();
+  });
+
+  it('(g) offers no Inspect on an alert that names no device', async () => {
+    const SITE_ALERT: AlertRow = { ...WORST, title: 'WAN degraded', device: '' };
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [SITE_ALERT] }));
+    renderAlerts();
+
+    expect(await screen.findByText('no device')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Inspect' })).toBeNull();
+  });
+
+  it('(h) an empty live queue reads as empty, never as a filter hiding rows', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [], syncedAt: null }));
+    renderAlerts();
+
+    expect(await screen.findByText('No alerts in the queue')).toBeTruthy();
+    expect(
+      screen.getByText('No plane has reported yet — link one under Connected systems.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('Nothing matches that filter')).toBeNull();
+  });
+
+  it('(i) keys rows on the plane identity, so two rows sharing a title do not collide', async () => {
+    const drift = (device: string, alertId: string): AlertRow => ({
+      ...WORST,
+      sev: 'P3',
+      tone: 'info',
+      title: 'Config Out of Sync',
+      detail: `${device} drift`,
+      device,
+      alertId,
+    });
+    mockGetAlerts.mockResolvedValue(
+      liveData({ alerts: [drift('sw-a', 'k1'), drift('sw-b', 'k2')] }),
+    );
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => errors.push(args[0]));
+    renderAlerts();
+
+    await waitFor(() => expect(screen.getByText('sw-a drift')).toBeTruthy());
+    expect(screen.getByText('sw-b drift')).toBeTruthy();
+    expect(errors.some((e) => typeof e === 'string' && /same key/i.test(e))).toBe(false);
+    spy.mockRestore();
   });
 });

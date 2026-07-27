@@ -379,6 +379,39 @@ export interface VlanObject {
  *  author ssid/port/vlan rows; roles exist as display strings on VLAN rows. */
 export type ConfigObject = SsidObject | PortObject | VlanObject;
 
+/**
+ * How a Configure row was obtained. `configured` = read back from the plane's
+ * configuration API (an SSID profile, a named VLAN, a port profile);
+ * `observed` = inferred from live client sessions or interface state, which is
+ * evidence of a config, not the config itself. Same vocabulary as the
+ * `origin` field the three ConfigObject rows already carry.
+ */
+export type ConfigInventoryMode = 'configured' | 'observed';
+
+/**
+ * A plane's configuration inventory — the SSID / VLAN / port objects read
+ * from its config API, as opposed to the ones observed from client sessions.
+ * This is the shape the live Configure screen needs so it can stop deriving
+ * SSIDs and VLANs from Clients (`inventoryMode: 'observed'`).
+ *
+ * Every array is OPTIONAL and absence is meaningful: an adapter that cannot
+ * read VLANs omits `vlans` rather than reporting an empty list, so the screen
+ * can say "not reported by this plane" instead of "this plane has no VLANs".
+ */
+export interface ConfigInventory {
+  ssids?: SsidObject[];
+  vlans?: VlanObject[];
+  ports?: PortObject[];
+  /** How these rows were obtained; rows may also carry a per-row `origin`. */
+  mode: ConfigInventoryMode;
+  /** Free-text provenance for the honesty note, e.g.
+   *  'central /configuration/v2/wlan · 6 groups'. */
+  source?: string;
+  /** Datasets the adapter tried and could not read (404 / no permission).
+   *  Named here so the screen distinguishes "not read" from "none exist". */
+  unavailable?: ('ssids' | 'vlans' | 'ports')[];
+}
+
 /** README ChangeRequest — the brokered-write unit. */
 export interface ChangeRequest {
   object: ConfigObject;
@@ -475,6 +508,13 @@ export interface OverviewAlert {
   plane: Plane;
   age: string;
   device: string;
+  /** Canonical site the alert belongs to. The authored fixtures compose the
+   *  site into `meta`; a live mapper has the site as a field and would
+   *  otherwise drop it (a live "Needs you now" row that cannot say where).
+   *  Optional so the fixtures stay valid — renderers prefer it over parsing
+   *  `meta`, and fall back to `meta` alone when it is absent. */
+  siteName?: string;
+  siteId?: SiteId;
 }
 
 /** Overview Sites table row — `plane` here is a prose label ('Central · local'). */
@@ -725,12 +765,26 @@ export interface DeviceRow extends Omit<Device, 'site'> {
   claimedBy?: Plane[];
 }
 
+/**
+ * What a lane header is actually asserting about its plane (design rule 1):
+ *   synced  — a real last-sync stamp from the registry
+ *   never   — the plane is linked but has never completed a sync
+ *   stale   — the last sync has aged past the staleness window
+ *   unknown — the payload carried NO lane meta for this plane; the header is
+ *             non-asserting and must not claim the plane is linked
+ */
+export type LaneSyncState = 'synced' | 'never' | 'stale' | 'unknown';
+
 /** Platform-lane header metadata (NT_LANE_META) — `mark` is the 2px rule colour. */
 export interface LaneMeta {
   tone: Tone;
   sync: string;
   note: string;
   mark: string;
+  /** Absent = 'synced' for the authored fixtures, which all carry a stamp.
+   *  A lane built for an unmapped/unlinked plane sets 'unknown' so nothing
+   *  downstream reads the header as a claim of linkage. */
+  state?: LaneSyncState;
 }
 
 // -- Device detail (NtDeviceDetail) --
@@ -830,6 +884,34 @@ export interface OrphanRow {
   tone: Tone;
   what: string;
   detail: string;
+}
+
+/**
+ * One device→subscription assignment as an entitlement plane (GreenLake)
+ * reports it. This is the missing half of the Licences screen: without it the
+ * portal can count subscriptions but cannot say which devices are unlicensed,
+ * so "Devices unlicensed" and the orphan/gap rows have nothing to derive from.
+ *
+ * Identity is `serial` (the one key GreenLake, Central and Mist all agree on —
+ * see reconcile's identityKey). Everything else is optional: a field the
+ * vendor did not return must stay absent, never a zero or an empty string
+ * standing in for "unknown".
+ */
+export interface SubscriptionAssignment {
+  serial: string;
+  mac?: string;
+  model?: string;
+  deviceName?: string;
+  deviceType?: string;
+  /** True only when the plane says the device is assigned to a service.
+   *  Absent = the plane did not report assignment state at all. */
+  assigned?: boolean;
+  /** The subscription key/SKU this device consumes; null = explicitly none. */
+  subscriptionKey?: string | null;
+  subscriptionTier?: string | null;
+  /** ISO date the consuming subscription ends. */
+  expires?: string | null;
+  archived?: boolean;
 }
 
 // -- Configure (NtConfigure) --
@@ -972,8 +1054,23 @@ export const PLANE_DATASET_KEYS = [
   'alerts',
   'authEvents',
   'subscriptions',
+  'config',
+  'assignments',
 ] as const;
 export type PlaneDatasetKey = (typeof PLANE_DATASET_KEYS)[number];
+
+/** The dataset keys that are ROW ARRAYS merged into the poller cache.
+ *  `config` is a single object and `assignments` is an entitlement feed, not a
+ *  screen row set — a merge loop must iterate this list, not every key. */
+export const PLANE_ROW_DATASET_KEYS = [
+  'devices',
+  'sites',
+  'clients',
+  'alerts',
+  'authEvents',
+  'subscriptions',
+] as const;
+export type PlaneRowDatasetKey = (typeof PLANE_ROW_DATASET_KEYS)[number];
 
 /**
  * What one pull actually achieved. The distinction the honesty rules need is
@@ -1007,6 +1104,27 @@ export interface PlaneFreshness {
   lastSync: string | null;
   ageSec: number | null; // null when the plane has never synced
   stale: boolean; // never synced, or older than the staleness window
+}
+
+/** Registry health vocabulary, mirrored here so the freshness helpers can be
+ *  shared by the server registry, the poller and the screen endpoints (the
+ *  server's PlaneHealth is the same union). */
+export type PlaneHealthKey = 'healthy' | 'warning' | 'degraded' | 'unlinked';
+
+/**
+ * Why a plane's rows cannot be presented as current:
+ *   never-synced — linked, but no successful pull has ever landed
+ *   aged-out     — the last successful pull is older than staleAfterSec
+ *   degraded     — the last pull failed; last-good data is being served
+ *   partial      — the pull succeeded but some datasets could not be read
+ *   null         — the plane is current (or unlinked, so it contributes none)
+ */
+export type PlaneStaleReason = 'never-synced' | 'aged-out' | 'degraded' | 'partial' | null;
+
+/** Plane freshness plus WHY it is stale — one definition for the registry,
+ *  the poller and every screen that has to render `unverified`. */
+export interface PlaneStaleness extends PlaneFreshness {
+  reason: PlaneStaleReason;
 }
 
 /** How a change can reach a plane — the capability-matrix `mode` vocabulary. */

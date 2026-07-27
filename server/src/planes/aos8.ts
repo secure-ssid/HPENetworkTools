@@ -16,6 +16,12 @@
  *               The session lives ~15 min — cached here and renewed at 14 min,
  *               or immediately when a call answers 401/403 or status != "0"
  *               (session expired), with ONE re-login retry.
+ *   logout      POST /v1/api/logout?UIDARUBA=<uid> (+ SESSION cookie)
+ *               Best-effort, fired before a rollover mints a new UID. The MM
+ *               caps concurrent management sessions, so abandoning one every
+ *               14 minutes eventually earns 'maximum number of sessions
+ *               reached' — a failure that would surface here as a rejected
+ *               login. A failing logout is logged and ignored, never fatal.
  *   showcommand GET /v1/configuration/showcommand?command=<cli>&UIDARUBA=<uid>
  *               → the CLI table parsed to JSON: named arrays of row objects
  *               (top level, or nested one level under a `_data`-style key).
@@ -28,6 +34,26 @@
  * records method + path + ms + status — the UID in the query string is
  * redacted, and the password only ever travels in the login POST body.
  *
+ * Mapping decisions:
+ *   - site: the AP database's `Group` and `show switches`' `Location` are the
+ *     only place-of-installation columns AOS-8 publishes, so they resolve the
+ *     site (siteIdForName mints an 'ext-*' id for a name the portal does not
+ *     know). A row with neither still lands on the 'multiple' pseudo-site —
+ *     that is what it is for.
+ *   - localShell: TRUE for controllers, false for APs. The flag means "the
+ *     portal will offer a recorded shell for this row" — an on-prem MM/MD is
+ *     reachable through the terminal manager's jump host (README: AOS-8 gets
+ *     recorded SSH, change window only), while an AP terminates on its
+ *     controller and has no portal shell. It is not a claim that THIS adapter
+ *     opens SSH; whether one device can be dialled is still the terminal
+ *     manager's call (it needs a management IP, which the tables publish).
+ *   - firmwareApproved: AOS-8 requires every managed device to run the mobility
+ *     master's train, so the MM's own `show switches` version IS the approved
+ *     train — an MD that differs is flagged rather than stamped approved. An
+ *     operator-declared `approvedFirmware` map (the credential central already
+ *     accepts) is honoured on top. Unknown firmware is never presented as
+ *     off-train: we cannot know, and guessing would be noise.
+ *
  * Failure policy (mirrors clearpass/mist): login failing, either inventory
  * showcommand section failing, or a section answering something that is not
  * JSON → pull() throws naming the section; an inventory nobody could parse is
@@ -39,8 +65,15 @@
 import * as https from 'node:https';
 import type { ClientRow, ClientType, DeviceRow, DeviceType, Tone } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
-import { siteIdForName, type FetchLike, type RecordCallFn } from './central';
-import type { PlaneAdapter, PlanePull, PlaneState } from './types';
+import {
+  firmwareIsApproved,
+  parseApprovedFirmware,
+  siteIdForName,
+  type ApprovedFirmwareMap,
+  type FetchLike,
+  type RecordCallFn,
+} from './central';
+import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 
 // Re-exported so tests can type an in-memory fake fetch against this adapter.
 export type { FetchLike } from './central';
@@ -140,34 +173,45 @@ function stateForStatus(raw: string | null): { state: string; stateTone: Tone } 
   return { state: s || 'unknown', stateTone: 'neutral' };
 }
 
-function baseRow(
-  name: string,
-  model: string | null,
-  type: DeviceType,
-  statusRaw: string | null,
-  firmware: string | null,
-  ip: string | null,
-): DeviceRow {
-  const { state, stateTone } = stateForStatus(statusRaw);
-  const site = siteIdForName(null); // AOS-8 tables carry no site concept — honest 'multiple'
+interface BaseRowInput {
+  name: string;
+  model: string | null;
+  type: DeviceType;
+  statusRaw: string | null;
+  firmware: string | null;
+  ip: string | null;
+  /** Group (APs) / Location (controllers) — the plane's only place column. */
+  siteName: string | null;
+}
+
+function baseRow(input: BaseRowInput): DeviceRow {
+  const { state, stateTone } = stateForStatus(input.statusRaw);
+  // A row with no Group/Location lands on the 'multiple' pseudo-site — its
+  // documented purpose — rather than being filed somewhere it never claimed.
+  const site = siteIdForName(input.siteName);
   return {
-    name,
-    model: model ?? 'unknown',
-    type,
+    name: input.name,
+    model: input.model ?? 'unknown',
+    type: input.type,
     siteId: site.siteId,
     siteName: site.siteName,
     plane: 'AOS-8',
     planeTone: 'accent',
     state,
     stateTone,
-    firmware: firmware ?? 'unknown',
-    firmwareApproved: true, // the MM does not publish an approved train — honest default
+    firmware: input.firmware ?? 'unknown',
+    // Provisional: pull() re-evaluates it against the MM's train and the
+    // operator's approved-firmware map, which a pure row mapper cannot see.
+    firmwareApproved: true,
     licence: 'unknown', // licences live on the MM (show license), not pulled
     reconciliationIssue: false, // the reconcile service computes this
-    localShell: false, // SSH sessions go through the terminal manager, not this adapter
+    // The portal WILL offer a recorded shell for an on-prem controller (the
+    // terminal manager dials it through the jump host); an AP terminates on
+    // its controller and has none.
+    localShell: input.type === 'controller',
     // Both tables publish the management address; the recorded-SSH terminal
     // dials it, so it must survive into the live inventory (never guessed).
-    ...(ip ? { ip } : {}),
+    ...(input.ip ? { ip: input.ip } : {}),
   };
 }
 
@@ -178,14 +222,16 @@ export function mapAos8Ap(raw: unknown): DeviceRow | null {
   const ip = pick(r, ['IP Address', 'IP', 'ip']);
   const name = pick(r, ['Name', 'name', 'AP Name', 'ap-name']) ?? ip;
   if (!name) return null;
-  return baseRow(
+  return baseRow({
     name,
-    pick(r, ['AP Type', 'Type', 'Model', 'model']),
-    'ap',
-    pick(r, ['Status', 'status', 'State']),
-    pick(r, ['Version', 'Firmware', 'fw']),
+    model: pick(r, ['AP Type', 'Type', 'Model', 'model']),
+    type: 'ap',
+    statusRaw: pick(r, ['Status', 'status', 'State']),
+    firmware: pick(r, ['Version', 'Firmware', 'fw']),
     ip,
-  );
+    // The AP database's Group is where an AOS-8 estate records the site.
+    siteName: pick(r, ['Group', 'group', 'AP Group', 'ap-group']),
+  });
 }
 
 /** `show switches` row → DeviceRow (type 'controller'). */
@@ -196,14 +242,49 @@ export function mapAos8Switch(raw: unknown): DeviceRow | null {
   const name = pick(r, ['Name', 'name', 'Hostname']) ?? ip;
   if (!name) return null;
   const model = pick(r, ['Model', 'Type', 'model']);
-  return baseRow(
+  return baseRow({
     name,
     model,
-    'controller',
-    pick(r, ['Status', 'status', 'State']),
-    pick(r, ['Version', 'Firmware', 'fw']),
+    type: 'controller',
+    statusRaw: pick(r, ['Status', 'status', 'State']),
+    firmware: pick(r, ['Version', 'Firmware', 'fw']),
     ip,
-  );
+    siteName: pick(r, ['Location', 'location', 'Site', 'site']),
+  });
+}
+
+/**
+ * The mobility master's own version out of `show switches` — the train every
+ * managed device is required to run, and the only approved-train statement an
+ * AOS-8 deployment actually publishes. null when no row identifies itself as
+ * the master (a standalone controller, or a Type column we do not recognise):
+ * then nothing is off-train, because nothing declared what on-train means.
+ */
+export function aos8MasterVersion(rows: unknown[]): string | null {
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as Record<string, unknown>;
+    const role = pick(r, ['Type', 'type', 'Role', 'role', 'Switch Type']) ?? '';
+    if (/master|conductor|^mm$/i.test(role)) return pick(r, ['Version', 'Firmware', 'fw']);
+  }
+  return null;
+}
+
+/**
+ * Is this device on the approved train? An operator-declared map wins (same
+ * credential and helper Central uses); on top of it, AOS-8's own rule: an MD
+ * whose version differs from the master's is off-train. Unknown firmware is
+ * never flagged — we cannot know, and flagging everything is noise.
+ */
+export function aos8FirmwareApproved(
+  device: DeviceRow,
+  masterVersion: string | null,
+  approved: ApprovedFirmwareMap,
+): boolean {
+  if (!firmwareIsApproved(device.type, device.model, device.firmware, approved)) return false;
+  if (masterVersion === null || device.firmware === 'unknown') return true;
+  if (device.type !== 'controller') return true; // APs run the image their controller pushes
+  return device.firmware === masterVersion;
 }
 
 /** AOS-8 user-table "Type"/"Host Name" → the shared ClientType vocabulary. */
@@ -353,6 +434,7 @@ export class Aos8Adapter implements PlaneAdapter {
   private readonly baseUrl: string;
   private readonly username: string;
   private readonly password: string;
+  private readonly approved: ApprovedFirmwareMap;
   private session: { uid: string; cookie: string; expiresAt: number } | null = null;
 
   constructor(
@@ -367,6 +449,7 @@ export class Aos8Adapter implements PlaneAdapter {
     this.baseUrl = withScheme(creds.master).replace(/\/+$/, '');
     this.username = (creds.username ?? creds.clientId).trim();
     this.password = creds.password ?? creds.clientSecret;
+    this.approved = parseApprovedFirmware(creds.approvedFirmware);
   }
 
   static isComplete(creds: PlaneCredentials | null): boolean {
@@ -378,6 +461,17 @@ export class Aos8Adapter implements PlaneAdapter {
 
   state(): PlaneState {
     return this.stateRef;
+  }
+
+  /**
+   * The on-prem plane the portal CAN give a shell to: AOS-8 devices are
+   * reached over recorded SSH through the terminal manager's jump host
+   * (README integration table: 'recorded SSH, change window only'). The write
+   * broker does not push configuration here — configuration stays on the MM —
+   * and this adapter reads no SSID/VLAN/port inventory.
+   */
+  capabilities(): PlaneCapabilities {
+    return { localShell: true, brokeredWrite: false, configRead: false };
   }
 
   async pull(): Promise<PlanePull> {
@@ -394,8 +488,16 @@ export class Aos8Adapter implements PlaneAdapter {
       throw new Error(`aos8 pull: section '${CMD_SWITCHES}' failed — ${(err as Error).message}`);
     }
 
-    const aps = apRows.map(mapAos8Ap).filter((d): d is DeviceRow => d !== null);
-    const switches = switchRows.map(mapAos8Switch).filter((d): d is DeviceRow => d !== null);
+    // AOS-8's approved train is the master's own version: evaluate every row
+    // against it (plus any operator-declared map) instead of stamping the
+    // whole plane 'approved' and making version skew unrenderable.
+    const train = aos8MasterVersion(switchRows);
+    const approve = (d: DeviceRow): DeviceRow => ({
+      ...d,
+      firmwareApproved: aos8FirmwareApproved(d, train, this.approved),
+    });
+    const aps = apRows.map(mapAos8Ap).filter((d): d is DeviceRow => d !== null).map(approve);
+    const switches = switchRows.map(mapAos8Switch).filter((d): d is DeviceRow => d !== null).map(approve);
     const devices = [...aps, ...switches];
     if (devices.length === 0) {
       // A live MM always answers `show switches` with at least itself. Zero
@@ -417,9 +519,11 @@ export class Aos8Adapter implements PlaneAdapter {
     }
 
     const down = devices.filter((d) => d.state === 'down').length;
+    const offTrain = devices.filter((d) => !d.firmwareApproved).length;
     this.stateRef.note =
       `${aps.length.toLocaleString('en-US')} APs · ${switches.length.toLocaleString('en-US')} controllers via showcommand` +
       (down > 0 ? ` · ${down.toLocaleString('en-US')} down` : '') +
+      (offTrain > 0 ? ` · ${offTrain.toLocaleString('en-US')} off the ${train ?? 'approved'} train` : '') +
       (clients !== null
         ? ` · ${clients.length.toLocaleString('en-US')} clients`
         : ` · client table unavailable (${clientsError})`);
@@ -495,6 +599,13 @@ export class Aos8Adapter implements PlaneAdapter {
   private async login(): Promise<{ uid: string; cookie: string }> {
     if (this.session && this.session.expiresAt > Date.now()) return this.session;
 
+    // Hand the old UID back before asking for a new one: the MM caps
+    // concurrent management sessions, and a rollover every 14 minutes would
+    // otherwise leak one until its idle timer reaps it.
+    const stale = this.session;
+    this.session = null;
+    if (stale) await this.logout(stale);
+
     const started = Date.now();
     let res: Response;
     try {
@@ -524,6 +635,29 @@ export class Aos8Adapter implements PlaneAdapter {
     // must not eat into the window the cached session is trusted for.
     this.session = { uid, cookie: sessionCookieFrom(res, uid), expiresAt: Date.now() + SESSION_TTL_MS };
     return this.session;
+  }
+
+  /**
+   * Best-effort session release. The MM's documented lifecycle is
+   * login → work → logout; a failed logout is never fatal (the session then
+   * simply ages out as it did before), so this never throws into pull().
+   */
+  private async logout(session: { uid: string; cookie: string }): Promise<void> {
+    const started = Date.now();
+    const logPath = 'POST /v1/api/logout?UIDARUBA=…';
+    try {
+      const res = await this.fetchImpl(
+        `${this.baseUrl}/v1/api/logout?UIDARUBA=${encodeURIComponent(session.uid)}`,
+        {
+          method: 'POST',
+          headers: { accept: 'application/json', cookie: session.cookie },
+          signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
+        },
+      );
+      this.recordCall({ path: logPath, ms: Date.now() - started, code: String(res.status) });
+    } catch {
+      this.recordCall({ path: logPath, ms: Date.now() - started, code: 'network-error' });
+    }
   }
 
   /**

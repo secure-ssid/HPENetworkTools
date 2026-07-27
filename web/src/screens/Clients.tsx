@@ -50,6 +50,28 @@ function metricNum(s: string): number {
   return parseFloat(s.replace(/−/g, '-'));
 }
 
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * A session the route could not re-confirm this cycle. The /clients handler
+ * rewrites rows from a plane the registry considers behind to health
+ * 'unverified' (design rule 1 — an aged cache is not a current session), so the
+ * screen must show that as a state, not as one more health word.
+ */
+function isUnverified(c: ClientRow): boolean {
+  return c.health === 'unverified';
+}
+
+/** VLAN as the plane reported it, without the fixtures' own 'vlan ' prefix. */
+function vlanNumber(vlan: string): string | null {
+  if (vlan === '—') return null;
+  return vlan.replace(/^vlan\s+/i, '');
+}
+
 function uniq<K extends keyof ClientRow>(clients: ClientRow[], k: K): string[] {
   return clients.map((c) => String(c[k])).filter((v, i, a) => a.indexOf(v) === i);
 }
@@ -139,6 +161,10 @@ export default function Clients() {
   /* Provenance for every derivation below: the section leads with real rows when
    * the portal is live OR when blend mode swapped it in. */
   const sectionLive = data.dataSource === 'live' || (data.blended?.includes('clients') ?? false);
+  /* Staleness is part of the UI (README §363-366): say when these sessions were
+   * pulled, and how many of them the source plane could not re-confirm. */
+  const stamp = sectionLive ? `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'}` : 'SYNCED 09:41';
+  const unverifiedCount = clients.filter(isUnverified).length;
   const ql = q.trim().toLowerCase();
   const rows = clients.filter(
     (c) =>
@@ -170,6 +196,32 @@ export default function Clients() {
   const openDevice = (name: string) => {
     closeClient();
     navigate(`/devices/${encodeURIComponent(name)}`);
+  };
+
+  /* Export what the operator is looking at, built here — there is no reporting
+   * backend to queue a job with, and claiming one would be a fabricated write
+   * (same client-side CSV the Licences screen ships). */
+  const exportCsv = () => {
+    const header =
+      'client,mac,type,model,site,group,attached,where,plane,auth,authBy,role,vlan,health,session';
+    const lines = rows.map((c) =>
+      [
+        c.name, c.mac, c.type, c.model, c.siteName, c.group, c.attach, c.where,
+        c.plane, c.auth, c.authBy, c.role, c.vlan, c.health, c.session,
+      ]
+        .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+        .join(','),
+    );
+    const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'clients-sessions.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast(`Exported ${rows.length} session${rows.length === 1 ? '' : 's'}`, {
+      description: 'clients-sessions.csv — the rows currently in view.',
+    });
   };
 
   const confirmCoa = async () => {
@@ -246,7 +298,9 @@ export default function Clients() {
             {
               k: 'IP',
               v: cur.ip,
-              note: cur.vlan === '—' ? metricNote(cur.vlan, 'VLAN') : `VLAN ${cur.vlan}`,
+              // Fixtures store the VLAN already prefixed ('vlan 820'); Central
+              // reports the bare id ('200'). One label, no stutter.
+              note: vlanNumber(cur.vlan) ? `VLAN ${vlanNumber(cur.vlan)}` : metricNote(cur.vlan, 'VLAN'),
               color: warn(cur.ip === 'pending' || cur.ip === '—'),
             },
           ],
@@ -287,18 +341,21 @@ export default function Clients() {
         subtitle="Every session, wired or wireless, whichever plane authenticated it."
         actions={
           <>
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-10)',
+                color: 'var(--nd-text-muted)',
+                letterSpacing: '.08em',
+              }}
+            >
+              {stamp}
+            </span>
+            {data.blended?.includes('clients') ? <Badge tone="info">LIVE</Badge> : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/auth-events')}>
               Auth events →
             </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() =>
-                toast('Session export queued', {
-                  description: 'CSV of the sampled sessions lands with the reporting backend.',
-                })
-              }
-            >
+            <Button variant="secondary" size="sm" onClick={exportCsv}>
               Export session
             </Button>
           </>
@@ -378,7 +435,9 @@ export default function Clients() {
           {/* The estate total is a fixture figure; a live feed counts only what
               the poller returned, so the tail drops rather than contradict the
               `Clients now` Stat above it. */}
-          {rows.length} of {clients.length} sampled{sectionLive ? '' : ' · 4,982 live sessions'}
+          {`${rows.length} of ${clients.length} sampled${
+            unverifiedCount ? ` · ${unverifiedCount} unverified` : ''
+          }${sectionLive ? '' : ' · 4,982 live sessions'}`}
         </span>
       </div>
 
@@ -534,9 +593,25 @@ export default function Clients() {
                 </div>
               </Table.Cell>
               <Table.Cell>
-                <Badge tone={c.healthTone} dot>
-                  {c.health}
-                </Badge>
+                {/* 'unverified' is not a health word — it means the plane that
+                    owns this session is behind and did not re-confirm it, so
+                    the row is last-good, never current (design rule 1). */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <Badge tone={c.healthTone} dot>
+                    {c.health}
+                  </Badge>
+                  {isUnverified(c) ? (
+                    <span
+                      style={{
+                        fontFamily: 'var(--nd-font-mono)',
+                        fontSize: 'var(--nd-text-10)',
+                        color: 'var(--nd-text-muted)',
+                      }}
+                    >
+                      {c.plane} behind
+                    </span>
+                  ) : null}
+                </div>
               </Table.Cell>
               <Table.Cell numeric>{c.session}</Table.Cell>
             </Table.Row>
@@ -544,11 +619,30 @@ export default function Clients() {
         </Table.Body>
       </Table>
 
+      {/* No sessions at all and no sessions past the filter are different facts —
+          blaming a filter the operator never set hides a missing plane. */}
       {rows.length === 0 ? (
-        <EmptyState
-          title="Nothing matches that filter"
-          description="Loosen the filters or clear Problems only to see more sessions."
-        />
+        clients.length === 0 ? (
+          <EmptyState
+            title="No sessions from any linked plane"
+            description={
+              sectionLive
+                ? 'No plane reported a client on the last poll — check Connected systems.'
+                : 'Nothing is associated across the linked planes.'
+            }
+          >
+            {sectionLive ? (
+              <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
+                Connected systems
+              </Button>
+            ) : null}
+          </EmptyState>
+        ) : (
+          <EmptyState
+            title="Nothing matches that filter"
+            description="Loosen the filters or clear Problems only to see more sessions."
+          />
+        )
       ) : null}
 
       <Drawer
@@ -578,6 +672,23 @@ export default function Clients() {
                 session {cur.session}
               </span>
             </div>
+
+            {isUnverified(cur) ? (
+              <div
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 'var(--nd-text-11)',
+                  color: 'var(--nd-text-muted)',
+                  lineHeight: 1.6,
+                  padding: '10px 12px',
+                  border: '1px solid var(--nd-border-default)',
+                  background: 'var(--nd-bg-raised)',
+                }}
+              >
+                {cur.plane} is behind, so this session was not re-confirmed on the last poll. Every
+                figure below is last-good at pull time, not current — treat it as unverified.
+              </div>
+            ) : null}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <SectionHeader label="Experience" meta={drawer.experienceMeta} />

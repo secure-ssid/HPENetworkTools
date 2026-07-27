@@ -9,10 +9,14 @@
  * the authored estate figures in demo, never a tally of the sample rows), then
  * either the open unified table (every claiming plane in Managed by, plus a
  * double-claimed / no-cloud-plane marker beside State) or the platform-lanes
- * grid (one lane per plane present, meta from the payload's lanes map, 2px
- * bottom rule in the plane's mark colour, 520px own
- * scroll). Filters are local, instant and additive (AND), and apply to both
- * presentations; an empty table shows the EmptyState.
+ * grid (one lane per plane the payload published lane meta for — INCLUDING a
+ * linked plane that reported nothing, which is the gap the view exists to
+ * show — meta from the payload's lanes map, 2px bottom rule in the plane's
+ * mark colour, 520px own scroll). Filters are local, instant and additive
+ * (AND) and search every key the placeholder advertises (name, model, site,
+ * serial, MAC, management IP); an empty table shows the EmptyState. The header
+ * subtitle states the authored estate totals in demo and is derived from the
+ * payload in live/blend — it never asserts a fixture count over real data.
  * Data: getDevices() — live /api/devices when the server is up, fixtures otherwise.
  */
 
@@ -35,8 +39,8 @@ import type { DevicesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { InventoryView } from '../app/SettingsContext';
 import { planeFilterForParam } from '../app/nav';
-import { DEVICE_RECONCILIATION } from '../../../shared';
-import type { DeviceRow, LaneMeta, Plane, Tone } from '../../../shared';
+import { DEVICE_RECONCILIATION, UNKNOWN_LANE_META } from '../../../shared';
+import type { DeviceRow, Plane, Tone } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import '../app/app.css';
@@ -62,13 +66,10 @@ const DOT_COLORS: Record<Tone, string> = {
 };
 
 /** Fallback for a plane the payload carries no lane meta for. Honesty rule 1:
- *  a lane with no freshness stamp says so — it never claims to be linked. */
-const FALLBACK_LANE: LaneMeta = {
-  tone: 'neutral',
-  sync: 'no sync stamp',
-  note: 'freshness not reported',
-  mark: 'var(--nd-border-strong)',
-};
+ *  a lane with no freshness stamp says so — it never claims to be linked. The
+ *  shared constant is the same one the server's live lane builder falls back
+ *  to, so the two copies cannot drift. */
+const FALLBACK_LANE = UNKNOWN_LANE_META;
 
 /** Every plane that claims this row. The reconciler ships `claimedBy` on live
  *  rows; the authored fixtures encode the double claim in `state` instead and
@@ -165,13 +166,27 @@ export default function Devices() {
     data.dataSource === 'demo' && !(data.blended?.includes('devices') ?? false);
   const hiddenCount = data.hiddenDevices?.length ?? 0;
   const ql = q.trim().toLowerCase();
+  // The placeholder promises name, model, serial and ip — so all four are
+  // searched. Serial/MAC/IP are optional on the row (fixtures carry none, live
+  // adapters carry what their plane published), and a MAC pasted from another
+  // tool rarely uses the same separators, so a separator-stripped pass runs
+  // alongside the literal one.
+  const qlBare = ql.replace(/[^a-z0-9]/g, '');
+  const matchesQuery = (d: DeviceRow): boolean => {
+    if (!ql) return true;
+    const hay = [d.name, d.model, d.siteName, d.serial ?? '', d.mac ?? '', d.ip ?? '']
+      .join(' ')
+      .toLowerCase();
+    if (hay.includes(ql)) return true;
+    return qlBare.length >= 6 && hay.replace(/[^a-z0-9 ]/g, '').includes(qlBare);
+  };
   const rows = devices.filter(
     (d) =>
       (type === 'all' || d.type === type) &&
       (plane === 'all' || d.plane === plane) &&
       (site === 'all' || d.siteId === site) &&
       (!issuesOnly || d.reconciliationIssue) &&
-      (!ql || (d.name + d.model + d.siteName).toLowerCase().includes(ql)),
+      matchesQuery(d),
   );
 
   const uniq = <T,>(xs: T[]): T[] => xs.filter((v, i, a) => a.indexOf(v) === i);
@@ -198,19 +213,31 @@ export default function Devices() {
   const unclaimed =
     reconciliation?.unclaimed ?? devices.filter((d) => d.licence === 'not in greenlake').length;
 
-  // One lane per plane present in the inventory, ordered by LANE_META; planes
-  // present in the data but missing from LANE_META append with fallback meta.
+  // One lane per plane the payload published lane meta for — INCLUDING a
+  // linked plane that reported no inventory at all, which is exactly the gap
+  // the lanes view exists to make legible (a lane that vanishes reads as "no
+  // such plane"). Planes present in the rows but missing from the lanes map
+  // append with the non-asserting fallback meta.
   const present = uniq(devices.map((d) => d.plane));
-  const lanePlanes: Plane[] = (Object.keys(data.lanes) as Plane[])
-    .filter((p) => present.includes(p))
-    .concat(present.filter((p) => !(p in data.lanes)));
+  const lanePlanes: Plane[] = (Object.keys(data.lanes) as Plane[]).concat(
+    present.filter((p) => !(p in data.lanes)),
+  );
+
+  // Header subtitle. The authored line states the demo estate's totals (418
+  // devices are a 418-row estate the 28 fixtures sample); in live/blend mode
+  // it is derived from what actually arrived, never asserted.
+  const subtitle = isDemo
+    ? '418 devices, six inventories, one reconciled list.'
+    : `${devices.length} device${devices.length === 1 ? '' : 's'}, ${lanePlanes.length} inventor${
+        lanePlanes.length === 1 ? 'y' : 'ies'
+      }, one reconciled list.`;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <ScreenHeader
         overline="Inventory / Devices"
         title="Devices"
-        subtitle="418 devices, six inventories, one reconciled list."
+        subtitle={subtitle}
         actions={
           <SegmentedControl
             options={VIEW_OPTIONS}
@@ -467,6 +494,10 @@ export default function Devices() {
           {lanePlanes.map((p) => {
             const meta = data.lanes[p] ?? FALLBACK_LANE;
             const inLane = rows.filter((d) => d.plane === p);
+            // "Nothing here" has two different meanings and the lane must not
+            // conflate them: the plane reported no inventory at all, or the
+            // local filters excluded the rows it did report.
+            const planeReportedNothing = !present.includes(p);
             return (
               <div key={p} style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
                 <div
@@ -613,7 +644,9 @@ export default function Devices() {
                         color: 'var(--nd-text-muted)',
                       }}
                     >
-                      Nothing in this lane matches the filter.
+                      {planeReportedNothing
+                        ? 'No inventory reported by this plane.'
+                        : 'Nothing in this lane matches the filter.'}
                     </div>
                   ) : null}
                 </div>
