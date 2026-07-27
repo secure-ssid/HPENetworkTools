@@ -574,6 +574,12 @@ export async function getDeviceDetail(name: string): Promise<DeviceDetailData> {
       banner: terminalBanner(profile.kind),
       quickCommands: terminalQuickCommands(profile.kind),
     },
+    // Same reason, for the Compliance panel: the authored profile's checks ARE
+    // the demo evidence, so serve them under the one `evidence` key both modes
+    // read. Without this the offline demo page would be the only place with a
+    // profile but no evidence block, and a screen that reads `evidence`
+    // uniformly would lose the panel exactly when there is no backend to blame.
+    evidence: { checks: profile.checks, mode: 'demo' },
     config: DEVICE_CONFIGS[profile.kind],
     clients: DEVICE_CLIENT_SETS[profile.kind],
     dataSource: 'demo',

@@ -26,7 +26,7 @@
  */
 
 import type { DeviceRow, Plane } from '../../../shared';
-import type { PlaneId } from '../planes/types';
+import { PLANE_IDS, type PlaneId } from '../planes/types';
 
 /** Extra identity fields adapters may attach; not in the shared types. */
 export interface DeviceIdentityHints {
@@ -58,6 +58,24 @@ export const PLANE_LABEL: Record<PlaneId, Plane> = {
   clearpass: 'CLEARPASS',
   uxi: 'UXI',
 };
+
+/**
+ * Inverse of PLANE_LABEL: the registry plane id behind a display label, or
+ * undefined when the label names no registry plane ('THIRD-PARTY').
+ *
+ * Reconciliation is where a row's claiming planes are decided (claimedBy holds
+ * DISPLAY labels so the UI needs no mapping table), so the way back — from a
+ * claim to the plane whose registry state and capabilities() describe it — is
+ * published here rather than re-derived by every caller that has to ask "can
+ * the plane claiming this row hand out a shell / take a brokered write?".
+ */
+export function planeIdForLabel(label: Plane): PlaneId | undefined {
+  return PLANE_ID_FOR[label];
+}
+
+const PLANE_ID_FOR: Partial<Record<Plane, PlaneId>> = Object.fromEntries(
+  PLANE_IDS.map((id) => [PLANE_LABEL[id], id]),
+) as Partial<Record<Plane, PlaneId>>;
 
 /**
  * Display-field priority: central > classic > mist > local > others

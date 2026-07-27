@@ -367,6 +367,68 @@ describe('Systems plane drawer', () => {
   });
 });
 
+describe('Systems console hand-off', () => {
+  /** Open a plane's drawer and switch to the Configuration tab. */
+  async function openConfigTab(planeName: string) {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText(planeName)).toBeTruthy());
+    fireEvent.click(screen.getByText(planeName));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Configuration' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    await waitFor(() => expect(screen.getByText('Credential & connection')).toBeTruthy());
+  }
+
+  it('opens the plane console the row actually records', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+    await openConfigTab('HPE Aruba Central');
+
+    const button = screen.getByRole('button', { name: 'Open console ↗' });
+    expect(button).toHaveProperty('disabled', false);
+    fireEvent.click(button);
+
+    expect(open).toHaveBeenCalledWith(
+      'https://app-us4.central.arubanetworks.com',
+      '_blank',
+      'noopener',
+    );
+    open.mockRestore();
+  });
+
+  it('stays inert for the local collector, which deliberately has no console', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+    await openConfigTab('Local switch collector');
+
+    const button = screen.getByRole('button', { name: 'Open console ↗' });
+    // Disabled, not a toast claiming a hand-off — and no invented URL.
+    expect(button).toHaveProperty('disabled', true);
+    fireEvent.click(button);
+    expect(open).not.toHaveBeenCalled();
+    expect(
+      screen.getByText('no console URL recorded for Local switch collector — nothing to hand off to'),
+    ).toBeTruthy();
+    open.mockRestore();
+  });
+
+  it('reports a blocked popup instead of letting the click look successful', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    await openConfigTab('HPE Aruba Central');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open console ↗' }));
+
+    await waitFor(() =>
+      expect(screen.getByText('Could not open the HPE Aruba Central console')).toBeTruthy(),
+    );
+    open.mockRestore();
+  });
+});
+
 describe('Systems connect drawer', () => {
   it('saves each credential under the key the chosen adapter reads', async () => {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
@@ -397,5 +459,41 @@ describe('Systems connect drawer', () => {
     expect(creds.host).toBe('cppm-01.meridian.health');
     expect(creds.token).toBe('tok-123');
     expect(creds.publisher).toBeUndefined();
+    // The optional CoA enforcement profile is rendered but left blank here,
+    // and a blank optional field is NOT sent — the adapter then uses the
+    // publisher default rather than a wrong profile name that fails the CoA.
+    expect(screen.getByLabelText('CoA enforcement profile — optional')).toBeTruthy();
+    expect(creds.coaEnforcementProfile).toBeUndefined();
+  });
+
+  it('sends the optional CoA enforcement profile under the key the adapter honours', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'clearpass' } });
+    await waitFor(() => expect(screen.getByText('ClearPass publisher URL')).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
+      target: { value: 'cppm-01.meridian.health' },
+    });
+    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tok-123' } });
+    fireEvent.change(screen.getByLabelText('CoA enforcement profile — optional'), {
+      target: { value: 'Quarantine-Profile' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
+    const [, creds] = mockTestSystem.mock.calls[0]!;
+    expect(creds.coaEnforcementProfile).toBe('Quarantine-Profile');
+    expect(creds.host).toBe('cppm-01.meridian.health');
+    expect(creds.token).toBe('tok-123');
   });
 });

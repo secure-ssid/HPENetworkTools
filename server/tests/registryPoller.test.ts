@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PlaneRegistry } from '../src/planes/registry';
+import type { PlaneAdapter } from '../src/planes/types';
 import type { SettingsStore } from '../src/config/settings';
 
 /** Run `fn` against a registry backed by a throwaway settings file. */
@@ -101,6 +102,87 @@ describe('registry — failure backoff', () => {
       const events = reg.recentEvents('mist');
       expect(events[0]).toMatchObject({ what: 'credentials saved — adapter rebuilt', who: 'operator' });
       expect(events).toHaveLength(2); // the earlier poll event survived the rebuild
+    });
+  });
+});
+
+describe('registry — a re-link releases the outgoing adapter', () => {
+  /** Replace the plane's live adapter with a stand-in and hand back both the
+   *  stand-in and a reader for whichever adapter the registry holds now. */
+  function swapIn(
+    reg: PlaneRegistry,
+    id: string,
+    dispose: PlaneAdapter['dispose'],
+  ): { outgoing: PlaneAdapter; current: () => PlaneAdapter } {
+    const runtime = (reg as unknown as { runtime: Map<string, { adapter: PlaneAdapter }> }).runtime;
+    const slot = runtime.get(id)!;
+    const outgoing: PlaneAdapter = {
+      id: slot.adapter.id,
+      state: () => slot.adapter.state(),
+      pull: async () => ({}),
+      dispose,
+    };
+    runtime.set(id, { ...slot, adapter: outgoing });
+    return { outgoing, current: () => runtime.get(id)!.adapter };
+  }
+
+  it('calls dispose() exactly once on the replaced adapter, never on the new one', async () => {
+    await withRegistry({ mist: MIST }, (reg) => {
+      const dispose = vi.fn(async () => {});
+      const { outgoing, current } = swapIn(reg, 'mist', dispose);
+
+      reg.reinitPlane('mist');
+      expect(dispose).toHaveBeenCalledTimes(1);
+      // The session belonged to the object being thrown away — the registry
+      // must have installed a fresh adapter, not kept the disposed one.
+      expect(current()).not.toBe(outgoing);
+
+      // A second re-link disposes whatever is outgoing THEN, not the object
+      // that was already released.
+      reg.reinitPlane('mist');
+      expect(dispose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('completes the re-link when dispose() rejects, throws synchronously, or never settles', async () => {
+    await withRegistry({ mist: MIST }, (reg) => {
+      // Rejects: the far side answered with an error.
+      const rejects = vi.fn(async () => {
+        throw new Error('controller unreachable');
+      });
+      const a = swapIn(reg, 'mist', rejects);
+      expect(() => reg.reinitPlane('mist')).not.toThrow();
+      expect(rejects).toHaveBeenCalledTimes(1);
+      expect(a.current()).not.toBe(a.outgoing);
+
+      // Throws synchronously, before any promise exists to attach .catch() to.
+      const sync = vi.fn(() => {
+        throw new Error('no session to release');
+      }) as unknown as PlaneAdapter['dispose'];
+      const b = swapIn(reg, 'mist', sync);
+      expect(() => reg.reinitPlane('mist')).not.toThrow();
+      expect(b.current()).not.toBe(b.outgoing);
+
+      // Hangs: the release is fire-and-forget, so the operator's credential
+      // save must return without waiting on the far side at all.
+      const hang = vi.fn(() => new Promise<void>(() => {})) as unknown as PlaneAdapter['dispose'];
+      const c = swapIn(reg, 'mist', hang);
+      const view = reg.reinitPlane('mist');
+      expect(hang).toHaveBeenCalledTimes(1);
+      expect(view.linked).toBe(true);
+      expect(c.current()).not.toBe(c.outgoing);
+      // The re-link is still recorded as the operator event it is.
+      expect(reg.recentEvents('mist')[0]).toMatchObject({ who: 'operator' });
+    });
+  });
+
+  it('re-links a plane whose adapter has no dispose() at all', async () => {
+    await withRegistry({ mist: MIST }, (reg) => {
+      // StubAdapter/UnconfiguredAdapter and the planes without a session to
+      // release do not implement dispose — the optional call must be a no-op.
+      const { outgoing, current } = swapIn(reg, 'mist', undefined);
+      expect(() => reg.reinitPlane('mist')).not.toThrow();
+      expect(current()).not.toBe(outgoing);
     });
   });
 });

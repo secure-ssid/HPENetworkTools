@@ -29,6 +29,7 @@ import {
   COMPLIANCE_STATS,
   CONFIG_PORTS,
   CONFIGURE_STATS,
+  CONNECT_ENDPOINT_KEY,
   DEVICE_CLIENT_SETS,
   DEVICE_CONFIGS,
   DEVICE_RECONCILIATION,
@@ -123,6 +124,7 @@ import {
 import { settings } from '../config/settings';
 import { poller } from '../services/poller';
 import { ticketStore } from '../services/tickets';
+import { terminalManager } from '../services/terminal';
 import { writeBroker } from '../services/writeBroker';
 import { registry } from '../planes/registry';
 import { PLANE_LABEL, reconcileDevices, type ReconciledDeviceRow } from '../services/reconcile';
@@ -523,6 +525,36 @@ function planeAllowsShell(device: ReconciledDeviceRow): boolean {
 }
 
 /**
+ * The live device-detail row, with `localShell` corrected to what the portal
+ * can ACTUALLY do rather than what the claiming plane's inventory asserted.
+ *
+ * DeviceDetail drives its WS attempt and all three honest shell notes off this
+ * one field, so a row that says `true` while the bridge would refuse renders a
+ * terminal that can never open (finding
+ * devicedetail-live-terminal-gate-can-never-open). Three facts, weakest wins:
+ *   - the plane's own row claim (`localShell`),
+ *   - no claiming plane's adapter vetoing it (planeAllowsShell), and
+ *   - terminalManager.canShell(): the device class has a CLI, the inventory
+ *     names a dialable management IP, and local-plane credentials — the shell
+ *     path itself — are stored.
+ * Detail-only on purpose: /api/devices serves the reconciled rows straight
+ * from the merge, and correcting one row here cannot be mistaken for a rewrite
+ * of the inventory (that belongs in reconcile.ts — handed off).
+ */
+function canOpenShell(device: ReconciledDeviceRow): boolean {
+  return (
+    device.localShell &&
+    planeAllowsShell(device) &&
+    terminalManager.canShell({ name: device.name, ip: device.ip, type: device.type, plane: device.plane })
+  );
+}
+
+function withLiveShellGate(device: ReconciledDeviceRow): ReconciledDeviceRow {
+  const localShell = canOpenShell(device);
+  return localShell === device.localShell ? device : { ...device, localShell };
+}
+
+/**
  * The shell block /api/devices/:name serves next to a live device — the same
  * `{banner, quickCommands}` pair the demo branch has always sent, so the two
  * branches and the screen name ONE source (contract drift closed). The kind
@@ -534,7 +566,7 @@ function liveTerminalPayload(
   device: ReconciledDeviceRow,
 ): { terminal: { banner: TerminalLine[]; quickCommands: string[] } } | Record<string, never> {
   const kind = deviceTerminalKind(device, device.name);
-  if (kind === 'none' || !device.localShell || !planeAllowsShell(device)) return {};
+  if (kind === 'none' || !canOpenShell(device)) return {};
   return { terminal: { banner: terminalBanner(kind), quickCommands: terminalQuickCommands(kind) } };
 }
 
@@ -1219,15 +1251,34 @@ function liveOverviewChanges(): ChangeLogEntry[] {
 
 /**
  * Live alert → the "Needs you now" view model. The row has no Site column
- * (README §1), so `meta` is the only place the site can appear — the fixtures
- * lead with it for exactly that reason. A detail that already names the site
- * is left alone rather than doubled up.
+ * (README §1), so `meta` is where the site appears in prose — the fixtures
+ * lead with it for exactly that reason, and a detail that already names the
+ * site is left alone rather than doubled up.
+ *
+ * `siteName`/`siteId` ride along as FIELDS as well: a live mapper holds the
+ * site as data and would otherwise reduce it to a prose fragment the renderer
+ * has to parse to link anywhere. The prose stays until the screen renders the
+ * field as its own element (handed off) — sending the field and dropping the
+ * prefix in the same edit would delete the site from today's row.
  */
 function liveOverviewAlert(a: AlertRow): OverviewAlert {
   const site = reportedValue(a.siteName) ? a.siteName : null;
   const leads = site !== null && a.detail.trim().toLowerCase().startsWith(site.trim().toLowerCase());
   const meta = site === null || leads ? a.detail : [site, a.detail].filter((part) => part.trim()).join(' · ');
-  return { sev: a.sev, tone: a.tone, title: a.title, meta, plane: a.plane, age: a.age, device: a.device };
+  return {
+    sev: a.sev,
+    tone: a.tone,
+    title: a.title,
+    meta,
+    plane: a.plane,
+    age: a.age,
+    device: a.device,
+    // Omitted, never blank: an unreported site must read as "not reported",
+    // and `siteId` is only sent when it is a real site (the bookkeeping ids
+    // alerts file under have no site page to link to).
+    ...(site === null ? {} : { siteName: site }),
+    ...(isRealSiteId(a.siteId) ? { siteId: a.siteId } : {}),
+  };
 }
 
 /** Live site row → the Overview Sites-table view model (badges → a prose plane label). */
@@ -2063,8 +2114,10 @@ function liveSiteReachability(devices: ReconciledDeviceRow[], site: SiteRow): Si
         : `${claimed.length} of ${siteDevices.length} device${siteDevices.length === 1 ? '' : 's'} at this site are claimed by the ${label} collector · ${sync}`,
     // Only a device the collector both claims AND can shell into is offered as
     // a terminal target; pointing the button at a cloud-claimed row would open
-    // a session the bridge refuses.
-    core: claimed.find((d) => d.localShell && planeAllowsShell(d))?.name ?? null,
+    // a session the bridge refuses. Same three-fact gate the device page's own
+    // shell block uses, so the button cannot land on a page that then says
+    // there is no shell here.
+    core: claimed.find(canOpenShell)?.name ?? null,
   };
 }
 
@@ -2074,6 +2127,12 @@ function liveSiteReachability(devices: ReconciledDeviceRow[], site: SiteRow): Si
  * same inventory, not an independent authored list. The headline device count
  * moves with it (it is the same estate), while the rest of the authored
  * profile is untouched.
+ *
+ * `core` is the reachability panel's terminal target, so it follows the same
+ * rule: a pruned core is no longer a device this portal knows, and offering a
+ * shell on it would dial a row the operator removed. SiteProfile.core is a
+ * plain string whose documented empty value means "no shell-capable core is
+ * known here" — the renderers then offer no terminal button at all.
  */
 function withoutHiddenDemoDevices(profile: SiteProfile | null): SiteProfile | null {
   if (profile === null) return null;
@@ -2081,11 +2140,13 @@ function withoutHiddenDemoDevices(profile: SiteProfile | null): SiteProfile | nu
   if (hidden.size === 0) return profile;
   const devices = profile.devices.filter((d) => !hidden.has(d.name));
   const removed = profile.devices.length - devices.length;
-  if (removed === 0) return profile;
+  const coreHidden = profile.core !== '' && hidden.has(profile.core);
+  if (removed === 0 && !coreHidden) return profile;
   const total = Number(profile.deviceCount.replace(/,/g, ''));
   return {
     ...profile,
     devices,
+    core: coreHidden ? '' : profile.core,
     deviceCount: Number.isFinite(total)
       ? Math.max(0, total - removed).toLocaleString('en-US')
       : profile.deviceCount,
@@ -2208,7 +2269,8 @@ screensRouter.get('/devices/:name', (req, res) => {
     if (blendFor('devices')) {
       const liveDevices = liveDeviceData().devices;
       if (liveDevices.length > 0) {
-        const device = liveDevices.find((d) => d.name === name) ?? null;
+        const found = liveDevices.find((d) => d.name === name) ?? null;
+        const device = found === null ? null : withLiveShellGate(found);
         if (!device) {
           res.status(404).json({ error: `device '${name}' not in the live inventory`, dataSource: 'demo', blended: ['devices'] });
           return;
@@ -2254,11 +2316,12 @@ screensRouter.get('/devices/:name', (req, res) => {
     return;
   }
 
-  const device = liveDeviceData().devices.find((d) => d.name === name) ?? null;
-  if (!device) {
+  const found = liveDeviceData().devices.find((d) => d.name === name) ?? null;
+  if (!found) {
     res.status(404).json({ error: `device '${name}' not in the live cache`, dataSource: 'live' });
     return;
   }
+  const device = withLiveShellGate(found);
   res.json(
     envelopeFor('devices', {
       device,
@@ -2592,6 +2655,56 @@ function tokenFact(s: PlaneState): string {
 }
 
 /**
+ * Planes whose STORED endpoint credential is the administration surface
+ * itself — the host an operator logs into: an AOS-8 mobility master (its own
+ * HTTPS UI), a ClearPass publisher, a classic-Central region URL.
+ *
+ * The other four deliberately publish no console, so "Open console" stays
+ * inert for them and says so (SystemRow.consoleUrl's contract) rather than
+ * opening a page that is not a console:
+ *   central   — stores an API GATEWAY (apigw-…); the console is a different
+ *               hostname (app-…) the portal does not hold and must not guess.
+ *   mist      — same: api.mist.com is stored, manage.mist.com is the console.
+ *   greenlake — stores a workspace UUID, which is not a host at all.
+ *   local     — an SSH jump box; the collector has no web console (SYSTEMS
+ *               records none for it either).
+ */
+const CONSOLE_ENDPOINT_PLANES = ['classic', 'aos8', 'clearpass'] as const;
+type ConsoleEndpointPlane = (typeof CONSOLE_ENDPOINT_PLANES)[number];
+
+function isConsoleEndpointPlane(id: PlaneId): id is ConsoleEndpointPlane {
+  return (CONSOLE_ENDPOINT_PLANES as readonly PlaneId[]).includes(id);
+}
+
+/**
+ * The console URL for a live plane, read off the credential the operator
+ * actually stored (the same key the connect drawer writes, CONNECT_ENDPOINT_KEY
+ * — ClearPass's drawer writes `publisher`, so its aliases are accepted too).
+ *
+ * Only the ORIGIN is served: a stored API path is not a console, and an origin
+ * also drops any userinfo a pasted URL carried, so nothing credential-shaped
+ * can ride out on this field. Anything that does not parse as a host at all
+ * (GreenLake's workspace UUID, a typo) yields undefined — an absent key, which
+ * the screen must render as "no console URL recorded".
+ */
+function planeConsoleUrl(id: PlaneId): string | undefined {
+  if (!isConsoleEndpointPlane(id)) return undefined;
+  const creds = settings.get().planes[id];
+  if (!creds) return undefined;
+  const raw = [CONNECT_ENDPOINT_KEY[id], 'publisher', 'baseUrl', 'host']
+    .map((key) => creds[key])
+    .find((value) => typeof value === 'string' && value.trim() !== '')
+    ?.trim();
+  if (!raw) return undefined;
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    return parsed.hostname === '' ? undefined : parsed.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * One registry plane as a SystemRow. Everything comes from what the portal
  * actually holds: the registry's link/health/freshness, the plane's own last
  * good pull (its sites, its dataset counts), its entries in the sync log, and
@@ -2606,9 +2719,13 @@ function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | undefined):
   // The granted scope, crossed with what this plane's adapter says it can
   // carry out — the same helper /api/configure's capability matrix reads.
   const scope = effectiveScope(s, scopeForPlane(id as PlaneKey, { linked: s.linked, scopes: stored?.scopes ?? null }));
+  const consoleUrl = planeConsoleUrl(id);
   return {
     name: stored?.displayName ?? SYSTEM_DISPLAY[id]!,
     planeId: id,
+    // Only when the portal really holds one — an absent key is what makes
+    // "Open console" inert instead of a hand-off it cannot make.
+    ...(consoleUrl === undefined ? {} : { consoleUrl }),
     kind: s.linked ? 'live plane registry' : 'not linked',
     state: s.health === 'unlinked' ? 'warning' : s.health,
     tone: SYSTEM_HEALTH_TONE[s.health],

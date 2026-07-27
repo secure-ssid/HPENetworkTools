@@ -548,6 +548,29 @@ export interface ChangeLogEntry {
   who: string;
 }
 
+/**
+ * One row of the write broker's own audit log (data/change-log.jsonl), as
+ * writeBroker.recentEvents() reads it back.
+ *
+ * Deliberately NOT ChangeLogEntry ({time,text,who}): that is the Overview
+ * "Recent changes" projection, and reusing it would force the broker's real
+ * fields through a prose string. This is the shape a GET /api/configure/history
+ * would answer with (`{ events: BrokerAuditEvent[] }`, mirroring the existing
+ * GET /api/configure/queue's `{ changes }`).
+ *
+ * SECURITY: rendered configuration bodies and payloads are NOT part of this
+ * row and must never be added — the drawer shows what happened to a change,
+ * not what was in it.
+ */
+export interface BrokerAuditEvent {
+  ts: string; // ISO
+  event: string; // 'queued' | 'push' | 'discard' | …
+  changeId: string;
+  ticket: string;
+  kind: string; // ssid | port | vlan
+  result: string; // the broker's own outcome word
+}
+
 export type LaunchTarget = { type: 'view'; view: View } | { type: 'device'; device: string };
 
 export interface LaunchpadRow {
@@ -714,7 +737,13 @@ export interface SiteProfile {
   collector: string;
   collectorTone: Tone;
   reachValue: number; // "Devices answering directly" %
-  core: string; // core switch, terminal target
+  /** Core switch — the terminal target the reachability panel offers. The
+   *  empty string means "no shell-capable core is known at this site", which
+   *  is what the demo branch must send when the authored core is one of the
+   *  operator's hidden demo devices: a renderer must then offer NO terminal
+   *  button rather than print a headless one. Kept a plain string (not
+   *  nullable) so every authored fixture stays valid unchanged. */
+  core: string;
   collectorNote: string;
   facts: Fact[];
   devices: SiteDeviceRow[];

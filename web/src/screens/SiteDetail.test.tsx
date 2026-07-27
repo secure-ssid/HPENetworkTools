@@ -284,6 +284,43 @@ describe('SiteDetail live summary', () => {
     expect(screen.getAllByText('sw-core-a').length).toBeGreaterThan(0);
   });
 
+  it('offers no Local terminal on an authored profile whose core was hidden', async () => {
+    // withoutHiddenDemoDevices() blanks profile.core when the authored core is
+    // one of the operator's hidden demo devices. A button pointing at it would
+    // open a device page the demo inventory no longer serves.
+    const profile = SITE_PROFILES['campus-01']!;
+    mockGetSiteDetail.mockResolvedValue({
+      site: { ...LIVE_SITE, id: 'campus-01', name: 'Campus-01 — Meridian HQ' },
+      profile: { ...profile, core: '', devices: profile.devices.filter((d) => d.name !== profile.core) },
+      dataSource: 'demo',
+    });
+
+    renderDetail('/sites/campus-01');
+
+    await waitFor(() => expect(screen.getByText('Site facts')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Local terminal' })).toBeNull();
+    // The reachability panel drops its own hand-off for the same reason.
+    expect(screen.queryByRole('button', { name: /^Open terminal on / })).toBeNull();
+    // The rest of the panel still renders — only the dead control is gone.
+    expect(screen.getByText('Local reachability')).toBeTruthy();
+    expect(screen.getByText('SSH collector')).toBeTruthy();
+  });
+
+  it('keeps the Local terminal hand-off while the authored profile still names a core', async () => {
+    const profile = SITE_PROFILES['campus-01']!;
+    mockGetSiteDetail.mockResolvedValue({
+      site: { ...LIVE_SITE, id: 'campus-01', name: 'Campus-01 — Meridian HQ' },
+      profile,
+      dataSource: 'demo',
+    });
+
+    renderDetail('/sites/campus-01');
+
+    await waitFor(() => expect(screen.getByText('Site facts')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Local terminal' }));
+    await waitFor(() => expect(screen.getByText(`device page ${profile.core}`)).toBeTruthy());
+  });
+
   it('treats a profile without an inventory row as not found', async () => {
     // The offline fallback answers pseudo-site ids ('core-services') with the
     // authored local-only profile and no site row — a fabricated page.

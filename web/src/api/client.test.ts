@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_SETTINGS,
   getAlerts,
+  getConfigure,
   getDeviceDetail,
   getDevices,
   getChatStatus,
   getOverview,
   getSettings,
   getSiteDetail,
+  getSystems,
   getSystemsState,
   getTerminalSession,
   getTerminalSessions,
@@ -344,6 +346,162 @@ describe('screen API source handling', () => {
     // null, not 0 — the panel renders '—' rather than an empty progress bar.
     expect(data.reachability?.reachValue).toBeNull();
     expect(data.reachability?.collector).toBe('not linked');
+  });
+
+  it('carries the authored demo evidence in the offline device-detail envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    const name = DEVICES[0].name;
+    const data = await getDeviceDetail(name);
+    // The authored profile IS the demo evidence — served under the same key the
+    // live branch uses, so a screen reading `evidence` uniformly keeps the
+    // Compliance panel when there is no backend at all.
+    expect(data.evidence?.mode).toBe('demo');
+    expect(data.evidence?.checks).toEqual(deviceProfile(name).checks);
+    expect(data.evidence?.checks.length).toBeGreaterThan(0);
+    expect(data.evidence?.note).toBeUndefined();
+  });
+
+  it('passes the live shell gate (localShell) through untouched', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        device: { name: 'ap-3f-12', plane: 'MIST', localShell: false, reconciliationIssue: false },
+        profile: null,
+        config: null,
+        clients: null,
+      },
+    });
+
+    const data = await getDeviceDetail('ap-3f-12');
+    // One field decides whether the pane may dial — the client must never
+    // re-derive or optimistically default it.
+    expect(data.device?.localShell).toBe(false);
+  });
+
+  it('keeps the reconciliation counts a demo-sourced devices payload already carries', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'demo',
+        devices: [],
+        lanes: {},
+        reconciliation: { doubleClaimed: 2, unclaimed: 1 },
+        hiddenDevices: ['sw-acc-3f-2'],
+      },
+    });
+
+    const data = await getDevices();
+    // The route is authoritative in both modes: the counts are not a
+    // client-side demo-only substitution.
+    expect(data.reconciliation).toEqual({ doubleClaimed: 2, unclaimed: 1 });
+    expect(data.hiddenDevices).toEqual(['sw-acc-3f-2']);
+  });
+
+  it('passes the alert site as its own field, not only as meta prose', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        syncedAt: '2026-07-26T09:41:00.000Z',
+        stats: [],
+        alerts: [
+          {
+            sev: 'P1',
+            tone: 'danger',
+            title: 'mm-lake-1 lost heartbeat',
+            meta: 'AOS-8 cluster',
+            plane: 'AOS-8',
+            age: '41m',
+            device: 'mm-lake-1',
+            siteName: 'Lakeshore Medical Center',
+            siteId: 'lakeshore',
+          },
+        ],
+        sites: [],
+        planes: [],
+        changes: [],
+        launchpad: [],
+      },
+    });
+
+    const data = await getOverview();
+    expect(data.alerts[0].siteName).toBe('Lakeshore Medical Center');
+    expect(data.alerts[0].siteId).toBe('lakeshore');
+    // The site is no longer welded into the prose, so a renderer can place it.
+    expect(data.alerts[0].meta).toBe('AOS-8 cluster');
+  });
+
+  it('passes the broker change id and lease through the configure queue rows', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        stats: [],
+        ssids: [],
+        ports: [],
+        vlans: [],
+        inventoryMode: 'observed',
+        capabilities: [],
+        queued: [
+          {
+            state: 'ready',
+            tone: 'success',
+            what: 'Add DHCP helper 10.44.0.20 to vlan 812',
+            where: '2 core switches',
+            ticket: 'NET-4166',
+            id: 'chg-7f21',
+            expiresAt: '2026-07-26T10:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+    const data = await getConfigure();
+    // Without the id a queued change stops being pushable after a reload.
+    expect(data.queued[0].id).toBe('chg-7f21');
+    expect(data.queued[0].expiresAt).toBe('2026-07-26T10:00:00.000Z');
+  });
+
+  it('leaves the offline demo queue rows id-less, which is what makes them non-pushable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    const data = await getConfigure();
+    expect(data.queued.length).toBeGreaterThan(0);
+    for (const row of data.queued) {
+      expect(row.id ?? null).toBeNull();
+      expect(row.expiresAt ?? null).toBeNull();
+    }
+  });
+
+  it('passes the per-plane console URL through the systems envelope', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        systems: [
+          { name: 'HPE Aruba Central', planeId: 'central', consoleUrl: 'https://app-us4.central.arubanetworks.com', sites: [], pulls: [] },
+          { name: 'Local switch collector', planeId: 'local', sites: [], pulls: [] },
+        ],
+        syncHistory: [],
+        permissions: [],
+      },
+    });
+
+    const data = await getSystems();
+    expect(data.systems[0].consoleUrl).toBe('https://app-us4.central.arubanetworks.com');
+    // No URL recorded — "Open console" must stay inert rather than invent one.
+    expect(data.systems[1].consoleUrl).toBeUndefined();
+  });
+
+  it('carries the authored console URLs in the offline systems envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    const data = await getSystems();
+    const byName = new Map(data.systems.map((s) => [s.name, s.consoleUrl]));
+    expect(byName.get('HPE Aruba Central')).toBe('https://app-us4.central.arubanetworks.com');
+    expect(byName.get('Local switch collector')).toBeUndefined();
   });
 
   it('keeps the per-plane freshness the registry stamps on /api/systems/state', async () => {

@@ -5,7 +5,7 @@ import Devices from './Devices';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getDevices } from '../api/client';
-import { DEVICES, LANE_META } from '../../../shared';
+import { DEVICE_RECONCILIATION, DEVICES, LANE_META } from '../../../shared';
 import type { DeviceRow } from '../../../shared';
 
 vi.mock('../api/client', async (importOriginal) => {
@@ -150,10 +150,14 @@ describe('Devices reconciliation flags', () => {
   });
 
   it('states the authored estate reconciliation truth in demo mode', async () => {
+    // Exactly what the demo /api/devices branch (and the client's offline demo
+    // fallback) now serves: the estate figures ride on the envelope, so the
+    // screen reads the payload rather than re-importing the fixture itself.
     mockGetDevices.mockResolvedValue({
       dataSource: 'demo',
       devices: DEVICES,
       lanes: LANE_META,
+      reconciliation: DEVICE_RECONCILIATION,
     });
 
     renderDevices();
@@ -169,6 +173,27 @@ describe('Devices reconciliation flags', () => {
     expect(
       screen.getByText('418 devices, six inventories, one reconciled list.'),
     ).toBeTruthy();
+  });
+
+  it('never asserts the authored estate counts over a payload that carries none', async () => {
+    // The 418-device figures are estate truth the ENVELOPE carries. A payload
+    // with no reconciliation block has said nothing about the estate, so the
+    // banner counts the rows it actually holds rather than the screen reaching
+    // behind the payload for a fixture it was not sent.
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'demo',
+      devices: [
+        liveRow({ name: 'sw-both-1', claimedBy: ['CENTRAL', 'LOCAL'], reconciliationIssue: true }),
+      ],
+      lanes: LANE_META,
+    });
+
+    renderDevices();
+
+    expect(
+      await screen.findByText('Reconciliation: 1 device claimed by two inventories, 0 by none'),
+    ).toBeTruthy();
+    expect(screen.queryByText(/14 by none/)).toBeNull();
   });
 });
 

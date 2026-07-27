@@ -238,3 +238,164 @@ describe('Configure — per-entry-source queue semantics', () => {
     expect(queueSection().getByText('needs window')).toBeTruthy();
   });
 });
+
+// -- the section-payload queue path ------------------------------------------
+//
+// When GET /api/configure/queue itself never answers (getChangeQueue() → null)
+// the ConfigureData payload's own `queued` rows are all there is. Those rows
+// now carry the broker's `id` and `expiresAt`, so the screen must honour them
+// instead of flattening every row to a local, id-less, lease-less one.
+
+/** A queued row as the section payload serves it: brokered, with a live lease. */
+function payloadRow(over: Partial<ConfigureData['queued'][number]> = {}) {
+  return {
+    id: 'chg-broker-7',
+    state: 'ready' as const,
+    tone: 'success' as const,
+    what: 'Add DHCP helper 10.44.0.20 to vlan 812',
+    where: '2 core switches · local collector',
+    ticket: 'NET-7007',
+    expiresAt: new Date(Date.now() + 11 * 60_000).toISOString(),
+    ...over,
+  };
+}
+
+describe('Configure — section-payload queue rows', () => {
+  it('keeps the broker id and lease from the section payload when the queue endpoint is unreachable', async () => {
+    mockGetChangeQueue.mockResolvedValue(null);
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      // Two rows the OLD `${ticket}-${what}` fallback key could not tell
+      // apart: only keying by the broker's own id renders both.
+      queued: [payloadRow(), payloadRow({ id: 'chg-broker-8' })],
+    });
+
+    renderConfigure();
+
+    await waitFor(() => expect(queueSection().getAllByText('NET-7007')).toHaveLength(2));
+    expect(queueSection().getAllByText('Add DHCP helper 10.44.0.20 to vlan 812')).toHaveLength(2);
+    expect(queueSection().getByText('2')).toBeTruthy();
+    // The rows ARE on the broker, so the id-less disclaimer must not appear…
+    expect(queueSection().queryByText('not on the broker — no lease')).toBeNull();
+    // …and the lease they carry is counted down instead.
+    expect(queueSection().getAllByText(/^lease \d+m left$/)).toHaveLength(2);
+  });
+
+  it('says an elapsed lease must be re-queued rather than offering a push the broker would reject', async () => {
+    mockGetChangeQueue.mockResolvedValue(null);
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      queued: [payloadRow({ expiresAt: new Date(Date.now() - 60_000).toISOString() })],
+    });
+
+    renderConfigure();
+
+    await waitFor(() => expect(queueSection().getByText('NET-7007')).toBeTruthy());
+    expect(queueSection().getByText('lease expired — re-queue before pushing')).toBeTruthy();
+    expect(queueSection().queryByText('not on the broker — no lease')).toBeNull();
+  });
+
+  it('reports an id-bearing section row as unpushed too when the broker queue never answered', async () => {
+    mockGetChangeQueue.mockResolvedValue(null);
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, queued: [payloadRow()] });
+
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-7007')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Push queue' }));
+
+    // The broker's own queue never answered, so nothing was pushed — the row
+    // must not fall silently between the server and local branches.
+    await waitFor(() => expect(screen.getByText(LOCAL_NOT_PUSHED_TOAST)).toBeTruthy());
+    expect(mockPushChange).not.toHaveBeenCalled();
+    expect(queueSection().getByText('NET-7007')).toBeTruthy();
+  });
+});
+
+// -- what the screen claims about this deployment's write surface -------------
+
+const LEASE_SENTENCE = 'Every push needs a ticket reference and holds a fifteen-minute lease.';
+
+describe('Configure — derived claims and empty states', () => {
+  it('derives the brokered-write sentence from the served capability matrix', async () => {
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      capabilities: [
+        { plane: 'Central', mode: 'brokered', note: 'ticketed write', tone: 'success' },
+        { plane: 'Local collector', mode: 'ssh', note: 'recorded session', tone: 'accent' },
+        { plane: 'Mist', mode: 'read only', note: 'no write path', tone: 'neutral' },
+      ],
+    });
+
+    renderConfigure();
+
+    await waitFor(() => expect(screen.getByText('Writes are brokered, never standing')).toBeTruthy());
+    // Only the planes this deployment actually reported — the authored
+    // "Central, the local collector and AOS-8" claim would name a plane that
+    // was never linked here.
+    expect(
+      screen.getByText(
+        `${LEASE_SENTENCE} Central and Local collector accept pushes from here; Mist is read-only, so those changes open in their own console with the payload pre-filled.`,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/AOS-8/)).toBeNull();
+  });
+
+  it('says nothing can be pushed at all when no plane reported a write capability', async () => {
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, capabilities: [] });
+
+    renderConfigure();
+
+    await waitFor(() => expect(screen.getByText('Writes are brokered, never standing')).toBeTruthy());
+    expect(
+      screen.getByText(
+        `${LEASE_SENTENCE} No plane has reported a write capability, so nothing here can be pushed until one is linked on Connected systems.`,
+      ),
+    ).toBeTruthy();
+  });
+
+  it('names each empty section rather than heading an empty list', async () => {
+    mockGetChangeQueue.mockResolvedValue([]);
+    mockGetConfigure.mockResolvedValue(CONFIGURE_DATA);
+
+    renderConfigure();
+
+    await waitFor(() => expect(screen.getByText('No SSIDs reported')).toBeTruthy());
+    expect(screen.getByText('No switch ports reported')).toBeTruthy();
+    expect(screen.getByText('No VLANs reported')).toBeTruthy();
+    expect(queueSection().getByText('No changes queued')).toBeTruthy();
+    // On a live section the empty state says the add path still works.
+    expect(
+      screen.getByText(
+        'No linked plane reported wireless configuration. "+ Add SSID" still renders and queues a new one.',
+      ),
+    ).toBeTruthy();
+    // Push is inert with nothing ready — never a control that cannot act.
+    expect(screen.getByRole('button', { name: 'Push queue' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Discard' })).toHaveProperty('disabled', true);
+  });
+
+  it('follows the blended section, not the envelope, when configure is swapped live', async () => {
+    // README §blendLive: the envelope still reads 'demo' while THIS section is
+    // real, so every live-flavoured affordance must follow `blended`.
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      dataSource: 'demo',
+      blended: ['configure'],
+    });
+
+    renderConfigure();
+
+    await waitFor(() => expect(screen.getByText('Queued changes')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+
+    // The live form: blank, with a free-text Central group rather than the
+    // authored group Select, and no fabricated blast-radius counts.
+    expect(screen.getByPlaceholderText('Enter SSID name')).toHaveProperty('value', '');
+    expect(screen.getByPlaceholderText('Enter Central group')).toBeTruthy();
+    expect(screen.queryByDisplayValue('MRDN-New')).toBeNull();
+    expect(screen.getByText('Impact evidence')).toBeTruthy();
+    expect(screen.queryByText('Blast radius')).toBeNull();
+    expect(screen.getAllByText('requires dry run').length).toBeGreaterThan(0);
+  });
+});

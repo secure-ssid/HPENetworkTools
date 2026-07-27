@@ -59,13 +59,20 @@
  * WebSocket protocol (JSON frames), endpoint /api/terminal/:name:
  *   client → {type:'open'}            begin; server resolves device + creds,
  *                                     opens SSH, waits for the first prompt
- *   server → {type:'banner', lines}   portal policy lines + device MOTD
- *   server → {type:'ready', prompt, user, target, via}
+ *   server → {type:'banner', lines}   portal policy lines, then the shell-path
+ *                                     provenance note when there is one, then
+ *                                     the device MOTD
+ *   server → {type:'ready', prompt, user, target, via, note}
  *                                     shell is live; prompt as seen on device,
  *                                     plus the identity actually recorded (SSH
  *                                     user, resolved target, jump host or null)
  *                                     so the pane attributes the session to the
- *                                     real actor. Never any secret.
+ *                                     real actor, and `note` — the same
+ *                                     provenance line the banner carries, as a
+ *                                     field, so a pane that styles banner lines
+ *                                     by role does not have to string-match one
+ *                                     out of the middle of `lines`. Never any
+ *                                     secret.
  *   client → {type:'cmd', cmd}        run one command through the allow-list
  *   server → {type:'out', text}       one ANSI-stripped output line (streamed)
  *   server → {type:'warn', text}      policy refusal / notice line
@@ -95,8 +102,8 @@ import { deviceProfile, deviceTerminalKind } from '../../../shared';
 import type { DeviceType, Plane, TerminalKind } from '../../../shared';
 import { settings, type PlaneCredentials } from '../config/settings';
 import { registry } from '../planes/registry';
-import { PLANE_IDS, type PlaneCapabilities, type PlaneId } from '../planes/types';
-import { PLANE_LABEL } from './reconcile';
+import type { PlaneCapabilities } from '../planes/types';
+import { planeIdForLabel } from './reconcile';
 import { poller } from './poller';
 
 // ---------------------------------------------------------------------------
@@ -362,12 +369,6 @@ export interface LiveDeviceRef {
   plane?: Plane;
 }
 
-/** Display label → registry plane id (inverse of PLANE_LABEL). A label with no
- *  registry plane ('THIRD-PARTY') resolves to undefined and claims nothing. */
-const PLANE_ID_FOR: Partial<Record<Plane, PlaneId>> = Object.fromEntries(
-  PLANE_IDS.map((id) => [PLANE_LABEL[id], id]),
-) as Partial<Record<Plane, PlaneId>>;
-
 export class TerminalManager {
   private readonly demoMode: () => boolean;
   private readonly liveDevices: () => LiveDeviceRef[];
@@ -394,7 +395,9 @@ export class TerminalManager {
     this.planeCapabilities =
       opts.planeCapabilities ??
       ((plane) => {
-        const id = PLANE_ID_FOR[plane];
+        // The label → plane id map lives in reconcile.ts, which is where the
+        // labels on a row come from in the first place.
+        const id = planeIdForLabel(plane);
         return id === undefined ? undefined : registry.state(id).capabilities;
       });
   }
@@ -694,10 +697,20 @@ export class TerminalManager {
           send({ type: 'banner', lines: banner });
           // The identity of the session that is actually recorded, so the
           // pane's titlebar can attribute it to the real SSH user and the
-          // real target instead of a fixture operator/IP. Additive fields —
-          // a client that only reads `prompt` is unaffected. NEVER carries
-          // the password/key: username, resolved target and jump host only.
-          send({ type: 'ready', prompt: ev.text, user: openedUser, target: openedTarget, via: openedVia });
+          // real target instead of a fixture operator/IP. `note` repeats the
+          // provenance line already inside `lines` as a field, so the pane can
+          // treat it as a notice instead of parsing it back out of the banner.
+          // Additive fields — a client that only reads `prompt` is unaffected.
+          // NEVER carries the password/key: username, resolved target, jump
+          // host and the disclosure line only.
+          send({
+            type: 'ready',
+            prompt: ev.text,
+            user: openedUser,
+            target: openedTarget,
+            via: openedVia,
+            note: pathNote,
+          });
           motd = [];
           state = 'ready';
         }

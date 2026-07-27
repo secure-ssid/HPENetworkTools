@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
-import { createWsTransport } from './wsTerminal';
+import { createWsTransport, type TerminalSessionIdentity } from './wsTerminal';
 
 afterEach(() => {
   cleanup();
@@ -176,6 +176,79 @@ describe('createWsTransport — opening lifecycle', () => {
     sock.emit({ type: 'end', prompt: 'real-sw1>' });
     await expect(cmd).resolves.toEqual([]);
     expect(prompts).toEqual(['real-sw1#', 'real-sw1>']);
+  });
+});
+
+describe('createWsTransport — session attribution from the ready frame', () => {
+  it('reports the recorded SSH user, resolved target, jump host and provenance note once', async () => {
+    setup();
+    const seen: TerminalSessionIdentity[] = [];
+    const session = createWsTransport('sw1', {
+      url: 'ws://test/terminal/sw1',
+      onSession: (s) => seen.push(s),
+    });
+    const connected = session.connect();
+    const sock = lastSocket();
+    sock.open();
+    sock.emit({
+      type: 'banner',
+      lines: [
+        'SSH session opened by r.okafor via the portal — session recorded',
+        'target sw1 — read-only lease: show / display / diagnostics only',
+        'CENTRAL reports no portal shell path for the devices it claims — this session is dialled through the local-plane credentials',
+        'sw1 login banner',
+      ],
+    });
+    sock.emit({
+      type: 'ready',
+      prompt: 'sw1#',
+      user: 'r.okafor',
+      target: '10.99.0.7',
+      via: 'collector-01',
+      note: 'CENTRAL reports no portal shell path for the devices it claims — this session is dialled through the local-plane credentials',
+    });
+    await expect(connected).resolves.toBe(true);
+
+    expect(seen).toEqual([
+      {
+        user: 'r.okafor',
+        target: '10.99.0.7',
+        via: 'collector-01',
+        note: 'CENTRAL reports no portal shell path for the devices it claims — this session is dialled through the local-plane credentials',
+      },
+    ]);
+    // A duplicate ready frame must not re-attribute the same session.
+    sock.emit({ type: 'ready', prompt: 'sw1#', user: 'someone.else', target: '10.99.0.9', via: null, note: null });
+    expect(seen).toHaveLength(1);
+    // The provenance line stays in the banner too — the field is an extra
+    // handle on it, not a replacement.
+    expect(session.transport.banner()).toHaveLength(4);
+  });
+
+  it('reports null for a direct session with nothing to disclose', async () => {
+    setup();
+    const seen: TerminalSessionIdentity[] = [];
+    const session = createWsTransport('sw1', { url: 'ws://test/terminal/sw1', onSession: (s) => seen.push(s) });
+    const connected = session.connect();
+    const sock = lastSocket();
+    sock.open();
+    sock.emit({ type: 'ready', prompt: 'sw1#', user: 'netops', target: '10.42.8.11', via: null, note: null });
+    await expect(connected).resolves.toBe(true);
+    expect(seen).toEqual([{ user: 'netops', target: '10.42.8.11', via: null, note: null }]);
+  });
+
+  it('names nobody when the bridge sends the prompt alone — no fabricated operator', async () => {
+    setup();
+    const seen: TerminalSessionIdentity[] = [];
+    const session = createWsTransport('sw1', { url: 'ws://test/terminal/sw1', onSession: (s) => seen.push(s) });
+    const connected = session.connect();
+    const sock = lastSocket();
+    sock.open();
+    sock.emit({ type: 'ready', prompt: 'sw1#' });
+    await expect(connected).resolves.toBe(true);
+    // Older bridge, no identity in the frame: the session still opens.
+    expect(seen).toEqual([]);
+    expect(await session.transport.respondAsync('')).toEqual([]);
   });
 });
 

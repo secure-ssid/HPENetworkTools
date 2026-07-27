@@ -21,7 +21,10 @@
  * up as a live sync). Its header
  * actions are derived, never hardcoded: "Open in <plane>" only when a plane
  * claimed the site, "Local terminal" only when a switch-like device row names
- * a target — an AP is not silently promoted to a terminal target.
+ * a target — an AP is not silently promoted to a terminal target — and, on the
+ * authored branch, only while the profile still names a core (it is blanked
+ * when the operator hid that fixture device, and a headless button would open
+ * a device page that no longer exists).
  */
 
 import { useEffect, useState } from 'react';
@@ -609,13 +612,20 @@ export default function SiteDetail() {
                 >
                   {profile.launch}
                 </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => navigate(`/devices/${encodeURIComponent(profile.core)}`)}
-                >
-                  Local terminal
-                </Button>
+                {/* SiteProfile.core is the empty string when no shell-capable
+                    core is known at this site — the route sends that when the
+                    authored core is one of the operator's hidden demo devices.
+                    A headless "Local terminal" would open a device page that
+                    does not exist, so it is not offered at all. */}
+                {profile.core ? (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => navigate(`/devices/${encodeURIComponent(profile.core)}`)}
+                  >
+                    Local terminal
+                  </Button>
+                ) : null}
               </>
             ) : null}
           </>

@@ -39,7 +39,7 @@ import type { DevicesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { InventoryView } from '../app/SettingsContext';
 import { planeFilterForParam } from '../app/nav';
-import { DEVICE_RECONCILIATION, UNKNOWN_LANE_META } from '../../../shared';
+import { UNKNOWN_LANE_META } from '../../../shared';
 import type { DeviceRow, Plane, Tone } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -203,10 +203,13 @@ export default function Devices() {
     })),
   );
 
-  // Reconciliation truth. Live mode always ships real counts; demo falls back
-  // to the authored estate figures (the 28 fixture rows are a SAMPLE of 418,
-  // so counting them would undercount — the prose below says "Fourteen").
-  const reconciliation = data.reconciliation ?? (isDemo ? DEVICE_RECONCILIATION : undefined);
+  // Reconciliation truth, always from the payload. Every envelope carries it
+  // now — live and blend ship the reconciler's real counts, the demo route and
+  // this client's offline demo fallback ship the authored estate figures (the
+  // 28 fixture rows are a SAMPLE of 418, so counting them would undercount —
+  // the prose below says "Fourteen"). Only a payload that carries none at all
+  // falls through to a tally of the loaded rows.
+  const reconciliation = data.reconciliation;
   const doubleClaimed =
     reconciliation?.doubleClaimed ??
     devices.filter((d) => d.state === 'double-claimed' || (d.claimedBy?.length ?? 0) > 1).length;

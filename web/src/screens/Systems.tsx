@@ -28,7 +28,10 @@
  * /api/systems/:plane/test and surfaces the server's message verbatim (a 502
  * {ok:false,message} is a normal result); Save and index is gated on a
  * successful test and POSTs /api/systems/:plane/credentials; Retire plane
- * DELETEs /api/systems/:plane after a window.confirm.
+ * DELETEs /api/systems/:plane after a window.confirm. "Open console" opens
+ * the row's own SystemRow.consoleUrl in a new tab and is DISABLED for a plane
+ * that records none (the local switch collector has no console) — an inert
+ * control, never a toast claiming a hand-off the portal cannot make.
  */
 
 import { useEffect, useState } from 'react';
@@ -937,6 +940,23 @@ export default function Systems() {
     setAddOpen(true);
   };
 
+  /**
+   * Hand off to the plane's own console. The button is disabled without a
+   * URL, so this is only reachable with one — but a browser that refuses the
+   * popup returns null, and that is a hand-off that did NOT happen: say so
+   * and show the URL rather than let the click look successful.
+   */
+  const openConsole = (row: SystemRow) => {
+    if (!row.consoleUrl) return;
+    const opened = window.open(row.consoleUrl, '_blank', 'noopener');
+    if (!opened) {
+      toast(`Could not open the ${row.name} console`, {
+        description: `The browser blocked the new tab — open ${row.consoleUrl} directly.`,
+        tone: 'warning',
+      });
+    }
+  };
+
   const retire = async () => {
     if (!cur || !curView?.planeId) {
       toast('cannot retire — this plane is not in the registry', { tone: 'danger' });
@@ -1733,31 +1753,35 @@ export default function Systems() {
                     >
                       Re-key credentials
                     </Button>
+                    {/* The hand-off is real when the row carries a console
+                        URL (SystemRow.consoleUrl). The local switch collector
+                        deliberately carries none — it has no console — so the
+                        control is DISABLED there rather than toasting about a
+                        hand-off it cannot make or inventing a URL for it. */}
                     <Button
                       variant="ghost"
                       size="sm"
-                      /* No plane row carries a console URL, so the portal
-                         cannot perform this hand-off — say so instead of
-                         reporting a queued action that never happens. */
-                      onClick={() =>
-                        toast(`No console URL recorded for ${cur.name}`, {
-                          description:
-                            'The portal has no console endpoint for this plane, so it cannot hand off — open the vendor console directly.',
-                          tone: 'warning',
-                        })
-                      }
+                      disabled={!cur.consoleUrl}
+                      title={cur.consoleUrl ?? `${cur.name} has no console to open`}
+                      onClick={() => openConsole(cur)}
                     >
                       Open console ↗
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      style={{ color: 'var(--nd-danger)' }}
-                      onClick={() => void retire()}
-                    >
+                    <Button variant="danger" size="sm" onClick={() => void retire()}>
                       Retire plane
                     </Button>
                   </div>
+                  {!cur.consoleUrl ? (
+                    <span
+                      style={{
+                        fontFamily: 'var(--nd-font-mono)',
+                        fontSize: 10.5,
+                        color: 'var(--nd-text-muted)',
+                      }}
+                    >
+                      no console URL recorded for {cur.name} — nothing to hand off to
+                    </span>
+                  ) : null}
                 </div>
               </div>
             ) : null}

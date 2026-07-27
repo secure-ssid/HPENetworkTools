@@ -11,7 +11,13 @@ import { cx } from './utils';
 /* ---------- Button ---------- */
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'secondary' | 'ghost';
+  /**
+   * `danger` is the destructive variant (retire a plane, revoke a credential).
+   * It exists so a destructive control never has to be a ghost button wearing
+   * an inline `color: var(--nd-danger)` — the intent belongs in the variant,
+   * where hover/active/focus states come with it.
+   */
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
   size?: 'sm' | 'md' | 'lg';
 };
 

@@ -17,6 +17,11 @@
  *              (out → text-secondary, warn → amber, echo → copper in the pane).
  *   close()    hangs the session up (device switch / unmount).
  *
+ * The 'ready' frame also names the session the bridge recorded (SSH user,
+ * resolved target, jump host, shell-path provenance note); onSession reports it
+ * so the owner attributes the pane from the socket itself instead of matching a
+ * recorded-sessions poll by timestamp.
+ *
  * Commands are serialised through a one-deep queue so the server never sees a
  * second command while one is in flight. `clear` is handled locally as the
  * null sentinel (pane resets to the banner), exactly like the canned path.
@@ -30,6 +35,27 @@ export interface AsyncTerminalTransport extends TerminalTransport {
   respondAsync(cmd: string): Promise<TerminalLine[] | null>;
 }
 
+/**
+ * Who the server says this session actually is, taken from the 'ready' frame —
+ * the same identity the recording on disk carries. The owner uses it instead of
+ * guessing from the recorded-sessions list (which lags the socket by a poll),
+ * so the titlebar never attributes a session to the wrong operator.
+ *
+ *   user    the SSH username the bridge authenticated with (never a secret)
+ *   target  the address actually dialled — a live management IP, not a fixture
+ *   via     the jump host the session was tunnelled through, or null for direct
+ *   note    the shell-path provenance line ('<PLANE> reports no portal shell
+ *           path …') when the claiming plane disclaims the path, else null.
+ *           It is also the banner's third line; as a field it can be styled as
+ *           a notice rather than string-matched out of the banner.
+ */
+export interface TerminalSessionIdentity {
+  user: string;
+  target: string;
+  via: string | null;
+  note: string | null;
+}
+
 export interface WsTerminalOptions {
   /** Full ws(s):// URL override (tests / non-standard mounts). */
   url?: string;
@@ -39,13 +65,21 @@ export interface WsTerminalOptions {
   commandTimeoutMs?: number;
   /** Reports the real prompt whenever the server observes it. */
   onPrompt?(prompt: string): void;
+  /** Reports the recorded session's identity once, from the 'ready' frame.
+   *  Not called when the server names neither user nor target — an older
+   *  bridge that only sends `prompt` leaves the owner with nothing to claim
+   *  rather than a fabricated operator. */
+  onSession?(session: TerminalSessionIdentity): void;
   /** Reports a post-ready disconnect once so owners can offer reconnect. */
   onDisconnect?(reason: string): void;
 }
 
 type ServerFrame =
   | { type: 'banner'; lines: string[] }
-  | { type: 'ready'; prompt: string }
+  // user/target/via/note are additive: a bridge that predates them sends the
+  // prompt alone, and the transport reports no session rather than inventing
+  // one (see onSession).
+  | { type: 'ready'; prompt: string; user?: string; target?: string; via?: string | null; note?: string | null }
   | { type: 'out'; text: string }
   | { type: 'warn'; text: string }
   | { type: 'end'; prompt?: string }
@@ -78,6 +112,7 @@ export function createWsTransport(
   let dead = false;
   let deadReason: string | null = null;
   let disconnectNotified = false;
+  let sessionNotified = false;
 
   interface Pending {
     lines: TerminalLine[];
@@ -165,11 +200,24 @@ export function createWsTransport(
       case 'banner':
         bannerLines = frame.lines.map((text) => ({ text, tone: 'muted' as const }));
         break;
-      case 'ready':
+      case 'ready': {
         ready = true;
         everReady = true;
         opts.onPrompt?.(frame.prompt);
+        // Attribution, once, and only when the server actually named the
+        // session: honesty rule — an unnamed session gets no operator, not a
+        // placeholder one.
+        if (typeof frame.user === 'string' && typeof frame.target === 'string' && !sessionNotified) {
+          sessionNotified = true;
+          opts.onSession?.({
+            user: frame.user,
+            target: frame.target,
+            via: typeof frame.via === 'string' ? frame.via : null,
+            note: typeof frame.note === 'string' ? frame.note : null,
+          });
+        }
         break;
+      }
       case 'out':
         pending?.lines.push({ text: frame.text, tone: 'body' });
         break;

@@ -4,13 +4,20 @@
  * header (Heading = device name, state + plane Badges, mono model · site · IP,
  * actions ← Inventory / Open in <plane> / Save config / Reboot), five
  * class-specific Stats, then flair → two
- * columns (1.55fr / 1fr). Left: the Local terminal (web/src/lib/TerminalPane —
+ * columns (1.55fr / 1fr). Compliance renders the route's served per-device
+ * evidence block in BOTH modes (the authored profile.checks are only the
+ * fallback for a payload that carried none), and an `unavailable` or empty
+ * block renders a named empty state rather than a clean scorecard.
+ * Left: the Local terminal (web/src/lib/TerminalPane —
  * shell-capable devices first try the recorded-SSH WebSocket transport from
  * web/src/lib/wsTerminal.ts, falling back to the canned demo transport when
  * the bridge is unreachable; cloud-claimed devices get read-only telemetry,
  * no input/chips; the banner and the quick-command chips come from the
  * envelope's `terminal` block when the route sent one, and from the shared
- * helpers otherwise) and Configuration (SegmentedControl
+ * helpers otherwise; the titlebar names the session from the bridge's own
+ * 'ready' frame — user, dialled target and jump host — falling back to the
+ * recorded-transcript match only for a bridge that names none)
+ * and Configuration (SegmentedControl
  * Running | Drift vs. baseline | History; drift rendered via DiffCode with
  * danger/success line colouring; Snapshot stores a local history row, Download
  * saves the running config as a file). Right: Identity facts, the class block
@@ -55,11 +62,11 @@ import { getDeviceDetail, getTerminalSession, getTerminalSessions, getTickets, r
 import type { TerminalSession, TerminalSessionEvent } from '../api/client';
 import type { DeviceDetailData } from '../api/client';
 import { deviceTerminalKind, terminalQuickCommands } from '../../../shared';
-import type { CfgHistoryRow, Fact, Plane, TicketRow } from '../../../shared';
+import type { CfgHistoryRow, DeviceEvidence, Fact, Plane, TicketRow } from '../../../shared';
 import { useSettings } from '../app/SettingsContext';
 import { TerminalPane, createCannedTransport } from '../lib/TerminalPane';
 import { createWsTransport } from '../lib/wsTerminal';
-import type { AsyncTerminalTransport } from '../lib/wsTerminal';
+import type { AsyncTerminalTransport, TerminalSessionIdentity } from '../lib/wsTerminal';
 import { DiffCode } from '../lib/DiffCode';
 import { ApiErrorState } from './ApiErrorState';
 
@@ -94,6 +101,64 @@ function LiveGapNote({ children }: { children: ReactNode }) {
         lineHeight: 1.6,
       }}
     >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The "Compliance" panel, rendered from the ONE evidence block the route
+ * serves in every mode (`data.evidence`; getDeviceDetail() normalizes a bare
+ * `checks` list into the same shape, so this is the only contract the screen
+ * reads). The block exists precisely so an EMPTY verdict list cannot be
+ * mistaken for a clean scorecard: `mode: 'unavailable'` — and an absent block,
+ * which says even less — renders a named empty state carrying the server's own
+ * reason, never a silent pass.
+ */
+function CompliancePanel({
+  evidence,
+  gapNote,
+  children,
+}: {
+  evidence: DeviceEvidence | null;
+  /** What the verdicts do NOT cover, printed under a populated list only. */
+  gapNote?: ReactNode;
+  children?: ReactNode;
+}) {
+  const scored = evidence !== null && evidence.mode !== 'unavailable' && evidence.checks.length > 0;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <SectionHeader label="Compliance" />
+      {scored ? (
+        <>
+          {evidence.checks.map((c) => (
+            <div key={c.rule ?? c.label} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Badge tone={c.tone}>{c.mark}</Badge>
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: 'var(--nd-text-12)',
+                  color: 'var(--nd-text-secondary)',
+                }}
+              >
+                {c.label}
+              </span>
+            </div>
+          ))}
+          {gapNote ? <LiveGapNote>{gapNote}</LiveGapNote> : null}
+        </>
+      ) : (
+        <EmptyState
+          title="No evidence for this device"
+          description={
+            evidence?.note ??
+            (evidence
+              ? 'The evidence block came back with no verdicts in it. An empty list is not a pass — nothing here has been checked.'
+              : 'No plane supplied evidence alongside this device, so there is nothing to score. An empty list is not a pass.')
+          }
+        />
+      )}
       {children}
     </div>
   );
@@ -264,6 +329,11 @@ export default function DeviceDetail() {
   // portal just opened from someone else's older transcript — only the former
   // may be named as "who is connected".
   const [liveSince, setLiveSince] = useState<string | null>(null);
+  // Who the BRIDGE says this session is, straight off its 'ready' frame. It
+  // cannot lag the socket and cannot belong to another operator, so it outranks
+  // the transcript-matching heuristic below; a bridge that names no session
+  // (an older one) leaves it null and the heuristic still stands in.
+  const [liveSession, setLiveSession] = useState<TerminalSessionIdentity | null>(null);
 
   // Recorded shell sessions on file for this device (empty when backend absent);
   // the expanded transcript loads on demand.
@@ -299,6 +369,7 @@ export default function DeviceDetail() {
     setLiveTransport(null);
     setLivePrompt(null);
     setLiveSince(null);
+    setLiveSession(null);
     if (!data) {
       setTerminalState('idle');
       return;
@@ -315,6 +386,9 @@ export default function DeviceDetail() {
     const session = createWsTransport(name, {
       onPrompt: (prompt) => {
         if (live) setLivePrompt(prompt);
+      },
+      onSession: (identity) => {
+        if (live) setLiveSession(identity);
       },
       onDisconnect: () => {
         if (!live) return;
@@ -412,6 +486,16 @@ export default function DeviceDetail() {
         .filter((s) => Date.parse(s.openedAt) >= Date.parse(liveSince) - 60_000)
         .sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0]
     : undefined;
+  // Who the pane may name as connected: the bridge's own claim first — it
+  // arrives with the socket, so it neither lags the session store nor can be
+  // another operator's transcript — then the heuristic above. Null when
+  // neither knows, and then nobody is named.
+  const attributed: { user: string; target: string; via: string | null } | null =
+    liveSession ??
+    (currentSession ? { user: currentSession.user, target: currentSession.target, via: null } : null);
+  // The jump host the bridge reported, when it reported one. A direct dial is
+  // still "via collector" — the portal's collector is what opened it.
+  const attributedVia = attributed?.via ? `via ${attributed.via}` : 'via collector';
 
   const saveConfig = () =>
     toast('Config snapshot not available yet', {
@@ -706,8 +790,8 @@ export default function DeviceDetail() {
                 sectionTitle="Local terminal"
                 sectionMeta="SESSION RECORDED"
                 titlebar={
-                  currentSession
-                    ? `ssh ${currentSession.user}@${currentSession.target} — via collector`
+                  attributed
+                    ? `ssh ${attributed.user}@${attributed.target} — ${attributedVia}`
                     : `ssh ${device.name} — via collector`
                 }
                 titlebarRight="AES-256 · LIVE · recorded"
@@ -863,17 +947,21 @@ export default function DeviceDetail() {
               </div>
             </div>
 
-            <div>
-              <SectionHeader label="Compliance" />
-              <LiveGapNote>
-                Live inventory evidence coverage is available; running-configuration drift remains unavailable.
-              </LiveGapNote>
+            {/* The route runs the same evidence predicates /api/compliance
+                does and ships this device's own verdicts, so the panel prints
+                them rather than pointing at a screen that would recompute
+                them. A payload without them says so — it does not imply a
+                pass. */}
+            <CompliancePanel
+              evidence={data.evidence ?? null}
+              gapNote="Live inventory evidence only — running-configuration drift remains unavailable."
+            >
               <div style={{ paddingTop: 10 }}>
                 <Button variant="ghost" size="sm" onClick={() => navigate('/compliance')}>
                   View evidence coverage →
                 </Button>
               </div>
-            </div>
+            </CompliancePanel>
           </div>
         </div>
 
@@ -919,7 +1007,7 @@ export default function DeviceDetail() {
         what: 'Config snapshot taken from the portal',
         // Never attribute the action to the fixture operator: name the account
         // the portal's own shell session ran under, or nobody at all.
-        who: currentSession ? `${currentSession.user} · portal snapshot` : 'portal snapshot · local only',
+        who: attributed ? `${attributed.user} · portal snapshot` : 'portal snapshot · local only',
         tag: 'snapshot',
         tone: 'neutral',
       },
@@ -1039,8 +1127,8 @@ export default function DeviceDetail() {
                 ? `no shell — ${profile.plane} owns this device`
                 : !liveSsh
                   ? `ssh r.okafor@${profile.ip} — via collector`
-                  : currentSession
-                    ? `ssh ${currentSession.user}@${currentSession.target} — via collector`
+                  : attributed
+                    ? `ssh ${attributed.user}@${attributed.target} — ${attributedVia}`
                     : `ssh ${profile.name} — via collector`
             }
             titlebarRight={
@@ -1274,29 +1362,17 @@ export default function DeviceDetail() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <SectionHeader label="Compliance" />
-            {profile.checks.map((c) => (
-              <div key={c.label} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Badge tone={c.tone}>{c.mark}</Badge>
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontSize: 'var(--nd-text-12)',
-                    color: 'var(--nd-text-secondary)',
-                  }}
-                >
-                  {c.label}
-                </span>
-              </div>
-            ))}
+          {/* Same panel, same contract: the demo route sends the authored
+              checks as `evidence` too, so the served block wins and the
+              profile is only the fallback for a payload (or an older route)
+              that carried none. */}
+          <CompliancePanel evidence={data.evidence ?? { checks: profile.checks, mode: 'demo' }}>
             <div>
               <Button variant="ghost" size="sm" onClick={() => navigate('/compliance')}>
                 Full compliance report
               </Button>
             </div>
-          </div>
+          </CompliancePanel>
         </div>
       </div>
 

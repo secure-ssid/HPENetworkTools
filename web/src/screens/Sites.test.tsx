@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import Sites from './Sites';
 import { SettingsProvider } from '../app/SettingsContext';
@@ -62,6 +62,85 @@ function renderSites() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+/** The footer's mono count node — asserted separately from the source stamp. */
+const COUNT_RE = /^\d+ of \d+ sites · \d+ devices indexed$/;
+
+describe('Sites footer provenance', () => {
+  it('stamps a live payload LIVE · SYNCED beside — not inside — the count', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite()],
+    });
+
+    renderSites();
+
+    await waitFor(() => expect(screen.getByText('Site A')).toBeTruthy());
+    // Two distinct nodes: a claim, and the source that made it. The count text
+    // must not have the stamp spliced into it.
+    const count = screen.getByText(COUNT_RE);
+    const stamp = screen.getByText(/^LIVE · SYNCED /);
+    expect(count).not.toBe(stamp);
+    expect(count.textContent).toBe('1 of 1 sites · 4 devices indexed');
+    expect(screen.queryByText('DEMO FIXTURE')).toBeNull();
+  });
+
+  it('stamps an authored payload DEMO FIXTURE and never borrows a live sync time', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'demo',
+      // A demo envelope may still carry a sync time; the footer must not
+      // promote it to a live claim.
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite(), liveSite({ id: 'campus-02', name: 'Site B', devices: 9 })],
+    });
+
+    renderSites();
+
+    await waitFor(() => expect(screen.getByText('Site A')).toBeTruthy());
+    const stamp = screen.getByText('DEMO FIXTURE');
+    const count = screen.getByText(COUNT_RE);
+    expect(count).not.toBe(stamp);
+    expect(count.textContent).toBe('2 of 2 sites · 13 devices indexed');
+    expect(screen.queryByText(/^LIVE · SYNCED /)).toBeNull();
+  });
+});
+
+describe('Sites health rail', () => {
+  it('renders an unreported health as "—" with the 70px rail still mounted and unfilled', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      stats: [],
+      sites: [
+        liveSite({ id: 'lakeshore', name: 'Stale Site', health: null, healthPct: '—', tone: 'stale' }),
+        liveSite({ id: 'campus-01', name: 'Site A' }),
+      ],
+    });
+
+    const { container } = renderSites();
+
+    await waitFor(() => expect(screen.getByText('Stale Site')).toBeTruthy());
+
+    const cell = container.querySelector<HTMLElement>(
+      '[title="health not reported by the managing plane"]',
+    );
+    expect(cell).toBeTruthy();
+    // The rail keeps the column aligned even with nothing to plot…
+    const rail = cell!.firstElementChild as HTMLElement;
+    expect(rail.style.width).toBe('70px');
+    // …and carries no fill, so no percentage is implied.
+    expect(rail.children.length).toBe(0);
+    expect(within(cell!).getByText('—')).toBeTruthy();
+
+    // The reported site keeps its fill and gets no "not reported" title.
+    expect(screen.getByText('98%')).toBeTruthy();
+    expect(
+      container.querySelectorAll('[title="health not reported by the managing plane"]'),
+    ).toHaveLength(1);
+  });
 });
 
 describe('Sites live rows', () => {

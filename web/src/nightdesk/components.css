@@ -836,6 +836,25 @@
   background: var(--nd-bg-raised);
 }
 
+/* Destructive actions. Outlined rather than filled: the weight matches the
+   secondary button it sits beside, and the colour comes from the existing
+   danger token pair — no new palette entry. */
+.nd-btn--danger {
+  background: transparent;
+  border-color: var(--nd-danger);
+  color: var(--nd-danger);
+}
+
+.nd-btn--danger:hover {
+  background: var(--nd-danger-subtle);
+}
+
+.nd-btn--danger:active {
+  background: var(--nd-danger-subtle);
+  border-color: var(--nd-danger);
+  color: var(--nd-danger);
+}
+
 .nd-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;

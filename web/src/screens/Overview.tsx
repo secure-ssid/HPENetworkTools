@@ -1,7 +1,9 @@
 /**
  * web/src/screens/Overview.tsx — single pane of glass.
  * High-fidelity port of design/NtOverview.dc.html: 5-Stat row → flair divider →
- * two columns (1.5fr / 1fr). Left: "Needs you now" alert rows + Sites table
+ * two columns (1.5fr / 1fr). Left: "Needs you now" alert rows (the site is its
+ * own element — and a link — whenever the row carries `siteName`/`siteId`,
+ * falling back to the authored `meta` prefix when it does not) + Sites table
  * with the 64×3px health bar. Right: Management planes, Launchpad, Change log.
  * Data: getOverview() — live /api/overview when the server is up, shared
  * fixtures otherwise (header then shows the demo SYNCED stamp).
@@ -23,7 +25,7 @@ import { getOverview } from '../api/client';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { pathForView } from '../app/nav';
-import type { LaunchpadRow, SiteHealthTone } from '../../../shared';
+import type { LaunchpadRow, OverviewAlert, SiteHealthTone, SiteId } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import '../app/app.css';
@@ -46,6 +48,28 @@ function hhmm(iso: string): string {
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+/**
+ * Where an alert is, and what is left of its meta line once the site has been
+ * taken out of it.
+ *
+ * "Needs you now" has no Site column, so the authored fixtures compose the
+ * site into `meta` as a prose prefix. A mapper that has the site as a field
+ * sends `siteName` (and `siteId`) instead, and that is preferred: a site is a
+ * place the operator can open, not a sentence fragment. The prefix is stripped
+ * when a payload carries BOTH, so the site can never be printed twice.
+ */
+function siteOf(a: OverviewAlert): { name: string | null; id: SiteId | null; meta: string } {
+  const name = a.siteName?.trim() ? a.siteName.trim() : null;
+  if (name === null) return { name: null, id: null, meta: a.meta };
+  const prefix = `${name} · `;
+  const meta = a.meta.startsWith(prefix)
+    ? a.meta.slice(prefix.length)
+    : a.meta.trim() === name
+      ? ''
+      : a.meta;
+  return { name, id: a.siteId ?? null, meta };
 }
 
 export default function Overview() {
@@ -206,7 +230,9 @@ export default function Overview() {
             ) : null}
             {/* Titles repeat across devices in live data ('Config Out of Sync'),
                 so identity is the row, not its name. */}
-            {data.alerts.slice(0, 4).map((a, i) => (
+            {data.alerts.slice(0, 4).map((a, i) => {
+              const site = siteOf(a);
+              return (
               <div
                 key={`${a.plane}|${a.device}|${a.title}|${i}`}
                 style={{
@@ -241,15 +267,44 @@ export default function Overview() {
                     {a.title}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                    <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-11)',
-                        color: 'var(--nd-text-muted)',
-                      }}
-                    >
-                      {a.meta}
-                    </span>
+                    {/* The site as its own element when the row carries it —
+                        openable when it also carries the canonical id, plain
+                        text when the payload only named it. */}
+                    {site.name !== null ? (
+                      site.id !== null ? (
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/sites/${encodeURIComponent(site.id as SiteId)}`)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            padding: 0,
+                            cursor: 'pointer',
+                            fontFamily: 'var(--nd-font-body)',
+                            fontSize: 'var(--nd-text-11)',
+                            color: 'var(--nd-accent-text)',
+                            textAlign: 'left',
+                          }}
+                        >
+                          {site.name}
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 'var(--nd-text-11)', color: 'var(--nd-text-secondary)' }}>
+                          {site.name}
+                        </span>
+                      )
+                    ) : null}
+                    {site.meta ? (
+                      <span
+                        style={{
+                          fontFamily: 'var(--nd-font-mono)',
+                          fontSize: 'var(--nd-text-11)',
+                          color: 'var(--nd-text-muted)',
+                        }}
+                      >
+                        {site.meta}
+                      </span>
+                    ) : null}
                     {showPlatformTags ? <Badge tone="neutral">{a.plane}</Badge> : null}
                   </div>
                 </div>
@@ -272,7 +327,8 @@ export default function Overview() {
                   </Button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

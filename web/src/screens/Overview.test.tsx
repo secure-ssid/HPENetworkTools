@@ -8,8 +8,10 @@
  *      ('SYNCED — · AUTO 60s'), never the string 'null';
  *  (b) live mode with an ISO syncedAt → the stamp renders in hhmm format,
  *      not the raw ISO string;
- *  (c) live alert rows render their meta text and site rows render the
- *      plane label / navigate with their siteId;
+ *  (c) live alert rows render their meta text, an alert carrying its own
+ *      siteName/siteId renders the site as an openable element instead of a
+ *      prose prefix (and never twice), and site rows render the plane label /
+ *      navigate with their siteId;
  *  (d) live mode derives the section links and the subtitle from the payload
  *      instead of printing the prototype's "All 7 alerts" / "All 10 sites" /
  *      "Ten sites, six management planes";
@@ -135,6 +137,61 @@ describe('Overview', () => {
 
     expect(await screen.findByText('Gateway gw-edge-1 unreachable')).toBeTruthy();
     expect(screen.getByText('CENTRAL · campus-01 · gw-edge-1')).toBeTruthy();
+  });
+
+  it('(c) an alert that carries its own site renders it as an element, not a meta prefix', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        alerts: [
+          {
+            sev: 'P1',
+            tone: 'danger',
+            title: 'Gateway gw-edge-1 unreachable',
+            // A route that sends the field may still lead the prose with it —
+            // the site must be printed once, not twice.
+            meta: 'Lakeshore Medical Center · CENTRAL · gw-edge-1',
+            siteName: 'Lakeshore Medical Center',
+            siteId: 'lakeshore',
+            plane: 'CENTRAL',
+            age: '4m',
+            device: 'gw-edge-1',
+          },
+        ],
+      }),
+    );
+    renderOverview();
+
+    // The site is its own element and opens the site it names.
+    const siteButton = await screen.findByRole('button', { name: 'Lakeshore Medical Center' });
+    expect(screen.getByText('CENTRAL · gw-edge-1')).toBeTruthy();
+    expect(screen.queryByText('Lakeshore Medical Center · CENTRAL · gw-edge-1')).toBeNull();
+    fireEvent.click(siteButton);
+    expect(screen.getByTestId('path').textContent).toBe('/sites/lakeshore');
+  });
+
+  it('(c) an alert with a site name but no canonical id names it without offering a dead link', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        alerts: [
+          {
+            sev: 'P2',
+            tone: 'warning',
+            title: 'Radio down',
+            meta: 'MIST · ap-3f-12',
+            siteName: 'Unmapped Annex',
+            plane: 'MIST',
+            age: '9m',
+            device: 'ap-3f-12',
+          },
+        ],
+      }),
+    );
+    renderOverview();
+
+    expect(await screen.findByText('Unmapped Annex')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Unmapped Annex' })).toBeNull();
+    // The rest of the meta line is untouched when it never carried the site.
+    expect(screen.getByText('MIST · ap-3f-12')).toBeTruthy();
   });
 
   it('(c) live site rows render the plane label and navigate with their siteId', async () => {

@@ -267,6 +267,43 @@ describe('TerminalManager.listSessions', () => {
     });
   });
 
+  it('parses every generation of the open line — recordings on disk predate the newer fields', () => {
+    // The open line grew ' via=<jump>' and then ' note=<provenance>' AFTER the
+    // first recordings were written. The `device= user= target=` prefix is the
+    // contract; anything appended must stay parseable, and a recording written
+    // by an older build must never drop out of the listing.
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-openline-'));
+    const write = (file: string, at: string, text: string) =>
+      writeFileSync(join(dir, file), JSON.stringify({ type: 'open', at, text }) + '\n');
+
+    write('old-2026-01-01T09-00-00.jsonl', '2026-01-01T09:00:00.000Z', 'device=old user=r.okafor target=10.42.8.11');
+    write(
+      'jump-2026-01-01T09-01-00.jsonl',
+      '2026-01-01T09:01:00.000Z',
+      'device=jump user=r.okafor target=10.42.8.11 via=collector-01',
+    );
+    write(
+      'noted-2026-01-01T09-02-00.jsonl',
+      '2026-01-01T09:02:00.000Z',
+      'device=noted user=r.okafor target=10.42.8.11 via=collector-01 note=CENTRAL reports no portal shell path for the devices it claims — this session is dialled through the local-plane credentials',
+    );
+    // Same device, same millisecond: the recorder takes the next free suffix
+    // rather than refusing the second session, so the listing must hold both.
+    write('noted-2026-01-01T09-02-00-2.jsonl', '2026-01-01T09:02:00.000Z', 'device=noted user=k.silva target=10.42.8.12 note=x');
+
+    const mgr = new TerminalManager({ logDir: dir });
+    const byFile = new Map(mgr.listSessions().map((s) => [s.file, s]));
+    expect(byFile.size).toBe(4);
+    for (const file of ['old-2026-01-01T09-00-00.jsonl', 'jump-2026-01-01T09-01-00.jsonl', 'noted-2026-01-01T09-02-00.jsonl']) {
+      expect(byFile.get(file)).toMatchObject({ user: 'r.okafor', target: '10.42.8.11' });
+    }
+    expect(byFile.get('old-2026-01-01T09-00-00.jsonl')!.device).toBe('old');
+    expect(byFile.get('noted-2026-01-01T09-02-00-2.jsonl')).toMatchObject({ device: 'noted', user: 'k.silva', target: '10.42.8.12' });
+    // The suffixed name is still a readable transcript, not a rejected one.
+    expect(mgr.readSession('noted-2026-01-01T09-02-00-2.jsonl')?.events).toHaveLength(1);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it('returns [] when the log dir does not exist', () => {
     const mgr = new TerminalManager({ logDir: join(tmpDir, 'nope') });
     expect(mgr.listSessions()).toEqual([]);
@@ -774,6 +811,12 @@ describe('the session discloses which plane provides the shell path', () => {
     expect(ws.frames.some((f) => f.type === 'ready')).toBe(true);
     expect(bannerLines(ws).some((l) => l.includes('CENTRAL reports no portal shell path'))).toBe(true);
     expect(openLine('sw-cloud-claimed', before)).toContain('note=CENTRAL reports no portal shell path');
+    // The same disclosure rides the 'ready' frame as a field, so the pane can
+    // present it as a notice without string-matching a banner line — and the
+    // two can never disagree, they are the one value.
+    const note = ws.frames.find((f) => f.type === 'ready')?.note as string | null;
+    expect(note).toContain('CENTRAL reports no portal shell path');
+    expect(bannerLines(ws)).toContain(note);
     ws.emit('close');
   });
 
@@ -789,7 +832,7 @@ describe('the session discloses which plane provides the shell path', () => {
     ssh.channel.emit('data', Buffer.from('(mm-lake-1) [mynode] #'));
 
     expect(bannerLines(ws).some((l) => l.includes('no portal shell path'))).toBe(false);
-    expect(ws.frames.find((f) => f.type === 'ready')).toMatchObject({ target: '10.48.0.10', via: 'collector-01' });
+    expect(ws.frames.find((f) => f.type === 'ready')).toMatchObject({ target: '10.48.0.10', via: 'collector-01', note: null });
     const line = openLine('mm-lake-1', before);
     expect(line).toContain('target=10.48.0.10');
     expect(line).toContain('via=collector-01');

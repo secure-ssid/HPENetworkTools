@@ -515,6 +515,13 @@ describe('live-mode screen contracts', () => {
       body: JSON.stringify({ demoMode }),
     });
 
+  const saveCreds = (plane: string, creds: Record<string, string>) =>
+    fetch(`${base}/api/systems/${plane}/credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(creds),
+    });
+
   const DEVICE = {
     name: 'sw-test-1',
     model: 'CX 8325',
@@ -640,11 +647,65 @@ describe('live-mode screen contracts', () => {
     // fixtures do the same) — otherwise a live alert cannot say where it is.
     expect(body.alerts[0].meta).toBe('Campus-01 — Meridian HQ · ap-1 flapping on channel 36');
     expect(body.alerts[0].plane).toBe('CENTRAL');
+    // …and the site rides along as DATA too, so a renderer can link it
+    // instead of parsing the prose fragment back out of `meta`.
+    expect(body.alerts[0].siteName).toBe('Campus-01 — Meridian HQ');
+    expect(body.alerts[0].siteId).toBe('campus-01');
     const site = (body.sites as any[]).find((s) => s.siteId === 'campus-01');
     expect(site).toBeDefined();
     expect(site.plane).toContain('CENTRAL');
     expect(typeof site.devices).toBe('number');
     expect(typeof site.clients).toBe('string');
+  });
+
+  it('an overview alert with no reported site sends no site fields at all', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      // 'core-services' is one of the bookkeeping ids alert rows file under:
+      // it has no site page, so linking it would be a dead jump.
+      alerts: [alertRow({ alertId: 'a-2', siteId: 'core-services', siteName: '—' })],
+    });
+    const { body } = await getJson('/api/overview');
+    expect(body.alerts[0].meta).toBe('ap-1 flapping on channel 36'); // no '—' prefix
+    expect(body.alerts[0].siteName).toBeUndefined(); // omitted, never blank
+    expect(body.alerts[0].siteId).toBeUndefined();
+  });
+
+  it('live system rows carry a console URL only for a plane whose stored endpoint IS its console', async () => {
+    const saved = await saveCreds('clearpass', { publisher: 'cppm-01.meridian.health', token: 'cppm-token-1234' });
+    expect(saved.status).toBe(200);
+    try {
+      const { body } = await getJson('/api/systems');
+      const rows = body.systems as any[];
+      const clearpass = rows.find((s) => s.planeId === 'clearpass');
+      // A bare host is the operator's own record — served as its https origin,
+      // never decorated with an invented console path.
+      expect(clearpass.consoleUrl).toBe('https://cppm-01.meridian.health');
+      // Central stores an API GATEWAY and GreenLake a workspace id; neither is
+      // a console, so "Open console" must stay inert rather than open a page
+      // that is not one. The collector has no console at all.
+      for (const planeId of ['central', 'greenlake', 'local', 'mist']) {
+        expect(rows.find((s) => s.planeId === planeId).consoleUrl).toBeUndefined();
+      }
+    } finally {
+      await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
+    }
+  });
+
+  it('a stored console endpoint is served as an origin — no path, no userinfo', async () => {
+    const saved = await saveCreds('aos8', {
+      master: 'https://admin:hunter2@10.48.0.10:4343/screens/wms/wms.login',
+      username: 'ro',
+      password: 'pw-12345678',
+    });
+    expect(saved.status).toBe(200);
+    try {
+      const { body } = await getJson('/api/systems');
+      const aos8 = (body.systems as any[]).find((s) => s.planeId === 'aos8');
+      expect(aos8.consoleUrl).toBe('https://10.48.0.10:4343');
+    } finally {
+      await fetch(`${base}/api/systems/aos8`, { method: 'DELETE' });
+    }
   });
 
   it('live /api/devices/:name serves cached facts and only attaches clients when sessions were reported', async () => {
@@ -898,6 +959,30 @@ describe('live-mode screen contracts', () => {
     expect(body.reachability.collectorNote).toContain('no device at this site has been probed directly');
   });
 
+  it('a linked collector reports its real share, and only offers a core it could actually shell', async () => {
+    contributions.clear();
+    const saved = await saveCreds('local', { host: 'jump-01.meridian.health', username: 'svc-portal', password: 'pw-12345678' });
+    expect(saved.status).toBe(200);
+    try {
+      contributions.set('local', {
+        devices: [
+          { ...DEVICE, name: 'sw-core-x', plane: 'LOCAL', planeTone: 'accent', localShell: true, ip: '10.1.0.5' },
+          // Same collector, but no management IP — the bridge would refuse to
+          // dial it, so it must never be the terminal target.
+          { ...DEVICE, name: 'sw-core-y', plane: 'LOCAL', planeTone: 'accent', localShell: true },
+        ],
+      });
+      const { body } = await getJson('/api/sites/campus-01');
+      expect(body.reachability.reachValue).toBe(100); // both rows are collector-claimed
+      expect(body.reachability.collector).not.toBe('not linked');
+      expect(body.reachability.core).toBe('sw-core-x');
+      expect(body.reachability.collectorNote).toContain('2 of 2 devices');
+    } finally {
+      await fetch(`${base}/api/systems/local`, { method: 'DELETE' });
+      contributions.clear();
+    }
+  });
+
   it('live device detail carries per-device evidence and only ships a shell block it can honour', async () => {
     contributions.clear();
     const CONTROLLER = {
@@ -926,38 +1011,62 @@ describe('live-mode screen contracts', () => {
     expect(cloud.body.terminal).toBeUndefined();
 
     contributions.clear();
-    contributions.set('aos8', { devices: [CONTROLLER] });
-    const shell = await getJson('/api/devices/mc-lake-1');
-    // Class comes from the row's device TYPE (controller → AOS chips), never
-    // the demo name-prefix rules, so route and screen cannot disagree.
-    expect(shell.body.terminal.quickCommands).toContain('show ap database');
-    expect(shell.body.terminal.banner.length).toBeGreaterThan(0);
+    // The collector credentials ARE the shell path: with none stored, no live
+    // device can be dialled at all, so the row's own claim is not enough.
+    contributions.set('aos8', { devices: [{ ...CONTROLLER, ip: '10.48.0.10' }] });
+    const noCreds = await getJson('/api/devices/mc-lake-1');
+    expect(noCreds.body.device.localShell).toBe(false);
+    expect(noCreds.body.terminal).toBeUndefined();
 
-    contributions.set('aos8', { devices: [{ ...CONTROLLER, name: 'ap-test-1', type: 'ap' }] });
-    const ap = await getJson('/api/devices/ap-test-1');
-    expect(ap.body.terminal).toBeUndefined(); // cloud-claimed class has no shell at all
+    const savedLocal = await saveCreds('local', { host: 'jump-01.meridian.health', username: 'svc-portal', password: 'pw-12345678' });
+    expect(savedLocal.status).toBe(200);
+    try {
+      contributions.set('aos8', { devices: [{ ...CONTROLLER, ip: '10.48.0.10' }] });
+      const shell = await getJson('/api/devices/mc-lake-1');
+      // Class comes from the row's device TYPE (controller → AOS chips), never
+      // the demo name-prefix rules, so route and screen cannot disagree.
+      expect(shell.body.device.localShell).toBe(true);
+      expect(shell.body.terminal.quickCommands).toContain('show ap database');
+      expect(shell.body.terminal.banner.length).toBeGreaterThan(0);
+
+      // Same credentials, same claim — but the inventory names no management
+      // IP, so resolveTarget() would refuse to dial and the gate must close
+      // rather than render a terminal that can never open.
+      contributions.set('aos8', { devices: [CONTROLLER] });
+      const noIp = await getJson('/api/devices/mc-lake-1');
+      expect(noIp.body.device.localShell).toBe(false);
+      expect(noIp.body.terminal).toBeUndefined();
+
+      contributions.set('aos8', { devices: [{ ...CONTROLLER, ip: '10.48.0.11', name: 'ap-test-1', type: 'ap' }] });
+      const ap = await getJson('/api/devices/ap-test-1');
+      expect(ap.body.device.localShell).toBe(false);
+      expect(ap.body.terminal).toBeUndefined(); // cloud-claimed class has no shell at all
+    } finally {
+      await fetch(`${base}/api/systems/local`, { method: 'DELETE' });
+      contributions.clear();
+    }
   });
 
   it('a plane that reports no local shell overrides a row that claims one', async () => {
     contributions.clear();
     // Mist's adapter answers capabilities().localShell === false: it describes
     // hardware the portal has no bridge to. A row claiming otherwise cannot
-    // conjure a session, so the shell block stays off.
-    const saved = await fetch(`${base}/api/systems/mist/credentials`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ apiHost: 'api.mist.example.com', orgId: 'org-1', token: 'mist-token-1234' }),
-    });
+    // conjure a session, so both the served flag and the shell block say no —
+    // DeviceDetail drives its WS attempt off `device.localShell` alone.
+    const saved = await saveCreds('mist', { apiHost: 'api.mist.example.com', orgId: 'org-1', token: 'mist-token-1234' });
     expect(saved.status).toBe(200);
+    const savedLocal = await saveCreds('local', { host: 'jump-01.meridian.health', username: 'svc-portal', password: 'pw-12345678' });
+    expect(savedLocal.status).toBe(200);
     try {
       contributions.set('mist', {
-        devices: [{ ...DEVICE, name: 'sw-mist-1', plane: 'MIST', planeTone: 'info', localShell: true }],
+        devices: [{ ...DEVICE, name: 'sw-mist-1', plane: 'MIST', planeTone: 'info', localShell: true, ip: '10.42.9.9' }],
       });
       const { body } = await getJson('/api/devices/sw-mist-1');
-      expect(body.device.localShell).toBe(true); // the row is served as reported
-      expect(body.terminal).toBeUndefined(); // …but no shell block is offered
+      expect(body.device.localShell).toBe(false); // corrected to what the portal can do
+      expect(body.terminal).toBeUndefined(); // …and no shell block is offered
     } finally {
       await fetch(`${base}/api/systems/mist`, { method: 'DELETE' });
+      await fetch(`${base}/api/systems/local`, { method: 'DELETE' });
       contributions.clear();
     }
   });
@@ -1902,6 +2011,7 @@ describe('hidden demo devices', () => {
     const before = await getJson('/api/sites/campus-01');
     const names = (before.body.profile.devices as any[]).map((d) => d.name);
     expect(names).toContain('sw-core-a');
+    expect(before.body.profile.core).toBe('sw-core-a');
     const total = Number(before.body.profile.deviceCount.replace(/,/g, ''));
 
     await putSettings({ hiddenDemoDevices: ['sw-core-a'] });
@@ -1910,6 +2020,21 @@ describe('hidden demo devices', () => {
       expect((after.body.profile.devices as any[]).map((d) => d.name)).not.toContain('sw-core-a');
       // The headline count moves with it — the two screens describe one estate.
       expect(Number(after.body.profile.deviceCount.replace(/,/g, ''))).toBe(total - 1);
+      // …and so does the reachability panel's terminal target: offering a
+      // shell on a device the operator pruned would dial a row this portal no
+      // longer holds. '' is the profile's documented "no core known" value.
+      expect(after.body.profile.core).toBe('');
+    } finally {
+      await putSettings({ hiddenDemoDevices: [] });
+    }
+  });
+
+  it('pruning some other device leaves the core terminal target alone', async () => {
+    await putSettings({ hiddenDemoDevices: ['sw-core-b'] });
+    try {
+      const { body } = await getJson('/api/sites/campus-01');
+      expect((body.profile.devices as any[]).map((d) => d.name)).not.toContain('sw-core-b');
+      expect(body.profile.core).toBe('sw-core-a'); // still in the inventory, still shellable
     } finally {
       await putSettings({ hiddenDemoDevices: [] });
     }

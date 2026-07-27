@@ -22,6 +22,14 @@
  *   (g) SERVED TERMINAL — the envelope's `terminal` banner/quickCommands are
  *                    preferred over local re-derivation, with the shared
  *                    helpers still covering a route that sent none.
+ *   (h) SERVED EVIDENCE — the Compliance panel renders the route's own
+ *                    per-device verdicts in both modes, and an 'unavailable'
+ *                    or absent block renders a named empty state rather than
+ *                    a clean scorecard.
+ *   (i) SESSION ATTRIBUTION — the titlebar names the account, target and jump
+ *                    host from the bridge's own 'ready' frame, outranking the
+ *                    recorded-transcript match (which can lag, or belong to
+ *                    another operator).
  *
  * These tests caught a real regression: the reboot hooks used to live below
  * the `if (!data)` early return, so React threw "Rendered more hooks than
@@ -52,6 +60,7 @@ import {
   terminalBanner,
   terminalQuickCommands,
 } from '../../../shared';
+import type { DeviceEvidence } from '../../../shared';
 
 // ---------------------------------------------------------------------------
 // jsdom shims (kept local to this file)
@@ -197,9 +206,12 @@ describe('DeviceDetail — live mode with profile/config/clients gaps', () => {
         'Not available in live mode — no linked plane reported client sessions.',
       ),
     ).toBeTruthy();
+    // This payload carried no evidence block at all, so Compliance says so —
+    // an empty scorecard would read as "everything passes".
+    expect(screen.getByText('No evidence for this device')).toBeTruthy();
     expect(
       screen.getByText(
-        'Live inventory evidence coverage is available; running-configuration drift remains unavailable.',
+        'No plane supplied evidence alongside this device, so there is nothing to score. An empty list is not a pass.',
       ),
     ).toBeTruthy();
     // localShell device, bridge mocked unreachable → the shell gap note.
@@ -814,5 +826,188 @@ describe('DeviceDetail — served terminal payload', () => {
     for (const cmd of terminalQuickCommands(deviceTerminalKind(device, device.name))) {
       expect(await screen.findByRole('button', { name: cmd })).toBeTruthy();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (h) SERVED EVIDENCE — the Compliance panel reads the route's own block, and
+//     an empty one can never read as a clean scorecard
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — served compliance evidence', () => {
+  const liveEvidencePayload = (evidence?: DeviceEvidence) => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+      ...(evidence ? { evidence } : {}),
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+  };
+
+  it('renders the live verdicts the route served instead of pointing at a screen that recomputes them', async () => {
+    liveEvidencePayload({
+      mode: 'live',
+      checks: [
+        { mark: 'pass', tone: 'success', label: 'Serial and MAC on record', rule: 'scan.coverage.identity' },
+        { mark: 'fail', tone: 'warning', label: "Firmware 10.09.1010 is off the approved train", rule: 'scan.coverage.firmware' },
+      ],
+    });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('Serial and MAC on record')).toBeTruthy();
+    expect(screen.getByText('Firmware 10.09.1010 is off the approved train')).toBeTruthy();
+    expect(screen.getByText('pass')).toBeTruthy();
+    expect(screen.getByText('fail')).toBeTruthy();
+    // What the verdicts do NOT cover still says so — but the panel no longer
+    // claims coverage "is available" while showing none of it.
+    expect(
+      screen.getByText(
+        'Live inventory evidence only — running-configuration drift remains unavailable.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('No evidence for this device')).toBeNull();
+  });
+
+  it("renders mode 'unavailable' as a named empty state carrying the route's reason, not a clean scorecard", async () => {
+    liveEvidencePayload({
+      mode: 'unavailable',
+      checks: [],
+      note: 'No linked plane reported this device in the last pull, so nothing was checked.',
+    });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('No evidence for this device')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'No linked plane reported this device in the last pull, so nothing was checked.',
+      ),
+    ).toBeTruthy();
+    // An 'unavailable' block is never dressed up as a pass.
+    expect(screen.queryByText('pass')).toBeNull();
+    // The hand-off to the full report stays reachable.
+    expect(screen.getByRole('button', { name: 'View evidence coverage →' })).toBeTruthy();
+  });
+
+  it('prefers the served demo evidence over the authored profile checks', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    const profile = deviceProfile('sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+      evidence: {
+        mode: 'demo',
+        checks: [{ mark: 'fail', tone: 'danger', label: 'Served demo verdict', rule: 'served.only' }],
+      },
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('Served demo verdict')).toBeTruthy();
+    // The authored checks are the fallback, not a second copy rendered beside it.
+    for (const check of profile.checks) {
+      expect(screen.queryByText(check.label)).toBeNull();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (i) SESSION ATTRIBUTION — the bridge's own 'ready' frame names the titlebar
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — session identity from the ready frame', () => {
+  it('names the account, the dialled target and the jump host the bridge reported', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    // The store still holds only ANOTHER operator's older transcript: the
+    // socket's own claim must win, with no poll to wait for.
+    mockGetTerminalSessions.mockResolvedValue([
+      {
+        file: 'old.jsonl',
+        device: 'sw-core-a',
+        user: 'someone.else',
+        target: '10.42.8.11',
+        openedAt: '2020-01-01T00:00:00Z',
+      },
+    ]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockCreateWsTransport.mockImplementationOnce((_name, opts) => ({
+      transport: {
+        banner: () => [],
+        respond: () => [],
+        respondAsync: () => Promise.resolve([]),
+      },
+      connect: () => {
+        opts?.onSession?.({
+          user: 'netops',
+          target: '10.42.9.7',
+          via: 'bastion-hq',
+          note: null,
+        });
+        return Promise.resolve(true);
+      },
+      close: () => {},
+    }));
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('ssh netops@10.42.9.7 — via bastion-hq')).toBeTruthy();
+    // The older transcript stays listed under Recorded sessions, but it is
+    // never presented as the connection this pane is holding.
+    expect(screen.queryByText(/^ssh someone\.else@/)).toBeNull();
+  });
+
+  it('reads a direct dial as via collector rather than inventing a jump host', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockCreateWsTransport.mockImplementationOnce((_name, opts) => ({
+      transport: {
+        banner: () => [],
+        respond: () => [],
+        respondAsync: () => Promise.resolve([]),
+      },
+      connect: () => {
+        opts?.onSession?.({ user: 'netops', target: '10.42.9.7', via: null, note: null });
+        return Promise.resolve(true);
+      },
+      close: () => {},
+    }));
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('ssh netops@10.42.9.7 — via collector')).toBeTruthy();
   });
 });
