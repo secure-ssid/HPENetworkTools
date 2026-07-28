@@ -2476,6 +2476,173 @@ describe('on-demand per-object detail reads', () => {
     expect(body.client.mac).toBe(MAC);
   });
 
+  /**
+   * SIGNAL / RETRIES / WIRING — the three drawer rows that are JOINS, not
+   * fields.
+   *
+   * Central's Client schema carries no rssi and no retries: `retries` lives on
+   * the AP RADIO, and the physical uplink lives on the site graph. These cover
+   * the joins the route performs after the client read, and — just as much —
+   * what it refuses to invent when a join does not land.
+   */
+  const WIFI = {
+    ...CLIENT,
+    mac: '00:23:A7:3D:A0:42',
+    attach: 'ap-detail-1', // the AP NAME — the client row carries no serial
+    link: '2.4 GHz · 6 (20 MHz)',
+    snr: '48 dB',
+  };
+  const WIRED = {
+    ...CLIENT,
+    mac: '2C:F0:5D:A1:AA:5F',
+    medium: 'wired',
+    attach: 'sw-detail-1',
+    where: '1/1/18',
+    link: '—',
+    snr: '—',
+  };
+  /** Both radios of the attached AP: the client is on 2.4 GHz channel 6, so
+   *  0.51 is its retry figure and 2.39 belongs to the other radio. */
+  const RADIOS = [
+    { number: 0, band: '5 GHz', channel: '40E', noiseFloorDbm: -97, retries: 2.39, channelQuality: 99, channelUtilPct: 4, clients: 0 },
+    { number: 1, band: '2.4 GHz', channel: '6', noiseFloorDbm: -97, retries: 0.51, channelQuality: 98, channelUtilPct: 11, clients: 5 },
+  ];
+  const wifiDrawer = (mac: string) => getJson(`/api/clients?mac=${encodeURIComponent(mac)}`);
+
+  it('RETRIES comes from the radio the client is actually on, never the AP’s other radio', async () => {
+    contributions.set('central', { devices: [AP, SW], clients: [WIFI] });
+    const asked: Array<[string, string]> = [];
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, rssi: null, source: source({ rssi: 'empty' }) }),
+      deviceDetail: async (serial: string, kind: string) => {
+        asked.push([serial, kind]);
+        return { serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) };
+      },
+      siteTopology: async (siteId: string) => GRAPH(siteId),
+    });
+    const { status, body } = await wifiDrawer(WIFI.mac);
+    expect(status).toBe(200);
+    // The client row names an AP, not a serial — the roster supplies the key.
+    expect(asked).toEqual([['PHT5M520SZ', 'ap']]);
+    expect(body.detail.servingRadio.radioNumber).toBe(1);
+    expect(body.detail.servingRadio.retries).toBe(0.51); // NOT the 5 GHz radio's 2.39
+    expect(body.detail.servingRadio.noiseFloorDbm).toBe(-97);
+    expect(body.detail.servingRadio.apName).toBe('ap-detail-1');
+    expect(body.detail.source.sections.servingRadio).toBe('ok');
+  });
+
+  it('SIGNAL is derived from snr + the serving radio’s noise floor, and a reported rssi wins', async () => {
+    contributions.set('central', { devices: [AP, SW], clients: [WIFI] });
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, rssi: null, source: source({ rssi: 'empty' }) }),
+      deviceDetail: async (serial: string, kind: string) => ({ serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) }),
+      siteTopology: async (siteId: string) => GRAPH(siteId),
+    });
+    const derived = await wifiDrawer(WIFI.mac);
+    // 48 dB over a -97 dBm floor. Arithmetic, not a plane reading — which is
+    // why the section still says the PLANE reported none: 'empty' beside a
+    // number is how the drawer knows to label it derived.
+    expect(derived.body.detail.rssi).toBe(-49);
+    expect(derived.body.detail.source.sections.rssi).toBe('empty');
+
+    clearDetailCache();
+    while (undo.length > 0) undo.pop()!();
+    stub('central', {
+      // A roam gives the mobility trail a real per-client rssi.
+      clientDetail: async (mac: string) => ({ mac, rssi: -58, source: source({ rssi: 'ok' }) }),
+      deviceDetail: async (serial: string, kind: string) => ({ serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) }),
+      siteTopology: async (siteId: string) => GRAPH(siteId),
+    });
+    const reported = await wifiDrawer(WIFI.mac);
+    // A reading is never overwritten with a derivation.
+    expect(reported.body.detail.rssi).toBe(-58);
+    expect(reported.body.detail.source.sections.rssi).toBe('ok');
+  });
+
+  it('WIRING reads the SWITCH end of the AP uplink, whichever end of the link the AP is on', async () => {
+    contributions.set('central', { devices: [AP, SW], clients: [WIFI] });
+    const graph = GRAPH('campus-01');
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, source: source({ rssi: 'empty' }) }),
+      deviceDetail: async (serial: string, kind: string) => ({ serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) }),
+      siteTopology: async () => graph,
+    });
+    const apFirst = await wifiDrawer(WIFI.mac);
+    expect(apFirst.body.detail.wiring).toMatchObject({
+      apSerial: 'PHT5M520SZ',
+      switchName: 'sw-detail-1',
+      switchSerial: 'SG30LMR164',
+      port: '1/1/12', // the SWITCH's port, not the AP's 'eth0'
+    });
+    expect(apFirst.body.detail.source.sections.wiring).toBe('ok');
+
+    // Central draws the link FROM the switch, so live graphs arrive the other
+    // way round. Same cable, same answer — the port must still be the switch's.
+    clearDetailCache();
+    graph.links = [
+      {
+        from: 'SG30LMR164',
+        to: 'PHT5M520SZ',
+        fromPorts: [{ name: '1/1/8' }],
+        toPorts: [{ name: 'eth0' }],
+        speedBps: 2500000000,
+        health: 'Good',
+      },
+    ];
+    const switchFirst = await wifiDrawer(WIFI.mac);
+    expect(switchFirst.body.detail.wiring.port).toBe('1/1/8');
+    expect(switchFirst.body.detail.wiring.switchName).toBe('sw-detail-1');
+  });
+
+  it('a wired session is asked for no radio at all and gets no wireless joins', async () => {
+    contributions.set('central', { devices: [AP, SW], clients: [WIRED] });
+    let radioCalls = 0;
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, rssi: null, source: source({ rssi: 'empty' }) }),
+      deviceDetail: async (serial: string, kind: string) => {
+        radioCalls += 1;
+        return { serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) };
+      },
+      siteTopology: async (siteId: string) => GRAPH(siteId),
+    });
+    const { status, body } = await wifiDrawer(WIRED.mac);
+    expect(status).toBe(200);
+    // A wired client has no serving radio, and its switch port is on its own
+    // row (attach + where) — there is no hop to join and no call to spend.
+    expect(radioCalls).toBe(0);
+    expect(body.detail.servingRadio).toBeUndefined();
+    expect(body.detail.wiring).toBeUndefined();
+    expect(body.detail.rssi).toBeNull();
+    expect(body.detail.source.sections.servingRadio).toBeUndefined();
+  });
+
+  it('an unmatchable radio leaves SIGNAL and RETRIES blank instead of borrowing another radio’s', async () => {
+    // The AP moved to a band this client is not on: no honest match exists.
+    contributions.set('central', { devices: [AP, SW], clients: [WIFI] });
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, rssi: null, source: source({ rssi: 'empty' }) }),
+      deviceDetail: async (serial: string, kind: string) => ({
+        serial,
+        kind,
+        radios: [
+          { number: 0, band: '5 GHz', channel: '40E', noiseFloorDbm: -97, retries: 2.39 },
+          { number: 2, band: '6 GHz', channel: '37', noiseFloorDbm: -96, retries: 1.1 },
+        ],
+        source: source({ radios: 'ok' }),
+      }),
+      siteTopology: async (siteId: string) => ({ ...GRAPH(siteId), links: [] }),
+    });
+    const { body } = await wifiDrawer(WIFI.mac);
+    expect(body.detail.servingRadio).toBeUndefined();
+    // 'empty' = we asked and no radio matched. Nothing was borrowed from the
+    // 5 GHz radio, so the signal row stays as blank as it was.
+    expect(body.detail.source.sections.servingRadio).toBe('empty');
+    expect(body.detail.rssi).toBeNull();
+    // A graph that carries no link for this AP says so, and invents no path.
+    expect(body.detail.wiring).toBeUndefined();
+    expect(body.detail.source.sections.wiring).toBe('empty');
+  });
+
   it('a device page reads that ONE device, asking only for the subresources its kind has', async () => {
     contributions.set('central', { devices: [AP, SW] });
     const asked: Array<[string, string]> = [];

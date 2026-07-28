@@ -41,7 +41,14 @@ import {
 import type { ClientsData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { planeFilterForParam } from '../app/nav';
-import { clientFieldProvenance, detailState, pathFor, timelineFor } from '../../../shared';
+import {
+  clientFieldProvenance,
+  deriveRssiDbm,
+  detailState,
+  pathFor,
+  planeKeyOf,
+  timelineFor,
+} from '../../../shared';
 import type {
   ClientDetailLive,
   ClientDetailSection,
@@ -49,6 +56,7 @@ import type {
   ClientTimelineEvent,
   PathHop,
   PathHopView,
+  ServingRadio,
   SiteTopologyLive,
   TicketRow,
   TimelineStep,
@@ -154,6 +162,16 @@ function dbm(v: number): string {
 
 function nonEmpty(parts: (string | null | undefined | false)[]): string[] {
   return parts.filter((p): p is string => typeof p === 'string' && p.length > 0);
+}
+
+/** The radio a per-radio figure belongs to: 'radio 1 · 2.4 GHz on MBB-515'.
+ *  Central models retries and the noise floor on the AP RADIO, never on the
+ *  client, so a drawer that prints one has to name whose number it is. */
+function servingRadioLabel(r: ServingRadio): string {
+  const radio =
+    nonEmpty([r.radioNumber !== null ? `radio ${r.radioNumber}` : null, r.band]).join(' · ') ||
+    'serving radio';
+  return r.apName ? `${radio} on ${r.apName}` : radio;
 }
 
 /** Plane session events → the rows this drawer already renders. */
@@ -585,6 +603,25 @@ export default function Clients() {
         const tputNum = typeof det?.tput === 'number' ? det.tput : null;
         const roamsNum = typeof det?.roams === 'number' ? det.roams : null;
 
+        /* The AP radio this client is actually on. Central models retries and
+         * the noise floor per RADIO, so these are the only honest source for
+         * the Retries row and for a signal figure at all — and both must be
+         * labelled as what they are, not passed off as client readings. */
+        const radio = det?.servingRadio ?? null;
+        const radioRetries = typeof radio?.retries === 'number' ? radio.retries : null;
+        /* Signal is arithmetic (SNR + noise floor) when it matches the two
+         * reported figures — a roam event's own rssi is a plane reading and
+         * keeps the plain label. */
+        const rssiDerived =
+          rssiNum !== null && rssiNum === deriveRssiDbm(metricNum(cur.snr), radio?.noiseFloorDbm);
+        /* Central's client schema has NO rssi: the one per-client rssi in its
+         * whole spec is a roam-event row, so a client that never moves has no
+         * sample to miss. Say that instead of implying a dropped reading. */
+        const noSignalNote =
+          planeKeyOf(cur.plane) === 'central'
+            ? `${cur.plane} reports signal only on a roam`
+            : `no signal sample in ${roamWindow}`;
+
         /* Where it is — the site/zone/group correction.
          * A plane that has no such concept must not be shown a dash that reads
          * as "the plane failed to report it": Central places a client by SITE
@@ -618,7 +655,18 @@ export default function Clients() {
         addPlace('Zone', 'zone', cur.zone);
         addPlace('Group', 'group', cur.group, (v) => `${v} — config group`);
         place.push({ k: 'Attached to', v: known(cur.attach, cur.where), muted: false });
-        addPlace('Wiring', 'closet', cur.closet);
+        /* Wiring is the AP's own uplink off the plane's site topology — the
+         * switch and port it is patched into. Without that link the fixture
+         * closet string is all there is, and it stays honestly blank. */
+        if (det?.wiring) {
+          place.push({
+            k: 'Wiring',
+            v: known(det.wiring.switchName, det.wiring.port),
+            muted: false,
+          });
+        } else {
+          addPlace('Wiring', 'closet', cur.closet);
+        }
 
         /* Path to the internet. pathFor() stitches the DEMO topology; for a
          * live client it would fabricate hops through devices the estate does
@@ -695,8 +743,10 @@ export default function Clients() {
               v: rssiNum !== null ? dbm(rssiNum) : cur.rssi,
               note: wired
                 ? 'wired link'
-                : detailNote('rssi', 'target ≥ −67 dBm', `no signal sample in ${roamWindow}`) ||
-                  metricNote(cur.rssi, 'target ≥ −67 dBm'),
+                : rssiDerived
+                  ? 'derived from SNR + noise floor'
+                  : detailNote('rssi', 'target ≥ −67 dBm', noSignalNote) ||
+                    metricNote(cur.rssi, 'target ≥ −67 dBm'),
               color: warn(rssiNum !== null ? rssiNum < -67 : cur.rssi !== '—' && metricNum(cur.rssi) < -67),
             },
             {
@@ -711,11 +761,17 @@ export default function Clients() {
             },
             {
               k: 'Retries',
-              v: cur.retries,
+              v: radioRetries !== null ? `${radioRetries}%` : cur.retries,
               note: wired
                 ? 'not applicable to wired links'
-                : metricNote(cur.retries, 'target under 8%'),
-              color: warn(cur.retries !== '—' && metricNum(cur.retries) > 8),
+                : radio
+                  ? `${servingRadioLabel(radio)} — the radio's, not this client's`
+                  : metricNote(cur.retries, 'target under 8%'),
+              color: warn(
+                radioRetries !== null
+                  ? radioRetries > 8
+                  : cur.retries !== '—' && metricNum(cur.retries) > 8,
+              ),
             },
             {
               k: 'Throughput',

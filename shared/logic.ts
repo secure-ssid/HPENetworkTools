@@ -917,6 +917,100 @@ const PLANE_LABEL_BY_KEY: Partial<Record<PlaneKey, Plane>> = Object.fromEntries(
     .map(([label, key]) => [key, label]),
 ) as Partial<Record<PlaneKey, Plane>>;
 
+// ---------------------------------------------------------------------------
+// Serving-radio join — the fields Central models per RADIO, not per client
+// ---------------------------------------------------------------------------
+
+/**
+ * RSSI in dBm, DERIVED from the client's SNR and its serving radio's noise
+ * floor: RSSI = SNR + noise floor (both dB, the noise floor negative, so
+ * 48 + -97 = -49 dBm).
+ *
+ * THIS NUMBER IS NOT REPORTED BY THE PLANE. Central's Client schema has no
+ * rssi field at all — the only per-client rssi in the whole Monitoring spec is
+ * MobilityDetails.rssi, a ROAM EVENT row, which a stationary client never
+ * produces. So this is arithmetic on two reported values, and a renderer must
+ * label it as derived in one short line, never present it as a plane reading.
+ *
+ * A missing input yields null, NEVER 0 and never a guess: with no noise floor
+ * there is no RSSI, and 0 dBm is a real (and absurd) signal level. Inputs are
+ * accepted as `undefined` too so callers can pass an unset optional straight
+ * through without laundering it into a number.
+ */
+export function deriveRssiDbm(
+  snrDb: number | null | undefined,
+  noiseFloorDbm: number | null | undefined,
+): number | null {
+  if (typeof snrDb !== 'number' || !Number.isFinite(snrDb)) return null;
+  if (typeof noiseFloorDbm !== 'number' || !Number.isFinite(noiseFloorDbm)) return null;
+  return snrDb + noiseFloorDbm;
+}
+
+/** The minimum a radio row must carry to be matched — DeviceRadio satisfies it
+ *  structurally, and so does a test stub. */
+export interface RadioBandChannel {
+  /** '2.4 GHz' | '5 GHz' | '6 GHz', as the plane words it. */
+  band: string;
+  /** Channel as the plane words it — '6', '40E', '157E'. */
+  channel: string;
+}
+
+/** '2.4 GHz' -> '2.4', '5 GHz' -> '5'. null when there is no number to key on. */
+function bandKey(band: string | null | undefined): string | null {
+  const m = /(\d+(?:\.\d+)?)/.exec(band ?? '');
+  return m ? m[1] : null;
+}
+
+/**
+ * The channel NUMBER, dropping every way the two sides decorate it: Central's
+ * client says '6 (20 MHz)', its radio says '6', and 5 GHz radios carry a width
+ * marker ('40E', '157E', '213S'). null when there is no leading number.
+ */
+function channelKey(channel: string | null | undefined): string | null {
+  const m = /^\s*(\d+)/.exec(channel ?? '');
+  return m ? String(Number(m[1])) : null;
+}
+
+/**
+ * The radio a client is actually being served by, out of its AP's radio list.
+ *
+ * Match order:
+ *   1. band AND channel — the real answer.
+ *   2. band alone, but ONLY when exactly one radio serves that band: an AP has
+ *      one 2.4 GHz radio, so "the 2.4 GHz radio" is unambiguous even if the
+ *      channel moved between the two reads.
+ *   3. channel alone, same uniqueness rule, for the case where the client row
+ *      carries no band.
+ * Anything ambiguous returns null. A wrong radio would put another radio's
+ * retries and noise floor on this client's drawer, which is worse than the
+ * blank row it replaces — so this guesses at nothing.
+ */
+export function matchServingRadio<R extends RadioBandChannel>(
+  radios: readonly R[] | null | undefined,
+  band: string | null | undefined,
+  channel: string | null | undefined,
+): R | null {
+  if (!Array.isArray(radios) || radios.length === 0) return null;
+  const wantBand = bandKey(band);
+  const wantChannel = channelKey(channel);
+
+  if (wantBand) {
+    const byBand = radios.filter((r) => bandKey(r.band) === wantBand);
+    if (wantChannel) {
+      const exact = byBand.filter((r) => channelKey(r.channel) === wantChannel);
+      if (exact.length === 1) return exact[0];
+    }
+    return byBand.length === 1 ? byBand[0] : null;
+  }
+
+  if (wantChannel) {
+    const byChannel = radios.filter((r) => channelKey(r.channel) === wantChannel);
+    return byChannel.length === 1 ? byChannel[0] : null;
+  }
+
+  return null;
+}
+
 /** Lower rank = worse tone (for group roll-ups). */
 function toneRank(t: Tone): number {
   switch (t) {

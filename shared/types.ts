@@ -1307,7 +1307,19 @@ export interface DetailSource<S extends string = string> {
 /** Sections of a client detail read — one key per thing the drawer renders,
  *  so a renderer can ask "what happened to `roams`?" and get a straight
  *  answer even when several fields come from one endpoint. */
-export type ClientDetailSection = 'rssi' | 'tput' | 'roams' | 'timeline' | 'usageSeries';
+export type ClientDetailSection =
+  | 'rssi'
+  | 'tput'
+  | 'roams'
+  | 'timeline'
+  | 'usageSeries'
+  /** The AP radio the client is actually associated to (/aps/{serial}/radios,
+   *  matched by band+channel). 'empty' = the radio list came back but no radio
+   *  could be matched without guessing. */
+  | 'servingRadio'
+  /** The physical path AP -> switch port, read off the site topology link.
+   *  'empty' = the topology has no link for this AP. */
+  | 'wiring';
 
 /** Sections of a device detail read. */
 export type DeviceDetailSection = 'radios' | 'wlans' | 'ports';
@@ -1363,6 +1375,74 @@ export interface UsageSample {
 }
 
 /**
+ * The AP radio a wireless client is actually associated to.
+ *
+ * WHY THIS EXISTS: Central's Client schema has NO rssi and NO retries — those
+ * fields are modelled PER AP RADIO (RadioListResponseV1.retries), never per
+ * client. The only honest way to fill the drawer's RETRIES / noise-floor rows
+ * is to name the radio the client is on and say the number is THE RADIO'S.
+ * Matched by band+channel against /aps/{serial}/radios — see
+ * matchServingRadio() in shared/logic.ts, which returns null rather than
+ * guessing when the match is ambiguous.
+ *
+ * RENDERERS MUST LABEL THESE AS THE RADIO'S, not the client's: `retries` is
+ * the serving radio's frame-retry percentage across all its clients.
+ *
+ * TYPES: Central sends every metric here as a STRING ('-97', '0.51', '98').
+ * The adapter normalizes to numbers so no renderer parses; a value the plane
+ * omitted or could not be parsed is `null`, NEVER 0.
+ */
+export interface ServingRadio {
+  /** Serial of the AP the client is attached to (Client.connectedDeviceSerial). */
+  serial: string;
+  /** That AP's name, as the plane words it ('MBB-515'). */
+  apName: string;
+  /** radioNumber — 0/1/2 on a tri-radio AP. */
+  radioNumber: number | null;
+  /** '2.4 GHz' | '5 GHz' | '6 GHz', as the plane words it. */
+  band: string;
+  /** Channel AS THE PLANE WORDS IT — '6', '40E', '157E'. The trailing letter
+   *  is a bonding marker, so this is a string, not a number. */
+  channel: string;
+  /** Noise floor, dBm (negative). The other half of the RSSI derivation —
+   *  see deriveRssiDbm() in shared/logic.ts. */
+  noiseFloorDbm: number | null;
+  /** Frame retries, percent 0-100. THE RADIO'S, not this client's. */
+  retries: number | null;
+  /** Central's own channel-quality score, 0-100. */
+  channelQuality: number | null;
+  /** Channel utilization, percent 0-100. */
+  channelUtilPct: number | null;
+  /** Clients associated to this radio (this client is one of them). */
+  clients: number | null;
+}
+
+/**
+ * The physical path from a wireless client's AP to the switch it hangs off.
+ *
+ * Derived from ONE topology link (SiteTopologyLive.links) whose near or far end
+ * is the client's AP — never from the demo fixtures, and never guessed. When
+ * the topology carries no link for that AP this is ABSENT and the drawer keeps
+ * its honest empty state.
+ */
+export interface ClientWiring {
+  /** The AP the client is associated to, as the plane names it. */
+  apName: string;
+  apSerial: string;
+  /** The switch at the far end of the AP's uplink. */
+  switchName: string;
+  switchSerial: string;
+  /** Switch port the AP is patched into, as the plane words it ('1/1/8'). */
+  port: string;
+  /** Link speed in BITS PER SECOND (Central reports 1000000000 for a 1 Gb
+   *  link). null/absent = the plane reported no speed. */
+  speedBps?: number | null;
+  /** 'Good' | 'Unknown' | null, as the plane words it — the plane's verdict on
+   *  the link, not ours. */
+  linkHealth?: string | null;
+}
+
+/**
  * Per-client detail, fetched on demand for ONE client.
  *
  * Every data field is optional: absent means the section was not fetched (or
@@ -1395,6 +1475,13 @@ export interface ClientDetailLive {
   timeline?: ClientTimelineEvent[];
   /** Usage samples over the detail window, oldest-first. */
   usageSeries?: UsageSample[];
+  /** The AP radio this client is on. Absent = not matched (see the
+   *  'servingRadio' section state for why). Its metrics belong to the RADIO;
+   *  a renderer must say so in one short label, e.g. "radio 1 · 2.4 GHz". */
+  servingRadio?: ServingRadio;
+  /** AP -> switch port for this client. Absent = the topology has no link for
+   *  the AP; keep the existing empty state rather than inventing a path. */
+  wiring?: ClientWiring;
   /** Where these numbers came from and what happened to each section. */
   source: DetailSource<ClientDetailSection>;
 }

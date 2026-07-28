@@ -21,6 +21,10 @@
  *     "never asked", "genuinely empty" and "call failed" as three different
  *     answers, and PlaneAdapter's optional clientDetail/deviceDetail/
  *     siteTopology return null for "this plane cannot answer".
+ *   - The SERVING-RADIO join: Central models rssi and retries per AP RADIO,
+ *     never per client, so deriveRssiDbm (RSSI = SNR + noise floor) and
+ *     matchServingRadio (band+channel, null when ambiguous) are what fill the
+ *     drawer's SIGNAL / RETRIES rows for a client that never roams.
  *   - Field provenance: planeSupportsClientField / clientFieldProvenance, so a
  *     blank zone on Central says Central has no zone concept instead of
  *     blaming Central for not reporting a field it never modelled.
@@ -33,9 +37,11 @@ import {
   PLANE_ROW_DATASET_KEYS,
   UNKNOWN_LANE_META,
   clientFieldProvenance,
+  deriveRssiDbm,
   detailHasRows,
   detailState,
   deviceTerminalKind,
+  matchServingRadio,
   isRealSiteId,
   laneSyncStamp,
   planeKeyOf,
@@ -46,9 +52,11 @@ import {
   type ClientDetailLive,
   type ClientDetailSection,
   type ClientTimelineEvent,
+  type ClientWiring,
   type ConfigInventory,
   type DetailSource,
   type DeviceRadio,
+  type ServingRadio,
   type SiteTopologyLive,
   type SsidForm,
   type SubscriptionAssignment,
@@ -514,5 +522,122 @@ describe('live-shaped detail rows — the field names and units the tenant actua
     expect(topo.links?.[0].from).toBe(link.from);
     expect(topo.nodes?.[0].health).toBeNull();
     expect(detailState(topo.source, 'links')).toBe('ok');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The serving-radio join — SIGNAL and RETRIES for a client that never roams
+// ---------------------------------------------------------------------------
+
+describe('deriveRssiDbm — RSSI = SNR + noise floor, and null in means null out', () => {
+  it('derives the live Kindle: snr 48 dB on a radio with a -97 dBm noise floor', () => {
+    // 00:23:a7:3d:a0:42 on MBB-515 radio 1. Central models no per-client rssi
+    // at all, so this arithmetic is the only honest number for the row.
+    expect(deriveRssiDbm(48, -97)).toBe(-49);
+  });
+
+  it('is null — never 0 — when the noise floor is missing', () => {
+    // 0 dBm is a real (and absurd) signal level; emitting it would be a lie.
+    expect(deriveRssiDbm(48, null)).toBeNull();
+    expect(deriveRssiDbm(48, undefined)).toBeNull();
+  });
+
+  it('is null when the client reported no SNR', () => {
+    expect(deriveRssiDbm(null, -97)).toBeNull();
+    expect(deriveRssiDbm(undefined, -97)).toBeNull();
+  });
+
+  it('is null for a non-finite input rather than NaN leaking into a render', () => {
+    expect(deriveRssiDbm(Number.NaN, -97)).toBeNull();
+    expect(deriveRssiDbm(48, Number.POSITIVE_INFINITY)).toBeNull();
+  });
+});
+
+describe('matchServingRadio — the radio the client is on, or nothing', () => {
+  // Verbatim shape of GET /aps/USHBKD50J4/radios, normalized by the adapter.
+  const radio = (over: Partial<DeviceRadio>): DeviceRadio => ({
+    number: 0, band: '5 GHz', channel: '40E', bandwidth: '40 MHz', powerDbm: 20,
+    clients: 0, channelUtilPct: 5, rxUtilPct: 1, txUtilPct: 1, retries: 2.39,
+    drops: 0, noiseFloorDbm: -97, nonWifiInterference: 0, channelQuality: 99,
+    status: 'UP', mode: 'Client Access', ...over,
+  });
+  const RADIO_5 = radio({});
+  const RADIO_24 = radio({ number: 1, band: '2.4 GHz', channel: '6', bandwidth: '20 MHz', retries: 0.51, channelQuality: 98, clients: 5 });
+  const AP = [RADIO_5, RADIO_24];
+
+  it("matches the client's '6 (20 MHz)' to the radio's bare '6'", () => {
+    const hit = matchServingRadio(AP, '2.4 GHz', '6 (20 MHz)');
+    expect(hit).toBe(RADIO_24);
+    expect(hit?.retries).toBe(0.51); // the RADIO's retries — the drawer must say so
+    expect(deriveRssiDbm(48, hit?.noiseFloorDbm ?? null)).toBe(-49);
+  });
+
+  it("strips the 5 GHz width marker so '40 (40 MHz)' matches '40E'", () => {
+    expect(matchServingRadio(AP, '5 GHz', '40 (40 MHz)')).toBe(RADIO_5);
+  });
+
+  it('falls back to band alone when exactly one radio serves that band', () => {
+    // Channel drifted between the client read and the radio read; the AP still
+    // has only one 2.4 GHz radio, so there is nothing to guess about.
+    expect(matchServingRadio(AP, '2.4 GHz', '11')).toBe(RADIO_24);
+    expect(matchServingRadio(AP, '2.4 GHz', null)).toBe(RADIO_24);
+  });
+
+  it('returns null rather than picking one of two radios on the same band', () => {
+    const dual = [RADIO_5, radio({ number: 2, channel: '157E' })];
+    expect(matchServingRadio(dual, '5 GHz', '36 (20 MHz)')).toBeNull();
+  });
+
+  it('matches on channel alone only when that channel is unique', () => {
+    expect(matchServingRadio(AP, null, '6')).toBe(RADIO_24);
+    expect(matchServingRadio([RADIO_24, radio({ number: 2, band: '6 GHz', channel: '6' })], null, '6')).toBeNull();
+  });
+
+  it('returns null for no radios, no band and no channel — never radios[0]', () => {
+    expect(matchServingRadio([], '2.4 GHz', '6')).toBeNull();
+    expect(matchServingRadio(undefined, '2.4 GHz', '6')).toBeNull();
+    expect(matchServingRadio(AP, null, null)).toBeNull();
+    expect(matchServingRadio(AP, '6 GHz', '37')).toBeNull(); // AP has no 6 GHz radio
+  });
+});
+
+describe('ServingRadio / ClientWiring ride the same three-state machinery', () => {
+  it('an unmatched radio and a link-less AP are "empty", not a failed read', () => {
+    const detail: ClientDetailLive = {
+      mac: '00:23:a7:3d:a0:42',
+      source: {
+        plane: 'central', at: '2026-07-26T12:00:00.000Z',
+        sections: { servingRadio: 'empty', wiring: 'empty' },
+      },
+    };
+    expect(detail.servingRadio).toBeUndefined();
+    expect(detail.wiring).toBeUndefined();
+    expect(detailState(detail.source, 'servingRadio')).toBe('empty');
+    expect(detailState(detail.source, 'wiring')).toBe('empty');
+  });
+
+  it('carries the live join: MBB-515 radio 1, and CX6300-CORE port 1/1/8', () => {
+    const servingRadio: ServingRadio = {
+      serial: 'USHBKD50J4', apName: 'MBB-515', radioNumber: 1, band: '2.4 GHz',
+      channel: '6', noiseFloorDbm: -97, retries: 0.51, channelQuality: 98,
+      channelUtilPct: null, clients: 5,
+    };
+    const wiring: ClientWiring = {
+      apName: 'MBB-515', apSerial: 'USHBKD50J4', switchName: 'CX6300-CORE',
+      switchSerial: 'SG30LMR164', port: '1/1/8', speedBps: 1000000000,
+      linkHealth: 'Good',
+    };
+    const detail: ClientDetailLive = {
+      mac: '00:23:a7:3d:a0:42', servingRadio, wiring,
+      source: {
+        plane: 'central', at: '2026-07-26T12:00:00.000Z',
+        sections: { servingRadio: 'ok', wiring: 'ok' },
+      },
+    };
+    expect(detailState(detail.source, 'servingRadio')).toBe('ok');
+    expect(detail.servingRadio?.retries).toBe(0.51);
+    // An absent metric is null, never 0 — 0% utilization is a real reading.
+    expect(detail.servingRadio?.channelUtilPct).toBeNull();
+    expect(detail.wiring?.port).toBe('1/1/8');
   });
 });

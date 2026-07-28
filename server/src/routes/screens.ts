@@ -60,10 +60,13 @@ import {
   SYSTEMS,
   TICKETS,
   VLANS,
+  deriveRssiDbm,
   deriveSiteProfile,
+  detailState,
   deviceProfile,
   deviceTerminalKind,
   isRealSiteId,
+  matchServingRadio,
   scopeForPlane,
   siteDisplayName,
   siteIdFor,
@@ -80,6 +83,7 @@ import {
   type ClientDetailLive,
   type ClientDetailSection,
   type ClientRow,
+  type ClientWiring,
   type BaselineProgressRow,
   type DetailFetchState,
   type DetailSource,
@@ -107,6 +111,7 @@ import {
   type RenewalRow,
   type SearchIndexEntry,
   type ScreenSection,
+  type ServingRadio,
   type Sev,
   type SsidObject,
   type SiteAlertRow,
@@ -2317,6 +2322,171 @@ function settle(res: Response, work: Promise<void>): void {
 
 // -- Clients / auth events ----------------------------------------------------
 
+// The drawer's SIGNAL, RETRIES and WIRING rows are JOINS, not field mappings.
+//
+// Central's Client schema carries neither rssi nor retries. `retries` exists
+// only on RadioListResponseV1 — PER AP RADIO — and the one per-client rssi in
+// the whole Monitoring spec is MobilityDetails.rssi, a ROAM EVENT row a
+// stationary client never produces. The physical uplink is modelled on the SITE
+// GRAPH, not on the client. So each row is filled by joining a second object:
+//
+//   RETRIES -> the SERVING radio of the AP the client is associated to, matched
+//              by band+channel against /aps/{serial}/radios. It is THE RADIO'S
+//              retry percentage across all its clients, and must be labelled as
+//              such.
+//   SIGNAL  -> snr + that radio's noise floor (deriveRssiDbm). Arithmetic, not a
+//              plane reading. A reported rssi ALWAYS wins over it.
+//   WIRING  -> the topology link whose far end is that AP: the switch, and the
+//              port the AP is patched into.
+//
+// All three are best-effort. No serving radio, no link, no snr — no value. The
+// blank row stays blank rather than being filled with a guess.
+
+/** The AP a WIRELESS client is associated to. The client row names it
+ *  (`attach`) but carries no serial, so the reconciled roster is the join —
+ *  keyed by the same name the topology graph uses. */
+function liveApForClient(client: ClientRow | null | undefined): ReconciledDeviceRow | null {
+  if (!client || client.medium !== 'wireless' || !reportedValue(client.attach)) return null;
+  return (
+    liveMerged().devices.find(
+      (d) => d.type === 'ap' && d.name === client.attach && reportedValue(d.serial),
+    ) ?? null
+  );
+}
+
+/** Band and channel back out of the composed link cell ('2.4 GHz · 6 (20 MHz)').
+ *  central.ts joins the plane's two radio fields for display and keeps neither
+ *  raw, so this is where the pair is recovered for the radio match. */
+function clientRadioKeys(client: ClientRow): { band: string | null; channel: string | null } {
+  const parts = client.link.split('·').map((part) => part.trim());
+  return { band: parts[0] ?? null, channel: parts[1] ?? null };
+}
+
+/** The number in front of a display value ('48 dB' -> 48, '—' -> null). */
+function leadingNumber(text: string | null | undefined): number | null {
+  const match = /^-?\d+(?:\.\d+)?/.exec((text ?? '').trim());
+  if (!match) return null;
+  const value = Number(match[0]);
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The AP radio this client is actually on, and what happened to the read.
+ *
+ * One extra per-object call per drawer open, through the SAME TTL cache the
+ * device page uses: several clients on one AP cost one call, and an AP page
+ * already opened inside the TTL costs none. 'empty' means the radio list came
+ * back and no radio could be matched — matchServingRadio returns null rather
+ * than guess, because another radio's retries and noise floor on this client's
+ * drawer is worse than the blank row it would replace.
+ */
+async function liveServingRadio(
+  client: ClientRow,
+  ap: ReconciledDeviceRow,
+): Promise<{ radio: ServingRadio | null; state: DetailFetchState }> {
+  const detail = await liveDeviceDetail(ap);
+  const radios = detail?.radios;
+  if (!radios) {
+    return { radio: null, state: detail ? detailState(detail.source, 'radios') : 'not-fetched' };
+  }
+  const { band, channel } = clientRadioKeys(client);
+  const match = matchServingRadio(radios, band, channel);
+  if (!match) return { radio: null, state: 'empty' };
+  return {
+    radio: {
+      serial: ap.serial!,
+      apName: ap.name,
+      radioNumber: match.number ?? null,
+      band: match.band,
+      channel: match.channel,
+      noiseFloorDbm: match.noiseFloorDbm ?? null,
+      retries: match.retries ?? null,
+      channelQuality: match.channelQuality ?? null,
+      channelUtilPct: match.channelUtilPct ?? null,
+      clients: match.clients ?? null,
+    },
+    state: 'ok',
+  };
+}
+
+/**
+ * The switch port an AP is patched into, off the site graph.
+ *
+ * Central draws the link FROM the switch, so the AP is normally the `to` end —
+ * both ends are checked, and the port always comes from the SWITCH end. Reading
+ * the AP's own 'eth0' into the WIRING row would name the wrong end of the
+ * cable. A far end that is not a switch (or not on the graph at all) is not
+ * reported as one.
+ */
+function wiringForAp(
+  topology: SiteTopologyLive | null,
+  ap: ReconciledDeviceRow,
+): ClientWiring | null {
+  const links = topology?.links;
+  if (!links || links.length === 0) return null;
+  const serial = ap.serial!;
+  const nodes = new Map((topology?.nodes ?? []).map((node) => [node.serial, node]));
+  for (const link of links) {
+    const apIsFrom = link.from === serial;
+    if (!apIsFrom && link.to !== serial) continue;
+    const far = nodes.get(apIsFrom ? link.to : link.from);
+    if (!far || !/switch/i.test(far.type)) continue;
+    const port = (apIsFrom ? link.toPorts : link.fromPorts)?.[0]?.name;
+    if (!reportedValue(port)) continue;
+    return {
+      apName: ap.name,
+      apSerial: serial,
+      switchName: far.name,
+      switchSerial: far.serial,
+      port: port!,
+      speedBps: link.speedBps,
+      linkHealth: link.health,
+    };
+  }
+  return null;
+}
+
+/**
+ * Fold the serving radio, the derived signal and the wiring into the payload.
+ *
+ * Pure — the reads already happened. The detail object is never mutated: on a
+ * cache MISS it IS the object held in the TTL cache and handed to every later
+ * reader.
+ *
+ * SIGNAL is only derived when the plane reported no rssi of its own; a real
+ * reading from the mobility trail is never overwritten with arithmetic. The
+ * renderer tells the two apart by `sections.rssi`: 'ok' is the plane's number,
+ * and a number present while the section says 'empty' is the derived one, which
+ * must be labelled as derived from SNR + noise floor.
+ */
+function withClientJoins(
+  detail: ClientDetailLive | null,
+  client: ClientRow | null,
+  ap: ReconciledDeviceRow | null,
+  served: { radio: ServingRadio | null; state: DetailFetchState } | null,
+  topology: SiteTopologyLive | null,
+): ClientDetailLive | null {
+  if (!detail || !client || !ap) return detail;
+  const radio = served?.radio ?? null;
+  const wiring = wiringForAp(topology, ap);
+  const sections = { ...detail.source.sections };
+  if (served && served.state !== 'not-fetched') sections.servingRadio = served.state;
+  // Only an actual graph can be 'empty' about this AP; a topology we never read
+  // says nothing at all about its wiring.
+  if (topology?.links) sections.wiring = wiring ? 'ok' : 'empty';
+  const joined: ClientDetailLive = {
+    ...detail,
+    ...(radio ? { servingRadio: radio } : {}),
+    ...(wiring ? { wiring } : {}),
+    source: { ...detail.source, sections },
+  };
+  if (joined.rssi === null || joined.rssi === undefined) {
+    const derived = deriveRssiDbm(leadingNumber(client.snr), radio?.noiseFloorDbm);
+    if (derived !== null) joined.rssi = derived;
+  }
+  return joined;
+}
+
 /**
  * Keys a client-detail request adds to the clients envelope.
  *
@@ -2327,20 +2497,23 @@ function settle(res: Response, work: Promise<void>): void {
  * `topology` rides along because the drawer's "Wiring" and "Path to the
  * internet" rows are answerable from nothing else: the client row says which
  * AP it is attached to, and the site's link graph says which switch port that
- * AP hangs off (AP765-FrontOutSide -> CX6300-CORE 1/1/12). Both reads are
- * cached, and the site graph is shared with the site and device pages, so a
- * drawer open costs at most one client call and — once per TTL — one site call.
+ * AP hangs off (AP765-FrontOutSide -> CX6300-CORE 1/1/12). All three reads are
+ * issued together and all three are cached, and the site graph is shared with
+ * the site and device pages — so a drawer open costs one client call, one AP
+ * call per AP per TTL, and one site call per TTL.
  */
 async function clientDetailKeys(
   client: ClientRow | null,
   wanted: string | null,
 ): Promise<Record<string, unknown>> {
   if (wanted === null) return {};
-  const [detail, topology] = await Promise.all([
+  const ap = liveApForClient(client);
+  const [detail, topology, served] = await Promise.all([
     liveClientDetail(client),
     liveSiteTopology(liveSiteById(client?.siteId)),
+    ap && client ? liveServingRadio(client, ap) : Promise.resolve(null),
   ]);
-  return { client, detail, topology };
+  return { client, detail: withClientJoins(detail, client, ap, served, topology), topology };
 }
 
 /**

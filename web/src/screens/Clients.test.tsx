@@ -441,9 +441,10 @@ describe('Clients drawer — on-demand detail read', () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByText(/will not substitute the demo timeline/)).toBeNull();
-    // A stationary client: 0 roams and no signal sample are answers, not gaps.
+    // A stationary client: 0 roams and no signal are answers, not gaps —
+    // Central's client schema has no rssi at all, only a roam-event one.
     expect(screen.getAllByText('no roaming in the last 24h').length).toBeGreaterThan(0);
-    expect(screen.getByText('no signal sample in the last 24h')).toBeTruthy();
+    expect(screen.getByText('CENTRAL reports signal only on a roam')).toBeTruthy();
   });
 
   it('keeps the honest empty state when the read fails', async () => {
@@ -514,6 +515,14 @@ describe('Clients drawer — on-demand detail read', () => {
     expect(mockGetSiteTopology).not.toHaveBeenCalled();
   });
 
+  it('labels a roam-event signal as the plane’s own reading, not as derived', async () => {
+    mockGetClientDetail.mockResolvedValue(FULL_DETAIL);
+    renderDrawer();
+
+    await waitFor(() => expect(screen.getByText('−58 dBm')).toBeTruthy());
+    expect(metricNoteFor('Signal')).toBe('target ≥ −67 dBm');
+  });
+
   it('reads each object once per drawer visit, not once per render', async () => {
     mockGetClientDetail.mockResolvedValue(FULL_DETAIL);
     mockGetSiteTopology.mockResolvedValue(SITE_TOPOLOGY);
@@ -526,5 +535,116 @@ describe('Clients drawer — on-demand detail read', () => {
     expect(mockGetClientDetail).toHaveBeenCalledWith('3c:a9:ab:7c:a9:51');
     expect(mockGetSiteTopology).toHaveBeenCalledTimes(1);
     expect(mockGetSiteTopology).toHaveBeenCalledWith('multiple');
+  });
+});
+
+/**
+ * The three rows Central cannot answer with a field lookup, only with a join:
+ * SIGNAL (SNR + the serving radio's noise floor), RETRIES (a PER-RADIO figure —
+ * Central has no per-client retries at all) and WIRING (the AP's uplink off the
+ * site topology). Live evidence, tenant SecureSSID, client 00:23:a7:3d:a0:42 on
+ * MBB-515: snr 48, radio 1 noise floor −97 / retries 0.51, link SG30LMR164 →
+ * USHBKD50J4 on port 1/1/8.
+ */
+const KINDLE = '00:23:a7:3d:a0:42';
+
+const KINDLE_CLIENT: ClientRow = {
+  ...SPARSE_LIVE_CLIENT,
+  name: KINDLE,
+  mac: KINDLE,
+  attach: 'MBB-515',
+  snr: '48 dB',
+  link: '2.4 GHz · 6 (20 MHz)',
+};
+
+const JOINED_DETAIL: ClientDetailLive = {
+  mac: KINDLE,
+  rssi: -49,
+  roams: 0,
+  roamsWindowSec: 86_400,
+  timeline: [],
+  servingRadio: {
+    serial: 'USHBKD50J4',
+    apName: 'MBB-515',
+    radioNumber: 1,
+    band: '2.4 GHz',
+    channel: '6',
+    noiseFloorDbm: -97,
+    retries: 0.51,
+    channelQuality: 98,
+    channelUtilPct: null,
+    clients: 5,
+  },
+  wiring: {
+    apName: 'MBB-515',
+    apSerial: 'USHBKD50J4',
+    switchName: 'CX6300-CORE',
+    switchSerial: 'SG30LMR164',
+    port: '1/1/8',
+    speedBps: 2_500_000_000,
+    linkHealth: 'Good',
+  },
+  source: {
+    plane: 'central',
+    at: DETAIL_AT,
+    sections: { rssi: 'ok', roams: 'empty', timeline: 'empty', servingRadio: 'ok', wiring: 'ok' },
+  },
+};
+
+describe('Clients drawer — the serving-radio and topology joins', () => {
+  beforeEach(() => {
+    mockGetClients.mockResolvedValue({ stats: [], clients: [KINDLE_CLIENT], dataSource: 'live' });
+  });
+
+  it('renders the derived signal and says it is derived, not a plane reading', async () => {
+    mockGetClientDetail.mockResolvedValue(JOINED_DETAIL);
+    renderDrawer(KINDLE);
+
+    await waitFor(() => expect(drawer().getByText('−49 dBm')).toBeTruthy());
+    // 48 dB SNR over a −97 dBm noise floor. One short label, no banner.
+    expect(metricNoteFor('Signal')).toBe('derived from SNR + noise floor');
+    expect(drawer().queryByText('CENTRAL reports signal only on a roam')).toBeNull();
+  });
+
+  it('renders retries as the serving radio’s figure, never as the client’s', async () => {
+    mockGetClientDetail.mockResolvedValue(JOINED_DETAIL);
+    renderDrawer(KINDLE);
+
+    await waitFor(() => expect(drawer().getByText('0.51%')).toBeTruthy());
+    expect(metricNoteFor('Retries')).toBe(
+      "radio 1 · 2.4 GHz on MBB-515 — the radio's, not this client's",
+    );
+  });
+
+  it('renders the AP’s uplink switch and port as the wiring', async () => {
+    mockGetClientDetail.mockResolvedValue(JOINED_DETAIL);
+    renderDrawer(KINDLE);
+
+    await waitFor(() => expect(drawer().getByText('CX6300-CORE · 1/1/8')).toBeTruthy());
+  });
+
+  it('keeps the honest blank rows when the joins found nothing', async () => {
+    // Same client, but no radio matched and no topology link for the AP.
+    mockGetClientDetail.mockResolvedValue({
+      ...JOINED_DETAIL,
+      rssi: null,
+      servingRadio: undefined,
+      wiring: undefined,
+      source: {
+        plane: 'central',
+        at: DETAIL_AT,
+        sections: { rssi: 'empty', servingRadio: 'empty', wiring: 'empty' },
+      },
+    });
+    renderDrawer(KINDLE);
+
+    // The read has to land first — before it does, the row is honestly blank
+    // for the poll-level reason instead of the detail-level one.
+    await waitFor(() =>
+      expect(metricNoteFor('Signal')).toBe('CENTRAL reports signal only on a roam'),
+    );
+    expect(drawer().queryByText('0.51%')).toBeNull();
+    expect(drawer().queryByText('CX6300-CORE · 1/1/8')).toBeNull();
+    expect(metricNoteFor('Retries')).toBe('not reported by CENTRAL');
   });
 });
