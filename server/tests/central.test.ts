@@ -522,6 +522,93 @@ describe('mapCentralClient', () => {
     const w = mapCentralClient({ mac: 'aa:bb:cc:11:22:33', type: 'Wireless' });
     expect(w!.medium).toBe('wireless');
   });
+
+  it('reads the GA wireless row: SNR, band/channel, SSID and medium — and still says — for what it omits', () => {
+    // Live shape from /network-monitoring/v1/clients. The portal claimed SNR
+    // was 'not reported by CENTRAL' only because it never called this
+    // endpoint; its `type` is the RESOURCE kind, so the medium has to come
+    // from clientConnectionType or the whole wireless roster reads 'wired'.
+    const now = Date.parse('2026-07-28T15:00:00.000Z');
+    const c = mapCentralClient(
+      {
+        macAddress: '24:3f:75:de:21:b7',
+        clientName: '55RokuSelectSeries4KTV',
+        type: 'network-monitoring/client-monitoring',
+        clientConnectionType: 'Wireless',
+        connectedDeviceType: 'AP',
+        connectedTo: 'Office-655',
+        wlanName: 'aruba-home',
+        siteName: 'Campus-01 HQ',
+        ipv4: '192.168.1.104',
+        vlanId: '200',
+        role: 'aruba-home',
+        clientOperatingSystem: 'Roku TV',
+        clientCategory: 'Audio & Video',
+        clientFunction: 'Media Streaming',
+        clientVendor: 'Roku',
+        clientTags: 'AV,ml-IoT',
+        keyManagement: 'WPA2-PSK',
+        authenticationType: '',
+        wirelessBand: '5 GHz',
+        wirelessChannel: '149E (80 MHz)',
+        snr: 48,
+        connectedAt: '2026-07-28T13:00:00.000Z',
+        status: 'Connected',
+      },
+      now,
+    );
+    expect(c!.medium).toBe('wireless');
+    expect(c!.snr).toBe('48 dB');
+    expect(c!.link).toBe('5 GHz · 149E (80 MHz)');
+    expect(c!.where).toBe('aruba-home');
+    expect(c!.attach).toBe('Office-655');
+    expect(c!.name).toBe('55RokuSelectSeries4KTV');
+    expect(c!.model).toBe('Roku TV');
+    expect(c!.type).toBe('media');
+    expect(c!.auth).toBe('WPA2-PSK');
+    expect(c!.vlan).toBe('200');
+    expect(c!.session).toBe('2h 0m');
+    // Honesty: the GA payload carries no signal strength, retry, rate or roam
+    // counters, so those stay '—' rather than being invented from the SNR.
+    expect(c!.rssi).toBe('—');
+    expect(c!.retries).toBe('—');
+    expect(c!.tput).toBe('—');
+    expect(c!.roams).toBe('—');
+  });
+
+  it('reads GA wired rows as wired and keeps their null SNR as —', () => {
+    const c = mapCentralClient({
+      macAddress: '00:0b:86:b8:c4:b8',
+      type: 'network-monitoring/client-monitoring',
+      clientConnectionType: 'Wired',
+      connectedTo: 'CX6300-CORE',
+      port: '1/1/17',
+      snr: null,
+    });
+    expect(c!.medium).toBe('wired');
+    expect(c!.snr).toBe('—');
+    expect(c!.where).toBe('1/1/17');
+  });
+
+  it('maps Central clientFunction/clientCategory into the type vocabulary, without forcing the ones that do not fit', () => {
+    const ga = (fields: Record<string, unknown>) =>
+      mapCentralClient({ macAddress: 'aa:bb:cc:dd:ee:01', ...fields })!.type;
+    // 'Video Surveillance' contains 'video' — the media test would have
+    // claimed a security camera before the imaging test ever ran.
+    expect(ga({ clientFunction: 'Video Surveillance', clientCategory: 'Public Safety' })).toBe('imaging');
+    expect(ga({ clientFunction: 'E-Reader', clientOperatingSystem: 'Kindle' })).toBe('tablet');
+    expect(ga({ clientFunction: 'Television Sets', clientCategory: 'Audio & Video' })).toBe('media');
+    expect(ga({ clientFunction: 'Gaming Platform' })).toBe('media');
+    expect(ga({ clientFunction: 'Home Automation', clientCategory: 'Smart Home' })).toBe('building');
+    expect(ga({ clientFunction: 'Energy Monitoring', clientOperatingSystem: 'Energy Detective' })).toBe('building');
+    expect(ga({ clientCategory: 'IoT Connectivity', clientVendor: 'Espressif' })).toBe('building');
+    expect(ga({ clientFunction: 'Printer', clientOperatingSystem: 'Canon Printer' })).toBe('printer');
+    // No honest bucket exists for an uplinked switch seen as a client, and
+    // 'Unclassified' is the plane saying it does not know — both stay unknown
+    // instead of being filed under a type the plane never claimed.
+    expect(ga({ clientFunction: 'Network Switching', clientCategory: 'Network Infrastructure' })).toBe('unknown');
+    expect(ga({ clientFunction: 'Unclassified', clientCategory: 'Unclassified' })).toBe('unknown');
+  });
 });
 
 describe('mapCentralNotification', () => {
@@ -1033,6 +1120,93 @@ describe('CentralAdapter.pull()', () => {
     const v1a = calls.filter((c) => c.startsWith('GET /network-monitoring/v1alpha1/clients'));
     expect(v1a.length).toBeGreaterThan(0);
     expect(v1a.every((c) => !c.includes('calculate_total'))).toBe(true); // never leaks (v1alpha1 400s on it)
+  });
+
+  it('prefers the GA clients endpoint, which is the one that reports SNR', async () => {
+    const routes = { ...HAPPY_ROUTES };
+    routes['GET /network-monitoring/v1/clients'] = {
+      items: [
+        {
+          macAddress: '24:3f:75:de:21:b7',
+          clientName: 'roku-lobby',
+          clientConnectionType: 'Wireless',
+          wlanName: 'Meridian-Staff',
+          siteName: 'Campus-01 HQ',
+          snr: 48,
+        },
+      ],
+      total: 1,
+      count: 1,
+      next: null,
+    };
+    // Same tenant, alpha shape: no snr at all. Reaching for it would put a '—'
+    // on the wire for a field Central DOES report.
+    routes['GET /network-monitoring/v1alpha1/clients'] = {
+      items: [{ macAddress: '24:3f:75:de:21:b7', hostName: 'roku-lobby', siteName: 'Campus-01 HQ' }],
+      total: 1,
+      count: 1,
+    };
+    const { adapter, calls } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    expect(pull.clients).toHaveLength(1);
+    expect(pull.clients![0].snr).toBe('48 dB');
+    const ga = calls.filter((c) => c.startsWith('GET /network-monitoring/v1/clients'));
+    expect(ga.length).toBeGreaterThan(0);
+    expect(ga.every((c) => !c.includes('calculate_total'))).toBe(true); // classic-only param never leaks
+    expect(calls.some((c) => c.startsWith('GET /network-monitoring/v1alpha1/clients'))).toBe(false);
+  });
+
+  it('walks the GA clients endpoint on its `next` cursor, not on offset', async () => {
+    // The GA endpoint IGNORES offset — verified against a live tenant:
+    // '?offset=2&limit=2' hands back page ONE again. Paging it the offset way
+    // re-reads the first page forever and silently drops every client past it.
+    const manyClients = Array.from({ length: 1_100 }, (_, i) => ({
+      macAddress: `aa:bb:cc:00:${String(Math.floor(i / 256)).padStart(2, '0')}:${String(i % 256).padStart(2, '0')}`,
+      clientName: `client-${i}`,
+      clientConnectionType: 'Wireless',
+      siteName: 'Campus-01 HQ',
+    }));
+    const { adapter, state, calls } = makeAdapter((method, pathname, query) => {
+      if (method === 'GET' && pathname === '/network-monitoring/v1/clients') {
+        const limit = Number(query.get('limit') ?? 500);
+        // Cursor semantics as the tenant implements them: page 1 when absent,
+        // and offset is not consulted at all.
+        const page = Number(query.get('next') ?? 1);
+        const items = manyClients.slice((page - 1) * limit, (page - 1) * limit + limit);
+        const done = (page - 1) * limit + items.length >= manyClients.length;
+        return { body: { items, total: manyClients.length, count: items.length, next: done ? null : String(page + 1) } };
+      }
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    const pull = await adapter.pull();
+    expect(pull.clients).toHaveLength(1_100);
+    const clientCalls = calls.filter((c) => c.startsWith('GET /network-monitoring/v1/clients'));
+    expect(clientCalls).toHaveLength(3); // 500 + 500 + 100
+    expect(clientCalls.every((c) => !c.includes('offset='))).toBe(true);
+    expect(clientCalls.some((c) => c.includes('next=2'))).toBe(true);
+    expect(clientCalls.some((c) => c.includes('next=3'))).toBe(true);
+    expect(state.note).toContain('1,100 clients');
+    expect(state.note).not.toContain('truncated');
+  });
+
+  it('reports truncation when the GA cursor walk is cut short by the page cap', async () => {
+    // A cursor still outstanding at the page cap is exactly the silent loss
+    // the offset walk reports — it must not present a partial roster as whole.
+    const { adapter, state } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/network-monitoring/v1/clients') {
+        const items = Array.from({ length: 500 }, (_, i) => ({
+          macAddress: `aa:bb:cc:11:${String(i % 256).padStart(2, '0')}:${String(Math.floor(i / 256)).padStart(2, '0')}`,
+          siteName: 'Campus-01 HQ',
+        }));
+        return { body: { items, count: items.length, next: 'more' } }; // never says stop
+      }
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    await adapter.pull();
+    expect(state.note).toContain('truncated: clients');
+    expect(state.health).toBe('warning'); // an incomplete read never stamps healthy
   });
 
   it('pull-level: v1alpha1 clients get a real session from connectedSince, not —', async () => {

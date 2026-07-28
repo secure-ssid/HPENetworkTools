@@ -671,6 +671,35 @@ describe('live-mode screen contracts', () => {
     expect(body.alerts[0].siteId).toBeUndefined();
   });
 
+  it("live overview's Needs-you-now drops cleared rows and leads with the unacked worst", async () => {
+    contributions.clear();
+    contributions.set('central', {
+      alerts: [
+        // A plane that has resolved a P1 is not asking for anyone: a 50-day-old
+        // cleared row under "Needs you now" overstates the workload (README §2).
+        alertRow({ alertId: 'c-1', sev: 'P1', tone: 'danger', title: 'Gateway down', state: 'cleared', age: '50d' }),
+        alertRow({ alertId: 'a-1', sev: 'P1', tone: 'danger', title: 'Acked P1', state: 'acked', age: '9h' }),
+        alertRow({ alertId: 'o-1', sev: 'P1', tone: 'danger', title: 'Open P1', state: 'open', age: '2h' }),
+        alertRow({ alertId: 'o-2', title: 'Open P2', state: 'open', age: '30m' }),
+      ],
+    });
+    const { body } = await getJson('/api/overview');
+    expect((body.alerts as any[]).map((a) => a.title)).toEqual(['Open P1', 'Acked P1', 'Open P2']);
+    // The stat tile counts only what is open, and it must not disagree with
+    // the panel it sits above.
+    const open = (body.stats as any[]).find((s) => s.label === 'Open alerts');
+    expect(open.value).toBe('2');
+
+    // …and a tenant whose every alert is cleared gets the panel's empty state,
+    // not a wall of stale P1s (the live shape of this estate today).
+    contributions.set('central', {
+      alerts: [alertRow({ alertId: 'c-2', sev: 'P1', tone: 'danger', state: 'cleared', age: '51d' })],
+    });
+    const cleared = await getJson('/api/overview');
+    expect(cleared.body.alerts).toEqual([]);
+    expect((cleared.body.stats as any[]).find((s) => s.label === 'Open alerts').value).toBe('0');
+  });
+
   it('live system rows carry a console URL only for a plane whose stored endpoint IS its console', async () => {
     const saved = await saveCreds('clearpass', { publisher: 'cppm-01.meridian.health', token: 'cppm-token-1234' });
     expect(saved.status).toBe(200);

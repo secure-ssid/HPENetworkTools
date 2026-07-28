@@ -16,7 +16,10 @@
  *      instead of printing the prototype's "All 7 alerts" / "All 10 sites" /
  *      "Ten sites, six management planes";
  *  (e) a demo-sourced payload keeps the authored fixture prose verbatim;
- *  (f) the Sites table stays a six-row preview while the link names the total.
+ *  (f) the Sites table stays a six-row preview while the link names the total;
+ *  (j) change-log rows sharing a time + text both render (unique React keys);
+ *  (k) an empty live section drops its "all N →" link instead of offering one
+ *      that leads to nothing.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -91,6 +94,19 @@ function siteRows(n: number): OverviewData['sites'] {
     alerts: 'clear',
     alertTone: 'success' as const,
   }));
+}
+
+/**
+ * React reports a duplicate-key collision through console.error and still
+ * renders both children, so "both rows are on screen" alone cannot see the bug
+ * — the warning is the assertion.
+ */
+function captureConsoleErrors() {
+  const errors: unknown[][] = [];
+  const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    errors.push(args);
+  });
+  return { errors, restore: () => spy.mockRestore() };
 }
 
 /** Exposes the current pathname so navigation assertions stay honest. */
@@ -285,6 +301,52 @@ describe('Overview', () => {
     expect(screen.getByText('No management planes linked')).toBeTruthy();
     expect(screen.getByText('No brokered changes yet')).toBeTruthy();
     expect(screen.getByText('No launch targets')).toBeTruthy();
+  });
+
+  it('(j) change-log rows sharing a time and text both render', async () => {
+    // The live broker tail really does repeat itself: two 19:33 "alert-ack"
+    // rows differing only by ticket. A key of time+text collided and React
+    // dropped one of them.
+    const { errors, restore } = captureConsoleErrors();
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        changes: [
+          { time: '19:33', text: 'alert-ack alert — validated', who: 'NET-4202 · write broker' },
+          { time: '19:33', text: 'alert-ack alert — validated', who: 'NET-0000 · write broker' },
+        ],
+      }),
+    );
+    renderOverview();
+
+    expect((await screen.findAllByText('alert-ack alert — validated')).length).toBe(2);
+    expect(screen.getByText('NET-4202 · write broker')).toBeTruthy();
+    expect(screen.getByText('NET-0000 · write broker')).toBeTruthy();
+    expect(errors.filter((e) => String(e[0]).includes('same key'))).toEqual([]);
+    restore();
+  });
+
+  it('(j) change-log rows identical in every field keep distinct keys', async () => {
+    const { errors, restore } = captureConsoleErrors();
+    const row = { time: '19:33', text: 'disconnect client — validated', who: 'write broker' };
+    mockGetOverview.mockResolvedValue(liveData({ changes: [{ ...row }, { ...row }] }));
+    renderOverview();
+
+    expect((await screen.findAllByText('disconnect client — validated')).length).toBe(2);
+    expect(errors.filter((e) => String(e[0]).includes('same key'))).toEqual([]);
+    restore();
+  });
+
+  it('(k) a live section with nothing in it offers no "all N →" link', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ alerts: [], sites: [] }));
+    renderOverview();
+
+    expect(await screen.findByText('Nothing needs you right now')).toBeTruthy();
+    expect(screen.queryByText('All 0 alerts →')).toBeNull();
+    expect(screen.queryByText('All 0 sites →')).toBeNull();
+    expect(screen.queryByText(/All 0 /)).toBeNull();
+    // The demo prose must not stand in for a live section that reported nothing.
+    expect(screen.queryByText('All 7 alerts →')).toBeNull();
+    expect(screen.queryByText('All 10 sites →')).toBeNull();
   });
 
   it('(i) the overline names the workspace the API computed for this screen', async () => {

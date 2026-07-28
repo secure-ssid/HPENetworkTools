@@ -1298,6 +1298,32 @@ function liveOverviewAlert(a: AlertRow): OverviewAlert {
   };
 }
 
+/** Unacknowledged rows lead their severity — nobody is on them yet. */
+const ALERT_STATE_RANK: Record<AlertRow['state'], number> = { open: 0, acked: 1, cleared: 2 };
+
+/**
+ * The "Needs you now" projection: the alert queue minus the rows that no
+ * longer need anyone. A row the plane itself considers resolved is not work,
+ * and listing it under that heading overstates the workload (README §2) —
+ * the same rule the Alerts screen applies when 'show cleared' is off, applied
+ * here at the source so the panel, the stat tile and the site column agree.
+ *
+ * Order: severity first (as the merged queue already sorts), then unacked
+ * before acked, then oldest first — a P1 nobody has touched is what the panel
+ * should lead with, not a P2 that already has an owner.
+ */
+function needsYouNowAlerts(alerts: AlertRow[]): OverviewAlert[] {
+  return alerts
+    .filter((a) => a.state !== 'cleared')
+    .sort(
+      (a, b) =>
+        SEV_RANK[a.sev] - SEV_RANK[b.sev] ||
+        ALERT_STATE_RANK[a.state] - ALERT_STATE_RANK[b.state] ||
+        ageMinutes(b.age) - ageMinutes(a.age),
+    )
+    .map(liveOverviewAlert);
+}
+
 /** Live site row → the Overview Sites-table view model (badges → a prose plane label). */
 function liveOverviewSite(s: SiteRow): OverviewSiteRow {
   return {
@@ -1765,7 +1791,7 @@ screensRouter.get('/overview', (_req, res) => {
           envelopeFor('overview', {
             workspace: settings.get().workspaceName,
             stats,
-            alerts: blendSection('alerts', live.alerts.map(liveOverviewAlert), OVERVIEW_ALERTS, blended),
+            alerts: blendSection('alerts', needsYouNowAlerts(live.alerts), OVERVIEW_ALERTS, blended),
             sites: blendSection('sites', live.sites.map(liveOverviewSite), OVERVIEW_SITES, blended),
             planes: blendSection('planes', livePlanes, OVERVIEW_PLANES, blended),
             changes: blendSection('changes', liveOverviewChanges(), OVERVIEW_CHANGES, blended),
@@ -1798,7 +1824,7 @@ screensRouter.get('/overview', (_req, res) => {
     envelopeFor('overview', {
       workspace: settings.get().workspaceName,
       stats: liveOverviewStats(live),
-      alerts: live.alerts.map(liveOverviewAlert),
+      alerts: needsYouNowAlerts(live.alerts),
       sites: live.sites.map(liveOverviewSite),
       planes: liveOverviewPlanes(),
       changes: liveOverviewChanges(),

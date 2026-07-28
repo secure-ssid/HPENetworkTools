@@ -13,7 +13,8 @@
  *   switches       /monitoring/v1/switches, /network-monitoring/v1alpha1/switches            offset/limit 200
  *   gateways       /monitoring/v1/gateways, /network-monitoring/v1alpha1/gateways            offset/limit 200
  *   sites          /central/v2/sites, /central/v1/sites, /network-config/v1alpha1/sites      offset/limit 100 (v1alpha1 cap)
- *   clients        /monitoring/v1/clients, /network-monitoring/v1alpha1/clients              offset/limit 500
+ *   clients        /network-monitoring/v1/clients                                            CURSOR `next`, limit 500
+ *                  /monitoring/v1/clients, /network-monitoring/v1alpha1/clients              offset/limit 500
  *   notifications  /central/v1/notifications, /monitoring/v1/notifications,
  *                  /network-notifications/v1/alerts                                          offset/limit 100
  *
@@ -26,6 +27,13 @@
  * number of rows in THIS response, so reading it as the total stops the walk
  * after page one (500 of 4,982 clients). With no total the loop falls back to
  * the full-page heuristic, which terminates on the first short page.
+ *
+ * Paging (cursor): the GA clients endpoint does NOT paginate on offset — it
+ * hands back a `next` token and IGNORES `offset` entirely (verified against a
+ * live tenant: `?offset=2&limit=2` returns page ONE again). Candidates marked
+ * `paging: 'cursor'` therefore walk on `?next=<token>` and stop when the
+ * payload reports `next: null`; walking them on offset would re-read page one
+ * forever and drop every client past the first page.
  *
  * Failure policy:
  *   - all candidates 404 → section "missing": devices sub-sections tolerate it
@@ -356,11 +364,22 @@ function clientTypeFor(r: Record<string, unknown>, os: string | null): ClientTyp
     str(r.function),
     str(r.vendor),
     str(r.manufacturer),
+    // GA spellings. clientFunction/clientCategory are Central's own
+    // classification ('E-Reader', 'Media Streaming', 'Network Infrastructure')
+    // and clientTags carries its ML verdict ('ml-IoT'); without them every
+    // GA row whose OS reads 'Unclassified' landed in UNKNOWN.
+    str(r.clientCategory),
+    str(r.clientFunction),
+    str(r.clientVendor),
+    str(r.clientManufacturer),
+    str(r.clientTags),
   ]
     .filter((value): value is string => value !== null)
     .join(' ')
     .toLowerCase();
-  if (/ipad|tablet/.test(s)) return 'tablet';
+  // 'E-Reader' (Kindle) is a reading tablet — the closest honest bucket in the
+  // shared vocabulary, which has no e-reader of its own.
+  if (/ipad|tablet|e-?reader/.test(s)) return 'tablet';
   // 'voip' BEFORE 'phone': every VoIP vocabulary ('VoIP Phone', 'IP Phone',
   // 'SIP handset', the literal 'phone system') contains 'phone', so a generic
   // phone test first makes this branch unreachable and buries desk handsets
@@ -369,23 +388,41 @@ function clientTypeFor(r: Record<string, unknown>, os: string | null): ClientTyp
   if (/iphone|android|smart ?phone|\bmobile\b|\bphone\b/.test(s)) return 'phone';
   if (/windows|mac ?os|linux|ubuntu|chrome/.test(s)) return 'laptop';
   if (/print/.test(s)) return 'printer';
-  if (/roku|smart ?tv|television|audio|video|media streaming/.test(s)) return 'media';
+  // BEFORE media: Central's 'Video Surveillance' clientFunction contains
+  // 'video', so the media test below would claim a security camera.
+  if (/surveillance|\bcctv\b/.test(s)) return 'imaging';
+  // 'Gaming Platform' is an entertainment endpoint — media is the only bucket
+  // the shared vocabulary offers for one.
+  if (/roku|smart ?tv|television|audio|video|media streaming|gaming/.test(s)) return 'media';
   if (/camera|imaging|x-?ray/.test(s)) return 'imaging';
   if (/medical|infusion|clinical/.test(s)) return 'medical';
-  if (/sensor|building|thermostat|lighting|iot/.test(s)) return 'building';
+  // 'Home Automation'/'Smart Home'/'Energy Monitoring' are Central's words for
+  // building-systems endpoints; 'ml-IoT' is its ML tag for the same family.
+  if (/sensor|building|thermostat|lighting|iot|home automation|smart home|energy monitoring/.test(s))
+    return 'building';
+  // Deliberately NOT mapped: 'Network Switching' / 'Network Infrastructure'
+  // (an uplinked switch or gateway seen as a client) has no honest match in
+  // the shared vocabulary, so it stays unknown rather than being forced.
   return 'unknown';
 }
 
 function clientMedium(r: Record<string, unknown>): 'wired' | 'wireless' {
+  // GA rows say it outright in clientConnectionType; on those rows `type` is
+  // the resource kind ('network-monitoring/client-monitoring'), which names
+  // neither medium, and the SSID lives under wlanName — so without this the
+  // whole GA wireless roster fell through to 'wired'.
+  const conn = (str(r.clientConnectionType) ?? '').toLowerCase();
+  if (conn.includes('wireless')) return 'wireless';
+  if (conn.includes('wired')) return 'wired';
   // v1alpha1 rows carry an explicit type ('Wireless'/'Wired') — trust it
   // before the ssid/network inference below.
   const t = (str(r.type) ?? '').toLowerCase();
   if (t.includes('wireless')) return 'wireless';
   if (t.includes('wired')) return 'wired';
-  const conn = (str(r.client_type) ?? str(r.connection) ?? str(r.medium) ?? '').toLowerCase();
-  if (conn.includes('wireless') || conn.includes('wifi') || conn.includes('802.11')) return 'wireless';
-  if (conn.includes('wired') || conn.includes('ethernet')) return 'wired';
-  return str(r.ssid ?? r.network ?? r.essid) ? 'wireless' : 'wired';
+  const kind = (str(r.client_type) ?? str(r.connection) ?? str(r.medium) ?? '').toLowerCase();
+  if (kind.includes('wireless') || kind.includes('wifi') || kind.includes('802.11')) return 'wireless';
+  if (kind.includes('wired') || kind.includes('ethernet')) return 'wired';
+  return str(r.ssid ?? r.network ?? r.essid ?? r.wlanName) ? 'wireless' : 'wired';
 }
 
 function clientHealth(r: Record<string, unknown>): {
@@ -414,13 +451,15 @@ export function mapCentralClient(raw: unknown, nowMs: number = Date.now()): Clie
   // dropping it discarded EVERY row of a camelCase clients payload as junk.
   const mac = str(r.macaddr ?? r.mac ?? r.macAddress);
   if (!mac) return null; // a client row without a MAC is junk
-  // v1alpha1 rows are camelCase (userName/hostName/modelOs/siteName/ipv4/…).
-  const os = str(r.os ?? r.os_type ?? r.modelOs);
+  // v1alpha1 rows are camelCase (userName/hostName/modelOs/siteName/ipv4/…);
+  // GA names the OS clientOperatingSystem ('Apple iPad', 'Roku TV').
+  const os = str(r.os ?? r.os_type ?? r.modelOs ?? r.clientOperatingSystem);
   const site = siteIdForName(str(r.site ?? r.site_name ?? r.siteName));
   const { health, healthTone, quality, problem } = clientHealth(r);
   const sessionSec = num(r.session_age ?? r.session_seconds ?? r.uptime);
-  // v1alpha1 reports no session seconds — derive it from connectedSince (ISO).
-  const connectedSinceMs = sessionSec === null ? parseTimestamp(r.connectedSince) : null;
+  // Neither camelCase path reports session seconds — derive it from the
+  // association timestamp (v1alpha1: connectedSince, GA: connectedAt).
+  const connectedSinceMs = sessionSec === null ? parseTimestamp(r.connectedSince ?? r.connectedAt) : null;
   const rssi = num(r.rssi ?? r.signal_strength ?? r.signalStrength);
   const snr = num(r.snr ?? r.signal_db ?? r.signalDb);
   // Radio facts under BOTH shapes, like every other field here: the classic
@@ -435,7 +474,9 @@ export function mapCentralClient(raw: unknown, nowMs: number = Date.now()): Clie
   // The classic clients endpoint reports `speed` in Mbps (v1alpha1: txRate).
   const tput = num(r.speed ?? r.txRate ?? r.tx_rate);
   return {
-    name: str(r.username ?? r.userName) ?? str(r.hostname ?? r.hostName) ?? str(r.name) ?? mac,
+    // clientName is the GA display name ('DESKTOP-O48COOH', 'ChimePro-1c');
+    // it falls back to the MAC on the plane's side, which is our last resort too.
+    name: str(r.username ?? r.userName) ?? str(r.hostname ?? r.hostName) ?? str(r.name ?? r.clientName) ?? mac,
     model: os ?? 'unknown',
     type: clientTypeFor(r, os),
     mac,
@@ -445,13 +486,22 @@ export function mapCentralClient(raw: unknown, nowMs: number = Date.now()): Clie
     siteName: site.siteName,
     group: str(r.group_name ?? r.group) ?? '—',
     attach: str(r.associated_device ?? r.ap_name ?? r.switch_name ?? r.nas ?? r.nas_name ?? r.connectedTo) ?? '—',
-    where: str(r.ssid ?? r.network ?? r.essid ?? r.port ?? r.interface ?? r.interface_name) ?? '—',
+    // wlanName is the GA spelling of the SSID; it sits before the port keys so
+    // a wireless GA row reads as its network rather than as a blank port.
+    where: str(r.ssid ?? r.network ?? r.essid ?? r.wlanName ?? r.port ?? r.interface ?? r.interface_name) ?? '—',
     plane: 'CENTRAL',
     planeTone: 'accent',
     healthTone,
-    // per-field str(): v1alpha1 sends authentication:'' (?? would not skip it)
-    // but fills keyManagement ('WPA2-PSK', 'WPA3-SAE') on wireless rows.
-    auth: str(r.auth_method) ?? str(r.auth) ?? str(r.authentication) ?? str(r.keyManagement) ?? '—',
+    // per-field str(): v1alpha1 sends authentication:'' and GA sends
+    // authenticationType:'' (?? would not skip either), but both fill
+    // keyManagement ('WPA2-PSK', 'WPA3-SAE') on wireless rows.
+    auth:
+      str(r.auth_method) ??
+      str(r.auth) ??
+      str(r.authentication) ??
+      str(r.authenticationType) ??
+      str(r.keyManagement) ??
+      '—',
     authBy: '—', // the clients endpoint does not name the authenticator; ClearPass rows will
     role: str(r.role) ?? '—',
     vlan: str(r.vlan ?? r.vlan_id ?? r.vlanId) ?? '—',
@@ -606,6 +656,10 @@ interface SectionCandidate {
   /** Per-candidate query extras — classic-only params (e.g. calculate_total)
    *  must NOT leak onto the v1alpha1 paths, which 400 on unknown params. */
   extraQuery?: string;
+  /** How THIS endpoint pages. Default (absent) is offset/limit. 'cursor'
+   *  means it ignores `offset` and hands back a `next` token instead — see
+   *  the paging note in the file header. */
+  paging?: 'cursor';
 }
 
 interface SectionSpec {
@@ -650,6 +704,12 @@ const SECTIONS: Record<SectionKey, SectionSpec> = {
   },
   clients: {
     candidates: [
+      // GA first: it is the only clients endpoint that reports per-client RF
+      // (snr, band, channel, keyManagement) — the v1alpha1 alpha path answers
+      // on the same tenants but omits snr entirely, which is why the Clients
+      // table read 'not reported by CENTRAL' for a field Central does report.
+      // It pages on a `next` cursor, NOT offset (see the header paging note).
+      { path: '/network-monitoring/v1/clients', paging: 'cursor' },
       { path: '/monitoring/v1/clients', extraQuery: '&calculate_total=true' },
       { path: '/network-monitoring/v1alpha1/clients' },
     ],
@@ -771,6 +831,23 @@ function extractTotal(body: unknown): number | null {
     return num(b.total) ?? num(b.total_count) ?? num(b.totalCount);
   }
   return null;
+}
+
+/**
+ * Cursor for the NEXT page of a cursor-paged candidate, or null when the
+ * payload says this was the last one. Read only for `paging: 'cursor'`
+ * candidates: the v1alpha1 payloads also carry a `next` key, but there it is
+ * a page ordinal alongside a working `offset`, so reading it everywhere would
+ * change how those sections walk. Live GA shape: `{ items, total, count,
+ * next: "2" }` on a middle page and `next: null` on the last.
+ */
+function extractNextCursor(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as Record<string, unknown>;
+  const nested = b.pagination ?? b._pagination;
+  const raw =
+    b.next ?? (nested && typeof nested === 'object' ? (nested as Record<string, unknown>).next : undefined);
+  return str(raw);
 }
 
 /** Retry-After is delta-seconds or an HTTP-date; both → ms, anything else null. */
@@ -1035,21 +1112,33 @@ export class CentralAdapter implements PlaneAdapter {
       : spec.candidates;
 
     for (const cand of candidates) {
-      const firstPath = `${cand.path}?offset=0&limit=${spec.limit}${cand.extraQuery ?? ''}`;
+      // A cursor endpoint ignores `offset`, so sending it would only be noise
+      // on the wire (and a stray param is fatal on the strict namespaces).
+      const byCursor = cand.paging === 'cursor';
+      const firstPath = byCursor
+        ? `${cand.path}?limit=${spec.limit}${cand.extraQuery ?? ''}`
+        : `${cand.path}?offset=0&limit=${spec.limit}${cand.extraQuery ?? ''}`;
       const first = await this.authedGet(firstPath, spec.timeoutMs);
       if (first.status === 404) continue; // release variance — try the alternate namespace
       if (first.status < 200 || first.status >= 300) throw new HttpStatusError(first.status, firstPath);
 
       const rows = extractRows(first.body);
       const total = extractTotal(first.body);
+      let cursor = byCursor ? extractNextCursor(first.body) : null;
       let offset = rows.length;
       let lastPageSize = rows.length;
       let page = 1;
-      while (page < spec.maxPages && lastPageSize >= spec.limit && (total === null || offset < total)) {
+      // Cursor walks end when the endpoint stops handing back a `next`; offset
+      // walks end on the first short page (or once the stated total is covered).
+      const hasMore = (): boolean =>
+        byCursor ? cursor !== null : lastPageSize >= spec.limit && (total === null || offset < total);
+      while (page < spec.maxPages && hasMore()) {
         // Pace the walk: the gateway is quota'd and a 10-page client pull
         // fired back-to-back is exactly what earns the 429.
         await this.sleep(PAGE_PACING_MS);
-        const path = `${cand.path}?offset=${offset}&limit=${spec.limit}${cand.extraQuery ?? ''}`;
+        const path = byCursor
+          ? `${cand.path}?limit=${spec.limit}&next=${encodeURIComponent(cursor as string)}${cand.extraQuery ?? ''}`
+          : `${cand.path}?offset=${offset}&limit=${spec.limit}${cand.extraQuery ?? ''}`;
         const res = await this.authedGet(path, spec.timeoutMs);
         // Page 1 worked, so the path is valid: a failure here fails the section.
         if (res.status < 200 || res.status >= 300) throw new HttpStatusError(res.status, path);
@@ -1058,12 +1147,13 @@ export class CentralAdapter implements PlaneAdapter {
         rows.push(...pageRows);
         offset += pageRows.length;
         lastPageSize = pageRows.length;
+        cursor = byCursor ? extractNextCursor(res.body) : null;
         page += 1;
       }
       this.resolvedPath.set(section, cand);
-      // Incomplete either way: the page cap cut a still-full walk short, or the
-      // endpoint stated a total it never handed over.
-      const cappedOut = page >= spec.maxPages && lastPageSize >= spec.limit;
+      // Incomplete either way: the page cap cut a still-unfinished walk short,
+      // or the endpoint stated a total it never handed over.
+      const cappedOut = page >= spec.maxPages && hasMore();
       const shortOfTotal = total !== null && rows.length < total;
       return { rows, truncated: cappedOut || shortOfTotal };
     }

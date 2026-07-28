@@ -5,6 +5,8 @@
  * own element — and a link — whenever the row carries `siteName`/`siteId`,
  * falling back to the authored `meta` prefix when it does not) + Sites table
  * with the 64×3px health bar. Right: Management planes, Launchpad, Change log.
+ * A live section that reported nothing keeps its named empty state and drops its
+ * "all N →" link rather than pointing at an empty screen.
  * Data: getOverview() — live /api/overview when the server is up, shared
  * fixtures otherwise (header then shows the demo SYNCED stamp).
  */
@@ -130,8 +132,18 @@ export default function Overview() {
   const alertsLive = data.dataSource === 'live' || (data.blended?.includes('alerts') ?? false);
   const sitesLive = data.dataSource === 'live' || (data.blended?.includes('sites') ?? false);
   const planesLive = data.dataSource === 'live' || (data.blended?.includes('planes') ?? false);
-  const alertsLink = alertsLive ? `All ${plural(data.alerts.length, 'alert')} →` : 'All 7 alerts →';
-  const sitesLink = sitesLive ? `All ${plural(data.sites.length, 'site')} →` : 'All 10 sites →';
+  /* A count-bearing link has to lead somewhere. A live section that reported
+   * nothing gets no link at all — "All 0 alerts →" advertises a queue that is
+   * not there, and the named empty state below already says what is true
+   * (README §honesty). Demo keeps the authored prose, which always counts. */
+  const alertsLink =
+    !alertsLive ? 'All 7 alerts →'
+    : data.alerts.length > 0 ? `All ${plural(data.alerts.length, 'alert')} →`
+    : null;
+  const sitesLink =
+    !sitesLive ? 'All 10 sites →'
+    : data.sites.length > 0 ? `All ${plural(data.sites.length, 'site')} →`
+    : null;
   const subtitle =
     sitesLive || planesLive
       ? `${plural(data.sites.length, 'site')}, ${plural(data.planes.length, 'management plane')} — one queue of things that actually need you.`
@@ -144,6 +156,24 @@ export default function Overview() {
    * (README §blendLive). Nothing to say when the whole payload is one source. */
   const sourceBadge = (live: boolean) =>
     anyBlended ? <Badge tone={live ? 'info' : 'neutral'}>{live ? 'LIVE' : 'DEMO'}</Badge> : null;
+
+  /* Section chrome: the source badge and the "all N →" link, or nothing at all
+   * when a single-source payload has an empty section — an empty meta span
+   * would still print the header's separator rule. */
+  const sectionMeta = (live: boolean, link: string | null, open: () => void) => {
+    const badge = sourceBadge(live);
+    if (badge === null && link === null) return undefined;
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+        {badge}
+        {link !== null ? (
+          <button type="button" className="nd-link" onClick={open}>
+            {link}
+          </button>
+        ) : null}
+      </span>
+    );
+  };
 
   /* The API computes the workspace for this screen; the settings context is only
    * a localStorage-seeded first-paint stand-in, so the server value wins. */
@@ -209,14 +239,7 @@ export default function Overview() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <SectionHeader
               label="Needs you now"
-              meta={
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                  {sourceBadge(alertsLive)}
-                  <button type="button" className="nd-link" onClick={() => navigate('/alerts')}>
-                    {alertsLink}
-                  </button>
-                </span>
-              }
+              meta={sectionMeta(alertsLive, alertsLink, () => navigate('/alerts'))}
             />
             {data.alerts.length === 0 ? (
               <EmptyState
@@ -334,14 +357,7 @@ export default function Overview() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <SectionHeader
               label="Sites"
-              meta={
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                  {sourceBadge(sitesLive)}
-                  <button type="button" className="nd-link" onClick={() => navigate('/sites')}>
-                    {sitesLink}
-                  </button>
-                </span>
-              }
+              meta={sectionMeta(sitesLive, sitesLink, () => navigate('/sites'))}
             />
             {data.sites.length === 0 ? (
               <EmptyState
@@ -566,9 +582,14 @@ export default function Overview() {
                 description="Every write the portal makes lands here with its authorising ticket."
               />
             ) : null}
-            {data.changes.map((c) => (
+            {/* ChangeLogEntry is {time,text,who} — the broker's audit rows lose
+                their changeId/ticket in this projection, so two brokered writes
+                of the same kind in the same minute collide on time+text (live:
+                two "alert-ack alert — validated" rows at 19:33). Identity is the
+                position in the tail the server sent, not the prose. */}
+            {data.changes.map((c, i) => (
               <div
-                key={c.time + c.text}
+                key={`${c.time}|${c.text}|${c.who}|${i}`}
                 style={{
                   display: 'flex',
                   gap: 10,
