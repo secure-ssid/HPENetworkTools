@@ -4,6 +4,8 @@ import {
   getAlerts,
   getChangeHistory,
   getChangeQueue,
+  getClientDetail,
+  getClients,
   getConfigure,
   getDeviceDetail,
   getDevices,
@@ -11,6 +13,7 @@ import {
   getOverview,
   getSettings,
   getSiteDetail,
+  getSiteTopology,
   getSystems,
   getSystemsState,
   getTerminalSession,
@@ -612,6 +615,200 @@ describe('screen API source handling', () => {
     expect(state?.planes.central.ageSec).toBe(6060);
     expect(state?.planes.central.callBudget).toBe(5000);
     expect(state?.planes.central.scope).toBe('read + broker');
+  });
+});
+
+describe('on-demand detail payloads', () => {
+  const clientSource = {
+    plane: 'central',
+    at: '2026-07-28T15:58:08.279Z',
+    sections: { rssi: 'empty', tput: 'ok', roams: 'ok', timeline: 'empty' },
+    cached: false,
+    note: null,
+  };
+
+  it('passes a client detail read through with its three-state provenance intact', async () => {
+    // Live shape from the tenant: a stationary camera — 0 roams and an empty
+    // trail are REAL answers, and rssi is null because the plane reported none.
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        stats: [],
+        clients: [],
+        client: { mac: '00:0b:86:b8:c4:b8' },
+        detail: {
+          mac: '00:0b:86:b8:c4:b8',
+          rssi: null,
+          roams: 0,
+          roamsWindowSec: 86_400,
+          timeline: [],
+          usageSeries: [{ ts: '2026-07-28T12:55:00Z', txBytes: 64_654, rxBytes: 366_581 }],
+          source: clientSource,
+        },
+      },
+    });
+
+    const detail = await getClientDetail('00:0b:86:b8:c4:b8');
+    expect(detail?.roams).toBe(0);
+    expect(detail?.rssi).toBeNull();
+    // Present-and-empty is "no roaming in the last 24h", which is only legible
+    // next to sections.timeline === 'empty'. Neither may be dropped or filled.
+    expect(detail?.timeline).toEqual([]);
+    expect(detail?.source.sections).toEqual(clientSource.sections);
+    expect(detail?.usageSeries?.[0].rxBytes).toBe(366_581);
+    // Nothing the plane may learn to report later is stripped on the way past.
+    expect(detail?.roamsWindowSec).toBe(86_400);
+  });
+
+  it('asks for a client detail on the named-client route, never on the list poll', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ dataSource: 'live', stats: [], clients: [] }) });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await getClients();
+    await getClientDetail('00:0b:86:b8:c4:b8');
+
+    // The per-object read happens only when a request names a client: a plain
+    // list poll that carried a MAC would spend a plane call every 60 seconds.
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/clients');
+    expect(fetchSpy.mock.calls[1][0]).toBe('/api/clients?mac=00%3A0b%3A86%3Ab8%3Ac4%3Ab8');
+  });
+
+  it('returns null (never fixtures, never an error banner) when a detail read cannot be served', async () => {
+    // The route's own honest "no plane could answer for this MAC".
+    mockFetch({ ok: true, body: { dataSource: 'live', stats: [], clients: [], detail: null } });
+    expect(await getClientDetail('00:0b:86:b8:c4:b8')).toBeNull();
+
+    // An HTTP failure on a SUPPLEMENTARY read leaves the drawer's other rows
+    // standing — it must not blank the screen, and must not invent a reading.
+    mockFetch({ ok: false, status: 500, body: { error: 'detail read failed' } });
+    expect(await getClientDetail('00:0b:86:b8:c4:b8')).toBeNull();
+
+    // No backend at all: there is no authored client detail to fall back to.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+    expect(await getClientDetail('00:0b:86:b8:c4:b8')).toBeNull();
+  });
+
+  it('discards a detail payload that arrived without provenance', async () => {
+    // Numbers with no source.sections cannot be told apart from "not fetched"
+    // downstream, so they must not reach an operator as if they were current.
+    mockFetch({
+      ok: true,
+      body: { dataSource: 'live', stats: [], clients: [], detail: { mac: 'aa:bb', rssi: -55 } },
+    });
+    expect(await getClientDetail('aa:bb')).toBeNull();
+
+    const data = await getClients('aa:bb');
+    expect(data.detail).toBeUndefined();
+    // …and the rest of the screen still renders rather than erroring out.
+    expect(data.apiError).toBeUndefined();
+    expect(data.dataSource).toBe('live');
+  });
+
+  it('passes the per-device radios and WLANs through the device-detail envelope', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        device: { name: 'AP735-LR' },
+        profile: null,
+        config: null,
+        clients: null,
+        detail: {
+          serial: 'PHT5M520SZ',
+          kind: 'ap',
+          source: {
+            plane: 'central',
+            at: '2026-07-28T15:57:13.905Z',
+            sections: { radios: 'ok', wlans: 'empty' },
+            cached: true,
+            note: null,
+          },
+          radios: [{ number: 0, band: '5 GHz', channel: '157E', retries: 0, noiseFloorDbm: -93 }],
+          wlans: [],
+        },
+      },
+    });
+
+    const data = await getDeviceDetail('AP735-LR');
+    expect(data.detail?.radios?.[0].channel).toBe('157E');
+    // 0 retries is a reading, not a missing value.
+    expect(data.detail?.radios?.[0].retries).toBe(0);
+    // Three states, all distinct after the boundary: wlans was asked and came
+    // back empty, ports was never asked at all.
+    expect(data.detail?.wlans).toEqual([]);
+    expect(data.detail?.ports).toBeUndefined();
+    expect(data.detail?.source.sections).toEqual({ radios: 'ok', wlans: 'empty' });
+  });
+
+  it('keeps a failed section marked failed instead of passing it off as empty', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        site: { id: 'ext-securessid', name: 'SecureSSID' },
+        profile: null,
+        topology: {
+          siteId: 'SecureSSID',
+          source: {
+            plane: 'central',
+            at: '2026-07-28T15:57:40.658Z',
+            sections: { nodes: 'failed', links: 'failed' },
+            note: 'topology: HTTP 404',
+            cached: true,
+          },
+        },
+      },
+    });
+
+    const data = await getSiteDetail('ext-securessid');
+    // A failed read has no arrays at all — filling them with [] here would let
+    // the page say "this site has no links", which is a different claim.
+    expect(data.topology?.nodes).toBeUndefined();
+    expect(data.topology?.links).toBeUndefined();
+    expect(data.topology?.source.sections).toEqual({ nodes: 'failed', links: 'failed' });
+    expect(data.topology?.source.note).toBe('topology: HTTP 404');
+
+    // The same payload, read through the topology getter the drawer uses.
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        site: { id: 'ext-securessid' },
+        profile: null,
+        topology: {
+          siteId: 'SecureSSID',
+          nodes: [{ serial: 'SG30LMR164', name: 'CX6300-CORE' }],
+          links: [],
+          source: { plane: 'central', at: '2026-07-28T15:57:40.658Z', sections: { nodes: 'ok', links: 'empty' } },
+        },
+      },
+    });
+    const topology = await getSiteTopology('ext-securessid');
+    expect(topology?.nodes?.[0].name).toBe('CX6300-CORE');
+    expect(topology?.links).toEqual([]);
+    expect(topology?.source.sections.links).toBe('empty');
+  });
+
+  it('drops an unreadable device detail block without blanking the device page', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        device: { name: 'AP735-LR' },
+        profile: null,
+        config: null,
+        clients: null,
+        detail: { serial: 'PHT5M520SZ', kind: 'ap', radios: [{ number: 0 }] },
+      },
+    });
+
+    const data = await getDeviceDetail('AP735-LR');
+    expect(data.detail).toBeUndefined();
+    expect(data.device?.name).toBe('AP735-LR');
+    expect(data.apiError).toBeUndefined();
   });
 });
 

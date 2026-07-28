@@ -28,8 +28,18 @@ import {
   parseApprovedFirmware,
   parseRetryAfterMs,
   parseTimestamp,
+  parseUsageIntervalSec,
   sevFor,
   siteIdForName,
+  mapCentralGatewayPort,
+  mapCentralRadio,
+  mapCentralSwitchPort,
+  mapCentralWlan,
+  mapMobilityEvent,
+  mapTopologyLink,
+  mapTopologyNode,
+  mapUsageSamples,
+  normalizeCentralMac,
   type FetchLike,
 } from '../src/planes/central';
 
@@ -1327,5 +1337,587 @@ describe('token endpoint selection (devhub new-central)', () => {
     });
     await expect(adapter.pull()).rejects.toThrow(/GreenLake SSO answered HTTP 400/);
     expect(calls.filter((c) => c.url.endsWith('/oauth2/token'))).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ON-DEMAND DETAIL READS
+//
+// Fixtures below are RECORDED from the live tenant (site 79244870000394240),
+// not invented: AP735-LR (PHT5M520SZ) radios + wlans, CX6300-CORE (SG30LMR164)
+// interfaces, SS_9004_Gateway (CNJDKLB03G) ports, the link topology, and a
+// macAddress-filtered clients-usage series. Central's habit of returning
+// numbers as strings ('9', '-98', '1500 bytes', '1000') is preserved exactly,
+// because normalizing it is half of what these mappers are for.
+// ---------------------------------------------------------------------------
+
+const RADIO_ROWS = [
+  {
+    power: '9', radioNumber: 1, mode: 'Client Access', channel: '11', channelUtilization: '24',
+    status: 'UP', txUtilization: '0', rxUtilization: '20', bandwidth: '20 MHz', noiseFloor: '-98',
+    id: 'PHT5M520SZ/radios/1', drops: '0', channelQuality: '95', clientCount: 1, retries: '0',
+    macAddress: '48:00:20:27:0c:80', band: '2.4 GHz', nonWifiInterference: '4',
+  },
+  {
+    power: '19', radioNumber: 0, mode: 'Client Access', channel: '157E', channelUtilization: '9',
+    status: 'UP', txUtilization: '1', rxUtilization: '4', bandwidth: '80 MHz', noiseFloor: '-93',
+    id: 'PHT5M520SZ/radios/0', drops: '0', channelQuality: '97', clientCount: 1, retries: '0',
+    macAddress: '48:00:20:27:0c:a0', band: '5 GHz', nonWifiInterference: '4',
+  },
+  {
+    power: '15', radioNumber: 2, mode: 'Client Access', channel: '213S', channelUtilization: '0',
+    status: 'UP', txUtilization: '0', rxUtilization: '0', bandwidth: '160 MHz', noiseFloor: '-87',
+    id: 'PHT5M520SZ/radios/2', drops: '0', channelQuality: '100', clientCount: 0, retries: '0',
+    macAddress: '48:00:20:27:0c:90', band: '6 GHz', nonWifiInterference: '0',
+  },
+];
+
+const WLAN_ROWS = [
+  { status: 'ENABLED', band: '5 GHz, 6 GHz', securityLevel: 'Enterprise', security: 'WPA3 Enterprise (CCM 128)', wlanName: 'Air Pass', vlan: '200', clientCount: 0 },
+  { status: 'ENABLED', band: '2.4 GHz, 5 GHz', securityLevel: 'Personal', security: 'WPA2 Personal', wlanName: 'aruba-home', vlan: '200', clientCount: 25 },
+];
+
+const SWITCH_PORT_CONNECTED = {
+  speed: 5000000000, neighbourSerial: 'PHQHKZ22X5', lag: '', stpInstanceType: 'mstp', id: '1/1/3',
+  stpPortState: 'Forwarding', status: 'Connected', serialNumber: 'SG30LMR164', stpPortRole: 'Designated',
+  neighbourType: 'Access Point', neighbourHealth: 'Good', name: '1/1/3', adminStatus: 'Up', mtu: 1500,
+  connector: 'RJ45', nativeVlan: 5, duplex: 'Full', vlanMode: 'Trunk', allowedVlans: ['5', '200'],
+  allowedVlanIds: [5, 200], operStatus: 'Up', poeStatus: 'Drawing Watts', index: 3,
+  poeClass: '802.3bt Type 3 (PoE++)', uplink: false, neighbour: 'Office-655', neighbourPort: 'eth0',
+};
+
+const SWITCH_PORT_IDLE = {
+  speed: null, neighbourSerial: null, lag: '', id: '1/1/1', stpPortState: null, status: 'Not Connected',
+  stpPortRole: null, neighbourType: null, neighbourHealth: null, name: '1/1/1', adminStatus: 'Up',
+  mtu: 1500, connector: 'RJ45', nativeVlan: 200, duplex: '-', vlanMode: 'Access', allowedVlanIds: [],
+  operStatus: 'Down', poeStatus: 'Not Used', poeClass: null, uplink: false, neighbour: null, neighbourPort: null,
+};
+
+const GATEWAY_PORT_UP = {
+  connectorType: 'RJ45', macAddress: '20:4c:03:82:04:c4', speed: '1000', vlan: '1,5,33,50,55,200',
+  mtu: '9216 bytes', id: 'CNJDKLB03G/ports/GE 0/0/1', portNumber: '1', health: 'Good',
+  adminState: 'Enabled', duplex: 'Full', operState: 'Up', portType: 'Trunk', name: 'GE 0/0/1',
+};
+
+const GATEWAY_PORT_DOWN = {
+  connectorType: 'RJ45', macAddress: '20:4c:03:82:04:c2', speed: 'Auto', vlan: '1', mtu: '1500 bytes',
+  portNumber: '0', health: 'Unknown', adminState: 'Enabled', duplex: 'Auto', operState: 'Down',
+  portType: 'Trunk', name: 'GE 0/0/0',
+};
+
+const TOPOLOGY_BODY = {
+  type: 'Topology',
+  id: 'linkTopology',
+  isolatedDevicesCount: 0,
+  isolatedHealth: null,
+  devices: [
+    { conductorSerial: null, internet: false, type: 'Switch', lastSeen: 0, healthReason: null, name: 'CX6300-CORE', serial: 'SG30LMR164', ipv4: '10.11.154.1', mac: '4c:d5:87:32:c0:80', health: 'Good', deployment: 'Standalone', model: 'CX-6300M', deviceFunction: 'Access Switch', status: 'ONLINE' },
+    { conductorSerial: null, internet: false, type: 'Gateway', lastSeen: 1780779865157, healthReason: 'DEVICE_STATUS', name: 'SS_9004_Gateway-LTE', serial: 'CNP6L2H038', ipv4: '192.168.1.8', mac: '20:4c:03:e4:11:c8', health: 'Poor', deployment: 'Cluster', model: 'A9004-LTE', deviceFunction: 'Mobility GW', status: 'OFFLINE' },
+    { conductorSerial: null, internet: null, type: 'Unmanaged', lastSeen: null, healthReason: null, name: 'Room 525', serial: 'tpd_204c03ff8c8a', ipv4: null, mac: '20:4c:03:ff:8c:8a', health: null, deployment: null, model: null, deviceFunction: '-', status: 'ONLINE' },
+  ],
+  links: [
+    { speed: 1000000000, stpState: null, fromPortList: [{ index: 20, health: 'Good', lag: '', healthReason: null, name: '1/1/20' }], toPortList: [{ index: 1, health: 'Good', lag: null, healthReason: null, name: 'GE 0/0/1' }], to: 'CNJDKLB03G', health: 'Good', isSibling: null, from: 'SG30LMR164', healthReason: null, edgeType: 'System' },
+    { speed: 5000000000, stpState: null, fromPortList: [{ index: 9, health: 'Good', lag: '', healthReason: null, name: '1/1/9' }], toPortList: [{ index: null, health: 'Unknown', lag: null, healthReason: null, name: 'eth0' }], to: 'tpd_204c03ff8c8a', health: 'Unknown', isSibling: null, from: 'SG30LMR164', healthReason: null, edgeType: 'System' },
+  ],
+};
+
+const MOBILITY_ROW = {
+  occurredAt: '2026-07-28T14:31:02.418Z',
+  roamTime: '168',
+  wlanName: 'SecureSSID',
+  sourceAp: 'LR655',
+  destinationAp: 'Office-655',
+  fromChannel: '11',
+  toChannel: '157E',
+  fromBssid: '54:d7:e3:c5:ba:40',
+  toBssid: '54:d7:e3:c5:de:70',
+  rssi: '-42',
+  radioBand: '5 GHz',
+  roamProtocol: '11r',
+  type: 'network-monitoring/client-monitoring',
+  id: 'roam-1',
+};
+
+/** A macAddress-FILTERED clients-usage answer (per-client bytes). */
+const USAGE_BODY = {
+  interval: '5 mins',
+  type: 'network-monitoring/client-monitoring',
+  keys: ['txUsage', 'rxUsage'],
+  samples: [
+    { data: [1000, 500], ts: '2026-07-28T15:40:00Z' },
+    { data: [2000, 1000], ts: '2026-07-28T15:45:00Z' },
+  ],
+};
+
+describe('detail-read mappers', () => {
+  it('normalizeCentralMac canonicalizes every spelling to one cache key and URL segment', () => {
+    expect(normalizeCentralMac('04:C2:9B:8F:4C:9C')).toBe('04:c2:9b:8f:4c:9c');
+    expect(normalizeCentralMac('04-c2-9b-8f-4c-9c')).toBe('04:c2:9b:8f:4c:9c');
+    expect(normalizeCentralMac('04c2.9b8f.4c9c')).toBe('04:c2:9b:8f:4c:9c');
+    // Not 12 hex digits: passed through rather than mangled into a wrong MAC.
+    expect(normalizeCentralMac('  Office-655 ')).toBe('office-655');
+    expect(normalizeCentralMac('   ')).toBeNull();
+    expect(normalizeCentralMac(null)).toBeNull();
+  });
+
+  it('parseUsageIntervalSec reads the sampling interval instead of assuming it', () => {
+    // Central picks 5 min for <=1 day and 3 hours beyond it: assuming one
+    // would scale every derived throughput by 36x.
+    expect(parseUsageIntervalSec('5 mins')).toBe(300);
+    expect(parseUsageIntervalSec('3 hours')).toBe(10800);
+    expect(parseUsageIntervalSec('1 day')).toBe(86400);
+    expect(parseUsageIntervalSec('whenever')).toBeNull();
+    expect(parseUsageIntervalSec(null)).toBeNull();
+  });
+
+  it('mapMobilityEvent turns a recorded roam into a timeline row with a numeric RSSI', () => {
+    const e = mapMobilityEvent(MOBILITY_ROW)!;
+    expect(e.kind).toBe('roam');
+    expect(e.ts).toBe('2026-07-28T14:31:02.418Z');
+    expect(e.detail).toContain('roamed LR655 -> Office-655');
+    expect(e.detail).toContain('ch 11 -> 157E');
+    expect(e.detail).toContain('168 ms');
+    expect(e.device).toBe('Office-655');
+    expect(e.rssiDbm).toBe(-42); // the plane sends the string '-42'
+    expect(e.band).toBe('5 GHz');
+    // '157E' is a channel PLUS a bonding marker — it must stay a string.
+    expect(e.channel).toBe('157E');
+    expect(e.wlan).toBe('SecureSSID');
+  });
+
+  it('mapMobilityEvent drops an undated event and tolerates a partial one', () => {
+    expect(mapMobilityEvent({ sourceAp: 'a', destinationAp: 'b' })).toBeNull();
+    const e = mapMobilityEvent({ occurredAt: '2026-07-28T14:00:00Z', destinationAp: 'LR655' })!;
+    expect(e.detail).toBe('roamed to LR655');
+    expect(e.rssiDbm).toBeNull(); // absent, not 0
+  });
+
+  it('mapUsageSamples reads the `keys` order rather than assuming tx comes first', () => {
+    const swapped = { ...USAGE_BODY, keys: ['rxUsage', 'txUsage'] };
+    expect(mapUsageSamples(USAGE_BODY)[0]).toEqual({ ts: '2026-07-28T15:40:00Z', txBytes: 1000, rxBytes: 500 });
+    expect(mapUsageSamples(swapped)[0]).toEqual({ ts: '2026-07-28T15:40:00Z', txBytes: 500, rxBytes: 1000 });
+  });
+
+  it('mapCentralRadio normalizes Central strings to numbers and keeps the channel a string', () => {
+    const r = mapCentralRadio(RADIO_ROWS[1])!;
+    expect(r.number).toBe(0);
+    expect(r.band).toBe('5 GHz');
+    expect(r.channel).toBe('157E'); // NOT 157 — the E is a bonding marker
+    expect(r.bandwidth).toBe('80 MHz');
+    expect(r.powerDbm).toBe(19);
+    expect(r.clients).toBe(1);
+    expect(r.channelUtilPct).toBe(9);
+    expect(r.rxUtilPct).toBe(4);
+    expect(r.txUtilPct).toBe(1);
+    expect(r.retries).toBe(0);
+    expect(r.drops).toBe(0);
+    expect(r.noiseFloorDbm).toBe(-93);
+    expect(r.nonWifiInterference).toBe(4);
+    expect(r.channelQuality).toBe(97);
+    expect(r.status).toBe('UP');
+    expect(r.mode).toBe('Client Access');
+    expect(r.macAddress).toBe('48:00:20:27:0c:a0');
+  });
+
+  it('mapCentralRadio reports an omitted statistic as null, never 0', () => {
+    const r = mapCentralRadio({ radioNumber: 0, band: '5 GHz', status: 'UP' })!;
+    expect(r.powerDbm).toBeNull();
+    expect(r.retries).toBeNull();
+    expect(r.noiseFloorDbm).toBeNull();
+    expect(r.channelQuality).toBeNull();
+  });
+
+  it('mapCentralWlan maps the recorded WLAN row and drops an unnamed one', () => {
+    const w = mapCentralWlan(WLAN_ROWS[1])!;
+    expect(w).toEqual({
+      name: 'aruba-home', status: 'ENABLED', security: 'WPA2 Personal',
+      securityLevel: 'Personal', band: '2.4 GHz, 5 GHz', vlan: '200', clients: 25,
+    });
+    expect(mapCentralWlan({ status: 'ENABLED' })).toBeNull();
+  });
+
+  it('mapCentralSwitchPort keeps the speed in bits per second and names the far end of the cable', () => {
+    const p = mapCentralSwitchPort(SWITCH_PORT_CONNECTED)!;
+    expect(p.name).toBe('1/1/3');
+    expect(p.status).toBe('Connected');
+    expect(p.adminStatus).toBe('Up');
+    expect(p.operStatus).toBe('Up');
+    expect(p.speedBps).toBe(5_000_000_000); // already bps on this endpoint
+    expect(p.duplex).toBe('Full');
+    expect(p.connector).toBe('RJ45');
+    expect(p.mtu).toBe(1500);
+    expect(p.vlanMode).toBe('Trunk');
+    expect(p.nativeVlan).toBe(5);
+    expect(p.allowedVlanIds).toEqual([5, 200]);
+    expect(p.poeStatus).toBe('Drawing Watts');
+    expect(p.poeClass).toBe('802.3bt Type 3 (PoE++)');
+    expect(p.stpRole).toBe('Designated');
+    expect(p.stpState).toBe('Forwarding');
+    expect(p.neighbour).toBe('Office-655');
+    expect(p.neighbourPort).toBe('eth0');
+    expect(p.neighbourSerial).toBe('PHQHKZ22X5');
+    expect(p.neighbourType).toBe('Access Point');
+    expect(p.neighbourHealth).toBe('Good');
+    expect(p.uplink).toBe(false);
+  });
+
+  it('mapCentralSwitchPort OMITS a neighbour Central did not report rather than emptying it', () => {
+    // An empty string would render as "the plane failed to report a neighbour";
+    // an absent key is "nothing is plugged in", which is what 'Not Connected'
+    // actually means.
+    const p = mapCentralSwitchPort(SWITCH_PORT_IDLE)!;
+    expect('neighbour' in p).toBe(false);
+    expect('stpRole' in p).toBe(false);
+    expect('poeClass' in p).toBe(false);
+    expect(p.speedBps).toBeNull(); // no negotiated speed, not 0
+    expect(p.allowedVlanIds).toEqual([]); // present-and-empty: the plane DID say none
+    expect(p.lag).toBeUndefined();
+  });
+
+  it('mapCentralGatewayPort rescales Mbps to bps and refuses to read Auto as a speed', () => {
+    const up = mapCentralGatewayPort(GATEWAY_PORT_UP)!;
+    expect(up.name).toBe('GE 0/0/1');
+    expect(up.speedBps).toBe(1_000_000_000); // the plane says the string '1000'
+    expect(up.mtu).toBe(9216); // the plane says '9216 bytes'
+    expect(up.adminStatus).toBe('Enabled');
+    expect(up.operStatus).toBe('Up');
+    expect(up.status).toBe('Up');
+    expect(up.vlanMode).toBe('Trunk');
+    expect(up.allowedVlanIds).toEqual([1, 5, 33, 50, 55, 200]);
+    expect(up.connector).toBe('RJ45');
+    // The gateway ports endpoint reports NO neighbour/PoE/STP at all — those
+    // keys must be absent, not blank.
+    expect('neighbour' in up).toBe(false);
+    expect('poeStatus' in up).toBe(false);
+    expect('stpState' in up).toBe(false);
+
+    const down = mapCentralGatewayPort(GATEWAY_PORT_DOWN)!;
+    expect(down.speedBps).toBeNull(); // 'Auto' is not a speed
+    expect(down.mtu).toBe(1500);
+    expect(down.operStatus).toBe('Down');
+  });
+
+  it('mapTopologyNode keeps an unmanaged node honestly unassessed', () => {
+    const managed = mapTopologyNode(TOPOLOGY_BODY.devices[1])!;
+    expect(managed.serial).toBe('CNP6L2H038');
+    expect(managed.health).toBe('Poor');
+    expect(managed.healthReason).toBe('DEVICE_STATUS');
+    expect(managed.deployment).toBe('Cluster');
+    expect(managed.internet).toBe(false);
+    expect(managed.lastSeen).toBe(1780779865157);
+
+    const unmanaged = mapTopologyNode(TOPOLOGY_BODY.devices[2])!;
+    expect(unmanaged.serial).toBe('tpd_204c03ff8c8a'); // synthetic id is still the graph key
+    expect(unmanaged.health).toBeNull(); // Central does not assess it — a real answer
+    expect(unmanaged.model).toBeNull();
+    expect(unmanaged.internet).toBeNull();
+    expect(unmanaged.lastSeen).toBeNull();
+    // A switch with lastSeen 0 has no stamp; it must never render as 1970.
+    expect(mapTopologyNode(TOPOLOGY_BODY.devices[0])!.lastSeen).toBe(0);
+    expect(mapTopologyNode({ name: 'no serial' })).toBeNull();
+  });
+
+  it('mapTopologyLink carries both port lists and the plane own Unknown verdict', () => {
+    const l = mapTopologyLink(TOPOLOGY_BODY.links[1])!;
+    expect(l.from).toBe('SG30LMR164');
+    expect(l.to).toBe('tpd_204c03ff8c8a');
+    expect(l.fromPorts).toEqual([{ name: '1/1/9', index: 9, lag: null, health: 'Good', healthReason: null }]);
+    expect(l.toPorts[0].name).toBe('eth0');
+    expect(l.toPorts[0].index).toBeNull();
+    expect(l.speedBps).toBe(5_000_000_000);
+    expect(l.health).toBe('Unknown'); // the plane's verdict, not a failed read
+    expect(l.edgeType).toBe('System');
+    expect(mapTopologyLink({ from: 'A' })).toBeNull(); // half-attached edge
+  });
+});
+
+// -- detail reads against the fake fetch -------------------------------------
+
+const DETAIL_MAC = '04:c2:9b:8f:4c:9c';
+
+/** makeAdapter + an injectable clock, so TTL expiry costs no wall time. */
+function makeDetailAdapter(handler: Handler, clock: { ms: number } = { ms: Date.parse('2026-07-28T16:00:00Z') }) {
+  const { fn, calls } = fakeFetch(handler);
+  const recorded: { path: string; ms: number; code: string }[] = [];
+  const state = makeState();
+  const slept: number[] = [];
+  const adapter = new CentralAdapter(
+    CREDS,
+    state,
+    (c) => recorded.push(c),
+    fn,
+    async (ms) => {
+      slept.push(ms);
+    },
+    () => clock.ms,
+  );
+  return { adapter, state, recorded, calls, slept, clock };
+}
+
+/** Handler for the recorded detail endpoints; unknown paths 404 as usual. */
+function detailHandler(overrides: Record<string, HandlerResult> = {}): Handler {
+  return (method, pathname) => {
+    const decoded = decodeURIComponent(pathname);
+    for (const [frag, result] of Object.entries(overrides)) {
+      if (decoded.includes(frag)) return result;
+    }
+    if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok-1', expires_in: 7200 } };
+    if (decoded.endsWith('/mobility-trail')) return { body: { items: [MOBILITY_ROW], total: 1, count: 1, next: null } };
+    if (decoded.endsWith('/clients-usage')) return { body: USAGE_BODY };
+    if (decoded.endsWith('/radios')) return { body: { items: RADIO_ROWS, total: 3, count: 3 } };
+    if (decoded.endsWith('/wlans')) return { body: { items: WLAN_ROWS, total: 2, count: 2 } };
+    if (decoded.endsWith('/interfaces')) {
+      return { body: { items: [SWITCH_PORT_CONNECTED, SWITCH_PORT_IDLE], total: 2, count: 2, offset: null } };
+    }
+    if (decoded.endsWith('/ports')) return { body: { items: [GATEWAY_PORT_UP, GATEWAY_PORT_DOWN], total: 2, count: 2 } };
+    if (decoded.includes('/topology/')) return { body: TOPOLOGY_BODY };
+    return undefined;
+  };
+}
+
+describe('CentralAdapter.clientDetail()', () => {
+  it('answers RSSI, roams, timeline and throughput for one MAC', async () => {
+    const { adapter } = makeDetailAdapter(detailHandler());
+    const d = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(d.mac).toBe(DETAIL_MAC);
+    expect(d.source.plane).toBe('central');
+    expect(d.rssi).toBe(-42);
+    expect(d.roams).toBe(1);
+    expect(d.roamsWindowSec).toBe(86400);
+    expect(d.timeline).toHaveLength(1);
+    expect(d.timeline![0].device).toBe('Office-655');
+    expect(d.usageSeries).toEqual([
+      { ts: '2026-07-28T15:40:00Z', txBytes: 1000, rxBytes: 500 },
+      { ts: '2026-07-28T15:45:00Z', txBytes: 2000, rxBytes: 1000 },
+    ]);
+    // 4,500 bytes over two 5-minute buckets = 4500*8/600 bits per second.
+    expect(d.tputWindowSec).toBe(600);
+    expect(d.tput).toBeCloseTo((4500 * 8) / 600, 6);
+    expect(d.source.sections).toEqual({ rssi: 'ok', roams: 'ok', timeline: 'ok', tput: 'ok', usageSeries: 'ok' });
+    expect(d.source.note).toBeNull();
+    expect(d.source.cached).toBe(false);
+  });
+
+  it('asks clients-usage for THIS client only, and sends no end-at', async () => {
+    // Unfiltered, /clients-usage is TENANT-WIDE (verified live: ~78 MB per
+    // 5-min bucket vs 984 B for one client) — attributing that series to one
+    // client would be fabrication. And an end-at from our clock 400s the
+    // gateway whenever the two clocks disagree, so it is never sent.
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    await adapter.clientDetail('04-C2-9B-8F-4C-9C');
+    const usage = calls.find((c) => c.includes('/clients-usage'))!;
+    expect(decodeURIComponent(usage)).toContain(`filter=macAddress eq '${DETAIL_MAC}'`);
+    const trail = calls.find((c) => c.includes('/mobility-trail'))!;
+    expect(decodeURIComponent(trail)).toContain(`/clients/${DETAIL_MAC}/mobility-trail`);
+    expect(trail).toContain('limit=100');
+    expect(decodeURIComponent(trail)).toContain('start-at=2026-07-27T16:00:00.000Z');
+    expect(trail).not.toContain('end-at');
+  });
+
+  it('a stationary client with no roams is empty, NOT failed', async () => {
+    const { adapter } = makeDetailAdapter(
+      detailHandler({ '/mobility-trail': { body: { items: [], total: 0, count: 0, next: null } } }),
+    );
+    const d = (await adapter.clientDetail(DETAIL_MAC))!;
+    // 0 roams is a real answer ('no roaming in the last 24h'), so `roams` is
+    // 'ok' at 0 while the genuinely empty event list is 'empty'.
+    expect(d.roams).toBe(0);
+    expect(d.source.sections.roams).toBe('ok');
+    expect(d.timeline).toEqual([]);
+    expect(d.source.sections.timeline).toBe('empty');
+    expect(d.rssi).toBeNull();
+    expect(d.source.sections.rssi).toBe('empty');
+    expect(d.source.note).toBeNull(); // an empty result is not an error
+  });
+
+  it('a broken section is marked failed while the section that answered still ships', async () => {
+    const { adapter } = makeDetailAdapter(detailHandler({ '/mobility-trail': { status: 500, body: { error: 'boom' } } }));
+    const d = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(d.source.sections.rssi).toBe('failed');
+    expect(d.source.sections.roams).toBe('failed');
+    expect(d.source.sections.timeline).toBe('failed');
+    expect(d.rssi).toBeUndefined(); // absent, never a fabricated or stale number
+    expect(d.timeline).toBeUndefined();
+    expect(d.source.sections.tput).toBe('ok'); // the other endpoint still answered
+    expect(d.source.note).toContain('mobility trail: HTTP 500');
+  });
+
+  it('caches a detail read for its TTL, then re-reads once it expires', async () => {
+    const clock = { ms: Date.parse('2026-07-28T16:00:00Z') };
+    const { adapter, calls } = makeDetailAdapter(detailHandler(), clock);
+    await adapter.clientDetail(DETAIL_MAC);
+    const first = calls.filter((c) => c.includes('/clients')).length;
+    expect(first).toBe(2); // mobility-trail + clients-usage
+
+    clock.ms += 20_000;
+    const again = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(calls.filter((c) => c.includes('/clients')).length).toBe(first); // zero new calls
+    expect(again.source.cached).toBe(true); // and it SAYS the numbers are cached
+    expect(again.rssi).toBe(-42);
+
+    clock.ms += 60_000; // past DETAIL_TTL_MS
+    const fresh = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(calls.filter((c) => c.includes('/clients')).length).toBe(first + 2);
+    expect(fresh.source.cached).toBe(false);
+  });
+
+  it('two panes opening the same client at once share ONE round trip', async () => {
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    const [a, b] = await Promise.all([adapter.clientDetail(DETAIL_MAC), adapter.clientDetail(DETAIL_MAC)]);
+    expect(calls.filter((c) => c.includes('/clients')).length).toBe(2); // not 4
+    expect(a!.rssi).toBe(b!.rssi);
+  });
+
+  it('caches the FAILED read too, so a re-rendering drawer cannot storm a sick tenant', async () => {
+    const { adapter, calls } = makeDetailAdapter(
+      detailHandler({ '/mobility-trail': { status: 503, body: {} }, '/clients-usage': { status: 503, body: {} } }),
+    );
+    const first = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(first.source.sections).toEqual({ rssi: 'failed', roams: 'failed', timeline: 'failed', tput: 'failed', usageSeries: 'failed' });
+    const before = calls.length;
+    await adapter.clientDetail(DETAIL_MAC);
+    expect(calls.length).toBe(before);
+  });
+
+  it('a blank MAC is answered with null — this plane cannot be asked about nothing', async () => {
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    expect(await adapter.clientDetail('  ')).toBeNull();
+    expect(calls).toHaveLength(0); // and it costs no call
+  });
+
+  it('a rate-limited detail read degrades immediately instead of holding the drawer for 30s', async () => {
+    const { adapter, slept } = makeDetailAdapter(detailHandler({ '/mobility-trail': { status: 429, body: {} } }));
+    const d = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(d.source.sections.timeline).toBe('failed');
+    expect(d.source.note).toContain('HTTP 429');
+    // pull()'s 429 backoff exists so a poll cycle survives; on a request path
+    // it would just stall a human. No sleeps here.
+    expect(slept).toHaveLength(0);
+  });
+});
+
+describe('CentralAdapter.deviceDetail()', () => {
+  it('an AP is asked for radios and WLANs only, and the radios come back in order', async () => {
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    const d = (await adapter.deviceDetail('PHT5M520SZ', 'ap'))!;
+    expect(d.serial).toBe('PHT5M520SZ');
+    expect(d.kind).toBe('ap');
+    // Central hands them back 1, 0, 2 — an operator reads radio 0 first.
+    expect(d.radios!.map((r) => r.number)).toEqual([0, 1, 2]);
+    expect(d.radios![0].channel).toBe('157E');
+    expect(d.radios![1].retries).toBe(0);
+    expect(d.wlans!.map((w) => w.name)).toEqual(['Air Pass', 'aruba-home']);
+    expect(d.source.sections).toEqual({ radios: 'ok', wlans: 'ok' });
+    expect(d.ports).toBeUndefined(); // an AP has no /interfaces — never asked
+    expect(calls.some((c) => c.includes('/interfaces'))).toBe(false);
+    expect(calls.filter((c) => c.includes('/aps/'))).toHaveLength(2);
+  });
+
+  it('a switch is read from /interfaces with NO paging params (Central returns them all)', async () => {
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    const d = (await adapter.deviceDetail('SG30LMR164', 'switch'))!;
+    expect(d.ports!.map((p) => p.name)).toEqual(['1/1/3', '1/1/1']);
+    expect(d.ports![0].neighbour).toBe('Office-655');
+    expect(d.source.sections).toEqual({ ports: 'ok' });
+    expect(d.radios).toBeUndefined();
+    const call = calls.find((c) => c.includes('/interfaces'))!;
+    // "Fetches all by default" (verified live: 28 of 28 in one response), so
+    // paging params would only add wire noise and a 400 risk.
+    expect(call).not.toContain('limit=');
+    expect(call).not.toContain('offset=');
+  });
+
+  it('a gateway is read from /gateways/{serial}/ports, not the switch interface path', async () => {
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    const d = (await adapter.deviceDetail('CNJDKLB03G', 'gateway'))!;
+    expect(calls.some((c) => c.includes('/gateways/CNJDKLB03G/ports'))).toBe(true);
+    expect(calls.some((c) => c.includes('/interfaces'))).toBe(false);
+    expect(d.ports!.map((p) => p.name)).toEqual(['GE 0/0/1', 'GE 0/0/0']);
+    expect(d.ports![0].speedBps).toBe(1_000_000_000);
+    expect(d.source.sections).toEqual({ ports: 'ok' });
+  });
+
+  it('a device with no subresources reports empty, and a 404 reports failed', async () => {
+    const { adapter } = makeDetailAdapter(detailHandler({ '/radios': { body: { items: [], total: 0 } } }));
+    const empty = (await adapter.deviceDetail('PHT5M520SZ', 'ap'))!;
+    expect(empty.radios).toEqual([]);
+    expect(empty.source.sections.radios).toBe('empty');
+    expect(empty.source.note).toBeNull();
+
+    const { adapter: broken } = makeDetailAdapter(detailHandler({ '/radios': { status: 404, body: {} } }));
+    const d = (await broken.deviceDetail('PHT5M520SZ', 'ap'))!;
+    expect(d.radios).toBeUndefined(); // never a fabricated row
+    expect(d.source.sections.radios).toBe('failed');
+    expect(d.source.sections.wlans).toBe('ok'); // the section that answered still ships
+    expect(d.source.note).toContain('radios: HTTP 404');
+  });
+
+  it('caches per serial AND kind, so one device drawer never re-reads the other', async () => {
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    await adapter.deviceDetail('SG30LMR164', 'switch');
+    await adapter.deviceDetail('SG30LMR164', 'switch');
+    expect(calls.filter((c) => c.includes('/interfaces'))).toHaveLength(1);
+    await adapter.deviceDetail('PHT5M520SZ', 'ap');
+    expect(calls.filter((c) => c.includes('/radios'))).toHaveLength(1);
+  });
+
+  it('a blank serial is answered with null and costs no call', async () => {
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    expect(await adapter.deviceDetail('', 'switch')).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('CentralAdapter.siteTopology()', () => {
+  it('maps the site graph by serial, keeping unmanaged nodes and Unknown links honest', async () => {
+    const { adapter } = makeDetailAdapter(detailHandler());
+    const t = (await adapter.siteTopology('79244870000394240'))!;
+    expect(t.siteId).toBe('79244870000394240');
+    expect(t.nodes!.map((n) => n.serial)).toEqual(['SG30LMR164', 'CNP6L2H038', 'tpd_204c03ff8c8a']);
+    expect(t.nodes![2].health).toBeNull();
+    expect(t.links).toHaveLength(2);
+    expect(t.links![0].fromPorts[0].name).toBe('1/1/20');
+    expect(t.links![0].toPorts[0].name).toBe('GE 0/0/1');
+    expect(t.links![1].health).toBe('Unknown');
+    expect(t.isolatedDevicesCount).toBe(0);
+    expect(t.isolatedHealth).toBeNull();
+    expect(t.source.sections).toEqual({ nodes: 'ok', links: 'ok' });
+  });
+
+  it('reads devices and links BY NAME, never by "first array in the payload"', async () => {
+    // The topology payload carries two sibling arrays; a first-array heuristic
+    // would happily return a decoy.
+    const decoy = { errors: [], warnings: ['x'], ...TOPOLOGY_BODY };
+    const { adapter } = makeDetailAdapter(detailHandler({ '/topology/': { body: decoy } }));
+    const t = (await adapter.siteTopology('79244870000394240'))!;
+    expect(t.nodes).toHaveLength(3);
+    expect(t.links).toHaveLength(2);
+  });
+
+  it('a site the plane cannot graph is failed, not an empty graph', async () => {
+    const { adapter } = makeDetailAdapter(detailHandler({ '/topology/': { status: 404, body: {} } }));
+    const t = (await adapter.siteTopology('nope'))!;
+    expect(t.nodes).toBeUndefined();
+    expect(t.links).toBeUndefined();
+    expect(t.source.sections).toEqual({ nodes: 'failed', links: 'failed' });
+    expect(t.source.note).toContain('topology: HTTP 404');
+  });
+
+  it('a blank site id is answered with null and costs no call', async () => {
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    expect(await adapter.siteTopology('')).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('detail reads are not poller work', () => {
+  it('pull() never issues a per-object detail call', async () => {
+    // 9 devices x N subresources x 1440 polls/day is exactly the regression
+    // this whole design exists to prevent.
+    const { adapter, calls } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    await adapter.pull();
+    for (const fragment of ['/mobility-trail', '/clients-usage', '/radios', '/wlans', '/interfaces', '/topology/']) {
+      expect(calls.some((c) => c.includes(fragment))).toBe(false);
+    }
   });
 });

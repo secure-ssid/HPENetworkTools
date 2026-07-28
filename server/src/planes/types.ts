@@ -15,12 +15,16 @@
 import type {
   AlertRow,
   AuthEventRow,
+  ClientDetailLive,
   ClientRow,
   ConfigInventory,
+  DeviceDetailKind,
+  DeviceDetailLive,
   DeviceRow,
   PlaneDatasetKey,
   PlaneScope,
   SiteRow,
+  SiteTopologyLive,
   SubscriptionAssignment,
   SubscriptionRow,
 } from '../../../shared';
@@ -151,6 +155,53 @@ export interface PlaneAdapter {
    *  not implement it claims nothing, and callers default every capability to
    *  false. */
   capabilities?(): PlaneCapabilities;
+
+  // -- ON-DEMAND DETAIL READS ------------------------------------------------
+  //
+  // These are NOT poller work. pull() reads a few flat lists on the 60s timer;
+  // a plane models one client across ~8 endpoints and one device across many
+  // /{id}/subresource endpoints, and fetching those per object per poll would
+  // be 9 devices x N subresources x 1440 polls/day against a tenant that
+  // enforces a daily call budget. A fix that works but hammers the plane is a
+  // regression.
+  //
+  // THEREFORE, for every method below:
+  //   * call it on the DETAIL REQUEST PATH only — for the ONE object whose
+  //     drawer is opening — behind a short TTL cache;
+  //   * never call it from poller.ts, and never fan it out over a list;
+  //   * it must be cheap to not call: the screens work without it.
+  //
+  // RETURNING null means "this plane cannot answer" (not implemented, not
+  // linked, wrong plane for this object). It must render as the honest empty
+  // state the screen already has — never as fabricated or borrowed data. A
+  // read that was ATTEMPTED and failed should return a payload whose
+  // `source.sections` marks the failed sections 'failed', so the screen can
+  // say the call broke instead of implying the plane has nothing.
+  //
+  // Implementations must not throw: swallow transport errors, mark the section
+  // 'failed', and return. All three are optional so no existing adapter has to
+  // change; callers must feature-detect (`adapter.clientDetail?.(…)`).
+
+  /**
+   * Per-client detail for ONE MAC — signal, throughput, roam count and the
+   * session timeline the flat /clients list does not carry.
+   */
+  clientDetail?(mac: string): Promise<ClientDetailLive | null>;
+
+  /**
+   * Per-device detail for ONE serial. `kind` tells the adapter which
+   * subresources are worth asking for (an AP has radios+wlans, a switch has
+   * ports) so it does not spend calls on 404s.
+   */
+  deviceDetail?(serial: string, kind: DeviceDetailKind): Promise<DeviceDetailLive | null>;
+
+  /**
+   * The plane's link topology for ONE site — the device graph and the
+   * port-to-port links behind it. `siteId` is the PLANE's site id, not the
+   * portal's SiteId.
+   */
+  siteTopology?(siteId: string): Promise<SiteTopologyLive | null>;
+
   /**
    * Release anything held on the far side before this adapter is dropped —
    * an AOS-8 session UID, a websocket, a keep-alive timer. The registry calls

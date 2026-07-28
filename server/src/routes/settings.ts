@@ -17,6 +17,7 @@ export const settingsRouter = Router();
 const SETTING_KEYS = new Set([
   'demoMode',
   'blendLive',
+  'configMode',
   'sectionMode',
   'hiddenDemoDevices',
   'workspaceName',
@@ -41,6 +42,7 @@ function settingsBodyError(body: unknown): string | null {
     ['demoMode', patch.demoMode === undefined || typeof patch.demoMode === 'boolean'],
     ['blendLive', patch.blendLive === undefined || typeof patch.blendLive === 'boolean'],
     ['chatWriteMode', patch.chatWriteMode === undefined || typeof patch.chatWriteMode === 'boolean'],
+    ['configMode', patch.configMode === undefined || typeof patch.configMode === 'boolean'],
     ['showPlatformTags', patch.showPlatformTags === undefined || typeof patch.showPlatformTags === 'boolean'],
     ['workspaceName', patch.workspaceName === undefined || (typeof patch.workspaceName === 'string' && patch.workspaceName.trim().length > 0)],
     ['pollIntervalSec', patch.pollIntervalSec === undefined || (typeof patch.pollIntervalSec === 'number' && Number.isFinite(patch.pollIntervalSec) && patch.pollIntervalSec >= 5)],

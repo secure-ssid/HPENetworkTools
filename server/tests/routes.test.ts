@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 let server: Server;
 let base: string;
@@ -2197,5 +2197,425 @@ describe('demo Configure serves the authored queue, not an empty broker', () => 
     // 'live evidence coverage findings' over a fixture screen.
     expect(body.stats[2]).toEqual(CONFIGURE_STATS[2]);
     expect(body.stats[3]).toEqual(CONFIGURE_STATS[3]);
+  });
+});
+
+/**
+ * On-demand per-object detail reads.
+ *
+ * A control plane models one client across ~8 endpoints and one device across
+ * many /{id}/subresource endpoints, so the flat lists the poller reads cannot
+ * carry signal, roam trail, per-radio RF, per-port wiring or link topology.
+ * These fetch that for the ONE object being opened — and, just as importantly,
+ * refuse to fetch it for anything else.
+ *
+ * The adapters are stubbed on the registry's live instances, so what is under
+ * test is the ROUTE's contract: when it calls a plane, when it declines to,
+ * and how each outcome is worded.
+ */
+describe('on-demand per-object detail reads', () => {
+  let contributions: Map<string, unknown>;
+  let planes: { get(id: string): Record<string, unknown> };
+  let clearDetailCache: () => void;
+  const undo: Array<() => void> = [];
+
+  const setDemoMode = (demoMode: boolean) =>
+    fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ demoMode }),
+    });
+
+  const AP = {
+    name: 'ap-detail-1',
+    model: 'AP-735',
+    type: 'ap',
+    siteId: 'campus-01',
+    siteName: 'Campus-01 — Meridian HQ',
+    plane: 'CENTRAL',
+    planeTone: 'accent',
+    state: 'up',
+    stateTone: 'success',
+    firmware: '10.6.0000',
+    firmwareApproved: true,
+    licence: 'Foundation',
+    reconciliationIssue: false,
+    localShell: false,
+    serial: 'PHT5M520SZ',
+  };
+  const SW = { ...AP, name: 'sw-detail-1', model: 'CX 6300', type: 'switch', serial: 'SG30LMR164' };
+  const NO_SERIAL = { ...AP, name: 'ap-no-serial', serial: undefined };
+
+  const MAC = '3C:A9:AB:7C:A9:51';
+  const CLIENT = {
+    name: 'cam-front-door',
+    model: 'AXIS P32',
+    type: 'unknown',
+    mac: MAC,
+    ip: '10.1.4.7',
+    medium: 'wireless',
+    siteId: 'campus-01',
+    siteName: 'Campus-01 — Meridian HQ',
+    group: '—',
+    attach: 'MRDN-Corp',
+    where: 'ap-detail-1 · radio 1',
+    plane: 'CENTRAL',
+    planeTone: 'accent',
+    auth: 'psk',
+    authBy: '—',
+    role: '—',
+    vlan: '110',
+    health: 'good',
+    healthTone: 'success',
+    session: '3h',
+    problem: false,
+    link: 'up',
+    rssi: '—',
+    snr: '—',
+    retries: '—',
+    tput: '—',
+    roams: '—',
+    quality: null,
+    zone: '—',
+    closet: '—',
+  };
+
+  const source = (sections: Record<string, string>) => ({
+    plane: 'central',
+    at: new Date().toISOString(),
+    sections,
+  });
+
+  const GRAPH = (siteId: string) => ({
+    siteId,
+    nodes: [
+      { serial: 'SG30LMR164', name: 'sw-detail-1', type: 'Switch', deviceFunction: 'Access Switch', status: 'ONLINE', health: 'Good', healthReason: 'DEVICE_STATUS', model: 'CX 6300', ipv4: '10.1.0.2', mac: null },
+      { serial: 'PHT5M520SZ', name: 'ap-detail-1', type: 'Access Point', deviceFunction: 'Campus Access Point', status: 'ONLINE', health: 'Good', healthReason: 'DEVICE_STATUS', model: 'AP-735', ipv4: '10.1.4.3', mac: null },
+    ],
+    links: [
+      {
+        from: 'PHT5M520SZ',
+        to: 'SG30LMR164',
+        fromPorts: [{ name: 'eth0' }],
+        toPorts: [{ name: '1/1/12' }],
+        speedBps: 5000000000,
+        health: 'Good',
+      },
+    ],
+    source: source({ nodes: 'ok', links: 'ok' }),
+  });
+
+  /** Attach stub methods to a plane's LIVE adapter instance and register the
+   *  teardown, so a test never leaves a capability behind for the next one. */
+  function stub(plane: string, methods: Record<string, unknown>): void {
+    const adapter = planes.get(plane);
+    const keys = Object.keys(methods);
+    for (const k of keys) adapter[k] = methods[k];
+    undo.push(() => {
+      for (const k of keys) delete adapter[k];
+    });
+  }
+
+  beforeAll(async () => {
+    const { poller } = await import('../src/services/poller');
+    const { registry } = await import('../src/planes/registry');
+    const screens = await import('../src/routes/screens');
+    contributions = (poller as unknown as { contributions: Map<string, unknown> }).contributions;
+    planes = registry as unknown as { get(id: string): Record<string, unknown> };
+    clearDetailCache = screens.resetDetailCache;
+    await setDemoMode(false);
+  });
+
+  afterEach(() => {
+    while (undo.length > 0) undo.pop()!();
+    contributions.clear();
+    // The TTL cache is process-wide by design — one drawer open must not be
+    // paid for twice. Tests must not inherit each other's cached answers.
+    clearDetailCache();
+  });
+
+  afterAll(async () => {
+    contributions.clear();
+    await setDemoMode(true);
+  });
+
+  it('the polled clients list issues no per-object read at all', async () => {
+    contributions.set('central', { clients: [CLIENT] });
+    let calls = 0;
+    stub('central', {
+      clientDetail: async () => {
+        calls += 1;
+        return null;
+      },
+    });
+    const { status, body } = await getJson('/api/clients');
+    expect(status).toBe(200);
+    expect(body.clients).toHaveLength(1);
+    // The clients screen refreshes on the poll interval. If a request that
+    // names no client still cost a per-object call, one open screen would be
+    // 1440 calls a day on its own — the regression this whole path avoids.
+    expect(calls).toBe(0);
+    expect(body.detail).toBeUndefined();
+    expect(body.topology).toBeUndefined();
+  });
+
+  it('naming one client opens the detail path and serves what the plane answered', async () => {
+    contributions.set('central', { clients: [CLIENT] });
+    const asked: string[] = [];
+    stub('central', {
+      clientDetail: async (mac: string) => {
+        asked.push(mac);
+        return {
+          mac,
+          rssi: -58,
+          roams: 0,
+          roamsWindowSec: 86400,
+          timeline: [],
+          source: source({ rssi: 'ok', roams: 'empty', timeline: 'empty' }),
+        };
+      },
+    });
+    const { status, body } = await getJson(`/api/clients?mac=${encodeURIComponent(MAC)}`);
+    expect(status).toBe(200);
+    expect(asked).toEqual([MAC]); // exactly one object, the one being opened
+    expect(body.client.mac).toBe(MAC);
+    expect(body.detail.rssi).toBe(-58);
+    // Zero roams for a stationary camera is a REAL answer: 'empty', which the
+    // route passes through untouched. It is neither 'failed' nor 'not-fetched',
+    // and it must never render as "no source".
+    expect(body.detail.roams).toBe(0);
+    expect(body.detail.source.sections.roams).toBe('empty');
+    // The list rides along, so opening a drawer is still one request.
+    expect(body.clients).toHaveLength(1);
+  });
+
+  it('the path form /api/clients/:mac serves the identical envelope', async () => {
+    contributions.set('central', { clients: [CLIENT] });
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, rssi: -58, source: source({ rssi: 'ok' }) }),
+    });
+    const query = await getJson(`/api/clients?mac=${encodeURIComponent(MAC)}`);
+    clearDetailCache();
+    const path = await getJson(`/api/clients/${encodeURIComponent(MAC)}`);
+    expect(path.status).toBe(200);
+    expect(path.body.detail.rssi).toBe(query.body.detail.rssi);
+    expect(path.body.client.mac).toBe(query.body.client.mac);
+    expect(path.body.clients).toEqual(query.body.clients);
+  });
+
+  it('a MAC that is not in the roster answers with the roster and no plane call', async () => {
+    contributions.set('central', { clients: [CLIENT] });
+    let calls = 0;
+    stub('central', {
+      clientDetail: async () => {
+        calls += 1;
+        return null;
+      },
+    });
+    const { status, body } = await getJson('/api/clients/aa:bb:cc:dd:ee:ff');
+    expect(status).toBe(200);
+    // Not a 404: the roster IS the answer to "show me this session" — it is
+    // current, and this MAC is not on it. Nothing is asked of the plane about
+    // a client the portal has no row for.
+    expect(body.client).toBeNull();
+    expect(body.detail).toBeNull();
+    expect(body.clients).toHaveLength(1);
+    expect(calls).toBe(0);
+  });
+
+  it('a second open inside the TTL is served from cache, not a second plane call', async () => {
+    contributions.set('central', { clients: [CLIENT] });
+    let calls = 0;
+    stub('central', {
+      clientDetail: async (mac: string) => {
+        calls += 1;
+        return { mac, rssi: -58, source: source({ rssi: 'ok' }) };
+      },
+    });
+    const first = await getJson(`/api/clients?mac=${encodeURIComponent(MAC)}`);
+    const second = await getJson(`/api/clients?mac=${encodeURIComponent(MAC)}`);
+    expect(calls).toBe(1);
+    expect(first.body.detail.source.cached).toBeFalsy();
+    // The second answer says it is cached rather than pretending to be a fresh
+    // read — the drawer can date it honestly.
+    expect(second.body.detail.source.cached).toBe(true);
+    expect(second.body.detail.rssi).toBe(-58);
+  });
+
+  it('a read that breaks is reported as FAILED, not as nothing to report', async () => {
+    contributions.set('central', { clients: [CLIENT] });
+    stub('central', {
+      clientDetail: async () => {
+        throw new Error('central token refresh failed');
+      },
+    });
+    const { status, body } = await getJson(`/api/clients?mac=${encodeURIComponent(MAC)}`);
+    expect(status).toBe(200); // a detail read is an enhancement, never a 500
+    expect(body.detail.source.sections).toEqual({
+      rssi: 'failed',
+      tput: 'failed',
+      roams: 'failed',
+      timeline: 'failed',
+      usageSeries: 'failed',
+    });
+    expect(body.detail.source.note).toContain('central token refresh failed');
+    // Nothing was invented to fill the gap.
+    expect(body.detail.rssi).toBeUndefined();
+    expect(body.detail.timeline).toBeUndefined();
+  });
+
+  it('a plane with no detail capability keeps the honest empty state', async () => {
+    // 'classic' has no stored credentials here, so its adapter is the
+    // unconfigured one — it claims no per-object capability at all.
+    contributions.set('classic', { clients: [{ ...CLIENT, plane: 'CLASSIC', planeTone: 'info' }] });
+    const { status, body } = await getJson(`/api/clients?mac=${encodeURIComponent(MAC)}`);
+    expect(status).toBe(200);
+    // null = "this plane cannot answer" — the screen keeps the empty state it
+    // already had, and nothing claims the plane was asked and had nothing.
+    expect(body.detail).toBeNull();
+    expect(body.client.mac).toBe(MAC);
+  });
+
+  it('a device page reads that ONE device, asking only for the subresources its kind has', async () => {
+    contributions.set('central', { devices: [AP, SW] });
+    const asked: Array<[string, string]> = [];
+    stub('central', {
+      deviceDetail: async (serial: string, kind: string) => {
+        asked.push([serial, kind]);
+        return {
+          serial,
+          kind,
+          radios: [{ number: 0, band: '5 GHz', channel: '157E', retries: 3 }],
+          wlans: [],
+          source: source({ radios: 'ok', wlans: 'empty' }),
+        };
+      },
+      siteTopology: async () => null, // the graph is a separate test
+    });
+    const { status, body } = await getJson('/api/devices/ap-detail-1');
+    expect(status).toBe(200);
+    // One device, not the estate — and an AP is never asked for switch ports.
+    expect(asked).toEqual([['PHT5M520SZ', 'ap']]);
+    expect(body.detail.radios[0].channel).toBe('157E');
+    expect(body.detail.source.sections.wlans).toBe('empty');
+    expect(body.device.name).toBe('ap-detail-1');
+  });
+
+  it('a switch is asked as a switch, and a row with no serial is not asked about at all', async () => {
+    contributions.set('central', { devices: [SW, NO_SERIAL] });
+    const asked: Array<[string, string]> = [];
+    stub('central', {
+      deviceDetail: async (serial: string, kind: string) => {
+        asked.push([serial, kind]);
+        return { serial, kind, ports: [], source: source({ ports: 'empty' }) };
+      },
+      siteTopology: async () => null, // the graph is a separate test
+    });
+    const sw = await getJson('/api/devices/sw-detail-1');
+    expect(sw.status).toBe(200);
+    expect(asked).toEqual([['SG30LMR164', 'switch']]);
+    const bare = await getJson('/api/devices/ap-no-serial');
+    expect(bare.status).toBe(200);
+    // No serial = no key to ask about. Guessing one would spend a call on a
+    // certain 404 and could name another device's radios.
+    expect(bare.body.detail).toBeNull();
+    expect(asked).toHaveLength(1);
+  });
+
+  it('a live site page carries the plane link graph and leaves the collector panel alone', async () => {
+    contributions.set('central', { devices: [AP, SW] });
+    const asked: string[] = [];
+    stub('central', {
+      siteTopology: async (siteId: string) => {
+        asked.push(siteId);
+        return GRAPH(siteId);
+      },
+    });
+    const { status, body } = await getJson('/api/sites/campus-01');
+    expect(status).toBe(200);
+    // The wiring fact the flat lists cannot carry: this AP hangs off that
+    // switch port.
+    expect(body.topology.links[0].toPorts[0].name).toBe('1/1/12');
+    expect(body.topology.source.sections.links).toBe('ok');
+    // SiteReachability is a statement about the LOCAL collector. A cloud
+    // plane's graph must not be laundered into it — that would credit a claim
+    // the collector never made.
+    expect(body.reachability.collector).toBe('not linked');
+    // screens.ts holds no plane site id: central.ts mints the portal id from
+    // the site NAME and keeps no id of its own, so the name is the join key
+    // and the adapter owns the name -> id resolution.
+    expect(asked).toEqual(['Campus-01 — Meridian HQ']);
+  });
+
+  it('the site graph is read once and shared by the site page, the device page and the client drawer', async () => {
+    contributions.set('central', { devices: [AP, SW], clients: [CLIENT] });
+    let calls = 0;
+    stub('central', {
+      siteTopology: async (siteId: string) => {
+        calls += 1;
+        return GRAPH(siteId);
+      },
+    });
+    const site = await getJson('/api/sites/campus-01');
+    const device = await getJson('/api/devices/ap-detail-1');
+    const client = await getJson(`/api/clients?mac=${encodeURIComponent(MAC)}`);
+    expect(site.body.topology.links).toHaveLength(1);
+    expect(device.body.topology.links).toHaveLength(1);
+    expect(client.body.topology.links).toHaveLength(1);
+    // Three pages, one call. Without the shared cache this is three per open.
+    expect(calls).toBe(1);
+  });
+
+  it('a plane at its stored daily call budget is not called, and the payload says why', async () => {
+    const saved = await fetch(`${base}/api/systems/classic/credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'airwave-01.meridian.health', callBudget: '0' }),
+    });
+    expect(saved.status).toBe(200);
+    try {
+      // Saved credentials clear that plane's contributions, so seed after.
+      contributions.set('classic', { clients: [{ ...CLIENT, plane: 'CLASSIC', planeTone: 'info' }] });
+      let calls = 0;
+      stub('classic', {
+        clientDetail: async () => {
+          calls += 1;
+          return null;
+        },
+      });
+      const { status, body } = await getJson(`/api/clients?mac=${encodeURIComponent(MAC)}`);
+      expect(status).toBe(200);
+      expect(calls).toBe(0);
+      // Nothing attempted — an empty `sections` map is 'not-fetched' for every
+      // section, which is the truth: we chose not to spend the call.
+      expect(body.detail.source.sections).toEqual({});
+      expect(body.detail.source.note).toContain('daily call budget');
+    } finally {
+      await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });
+    }
+  });
+
+  it('demo mode names a client without spending a plane call', async () => {
+    await setDemoMode(true);
+    try {
+      let calls = 0;
+      stub('central', {
+        clientDetail: async () => {
+          calls += 1;
+          return null;
+        },
+      });
+      const { status, body } = await getJson(`/api/clients?mac=${encodeURIComponent(MAC)}`);
+      expect(status).toBe(200);
+      expect(body.dataSource).toBe('demo');
+      // Demo rows are authored and complete; there is no live object behind a
+      // fixture MAC to read, and the payload is exactly what it always was.
+      expect(calls).toBe(0);
+      expect(body.detail).toBeUndefined();
+      expect(body.client).toBeUndefined();
+      expect((body.clients as any[]).length).toBeGreaterThan(0);
+    } finally {
+      await setDemoMode(false);
+    }
   });
 });

@@ -17,6 +17,13 @@
  *     new optional facts.
  *   - OVERVIEW_ALERTS: the demo "Needs you now" rows carry siteName/siteId
  *     exactly as the live mapper sends them, and only for a real site.
+ *   - The ON-DEMAND detail-read contract: detailState/detailHasRows keep
+ *     "never asked", "genuinely empty" and "call failed" as three different
+ *     answers, and PlaneAdapter's optional clientDetail/deviceDetail/
+ *     siteTopology return null for "this plane cannot answer".
+ *   - Field provenance: planeSupportsClientField / clientFieldProvenance, so a
+ *     blank zone on Central says Central has no zone concept instead of
+ *     blaming Central for not reporting a field it never modelled.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,17 +32,29 @@ import {
   PLANE_DATASET_KEYS,
   PLANE_ROW_DATASET_KEYS,
   UNKNOWN_LANE_META,
+  clientFieldProvenance,
+  detailHasRows,
+  detailState,
   deviceTerminalKind,
   isRealSiteId,
   laneSyncStamp,
+  planeKeyOf,
   planeStaleness,
+  planeSupportsClientField,
   ssidPreview,
   staleAfterSecFor,
+  type ClientDetailLive,
+  type ClientDetailSection,
+  type ClientTimelineEvent,
   type ConfigInventory,
+  type DetailSource,
+  type DeviceRadio,
+  type SiteTopologyLive,
   type SsidForm,
   type SubscriptionAssignment,
+  type TopologyLink,
 } from '../../shared';
-import type { PlanePull, PlaneState } from '../src/planes/types';
+import type { PlaneAdapter, PlanePull, PlaneState } from '../src/planes/types';
 
 const NOW = Date.parse('2026-07-26T12:00:00.000Z');
 const ago = (ms: number): string => new Date(NOW - ms).toISOString();
@@ -280,5 +299,220 @@ describe('OVERVIEW_ALERTS — the demo "Needs you now" rows say where, the same 
       'CLASSIC',
       'GREENLAKE',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// On-demand detail reads — the three-state contract and field provenance
+// ---------------------------------------------------------------------------
+
+describe('detailState — "never asked", "genuinely empty" and "call failed" are three answers', () => {
+  const source: DetailSource<ClientDetailSection> = {
+    plane: 'central',
+    at: '2026-07-26T12:00:00.000Z',
+    sections: { roams: 'empty', timeline: 'empty', tput: 'ok', usageSeries: 'failed' },
+  };
+
+  it('a section the adapter never set reads as not-fetched, not as empty', () => {
+    // rssi was never attempted. If this collapsed to 'empty' the drawer would
+    // claim the plane reported no signal, which it never said.
+    expect(detailState(source, 'rssi')).toBe('not-fetched');
+  });
+
+  it('an authoritative zero is "empty", which is an answer and not an error', () => {
+    expect(detailState(source, 'roams')).toBe('empty');
+  });
+
+  it('a broken call stays "failed" so the screen never implies the plane has nothing', () => {
+    expect(detailState(source, 'usageSeries')).toBe('failed');
+  });
+
+  it('no source at all is not-fetched — a null payload never reads as empty', () => {
+    expect(detailState(null, 'timeline')).toBe('not-fetched');
+    expect(detailState(undefined, 'timeline')).toBe('not-fetched');
+  });
+});
+
+describe('detailHasRows — an absent array and an empty array are not the same thing', () => {
+  const at = '2026-07-26T12:00:00.000Z';
+  const detail = (
+    sections: DetailSource<ClientDetailSection>['sections'],
+    timeline?: ClientTimelineEvent[],
+  ): ClientDetailLive => ({ mac: '00:11:22:33:44:55', timeline, source: { plane: 'central', at, sections } });
+
+  it('is false for a stationary client with no roams — and the state says why', () => {
+    const d = detail({ timeline: 'empty' }, []);
+    expect(detailHasRows(d.source, 'timeline', d.timeline)).toBe(false);
+    expect(detailState(d.source, 'timeline')).toBe('empty'); // "no roaming in the last 24h"
+  });
+
+  it('is false for a read that was never issued, which is a different sentence', () => {
+    const d = detail({});
+    expect(d.timeline).toBeUndefined();
+    expect(detailHasRows(d.source, 'timeline', d.timeline)).toBe(false);
+    expect(detailState(d.source, 'timeline')).toBe('not-fetched');
+  });
+
+  it('is false for a failed read even if a stale array is passed alongside it', () => {
+    const d = detail({ timeline: 'failed' }, [
+      { ts: at, kind: 'roam', detail: 'roamed ap-a -> ap-b' },
+    ]);
+    expect(detailHasRows(d.source, 'timeline', d.timeline)).toBe(false);
+  });
+
+  it('is true only when the plane answered with rows', () => {
+    const d = detail({ timeline: 'ok' }, [{ ts: at, kind: 'roam', detail: 'roamed ap-a -> ap-b' }]);
+    expect(detailHasRows(d.source, 'timeline', d.timeline)).toBe(true);
+  });
+});
+
+describe('planeSupportsClientField — Central models SITE, not zone', () => {
+  it('does not claim Central reports a zone or a per-client config group', () => {
+    // Central's Client schema places a client with siteId/siteName and nothing
+    // else. Saying "not reported by CENTRAL" blames the plane for a field it
+    // never had.
+    expect(planeSupportsClientField('central', 'zone')).toBe(false);
+    expect(planeSupportsClientField('CENTRAL', 'group')).toBe(false);
+  });
+
+  it('still holds Central to the fields it DOES model', () => {
+    for (const field of ['rssi', 'snr', 'tput', 'roams', 'retries', 'vlan', 'ip'] as const) {
+      expect(planeSupportsClientField('central', field)).toBe(true);
+    }
+  });
+
+  it('asserts nothing about planes that have not been checked', () => {
+    // Silence is not evidence: an unchecked plane keeps the existing
+    // "not reported by X" wording rather than gaining a claim nobody verified.
+    expect(planeSupportsClientField('mist', 'zone')).toBe(true);
+    expect(planeSupportsClientField('THIRD-PARTY', 'zone')).toBe(true);
+    expect(planeSupportsClientField(null, 'zone')).toBe(true);
+  });
+
+  it('accepts either spelling of a plane', () => {
+    expect(planeKeyOf('AOS-8')).toBe('aos8');
+    expect(planeKeyOf('aos8')).toBe('aos8');
+    expect(planeKeyOf('THIRD-PARTY')).toBe(null);
+    expect(planeKeyOf(undefined)).toBe(null);
+  });
+});
+
+describe('clientFieldProvenance — one sentence per situation, for every renderer', () => {
+  it('a value present is just present', () => {
+    expect(clientFieldProvenance('CENTRAL', 'rssi', '−52 dBm')).toEqual({ kind: 'present' });
+  });
+
+  it('a blank zone on Central says Central has no zone concept, never "not reported"', () => {
+    const p = clientFieldProvenance('CENTRAL', 'zone', '—');
+    expect(p.kind).toBe('unsupported');
+    expect(p.kind === 'unsupported' && p.note).toBe('Central places clients by site, not zone');
+    expect(p.kind === 'unsupported' && p.note).not.toMatch(/not reported/);
+  });
+
+  it('a blank field the plane DOES model is honestly "not reported by CENTRAL"', () => {
+    const p = clientFieldProvenance('CENTRAL', 'snr', '—');
+    expect(p).toEqual({ kind: 'missing', note: 'not reported by CENTRAL' });
+  });
+
+  it('treats every flavour of blank the fixtures and adapters use as blank', () => {
+    for (const blank of ['—', '', null, undefined]) {
+      expect(clientFieldProvenance('CENTRAL', 'snr', blank).kind).toBe('missing');
+    }
+    // 0 and '0' are ANSWERS: a client with zero roams reported zero roams.
+    expect(clientFieldProvenance('CENTRAL', 'roams', '0')).toEqual({ kind: 'present' });
+    expect(clientFieldProvenance('CENTRAL', 'roams', 0)).toEqual({ kind: 'present' });
+  });
+});
+
+describe('PlaneAdapter detail methods — optional, on-demand, null means "cannot answer"', () => {
+  it('an adapter with none of them still satisfies PlaneAdapter', () => {
+    const bare: PlaneAdapter = {
+      id: 'classic',
+      state: () => ({
+        id: 'classic', linked: false, health: 'unlinked', lastSync: null,
+        deviceCount: null, callsToday: 0, note: null,
+      }),
+      pull: async () => ({}),
+    };
+    expect(bare.clientDetail).toBeUndefined();
+    expect(bare.deviceDetail).toBeUndefined();
+    expect(bare.siteTopology).toBeUndefined();
+  });
+
+  it('an adapter that cannot answer returns null rather than an invented payload', async () => {
+    const adapter: PlaneAdapter = {
+      id: 'central',
+      state: () => ({
+        id: 'central', linked: true, health: 'healthy', lastSync: null,
+        deviceCount: 9, callsToday: 86, note: null,
+      }),
+      pull: async () => ({}),
+      clientDetail: async () => null,
+      deviceDetail: async (serial, kind) => ({
+        serial,
+        kind,
+        // Asked for, and the switch genuinely has no ports to report — an
+        // empty array WITH an 'empty' state, not an absent one.
+        ports: [],
+        source: { plane: 'central', at: '2026-07-26T12:00:00.000Z', sections: { ports: 'empty' } },
+      }),
+      siteTopology: async () => null,
+    };
+    expect(await adapter.clientDetail?.('00:11:22:33:44:55')).toBeNull();
+    expect(await adapter.siteTopology?.('79244870000394240')).toBeNull();
+    const dev = await adapter.deviceDetail?.('SG30LMR164', 'switch');
+    expect(dev?.ports).toEqual([]);
+    expect(detailState(dev?.source, 'ports')).toBe('empty');
+    // radios were never asked for on a switch — absent, not empty.
+    expect(dev?.radios).toBeUndefined();
+    expect(detailState(dev?.source, 'radios')).toBe('not-fetched');
+  });
+});
+
+describe('live-shaped detail rows — the field names and units the tenant actually returns', () => {
+  it('a Central radio row types channel as a string and speeds/levels as numbers', () => {
+    // Verified live on AP735-LR (PHT5M520SZ): channel '157E' carries a bonding
+    // marker, so parsing it to a number would silently drop it.
+    const radio: DeviceRadio = {
+      number: 0, band: '5 GHz', channel: '157E', bandwidth: '80 MHz',
+      powerDbm: 19, clients: 1, channelUtilPct: 9, rxUtilPct: 4, txUtilPct: 1,
+      retries: 0, drops: 0, noiseFloorDbm: -93, nonWifiInterference: 4,
+      channelQuality: 94, status: 'UP', mode: 'Client Access',
+    };
+    expect(radio.channel).toBe('157E');
+    expect(radio.noiseFloorDbm).toBeLessThan(0);
+  });
+
+  it('a topology link is keyed by serial and carries both ends of the cable', () => {
+    const link: TopologyLink = {
+      from: 'SG30LMR164',
+      to: 'PHT5M520SZ',
+      fromPorts: [{ name: '1/1/6', index: 6, lag: '', health: 'Good' }],
+      toPorts: [{ name: 'eth0', index: 0, lag: null, health: 'Good' }],
+      speedBps: 5_000_000_000,
+      health: 'Good',
+      edgeType: 'System',
+    };
+    const topo: SiteTopologyLive = {
+      siteId: '79244870000394240',
+      nodes: [
+        {
+          serial: 'tpd_204c03ff61e2', name: '20:4c:03:ff:61:e2', type: 'Unmanaged',
+          deviceFunction: '-', status: 'ONLINE',
+          // The plane assesses no health for an unmanaged node. null is its
+          // answer, not a failed read — links to it read 'Unknown', not broken.
+          health: null, healthReason: null, model: null, ipv4: null,
+          mac: '20:4c:03:ff:61:e2',
+        },
+      ],
+      links: [link],
+      source: {
+        plane: 'central', at: '2026-07-26T12:00:00.000Z',
+        sections: { nodes: 'ok', links: 'ok' },
+      },
+    };
+    expect(topo.links?.[0].from).toBe(link.from);
+    expect(topo.nodes?.[0].health).toBeNull();
+    expect(detailState(topo.source, 'links')).toBe('ok');
   });
 });

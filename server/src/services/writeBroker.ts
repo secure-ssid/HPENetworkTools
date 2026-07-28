@@ -259,15 +259,24 @@ function liveBlastFor(kind: ConfigKind, form: ConfigForm): BlastRadiusRow[] {
   ];
 }
 
+/** Lab config mode: writes go through without the brokered-change ceremony. */
+function configMode(): boolean {
+  return settings.get().configMode === true;
+}
+
 function requireTicket(raw: unknown): string {
   const ticket = typeof raw === 'string' ? raw.trim() : '';
-  if (!ticket) throw new BrokerError(400, 'ticket reference required — writes are brokered, never standing');
-  return ticket;
+  if (ticket) return ticket;
+  // In a lab there is nothing to authorise against, so a write does not need a
+  // ticket. Still stamp one so the change log stays readable.
+  if (configMode()) return 'LAB';
+  throw new BrokerError(400, 'ticket reference required — writes are brokered, never standing');
 }
 
 /** The reference must name a REAL ticket — presence alone is not enough. */
 function requireKnownTicket(raw: unknown, knownTicket: (id: string) => boolean): string {
   const ticket = requireTicket(raw);
+  if (configMode()) return ticket;
   if (!knownTicket(ticket)) {
     throw new BrokerError(400, `unknown ticket '${ticket}' — writes reference a raised ticket (demo mode also accepts the fixture queue)`);
   }

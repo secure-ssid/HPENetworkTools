@@ -30,6 +30,14 @@
  *                    host from the bridge's own 'ready' frame, outranking the
  *                    recorded-transcript match (which can lag, or belong to
  *                    another operator).
+ *   (j) CLASS-AWARE PANELS — the right column's class block follows the device
+ *                    CLASS, not one hardcoded panel: an AP renders Radios +
+ *                    SSIDs (and never a ports panel), a switch renders Ports
+ *                    with the worst far-end health first, and a class the
+ *                    route served nothing for renders no panel at all. The
+ *                    four read outcomes (ok / empty / failed / not-fetched)
+ *                    print four different sentences, and only the last two
+ *                    may mention the plane at all.
  *
  * These tests caught a real regression: the reboot hooks used to live below
  * the `if (!data)` early return, so React threw "Rendered more hooks than
@@ -60,7 +68,13 @@ import {
   terminalBanner,
   terminalQuickCommands,
 } from '../../../shared';
-import type { DeviceEvidence } from '../../../shared';
+import type {
+  DeviceDetailLive,
+  DeviceEvidence,
+  DevicePort,
+  DeviceRadio,
+  DeviceWlan,
+} from '../../../shared';
 
 // ---------------------------------------------------------------------------
 // jsdom shims (kept local to this file)
@@ -379,12 +393,15 @@ describe('DeviceDetail — live view completeness', () => {
     // Design rule 4: a read-only plane still gets a console hand-off.
     expect(screen.getByRole('button', { name: 'Open in CENTRAL' })).toBeTruthy();
 
-    // The class block declares itself missing instead of vanishing.
+    // The class block declares itself missing instead of vanishing — and says
+    // the portal has not read it, never that CENTRAL withheld it (Central
+    // models switch interfaces; the portal simply had not asked yet).
     expect(
       screen.getByText(
-        'Not available in live mode — no linked plane reports per-port state for this device.',
+        'Per-port state has not been read for this device — the portal fetches interfaces on demand, for the one device being viewed.',
       ),
     ).toBeTruthy();
+    expect(screen.queryByText(/no linked plane reports per-port state/)).toBeNull();
 
     // …and the clients section keeps its route out to the full list.
     expect(screen.getByRole('button', { name: 'All clients →' })).toBeTruthy();
@@ -443,6 +460,429 @@ describe('DeviceDetail — live view completeness', () => {
     expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
     expect(screen.queryByText(/off the approved train/)).toBeNull();
     expect(screen.getByText('no version reported')).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (j) CLASS-AWARE DETAIL PANELS — an AP gets Radios + SSIDs, a switch gets
+//     Ports, and a class with no served subresource gets no panel at all
+//
+//     Payloads below are the shapes verified live on the user's tenant:
+//     AP735-LR (PHT5M520SZ) radios/WLANs and CX6300-CORE (SG30LMR164)
+//     interfaces, normalized to the shared DeviceDetailLive contract.
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — class-aware detail panels', () => {
+  /** Attach the route's per-device detail block to an envelope — the optional
+   *  field the screen reads. Payloads WITHOUT it exercise the 'not fetched'
+   *  path, which is the state every device is in until the read lands. */
+  const withDetail = <T extends object>(base: T, detail: DeviceDetailLive) => ({
+    ...base,
+    detail,
+  });
+
+  const liveBase = (deviceName: string) => {
+    const device = DEVICES.find((d) => d.name === deviceName);
+    if (!device) throw new Error(`fixture missing: ${deviceName}`);
+    return {
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live' as const,
+    };
+  };
+
+  const quietDeps = () => {
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+  };
+
+  const AP_RADIOS: DeviceRadio[] = [
+    {
+      number: 0,
+      band: '5 GHz',
+      channel: '157E',
+      bandwidth: '80 MHz',
+      powerDbm: 19,
+      clients: 1,
+      channelUtilPct: 11,
+      rxUtilPct: 5,
+      txUtilPct: 1,
+      retries: 0,
+      drops: 0,
+      noiseFloorDbm: -93,
+      nonWifiInterference: 5,
+      channelQuality: 97,
+      status: 'UP',
+      mode: 'Client Access',
+      macAddress: '48:00:20:27:0c:a0',
+    },
+    {
+      number: 1,
+      band: '2.4 GHz',
+      channel: '11',
+      bandwidth: '20 MHz',
+      powerDbm: 9,
+      clients: 1,
+      channelUtilPct: 23,
+      rxUtilPct: 18,
+      txUtilPct: 0,
+      retries: 0.09,
+      drops: 0.09,
+      noiseFloorDbm: -98,
+      nonWifiInterference: 5,
+      channelQuality: 97,
+      status: 'UP',
+      mode: 'Client Access',
+      macAddress: '48:00:20:27:0c:80',
+    },
+    {
+      number: 2,
+      band: '6 GHz',
+      channel: '213S',
+      bandwidth: '160 MHz',
+      powerDbm: 15,
+      clients: 0,
+      channelUtilPct: 0,
+      rxUtilPct: 0,
+      txUtilPct: 0,
+      retries: 0,
+      drops: 0,
+      noiseFloorDbm: -87,
+      nonWifiInterference: 0,
+      channelQuality: 100,
+      status: 'UP',
+      mode: 'Client Access',
+      macAddress: '48:00:20:27:0c:90',
+    },
+  ];
+
+  const AP_WLANS: DeviceWlan[] = [
+    {
+      name: 'Air Pass',
+      status: 'ENABLED',
+      security: 'WPA3 Enterprise (CCM 128)',
+      securityLevel: 'Enterprise',
+      band: '5 GHz, 6 GHz',
+      vlan: '200',
+      clients: 0,
+    },
+    {
+      name: 'aruba-home',
+      status: 'ENABLED',
+      security: 'WPA2 Personal',
+      securityLevel: 'Personal',
+      band: '2.4 GHz, 5 GHz',
+      vlan: '200',
+      clients: 25,
+    },
+    {
+      name: 'SecureSSID',
+      status: 'ENABLED',
+      security: 'WPA3 Personal',
+      securityLevel: 'Personal',
+      band: '5 GHz, 6 GHz',
+      vlan: '200',
+      clients: 1,
+    },
+  ];
+
+  const SWITCH_PORTS: DevicePort[] = [
+    {
+      name: '1/1/1',
+      status: 'Not Connected',
+      adminStatus: 'Up',
+      operStatus: 'Down',
+      speedBps: null,
+      duplex: '-',
+      connector: 'RJ45',
+      mtu: 1500,
+      vlanMode: 'Access',
+      nativeVlan: 200,
+      allowedVlanIds: [],
+      poeStatus: 'Not Used',
+    },
+    {
+      name: '1/1/2',
+      status: 'Connected',
+      adminStatus: 'Up',
+      operStatus: 'Up',
+      speedBps: 1_000_000_000,
+      duplex: 'Full',
+      connector: 'RJ45',
+      mtu: 1500,
+      vlanMode: 'Access',
+      nativeVlan: 200,
+      allowedVlanIds: [],
+      poeStatus: 'Not Used',
+      stpRole: 'Designated',
+      stpState: 'Forwarding',
+      neighbour: 'SS_9004_Gateway-LTE',
+      neighbourSerial: 'CNP6L2H038',
+      neighbourType: 'Gateway',
+      neighbourHealth: 'Poor',
+    },
+    {
+      name: '1/1/3',
+      status: 'Connected',
+      adminStatus: 'Up',
+      operStatus: 'Up',
+      speedBps: 5_000_000_000,
+      duplex: 'Full',
+      connector: 'RJ45',
+      mtu: 1500,
+      vlanMode: 'Trunk',
+      nativeVlan: 5,
+      allowedVlanIds: [5, 200],
+      poeStatus: 'Drawing Watts',
+      poeClass: '802.3bt Type 3 (PoE++)',
+      stpRole: 'Designated',
+      stpState: 'Forwarding',
+      neighbour: 'Office-655',
+      neighbourPort: 'eth0',
+      neighbourSerial: 'PHQHKZ22X5',
+      neighbourType: 'Access Point',
+      neighbourHealth: 'Good',
+    },
+    {
+      // Central answers 'Unknown' on a link it has not scored. That is not an
+      // adverse verdict and must not sort next to the Poor one.
+      name: '1/1/9',
+      status: 'Connected',
+      adminStatus: 'Up',
+      operStatus: 'Up',
+      speedBps: 2_500_000_000,
+      duplex: 'Full',
+      vlanMode: 'Trunk',
+      nativeVlan: 5,
+      allowedVlanIds: [5, 200],
+      poeStatus: 'Drawing Watts',
+      poeClass: '802.3bt Type 3 (PoE++)',
+      neighbour: 'Room 525',
+      neighbourType: 'Unmanaged',
+      neighbourHealth: 'Unknown',
+    },
+  ];
+
+  const apDetail = (
+    sections: DeviceDetailLive['source']['sections'],
+    rows: Partial<Pick<DeviceDetailLive, 'radios' | 'wlans'>> = {},
+    note?: string,
+  ): DeviceDetailLive => ({
+    serial: 'PHT5M520SZ',
+    kind: 'ap',
+    ...rows,
+    source: {
+      plane: 'central',
+      at: '2026-07-28T15:47:00.000Z',
+      sections,
+      ...(note ? { note } : {}),
+    },
+  });
+
+  it('renders an AP as radios and SSIDs — never a ports panel it has no ports for', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(
+        liveBase('ap-1f-04'),
+        apDetail({ radios: 'ok', wlans: 'ok' }, { radios: AP_RADIOS, wlans: AP_WLANS }),
+      ),
+    );
+    quietDeps();
+
+    renderDeviceDetail('ap-1f-04');
+
+    expect(await screen.findByText('Radios')).toBeTruthy();
+    expect(screen.getByText('3 ON AIR')).toBeTruthy();
+    expect(screen.getByText('SSIDs broadcast')).toBeTruthy();
+    expect(screen.getByText('3 WLANS')).toBeTruthy();
+
+    // An access point has no ports. The old build rendered one anyway and told
+    // the operator no plane reported per-port state for it.
+    expect(screen.queryByText('Ports of interest')).toBeNull();
+    expect(screen.queryByText(/per-port state/i)).toBeNull();
+
+    // Radios read lowest band first, not in Central's 1/0/2 radio order.
+    const bands = screen.getAllByText(/^(2\.4|5|6) GHz$/).map((el) => el.textContent);
+    expect(bands).toEqual(['2.4 GHz', '5 GHz', '6 GHz']);
+
+    // Every number the brief asked for, per radio.
+    expect(screen.getByText('ch 11 · 20 MHz · 9 dBm · Client Access')).toBeTruthy();
+    expect(
+      screen.getByText('1 client · util 23% · noise -98 dBm · retries 0.09% · quality 97'),
+    ).toBeTruthy();
+    expect(screen.getByText('ch 157E · 80 MHz · 19 dBm · Client Access')).toBeTruthy();
+    expect(screen.getByText('ch 213S · 160 MHz · 15 dBm · Client Access')).toBeTruthy();
+    // A zero is a reading, not a missing value — 0 clients / 0% util survive.
+    expect(
+      screen.getByText('0 clients · util 0% · noise -87 dBm · retries 0% · quality 100'),
+    ).toBeTruthy();
+
+    // SSIDs: name / security / band / VLAN / clients.
+    expect(screen.getByText('Air Pass')).toBeTruthy();
+    expect(screen.getByText('WPA3 Enterprise (CCM 128) · 5 GHz, 6 GHz · VLAN 200')).toBeTruthy();
+    expect(screen.getByText('WPA2 Personal · 2.4 GHz, 5 GHz · VLAN 200')).toBeTruthy();
+    expect(screen.getByText('25 clients')).toBeTruthy();
+    expect(screen.getByText('1 client')).toBeTruthy();
+  });
+
+  it('renders a switch as ports, worst far-end health first, and no radio panels', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(liveBase('sw-core-a'), {
+        serial: 'SG30LMR164',
+        kind: 'switch',
+        ports: SWITCH_PORTS,
+        source: { plane: 'central', at: '2026-07-28T15:47:00.000Z', sections: { ports: 'ok' } },
+      }),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('Ports of interest')).toBeTruthy();
+    // A switch has no radios and broadcasts no SSIDs.
+    expect(screen.queryByText('Radios')).toBeNull();
+    expect(screen.queryByText('SSIDs broadcast')).toBeNull();
+
+    // The filter shows connected ports, and the header names the total so it
+    // can never read as "this switch has three ports".
+    expect(screen.getByText('3 OF 4 CONNECTED')).toBeTruthy();
+    expect(screen.queryByText('1/1/1')).toBeNull();
+
+    // The physical link to the gateway that is down sorts FIRST and carries
+    // Central's own health word — this is the correlation the screen exists
+    // for. An UNSCORED link ('Unknown') is not urgency and stays in port order.
+    const portNames = screen.getAllByText(/^1\/1\/[0-9]$/).map((el) => el.textContent);
+    expect(portNames).toEqual(['1/1/2', '1/1/3', '1/1/9']);
+    expect(screen.getByText('SS_9004_Gateway-LTE · Gateway')).toBeTruthy();
+    expect(screen.getByText('Poor')).toBeTruthy();
+    expect(screen.getByText('1 Gb · full · Access 200 · STP Designated/Forwarding')).toBeTruthy();
+
+    // The AP port: PoE++ on a trunk carrying VLANs 5 and 200.
+    expect(screen.getByText('Office-655 eth0 · Access Point')).toBeTruthy();
+    expect(
+      screen.getByText(
+        '5 Gb · full · Trunk 5 + 5,200 · PoE Drawing Watts · 802.3bt Type 3 (PoE++) · STP Designated/Forwarding',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('keeps the honest empty state when the detail read failed, and names the reason', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(
+        liveBase('ap-1f-04'),
+        apDetail({ radios: 'failed', wlans: 'failed' }, {}, 'Central token refresh failed'),
+      ),
+    );
+    quietDeps();
+
+    renderDeviceDetail('ap-1f-04');
+
+    expect(
+      await screen.findByText(
+        'Per-radio state could not be read from CENTRAL — Central token refresh failed',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Broadcast SSIDs could not be read from CENTRAL — Central token refresh failed',
+      ),
+    ).toBeTruthy();
+    // Nothing was invented to fill the panel.
+    expect(screen.queryByText(/^ch \d/)).toBeNull();
+  });
+
+  it('says the plane answered with nothing when the read came back empty — that is not an error', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(
+        liveBase('ap-1f-04'),
+        apDetail({ radios: 'empty', wlans: 'empty' }, { radios: [], wlans: [] }),
+      ),
+    );
+    quietDeps();
+
+    renderDeviceDetail('ap-1f-04');
+
+    expect(await screen.findByText('CENTRAL answered with no radios for this AP.')).toBeTruthy();
+    expect(screen.getByText('CENTRAL reports no WLAN broadcast by this AP.')).toBeTruthy();
+    // An empty answer is never dressed up as a failure or a missing source.
+    expect(screen.queryByText(/could not be read/)).toBeNull();
+    expect(screen.queryByText(/has not been read/)).toBeNull();
+  });
+
+  it('tells an AP with no detail payload that the portal has not read it — not that CENTRAL withheld it', async () => {
+    mockGetDeviceDetail.mockResolvedValue(liveBase('ap-1f-04'));
+    quietDeps();
+
+    renderDeviceDetail('ap-1f-04');
+
+    expect(
+      await screen.findByText(
+        'Per-radio state has not been read for this AP — the portal fetches radios on demand, for the one device being viewed.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Broadcast SSIDs have not been read for this AP — the portal fetches them on demand, for the one device being viewed.',
+      ),
+    ).toBeTruthy();
+    // Rule 4: never blame the plane for a read the portal did not make.
+    expect(screen.queryByText(/no linked plane reports per-port/)).toBeNull();
+    expect(screen.queryByText('Ports of interest')).toBeNull();
+  });
+
+  it('gives a gateway no class block at all until the route serves one', async () => {
+    mockGetDeviceDetail.mockResolvedValue(liveBase('gw-edge-1'));
+    quietDeps();
+
+    renderDeviceDetail('gw-edge-1');
+
+    expect(await screen.findByRole('heading', { name: 'gw-edge-1' })).toBeTruthy();
+    // Central serves no gateway subresource through the switch endpoint, so a
+    // ports panel here would be a claim about a device class that has none.
+    expect(screen.queryByText('Ports of interest')).toBeNull();
+    expect(screen.queryByText('Radios')).toBeNull();
+    expect(screen.queryByText('SSIDs broadcast')).toBeNull();
+  });
+
+  it('renders whatever the route DID read for a gateway, payload-driven', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(liveBase('gw-edge-1'), {
+        serial: 'CNJDKLB03G',
+        kind: 'gateway',
+        ports: [SWITCH_PORTS[2]],
+        source: { plane: 'central', at: '2026-07-28T15:47:00.000Z', sections: { ports: 'ok' } },
+      }),
+    );
+    quietDeps();
+
+    renderDeviceDetail('gw-edge-1');
+
+    expect(await screen.findByText('Ports of interest')).toBeTruthy();
+    expect(screen.getByText('1 OF 1 CONNECTED')).toBeTruthy();
+    expect(screen.getByText('Office-655 eth0 · Access Point')).toBeTruthy();
+  });
+
+  it('reports a switch whose ports all came back down without calling it a failure', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(liveBase('sw-core-a'), {
+        serial: 'SG30LMR164',
+        kind: 'switch',
+        ports: [SWITCH_PORTS[0]],
+        source: { plane: 'central', at: '2026-07-28T15:47:00.000Z', sections: { ports: 'ok' } },
+      }),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(
+      await screen.findByText(
+        'None of the 1 interfaces CENTRAL reported is connected — every port is down with no neighbour discovered.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/could not be read/)).toBeNull();
   });
 });
 

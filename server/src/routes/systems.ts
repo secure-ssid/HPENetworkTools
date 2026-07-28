@@ -28,6 +28,10 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { settings } from '../config/settings';
 import { CentralAdapter, GREENLAKE_CCS_TOKEN_URL, isNewCentralGateway } from '../planes/central';
 import { UxiAdapter } from '../planes/uxi';
+import { GreenLakeAdapter } from '../planes/greenlake';
+import { MistAdapter } from '../planes/mist';
+import { ClearPassAdapter } from '../planes/clearpass';
+import { Aos8Adapter } from '../planes/aos8';
 import { registry } from '../planes/registry';
 import { poller } from '../services/poller';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
@@ -100,14 +104,30 @@ function sanitizeCreds(input: unknown): Record<string, string> | null {
 const HOST_KEYS = ['host', 'baseUrl', 'url', 'endpoint', 'jumpHost', 'address', 'master', 'publisher', 'apiHost'];
 
 /**
- * Is this credential set complete enough to test on its own? Central needs
- * the full OAuth trio; other planes need at least one host-ish field for the
- * reachability check to have something real to try.
+ * Is this credential set complete enough to test on its own?
+ *
+ * Ask the ADAPTER, because the adapter is the thing that will refuse to build
+ * without them — a plane that passes here but fails `isComplete()` later links
+ * to a stub that never syncs, and a plane that fails here can never be
+ * connected through the only UI the product offers.
+ *
+ * The old host-key heuristic did exactly that to GreenLake: it is a SaaS with a
+ * fixed base URL, so it has no host to supply, and its identity is
+ * `workspaceId` — which is not a HOST_KEY. A complete GreenLake set
+ * (workspaceId + clientId + clientSecret) was therefore rejected as
+ * "incomplete" while the same set plus any throwaway baseUrl sailed through.
+ *
+ * HOST_KEYS remains the fallback for planes with no adapter-side rule (classic,
+ * local), where a reachability check needs something real to dial.
  */
 function completeCredsFor(plane: PlaneId, creds: Record<string, string> | null): boolean {
   if (!creds) return false;
   if (plane === 'central') return CentralAdapter.isComplete(creds);
   if (plane === 'uxi') return UxiAdapter.isComplete(creds);
+  if (plane === 'greenlake') return GreenLakeAdapter.isComplete(creds);
+  if (plane === 'mist') return MistAdapter.isComplete(creds);
+  if (plane === 'clearpass') return ClearPassAdapter.isComplete(creds);
+  if (plane === 'aos8') return Aos8Adapter.isComplete(creds);
   return HOST_KEYS.some((k) => typeof creds[k] === 'string' && creds[k].trim().length > 0);
 }
 
@@ -298,6 +318,49 @@ async function testUxi(creds: Record<string, string>): Promise<Omit<TestResult, 
   }
 }
 
+/**
+ * GreenLake: validate the credentials, not a host.
+ *
+ * GreenLake is SaaS behind a fixed base URL (the adapter defaults to
+ * https://global.api.greenlake.hpe.com), so the operator has no host to type
+ * and a reachability probe would only prove HPE's edge is up. Its identity is
+ * workspaceId + an SSO client-credentials pair, so the honest test is the same
+ * token exchange the adapter itself performs — mirroring testUxi.
+ */
+async function testGreenLake(creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
+  if (!GreenLakeAdapter.isComplete(creds)) {
+    return { ok: false, message: 'greenlake requires workspaceId, clientId and clientSecret' };
+  }
+  const basic = Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString('base64');
+  let tokenRes: globalThis.Response;
+  try {
+    tokenRes = await fetchWithTimeout(
+      GREENLAKE_CCS_TOKEN_URL,
+      {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          authorization: `Basic ${basic}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ grant_type: 'client_credentials' }).toString(),
+      },
+      5000,
+    );
+  } catch (err) {
+    // Never echo the secret or the socket detail back to the client.
+    console.error(`greenlake connection test: POST token endpoint failed: ${(err as Error).message}`);
+    return { ok: false, message: 'cannot reach HPE SSO to exchange the client credentials' };
+  }
+  if (!tokenRes.ok) {
+    return { ok: false, message: `HPE SSO rejected the client credentials — HTTP ${tokenRes.status}` };
+  }
+  return {
+    ok: true,
+    message: `authenticated — token received for workspace ${creds.workspaceId}`,
+  };
+}
+
 /** Generic planes: reachability only, reported honestly. */
 async function testReachable(plane: PlaneId, creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
   // Only a host-ish field may name a target — any other stored value (token,
@@ -368,14 +431,20 @@ systemsRouter.post(
 
     const started = Date.now();
     const outcome =
-      plane === 'central' ? await testCentral(creds) : plane === 'uxi' ? await testUxi(creds) : await testReachable(plane, creds);
+      plane === 'central'
+        ? await testCentral(creds)
+        : plane === 'uxi'
+          ? await testUxi(creds)
+          : plane === 'greenlake'
+            ? await testGreenLake(creds)
+            : await testReachable(plane, creds);
     const ms = Date.now() - started;
 
     registry.recordCall(plane, {
       path:
         plane === 'central'
           ? 'OAuth client-credentials (connection test)'
-          : plane === 'uxi'
+          : plane === 'uxi' || plane === 'greenlake'
             ? 'POST sso token.oauth2 (connection test)'
             : 'reachability check (connection test)',
       ms,

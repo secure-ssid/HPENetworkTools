@@ -8,6 +8,9 @@
  * The detail getters (site/device) go further: an ANSWERED non-OK is live
  * data saying "not in the cache", not an absent backend — it returns the
  * honest null-profile shape instead of substituting fixtures.
+ * The on-demand per-object reads (getClientDetail / getSiteTopology, and the
+ * `detail`/`topology` blocks the screen envelopes carry) have their own rules —
+ * see "THREE STATES, PRESERVED ACROSS THIS BOUNDARY" below.
  */
 
 import {
@@ -68,12 +71,14 @@ import type {
   BrokerAuditEvent,
   CapabilityRow,
   ChangeLogEntry,
+  ClientDetailLive,
   ClientRow,
   ConfigForm,
   ConfigKind,
   DeviceCfg,
   DeviceCheckRow,
   DeviceClientSet,
+  DeviceDetailLive,
   DeviceEvidence,
   DeviceProfile,
   DeviceRow,
@@ -100,6 +105,7 @@ import type {
   SiteProfile,
   SiteReachability,
   SiteRow,
+  SiteTopologyLive,
   SsidObject,
   StatDef,
   SubscriptionRow,
@@ -154,6 +160,13 @@ export interface TicketsData extends ScreenEnvelope {
 export interface ClientsData extends ScreenEnvelope {
   stats: StatDef[];
   clients: ClientRow[];
+  /** The three keys below appear ONLY when the request named one client
+   *  (`/api/clients?mac=…`) — the route does no per-object read for a plain
+   *  list poll, which is what keeps the 60s tick off the tenant's call budget.
+   *  `null` on any of them is the route's honest "no plane could answer". */
+  client?: ClientRow | null;
+  detail?: ClientDetailLive | null;
+  topology?: SiteTopologyLive | null;
 }
 
 export interface AuthEventsData extends ScreenEnvelope {
@@ -183,7 +196,68 @@ export interface SiteDetailData extends ScreenEnvelope {
    *  and the panel keeps its honest NOT REPORTED state. In demo mode the same
    *  four values live on `profile` instead. */
   reachability?: SiteReachability;
+  /** The claiming plane's LINK topology for this site — the device graph and
+   *  the port-to-port links behind it — read ON THE DETAIL REQUEST PATH for
+   *  this one site, never on the 60s poll. See the three-state rule below:
+   *  absent envelope = the route attached nothing, absent `nodes`/`links` =
+   *  that section was not fetched, present-and-empty = the plane answered with
+   *  no graph. This client never fills either in. */
+  topology?: SiteTopologyLive;
 }
+
+// -- THREE STATES, PRESERVED ACROSS THIS BOUNDARY ---------------------------
+//
+// The on-demand detail payloads below (ClientDetailLive, DeviceDetailLive,
+// SiteTopologyLive) each carry a `source.sections` map saying what happened to
+// every section of the read, because the screens word three outcomes
+// differently: never asked / asked and there is genuinely nothing / asked and
+// the call failed. A stationary camera with no roams is "no roaming in the
+// last 24h", not "no source".
+//
+// So the rule for every getter here: an ABSENT array stays absent and an EMPTY
+// array stays empty. Defaulting a missing array to [] would turn "we never
+// asked" into "there are none", which is the exact fabrication this whole pass
+// exists to remove. Nothing below applies `?? []` to a detail array.
+
+/** Every detail payload carries a provenance envelope; a body without one
+ *  cannot be read three-state. Used the same way getChangeQueue() checks for
+ *  an array: a wrong-shaped 200 is an API failure, not an empty result. */
+function carriesDetailSource(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const source = (value as { source?: unknown }).source;
+  return (
+    !!source &&
+    typeof source === 'object' &&
+    typeof (source as { plane?: unknown }).plane === 'string' &&
+    typeof (source as { sections?: unknown }).sections === 'object'
+  );
+}
+
+/**
+ * Drop an ATTACHED detail block that arrived without its provenance envelope.
+ *
+ * Such a block is unreadable rather than empty — nothing in it says whether a
+ * missing array means "not fetched" or "the call failed" — and a screen that
+ * rendered it would have to guess, which is how "—" starts meaning three
+ * different things again. Dropping it leaves the panel's existing honest empty
+ * state. It is deliberately NOT promoted to an apiError: one unreadable
+ * sub-block must not blank a device, site or clients page whose other panels
+ * are fine — the honest empty state is the smaller loss.
+ */
+function dropUnreadableBlocks<T extends object>(data: T, ...keys: DetailBlockKey[]): T {
+  const unreadable = keys.filter((key) => {
+    const block = (data as Record<string, unknown>)[key];
+    // `null` is the route's own honest "no plane could answer" and is kept.
+    return block !== undefined && block !== null && !carriesDetailSource(block);
+  });
+  if (unreadable.length === 0) return data;
+  const copy = { ...data } as Record<string, unknown>;
+  for (const key of unreadable) delete copy[key];
+  return copy as T;
+}
+
+/** The two keys a route attaches a detail payload under. */
+type DetailBlockKey = 'detail' | 'topology';
 
 export interface DevicesData extends ScreenEnvelope {
   devices: DeviceRow[];
@@ -211,6 +285,17 @@ export interface DeviceDetailData extends ScreenEnvelope {
    *  source instead. Normalized by getDeviceDetail(), so the screen only ever
    *  sees this one shape. */
   evidence?: DeviceEvidence;
+  /** Per-device live subresources — radios + WLANs for an AP, ports for a
+   *  switch — read ON THE DETAIL REQUEST PATH for this one device, never on
+   *  the 60s poll. Same three states as `SiteDetailData.topology`: absent
+   *  envelope = the route attached nothing, absent array = that section was
+   *  not fetched (an AP is not asked for ports), present-and-empty = the plane
+   *  answered with nothing. Consult `detail.source.sections` before writing
+   *  any "nothing here" sentence. */
+  detail?: DeviceDetailLive;
+  /** The site graph this device sits in, when the route attaches one — it is
+   *  what names the far end of an uplink. Same three states as `detail`. */
+  topology?: SiteTopologyLive;
 }
 
 export interface LicensesData extends ScreenEnvelope {
@@ -427,13 +512,95 @@ export async function getTickets(): Promise<TicketsData> {
   return { tickets: TICKETS, dataSource: 'demo' };
 }
 
-export async function getClients(): Promise<ClientsData> {
-  const result = await fetchScreen<ClientsData>('/api/clients');
-  if (result.kind === 'ok') return result.data;
+/**
+ * The clients screen. Pass `mac` ONLY from a drawer open, never from the poll:
+ * naming a client makes the route issue that client's per-object detail read,
+ * and doing that on a 60s timer across a whole list is what the tenant's daily
+ * call budget cannot survive.
+ */
+export async function getClients(mac?: string): Promise<ClientsData> {
+  const result = await fetchScreen<ClientsData>(
+    mac ? `/api/clients?mac=${encodeURIComponent(mac)}` : '/api/clients',
+  );
+  if (result.kind === 'ok') return dropUnreadableBlocks(result.data, 'detail', 'topology');
   if (result.kind === 'http-error') {
     return apiFailure<ClientsData>(result.message, { stats: [], clients: [] });
   }
   return { stats: CLIENT_STATS, clients: CLIENTS, dataSource: 'demo' };
+}
+
+// ---------------------------------------------------------------------------
+// On-demand detail reads — the per-object blocks the routes attach to
+// /api/clients?mac=…, /api/sites/:siteId and /api/devices/:name
+//
+// These are NOT poller work. A plane models one client across several
+// per-object endpoints and one device across many /{id}/subresource endpoints;
+// fanning those out over every row on every 60s tick would spend the tenant's
+// daily call budget on data nobody is looking at. Each getter below is for the
+// ONE object whose drawer is open, called once per selection.
+//
+// They return the payload or `null`, never an envelope and never fixtures:
+//
+//   * `null` = the portal could not obtain a READABLE payload — no backend, a
+//     build without the route, an HTTP failure, or a body with no provenance.
+//     The panel keeps the honest empty state it already had. It is deliberately
+//     NOT an ApiErrorState: these reads are supplementary, and blanking a
+//     drawer whose other twenty rows are true would be a worse lie than the
+//     missing figure. It is also never fixtures — there is no authored client
+//     detail, and inventing one would put fabricated radio numbers against a
+//     real endpoint's MAC.
+//   * A payload = whatever the plane said, passed through UNTOUCHED. The read
+//     that was attempted and failed is not null: the route marks the section
+//     'failed' inside `source.sections`, which is how the drawer can say the
+//     call broke instead of implying the plane has nothing.
+// ---------------------------------------------------------------------------
+
+/**
+ * Take the detail payload out of the screen envelope the route attaches it to.
+ *
+ * Same reasoning as normalizeEvidence() below — one shape for the screen, no
+ * guessing at the call site — and it also accepts a route that answers with
+ * the bare payload. A block with no provenance envelope is discarded rather
+ * than rendered: with no `source.sections` there is no way to tell "asked and
+ * empty" from "the call failed", and a figure whose meaning is unknown must
+ * not reach an operator.
+ */
+function unwrapDetailPayload<T>(body: unknown, key: DetailBlockKey): T | null {
+  if (!body || typeof body !== 'object') return null;
+  if (carriesDetailSource(body)) return body as T;
+  const block = (body as Record<string, unknown>)[key];
+  return carriesDetailSource(block) ? (block as T) : null;
+}
+
+/** Shared body of the two on-demand reads; see the section note above. */
+async function readDetail<T>(path: string, key: DetailBlockKey): Promise<T | null> {
+  const r = await fetchDetail<unknown>(path);
+  return r.kind === 'ok' ? unwrapDetailPayload<T>(r.data, key) : null;
+}
+
+/**
+ * The client's own detail — signal, throughput, roam count, session timeline —
+ * for the ONE client whose drawer is open.
+ *
+ * It rides `/api/clients?mac=`: the route does the per-object read only when a
+ * request names a client, so the plain list poll stays exactly as cheap as it
+ * was. Never call this from the polling loop.
+ */
+export async function getClientDetail(mac: string): Promise<ClientDetailLive | null> {
+  return readDetail<ClientDetailLive>(`/api/clients?mac=${encodeURIComponent(mac)}`, 'detail');
+}
+
+/**
+ * The plane's link topology for one site — the device graph and the
+ * port-to-port links behind it, which is what makes a client's wiring and
+ * path-to-the-internet rows real rather than guessed.
+ *
+ * It rides `/api/sites/:siteId`, where the route already attaches it, and the
+ * server caches the read, so opening several drawers in one site costs one
+ * call rather than one per drawer.
+ */
+export async function getSiteTopology(siteId: string): Promise<SiteTopologyLive | null> {
+  return readDetail<SiteTopologyLive>(`/api/sites/${encodeURIComponent(siteId)}`, 'topology');
 }
 
 export async function getAuthEvents(): Promise<AuthEventsData> {
@@ -467,7 +634,7 @@ export async function getSiteDetail(param: string): Promise<SiteDetailData> {
   const r = await fetchDetail<SiteDetailData>(
     `/api/sites/${encodeURIComponent(param)}`,
   );
-  if (r.kind === 'ok') return r.data;
+  if (r.kind === 'ok') return dropUnreadableBlocks(r.data, 'topology');
   if (r.kind === 'answered') {
     if (r.status !== 404) {
       return apiFailure<SiteDetailData>(r.message, { site: null, profile: null });
@@ -538,7 +705,7 @@ export async function getDeviceDetail(name: string): Promise<DeviceDetailData> {
   const r = await fetchDetail<DeviceDetailData & { checks?: DeviceCheckRow[] }>(
     `/api/devices/${encodeURIComponent(name)}`,
   );
-  if (r.kind === 'ok') return normalizeEvidence(r.data);
+  if (r.kind === 'ok') return dropUnreadableBlocks(normalizeEvidence(r.data), 'detail', 'topology');
   if (r.kind === 'answered') {
     if (r.status !== 404) {
       return apiFailure<DeviceDetailData>(r.message, {

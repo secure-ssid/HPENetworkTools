@@ -15,7 +15,7 @@
  * hints. Datasets no plane reports stay honestly empty.
  */
 
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import {
   ALERTS,
   AUTH_EVENTS,
@@ -77,10 +77,17 @@ import {
   type AuthEventRow,
   type CapabilityRow,
   type ChangeLogEntry,
+  type ClientDetailLive,
+  type ClientDetailSection,
   type ClientRow,
   type BaselineProgressRow,
+  type DetailFetchState,
+  type DetailSource,
   type DeviceCheckRow,
   type DeviceClientSet,
+  type DeviceDetailKind,
+  type DeviceDetailLive,
+  type DeviceDetailSection,
   type DeviceEvidence,
   type DeviceRow,
   type DeviceType,
@@ -109,6 +116,8 @@ import {
   type SiteProfile,
   type SiteReachability,
   type SiteRow,
+  type SiteTopologyLive,
+  type SiteTopologySection,
   type StatDef,
   type SubscriptionAssignment,
   type SubscriptionRow,
@@ -1940,9 +1949,413 @@ screensRouter.post('/tickets/:id/resolve', (req, res) => {
   res.json({ ticket });
 });
 
+// -- On-demand plane detail reads ---------------------------------------------
+//
+// A control plane models one client across ~8 endpoints and one device across
+// many /{id}/subresource endpoints. The poller reads a handful of FLAT LISTS
+// (/clients, /aps, /switches, /sites) on a 60s timer, so everything those
+// lists do not carry — signal, roam trail, per-radio RF, per-port wiring, link
+// topology — is only obtainable with a PER-OBJECT read.
+//
+// Those reads happen HERE, on the DETAIL REQUEST PATH, for the ONE object a
+// page or drawer is opening, and nowhere else. They are never added to the
+// poll loop: 9 devices x N subresources x 1440 polls/day would exhaust the
+// tenant's daily call budget, and a fix that hammers the plane is a
+// regression, not a fix. Three guards keep it cheap:
+//
+//   1. TTL cache keyed by plane + object, SHARED across routes — a reopened
+//      drawer, a second screen asking about the same site, and the clients
+//      screen's own 60s refresh with a drawer open all cost nothing.
+//   2. Single-flight — concurrent requests for one key await the one call.
+//   3. Budget gate — a plane already at its stored daily call budget is not
+//      called at all, and the payload SAYS that instead of implying the plane
+//      had nothing to say.
+//
+// Every outcome maps onto DetailSource's three states instead of collapsing
+// into one empty:
+//   null                      — this plane cannot answer (unlinked, no such
+//                               capability, no serial/MAC to ask about). The
+//                               screen keeps the empty state it already had.
+//   sections {} + note        — we deliberately did not ask (budget spent).
+//   sections all 'failed'     — we asked and the call broke or timed out.
+//   whatever the adapter says — including 'empty', which is a REAL answer: a
+//                               stationary client with no roams is "no roaming
+//                               in the last 24h", never "no source".
+
+/** Detail freshness. Longer than the 60s poll on purpose: these are per-object
+ *  calls against a metered plane, and a drawer left open through a refresh
+ *  must not turn into one call per poll. */
+const DETAIL_TTL_MS = 90_000;
+/** Physical wiring changes on the timescale of a maintenance window, not a
+ *  poll, so the site graph is cached far longer than RF numbers. */
+const TOPOLOGY_TTL_MS = 300_000;
+/** Backstop only — adapters carry their own HTTP timeouts. This exists so a
+ *  hung socket cannot hold a screen request open forever. */
+const DETAIL_TIMEOUT_MS = 10_000;
+/** Bounded so a long-lived server cannot accumulate one entry per MAC seen. */
+const DETAIL_CACHE_MAX = 256;
+
+const detailCache = new Map<string, { at: number; value: unknown }>();
+const detailInflight = new Map<string, Promise<unknown>>();
+
+/** Test seam: forget every cached detail read. Never called by a route. */
+export function resetDetailCache(): void {
+  detailCache.clear();
+  detailInflight.clear();
+}
+
+function trimDetailCache(): void {
+  while (detailCache.size > DETAIL_CACHE_MAX) {
+    const oldest = detailCache.keys().next();
+    if (oldest.done) return;
+    detailCache.delete(oldest.value);
+  }
+}
+
+/** Re-stamp a cached payload as cached WITHOUT mutating the cached object —
+ *  it is handed to every subsequent reader. */
+function asCached<T extends { source: DetailSource<string> }>(value: T | null): T | null {
+  if (value === null) return null;
+  return { ...value, source: { ...value.source, cached: true } };
+}
+
+/**
+ * TTL + single-flight around one per-object read.
+ *
+ * A cached `null` is cached too: "this plane cannot answer" is an answer, and
+ * re-asking every request would defeat the point of the gate.
+ */
+function cachedDetail<T extends { source: DetailSource<string> }>(
+  key: string,
+  ttlMs: number,
+  run: () => Promise<T | null>,
+): Promise<T | null> {
+  const hit = detailCache.get(key);
+  if (hit && Date.now() - hit.at < ttlMs) return Promise.resolve(asCached(hit.value as T | null));
+  const flying = detailInflight.get(key) as Promise<T | null> | undefined;
+  if (flying) return flying;
+  const call = run()
+    .then((value) => {
+      detailCache.set(key, { at: Date.now(), value });
+      trimDetailCache();
+      return value;
+    })
+    .finally(() => detailInflight.delete(key));
+  detailInflight.set(key, call as Promise<unknown>);
+  return call;
+}
+
+const DETAIL_DEADLINE = { ok: false as const };
+
+/**
+ * Run one adapter call so it can only ever resolve. A throw or a hang becomes
+ * an explicit 'failed' payload — NOT a null, because null means "never asked"
+ * and the two must not read the same on screen.
+ */
+async function attemptDetail<T>(
+  call: () => Promise<T | null>,
+  onFailure: (note: string) => T,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const deadline = new Promise<typeof DETAIL_DEADLINE>((resolve) => {
+      timer = setTimeout(() => resolve(DETAIL_DEADLINE), DETAIL_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') timer.unref();
+    });
+    const settled = await Promise.race([
+      call().then((value) => ({ ok: true as const, value })),
+      deadline,
+    ]);
+    if (!settled.ok) {
+      return onFailure(`the detail read did not answer within ${Math.round(DETAIL_TIMEOUT_MS / 1000)}s`);
+    }
+    return settled.value;
+  } catch (err) {
+    return onFailure(detailErrorText(err));
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** The adapter's own words, trimmed. Adapters never put credentials in an
+ *  error message; the length cap keeps a stack trace out of the payload. */
+function detailErrorText(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  const one = text.split('\n')[0]!.trim();
+  return one.length > 200 ? `${one.slice(0, 197)}…` : one || 'the detail read failed';
+}
+
+/**
+ * Is this plane out of calls for today?
+ *
+ * A plane with no stored budget asserts no limit, so it is never gated. When
+ * there IS a budget and it is spent, the honest move is to not call and say
+ * why — a detail payload with no sections attempted plus that sentence.
+ */
+function detailBudgetNote(id: PlaneId): string | null {
+  const state = registry.state(id);
+  const budget = state.callBudget;
+  if (budget === null || budget === undefined) return null;
+  if (state.callsToday < budget) return null;
+  return `${PLANE_LABEL[id]} has spent its stored daily call budget (${state.callsToday}/${budget}) — no per-object detail read was issued`;
+}
+
+/** The registry plane behind a display label, or null for a label the portal
+ *  adapts nothing for ('THIRD-PARTY'). */
+function detailPlaneFor(label: Plane | null | undefined): PlaneId | null {
+  return label ? planeIdForLabel(label) ?? null : null;
+}
+
+/** Last-resort guard: a detail read is an enhancement, never a reason for a
+ *  screen request to fail. */
+function neverThrows<T>(p: Promise<T | null>): Promise<T | null> {
+  return p.catch(() => null);
+}
+
+const CLIENT_DETAIL_SECTIONS: readonly ClientDetailSection[] = [
+  'rssi',
+  'tput',
+  'roams',
+  'timeline',
+  'usageSeries',
+];
+
+function sectionMap<S extends string>(
+  sections: readonly S[],
+  state: DetailFetchState,
+): Partial<Record<S, DetailFetchState>> {
+  const out: Partial<Record<S, DetailFetchState>> = {};
+  for (const s of sections) out[s] = state;
+  return out;
+}
+
+/**
+ * A detail payload that carries no data and says why.
+ *
+ * `attempted: false` leaves `sections` empty, which the contract defines as
+ * 'not-fetched' for every section — the shape for "we chose not to ask".
+ * `attempted: true` marks them 'failed' — "we asked and it broke".
+ */
+function clientDetailStub(
+  mac: string,
+  plane: PlaneId,
+  note: string,
+  attempted: boolean,
+): ClientDetailLive {
+  return {
+    mac,
+    source: {
+      plane,
+      at: new Date().toISOString(),
+      sections: attempted ? sectionMap(CLIENT_DETAIL_SECTIONS, 'failed') : {},
+      note,
+    },
+  };
+}
+
+/** An AP has radios and WLANs; a switch or gateway has ports. Asking a switch
+ *  for radios spends a call on a guaranteed 404. */
+function deviceDetailSections(kind: DeviceDetailKind): readonly DeviceDetailSection[] {
+  return kind === 'ap' ? (['radios', 'wlans'] as const) : (['ports'] as const);
+}
+
+function deviceDetailStub(
+  serial: string,
+  kind: DeviceDetailKind,
+  plane: PlaneId,
+  note: string,
+  attempted: boolean,
+): DeviceDetailLive {
+  return {
+    serial,
+    kind,
+    source: {
+      plane,
+      at: new Date().toISOString(),
+      sections: attempted ? sectionMap(deviceDetailSections(kind), 'failed') : {},
+      note,
+    },
+  };
+}
+
+const TOPOLOGY_SECTIONS: readonly SiteTopologySection[] = ['nodes', 'links'];
+
+function topologyStub(
+  siteKey: string,
+  plane: PlaneId,
+  note: string,
+  attempted: boolean,
+): SiteTopologyLive {
+  return {
+    siteId: siteKey,
+    source: {
+      plane,
+      at: new Date().toISOString(),
+      sections: attempted ? sectionMap(TOPOLOGY_SECTIONS, 'failed') : {},
+      note,
+    },
+  };
+}
+
+/** Only these three device families have per-object subresources worth a call;
+ *  a controller/sensor/policy row asks for nothing. */
+const DEVICE_DETAIL_KIND: Partial<Record<DeviceType, DeviceDetailKind>> = {
+  ap: 'ap',
+  switch: 'switch',
+  gateway: 'gateway',
+};
+
+/**
+ * Per-client detail for the ONE client whose drawer is opening.
+ *
+ * Gates, in order: a client with no MAC cannot be asked about; a label with no
+ * registry plane behind it has no adapter; an adapter without the capability
+ * claims nothing; a plane out of budget is told about rather than called.
+ */
+function liveClientDetail(client: ClientRow | null | undefined): Promise<ClientDetailLive | null> {
+  if (!client || !reportedValue(client.mac)) return Promise.resolve(null);
+  const planeId = detailPlaneFor(client.plane);
+  if (!planeId) return Promise.resolve(null);
+  const adapter = registry.get(planeId);
+  const read = adapter.clientDetail;
+  if (typeof read !== 'function') return Promise.resolve(null);
+  const mac = client.mac;
+  const budget = detailBudgetNote(planeId);
+  if (budget) return Promise.resolve(clientDetailStub(mac, planeId, budget, false));
+  return neverThrows(
+    cachedDetail(`client:${planeId}:${normalizeMac(mac)}`, DETAIL_TTL_MS, () =>
+      attemptDetail(
+        () => read.call(adapter, mac),
+        (note) => clientDetailStub(mac, planeId, note, true),
+      ),
+    ),
+  );
+}
+
+/** Per-device detail for the ONE device whose page is opening. */
+function liveDeviceDetail(device: ReconciledDeviceRow | null): Promise<DeviceDetailLive | null> {
+  if (!device || !reportedValue(device.serial)) return Promise.resolve(null);
+  const kind = DEVICE_DETAIL_KIND[device.type];
+  if (!kind) return Promise.resolve(null);
+  const planeId = detailPlaneFor(device.plane);
+  if (!planeId) return Promise.resolve(null);
+  const adapter = registry.get(planeId);
+  const read = adapter.deviceDetail;
+  if (typeof read !== 'function') return Promise.resolve(null);
+  const serial = device.serial!;
+  const budget = detailBudgetNote(planeId);
+  if (budget) return Promise.resolve(deviceDetailStub(serial, kind, planeId, budget, false));
+  return neverThrows(
+    cachedDetail(`device:${planeId}:${serial}:${kind}`, DETAIL_TTL_MS, () =>
+      attemptDetail(
+        () => read.call(adapter, serial, kind),
+        (note) => deviceDetailStub(serial, kind, planeId, note, true),
+      ),
+    ),
+  );
+}
+
+/**
+ * The key a plane can join its own site records on.
+ *
+ * The portal's SiteId is the PORTAL's: central.ts mints 'ext-<slug>' from the
+ * plane's site NAME (siteIdForName) and keeps no plane id, so this route has
+ * no numeric id to pass. A portal id that is already all digits came from a
+ * plane and is passed through unchanged; otherwise the site NAME is the only
+ * key both sides hold, and the adapter owns the name -> id join because the
+ * adapter is the side that made it.
+ */
+function planeSiteKey(site: SiteRow): string {
+  const id = String(site.id);
+  return /^\d+$/.test(id) ? id : site.name;
+}
+
+/**
+ * The plane's link topology for ONE site.
+ *
+ * A site can be claimed by several planes; the first badge whose adapter can
+ * actually answer wins, rather than assuming Central. The result is cached per
+ * plane+site, so the site page, a device page and a client drawer at the same
+ * site share one read.
+ */
+function liveSiteTopology(site: SiteRow | null): Promise<SiteTopologyLive | null> {
+  if (!site) return Promise.resolve(null);
+  const siteKey = planeSiteKey(site);
+  if (!reportedValue(siteKey)) return Promise.resolve(null);
+  for (const badge of site.planes) {
+    const planeId = detailPlaneFor(badge.name);
+    if (!planeId) continue;
+    const adapter = registry.get(planeId);
+    const read = adapter.siteTopology;
+    if (typeof read !== 'function') continue;
+    const budget = detailBudgetNote(planeId);
+    if (budget) return Promise.resolve(topologyStub(siteKey, planeId, budget, false));
+    return neverThrows(
+      cachedDetail(`topology:${planeId}:${siteKey}`, TOPOLOGY_TTL_MS, () =>
+        attemptDetail(
+          () => read.call(adapter, siteKey),
+          (note) => topologyStub(siteKey, planeId, note, true),
+        ),
+      ),
+    );
+  }
+  return Promise.resolve(null);
+}
+
+/** The site row a live object belongs to, for the topology read. */
+function liveSiteById(id: SiteId | null | undefined): SiteRow | null {
+  if (!id) return null;
+  return liveMerged().sites.find((s) => s.id === id) ?? null;
+}
+
+/** Answer an async screen request without letting a rejection hang the socket. */
+function settle(res: Response, work: Promise<void>): void {
+  void work.catch((err) => {
+    if (!res.headersSent) res.status(500).json({ error: detailErrorText(err) });
+  });
+}
+
 // -- Clients / auth events ----------------------------------------------------
 
-screensRouter.get('/clients', (_req, res) => {
+/**
+ * Keys a client-detail request adds to the clients envelope.
+ *
+ * A request that named NO client adds nothing at all, so the screen's own 60s
+ * refresh of /api/clients is byte-for-byte what it always was and issues zero
+ * per-object calls. Only naming one client opens the detail path.
+ *
+ * `topology` rides along because the drawer's "Wiring" and "Path to the
+ * internet" rows are answerable from nothing else: the client row says which
+ * AP it is attached to, and the site's link graph says which switch port that
+ * AP hangs off (AP765-FrontOutSide -> CX6300-CORE 1/1/12). Both reads are
+ * cached, and the site graph is shared with the site and device pages, so a
+ * drawer open costs at most one client call and — once per TTL — one site call.
+ */
+async function clientDetailKeys(
+  client: ClientRow | null,
+  wanted: string | null,
+): Promise<Record<string, unknown>> {
+  if (wanted === null) return {};
+  const [detail, topology] = await Promise.all([
+    liveClientDetail(client),
+    liveSiteTopology(liveSiteById(client?.siteId)),
+  ]);
+  return { client, detail, topology };
+}
+
+/**
+ * The clients screen, plus — when the request names ONE client — that client's
+ * on-demand detail.
+ *
+ * The MAC arrives either as `?mac=` (the same param the drawer already keeps in
+ * the screen URL) or as a path segment, and both land here so the detail read
+ * has exactly one implementation.
+ */
+async function serveClients(res: Response, macParam: string | null): Promise<void> {
+  const wanted = macParam && macParam.trim() !== '' ? normalizeMac(macParam) : null;
+  const pick = (rows: ClientRow[]): ClientRow | null =>
+    wanted === null ? null : rows.find((c) => normalizeMac(c.mac) === wanted) ?? null;
+
   if (sourceFor('clients') === 'demo') {
     if (blendFor('clients')) {
       const blended: string[] = [];
@@ -1950,16 +2363,50 @@ screensRouter.get('/clients', (_req, res) => {
       if (blendClients.length > 0) {
         blended.push('clients');
         res.json(
-          withBlended(envelopeFor('clients', { stats: liveClientStats(blendClients), clients: blendClients }), blended, 'clients'),
+          withBlended(
+            envelopeFor('clients', {
+              stats: liveClientStats(blendClients),
+              clients: blendClients,
+              ...(await clientDetailKeys(pick(blendClients), wanted)),
+            }),
+            blended,
+            'clients',
+          ),
         );
         return;
       }
     }
+    // Demo rows are authored and complete. There is no live object behind a
+    // fixture MAC, so asking a plane about one would spend a call to learn
+    // nothing — and the payload stays exactly as demo mode has always served it.
     res.json(envelopeFor('clients', { stats: CLIENT_STATS, clients: CLIENTS }));
     return;
   }
   const clients = liveClients();
-  res.json(envelopeFor('clients', { stats: liveClientStats(clients), clients }));
+  res.json(
+    envelopeFor('clients', {
+      stats: liveClientStats(clients),
+      clients,
+      ...(await clientDetailKeys(pick(clients), wanted)),
+    }),
+  );
+}
+
+screensRouter.get('/clients', (req, res) => {
+  settle(res, serveClients(res, typeof req.query.mac === 'string' ? req.query.mac : null));
+});
+
+/**
+ * Same handler as `/clients?mac=` — a caller that prefers the path form gets
+ * the identical envelope rather than a second, drifting implementation.
+ *
+ * A MAC that is not in the roster is NOT a 404 here (unlike /devices/:name and
+ * /sites/:siteId, which are whole pages). The response is still the clients
+ * screen, with `client: null` — which is the honest answer to "show me this
+ * session": the roster is current and this MAC is not on it.
+ */
+screensRouter.get('/clients/:mac', (req, res) => {
+  settle(res, serveClients(res, req.params.mac));
 });
 
 /** Live client stats — same five StatDefs as the fixtures, computed per poll. */
@@ -2196,8 +2643,25 @@ function withoutHiddenDemoDevices(profile: SiteProfile | null): SiteProfile | nu
   };
 }
 
+/**
+ * The site's link graph, attached to a live site page.
+ *
+ * It is a NEW key, not a rewrite of `reachability`: SiteReachability is a
+ * statement about the LOCAL collector — "how much of this site has this portal
+ * probed directly" — and filling it from a cloud plane's topology would credit
+ * the wrong plane for a claim it never made. The graph answers a different
+ * question (what is wired to what, and which port), so it gets its own key and
+ * leaves the collector panel alone.
+ */
+async function siteDetailKeys(site: SiteRow): Promise<Record<string, unknown>> {
+  return { topology: await liveSiteTopology(site) };
+}
+
 screensRouter.get('/sites/:siteId', (req, res) => {
-  const param = req.params.siteId;
+  settle(res, serveSiteDetail(res, req.params.siteId));
+});
+
+async function serveSiteDetail(res: Response, param: string): Promise<void> {
   const id: SiteId | undefined = isSiteId(param) ? param : siteIdFor(param);
 
   if (sourceFor('sites') === 'demo') {
@@ -2220,6 +2684,7 @@ screensRouter.get('/sites/:siteId', (req, res) => {
               profile: null,
               reachability: liveSiteReachability(live.devices, site),
               ...liveSiteSections(live, site),
+              ...(await siteDetailKeys(site)),
             }),
             ['sites'],
             'sites',
@@ -2260,9 +2725,10 @@ screensRouter.get('/sites/:siteId', (req, res) => {
       profile: null,
       reachability: liveSiteReachability(live.devices, site),
       ...liveSiteSections(live, site),
+      ...(await siteDetailKeys(site)),
     }),
   );
-});
+}
 
 // -- Devices ------------------------------------------------------------------
 
@@ -2302,9 +2768,31 @@ screensRouter.get('/devices', (_req, res) => {
   res.json(envelopeFor('devices', { devices, lanes: liveLaneMeta(), reconciliation: { doubleClaimed, unclaimed } }));
 });
 
-screensRouter.get('/devices/:name', (req, res) => {
-  const name = req.params.name;
+/**
+ * Keys a live device page adds from the per-object read path.
+ *
+ * `detail` is this ONE device's subresources — radios + WLANs for an AP, ports
+ * for a switch or gateway — which no flat list carries. `topology` is the
+ * site's link graph, so an AP page can say which switch port it hangs off (the
+ * AP has no port list of its own) and a switch page can corroborate its
+ * neighbours. Both are cached; the graph is shared with the site page and the
+ * client drawer, so opening several pages at one site costs one graph read.
+ */
+async function deviceDetailKeys(
+  device: ReconciledDeviceRow,
+): Promise<Record<string, unknown>> {
+  const [detail, topology] = await Promise.all([
+    liveDeviceDetail(device),
+    liveSiteTopology(liveSiteById(device.siteId)),
+  ]);
+  return { detail, topology };
+}
 
+screensRouter.get('/devices/:name', (req, res) => {
+  settle(res, serveDeviceDetail(res, req.params.name));
+});
+
+async function serveDeviceDetail(res: Response, name: string): Promise<void> {
   if (sourceFor('devices') === 'demo') {
     // Blend: the devices section has swapped to live rows — a fixture detail
     // (config, clients) for a name the live inventory doesn't know would be
@@ -2327,6 +2815,7 @@ screensRouter.get('/devices/:name', (req, res) => {
               clients: liveDeviceClients(name),
               evidence: liveDeviceEvidence(device),
               ...liveTerminalPayload(device),
+              ...(await deviceDetailKeys(device)),
             }),
             ['devices'],
             'devices',
@@ -2377,9 +2866,10 @@ screensRouter.get('/devices/:name', (req, res) => {
       // portal can really open one.
       evidence: liveDeviceEvidence(device),
       ...liveTerminalPayload(device),
+      ...(await deviceDetailKeys(device)),
     }),
   );
-});
+}
 
 // -- Licences / configure / compliance ---------------------------------------
 

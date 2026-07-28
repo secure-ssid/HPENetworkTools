@@ -73,6 +73,15 @@
  *   - licence: 'unknown' — Central's monitoring endpoints do not report
  *     licences; GreenLake is the licence reconciliation source today.
  *
+ * ON-DEMAND DETAIL READS (clientDetail/deviceDetail/siteTopology) are NOT part
+ * of pull() and must never be called from the poller. pull() reads a few flat
+ * lists on the 60s timer; Central models one client across ~8 endpoints and one
+ * device across many /{id}/subresource endpoints, so those are fetched for the
+ * ONE object being viewed, behind a TTL cache, with a shorter timeout and no
+ * 429 backoff. See the block above clientDetail() for the per-object call cost
+ * and the endpoint-by-endpoint reasoning (including why /clients-usage MUST
+ * carry the macAddress filter — unfiltered it is tenant-wide).
+ *
  * DEFERRED (needs a live tenant to verify the shapes before it can ship):
  *   licences  /platform/licensing/v1/subscriptions +
  *             /platform/device_inventory/v1/devices → serial→licence map, so
@@ -103,14 +112,31 @@ import {
   siteDisplayName,
   siteIdFor,
   type AlertRow,
+  type ClientDetailLive,
+  type ClientDetailSection,
   type ClientRow,
+  type ClientTimelineEvent,
   type ClientType,
+  type DetailFetchState,
+  type DetailSource,
+  type DeviceDetailKind,
+  type DeviceDetailLive,
+  type DeviceDetailSection,
+  type DevicePort,
+  type DeviceRadio,
   type DeviceRow,
+  type DeviceWlan,
   type PlaneDatasetKey,
   type Sev,
   type SiteId,
   type SiteRow,
+  type SiteTopologyLive,
+  type SiteTopologySection,
   type Tone,
+  type TopologyDeviceNode,
+  type TopologyLink,
+  type TopologyLinkPort,
+  type UsageSample,
 } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
@@ -130,6 +156,25 @@ const RATE_LIMIT_BASE_MS = 1_000;
 const RATE_LIMIT_CAP_MS = 30_000;
 /** Pacing between pages of one section so a 10-page walk is not a burst. */
 const PAGE_PACING_MS = 150;
+
+// -- On-demand detail reads (NOT poller work — see PlaneAdapter's contract) ---
+/** Detail reads sit on the drawer's request path, so they get a SHORTER budget
+ *  than a poll page: a slow subresource must never stall the one object a
+ *  human is looking at. It degrades to the honest empty state instead. */
+const DETAIL_TIMEOUT_MS = 8_000;
+/** TTL for a cached detail payload. Long enough that re-opening a drawer (or
+ *  two panes asking for the same object) costs zero calls, short enough that
+ *  what the operator reads is still this minute's truth. */
+const DETAIL_TTL_MS = 45_000;
+/** Bounded LRU-ish cache so a long session cannot grow it without limit. */
+const DETAIL_CACHE_MAX = 128;
+/** Lookback for the mobility trail — README's "no roaming in the last 24h". */
+const MOBILITY_WINDOW_SEC = 24 * 60 * 60;
+/** Central caps mobility-trail at limit=100. ONE page is deliberate: the
+ *  payload states `total`, so the roam COUNT is exact without walking the
+ *  cursor, and the timeline only needs the newest events (default sort is
+ *  occurredAt DESC). Walking would spend calls to render rows nobody scrolls to. */
+const MOBILITY_PAGE_LIMIT = 100;
 
 export type RecordCallFn = (call: { path: string; ms: number; code: string }) => void;
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -581,6 +626,323 @@ export function mapCentralNotification(raw: unknown, nowMs: number = Date.now())
 }
 
 // ---------------------------------------------------------------------------
+// Detail-read mapping (pure, exported for tests)
+//
+// Every shape below was verified against the live tenant, not guessed. Central
+// returns most per-object statistics as STRINGS ('9', '-98', '1500 bytes'), so
+// each mapper normalizes to the contract's types; a value the plane omitted (or
+// worded in a way we cannot parse) becomes null, never 0.
+// ---------------------------------------------------------------------------
+
+/**
+ * Central addresses a client by colon-separated lowercase MAC. Rows may reach
+ * us hyphenated, dotted or upper-cased, so canonicalize before it becomes both
+ * a URL segment and a cache key — otherwise 'AA-BB-…' and 'aa:bb:…' are two
+ * cache entries and two calls for one client. Anything that is not 12 hex
+ * digits is passed through trimmed+lowercased rather than mangled; '' → null,
+ * which the caller turns into "this plane cannot answer".
+ */
+export function normalizeCentralMac(mac: string | null | undefined): string | null {
+  const raw = (mac ?? '').trim().toLowerCase();
+  if (!raw) return null;
+  const hex = raw.replace(/[^0-9a-f]/g, '');
+  if (hex.length === 12) return (hex.match(/.{2}/g) as string[]).join(':');
+  return raw;
+}
+
+/**
+ * '5 mins' / '3 hours' → seconds. Central states the sampling interval in
+ * words and picks it from the queried range (≤1 day → 5 min, else 3 hours),
+ * so it must be read rather than assumed: getting it wrong scales the derived
+ * throughput by 36x. An unrecognized wording → null, and the caller then
+ * reports no throughput instead of a wrong one.
+ */
+export function parseUsageIntervalSec(interval: string | null): number | null {
+  const s = (interval ?? '').trim().toLowerCase();
+  const m = /^(\d+)\s*(sec|min|hour|day)/.exec(s);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const unit = { sec: 1, min: 60, hour: 3600, day: 86400 }[m[2] as 'sec' | 'min' | 'hour' | 'day'];
+  return n * unit;
+}
+
+/**
+ * One MobilityDetails row → a timeline event. Central's mobility trail is
+ * exclusively ROAM records (source AP → destination AP), so `kind` is 'roam';
+ * the sentence is built from the plane's own words, never embellished.
+ */
+export function mapMobilityEvent(raw: unknown): ClientTimelineEvent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const ts = str(r.occurredAt);
+  if (!ts) return null; // an undated event cannot be placed on a timeline
+  const from = str(r.sourceAp);
+  const to = str(r.destinationAp);
+  const band = str(r.radioBand);
+  const toChannel = str(r.toChannel);
+  const fromChannel = str(r.fromChannel);
+  const wlan = str(r.wlanName);
+  const proto = str(r.roamProtocol);
+  const roamMs = num(r.roamTime);
+  const where = from && to ? `roamed ${from} -> ${to}` : to ? `roamed to ${to}` : from ? `roamed from ${from}` : 'roamed';
+  const channelText =
+    fromChannel && toChannel && fromChannel !== toChannel ? `ch ${fromChannel} -> ${toChannel}` : toChannel ? `ch ${toChannel}` : null;
+  const detail = [where, [band, channelText].filter(Boolean).join(' '), proto, roamMs !== null ? `${roamMs} ms` : null]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .join(', ');
+  return {
+    ts,
+    kind: 'roam',
+    detail,
+    ...(to ? { device: to } : {}),
+    rssiDbm: num(r.rssi),
+    ...(band ? { band } : {}),
+    ...(toChannel ? { channel: toChannel } : {}),
+    ...(wlan ? { wlan } : {}),
+  };
+}
+
+/**
+ * A GetClientsUsage payload → oldest-first samples. `keys` names the columns
+ * of each `data` tuple (['txUsage','rxUsage'] live) — it is READ, not assumed,
+ * so a tenant that reorders them does not silently swap tx and rx.
+ */
+export function mapUsageSamples(body: unknown): UsageSample[] {
+  if (!body || typeof body !== 'object') return [];
+  const b = body as Record<string, unknown>;
+  const keys = Array.isArray(b.keys) ? b.keys.map((k) => str(k)) : [];
+  const txAt = keys.indexOf('txUsage');
+  const rxAt = keys.indexOf('rxUsage');
+  const samples = Array.isArray(b.samples) ? b.samples : [];
+  const out: UsageSample[] = [];
+  for (const s of samples) {
+    if (!s || typeof s !== 'object') continue;
+    const row = s as Record<string, unknown>;
+    const ts = str(row.ts);
+    if (!ts) continue;
+    const data = Array.isArray(row.data) ? row.data : [];
+    out.push({
+      ts,
+      txBytes: txAt >= 0 ? num(data[txAt]) : null,
+      rxBytes: rxAt >= 0 ? num(data[rxAt]) : null,
+    });
+  }
+  return out;
+}
+
+/** One AccessPointRadio row → DeviceRadio. `index` is the fallback radio
+ *  number for a payload that omits radioNumber (live always sends it). */
+export function mapCentralRadio(raw: unknown, index = 0): DeviceRadio | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const mac = str(r.macAddress);
+  return {
+    number: num(r.radioNumber) ?? index,
+    band: str(r.band) ?? '',
+    // '157E' / '213S' — the trailing letter is a bonding marker, so the plane's
+    // own string is the only lossless representation.
+    channel: str(r.channel) ?? '',
+    bandwidth: str(r.bandwidth) ?? '',
+    powerDbm: num(r.power),
+    clients: num(r.clientCount),
+    channelUtilPct: num(r.channelUtilization),
+    rxUtilPct: num(r.rxUtilization),
+    txUtilPct: num(r.txUtilization),
+    retries: num(r.retries),
+    drops: num(r.drops),
+    noiseFloorDbm: num(r.noiseFloor),
+    nonWifiInterference: num(r.nonWifiInterference),
+    channelQuality: num(r.channelQuality),
+    status: str(r.status) ?? '',
+    mode: str(r.mode) ?? '',
+    ...(mac ? { macAddress: mac } : {}),
+  };
+}
+
+/** One WlanInfoV1 row → DeviceWlan. */
+export function mapCentralWlan(raw: unknown): DeviceWlan | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.wlanName);
+  if (!name) return null; // an unnamed WLAN row is junk
+  return {
+    name,
+    status: str(r.status) ?? '',
+    security: str(r.security) ?? '',
+    securityLevel: str(r.securityLevel) ?? '',
+    band: str(r.band) ?? '',
+    // A bare id ('200') and a named VLAN both arrive here, hence a string.
+    vlan: str(r.vlan) ?? '',
+    clients: num(r.clientCount),
+  };
+}
+
+/** Numeric VLAN ids out of an allowedVlanIds array; junk entries dropped. */
+function vlanIdList(raw: unknown): number[] | null {
+  if (!Array.isArray(raw)) return null;
+  return raw.map((v) => num(v)).filter((v): v is number => v !== null);
+}
+
+/**
+ * One SwitchInterface row → DevicePort. Verified on CX6300-CORE (SG30LMR164):
+ * `speed` is already BITS PER SECOND here (1000000000 for a 1 Gb port), unlike
+ * the gateway ports endpoint below, which reports Mbps as a string.
+ */
+export function mapCentralSwitchPort(raw: unknown): DevicePort | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name) ?? str(r.id);
+  if (!name) return null;
+  const allowed = vlanIdList(r.allowedVlanIds);
+  const connector = str(r.connector);
+  const poeStatus = str(r.poeStatus);
+  const poeClass = str(r.poeClass);
+  const stpRole = str(r.stpPortRole);
+  const stpState = str(r.stpPortState);
+  const neighbour = str(r.neighbour);
+  const neighbourPort = str(r.neighbourPort);
+  const neighbourSerial = str(r.neighbourSerial);
+  const neighbourType = str(r.neighbourType);
+  const neighbourHealth = str(r.neighbourHealth);
+  const lag = str(r.lag);
+  return {
+    name,
+    status: str(r.status) ?? '',
+    adminStatus: str(r.adminStatus) ?? '',
+    operStatus: str(r.operStatus) ?? '',
+    speedBps: num(r.speed),
+    duplex: str(r.duplex) ?? '',
+    vlanMode: str(r.vlanMode) ?? '',
+    mtu: num(r.mtu),
+    nativeVlan: num(r.nativeVlan),
+    ...(connector ? { connector } : {}),
+    // Present-and-empty is meaningful (the plane said "no tagged VLANs"), so
+    // the key ships whenever the plane sent the array at all.
+    ...(allowed ? { allowedVlanIds: allowed } : {}),
+    ...(poeStatus ? { poeStatus } : {}),
+    ...(poeClass ? { poeClass } : {}),
+    ...(stpRole ? { stpRole } : {}),
+    ...(stpState ? { stpState } : {}),
+    ...(neighbour ? { neighbour } : {}),
+    ...(neighbourPort ? { neighbourPort } : {}),
+    ...(neighbourSerial ? { neighbourSerial } : {}),
+    ...(neighbourType ? { neighbourType } : {}),
+    ...(neighbourHealth ? { neighbourHealth } : {}),
+    ...(lag ? { lag } : {}),
+    ...(typeof r.uplink === 'boolean' ? { uplink: r.uplink } : {}),
+  };
+}
+
+/**
+ * One GatewayPortResponse row → DevicePort. A DIFFERENT shape from the switch
+ * interface, and deliberately mapped separately:
+ *   - `speed` is a STRING in Mbps ('1000') or the literal 'Auto' when the port
+ *     is down — 'Auto' is not a speed, so it becomes null rather than 0, and a
+ *     numeric value is scaled to bits per second.
+ *   - `mtu` arrives as '1500 bytes'.
+ *   - adminState is 'Enabled'/'Disabled' and operState 'Up'/'Down'; there is no
+ *     rolled-up `status` field, so operState IS the port's status here.
+ *   - the gateway ports endpoint reports NO neighbour, PoE or spanning-tree
+ *     facts. Those keys stay ABSENT — a gateway port genuinely has no such
+ *     reading, and an empty string would read as "the plane failed to report".
+ */
+export function mapCentralGatewayPort(raw: unknown): DevicePort | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name) ?? str(r.portNumber);
+  if (!name) return null;
+  const speedMbps = num(r.speed); // 'Auto' → null
+  const connector = str(r.connectorType);
+  const mtu = num(/^\d+/.exec(str(r.mtu) ?? '')?.[0] ?? null);
+  const oper = str(r.operState) ?? '';
+  const allowed = vlanIdList((str(r.vlan) ?? '').split(',').filter((v) => v.trim().length > 0));
+  return {
+    name,
+    status: oper,
+    adminStatus: str(r.adminState) ?? '',
+    operStatus: oper,
+    speedBps: speedMbps === null ? null : speedMbps * 1_000_000,
+    duplex: str(r.duplex) ?? '',
+    vlanMode: str(r.portType) ?? '',
+    mtu,
+    ...(connector ? { connector } : {}),
+    ...(allowed && allowed.length > 0 ? { allowedVlanIds: allowed } : {}),
+  };
+}
+
+/** One Topology `devices` entry → TopologyDeviceNode. */
+export function mapTopologyNode(raw: unknown): TopologyDeviceNode | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  // Unmanaged nodes get a synthetic serial ('tpd_204c03ff61e2') — still the
+  // key the links reference, so it is the graph key either way.
+  const serial = str(r.serial);
+  if (!serial) return null;
+  const mac = str(r.mac);
+  return {
+    serial,
+    name: str(r.name) ?? mac ?? serial,
+    type: str(r.type) ?? '',
+    deviceFunction: str(r.deviceFunction) ?? '',
+    status: str(r.status) ?? '',
+    // null is a REAL answer for an unmanaged node Central does not assess.
+    health: str(r.health),
+    healthReason: str(r.healthReason),
+    model: str(r.model),
+    ipv4: str(r.ipv4),
+    mac,
+    deployment: str(r.deployment),
+    conductorSerial: str(r.conductorSerial),
+    internet: typeof r.internet === 'boolean' ? r.internet : null,
+    // 0 and null both mean "no stamp"; neither may be rendered as 1970.
+    lastSeen: num(r.lastSeen),
+  };
+}
+
+function mapTopologyPorts(raw: unknown): TopologyLinkPort[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TopologyLinkPort[] = [];
+  for (const p of raw) {
+    if (!p || typeof p !== 'object') continue;
+    const rec = p as Record<string, unknown>;
+    const name = str(rec.name);
+    if (!name) continue;
+    out.push({
+      name,
+      index: num(rec.index),
+      lag: str(rec.lag),
+      health: str(rec.health),
+      healthReason: str(rec.healthReason),
+    });
+  }
+  return out;
+}
+
+/** One Topology `links` entry → TopologyLink (keyed by the node SERIALS). */
+export function mapTopologyLink(raw: unknown): TopologyLink | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const from = str(r.from);
+  const to = str(r.to);
+  if (!from || !to) return null; // a half-attached edge cannot be drawn
+  return {
+    from,
+    to,
+    fromPorts: mapTopologyPorts(r.fromPortList),
+    toPorts: mapTopologyPorts(r.toPortList),
+    speedBps: num(r.speed),
+    // 'Unknown' is Central's own verdict about an unmanaged far end — a real
+    // answer, not a failed read.
+    health: str(r.health),
+    healthReason: str(r.healthReason),
+    stpState: str(r.stpState),
+    edgeType: str(r.edgeType),
+    isSibling: typeof r.isSibling === 'boolean' ? r.isSibling : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Token manager — in-memory, refresh at expiry−60s, single-flight
 // ---------------------------------------------------------------------------
 
@@ -907,6 +1269,13 @@ export class CentralAdapter implements PlaneAdapter {
   private readonly resolvedPath = new Map<SectionKey, SectionCandidate>();
   /** Token endpoint that worked (tried first next time). */
   private resolvedToken: TokenEndpoint | null = null;
+  /** TTL cache for on-demand detail reads, keyed by object identity. This is
+   *  the rate-limit guard: without it, every drawer open (and every re-render
+   *  that re-asks) is another per-object call against a quota'd tenant. */
+  private readonly detailCache = new Map<string, { expiresAtMs: number; value: unknown }>();
+  /** Single-flight per key: two panes opening the same object at once share
+   *  ONE round trip instead of racing two. */
+  private readonly detailInflight = new Map<string, Promise<unknown>>();
 
   constructor(
     creds: PlaneCredentials,
@@ -915,6 +1284,9 @@ export class CentralAdapter implements PlaneAdapter {
     private readonly fetchImpl: FetchLike = (url, init) => fetch(url, init),
     /** Injectable so tests exercise backoff/pacing without real wall time. */
     private readonly sleep: SleepFn = realSleep,
+    /** Injectable clock — the detail TTL cache and the mobility-trail lookback
+     *  both read it, and a test must be able to move time without sleeping. */
+    private readonly now: () => number = () => Date.now(),
   ) {
     if (!CentralAdapter.isComplete(creds)) {
       throw new Error('central requires gatewayBaseUrl, clientId and clientSecret');
@@ -990,6 +1362,73 @@ export class CentralAdapter implements PlaneAdapter {
     return { localShell: false, brokeredWrite: true, configRead: false };
   }
 
+  // -- ON-DEMAND DETAIL READS ------------------------------------------------
+  //
+  // These are NOT poller work and must never be called from poller.ts. Central
+  // models a client across ~8 endpoints and a device across many
+  // /{id}/subresource endpoints; fanning those out over the inventory on the
+  // 60s timer would be 9 devices x N subresources x 1440 polls/day against a
+  // tenant that enforces a daily call budget. So:
+  //   * every method reads for the ONE object being viewed,
+  //   * behind a TTL cache + single-flight (DETAIL_TTL_MS),
+  //   * with a per-call timeout SHORTER than the poll timeout, and
+  //   * with NO 429 backoff loop — a rate-limited detail read degrades to the
+  //     honest empty state immediately rather than holding a drawer open for
+  //     30 seconds. The poller's own backoff still protects the quota.
+  //
+  // Call cost, worst case, per object per TTL window:
+  //   client   2 (mobility-trail + clients-usage)
+  //   AP       2 (radios + wlans)
+  //   switch   1 (interfaces — Central returns ALL of them unpaged by default)
+  //   gateway  1 (ports)
+  //   topology 1
+  //
+  // A section that failed is reported as 'failed', NOT as an empty result: the
+  // screen must be able to say the call broke instead of implying the plane has
+  // nothing (shared/types.ts, the three-state note above DetailFetchState).
+
+  /**
+   * Per-client detail for ONE MAC.
+   *
+   *   rssi / roams / timeline  ← GET /clients/{mac}/mobility-trail
+   *       Central's ONLY per-client RSSI source: the flat /clients row carries
+   *       snr but no rssi, and the mobility trail stamps every roam with the
+   *       signal it landed on. A stationary client answers 200 with zero events
+   *       — that is "no roaming in the last 24h", not a failure, so `roams` is
+   *       'ok' at 0 while `timeline` is 'empty'.
+   *   tput / usageSeries       ← GET /clients-usage?filter=macAddress eq '…'
+   *       VERIFIED live: unfiltered this endpoint is TENANT-WIDE (78 MB per
+   *       5-min bucket on this tenant); with the macAddress filter it is the
+   *       single client (984 B for a Roku, 128 B for a Pi). Attributing the
+   *       unfiltered series to one client would be fabrication, so the filter
+   *       is not optional. /clients-topn-usage is per-client too but is a
+   *       LEADERBOARD — a client outside the top N is simply absent from it,
+   *       which would read as "no throughput" for a quiet client.
+   */
+  async clientDetail(mac: string): Promise<ClientDetailLive | null> {
+    const normalized = normalizeCentralMac(mac);
+    if (!normalized) return null; // no MAC = nothing this plane can be asked about
+    return this.cachedDetail(`client:${normalized}`, () => this.readClientDetail(normalized));
+  }
+
+  /**
+   * Per-device detail for ONE serial. `kind` decides which subresources are
+   * worth asking for so we never spend a call on a guaranteed 404 (an AP has
+   * no /interfaces, a switch has no /radios).
+   */
+  async deviceDetail(serial: string, kind: DeviceDetailKind): Promise<DeviceDetailLive | null> {
+    const id = (serial ?? '').trim();
+    if (!id) return null;
+    return this.cachedDetail(`device:${kind}:${id}`, () => this.readDeviceDetail(id, kind));
+  }
+
+  /** The plane's link topology for ONE site — GET /topology/{site-id}. */
+  async siteTopology(siteId: string): Promise<SiteTopologyLive | null> {
+    const id = (siteId ?? '').trim();
+    if (!id) return null;
+    return this.cachedDetail(`topology:${id}`, () => this.readSiteTopology(id));
+  }
+
   async pull(): Promise<PlanePull> {
     const missing: SectionKey[] = [];
     const truncated: SectionKey[] = [];
@@ -1041,6 +1480,11 @@ export class CentralAdapter implements PlaneAdapter {
     // NOT .map(mapCentralClient): map passes the index as the 2nd arg, which
     // mapCentralClient reads as nowMs — same leak that zeroed alert ages below.
     const clients = clientRows.map((r) => mapCentralClient(r)).filter((c): c is ClientRow => c !== null);
+    // siteIdForName() mints an opaque 'ext-<slug>' from the NAME and drops the
+    // plane's own site id, but the topology endpoint is keyed by that id — so
+    // keep the join here, off the raw rows, while both halves are still in hand.
+    this.rememberNativeSiteIds(siteRows, ['siteId', 'site_id', 'scopeId', 'id']);
+    this.rememberNativeSiteIds(clientRows, ['siteId', 'site_id']);
     // NOT .map(mapCentralNotification): map passes the index as the 2nd arg,
     // which mapCentralNotification reads as nowMs — every age became '0s'.
     const alerts = notificationRows.map((r) => mapCentralNotification(r)).filter((a): a is AlertRow => a !== null);
@@ -1074,6 +1518,277 @@ export class CentralAdapter implements PlaneAdapter {
       ...(missing.includes('notifications') ? {} : { alerts }),
       ...(partial.length > 0 ? { partial } : {}),
     };
+  }
+
+  // -- detail-read internals -------------------------------------------------
+
+  /**
+   * TTL cache + single-flight around one detail read.
+   *
+   * A cache HIT re-stamps `source.cached = true` so the screen can say the
+   * numbers are up to 45s old rather than implying a fresh call. Expired
+   * entries are swept on access, and the map is capped so a long-lived process
+   * that opens hundreds of drawers cannot grow it without bound.
+   *
+   * A FAILED read is cached too — deliberately. Without that, a drawer that
+   * re-renders on every keystroke turns one broken endpoint into a call storm
+   * against the exact tenant that is already unhappy.
+   */
+  private async cachedDetail<T>(key: string, load: () => Promise<T>): Promise<T> {
+    const nowMs = this.now();
+    const hit = this.detailCache.get(key);
+    if (hit && hit.expiresAtMs > nowMs) {
+      const value = hit.value as T & { source: DetailSource<string> };
+      return { ...value, source: { ...value.source, cached: true } } as T;
+    }
+    const inflight = this.detailInflight.get(key);
+    if (inflight) return inflight as Promise<T>;
+    const promise = load()
+      .then((value) => {
+        this.detailCache.set(key, { expiresAtMs: this.now() + DETAIL_TTL_MS, value });
+        this.sweepDetailCache();
+        return value;
+      })
+      .finally(() => {
+        this.detailInflight.delete(key);
+      });
+    this.detailInflight.set(key, promise as Promise<unknown>);
+    return promise;
+  }
+
+  private sweepDetailCache(): void {
+    const nowMs = this.now();
+    for (const [k, v] of this.detailCache) {
+      if (v.expiresAtMs <= nowMs) this.detailCache.delete(k);
+    }
+    // Insertion order = oldest first, so dropping from the front evicts the
+    // least recently stored entry.
+    while (this.detailCache.size > DETAIL_CACHE_MAX) {
+      const oldest = this.detailCache.keys().next();
+      if (oldest.done) break;
+      this.detailCache.delete(oldest.value);
+    }
+  }
+
+  /**
+   * One detail GET. Same bearer handling as authedGet (one invalidate + retry
+   * on 401) but DELIBERATELY without its 429 backoff and network retry: those
+   * exist so a poll cycle survives, and on a drawer's request path they would
+   * only turn a rate limit into a 30-second stall. Never throws — a transport
+   * failure comes back as `ok:false` with a short, secret-free reason.
+   */
+  private async detailGet(path: string): Promise<{ ok: true; body: unknown } | { ok: false; note: string }> {
+    try {
+      let res = await this.http('GET', path, { token: await this.tokens.get(), timeoutMs: DETAIL_TIMEOUT_MS });
+      if (res.status === 401) {
+        this.tokens.invalidate();
+        res = await this.http('GET', path, { token: await this.tokens.get(), timeoutMs: DETAIL_TIMEOUT_MS });
+      }
+      if (res.status < 200 || res.status >= 300) return { ok: false, note: `HTTP ${res.status}` };
+      return { ok: true, body: res.body };
+    } catch (err) {
+      // http() prefixes the label; keep only the cause so the note stays a
+      // sentence a human reads, and never a URL or a credential.
+      const raw = (err as Error).message;
+      return { ok: false, note: raw.slice(raw.indexOf('failed: ') + 8) || 'request failed' };
+    }
+  }
+
+  private async readClientDetail(mac: string): Promise<ClientDetailLive> {
+    const startedMs = this.now();
+    const startAt = new Date(startedMs - MOBILITY_WINDOW_SEC * 1000).toISOString();
+    const seg = encodeURIComponent(mac);
+    // `end-at` is deliberately OMITTED — it defaults to Central's own current
+    // timestamp. Sending our clock's "now" 400s the endpoint whenever the two
+    // disagree by even a few minutes (verified live).
+    const [trail, usage] = await Promise.all([
+      this.detailGet(
+        `/network-monitoring/v1/clients/${seg}/mobility-trail?limit=${MOBILITY_PAGE_LIMIT}&start-at=${encodeURIComponent(startAt)}`,
+      ),
+      this.detailGet(
+        `/network-monitoring/v1/clients-usage?filter=${encodeURIComponent(`macAddress eq '${mac}'`)}`,
+      ),
+    ]);
+
+    const sections: Partial<Record<ClientDetailSection, DetailFetchState>> = {};
+    const notes: string[] = [];
+    const out: ClientDetailLive = { mac, source: { plane: 'central', at: '', sections } };
+
+    if (!trail.ok) {
+      sections.rssi = 'failed';
+      sections.roams = 'failed';
+      sections.timeline = 'failed';
+      notes.push(`mobility trail: ${trail.note}`);
+    } else {
+      const events = extractRows(trail.body)
+        .map((r) => mapMobilityEvent(r))
+        .filter((e): e is ClientTimelineEvent => e !== null);
+      // `total` is the roam count for the whole window; one page of 100 is
+      // enough to RENDER the newest events without paying to walk the cursor
+      // just to count them.
+      const total = extractTotal(trail.body);
+      out.timeline = events;
+      out.roams = total ?? events.length;
+      out.roamsWindowSec = MOBILITY_WINDOW_SEC;
+      // 0 roams is a REAL answer for a stationary client, so `roams` is 'ok'
+      // while the (genuinely empty) event list is 'empty'.
+      sections.roams = 'ok';
+      sections.timeline = events.length > 0 ? 'ok' : 'empty';
+      const signal = events.find((e) => typeof e.rssiDbm === 'number');
+      out.rssi = signal?.rssiDbm ?? null;
+      sections.rssi = out.rssi === null ? 'empty' : 'ok';
+    }
+
+    if (!usage.ok) {
+      sections.tput = 'failed';
+      sections.usageSeries = 'failed';
+      notes.push(`usage: ${usage.note}`);
+    } else {
+      const samples = mapUsageSamples(usage.body);
+      const intervalSec = parseUsageIntervalSec(
+        usage.body && typeof usage.body === 'object' ? str((usage.body as Record<string, unknown>).interval) : null,
+      );
+      out.usageSeries = samples;
+      sections.usageSeries = samples.length > 0 ? 'ok' : 'empty';
+      if (samples.length > 0 && intervalSec !== null) {
+        const bytes = samples.reduce((sum, s) => sum + (s.txBytes ?? 0) + (s.rxBytes ?? 0), 0);
+        const windowSec = samples.length * intervalSec;
+        // Central reports usage TOTALS per bucket, never an instantaneous
+        // rate, so this is an AVERAGE — tputWindowSec is what the renderer
+        // must label it with ("avg over 3h"), never "current rate".
+        out.tput = (bytes * 8) / windowSec;
+        out.tputWindowSec = windowSec;
+        sections.tput = 'ok';
+      } else {
+        out.tput = null;
+        sections.tput = 'empty';
+      }
+    }
+
+    out.source.at = new Date(this.now()).toISOString();
+    out.source.cached = false;
+    out.source.note = notes.length > 0 ? notes.join('; ') : null;
+    return out;
+  }
+
+  private async readDeviceDetail(serial: string, kind: DeviceDetailKind): Promise<DeviceDetailLive> {
+    const seg = encodeURIComponent(serial);
+    const sections: Partial<Record<DeviceDetailSection, DetailFetchState>> = {};
+    const notes: string[] = [];
+    const out: DeviceDetailLive = { serial, kind, source: { plane: 'central', at: '', sections } };
+
+    if (kind === 'ap') {
+      const [radios, wlans] = await Promise.all([
+        this.detailGet(`/network-monitoring/v1/aps/${seg}/radios`),
+        this.detailGet(`/network-monitoring/v1/aps/${seg}/wlans`),
+      ]);
+      if (!radios.ok) {
+        sections.radios = 'failed';
+        notes.push(`radios: ${radios.note}`);
+      } else {
+        const rows = extractRows(radios.body)
+          .map((r, i) => mapCentralRadio(r, i))
+          .filter((r): r is DeviceRadio => r !== null)
+          // Central hands them back unordered (1, 0, 2 live); radio 0 first is
+          // what an operator expects to read.
+          .sort((a, b) => a.number - b.number);
+        out.radios = rows;
+        sections.radios = rows.length > 0 ? 'ok' : 'empty';
+      }
+      if (!wlans.ok) {
+        sections.wlans = 'failed';
+        notes.push(`wlans: ${wlans.note}`);
+      } else {
+        const rows = extractRows(wlans.body)
+          .map((r) => mapCentralWlan(r))
+          .filter((w): w is DeviceWlan => w !== null);
+        out.wlans = rows;
+        sections.wlans = rows.length > 0 ? 'ok' : 'empty';
+      }
+    } else {
+      // Switches page on offset/limit but "fetch all by default" (verified: 28
+      // of 28 interfaces in one unparameterized response), and the gateway
+      // ports list is short by construction — so neither is walked. Sending no
+      // paging params is both the cheapest and the most complete read.
+      const path =
+        kind === 'switch'
+          ? `/network-monitoring/v1/switches/${seg}/interfaces`
+          : `/network-monitoring/v1/gateways/${seg}/ports`;
+      const ports = await this.detailGet(path);
+      if (!ports.ok) {
+        sections.ports = 'failed';
+        notes.push(`ports: ${ports.note}`);
+      } else {
+        const map = kind === 'switch' ? mapCentralSwitchPort : mapCentralGatewayPort;
+        const rows = extractRows(ports.body)
+          .map((r) => map(r))
+          .filter((p): p is DevicePort => p !== null);
+        out.ports = rows;
+        sections.ports = rows.length > 0 ? 'ok' : 'empty';
+      }
+    }
+
+    out.source.at = new Date(this.now()).toISOString();
+    out.source.cached = false;
+    out.source.note = notes.length > 0 ? notes.join('; ') : null;
+    return out;
+  }
+
+  /**
+   * Central's own site id, keyed by the portal SiteId this adapter mints.
+   * Populated from raw rows during pull(); the topology endpoint is keyed by
+   * the plane's id ('79244870000394240'), never by the site NAME.
+   */
+  private readonly nativeSiteIds = new Map<string, string>();
+
+  private rememberNativeSiteIds(rows: unknown[], idKeys: readonly string[]): void {
+    for (const raw of rows) {
+      if (!raw || typeof raw !== 'object') continue;
+      const r = raw as Record<string, unknown>;
+      const name = str(r.siteName ?? r.site_name ?? r.site ?? r.scopeName ?? r.collectionName ?? r.name);
+      if (!name) continue;
+      const native = idKeys.map((k) => str(r[k])).find((v) => v !== null && !/^ext-/.test(v));
+      if (!native) continue;
+      this.nativeSiteIds.set(siteIdForName(name).siteId, native);
+    }
+  }
+
+  private async readSiteTopology(siteId: string): Promise<SiteTopologyLive> {
+    // The endpoint is keyed by the PLANE's site id. Callers reach here with
+    // either the portal's 'ext-<slug>' id or the plane's display name (the
+    // route falls back to site.name), so resolve both spellings before giving
+    // up — passing a name straight through is what made this a silent 404.
+    const native =
+      this.nativeSiteIds.get(siteId) ?? this.nativeSiteIds.get(siteIdForName(siteId).siteId) ?? siteId;
+    const res = await this.detailGet(`/network-monitoring/v1/topology/${encodeURIComponent(native)}`);
+    const sections: Partial<Record<SiteTopologySection, DetailFetchState>> = {};
+    const out: SiteTopologyLive = { siteId, source: { plane: 'central', at: '', sections } };
+    if (!res.ok) {
+      sections.nodes = 'failed';
+      sections.links = 'failed';
+      out.source.note = `topology: ${res.note}`;
+    } else {
+      // Read `devices`/`links` BY NAME, not through extractRows' first-array
+      // heuristic: this payload has two sibling arrays and the heuristic would
+      // pick whichever the tenant happens to serialize first.
+      const body = (res.body && typeof res.body === 'object' ? res.body : {}) as Record<string, unknown>;
+      const nodes = (Array.isArray(body.devices) ? body.devices : [])
+        .map((d) => mapTopologyNode(d))
+        .filter((n): n is TopologyDeviceNode => n !== null);
+      const links = (Array.isArray(body.links) ? body.links : [])
+        .map((l) => mapTopologyLink(l))
+        .filter((l): l is TopologyLink => l !== null);
+      out.nodes = nodes;
+      out.links = links;
+      out.isolatedDevicesCount = num(body.isolatedDevicesCount);
+      out.isolatedHealth = str(body.isolatedHealth);
+      sections.nodes = nodes.length > 0 ? 'ok' : 'empty';
+      sections.links = links.length > 0 ? 'ok' : 'empty';
+      out.source.note = null;
+    }
+    out.source.at = new Date(this.now()).toISOString();
+    out.source.cached = false;
+    return out;
   }
 
   // -- internals -------------------------------------------------------------

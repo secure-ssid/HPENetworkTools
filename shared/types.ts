@@ -1243,3 +1243,381 @@ export type WriteMode = 'brokered' | 'ssh' | 'read only';
 
 /** Granted scope on a plane — the same vocabulary as System.scope. */
 export type PlaneScope = 'read only' | 'read + broker' | 'read + ssh';
+
+// ---------------------------------------------------------------------------
+// On-demand plane DETAIL reads (per-object). NOT poller datasets.
+// ---------------------------------------------------------------------------
+//
+// The poller reads a handful of FLAT LISTS (/clients, /aps, /switches, /sites)
+// on a 60s timer. A control plane models one client across ~8 endpoints and one
+// device across many /{id}/subresource endpoints, so everything a list does not
+// carry — signal history, roaming trail, per-radio RF, per-port wiring, site
+// topology — is only obtainable with a PER-OBJECT read.
+//
+// Those reads are ON-DEMAND: issued for the ONE object a drawer is opening, on
+// the detail request path, behind a short TTL cache. They must NEVER be added
+// to the poll loop — 9 devices x N subresources x 1440 polls/day would exhaust
+// the tenant's daily call budget, and a fix that hammers the plane is a
+// regression, not a fix.
+//
+// THREE STATES, everywhere. The whole point of these shapes is that
+// "we never asked", "we asked and there is genuinely nothing" and "we asked and
+// the call failed" are three different sentences on screen:
+//
+//   not-fetched — the section was not requested (cheap render, cache miss
+//                 pending, plane unlinked). Render the existing empty state.
+//   ok          — fetched, and the plane returned rows.
+//   empty       — fetched, and the plane authoritatively returned nothing.
+//                 THIS IS NOT AN ERROR: a stationary camera with no roams is
+//                 "no roaming in the last 24h", never "no source".
+//   failed      — the call 404'd, timed out or threw. Keep the honest empty
+//                 state; never substitute a fabricated or stale value.
+//
+// An ABSENT array and an EMPTY array therefore do not mean the same thing:
+//   rows === undefined -> nothing was fetched
+//   rows.length === 0  -> consult DetailSource.sections for 'empty' vs 'failed'
+
+/** Outcome of one section of a detail read — see the three-state note above. */
+export type DetailFetchState = 'not-fetched' | 'ok' | 'empty' | 'failed';
+
+/**
+ * Provenance envelope carried by every detail payload: which plane answered,
+ * when, and what happened to each section of the read.
+ *
+ * `sections` is PARTIAL on purpose — a key that is absent was not attempted,
+ * which is exactly 'not-fetched'. Use detailState() (shared/logic.ts) rather
+ * than indexing it directly so the default is applied consistently.
+ */
+export interface DetailSource<S extends string = string> {
+  /** The plane the read was issued against. */
+  plane: PlaneKey;
+  /** ISO — when the read settled (NOT when the poller last synced). */
+  at: string;
+  /** Per-section outcome. Absent key = 'not-fetched'. */
+  sections: Partial<Record<S, DetailFetchState>>;
+  /** Whether these rows came from the TTL cache rather than a fresh call.
+   *  Absent = unknown/not tracked. */
+  cached?: boolean;
+  /** One honest sentence about the read as a whole, surfaced verbatim when a
+   *  section failed ("Central token refresh failed", "read timed out"). Never
+   *  invented prose, and never a credential or URL with a secret in it. */
+  note?: string | null;
+}
+
+/** Sections of a client detail read — one key per thing the drawer renders,
+ *  so a renderer can ask "what happened to `roams`?" and get a straight
+ *  answer even when several fields come from one endpoint. */
+export type ClientDetailSection = 'rssi' | 'tput' | 'roams' | 'timeline' | 'usageSeries';
+
+/** Sections of a device detail read. */
+export type DeviceDetailSection = 'radios' | 'wlans' | 'ports';
+
+/** Sections of a site topology read. */
+export type SiteTopologySection = 'nodes' | 'links';
+
+/** What a client timeline entry describes. 'other' keeps an unmapped plane
+ *  event renderable instead of dropping it. */
+export type ClientTimelineKind =
+  | 'roam'
+  | 'connect'
+  | 'disconnect'
+  | 'auth'
+  | 'dhcp'
+  | 'other';
+
+/**
+ * One event on a client's session timeline. Built from the plane's own event
+ * feed (Central: /clients/{mac}/mobility-trail) — never stitched from the demo
+ * topology fixtures, which would fabricate hops through devices the live estate
+ * does not have.
+ */
+export interface ClientTimelineEvent {
+  ts: string; // ISO
+  kind: ClientTimelineKind;
+  /** Human sentence for the row, as close to the plane's own words as
+   *  possible ("roamed ap-3f-12 -> ap-3f-08, 5 GHz ch 36"). */
+  detail: string;
+  /** Device the event happened on/at (name or serial as the plane gave it). */
+  device?: string;
+  /** Switch port or AP radio the event happened on. */
+  port?: string;
+  /** VLAN id/name at the time of the event. */
+  vlan?: string;
+  /** Signal at the moment of the event, dBm (MobilityDetails.rssi). */
+  rssiDbm?: number | null;
+  /** Radio band, as the plane words it ('5 GHz'). */
+  band?: string;
+  /** Channel, as the plane words it — Central returns '157E'/'213S', i.e. a
+   *  channel plus a width marker, so this is a STRING not a number. */
+  channel?: string;
+  /** WLAN/SSID the event relates to. */
+  wlan?: string;
+}
+
+/** One usage sample from a plane's usage series (Central /clients-usage
+ *  returns [txUsage, rxUsage] byte pairs on a fixed sampling interval). */
+export interface UsageSample {
+  ts: string; // ISO — start of the sample bucket
+  txBytes: number | null;
+  rxBytes: number | null;
+}
+
+/**
+ * Per-client detail, fetched on demand for ONE client.
+ *
+ * Every data field is optional: absent means the section was not fetched (or
+ * the plane returned no value for it), and `source.sections` says which.
+ * `null` means the plane answered and reported no value — do not render a
+ * number for it, and do not blame the plane for a field it never models
+ * (see planeSupportsClientField in shared/logic.ts).
+ */
+export interface ClientDetailLive {
+  /** The MAC the read was issued for, normalized as the caller passed it. */
+  mac: string;
+  /** Signal, dBm (negative). Wired clients have no radio: expect
+   *  'not-fetched'/null, and the renderer must say "wired link", not
+   *  "not reported". */
+  rssi?: number | null;
+  /** Throughput in BITS PER SECOND, derived from the plane's usage window
+   *  (bytes x 8 / window). Central reports usage totals, not an instantaneous
+   *  rate, so this is an average — `tputWindowSec` is what a renderer must
+   *  label it with ("avg over 3h"), never "current rate". */
+  tput?: number | null;
+  /** The window `tput` was averaged over, seconds. */
+  tputWindowSec?: number;
+  /** Roam count in `roamsWindowSec`. 0 is a REAL answer for a stationary
+   *  client and must render as "no roaming in the last 24h". */
+  roams?: number | null;
+  /** The lookback `roams`/`timeline` cover, seconds. */
+  roamsWindowSec?: number;
+  /** Session events, newest-first. Present-and-empty = the plane has no events
+   *  in the window (honest), absent = not fetched. */
+  timeline?: ClientTimelineEvent[];
+  /** Usage samples over the detail window, oldest-first. */
+  usageSeries?: UsageSample[];
+  /** Where these numbers came from and what happened to each section. */
+  source: DetailSource<ClientDetailSection>;
+}
+
+/**
+ * One AP radio (Central /aps/{serial}/radios).
+ *
+ * NOTE ON TYPES — verified live on AP735-LR (PHT5M520SZ): Central returns most
+ * of these as STRINGS ("9", "25", "-98"). The adapter normalizes to numbers
+ * here so renderers never parse; a value the plane omitted or could not be
+ * parsed is `null`, never 0.
+ */
+export interface DeviceRadio {
+  /** radioNumber — 0/1/2 on a tri-radio AP. */
+  number: number;
+  /** '2.4 GHz' | '5 GHz' | '6 GHz', as the plane words it. */
+  band: string;
+  /** Channel AS THE PLANE WORDS IT — '11', '157E', '213S'. The trailing
+   *  letter is a bonding marker, so this is a string, not a number. */
+  channel: string;
+  /** '20 MHz' | '80 MHz' | '160 MHz', as the plane words it. */
+  bandwidth: string;
+  /** Transmit power, dBm. */
+  powerDbm: number | null;
+  /** Clients associated to this radio. */
+  clients: number | null;
+  /** Channel utilization, percent 0-100. */
+  channelUtilPct: number | null;
+  /** Receive airtime utilization, percent 0-100. */
+  rxUtilPct: number | null;
+  /** Transmit airtime utilization, percent 0-100. */
+  txUtilPct: number | null;
+  /** Frame retries, percent 0-100. */
+  retries: number | null;
+  /** Dropped frames, percent 0-100. */
+  drops: number | null;
+  /** Noise floor, dBm (negative). */
+  noiseFloorDbm: number | null;
+  /** Non-Wi-Fi interference, percent 0-100. */
+  nonWifiInterference: number | null;
+  /** Central's own channel-quality score, 0-100. */
+  channelQuality: number | null;
+  /** 'UP' | 'DOWN' | 'DISABLED', as the plane words it. */
+  status: string;
+  /** Radio mode ('Client Access', 'Monitor'…), as the plane words it. */
+  mode: string;
+  /** Radio BSSID/MAC, when the plane reports one. */
+  macAddress?: string;
+}
+
+/** One WLAN broadcast by a device (Central /aps/{serial}/wlans). */
+export interface DeviceWlan {
+  /** wlanName — the SSID as broadcast. */
+  name: string;
+  /** 'UP' | 'DOWN', as the plane words it. */
+  status: string;
+  /** Security suite, as the plane words it ('wpa3-sae'). */
+  security: string;
+  /** Central's coarse security grade ('Enterprise', 'Personal', 'Open'). */
+  securityLevel: string;
+  /** Band(s) the WLAN is broadcast on, as the plane words it. */
+  band: string;
+  /** VLAN id as a STRING — planes report bare ids ('200') and named VLANs
+   *  ('guest') through the same field. */
+  vlan: string;
+  /** Clients currently on this WLAN on this device. */
+  clients: number | null;
+}
+
+/**
+ * One switch/gateway port (Central /switches/{serial}/interfaces).
+ *
+ * The neighbour* fields are what makes the Clients drawer's "Wiring" row real:
+ * they name the far end of the cable, which no flat list carries.
+ */
+export interface DevicePort {
+  /** Interface name as the plane words it ('1/1/20', 'GE 0/0/1'). */
+  name: string;
+  /** The plane's rolled-up port status. */
+  status: string;
+  /** Administrative state ('up' | 'down'). */
+  adminStatus: string;
+  /** Operational state ('up' | 'down'). */
+  operStatus: string;
+  /** Negotiated speed in BITS PER SECOND (Central reports 1000000000 for a
+   *  1 Gb port). null = the plane reported no speed. */
+  speedBps?: number | null;
+  /** 'full' | 'half' | '', as the plane words it. */
+  duplex: string;
+  /** Physical connector type ('RJ45', 'SFP+'). */
+  connector?: string;
+  mtu?: number | null;
+  /** 'access' | 'trunk' | 'native-untagged'…, as the plane words it. */
+  vlanMode: string;
+  nativeVlan?: number | null;
+  /** Tagged VLANs allowed on the port. Present-and-empty = the plane said
+   *  none; absent = the plane did not report the list. */
+  allowedVlanIds?: number[];
+  poeStatus?: string;
+  poeClass?: string;
+  /** Spanning-tree role/state as the plane words them ('root', 'forwarding'). */
+  stpRole?: string;
+  stpState?: string;
+  /** Far end of the cable, as discovered by the plane (LLDP/CDP). */
+  neighbour?: string;
+  neighbourPort?: string;
+  neighbourSerial?: string;
+  neighbourType?: string;
+  neighbourHealth?: string;
+  /** LAG name when the port is bundled; '' or absent when it is not. */
+  lag?: string;
+  /** True when the plane marks this port as an uplink. */
+  uplink?: boolean;
+}
+
+/** Which family of per-object subresources a device detail read should ask
+ *  for. An AP has radios+wlans, a switch has ports, a gateway has ports. */
+export type DeviceDetailKind = 'ap' | 'switch' | 'gateway';
+
+/**
+ * Per-device detail, fetched on demand for ONE device.
+ *
+ * Absent array = that section was not fetched (an AP is not asked for ports).
+ * Present-and-empty = the plane answered with nothing. Check `source.sections`
+ * before rendering any "nothing here" sentence.
+ */
+export interface DeviceDetailLive {
+  /** The serial the read was issued for. */
+  serial: string;
+  kind: DeviceDetailKind;
+  radios?: DeviceRadio[];
+  wlans?: DeviceWlan[];
+  ports?: DevicePort[];
+  source: DetailSource<DeviceDetailSection>;
+}
+
+/**
+ * One device in a plane's LINK topology (Central /topology/{site-id}).
+ *
+ * This is the plane's raw graph, not the rendered diagram — see SiteTopology /
+ * TopologyNode above (line ~790) for the view model buildSiteTopology()
+ * produces. The two must not be confused: this one is keyed by SERIAL and
+ * carries no layout.
+ */
+export interface TopologyDeviceNode {
+  /** Plane serial — the graph key. Unmanaged nodes get a synthetic id
+   *  ('tpd_204c03ff61e2'), which is still the key links reference. */
+  serial: string;
+  /** Device name, or the MAC when the plane has no name for it. */
+  name: string;
+  /** 'Switch' | 'Access Point' | 'Gateway' | 'Unmanaged', as the plane words it. */
+  type: string;
+  /** 'Access Switch' | 'Campus Access Point' | 'Mobility GW' | '-', as worded. */
+  deviceFunction: string;
+  /** 'ONLINE' | 'OFFLINE', as the plane words it. */
+  status: string;
+  /** 'Good' | 'Poor' | null — null is a REAL answer for an unmanaged node the
+   *  plane does not assess, not a missing read. */
+  health: string | null;
+  /** Why the health is what it is ('DEVICE_STATUS'); null when unstated. */
+  healthReason: string | null;
+  model: string | null;
+  ipv4: string | null;
+  mac: string | null;
+  /** 'Standalone' | 'Cluster', as the plane words it. */
+  deployment?: string | null;
+  /** Conductor/stack-master serial when the node is a member. */
+  conductorSerial?: string | null;
+  /** Whether the plane sees an internet path from this node. */
+  internet?: boolean | null;
+  /** Epoch ms as the plane reports it; 0 and null both mean "no stamp", and
+   *  neither may be rendered as 1970. */
+  lastSeen?: number | null;
+}
+
+/** One end of a topology link — a port on the device at that end. */
+export interface TopologyLinkPort {
+  /** Port name as the plane words it ('1/1/20', 'GE 0/0/1', 'eth0'). */
+  name: string;
+  index?: number | null;
+  /** LAG name; '' when the port is not bundled. */
+  lag?: string | null;
+  health?: string | null;
+  healthReason?: string | null;
+}
+
+/** One link between two topology nodes, keyed by the SERIALS in `nodes`. */
+export interface TopologyLink {
+  /** Serial of the near end (matches TopologyDeviceNode.serial). */
+  from: string;
+  /** Serial of the far end. */
+  to: string;
+  /** Ports at the near end (a LAG has several). */
+  fromPorts: TopologyLinkPort[];
+  /** Ports at the far end. */
+  toPorts: TopologyLinkPort[];
+  /** Link speed in BITS PER SECOND (Central reports 5000000000 for 5 Gb). */
+  speedBps: number | null;
+  /** 'Good' | 'Unknown' | null, as the plane words it. 'Unknown' is the
+   *  plane's own verdict about an unmanaged far end — not a failed read. */
+  health: string | null;
+  healthReason?: string | null;
+  stpState?: string | null;
+  /** 'System' | 'Manual', as the plane words it. */
+  edgeType?: string | null;
+  /** Set when both ends are members of the same stack/cluster. */
+  isSibling?: boolean | null;
+}
+
+/**
+ * A plane's link topology for ONE site, fetched on demand.
+ *
+ * Named *Live to keep it distinct from `SiteTopology` (the rendered diagram
+ * view model built by buildSiteTopology). Absent `nodes`/`links` = not
+ * fetched; present-and-empty = the plane knows the site and reports no graph.
+ */
+export interface SiteTopologyLive {
+  /** The plane's site id the read was issued for. */
+  siteId: string;
+  nodes?: TopologyDeviceNode[];
+  links?: TopologyLink[];
+  /** Devices the plane could not place on the graph. */
+  isolatedDevicesCount?: number | null;
+  isolatedHealth?: string | null;
+  source: DetailSource<SiteTopologySection>;
+}

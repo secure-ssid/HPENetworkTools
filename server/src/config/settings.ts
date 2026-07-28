@@ -53,6 +53,12 @@ export interface Settings {
   sectionMode?: SectionMode;
   /** Fixture device names hidden from the demo inventory (pruned by the operator). */
   hiddenDemoDevices?: string[];
+  /**
+   * Lab config mode. This estate is a lab used to demonstrate what the portal
+   * can do, so writes do not need the brokered-change ceremony. With this on,
+   * a write no longer requires a raised ticket reference. Off by default.
+   */
+  configMode?: boolean;
   workspaceName: string;
   pollIntervalSec: number;
   planes: Record<PlaneId, PlaneCredentials | null>;
@@ -214,6 +220,7 @@ export class SettingsStore {
       out.pollIntervalSec = Math.floor(p.pollIntervalSec);
     }
     if (typeof p.chatWriteMode === 'boolean') out.chatWriteMode = p.chatWriteMode;
+    if (typeof p.configMode === 'boolean') out.configMode = p.configMode;
     if (p.density === 'comfortable' || p.density === 'compact') out.density = p.density;
     if (p.inventoryView === 'Unified table' || p.inventoryView === 'Platform lanes') {
       out.inventoryView = p.inventoryView;

@@ -23,6 +23,15 @@
  * saves the running config as a file). Right: Identity facts, the class block
  * (Ports of interest / Cluster members / Radios & SSIDs / Tunnels / Services),
  * Clients on this device, Compliance.
+ * The right column's class block is chosen by the device CLASS, not hardcoded:
+ * an AP renders Radios + SSIDs broadcast (Central /aps/{serial}/radios and
+ * /wlans), a switch renders Ports of interest (/switches/{serial}/interfaces),
+ * and a class the route served no subresource for renders no panel at all
+ * rather than a ports panel an access point can only ever answer '—' to. Those
+ * panels read the envelope's on-demand `detail` block — a per-object read made
+ * for the ONE device being viewed, never on the 60s poll — and each of the four
+ * read outcomes (ok / empty / failed / not fetched) prints its own sentence, so
+ * "we have not asked yet" is never dressed up as "the plane does not report it".
  * Data: getDeviceDetail(name) — live /api/devices/:name when the server is up,
  * the shared deviceProfile() fixtures otherwise. The route ships the reconciled
  * inventory row alongside the authored profile, and that row is authoritative
@@ -61,8 +70,22 @@ import {
 import { getDeviceDetail, getTerminalSession, getTerminalSessions, getTickets, rebootDevice } from '../api/client';
 import type { TerminalSession, TerminalSessionEvent } from '../api/client';
 import type { DeviceDetailData } from '../api/client';
-import { deviceTerminalKind, terminalQuickCommands } from '../../../shared';
-import type { CfgHistoryRow, DeviceEvidence, Fact, Plane, TicketRow } from '../../../shared';
+import { detailHasRows, detailState, deviceTerminalKind, terminalQuickCommands } from '../../../shared';
+import type {
+  CfgHistoryRow,
+  DetailFetchState,
+  DeviceDetailLive,
+  DeviceDetailSection,
+  DeviceEvidence,
+  DevicePort,
+  DeviceRadio,
+  DeviceType,
+  DeviceWlan,
+  Fact,
+  Plane,
+  TicketRow,
+  Tone,
+} from '../../../shared';
 import { useSettings } from '../app/SettingsContext';
 import { TerminalPane, createCannedTransport } from '../lib/TerminalPane';
 import { createWsTransport } from '../lib/wsTerminal';
@@ -102,6 +125,405 @@ function LiveGapNote({ children }: { children: ReactNode }) {
       }}
     >
       {children}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Class blocks — the per-object subresources that actually apply to a device
+//
+// Central models an AP as radios + broadcast WLANs and a switch as interfaces;
+// the flat inventory list carries none of it, so these panels read the route's
+// on-demand detail payload (`detail` on the envelope) rather than the poller
+// snapshot. Which panels exist is decided by the device CLASS: an access point
+// has no ports, so it must not be handed a ports panel that then blames a plane
+// for "not reporting" something the device does not have.
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-device detail read the route attaches to the envelope.
+ *
+ * OPTIONAL by contract, and this screen must stay renderable without it: the
+ * detail read is made on the DETAIL REQUEST PATH for the one device being
+ * viewed, not on the 60s poll, so an envelope that predates it, a plane with
+ * no detail support, and a read that timed out all arrive here as `undefined`.
+ * Every panel below degrades to its own honest sentence; nothing fabricates.
+ */
+function servedDeviceDetail(data: DeviceDetailData): DeviceDetailLive | null {
+  return data.detail ?? null;
+}
+
+/** Display order of the class blocks, whichever set a device ends up with. */
+const DETAIL_SECTION_ORDER: DeviceDetailSection[] = ['radios', 'wlans', 'ports'];
+
+/**
+ * Which subresources a device CLASS has at all.
+ *
+ * An AP has radios and WLANs and no ports; a switch has ports and no radios.
+ * A gateway (and anything else) gets no class block by default — Central does
+ * not serve gateway interfaces through the switch endpoint, so the panels for
+ * those classes are payload-driven only: whatever the route actually read.
+ */
+function classSections(type: DeviceType | undefined): DeviceDetailSection[] {
+  if (type === 'ap') return ['radios', 'wlans'];
+  if (type === 'switch') return ['ports'];
+  return [];
+}
+
+/**
+ * The blocks to render for this device: the ones its class has, plus any the
+ * route actually attempted (so a gateway that DOES come back with interfaces
+ * one day renders them without another change here).
+ */
+function sectionsToRender(
+  type: DeviceType | undefined,
+  detail: DeviceDetailLive | null,
+): DeviceDetailSection[] {
+  const byClass = classSections(type);
+  return DETAIL_SECTION_ORDER.filter(
+    (s) => byClass.includes(s) || detailState(detail?.source, s) !== 'not-fetched',
+  );
+}
+
+/**
+ * The one sentence a class block with no rows may print.
+ *
+ * The four outcomes are four DIFFERENT statements and the README's honesty
+ * rules turn on the difference: a section we never asked for must not be
+ * reported as the plane withholding it, and a section the plane answered with
+ * nothing is not an error.
+ */
+function detailGapSentence(
+  state: DetailFetchState,
+  copy: { notFetched: string; empty: string; failed: string },
+  note?: string | null,
+): string {
+  if (state === 'failed') return note ? `${copy.failed} — ${note}` : copy.failed;
+  if (state === 'not-fetched') return copy.notFetched;
+  // 'empty' — and 'ok' that carried no rows — say the same thing: the read
+  // happened and the plane had nothing to give. That is not an error.
+  return copy.empty;
+}
+
+/** `23` → `23%`; a value the plane omitted contributes no segment at all. */
+function pctText(v: number | null | undefined, label: string): string | null {
+  return v == null ? null : `${label} ${v}%`;
+}
+
+/** Bits per second as an engineer writes it: 1000000000 → `1 Gb`. */
+function speedText(bps: number | null | undefined): string | null {
+  if (bps == null || !Number.isFinite(bps) || bps <= 0) return null;
+  if (bps >= 1e9) {
+    const gb = bps / 1e9;
+    return `${Number.isInteger(gb) ? gb : Number(gb.toFixed(1))} Gb`;
+  }
+  if (bps >= 1e6) {
+    const mb = bps / 1e6;
+    return `${Number.isInteger(mb) ? mb : Number(mb.toFixed(1))} Mb`;
+  }
+  return `${bps} b`;
+}
+
+/** Segments joined with the mono middot the rest of the screen uses. */
+function joinFacts(parts: (string | null | undefined)[]): string {
+  return parts.filter((p): p is string => Boolean(p)).join(' · ');
+}
+
+/** `UP` / `DOWN` / anything else, as the plane worded it. */
+function statusTone(status: string | undefined): Tone {
+  const s = (status ?? '').trim().toLowerCase();
+  if (s === 'up' || s === 'enabled' || s === 'connected') return 'success';
+  if (s === 'down' || s === 'disabled') return 'danger';
+  return 'neutral';
+}
+
+/** Central's own health words on a link ('Good' | 'Fair' | 'Poor'). A poor far
+ *  end is the correlation this screen exists for, so it is not muted. */
+function healthTone(health: string | undefined): Tone {
+  const h = (health ?? '').trim().toLowerCase();
+  if (h === 'good') return 'success';
+  if (h === 'fair') return 'warning';
+  if (h === 'poor' || h === 'bad' || h === 'critical') return 'danger';
+  return 'neutral';
+}
+
+/** Radios lowest band first — Central numbers them 1/0/2 for 2.4/5/6 GHz, and
+ *  nobody reads a radio list in that order. */
+function bandRank(band: string | undefined): number {
+  const n = Number.parseFloat(band ?? '');
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+/** Is this port carrying anything? `operStatus` when the plane sent one, the
+ *  rolled-up status word otherwise ('Not Connected' must not match). */
+function portIsUp(p: DevicePort): boolean {
+  const oper = (p.operStatus ?? '').trim().toLowerCase();
+  if (oper === 'up' || oper === 'down') return oper === 'up';
+  return /^connected$/i.test((p.status ?? '').trim());
+}
+
+/** One class-block row: a mono key, one or two lines of facts, a Badge. */
+function DetailRow({
+  keyText,
+  keyWidth = 74,
+  title,
+  facts,
+  badge,
+  badgeTone,
+  trailing,
+}: {
+  keyText: string;
+  keyWidth?: number;
+  title?: string;
+  facts: string;
+  badge?: string;
+  badgeTone?: Tone;
+  trailing?: string;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 10,
+        padding: '9px 0',
+        borderBottom: '1px solid var(--nd-border-subtle)',
+      }}
+    >
+      <span
+        style={{
+          fontFamily: 'var(--nd-font-mono)',
+          fontSize: 'var(--nd-text-11)',
+          color: 'var(--nd-text-primary)',
+          width: keyWidth,
+          flex: `0 0 ${keyWidth}px`,
+          paddingTop: 1,
+        }}
+      >
+        {keyText}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {title ? (
+          <div
+            style={{
+              fontSize: 'var(--nd-text-12)',
+              color: 'var(--nd-text-primary)',
+              overflowWrap: 'anywhere',
+            }}
+          >
+            {title}
+          </div>
+        ) : null}
+        <div
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 'var(--nd-text-10)',
+            color: 'var(--nd-text-muted)',
+            lineHeight: 1.6,
+            overflowWrap: 'anywhere',
+          }}
+        >
+          {facts}
+        </div>
+      </div>
+      {trailing ? (
+        <span
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 'var(--nd-text-10)',
+            color: 'var(--nd-text-muted)',
+            paddingTop: 2,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {trailing}
+        </span>
+      ) : null}
+      {badge ? <Badge tone={badgeTone}>{badge}</Badge> : null}
+    </div>
+  );
+}
+
+/** Radios on an AP (Central /aps/{serial}/radios). */
+function RadiosPanel({ detail, plane }: { detail: DeviceDetailLive | null; plane: string }) {
+  const state = detailState(detail?.source, 'radios');
+  const radios: DeviceRadio[] = detailHasRows(detail?.source, 'radios', detail?.radios)
+    ? [...(detail?.radios ?? [])].sort(
+        (a, b) => bandRank(a.band) - bandRank(b.band) || a.number - b.number,
+      )
+    : [];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <SectionHeader
+        label="Radios"
+        meta={radios.length > 0 ? `${radios.length} ON AIR` : undefined}
+      />
+      {radios.length === 0 ? (
+        <LiveGapNote>
+          {detailGapSentence(state, {
+            notFetched: 'Per-radio state has not been read for this AP — the portal fetches radios on demand, for the one device being viewed.',
+            empty: `${plane} answered with no radios for this AP.`,
+            failed: `Per-radio state could not be read from ${plane}`,
+          }, detail?.source.note)}
+        </LiveGapNote>
+      ) : (
+        radios.map((r) => (
+          <DetailRow
+            key={`${r.number}-${r.band}`}
+            keyText={r.band || `radio ${r.number}`}
+            keyWidth={58}
+            title={joinFacts([
+              r.channel ? `ch ${r.channel}` : null,
+              r.bandwidth || null,
+              r.powerDbm == null ? null : `${r.powerDbm} dBm`,
+              r.mode || null,
+            ])}
+            facts={joinFacts([
+              r.clients == null ? null : `${r.clients} client${r.clients === 1 ? '' : 's'}`,
+              pctText(r.channelUtilPct, 'util'),
+              r.noiseFloorDbm == null ? null : `noise ${r.noiseFloorDbm} dBm`,
+              pctText(r.retries, 'retries'),
+              r.channelQuality == null ? null : `quality ${r.channelQuality}`,
+            ]) || 'No per-radio counters in this read.'}
+            badge={r.status || undefined}
+            badgeTone={statusTone(r.status)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+/** WLANs this AP is broadcasting (Central /aps/{serial}/wlans). */
+function WlansPanel({ detail, plane }: { detail: DeviceDetailLive | null; plane: string }) {
+  const state = detailState(detail?.source, 'wlans');
+  const wlans: DeviceWlan[] = detailHasRows(detail?.source, 'wlans', detail?.wlans)
+    ? (detail?.wlans ?? [])
+    : [];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <SectionHeader
+        label="SSIDs broadcast"
+        meta={wlans.length > 0 ? `${wlans.length} WLAN${wlans.length === 1 ? '' : 'S'}` : undefined}
+      />
+      {wlans.length === 0 ? (
+        <LiveGapNote>
+          {detailGapSentence(state, {
+            notFetched: 'Broadcast SSIDs have not been read for this AP — the portal fetches them on demand, for the one device being viewed.',
+            empty: `${plane} reports no WLAN broadcast by this AP.`,
+            failed: `Broadcast SSIDs could not be read from ${plane}`,
+          }, detail?.source.note)}
+        </LiveGapNote>
+      ) : (
+        wlans.map((w) => (
+          <DetailRow
+            key={w.name}
+            keyText={w.name}
+            keyWidth={104}
+            facts={joinFacts([
+              w.security || w.securityLevel || null,
+              w.band || null,
+              w.vlan ? `VLAN ${w.vlan}` : null,
+            ]) || 'No WLAN attributes in this read.'}
+            trailing={
+              w.clients == null ? undefined : `${w.clients} client${w.clients === 1 ? '' : 's'}`
+            }
+            badge={w.status || undefined}
+            badgeTone={statusTone(w.status)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+/** Interfaces on a switch (Central /switches/{serial}/interfaces).
+ *
+ *  "Of interest" is not decoration: a 48-port switch with 8 cables in it should
+ *  not print 40 identical idle rows. Connected ports (and any port with a
+ *  neighbour) are listed, worst far-end health first — the physical link to a
+ *  gateway that is down is exactly what this screen has to surface. The header
+ *  names the total so the filter can never read as "the switch has 8 ports". */
+function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null; plane: string }) {
+  const state = detailState(detail?.source, 'ports');
+  const all: DevicePort[] = detailHasRows(detail?.source, 'ports', detail?.ports)
+    ? (detail?.ports ?? [])
+    : [];
+  const interesting = all
+    .filter((p) => portIsUp(p) || Boolean(p.neighbour))
+    .sort((a, b) => {
+      // Only a real adverse verdict jumps the queue. Central also answers
+      // 'Unknown' on a link it has not scored, and an unscored port is not a
+      // problem report — sorting it next to a 'Poor' one would invent urgency.
+      const rank = (p: DevicePort) => {
+        const tone = healthTone(p.neighbourHealth);
+        if (tone === 'warning' || tone === 'danger') return 0;
+        return portIsUp(p) ? 1 : 2;
+      };
+      return rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <SectionHeader
+        label="Ports of interest"
+        meta={
+          all.length > 0 ? `${interesting.length} OF ${all.length} CONNECTED` : undefined
+        }
+      />
+      {all.length === 0 ? (
+        <LiveGapNote>
+          {detailGapSentence(state, {
+            notFetched: 'Per-port state has not been read for this device — the portal fetches interfaces on demand, for the one device being viewed.',
+            empty: `${plane} answered with no interfaces for this device.`,
+            failed: `Per-port state could not be read from ${plane}`,
+          }, detail?.source.note)}
+        </LiveGapNote>
+      ) : interesting.length === 0 ? (
+        <LiveGapNote>
+          {`None of the ${all.length} interfaces ${plane} reported is connected — every port is down with no neighbour discovered.`}
+        </LiveGapNote>
+      ) : (
+        interesting.map((p) => {
+          const vlans =
+            p.allowedVlanIds && p.allowedVlanIds.length > 0
+              ? `${p.vlanMode || 'vlan'} ${p.nativeVlan ?? '?'} + ${p.allowedVlanIds.join(',')}`
+              : p.nativeVlan != null
+                ? `${p.vlanMode || 'vlan'} ${p.nativeVlan}`
+                : p.vlanMode || null;
+          const poe =
+            p.poeStatus && !/^not used$/i.test(p.poeStatus)
+              ? joinFacts([`PoE ${p.poeStatus}`, p.poeClass || null])
+              : null;
+          const stp =
+            p.stpRole || p.stpState
+              ? `STP ${[p.stpRole, p.stpState].filter(Boolean).join('/')}`
+              : null;
+          return (
+            <DetailRow
+              key={p.name}
+              keyText={p.name}
+              keyWidth={58}
+              title={
+                p.neighbour
+                  ? joinFacts([
+                      p.neighbourPort ? `${p.neighbour} ${p.neighbourPort}` : p.neighbour,
+                      p.neighbourType || null,
+                    ])
+                  : p.status || 'No neighbour discovered'
+              }
+              facts={joinFacts([
+                speedText(p.speedBps),
+                p.duplex && p.duplex !== '-' ? p.duplex.toLowerCase() : null,
+                vlans,
+                poe,
+                stp,
+              ]) || 'No per-port attributes in this read.'}
+              badge={p.neighbourHealth || p.status || undefined}
+              badgeTone={p.neighbourHealth ? healthTone(p.neighbourHealth) : statusTone(p.status)}
+            />
+          );
+        })
+      )}
     </div>
   );
 }
@@ -626,6 +1048,15 @@ export default function DeviceDetail() {
       );
     }
 
+    // Per-object detail for THIS device, when the route read it. Absent is the
+    // normal state until the read lands (and after a failed one), and every
+    // class block below renders its own honest sentence for that.
+    const liveDetail = servedDeviceDetail(data);
+    // Who to name in a gap sentence: the plane the read was issued against
+    // when the payload says, else the plane that claims the row.
+    const detailPlane = (liveDetail?.source.plane ?? device.plane).toString().toUpperCase();
+    const liveSections = sectionsToRender(device.type, liveDetail);
+
     const reported = (value: string) =>
       value && value !== '—' && value.toLowerCase() !== 'unknown' ? value : 'Not reported';
     // Header meta is model · site · IP (README §8); the plane's management IP
@@ -894,16 +1325,20 @@ export default function DeviceDetail() {
               ))}
             </div>
 
-            {/* The class block (Ports of interest / Cluster members / Radios &
-                SSIDs / Services) has no live source yet. README §9 requires the
-                section, and every other live gap on this screen declares
-                itself rather than vanishing. */}
-            <div>
-              <SectionHeader label="Ports of interest" />
-              <LiveGapNote>
-                Not available in live mode — no linked plane reports per-port state for this device.
-              </LiveGapNote>
-            </div>
+            {/* The class block, chosen by the device's CLASS rather than
+                hardcoded: an AP gets Radios + SSIDs, a switch gets Ports, and
+                a class Central serves no subresource for gets whatever the
+                route actually read — nothing, rather than a ports panel that
+                would blame a plane for a field the device does not have. */}
+            {liveSections.map((section) =>
+              section === 'radios' ? (
+                <RadiosPanel key={section} detail={liveDetail} plane={detailPlane} />
+              ) : section === 'wlans' ? (
+                <WlansPanel key={section} detail={liveDetail} plane={detailPlane} />
+              ) : (
+                <PortsPanel key={section} detail={liveDetail} plane={detailPlane} />
+              ),
+            )}
 
             <div>
               <SectionHeader label="Clients on this device" meta={clients?.meta} />

@@ -18,8 +18,11 @@ import type {
   DeviceProfile,
   DeviceRow,
   DeviceType,
+  DetailFetchState,
+  DetailSource,
   PathHop,
   PathHopView,
+  Plane,
   PlaneDatasetKey,
   PlaneFreshness,
   PlaneHealthKey,
@@ -53,6 +56,7 @@ import {
   AP_UPLINK,
   DEVICE_PROFILE_BUILDERS,
   FALLBACK_CHAIN,
+  PLANE_KEY_BY_LABEL,
   PLANE_WRITE_MODE,
   SITE_CHAIN,
   SW_TERMINAL_RESPONSES,
@@ -760,6 +764,158 @@ export function scopeForPlane(plane: PlaneKey, opts: { linked: boolean; scopes?:
   if (mode === 'brokered' && (opts.scopes ?? '').includes('write')) return 'read + broker';
   return 'read only';
 }
+
+// ---------------------------------------------------------------------------
+// Detail-read provenance — three states, and field-level support
+// ---------------------------------------------------------------------------
+
+/**
+ * What happened to one section of a detail read.
+ *
+ * A section key the adapter never set was never attempted, which is exactly
+ * 'not-fetched' — so read through this instead of indexing `sections` directly
+ * and letting `undefined` leak into a render.
+ */
+export function detailState<S extends string>(
+  source: DetailSource<S> | null | undefined,
+  section: S,
+): DetailFetchState {
+  return source?.sections?.[section] ?? 'not-fetched';
+}
+
+/**
+ * Did this section come back with real rows?
+ *
+ * Deliberately NOT `rows.length > 0`: a section can be 'ok' with rows, 'empty'
+ * (the plane genuinely has none), 'failed' (the call broke) or 'not-fetched'
+ * (we never asked), and the last three render three different sentences.
+ */
+export function detailHasRows<S extends string>(
+  source: DetailSource<S> | null | undefined,
+  section: S,
+  rows: unknown[] | undefined,
+): boolean {
+  return detailState(source, section) === 'ok' && Array.isArray(rows) && rows.length > 0;
+}
+
+/** The client fields the drawer states provenance for. An explicit list, not
+ *  `keyof Client`: widening a keyof-indexed type has broken this codebase
+ *  before, and only these are actually reasoned about. */
+export const CLIENT_PROVENANCE_FIELDS = [
+  'rssi',
+  'snr',
+  'retries',
+  'tput',
+  'roams',
+  'quality',
+  'zone',
+  'group',
+  'closet',
+  'vlan',
+  'ip',
+  'link',
+  'where',
+  'attach',
+  'role',
+  'auth',
+  'session',
+  'health',
+] as const;
+export type ClientProvenanceField = (typeof CLIENT_PROVENANCE_FIELDS)[number];
+
+/**
+ * Fields a plane HAS NO CONCEPT OF, with the honest sentence to say instead.
+ *
+ * This is an assertion about the plane's data model, so it may only name a
+ * plane/field pair that has actually been checked against the published spec.
+ * A plane absent from this table asserts nothing: every field is treated as
+ * supported, which keeps the existing "not reported by X" wording — the safe
+ * default, because claiming a plane lacks a concept it has is its own lie.
+ *
+ * CENTRAL, verified against the published Client schema (authenticationType …
+ * wlanName): there is siteId/siteName and NOTHING ELSE placing a client.
+ * There is no zone and no per-client config group. Aruba Central's construct
+ * is the SITE — do not invent a zone lookup for it.
+ */
+const CLIENT_FIELD_UNSUPPORTED: Partial<
+  Record<PlaneKey, Partial<Record<ClientProvenanceField, string>>>
+> = {
+  central: {
+    zone: 'Central places clients by site, not zone',
+    group: 'Central places clients by site — a client carries no config group',
+  },
+};
+
+/** Normalize either spelling of a plane (display label 'CENTRAL' or registry
+ *  key 'central') to the key. null = not a plane the portal adapts. */
+export function planeKeyOf(plane: PlaneKey | Plane | null | undefined): PlaneKey | null {
+  if (!plane) return null;
+  if (plane in PLANE_KEY_BY_LABEL) return PLANE_KEY_BY_LABEL[plane as Plane];
+  return PLANE_WRITE_MODE[plane as PlaneKey] ? (plane as PlaneKey) : null;
+}
+
+/**
+ * Does this plane MODEL this client field at all?
+ *
+ * false = the plane has no such concept, so a renderer must say that (or omit
+ * the row) — never "not reported by CENTRAL", which blames the plane for a
+ * field it never had. true = the plane models it, so an absent value really is
+ * "not reported this poll".
+ *
+ * NOTE FOR RENDERERS: this describes a LIVE plane's data model. The demo
+ * fixtures are authored and complete; gate any provenation on the section
+ * being live, or demo parity breaks (a fixture CENTRAL client has an authored
+ * zone, and it must keep rendering).
+ */
+export function planeSupportsClientField(
+  plane: PlaneKey | Plane | null | undefined,
+  field: ClientProvenanceField,
+): boolean {
+  const key = planeKeyOf(plane);
+  if (!key) return true; // nothing checked = assert nothing
+  return CLIENT_FIELD_UNSUPPORTED[key]?.[field] === undefined;
+}
+
+/**
+ * Why a client field is blank, in the three flavours the honesty rules need:
+ *   present     — there is a value; render it
+ *   unsupported — the plane has no such concept; say so or omit the row
+ *   missing     — the plane models it but did not report it this poll
+ */
+export type ClientFieldProvenance =
+  | { kind: 'present' }
+  | { kind: 'unsupported'; note: string }
+  | { kind: 'missing'; note: string };
+
+/** Values the fixtures and adapters use for "nothing here". */
+function isBlankValue(value: unknown): boolean {
+  return value === null || value === undefined || value === '' || value === '—';
+}
+
+/**
+ * One decision point for the client drawer's blank rows, so five renderers
+ * cannot invent five different sentences for the same situation.
+ */
+export function clientFieldProvenance(
+  plane: PlaneKey | Plane | null | undefined,
+  field: ClientProvenanceField,
+  value: unknown,
+): ClientFieldProvenance {
+  if (!isBlankValue(value)) return { kind: 'present' };
+  const key = planeKeyOf(plane);
+  const unsupported = key ? CLIENT_FIELD_UNSUPPORTED[key]?.[field] : undefined;
+  if (unsupported) return { kind: 'unsupported', note: unsupported };
+  const label = key ? PLANE_LABEL_BY_KEY[key] : null;
+  return { kind: 'missing', note: label ? `not reported by ${label}` : 'not reported' };
+}
+
+/** Registry key -> display label. Derived from PLANE_KEY_BY_LABEL so the two
+ *  directions can never drift. */
+const PLANE_LABEL_BY_KEY: Partial<Record<PlaneKey, Plane>> = Object.fromEntries(
+  (Object.entries(PLANE_KEY_BY_LABEL) as [Plane, PlaneKey | null][])
+    .filter((entry): entry is [Plane, PlaneKey] => entry[1] !== null)
+    .map(([label, key]) => [key, label]),
+) as Partial<Record<PlaneKey, Plane>>;
 
 /** Lower rank = worse tone (for group roll-ups). */
 function toneRank(t: Tone): number {

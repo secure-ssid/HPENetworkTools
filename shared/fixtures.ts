@@ -1250,6 +1250,29 @@ export const PLANE_WRITE_MODE: Record<PlaneKey, WriteMode> = {
   uxi: 'read only',
 };
 
+/**
+ * Display label -> registry plane key. The server has the same mapping in the
+ * other direction (services/reconcile.ts PLANE_LABEL / planeIdForLabel), but
+ * that module is server-only; the web screens hold a client's `plane` as a
+ * display label and need the key to ask shared helpers about it.
+ *
+ * 'THIRD-PARTY' resolves to null on purpose: it is not a plane the portal has
+ * an adapter for, so nothing may be asserted about what it does or does not
+ * model.
+ */
+export const PLANE_KEY_BY_LABEL: Record<Plane, PlaneKey | null> = {
+  CENTRAL: 'central',
+  CLASSIC: 'classic',
+  MIST: 'mist',
+  GREENLAKE: 'greenlake',
+  'AOS-8': 'aos8',
+  'AOS-10': 'aos10',
+  LOCAL: 'local',
+  CLEARPASS: 'clearpass',
+  UXI: 'uxi',
+  'THIRD-PARTY': null,
+};
+
 // -- Edit-drawer form seeds & select options (state + option arrays) ---------
 
 /** Initial form models from the component state. */

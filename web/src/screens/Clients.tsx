@@ -12,7 +12,7 @@
  * Data: getClients() — live /api/clients when the server is up, fixtures otherwise.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Badge,
@@ -30,12 +30,32 @@ import {
   Table,
   useToast,
 } from '../nightdesk';
-import { blockClient, disconnectClient, getClients, getTickets } from '../api/client';
+import {
+  blockClient,
+  disconnectClient,
+  getClientDetail,
+  getClients,
+  getSiteTopology,
+  getTickets,
+} from '../api/client';
 import type { ClientsData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { planeFilterForParam } from '../app/nav';
-import { pathFor, timelineFor } from '../../../shared';
-import type { ClientRow, TicketRow } from '../../../shared';
+import { clientFieldProvenance, detailState, pathFor, timelineFor } from '../../../shared';
+import type {
+  ClientDetailLive,
+  ClientDetailSection,
+  ClientRow,
+  ClientTimelineEvent,
+  PathHop,
+  PathHopView,
+  SiteTopologyLive,
+  TicketRow,
+  TimelineStep,
+  Tone,
+  TopologyDeviceNode,
+  TopologyLink,
+} from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 
@@ -74,6 +94,256 @@ function vlanNumber(vlan: string): string | null {
 
 function uniq<K extends keyof ClientRow>(clients: ClientRow[], k: K): string[] {
   return clients.map((c) => String(c[k])).filter((v, i, a) => a.indexOf(v) === i);
+}
+
+// ---------------------------------------------------------------------------
+// On-demand detail reads — ONE client, ONE open drawer
+// ---------------------------------------------------------------------------
+
+/**
+ * Central models a client across ~8 endpoints and a site across a topology
+ * read; the 60s poll fetches NONE of them on purpose (9 devices x N
+ * subresources x 1440 polls a day would burn the tenant's call budget for
+ * rows nobody is looking at). These reads happen on the DETAIL path —
+ * getClientDetail / getSiteTopology, issued once per object while its drawer
+ * is open — and a rejection is swallowed into the honest empty state below
+ * rather than into a fabricated number.
+ */
+async function readClientDetail(mac: string): Promise<ClientDetailLive | null> {
+  return (await getClientDetail(mac).catch(() => null)) ?? null;
+}
+
+async function readSiteTopology(siteId: string): Promise<SiteTopologyLive | null> {
+  return (await getSiteTopology(siteId).catch(() => null)) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Formatting for detail figures
+// ---------------------------------------------------------------------------
+
+/** Bits per second, as an operator says it. */
+function formatBps(bps: number): string {
+  if (!Number.isFinite(bps) || bps < 0) return '—';
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(1)} Gbps`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mbps`;
+  if (bps >= 1e3) return `${Math.round(bps / 1e3)} kbps`;
+  return `${Math.round(bps)} bps`;
+}
+
+/** The window a detail figure covers. null when the read did not say — the
+ *  sentence then must not name one, because guessing "24h" is a fabrication. */
+function formatWindow(sec: number | null | undefined): string | null {
+  if (typeof sec !== 'number' || !Number.isFinite(sec) || sec <= 0) return null;
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const minutes = Math.round(sec / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
+function windowPhrase(sec: number | null | undefined): string {
+  const w = formatWindow(sec);
+  return w ? `the last ${w}` : 'the read window';
+}
+
+/** dBm with the design's U+2212 minus, matching the fixtures' own metrics. */
+function dbm(v: number): string {
+  return `${String(v).replace('-', '−')} dBm`;
+}
+
+function nonEmpty(parts: (string | null | undefined | false)[]): string[] {
+  return parts.filter((p): p is string => typeof p === 'string' && p.length > 0);
+}
+
+/** Plane session events → the rows this drawer already renders. */
+function timelineRowsFrom(events: ClientTimelineEvent[], plane: string): TimelineStep[] {
+  return events.map((e) => ({
+    time: hhmm(e.ts),
+    plane,
+    what: e.detail,
+    raw: nonEmpty([
+      e.kind.toUpperCase(),
+      e.device,
+      e.port ? `port ${e.port}` : null,
+      e.wlan,
+      e.band,
+      e.channel ? `ch ${e.channel}` : null,
+      typeof e.rssiDbm === 'number' ? dbm(e.rssiDbm) : null,
+      e.vlan ? `vlan ${e.vlan}` : null,
+    ]).join(' · '),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Path to the internet, from the plane's own site graph
+// ---------------------------------------------------------------------------
+
+/** Mirrors shared decorateHops(), which is internal to logic.ts. */
+const HOP_DOT: Partial<Record<Tone, string>> = {
+  success: 'var(--nd-success)',
+  warning: 'var(--nd-warning)',
+  danger: 'var(--nd-danger)',
+  neutral: 'var(--nd-border-strong)',
+  accent: 'var(--nd-accent)',
+};
+
+function decorate(hops: PathHop[]): PathHopView[] {
+  return hops.map((h, i) => ({
+    ...h,
+    hasNext: i < hops.length - 1,
+    plain: !h.device,
+    dot: HOP_DOT[h.tone] ?? 'var(--nd-border-strong)',
+  }));
+}
+
+function topologyTone(node: TopologyDeviceNode): Tone {
+  const status = (node.status ?? '').toUpperCase();
+  if (status === 'OFFLINE' || status === 'DOWN') return 'danger';
+  const health = (node.health ?? '').toLowerCase();
+  if (health === 'poor' || health === 'bad') return 'danger';
+  if (health === 'fair') return 'warning';
+  if (health === 'good') return 'success';
+  return 'neutral';
+}
+
+function isGatewayNode(node: TopologyDeviceNode): boolean {
+  return /gateway|gw|router|wan/i.test(`${node.deviceFunction} ${node.type}`);
+}
+
+/** One segment as a fact about the wiring, in the direction of travel. */
+function linkFact(link: TopologyLink, forward: boolean): string {
+  const near = (forward ? link.fromPorts : link.toPorts).map((p) => p.name).filter(Boolean);
+  const far = (forward ? link.toPorts : link.fromPorts).map((p) => p.name).filter(Boolean);
+  return nonEmpty([
+    near.length || far.length ? `${near.join('+') || '?'} → ${far.join('+') || '?'}` : null,
+    typeof link.speedBps === 'number' && link.speedBps > 0 ? formatBps(link.speedBps) : null,
+    link.health && link.health.toLowerCase() !== 'good' ? `link ${link.health.toLowerCase()}` : null,
+  ]).join(' · ');
+}
+
+type LivePath = {
+  hops: PathHopView[];
+  /** Why the chain looks the way it does — the drawer says each differently. */
+  reason: 'ok' | 'no-graph' | 'not-on-graph' | 'no-uplink';
+  /** The node the chain ends on, when it ended on one. */
+  end: TopologyDeviceNode | null;
+};
+
+/**
+ * Walk the plane's own site graph from the device this client is attached to
+ * out to the nearest gateway. Nothing here is invented: every hop is a node
+ * the plane returned, every segment label is that link's own ports and speed.
+ * When the plane does not place the attach device on the graph we say so —
+ * we do not guess the uplink.
+ */
+function livePathFor(client: ClientRow, topo: SiteTopologyLive): LivePath {
+  const nodes = topo.nodes ?? [];
+  const links = topo.links ?? [];
+  if (nodes.length === 0) return { hops: [], reason: 'no-graph', end: null };
+
+  const wanted = client.attach.trim().toLowerCase();
+  const start =
+    nodes.find((n) => n.name.trim().toLowerCase() === wanted) ??
+    nodes.find((n) => n.serial.trim().toLowerCase() === wanted) ??
+    nodes.find((n) => (n.mac ?? '').trim().toLowerCase() === wanted) ??
+    null;
+  if (!start) return { hops: [], reason: 'not-on-graph', end: null };
+
+  const bySerial = new Map(nodes.map((n) => [n.serial, n]));
+  const edges = new Map<string, { other: string; link: TopologyLink; forward: boolean }[]>();
+  const push = (from: string, other: string, link: TopologyLink, forward: boolean) => {
+    const list = edges.get(from) ?? [];
+    list.push({ other, link, forward });
+    edges.set(from, list);
+  };
+  for (const link of links) {
+    push(link.from, link.to, link, true);
+    push(link.to, link.from, link, false);
+  }
+
+  /* Breadth-first: the shortest hop chain is the one the traffic takes. */
+  const prev = new Map<string, { from: string; link: TopologyLink; forward: boolean }>();
+  const dist = new Map<string, number>([[start.serial, 0]]);
+  const queue = [start.serial];
+  while (queue.length) {
+    const at = queue.shift() as string;
+    for (const edge of edges.get(at) ?? []) {
+      if (dist.has(edge.other) || !bySerial.has(edge.other)) continue;
+      dist.set(edge.other, (dist.get(at) ?? 0) + 1);
+      prev.set(edge.other, { from: at, link: edge.link, forward: edge.forward });
+      queue.push(edge.other);
+    }
+  }
+
+  const rank = (n: TopologyDeviceNode) =>
+    (dist.get(n.serial) ?? 99) * 10 +
+    ((n.status ?? '').toUpperCase() === 'ONLINE' ? 0 : 2) +
+    ((n.health ?? '').toLowerCase() === 'good' ? 0 : 1);
+  const target = nodes
+    .filter((n) => n.serial !== start.serial && dist.has(n.serial) && isGatewayNode(n))
+    .sort((a, b) => rank(a) - rank(b))[0];
+
+  const chain: TopologyDeviceNode[] = [];
+  if (target) {
+    let cursor: string | undefined = target.serial;
+    while (cursor) {
+      const node = bySerial.get(cursor);
+      if (node) chain.unshift(node);
+      cursor = prev.get(cursor)?.from;
+    }
+  } else {
+    chain.push(start);
+  }
+
+  const hops: PathHop[] = [
+    {
+      name: client.name,
+      role: nonEmpty([client.model, client.type]).join(' · ') || 'client',
+      state: client.health,
+      tone: client.healthTone,
+      link:
+        nonEmpty([
+          client.where !== '—' ? client.where : null,
+          vlanNumber(client.vlan) ? `vlan ${vlanNumber(client.vlan)}` : null,
+        ]).join(' · ') || null,
+      device: false,
+    },
+  ];
+  chain.forEach((node, i) => {
+    const next = chain[i + 1];
+    const step = next ? prev.get(next.serial) : undefined;
+    hops.push({
+      name: node.name,
+      role:
+        nonEmpty([
+          node.deviceFunction && node.deviceFunction !== '-' ? node.deviceFunction.toLowerCase() : null,
+          node.model,
+          node.healthReason && node.health && node.health.toLowerCase() !== 'good'
+            ? node.healthReason.toLowerCase()
+            : null,
+        ]).join(' · ') || node.type.toLowerCase(),
+      state: (node.status ?? node.health ?? 'unknown').toLowerCase(),
+      tone: topologyTone(node),
+      link: step ? linkFact(step.link, step.forward) || null : null,
+      device: true,
+    });
+  });
+  /* Only the plane may claim an internet path: Central reports internet=false
+     on every node of this estate, so the chain ends at the gateway and the
+     drawer says that in words instead of drawing an Internet hop. */
+  const end = chain[chain.length - 1] ?? null;
+  if (end?.internet === true) {
+    hops.push({
+      name: 'Internet',
+      role: `upstream of ${end.name}`,
+      state: 'reachable',
+      tone: 'neutral',
+      link: null,
+      device: false,
+    });
+  }
+  return { hops: decorate(hops), reason: target ? 'ok' : 'no-uplink', end };
 }
 
 export default function Clients() {
@@ -132,6 +402,40 @@ export default function Clients() {
     setCoaTicket('');
   }, [macParam]);
 
+  /* Detail reads for the open drawer. Keyed by object, so a result that lands
+   * after the operator moved on is filed, not raced; asked-for keys live in a
+   * ref so a re-render (or StrictMode's double effect) cannot re-issue a call.
+   * `null` = we asked and got nothing usable — an honest empty state, not an
+   * excuse to substitute demo data. */
+  const sectionLive = data
+    ? data.dataSource === 'live' || (data.blended?.includes('clients') ?? false)
+    : false;
+  const [clientDetail, setClientDetail] = useState<Record<string, ClientDetailLive | null>>({});
+  const [siteTopology, setSiteTopology] = useState<Record<string, SiteTopologyLive | null>>({});
+  const detailAsked = useRef(new Set<string>());
+  const topologyAsked = useRef(new Set<string>());
+
+  useEffect(() => {
+    /* Demo fixtures are authored and complete — nothing to fetch for them. */
+    if (!macParam || !sectionLive) return;
+    if (detailAsked.current.has(macParam)) return;
+    detailAsked.current.add(macParam);
+    void readClientDetail(macParam).then((d) => {
+      setClientDetail((cache) => ({ ...cache, [macParam]: d }));
+    });
+  }, [macParam, sectionLive]);
+
+  useEffect(() => {
+    if (!data || !macParam || !sectionLive) return;
+    const siteId = data.clients.find((c) => c.mac === macParam)?.siteId;
+    if (!siteId) return;
+    if (topologyAsked.current.has(siteId)) return;
+    topologyAsked.current.add(siteId);
+    void readSiteTopology(siteId).then((t) => {
+      setSiteTopology((cache) => ({ ...cache, [siteId]: t }));
+    });
+  }, [data, macParam, sectionLive]);
+
   useEffect(() => {
     if (!coaOpen) return;
     let live = true;
@@ -159,8 +463,8 @@ export default function Clients() {
 
   const clients = data.clients;
   /* Provenance for every derivation below: the section leads with real rows when
-   * the portal is live OR when blend mode swapped it in. */
-  const sectionLive = data.dataSource === 'live' || (data.blended?.includes('clients') ?? false);
+   * the portal is live OR when blend mode swapped it in (`sectionLive`, computed
+   * above the early return so the detail-read effects can gate on it too). */
   /* Staleness is part of the UI (README §363-366): say when these sessions were
    * pulled, and how many of them the source plane could not re-confirm. */
   const stamp = sectionLive ? `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'}` : 'SYNCED 09:41';
@@ -252,48 +556,191 @@ export default function Clients() {
   const warn = (bad: boolean) => (bad ? 'var(--nd-warning)' : 'var(--nd-text-primary)');
   const drawer = cur
     ? (() => {
-        // pathFor/timelineFor stitch from the DEMO topology + event fixtures.
-        // For a live client they would fabricate hops through devices the
-        // estate doesn't have (sw-core-a, gw-edge-1…) — once the section
-        // leads with live rows, serve an honest empty state instead.
-        const path = sectionLive ? [] : pathFor(cur);
-        const weakHops = path.filter((h) => h.tone === 'warning' || h.tone === 'danger').length;
         const wired = cur.medium === 'wired';
         const metricNote = (value: string, note: string) =>
           sectionLive && value === '—' ? `not reported by ${cur.plane}` : note;
         const known = (...parts: string[]) => parts.filter((part) => part && part !== '—').join(' · ') || '—';
+
+        /* The per-client detail read for THIS drawer (undefined = still in
+         * flight or never asked; null = asked, nothing usable came back). */
+        const det = sectionLive ? (clientDetail[cur.mac] ?? null) : null;
+        const secState = (section: ClientDetailSection) => detailState(det?.source, section);
+        /* One sentence per outcome. '' means "the detail path said nothing
+         * about this", and the caller keeps the existing poll-level wording. */
+        const detailNote = (section: ClientDetailSection, whenOk: string, whenEmpty: string): string => {
+          switch (secState(section)) {
+            case 'ok':
+              return whenOk;
+            case 'empty':
+              return whenEmpty;
+            case 'failed':
+              return det?.source.note ? `read failed — ${det.source.note}` : 'detail read did not complete';
+            default:
+              return '';
+          }
+        };
+        const roamWindow = windowPhrase(det?.roamsWindowSec);
+
+        const rssiNum = typeof det?.rssi === 'number' ? det.rssi : null;
+        const tputNum = typeof det?.tput === 'number' ? det.tput : null;
+        const roamsNum = typeof det?.roams === 'number' ? det.roams : null;
+
+        /* Where it is — the site/zone/group correction.
+         * A plane that has no such concept must not be shown a dash that reads
+         * as "the plane failed to report it": Central places a client by SITE
+         * and models neither a zone nor a per-client config group, so those
+         * rows are dropped and the reason is stated once, underneath. Demo
+         * fixtures are authored and complete, so they render verbatim. */
+        const placeNotes: string[] = [];
+        const place: { k: string; v: string; muted: boolean }[] = [];
+        const addPlace = (
+          k: string,
+          field: Parameters<typeof clientFieldProvenance>[1],
+          value: string,
+          present: (v: string) => string = (v) => v,
+        ) => {
+          if (!sectionLive) {
+            place.push({ k, v: present(value), muted: false });
+            return;
+          }
+          const prov = clientFieldProvenance(cur.plane, field, value);
+          if (prov.kind === 'unsupported') {
+            placeNotes.push(`${prov.note}.`);
+            return;
+          }
+          place.push({
+            k,
+            v: prov.kind === 'present' ? present(value) : prov.note,
+            muted: prov.kind !== 'present',
+          });
+        };
+        place.push({ k: 'Site', v: cur.siteName, muted: false });
+        addPlace('Zone', 'zone', cur.zone);
+        addPlace('Group', 'group', cur.group, (v) => `${v} — config group`);
+        place.push({ k: 'Attached to', v: known(cur.attach, cur.where), muted: false });
+        addPlace('Wiring', 'closet', cur.closet);
+
+        /* Path to the internet. pathFor() stitches the DEMO topology; for a
+         * live client it would fabricate hops through devices the estate does
+         * not have (sw-core-a, gw-edge-1…), so a live chain may only come from
+         * the plane's own site graph. */
+        const topo = sectionLive ? (siteTopology[cur.siteId] ?? null) : null;
+        const live = sectionLive ? (topo ? livePathFor(cur, topo) : null) : null;
+        const path = sectionLive ? (live?.hops ?? []) : pathFor(cur);
+        const weakHops = path.filter((h) => h.tone === 'warning' || h.tone === 'danger').length;
+        const hopsMeta = `${path.length} HOPS${weakHops ? ` · ${weakHops} DEGRADED` : ' · ALL HEALTHY'}`;
+        const topoState = detailState(topo?.source, 'nodes');
+        const pathMeta = !sectionLive
+          ? hopsMeta
+          : path.length
+            ? `${hopsMeta} · ${cur.plane} TOPOLOGY`
+            : topoState === 'failed'
+              ? 'TOPOLOGY READ FAILED'
+              : live?.reason === 'not-on-graph'
+                ? 'ATTACH POINT NOT ON GRAPH'
+                : live?.reason === 'no-graph' || topoState === 'empty'
+                  ? 'SITE GRAPH EMPTY'
+                  : 'NO TOPOLOGY SOURCE';
+        const pathEmpty =
+          topoState === 'failed'
+            ? `The site graph read did not complete${
+                topo?.source.note ? ` — ${topo.source.note}` : ''
+              }. Nothing is drawn rather than a guessed chain.`
+            : live?.reason === 'not-on-graph'
+              ? `${cur.plane} returned the site graph but does not place ${cur.attach} on it, so the portal will not guess this client's uplink.`
+              : live?.reason === 'no-graph' || topoState === 'empty'
+                ? `${cur.plane} reports no link topology for ${cur.siteName}.`
+                : 'No linked topology source reported a path for this live client. The portal will not substitute the demo topology.';
+        /* The chain stops where the plane's knowledge stops. Central reports
+         * internet=false on every node of this estate, so say that instead of
+         * drawing an internet hop nobody reported. */
+        const pathNote =
+          live?.reason === 'ok' && live.end && live.end.internet !== true
+            ? `${cur.plane}'s site graph ends at ${live.end.name} — it does not report the upstream internet path.`
+            : live?.reason === 'no-uplink' && path.length
+              ? `${cur.plane} places ${cur.attach} on the site graph but reports no gateway beyond it.`
+              : null;
+
+        /* Session timeline. "Fetched and genuinely empty" (a stationary camera
+         * has no roaming events) is not "nothing was fetched". */
+        const timelineState = secState('timeline');
+        const timeline = sectionLive
+          ? timelineState === 'ok'
+            ? timelineRowsFrom(det?.timeline ?? [], cur.plane)
+            : []
+          : timelineFor(cur);
+        const timelineMeta = !sectionLive
+          ? 'STITCHED ACROSS PLANES'
+          : timeline.length
+            ? `${timeline.length} EVENT${timeline.length === 1 ? '' : 'S'} · ${cur.plane}`
+            : timelineState === 'empty' || timelineState === 'ok'
+              ? `NO EVENTS IN ${(formatWindow(det?.roamsWindowSec) ?? 'THE WINDOW').toUpperCase()}`
+              : timelineState === 'failed'
+                ? 'SESSION READ FAILED'
+                : 'NO PLANE SESSION EVENTS';
+        const timelineEmpty =
+          timelineState === 'empty' || timelineState === 'ok'
+            ? `${cur.plane} answered for this client and reported no roaming or session events in ${roamWindow}. That is an empty result, not a failed read.`
+            : timelineState === 'failed'
+              ? `The session read did not complete${
+                  det?.source.note ? ` — ${det.source.note}` : ''
+                }. Nothing is shown rather than a stale or invented timeline.`
+              : 'No linked plane reported session events for this client. The portal will not substitute the demo timeline.';
+
         return {
           summary: sectionLive ? known(cur.model, cur.siteName) : known(cur.role, cur.group, cur.siteName),
           metrics: [
             {
               k: 'Signal',
-              v: cur.rssi,
-              note: metricNote(cur.rssi, wired ? 'wired link' : 'target ≥ −67 dBm'),
-              color: warn(cur.rssi !== '—' && metricNum(cur.rssi) < -67),
+              v: rssiNum !== null ? dbm(rssiNum) : cur.rssi,
+              note: wired
+                ? 'wired link'
+                : detailNote('rssi', 'target ≥ −67 dBm', `no signal sample in ${roamWindow}`) ||
+                  metricNote(cur.rssi, 'target ≥ −67 dBm'),
+              color: warn(rssiNum !== null ? rssiNum < -67 : cur.rssi !== '—' && metricNum(cur.rssi) < -67),
             },
             {
               k: 'SNR',
+              /* Radio metrics on a wired session: the plane did not fail to
+               * report them, there is no radio to report. Blaming the plane
+               * for a figure the link cannot have is the same lie as blaming
+               * it for a zone it does not model. */
               v: cur.snr,
-              note: metricNote(cur.snr, wired ? 'not applicable to wired links' : 'target ≥ 25 dB'),
+              note: wired ? 'not applicable to wired links' : metricNote(cur.snr, 'target ≥ 25 dB'),
               color: warn(cur.snr !== '—' && metricNum(cur.snr) < 25),
             },
             {
               k: 'Retries',
               v: cur.retries,
-              note: metricNote(cur.retries, 'target under 8%'),
+              note: wired
+                ? 'not applicable to wired links'
+                : metricNote(cur.retries, 'target under 8%'),
               color: warn(cur.retries !== '—' && metricNum(cur.retries) > 8),
             },
             {
               k: 'Throughput',
-              v: cur.tput,
-              note: metricNote(cur.tput, 'current rate'),
+              v: tputNum !== null ? formatBps(tputNum) : cur.tput,
+              /* Central reports usage totals over a window, never an
+               * instantaneous rate — label the average as an average. */
+              note:
+                detailNote(
+                  'tput',
+                  `avg over ${formatWindow(det?.tputWindowSec) ?? 'the read window'}`,
+                  `no usage samples in ${windowPhrase(det?.tputWindowSec)}`,
+                ) || metricNote(cur.tput, 'current rate'),
               color: warn(false),
             },
             {
               k: 'Roams',
-              v: cur.roams,
-              note: metricNote(cur.roams, 'this session'),
-              color: warn(parseInt(cur.roams, 10) > 8),
+              v: roamsNum !== null ? String(roamsNum) : cur.roams,
+              note:
+                detailNote(
+                  'roams',
+                  roamsNum === 0 ? `no roaming in ${roamWindow}` : `in ${roamWindow}`,
+                  `no roaming in ${roamWindow}`,
+                ) ||
+                (wired ? 'not applicable to wired links' : metricNote(cur.roams, 'this session')),
+              color: warn(roamsNum !== null ? roamsNum > 8 : parseInt(cur.roams, 10) > 8),
             },
             {
               k: 'IP',
@@ -313,22 +760,18 @@ export default function Clients() {
                 ? 'Below the clinical target — signal or retries are the limiting factor.'
                 : 'Session is effectively unusable; see the timeline for why.',
           experienceMeta: cur.link === '—' && sectionLive ? 'PARTIAL PLANE METRICS' : cur.link,
-          place: [
-            { k: 'Site', v: cur.siteName },
-            { k: 'Zone', v: cur.zone },
-            {
-              k: 'Group',
-              v: cur.group === '—' ? 'Not reported by the client plane' : `${cur.group} — config group`,
-            },
-            { k: 'Attached to', v: known(cur.attach, cur.where) },
-            { k: 'Wiring', v: cur.closet },
-          ],
+          place,
+          placeNotes,
+          /* The section meta named the config group; for a plane that has no
+           * per-client group, name what it does place the client by. */
+          placeMeta: sectionLive && cur.group === '—' ? cur.siteName : cur.group,
           path,
-          pathMeta: sectionLive
-            ? 'NO TOPOLOGY SOURCE'
-            : `${path.length} HOPS${weakHops ? ` · ${weakHops} DEGRADED` : ' · ALL HEALTHY'}`,
-          timeline: sectionLive ? [] : timelineFor(cur),
-          timelineMeta: sectionLive ? 'NO PLANE SESSION EVENTS' : 'STITCHED ACROSS PLANES',
+          pathMeta,
+          pathEmpty,
+          pathNote,
+          timeline,
+          timelineMeta,
+          timelineEmpty,
         };
       })()
     : null;
@@ -750,7 +1193,7 @@ export default function Clients() {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <SectionHeader label="Where it is" meta={cur.group} />
+              <SectionHeader label="Where it is" meta={drawer.placeMeta} />
               {drawer.place.map((p) => (
                 <div
                   key={p.k}
@@ -780,13 +1223,32 @@ export default function Clients() {
                       flex: 1,
                       minWidth: 0,
                       fontSize: 'var(--nd-text-12)',
-                      color: 'var(--nd-text-secondary)',
+                      color: p.muted ? 'var(--nd-text-muted)' : 'var(--nd-text-secondary)',
                     }}
                   >
                     {p.v}
                   </span>
                 </div>
               ))}
+              {/* A field the plane has no concept of gets an explanation, not a
+                  dash that blames the plane for never modelling it. */}
+              {drawer.placeNotes.length ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, paddingTop: 8 }}>
+                  {drawer.placeNotes.map((note) => (
+                    <span
+                      key={note}
+                      style={{
+                        fontFamily: 'var(--nd-font-mono)',
+                        fontSize: 'var(--nd-text-10)',
+                        color: 'var(--nd-text-muted)',
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      {note}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -800,8 +1262,7 @@ export default function Clients() {
                     lineHeight: 1.6,
                   }}
                 >
-                  No linked topology source reported a path for this live client. The portal
-                  will not substitute the demo topology.
+                  {drawer.pathEmpty}
                 </div>
               ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 0, paddingLeft: 2 }}>
@@ -888,6 +1349,18 @@ export default function Clients() {
                 ))}
               </div>
               )}
+              {drawer.pathNote ? (
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-10)',
+                    color: 'var(--nd-text-muted)',
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {drawer.pathNote}
+                </span>
+              ) : null}
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -902,8 +1375,7 @@ export default function Clients() {
                     padding: '9px 0',
                   }}
                 >
-                  No linked plane reported session events for this client. The portal will not
-                  substitute the demo timeline.
+                  {drawer.timelineEmpty}
                 </div>
               ) : (
               drawer.timeline.map((t, i) => (
