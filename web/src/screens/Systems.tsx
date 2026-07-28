@@ -429,6 +429,28 @@ function PortalSection() {
     });
   };
 
+  /**
+   * Lab config mode. This estate is a lab used to show what the portal can do,
+   * so a write does not need the brokered-change ceremony — with this on, the
+   * broker stops demanding a raised ticket reference.
+   */
+  const toggleConfigMode = async (next: boolean) => {
+    const prev = portal?.configMode ?? false;
+    setPortal((p) => (p ? { ...p, configMode: next } : p));
+    const res = await savePortalSettings({ configMode: next });
+    if (!res.ok) {
+      setPortal((p) => (p ? { ...p, configMode: prev } : p));
+      toast(res.message, { tone: 'danger' });
+      return;
+    }
+    toast(next ? 'Config mode on' : 'Config mode off', {
+      description: next
+        ? 'writes push without a ticket reference.'
+        : 'writes reference a raised ticket again.',
+      tone: 'success',
+    });
+  };
+
   const toggleBlend = async (next: boolean) => {
     const prev = portal?.blendLive ?? false;
     setPortal((p) => (p ? { ...p, blendLive: next } : p));
@@ -570,6 +592,12 @@ function PortalSection() {
           onCheckedChange={(v) => void toggleBlend(v)}
           disabled={offline || !(portal?.demoMode ?? true)}
           label="Blend live sections into demo"
+        />
+        <Switch
+          checked={portal?.configMode ?? false}
+          onCheckedChange={(v) => void toggleConfigMode(v)}
+          disabled={offline}
+          label="Config mode (writes need no ticket)"
         />
         <Switch
           checked={showPlatformTags}

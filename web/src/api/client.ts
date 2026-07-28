@@ -1595,6 +1595,8 @@ export interface PortalSettings {
   sectionMode?: SectionMode;
   /** Fixture device names hidden from the demo inventory. */
   hiddenDemoDevices?: string[];
+  /** Lab config mode: writes go through without a ticket reference. */
+  configMode?: boolean;
   pollIntervalSec: number;
 }
 
