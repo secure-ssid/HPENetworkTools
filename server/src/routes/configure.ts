@@ -9,6 +9,15 @@
  *   POST /api/configure/push     {changeId}             → PushResult (404 unknown, 409 not-ready / lease expired)
  *   POST /api/configure/discard  {changeId}             → {ok, changeId} (404 unknown)
  *
+ *   GET  /api/configure/ssids/catalog                    → SsidCatalog (live scope/dependency choices)
+ *   POST /api/configure/ssids/apply {form, reviewConfirmed} → SsidApplyResult (400 without reviewConfirmed:true)
+ *
+ * SSIDs are the one config kind that does NOT go through the ticketed
+ * queue/push above — see server/src/services/ssidDirectWrite.ts for why
+ * (New Central's real config surface is a WLAN profile upsert plus separate
+ * scope-map assignments, not a single ticketed PUT). Every other kind
+ * (port, vlan) is unaffected.
+ *
  * 4xx answers are always {error}. Attempted pushes/dry-runs answer 200 with
  * the honest result object (ok/applied flags) — a plane answering 404/500 is
  * an outcome to report, not a request error. BrokerError statuses map
@@ -17,6 +26,7 @@
 
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { writeBroker, type WriteBroker } from '../services/writeBroker';
+import { ssidDirectWrite, type SsidDirectWriteService } from '../services/ssidDirectWrite';
 import type { BrokerAuditEvent } from '../../../shared';
 
 /** Audit-log page size: what the drawer asks for, clamped to what the log tail
@@ -37,7 +47,7 @@ function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void
   };
 }
 
-export function makeConfigureRouter(broker: WriteBroker): Router {
+export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirectWriteService = ssidDirectWrite): Router {
   const router = Router();
 
   router.post('/configure/render', (req, res) => {
@@ -92,8 +102,37 @@ export function makeConfigureRouter(broker: WriteBroker): Router {
     res.json(broker.discard(body.changeId));
   });
 
+  /**
+   * Live scope choices (sites, site collections, AP device groups, APs) and
+   * live security dependencies (roles, authentication server groups, captive-portal
+   * profiles) for the SSID editor. Never 4xx on its own — an unlinked/Classic
+   * plane answers 200 with every section named in `unavailable` so the
+   * screen can disable Apply for what it cannot offer, the same honesty rule
+   * every other "not reported by this plane" surface follows.
+   */
+  router.get(
+    '/configure/ssids/catalog',
+    h(async (_req, res) => {
+      res.json(await ssidService.catalog());
+    }),
+  );
+
+  /**
+   * Apply a reviewed direct SSID change. `reviewConfirmed` stands in for the
+   * ticketed broker's ticket reference — the direct-write path's own audit
+   * gate (400 without it). The result is always 200: a partial or failed
+   * apply is an outcome to report, not a request error.
+   */
+  router.post(
+    '/configure/ssids/apply',
+    h(async (req, res) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      res.json(await ssidService.apply(body.form, body.reviewConfirmed));
+    }),
+  );
+
   return router;
 }
 
-/** Process router, bound to the singleton broker. */
-export const configureRouter = makeConfigureRouter(writeBroker);
+/** Process router, bound to the singleton broker + SSID direct-write service. */
+export const configureRouter = makeConfigureRouter(writeBroker, ssidDirectWrite);

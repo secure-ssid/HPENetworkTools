@@ -12,10 +12,12 @@
  * the gateway's own /oauth2/token for classic — host shape decides, 8s) and,
  * if a token comes back, a best-effort device sample query. 'uxi' gets the
  * same treatment against HPE SSO (Basic client-credentials → token.oauth2,
- * then a sensor roster sample). For other planes we only prove reachability
- * (HTTP GET when the endpoint has a scheme, TCP connect for bare host[:port],
- * 5s) and say exactly that — "credentials not yet validated". Every attempt
- * is recorded in the plane's API-call log.
+ * then a sensor roster sample). 'sse' sends the real Admin API request the
+ * adapter itself will send — a minimal paginated GET against Connectors with
+ * the submitted Bearer token — and reports what came back. For other planes
+ * we only prove reachability (HTTP GET when the endpoint has a scheme, TCP
+ * connect for bare host[:port], 5s) and say exactly that — "credentials not
+ * yet validated". Every attempt is recorded in the plane's API-call log.
  *
  * Test-then-save: when the request body carries a complete credential set for
  * the plane, THOSE are tested (the connect flow tests before saving); only
@@ -27,6 +29,12 @@ import * as net from 'node:net';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { settings } from '../config/settings';
 import { CentralAdapter, GREENLAKE_CCS_TOKEN_URL, isNewCentralGateway } from '../planes/central';
+import {
+  normalizeSseBaseUrl,
+  SSE_KIND_SPEC,
+  SseAdapter,
+  SseEndpointValidationError,
+} from '../planes/sse';
 import { UxiAdapter } from '../planes/uxi';
 import { GreenLakeAdapter } from '../planes/greenlake';
 import { MistAdapter } from '../planes/mist';
@@ -34,6 +42,8 @@ import { ClearPassAdapter } from '../planes/clearpass';
 import { Aos8Adapter } from '../planes/aos8';
 import { registry } from '../planes/registry';
 import { poller } from '../services/poller';
+import { SseObjectsError, sseObjects, sseObjectsErrorBody } from '../services/sseObjects';
+import { CentralWebhooksError, centralWebhooks } from '../services/centralWebhooks';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
 
 export const systemsRouter = Router();
@@ -90,11 +100,24 @@ interface TestResult {
   source: 'request' | 'stored';
 }
 
-/** Keep only non-empty string entries from an untrusted credential record. */
+/**
+ * Keep credential strings plus the scope UI's canonical token array.
+ * `scopes: []` deliberately becomes an empty stored string: unlike omission,
+ * that is an explicit revocation marker which replaces a previously stored
+ * scope set when the SSE record is merged.
+ */
 function sanitizeCreds(input: unknown): Record<string, string> | null {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return null;
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (k === 'scopes' && Array.isArray(v) && v.every((scope) => typeof scope === 'string')) {
+      out.scopes = v.map((scope) => scope.trim()).filter(Boolean).join(',');
+      continue;
+    }
+    if (k === 'scopes' && typeof v === 'string') {
+      out.scopes = v.trim();
+      continue;
+    }
     if (typeof v === 'string' && v.trim().length > 0) out[k] = v;
   }
   return Object.keys(out).length > 0 ? out : null;
@@ -128,6 +151,7 @@ function completeCredsFor(plane: PlaneId, creds: Record<string, string> | null):
   if (plane === 'mist') return MistAdapter.isComplete(creds);
   if (plane === 'clearpass') return ClearPassAdapter.isComplete(creds);
   if (plane === 'aos8') return Aos8Adapter.isComplete(creds);
+  if (plane === 'sse') return SseAdapter.isComplete(creds);
   return HOST_KEYS.some((k) => typeof creds[k] === 'string' && creds[k].trim().length > 0);
 }
 
@@ -361,6 +385,121 @@ async function testGreenLake(creds: Record<string, string>): Promise<Omit<TestRe
   };
 }
 
+/**
+ * HPE Aruba Networking SSE: the token is static (no mint step), so the honest
+ * test is the exact call SseAdapter.pull() itself makes for one kind — a
+ * minimal paginated GET against Connectors with `Authorization: Bearer`.
+ * Path and query spelling are verified against the official pyhpesse SDK
+ * source (see server/src/planes/sse.ts's header comment for the citation),
+ * not the lower-case '/api/v1/connectors?pageSize=…' shape an earlier
+ * assumption used before that source was read.
+ */
+async function testSse(creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
+  if (!SseAdapter.isComplete(creds)) {
+    return { ok: false, message: 'sse requires an Admin API token' };
+  }
+  const base = normalizeSseBaseUrl(creds.baseUrl);
+  const path = `${SSE_KIND_SPEC.connectors.path}?pagenumber=1&pagesize=1`;
+  let res: globalThis.Response;
+  try {
+    res = await fetchWithTimeout(
+      `${base}${path}`,
+      { headers: { authorization: `Bearer ${creds.token}`, accept: 'application/json' } },
+      8000,
+    );
+  } catch (err) {
+    console.error(`sse connection test: GET ${path} failed: ${(err as Error).message}`);
+    return { ok: false, message: `cannot reach ${base} to query Connectors` };
+  }
+  if (res.status === 401 || res.status === 403) {
+    return { ok: false, message: `Admin API rejected the token — HTTP ${res.status}` };
+  }
+  if (!res.ok) {
+    return { ok: false, message: `Admin API answered HTTP ${res.status} querying Connectors` };
+  }
+  // A 200 alone proves nothing — an HTML error page, a truncated/garbled body,
+  // or valid-but-unrecognized JSON must all fail this test honestly rather
+  // than being reported as "authenticated". Only a body matching a supported
+  // adapter envelope (bare array, or an object exposing one of the documented
+  // row-container keys) counts as a real Connectors read.
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch (err) {
+    console.error(`sse connection test: GET ${path} returned an unreadable body: ${(err as Error).message}`);
+    return { ok: false, message: `Admin API answered HTTP ${res.status} with an unreadable (non-JSON) body querying Connectors` };
+  }
+  const envelope = parseSseCollectionEnvelope(body);
+  if (!envelope) {
+    return { ok: false, message: `Admin API answered HTTP ${res.status} with an unrecognized response body querying Connectors` };
+  }
+  const count = envelope.total !== null ? String(envelope.total) : `${envelope.rows.length}+`;
+  return { ok: true, message: `authenticated — token accepted; Connectors query ok, reported connectors: ${count}` };
+}
+
+/**
+ * One recognized SSE Admin API collection body: either a bare array, or an
+ * object exposing one of the documented row-container keys ('data' first —
+ * the SDK's own shape — then the tolerated alternates, then a HAL
+ * `_embedded` collection). This mirrors planes/sse.ts's own (unexported)
+ * extractRows precedence so the connection test accepts exactly what the
+ * adapter itself would read — duplicated narrowly here, rather than editing
+ * that adapter file, because the helper isn't exported.
+ *
+ * Anything else — an empty object, a differently-shaped JSON body, an HTML
+ * page — is NOT a recognized envelope: this returns null (not `{ rows: [] }`),
+ * so a 200 with an unreadable/unrecognized body can never masquerade as a
+ * successful, empty Connectors read.
+ *
+ * An optional total (`totalRecords`/`total`/`count`/`totalCount`) is only
+ * trusted when it is a sensible (finite, non-negative) number; otherwise the
+ * caller falls back to reporting the page's own row count.
+ */
+function parseSseCollectionEnvelope(body: unknown): { rows: unknown[]; total: number | null } | null {
+  let rows: unknown[] | null = null;
+  if (Array.isArray(body)) {
+    rows = body;
+  } else if (body && typeof body === 'object') {
+    const r = body as Record<string, unknown>;
+    for (const key of ['data', 'items', 'results', 'records', 'list']) {
+      if (Array.isArray(r[key])) {
+        rows = r[key] as unknown[];
+        break;
+      }
+    }
+    if (!rows && r._embedded && typeof r._embedded === 'object') {
+      for (const value of Object.values(r._embedded as Record<string, unknown>)) {
+        if (Array.isArray(value)) {
+          rows = value;
+          break;
+        }
+      }
+    }
+  }
+  if (!rows) return null;
+  const r = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  const totalRaw = r.totalRecords ?? r.total ?? r.count ?? r.totalCount;
+  const total = typeof totalRaw === 'number' && Number.isFinite(totalRaw) && totalRaw >= 0 ? totalRaw : null;
+  return { rows, total };
+}
+
+/**
+ * The exact SSE credential record a request will test or persist: whatever
+ * is already stored, overlaid by any submitted fields, with baseUrl run
+ * through the one canonicalizer. This is what makes a token-only re-key
+ * request test and save the SAME record — the stored custom HTTPS base URL
+ * survives the overlay instead of the test silently falling back to the
+ * default while the save keeps the custom URL underneath it.
+ */
+function buildSseCredentialRecord(
+  stored: Record<string, string> | null | undefined,
+  submitted: Record<string, string> | null,
+): Record<string, string> {
+  const merged: Record<string, string> = { ...(stored ?? {}), ...(submitted ?? {}) };
+  merged.baseUrl = normalizeSseBaseUrl(merged.baseUrl);
+  return merged;
+}
+
 /** Generic planes: reachability only, reported honestly. */
 async function testReachable(plane: PlaneId, creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
   // Only a host-ish field may name a target — any other stored value (token,
@@ -421,12 +560,27 @@ systemsRouter.post(
       return;
     }
     const useBody = bodyCreds !== null;
-    const creds = useBody ? bodyCreds : stored && Object.keys(stored).length > 0 ? stored : null;
+    let creds = useBody ? bodyCreds : stored && Object.keys(stored).length > 0 ? stored : null;
     if (!creds) {
       res
         .status(400)
         .json({ error: `no credentials for ${plane} — pass a complete set in the request body or save credentials first` });
       return;
+    }
+    if (plane === 'sse' && useBody) {
+      // Test-then-save parity for a re-key: a submitted overlay (e.g. a new
+      // token alone) must be tested against the SAME canonical record
+      // /credentials will persist — the stored custom base URL, not the
+      // default one the submitted set alone would resolve to.
+      try {
+        creds = buildSseCredentialRecord(stored, bodyCreds);
+      } catch (err) {
+        if (err instanceof SseEndpointValidationError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
     }
 
     const started = Date.now();
@@ -437,7 +591,9 @@ systemsRouter.post(
           ? await testUxi(creds)
           : plane === 'greenlake'
             ? await testGreenLake(creds)
-            : await testReachable(plane, creds);
+            : plane === 'sse'
+              ? await testSse(creds)
+              : await testReachable(plane, creds);
     const ms = Date.now() - started;
 
     registry.recordCall(plane, {
@@ -446,7 +602,9 @@ systemsRouter.post(
           ? 'OAuth client-credentials (connection test)'
           : plane === 'uxi' || plane === 'greenlake'
             ? 'POST sso token.oauth2 (connection test)'
-            : 'reachability check (connection test)',
+            : plane === 'sse'
+              ? 'GET /api/v1.0/Connectors?pagenumber=1&pagesize=1 (connection test)'
+              : 'reachability check (connection test)',
       ms,
       code: outcome.ok ? 'ok' : 'fail',
     });
@@ -465,14 +623,52 @@ systemsRouter.post('/systems/:plane/credentials', (req, res) => {
     return;
   }
   const body = req.body as Record<string, unknown> | undefined;
-  const creds = sanitizeCreds(body && typeof body === 'object' && body.credentials !== undefined
+  const submitted = sanitizeCreds(body && typeof body === 'object' && body.credentials !== undefined
     ? body.credentials
     : body);
-  if (!creds) {
+  if (!submitted) {
     res.status(400).json({ error: 'body must be an object with at least one non-empty credential field' });
     return;
   }
 
+  let creds = submitted;
+  if (plane === 'central') {
+    try {
+      centralWebhooks.assertCentralCredentialsMutable();
+    } catch (err) {
+      if (err instanceof CentralWebhooksError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  }
+  if (plane === 'sse') {
+    // A submitted overlay (e.g. a token-only re-key) is merged onto whatever
+    // is already stored and canonicalized as ONE record — the same record
+    // /test would exercise — so the base URL that gets validated here is
+    // exactly the base URL that gets persisted, not a default that then
+    // silently coexists with a saved custom value.
+    try {
+      creds = buildSseCredentialRecord(settings.get().planes.sse, submitted);
+    } catch (err) {
+      if (err instanceof SseEndpointValidationError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+    try {
+      sseObjects.assertCredentialsMutable();
+    } catch (err) {
+      if (err instanceof SseObjectsError) {
+        if (err.status >= 500) console.error(`error: ${err.message}`);
+        res.status(err.status).json(sseObjectsErrorBody(err));
+        return;
+      }
+      throw err;
+    }
+  }
   settings.update({ planes: { [plane]: creds } });
   poller.clearPlane(plane);
   const state = registry.reinitPlane(plane);
@@ -484,6 +680,29 @@ systemsRouter.delete('/systems/:plane', (req, res) => {
   if (!plane) {
     res.status(404).json({ error: `unknown plane '${req.params.plane}'` });
     return;
+  }
+  if (plane === 'sse') {
+    try {
+      sseObjects.assertCredentialsMutable();
+    } catch (err) {
+      if (err instanceof SseObjectsError) {
+        if (err.status >= 500) console.error(`error: ${err.message}`);
+        res.status(err.status).json(sseObjectsErrorBody(err));
+        return;
+      }
+      throw err;
+    }
+  }
+  if (plane === 'central') {
+    try {
+      centralWebhooks.assertCentralCredentialsMutable();
+    } catch (err) {
+      if (err instanceof CentralWebhooksError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
   }
   settings.update({ planes: { [plane]: null } });
   poller.clearPlane(plane);

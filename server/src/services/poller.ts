@@ -185,6 +185,16 @@ export class Poller {
   }
 
   /**
+   * Immediately poll ONE plane, ignoring the backoff window (like syncNow's
+   * force flag). Used by the SSE mutation routes to refresh the cached
+   * inventory right after a commit — the object change must be visible
+   * immediately, not after the next 60s poll tick.
+   */
+  async syncNowFor(id: PlaneId): Promise<TickResult> {
+    return this.tick(id, true);
+  }
+
+  /**
    * Remove one plane's last-good contribution. Incrementing its generation
    * also prevents an older in-flight pull from repopulating the cache or
    * stamping a newly re-initialised adapter's state.
@@ -239,14 +249,26 @@ export class Poller {
       try {
         const pull = await adapter.pull();
         if ((this.generations.get(id) ?? 0) !== generation) return 'skipped';
-        if (DATASET_KEYS.some((k) => pull[k] !== undefined)) {
-          this.contributions.set(id, pull); // last good data survives later failures
-        }
         // A sync stamp means data arrived. A cycle that returned no dataset at
-        // all (not even config/assignments) proves the plane answered, not
+        // all (not even config/assignments/sse) proves the plane answered, not
         // that anything was read, so it must not move `lastSync`.
         const carried = PLANE_DATASET_KEYS.some((k) => pull[k] !== undefined);
+        // The cache keeps a plane's last good pull even when it carried ONLY a
+        // structured, non-row dataset (config/assignments/sse) — the row-array
+        // check alone (DATASET_KEYS) would silently drop an SSE-only pull, and
+        // GET /api/sse/inventory would never see anything the adapter read.
+        if (carried) {
+          this.contributions.set(id, pull);
+        }
         const deviceCount = pull.devices ? pull.devices.length : state.deviceCount;
+        // SSE carries per-kind failure evidence even when every kind failed.
+        // Cache that evidence, but degrade/back off exactly like a thrown pull:
+        // a zero-kind inventory is not a successful sync stamp.
+        if (id === 'sse' && pull.sse && Object.keys(pull.sse.kinds).length === 0) {
+          this.reg.markSyncResult(id, false, { note: 'SSE inventory read failed for every object kind' });
+          this.log(id, 'poll failed — SSE inventory read failed for every object kind', 'error');
+          return 'error';
+        }
         this.reg.markSyncResult(id, true, {
           deviceCount,
           partial: pull.partial,

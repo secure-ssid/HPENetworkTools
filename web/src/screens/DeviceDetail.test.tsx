@@ -46,7 +46,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import DeviceDetail from './DeviceDetail';
 import { SettingsProvider } from '../app/SettingsContext';
@@ -56,6 +56,7 @@ import {
   getTerminalSession,
   getTerminalSessions,
   getTickets,
+  rebootDevice,
 } from '../api/client';
 import type { TerminalTranscript } from '../api/client';
 import { createWsTransport } from '../lib/wsTerminal';
@@ -63,6 +64,7 @@ import {
   DEVICE_CLIENT_SETS,
   DEVICE_CONFIGS,
   DEVICES,
+  TICKETS,
   deviceProfile,
   deviceTerminalKind,
   terminalBanner,
@@ -144,6 +146,7 @@ const mockGetDeviceDetail = vi.mocked(getDeviceDetail);
 const mockGetTerminalSession = vi.mocked(getTerminalSession);
 const mockGetTerminalSessions = vi.mocked(getTerminalSessions);
 const mockGetTickets = vi.mocked(getTickets);
+const mockRebootDevice = vi.mocked(rebootDevice);
 const mockCreateWsTransport = vi.mocked(createWsTransport);
 
 // ---------------------------------------------------------------------------
@@ -153,6 +156,23 @@ const mockCreateWsTransport = vi.mocked(createWsTransport);
 function renderDeviceDetail(name: string) {
   return render(
     <MemoryRouter initialEntries={[`/devices/${name}`]}>
+      <SettingsProvider>
+        <ToastProvider>
+          <Routes>
+            <Route path="/devices/:name" element={<DeviceDetail />} />
+          </Routes>
+        </ToastProvider>
+      </SettingsProvider>
+    </MemoryRouter>,
+  );
+}
+
+/** Like renderDeviceDetail, but the caller supplies the full path (with a
+ *  `?plane=&serial=` query string) — used to prove the identity a row link
+ *  carried reaches getDeviceDetail unchanged. */
+function renderDeviceDetailAtPath(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
       <SettingsProvider>
         <ToastProvider>
           <Routes>
@@ -981,7 +1001,7 @@ describe('DeviceDetail — live terminal lifecycle', () => {
     ]);
 
     let disconnect: ((reason: string) => void) | undefined;
-    mockCreateWsTransport.mockImplementationOnce((_name, opts) => {
+    mockCreateWsTransport.mockImplementationOnce((_name, _identity, opts) => {
       disconnect = opts?.onDisconnect;
       return {
         transport: {
@@ -1394,7 +1414,7 @@ describe('DeviceDetail — session identity from the ready frame', () => {
     ]);
     mockGetTerminalSession.mockResolvedValue(null);
     mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
-    mockCreateWsTransport.mockImplementationOnce((_name, opts) => ({
+    mockCreateWsTransport.mockImplementationOnce((_name, _identity, opts) => ({
       transport: {
         banner: () => [],
         respond: () => [],
@@ -1433,7 +1453,7 @@ describe('DeviceDetail — session identity from the ready frame', () => {
     mockGetTerminalSessions.mockResolvedValue([]);
     mockGetTerminalSession.mockResolvedValue(null);
     mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
-    mockCreateWsTransport.mockImplementationOnce((_name, opts) => ({
+    mockCreateWsTransport.mockImplementationOnce((_name, _identity, opts) => ({
       transport: {
         banner: () => [],
         respond: () => [],
@@ -1449,5 +1469,217 @@ describe('DeviceDetail — session identity from the ready frame', () => {
     renderDeviceDetail('sw-core-a');
 
     expect(await screen.findByText('ssh netops@10.42.9.7 — via collector')).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Exact identity routing (fix-device-detail-identity) — the plane+serial a
+// row link carries must reach getDeviceDetail unchanged, and the server's
+// honest 409 for an ambiguous bare name must render as an error state, never
+// a silently-picked device.
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — exact plane+serial identity from the URL', () => {
+  it('forwards the linked plane+serial query to getDeviceDetail', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({ device, profile: null, config: null, clients: null, dataSource: 'live' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetailAtPath('/devices/ap-dup?plane=MIST&serial=DUP-MIST-002');
+
+    await screen.findByRole('heading', { name: 'sw-core-a' });
+    expect(mockGetDeviceDetail).toHaveBeenCalledWith('ap-dup', { plane: 'MIST', serial: 'DUP-MIST-002' });
+  });
+
+  it('a legacy bare-name link (no query) still calls getDeviceDetail with no identity hint', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({ device, profile: null, config: null, clients: null, dataSource: 'live' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    await screen.findByRole('heading', { name: 'sw-core-a' });
+    expect(mockGetDeviceDetail).toHaveBeenCalledWith('sw-core-a', { plane: undefined, serial: undefined });
+  });
+
+  it("an ambiguous name renders the honest API error state, never a picked-first device", async () => {
+    mockGetDeviceDetail.mockResolvedValue({
+      device: null,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+      apiError: "'ap-dup' names 2 devices — pass plane and serial to pick one",
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('ap-dup');
+
+    expect(await screen.findByText('The portal API could not load this screen')).toBeTruthy();
+    expect(
+      screen.getByText("'ap-dup' names 2 devices — pass plane and serial to pick one"),
+    ).toBeTruthy();
+    // Never a device heading — an ambiguous name must not silently render
+    // either candidate.
+    expect(screen.queryByRole('heading', { name: 'ap-dup' })).toBeNull();
+  });
+
+  it('one plane+serial query resolves the FIRST duplicate row, the other resolves the SECOND', async () => {
+    const centralDup = DEVICES.find((d) => d.name === 'sw-core-a')!;
+    const mistDup = { ...centralDup, name: 'sw-core-a', plane: 'MIST' as const, serial: 'DUP-MIST-002' };
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    mockGetDeviceDetail.mockResolvedValueOnce({
+      device: { ...centralDup, serial: 'DUP-CENTRAL-001' },
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    renderDeviceDetailAtPath('/devices/sw-core-a?plane=CENTRAL&serial=DUP-CENTRAL-001');
+    await screen.findByRole('heading', { name: 'sw-core-a' });
+    expect(mockGetDeviceDetail).toHaveBeenLastCalledWith('sw-core-a', {
+      plane: 'CENTRAL',
+      serial: 'DUP-CENTRAL-001',
+    });
+    cleanup();
+
+    mockGetDeviceDetail.mockResolvedValueOnce({ device: mistDup, profile: null, config: null, clients: null, dataSource: 'live' });
+    renderDeviceDetailAtPath('/devices/sw-core-a?plane=MIST&serial=DUP-MIST-002');
+    await screen.findByRole('heading', { name: 'sw-core-a' });
+    expect(mockGetDeviceDetail).toHaveBeenLastCalledWith('sw-core-a', { plane: 'MIST', serial: 'DUP-MIST-002' });
+    // The diagnostics eligibility target the panel keys on (plane, serial)
+    // must reflect whichever duplicate row this render actually resolved.
+    expect(screen.getAllByText('MIST').length).toBeGreaterThan(0);
+  });
+
+  it('sends the exact resolved plane+serial when rebooting', async () => {
+    const base = DEVICES.find((device) => device.name === 'sw-core-a');
+    if (!base) throw new Error('fixture missing');
+    const device = {
+      ...base,
+      name: 'shared-name',
+      plane: 'CENTRAL' as const,
+      serial: 'SERIAL-B',
+      localShell: false,
+    };
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [TICKETS[0]!], dataSource: 'demo' });
+    mockRebootDevice.mockResolvedValue({
+      ok: true,
+      applied: true,
+      device: device.name,
+      plane: device.plane,
+      serial: device.serial,
+      ticket: TICKETS[0]!.id,
+      message: 'accepted',
+    });
+
+    renderDeviceDetailAtPath('/devices/shared-name?plane=CENTRAL&serial=SERIAL-B');
+    await screen.findByRole('heading', { name: 'shared-name' });
+    fireEvent.click(screen.getByRole('button', { name: 'Reboot' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reboot shared-name' }));
+
+    await waitFor(() => expect(mockRebootDevice).toHaveBeenCalledWith(
+      'shared-name',
+      TICKETS[0]!.id,
+      { plane: 'CENTRAL', serial: 'SERIAL-B' },
+    ));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recorded-sessions identity query (fix-terminal-session-identity) — the
+// list/transcript reads for the Device Detail page must carry the same
+// plane+serial the URL linked here with, never a name-only lookup, and an
+// ambiguous shared name must render as an honest error, never a guess.
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — recorded sessions use plane+serial, never name-only', () => {
+  it('forwards the linked plane+serial to getTerminalSessions', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({ device, profile: null, config: null, clients: null, dataSource: 'live' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetailAtPath('/devices/shared-name?plane=CENTRAL&serial=SERIAL-B');
+
+    await screen.findByRole('heading', { name: 'sw-core-a' });
+    expect(mockGetTerminalSessions).toHaveBeenCalledWith('shared-name', { plane: 'CENTRAL', serial: 'SERIAL-B' });
+  });
+
+  it('a legacy bare-name link still asks for sessions, with no identity hint (undefined, never guessed)', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({ device, profile: null, config: null, clients: null, dataSource: 'live' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    await screen.findByRole('heading', { name: 'sw-core-a' });
+    expect(mockGetTerminalSessions).toHaveBeenCalledWith('sw-core-a', { plane: undefined, serial: undefined });
+  });
+
+  it('forwards the same identity to getTerminalSession when a transcript is opened', async () => {
+    const profile = deviceProfile('sw-core-a');
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([
+      { file: 'a.log', device: 'sw-core-a', user: 'r.okafor', target: 'sw-core-a', openedAt: '2026-07-25T09:12:00Z' },
+    ]);
+    mockGetTerminalSession.mockResolvedValue({ file: 'a.log', events: [], truncated: false });
+
+    renderDeviceDetailAtPath('/devices/sw-core-a?plane=LOCAL&serial=SERIAL-CORE-A');
+    const viewButton = await screen.findByRole('button', { name: 'View transcript' });
+    fireEvent.click(viewButton);
+
+    await waitFor(() =>
+      expect(mockGetTerminalSession).toHaveBeenCalledWith('a.log', 'sw-core-a', { plane: 'LOCAL', serial: 'SERIAL-CORE-A' }),
+    );
+  });
+
+  it('renders an ambiguous-name failure honestly instead of a misleadingly empty session list', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({ device, profile: null, config: null, clients: null, dataSource: 'live' });
+    mockGetTerminalSessions.mockRejectedValue(
+      new Error("'shared-name' names more than one device — recorded sessions need an exact plane and serial to show safely"),
+    );
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('shared-name');
+
+    expect(
+      await screen.findByText(/names more than one device — recorded sessions need an exact plane and serial/),
+    ).toBeTruthy();
   });
 });

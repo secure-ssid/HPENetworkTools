@@ -27,6 +27,12 @@ import { appendBrokerLog, brokerDataDir, type BrokerTransport } from './writeBro
 import { knownTicketId } from './tickets';
 import { poller } from './poller';
 import { DEVICES } from '../../../shared';
+import type { Plane } from '../../../shared';
+import {
+  resolveDeviceIdentity,
+  safeDeviceCandidates,
+  type DeviceIdentity,
+} from './deviceIdentity';
 
 /** The troubleshooting API's device-type vocabulary (pycentral SUPPORTED_DEVICE_TYPES). */
 const TROUBLESHOOTING_TYPE: Record<string, string> = {
@@ -38,14 +44,17 @@ const TROUBLESHOOTING_TYPE: Record<string, string> = {
 export interface RebootDevice {
   name: string;
   type: string; // shared DeviceType vocabulary ('ap' | 'switch' | 'gateway' | …)
-  plane: string; // display label, e.g. 'CENTRAL'
+  plane: Plane | string; // display label, e.g. 'CENTRAL'
   serial?: string;
+  claimedBy?: Plane[];
 }
 
 export interface RebootResult {
   ok: boolean;
   applied: boolean; // true ONLY on a 202 from the troubleshooting API
   device: string;
+  plane: string;
+  serial: string | null;
   ticket: string;
   httpCode?: number;
   message: string;
@@ -56,6 +65,7 @@ export class RebootError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly details: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = 'RebootError';
@@ -66,6 +76,8 @@ export interface RebootServiceOptions {
   registry?: PlaneRegistry; // default: the process-wide singleton
   transport?: BrokerTransport | null; // undefined → resolve the CentralAdapter from the registry
   demoMode?: () => boolean; // default: settings store
+  listDevices?: () => RebootDevice[];
+  /** @deprecated Test compatibility. Cannot represent duplicate names. */
   lookupDevice?: (name: string) => RebootDevice | null; // default: fixtures (demo) / poller cache (live)
   knownTicket?: (id: string) => boolean; // default: the ticket store (+ fixture ids in demo mode)
   dataDir?: string; // default: HPE_DATA_DIR or <repo>/data
@@ -85,20 +97,30 @@ function requireTicket(raw: unknown): string {
 }
 
 /** Default inventory lookup: fixtures in demo mode, the poller cache in live mode. */
-function defaultLookup(name: string): RebootDevice | null {
+function defaultDevices(): RebootDevice[] {
   if (settings.get().demoMode) {
-    const d = DEVICES.find((x) => x.name === name);
-    return d ? { name: d.name, type: d.type, plane: d.plane } : null;
+    return DEVICES.map((device) => ({
+      name: device.name,
+      type: device.type,
+      plane: device.plane,
+      ...(device.serial ? { serial: device.serial } : {}),
+      ...(device.claimedBy ? { claimedBy: device.claimedBy } : {}),
+    }));
   }
-  const d = poller.getCache().devices.find((x) => x.name === name) as RebootDevice | undefined;
-  return d ? { name: d.name, type: d.type, plane: d.plane, ...(d.serial ? { serial: d.serial } : {}) } : null;
+  return poller.getCache().devices.map((device) => ({
+    name: device.name,
+    type: device.type,
+    plane: device.plane,
+    ...(device.serial ? { serial: device.serial } : {}),
+    ...(device.claimedBy ? { claimedBy: device.claimedBy } : {}),
+  }));
 }
 
 export class RebootService {
   private readonly registry: PlaneRegistry;
   private readonly transportOverride: BrokerTransport | null | undefined;
   private readonly demoMode: () => boolean;
-  private readonly lookupDevice: (name: string) => RebootDevice | null;
+  private readonly listDevices: (name: string) => RebootDevice[];
   private readonly knownTicket: (id: string) => boolean;
   private readonly dataDir: string;
   private readonly nowMs: () => number;
@@ -107,7 +129,14 @@ export class RebootService {
     this.registry = opts.registry ?? defaultRegistry;
     this.transportOverride = opts.transport;
     this.demoMode = opts.demoMode ?? (() => settings.get().demoMode);
-    this.lookupDevice = opts.lookupDevice ?? defaultLookup;
+    this.listDevices = opts.listDevices
+      ? () => opts.listDevices!()
+      : opts.lookupDevice
+        ? (name) => {
+            const device = opts.lookupDevice!(name);
+            return device ? [device] : [];
+          }
+        : () => defaultDevices();
     this.knownTicket = opts.knownTicket ?? ((id) => knownTicketId(id, this.demoMode()));
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
@@ -118,18 +147,44 @@ export class RebootService {
    * (400/404/409); a plane answer that is not 202 comes back as an honest
    * {ok:false} result at HTTP 200, mirroring the write broker's push.
    */
-  async reboot(nameRaw: unknown, ticketRaw: unknown): Promise<RebootResult> {
+  async reboot(
+    nameRaw: unknown,
+    ticketRaw: unknown,
+    identity: DeviceIdentity = {},
+  ): Promise<RebootResult> {
     const name = requireName(nameRaw);
     const ticket = requireTicket(ticketRaw);
     if (!this.knownTicket(ticket)) {
       throw new RebootError(400, `unknown ticket '${ticket}' — writes reference a raised ticket (demo mode also accepts the fixture queue)`);
     }
-    const device = this.lookupDevice(name);
+    const hasPlane = typeof identity.plane === 'string' && identity.plane.trim().length > 0;
+    const hasSerial = typeof identity.serial === 'string' && identity.serial.trim().length > 0;
+    if (hasPlane !== hasSerial) {
+      throw new RebootError(400, 'plane and serial must be supplied together');
+    }
+    const resolution = resolveDeviceIdentity(this.listDevices(name), name, identity, {
+      requireCompleteIdentity: true,
+      requireNameMatch: true,
+    });
+    if (resolution.invalid) throw new RebootError(409, resolution.invalid);
+    if (resolution.ambiguous) {
+      throw new RebootError(
+        409,
+        `'${name}' names ${resolution.ambiguous.length} devices — pass plane and serial to pick one`,
+        { candidates: safeDeviceCandidates(resolution.ambiguous) },
+      );
+    }
+    const device = resolution.device;
     if (!device) throw new RebootError(404, `device '${name}' not found in inventory`);
-    const base = { device: name, ticket };
+    const base = {
+      device: device.name,
+      plane: device.plane,
+      serial: device.serial ?? null,
+      ticket,
+    };
 
     if (this.demoMode()) {
-      this.log(name, ticket, 'validated — demo mode, nothing sent');
+      this.log(device, ticket, 'validated — demo mode, nothing sent');
       return {
         ...base,
         ok: true,
@@ -164,7 +219,7 @@ export class RebootService {
     try {
       res = await transport.request('POST', path);
     } catch (err) {
-      this.log(name, ticket, 'network-error');
+      this.log(device, ticket, 'network-error');
       return {
         ...base,
         ok: false,
@@ -174,7 +229,7 @@ export class RebootService {
     }
 
     if (res.status === 202) {
-      this.log(name, ticket, 'reboot-initiated', res.status);
+      this.log(device, ticket, 'reboot-initiated', res.status);
       return {
         ...base,
         ok: true,
@@ -183,7 +238,7 @@ export class RebootService {
         message: `reboot accepted by Central (HTTP 202) — ${name} will drop and rejoin`,
       };
     }
-    this.log(name, ticket, 'rejected', res.status);
+    this.log(device, ticket, 'rejected', res.status);
     return {
       ...base,
       ok: false,
@@ -200,14 +255,17 @@ export class RebootService {
     return adapter instanceof CentralAdapter ? adapter : null;
   }
 
-  private log(device: string, ticket: string, result: string, httpCode?: number): void {
+  private log(device: RebootDevice, ticket: string, result: string, httpCode?: number): void {
     appendBrokerLog(this.dataDir, {
       ts: new Date(this.nowMs()).toISOString(),
       event: 'reboot',
-      changeId: `reboot-${device}`,
+      changeId: `reboot-${device.serial ?? device.name}`,
       ticket,
       kind: 'reboot',
       result,
+      device: device.name,
+      plane: device.plane,
+      serial: device.serial ?? null,
       ...(httpCode !== undefined ? { httpCode } : {}),
     });
   }

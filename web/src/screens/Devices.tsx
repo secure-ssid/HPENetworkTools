@@ -38,7 +38,7 @@ import { getDevices, savePortalSettings } from '../api/client';
 import type { DevicesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { InventoryView } from '../app/SettingsContext';
-import { planeFilterForParam } from '../app/nav';
+import { deviceDetailPath, planeFilterForParam } from '../app/nav';
 import { UNKNOWN_LANE_META } from '../../../shared';
 import type { DeviceRow, Plane, Tone } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
@@ -357,11 +357,11 @@ export default function Devices() {
                 const claims = claimantsOf(d);
                 const mark = reconciliationMark(d);
                 return (
-                  <Table.Row key={d.name}>
+                  <Table.Row key={`${d.name}:${d.serial ?? d.plane}`}>
                     <Table.Cell>
                       <button
                         type="button"
-                        onClick={() => navigate(`/devices/${encodeURIComponent(d.name)}`)}
+                        onClick={() => navigate(deviceDetailPath({ name: d.name, plane: d.plane, serial: d.serial }))}
                         style={{
                           background: 'none',
                           border: 'none',
@@ -567,10 +567,10 @@ export default function Devices() {
                 >
                   {inLane.map((d) => (
                     <button
-                      key={d.name}
+                      key={`${d.name}:${d.serial ?? d.plane}`}
                       type="button"
                       className="nt-rowlink"
-                      onClick={() => navigate(`/devices/${encodeURIComponent(d.name)}`)}
+                      onClick={() => navigate(deviceDetailPath({ name: d.name, plane: d.plane, serial: d.serial }))}
                       style={{
                         display: 'flex',
                         flexDirection: 'column',

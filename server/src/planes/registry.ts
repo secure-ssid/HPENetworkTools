@@ -13,13 +13,14 @@
  *   - failure backoff: a plane that keeps failing is not re-polled at the same
  *     cadence against the quota it is already exceeding
  *
- * 'central', 'greenlake', 'clearpass', 'uxi', 'mist' and 'aos8' with complete
- * credentials get their real adapters (CentralAdapter: gatewayBaseUrl +
+ * 'central', 'greenlake', 'clearpass', 'uxi', 'mist', 'aos8' and 'sse' with
+ * complete credentials get their real adapters (CentralAdapter: gatewayBaseUrl +
  * clientId + clientSecret; GreenLakeAdapter: workspaceId + clientId +
  * clientSecret; ClearPassAdapter: publisher (or host) + clientId +
  * clientSecret, or a legacy pre-minted token; UxiAdapter: clientId +
  * clientSecret; MistAdapter: apiHost + orgId + token; Aos8Adapter: master +
- * username/password). Other planes with credentials get a StubAdapter
+ * username/password; SseAdapter: a static Admin API token, baseUrl optional).
+ * Other planes with credentials get a StubAdapter
  * (linked, pull() returns {} — real implementations land later). Planes
  * without credentials get an UnconfiguredAdapter (unlinked, health
  * 'unlinked'). reinitPlane() swaps one plane's adapter after its credentials
@@ -50,6 +51,7 @@ import { CentralAdapter } from './central';
 import { ClearPassAdapter } from './clearpass';
 import { GreenLakeAdapter } from './greenlake';
 import { MistAdapter } from './mist';
+import { SseAdapter } from './sse';
 import { UxiAdapter } from './uxi';
 import {
   PLANE_IDS,
@@ -449,6 +451,12 @@ export class PlaneRegistry {
       state.health = 'warning';
       state.note = 'credentials saved — first sync pending';
       adapter = new Aos8Adapter(creds, state, (call) => this.recordCall(id, call));
+    } else if (id === 'sse' && creds && SseAdapter.isComplete(creds)) {
+      // Real adapter — same lifecycle as central above.
+      baseHealth = 'healthy';
+      state.health = 'warning';
+      state.note = 'credentials saved — first sync pending';
+      adapter = new SseAdapter(creds, state, (call) => this.recordCall(id, call));
     } else if (linked) {
       baseHealth = 'warning';
       state.health = 'warning';

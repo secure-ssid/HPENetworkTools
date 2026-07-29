@@ -117,6 +117,7 @@ import {
   type ClientRow,
   type ClientTimelineEvent,
   type ClientType,
+  type ConfigInventory,
   type DetailFetchState,
   type DetailSource,
   type DeviceDetailKind,
@@ -128,6 +129,18 @@ import {
   type DeviceWlan,
   type PlaneDatasetKey,
   type Sev,
+  type SsidApplyResult,
+  type SsidBands,
+  type SsidCatalog,
+  type SsidCatalogSection,
+  type SsidDependencyOption,
+  type SsidForm,
+  type SsidObject,
+  type SsidProfileStepResult,
+  type SsidScopeAssignmentResult,
+  type SsidScopeCategory,
+  type SsidScopeOption,
+  type SsidSecurity,
   type SiteId,
   type SiteRow,
   type SiteTopologyLive,
@@ -357,11 +370,9 @@ export function mapCentralDevice(
     stateTone,
     firmware,
     firmwareApproved: firmwareIsApproved(kind, model, firmware, approved),
-    // Not on the monitoring row. Central DOES expose licensing
-    // (/platform/licensing/v1/subscriptions, /platform/device_inventory/v1/devices),
-    // which this adapter does not read — see the DEFERRED note in the header —
-    // so 'unknown' means "not read", never "this device is unlicensed".
-    licence: 'unknown',
+    // New Central's unified inventory publishes the assigned service tier.
+    // Legacy monitoring rows omit it, where 'unknown' still means "not read".
+    licence: str(r.tier) ?? 'unknown',
     reconciliationIssue: false, // the reconcile service computes this
     localShell: false, // cloud-claimed — shell only via the local collector
     ...(serial ? { serial } : {}),
@@ -370,6 +381,26 @@ export function mapCentralDevice(
     // resolveTarget() need; absent stays absent rather than becoming a lie.
     ...(ip ? { ip } : {}),
   };
+}
+
+/** New Central's unified device-inventory row. It includes claimed devices
+ * that are not provisioned yet, unlike the legacy split monitoring lists. */
+export function mapCentralInventoryDevice(
+  raw: unknown,
+  approved: ApprovedFirmwareMap = [],
+): CentralDeviceRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const type = (str(r.deviceType ?? r.device_type ?? r.type) ?? '').toUpperCase();
+  const kind =
+    type.includes('ACCESS_POINT') || type === 'AP'
+      ? 'ap'
+      : type.includes('SWITCH') || type.includes('CX')
+        ? 'switch'
+        : type.includes('GATEWAY')
+          ? 'gateway'
+          : null;
+  return kind === null ? null : mapCentralDevice(raw, kind, approved);
 }
 
 /**
@@ -623,6 +654,270 @@ export function mapCentralNotification(raw: unknown, nowMs: number = Date.now())
     device: str(r.device ?? r.device_name ?? r.hostname ?? r.device_serial) ?? deviceFromDetail(detail),
     ...(alertId ? { alertId } : {}),
   };
+}
+
+function centralSecurityLabel(raw: string | null): string {
+  const value = (raw ?? '').trim().toUpperCase();
+  if (!value) return 'Not reported';
+  const known: Record<string, string> = {
+    OPEN: 'Open',
+    ENHANCED_OPEN: 'Enhanced Open',
+    WPA2_PERSONAL: 'WPA2-Personal',
+    WPA2_ENTERPRISE: 'WPA2-Enterprise',
+    WPA2_MPSK_LOCAL: 'WPA2-MPSK-Local',
+    WPA3_SAE: 'WPA3-SAE',
+    WPA3_ENTERPRISE: 'WPA3-Enterprise',
+    WPA3_ENTERPRISE_CCM_128: 'WPA3-Enterprise',
+  };
+  return known[value] ?? value.replaceAll('_', '-');
+}
+
+/** A configured New Central WLAN profile. Scope maps are a separate API, so
+ * the target note states that limitation instead of inventing an AP count. */
+export function mapCentralSsid(raw: unknown): SsidObject | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const essid = r.essid && typeof r.essid === 'object' ? (r.essid as Record<string, unknown>) : {};
+  const name = str(r.ssid) ?? str(essid.name);
+  if (!name) return null;
+  const vlanRange = Array.isArray(r['vlan-id-range'])
+    ? r['vlan-id-range'].map((value) => str(value)).filter((value): value is string => value !== null)
+    : [];
+  const vlan = vlanRange.join(', ') || str(r.vlan ?? r.vlanId ?? r['vlan-id']) || 'Not reported';
+  const enabled = typeof r.enable === 'boolean' ? r.enable : null;
+  return {
+    kind: 'ssid',
+    origin: 'configured',
+    name,
+    vlan,
+    security: centralSecurityLabel(str(r.opmode)),
+    targets: `${enabled === null ? 'State not reported' : enabled ? 'Enabled profile' : 'Disabled profile'} · scope assignment not read`,
+    plane: 'CENTRAL',
+    tone: 'accent',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Direct SSID write — New Central network-config v1alpha1 (WLAN profile
+// upsert + configuration assignment). Symmetric with mapCentralSsid above: that
+// one reads the tenant's `opmode` string back into a display label,
+// CENTRAL_SSID_OPMODE below is the reverse map this adapter writes.
+// ---------------------------------------------------------------------------
+
+/** SsidSecurity → the New Central 26.04 `opmode` enum. */
+const CENTRAL_SSID_OPMODE: Record<SsidSecurity, string> = {
+  'wpa3-enterprise': 'WPA3_ENTERPRISE_CCM_128',
+  'wpa2-enterprise': 'WPA2_ENTERPRISE',
+  'psk-portal': 'WPA2_PERSONAL',
+  'wpa2-psk': 'WPA2_PERSONAL',
+  open: 'OPEN',
+};
+
+const CENTRAL_SSID_RF_BAND: Record<SsidBands, string> = {
+  '5+6': '5GHZ_6GHZ',
+  all: 'BAND_ALL',
+  '5': '5GHZ',
+};
+
+/**
+ * Build the New Central 26.04 WLAN body from the reviewed form. The unique
+ * profile name belongs in the request path; `ssid` and `essid.name` are the
+ * body fields. `personal-security.wpa-passphrase` is the only secret-bearing
+ * field and callers must send this object directly without logging it.
+ *
+ * A form missing a required dependency (role, server group, captive portal,
+ * passphrase — see ssidDependencyRequirementsFor) still builds a body; the
+ * caller (applySsidProfile) is what refuses to write until the review-gated
+ * dependencies for the chosen security mode are present.
+ */
+export function buildWlanSsidPayload(form: SsidForm): Record<string, unknown> {
+  const vlanId = form.vlan.trim();
+  const body: Record<string, unknown> = {
+    ssid: form.name,
+    essid: { name: form.name, 'use-alias': false },
+    enable: true,
+    'hide-ssid': !form.broadcast,
+    'forward-mode': 'FORWARD_MODE_BRIDGE',
+    'rf-band': CENTRAL_SSID_RF_BAND[form.bands],
+    'client-isolation': form.isolate,
+    'vlan-id-range': vlanId ? [vlanId] : [],
+    'vlan-selector': 'VLAN_RANGES',
+    opmode: CENTRAL_SSID_OPMODE[form.security],
+  };
+  if (form.defaultRole) body['default-role'] = form.defaultRole;
+  if (form.security === 'wpa2-psk' || form.security === 'psk-portal') {
+    const passphrase = form.passphrase ?? '';
+    body['personal-security'] = {
+      'passphrase-format': passphrase.length === 64 && /^[0-9a-f]+$/i.test(passphrase) ? 'HEX' : 'STRING',
+      'wpa-passphrase': passphrase,
+    };
+  }
+  if (
+    (form.security === 'wpa3-enterprise' || form.security === 'wpa2-enterprise') &&
+    form.authServerGroupId
+  ) {
+    body['auth-server-group'] = form.authServerGroupId;
+  }
+  if (form.security === 'psk-portal' && form.captivePortalProfileId) {
+    body['captive-portal'] = form.captivePortalProfileId;
+    body['captive-portal-type'] = 'EXTERNAL_CP';
+  }
+  return body;
+}
+
+function desiredValueMatches(current: unknown, desired: unknown): boolean {
+  if (Array.isArray(desired)) {
+    return Array.isArray(current) && JSON.stringify(current) === JSON.stringify(desired);
+  }
+  if (desired && typeof desired === 'object') {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return false;
+    const cur = current as Record<string, unknown>;
+    return Object.entries(desired as Record<string, unknown>).every(([key, value]) =>
+      desiredValueMatches(cur[key], value),
+    );
+  }
+  return current === desired;
+}
+
+/** Compare only fields this request owns, including the write-only PSK when
+ * Central returns it. If a tenant redacts the PSK, an explicitly supplied
+ * passphrase safely forces a PATCH instead of incorrectly becoming a no-op. */
+export function wlanProfileChanged(current: unknown, desired: Record<string, unknown>): boolean {
+  const cur = current && typeof current === 'object' ? (current as Record<string, unknown>) : {};
+  return Object.entries(desired).some(([field, value]) => !desiredValueMatches(cur[field], value));
+}
+
+/**
+ * The mode-specific WLAN fields buildWlanSsidPayload() only ever adds, never
+ * removes: switching security modes leaves the previous mode's field(s) on
+ * the tenant unless this write explicitly drops them. Verified against the
+ * New Central 26.04 network-config OpenAPI reference (developer.arubanetworks.com
+ * /new-central): PATCH is a partial update of exactly the fields present in
+ * the body — omitted fields are left untouched, not cleared — while PUT is
+ * the documented full-object replace. Rather than guess at unconfirmed
+ * null-clears-a-field enum semantics for 'auth-server-group'/'captive-portal-type'
+ * (which may not even be nullable in the schema), a mode transition away from
+ * a field this map owns uses a PUT built from GET-current merged with the
+ * new desired body, with every managed field this write no longer wants
+ * explicitly deleted before send — a full replace clears them for certain,
+ * and merging in the current profile first preserves whatever unrelated
+ * settings (e.g. anything Central defaults that this form never exposes)
+ * that request would otherwise have wiped out.
+ */
+const MANAGED_MODE_FIELDS = ['personal-security', 'auth-server-group', 'captive-portal', 'captive-portal-type'] as const;
+
+/** True for any value this adapter would consider "still set" on the tenant —
+ *  present, non-null, and not an empty string/array/object. */
+function isFieldSet(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
+/** Which managed mode-fields are still set on `current` but absent from the
+ * new `desired` body — i.e. left over from a security mode this write is
+ * moving away from. An empty result means no clearing is required. */
+export function staleManagedModeFields(current: unknown, desired: Record<string, unknown>): string[] {
+  if (!current || typeof current !== 'object' || Array.isArray(current)) return [];
+  const cur = current as Record<string, unknown>;
+  return MANAGED_MODE_FIELDS.filter((field) => !(field in desired) && isFieldSet(cur[field]));
+}
+
+/** Build the full-object PUT body for a mode transition: the current profile
+ * (so unrelated fields this form doesn't manage survive the replace) with
+ * this write's desired fields applied on top, then every managed mode-field
+ * the new mode does not want stripped so PUT's replace semantics actually
+ * remove it from the tenant. */
+export function buildWlanReplacementPayload(current: unknown, desired: Record<string, unknown>): Record<string, unknown> {
+  const cur = current && typeof current === 'object' && !Array.isArray(current) ? (current as Record<string, unknown>) : {};
+  const merged: Record<string, unknown> = { ...cur, ...desired };
+  for (const field of MANAGED_MODE_FIELDS) {
+    if (!(field in desired)) delete merged[field];
+  }
+  return merged;
+}
+
+/** Central may redact or omit this write-only field on GET. Keep the readable
+ * personal-security fields (including passphrase-format) in verification. */
+function readableWlanPayload(desired: Record<string, unknown>): Record<string, unknown> {
+  const personalSecurity = desired['personal-security'];
+  if (!personalSecurity || typeof personalSecurity !== 'object' || Array.isArray(personalSecurity)) return desired;
+  const { ['wpa-passphrase']: _passphrase, ...readablePersonalSecurity } = personalSecurity as Record<string, unknown>;
+  return { ...desired, 'personal-security': readablePersonalSecurity };
+}
+
+/** Every SsidCatalogSection — the "N/7 sections" denominator and the
+ *  all-sections-unavailable answer for Classic Central. */
+export const ALL_SSID_CATALOG_SECTIONS: readonly SsidCatalogSection[] = [
+  'sites',
+  'site-collections',
+  'ap-groups',
+  'aps',
+  'roles',
+  'authServerGroups',
+  'captivePortalProfiles',
+];
+
+/** Rows from a sites/site-collections/device-groups read → scope options,
+ *  pushing `section` onto `unavailable` when the read failed (rows === null)
+ *  instead of silently returning an empty catalog entry for it. */
+function sectionScopeOptions(
+  rows: unknown[] | null,
+  category: SsidScopeCategory,
+  unavailable: SsidCatalogSection[],
+  section: SsidCatalogSection,
+): SsidScopeOption[] {
+  if (rows === null) {
+    unavailable.push(section);
+    return [];
+  }
+  const out: SsidScopeOption[] = [];
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as Record<string, unknown>;
+    const id = str(r.id ?? r['scope-id'] ?? r.scopeId ?? r.name);
+    if (!id) continue;
+    const label = str(r.name ?? r.label ?? r.description) ?? id;
+    out.push({ id, label, category });
+  }
+  return out;
+}
+
+/** Scope-data DEVICE rows → individual AP assignment targets. A device's
+ * Central scope-id is not its serial number; config-assignments requires the
+ * former, while the serial remains useful only in the display label. */
+function apScopeOptionsFrom(rows: unknown[]): SsidScopeOption[] {
+  const out: SsidScopeOption[] = [];
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as Record<string, unknown>;
+    if (str(r.type) !== 'DEVICE' || str(r.persona) !== 'CAMPUS_AP') continue;
+    const meta = r.meta && typeof r.meta === 'object' ? (r.meta as Record<string, unknown>) : {};
+    const id = str(r.scope_id ?? r.scopeId);
+    if (!id) continue;
+    const name = str(meta.hostname ?? meta.scope_name) ?? id;
+    const model = str(meta.device_model);
+    const serial = str(meta.serial_number);
+    const details = [model, serial].filter((value): value is string => value !== null).join(' · ');
+    out.push({ id, label: details ? `${name} (${details})` : name, category: 'ap' });
+  }
+  return out;
+}
+
+/** Rows from a roles/server-groups/captive-portal read → dependency options. */
+function dependencyOptionsFrom(rows: unknown[]): SsidDependencyOption[] {
+  const out: SsidDependencyOption[] = [];
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as Record<string, unknown>;
+    const id = str(r.name ?? r.id);
+    if (!id) continue;
+    const description = str(r.description);
+    out.push({ id, label: description ? `${id} — ${description}` : id });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,7 +1306,15 @@ export function mintedTokenInfo(
 // The adapter
 // ---------------------------------------------------------------------------
 
-type SectionKey = 'aps' | 'switches' | 'gateways' | 'sites' | 'clients' | 'notifications';
+type SectionKey =
+  | 'deviceInventory'
+  | 'aps'
+  | 'switches'
+  | 'gateways'
+  | 'sites'
+  | 'clients'
+  | 'notifications'
+  | 'ssids';
 
 interface SectionCandidate {
   path: string;
@@ -1021,7 +1324,7 @@ interface SectionCandidate {
   /** How THIS endpoint pages. Default (absent) is offset/limit. 'cursor'
    *  means it ignores `offset` and hands back a `next` token instead — see
    *  the paging note in the file header. */
-  paging?: 'cursor';
+  paging?: 'cursor' | 'none';
 }
 
 interface SectionSpec {
@@ -1040,6 +1343,15 @@ interface SectionResult {
 }
 
 const SECTIONS: Record<SectionKey, SectionSpec> = {
+  deviceInventory: {
+    candidates: [
+      { path: '/network-monitoring/v1/device-inventory', paging: 'cursor' },
+      { path: '/network-monitoring/v1alpha1/device-inventory', paging: 'cursor' },
+    ],
+    limit: 200,
+    maxPages: 25,
+    timeoutMs: SECTION_TIMEOUT_MS,
+  },
   aps: {
     candidates: [{ path: '/monitoring/v1/aps' }, { path: '/network-monitoring/v1alpha1/aps' }],
     limit: 200,
@@ -1059,8 +1371,12 @@ const SECTIONS: Record<SectionKey, SectionSpec> = {
     timeoutMs: SECTION_TIMEOUT_MS,
   },
   sites: {
-    candidates: [{ path: '/central/v2/sites' }, { path: '/central/v1/sites' }, { path: '/network-config/v1alpha1/sites' }],
-    // v1alpha1/sites 400s PAGE_LIMIT_SIZE_EXCEEDED at limit=200 — cap is 100.
+    candidates: [
+      { path: '/network-config/v1/sites', paging: 'none' },
+      { path: '/central/v2/sites' },
+      { path: '/central/v1/sites' },
+      { path: '/network-config/v1alpha1/sites' },
+    ],
     limit: 100,
     maxPages: 10,
   },
@@ -1081,24 +1397,67 @@ const SECTIONS: Record<SectionKey, SectionSpec> = {
   },
   notifications: {
     candidates: [
+      {
+        path: '/network-notifications/v1/alerts',
+        paging: 'cursor',
+        extraQuery: `&filter=${encodeURIComponent("status eq 'Active'")}&sort=${encodeURIComponent('severity desc')}`,
+      },
       { path: '/central/v1/notifications' },
       { path: '/monitoring/v1/notifications' },
-      { path: '/network-notifications/v1/alerts' },
     ],
     limit: 100,
     maxPages: 5,
   },
+  ssids: {
+    candidates: [{ path: '/network-config/v1/wlan-ssids', paging: 'none' }],
+    limit: 100,
+    maxPages: 1,
+  },
 };
 
+/** Outbound verbs this adapter issues. PATCH is additive — used only by the
+ *  direct SSID profile update path (applySsidProfile); every existing caller
+ *  still passes GET/POST/PUT and is unaffected. DELETE is additive too — used
+ *  only by the direct webhook-management path (server/src/services/
+ *  centralWebhooks.ts's DELETE /network-services/v1/webhooks/{id}); every
+ *  existing caller is unaffected. */
+type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
 /**
- * One outbound response. `retryAfterMs` is additive — callers that only read
- * { status, body } (the write broker, reboot/disconnect/ackAlert) are
- * unaffected; only the 429 backoff in authedGet consumes it.
+ * One outbound response. Rate-limit metadata is additive — callers that only
+ * read { status, body } are unaffected.
  */
-interface HttpResult {
+export type CentralHttpBodyParse =
+  | 'empty'
+  | 'whitespace'
+  | 'json-null'
+  | 'json'
+  | 'malformed-json'
+  | 'non-json'
+  | 'unreadable';
+
+export interface CentralHttpResult {
   status: number;
   body: unknown;
+  /** How the response bytes became `body`; never includes the raw body. */
+  bodyParse: CentralHttpBodyParse;
+  /** Trimmed Location response header, used by accepted async operations. */
+  location?: string;
   retryAfterMs?: number;
+  rateLimitResetAtMs?: number;
+}
+
+export type CentralRequestErrorKind = 'authentication' | 'transport' | 'service';
+
+/** Secret-free failure classification for auth'd Central requests. */
+export class CentralRequestError extends Error {
+  constructor(
+    readonly kind: CentralRequestErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CentralRequestError';
+  }
 }
 
 class HttpStatusError extends Error {
@@ -1114,12 +1473,14 @@ class HttpStatusError extends Error {
 /** Section key → the shared dataset it feeds (three inventory endpoints, one
  *  dataset; 'notifications' is the plane's word for the alerts dataset). */
 const SECTION_DATASET: Record<SectionKey, PlaneDatasetKey> = {
+  deviceInventory: 'devices',
   aps: 'devices',
   switches: 'devices',
   gateways: 'devices',
   sites: 'sites',
   clients: 'clients',
   notifications: 'alerts',
+  ssids: 'config',
 };
 
 /**
@@ -1154,12 +1515,14 @@ const PAYLOAD_KEYS = [
   'aps',
   'switches',
   'gateways',
+  'devices',
   'sites',
   'clients',
   'notifications',
   'alerts',
   'items',
   'results',
+  'wlan-ssid',
 ];
 
 function extractRows(body: unknown): unknown[] {
@@ -1222,7 +1585,25 @@ export function parseRetryAfterMs(header: string | null, nowMs: number = Date.no
   return Number.isNaN(at) ? null : Math.max(0, at - nowMs);
 }
 
-function withScheme(base: string): string {
+/** X-RateLimit-Reset is normally epoch seconds; tolerate epoch ms, delta
+ * seconds, and an HTTP date without ever scheduling in the past. */
+export function parseRateLimitResetAtMs(header: string | null, nowMs: number = Date.now()): number | null {
+  const raw = str(header);
+  if (!raw) return null;
+  const value = num(raw);
+  if (value !== null) {
+    const at = value >= 1e12 ? value : value >= 1e9 ? value * 1000 : nowMs + value * 1000;
+    return Math.max(nowMs, at);
+  }
+  const at = Date.parse(raw);
+  return Number.isNaN(at) ? null : Math.max(nowMs, at);
+}
+
+/** Exported for display-only use by server/src/services/centralWebhooks.ts,
+ *  which shows the exact (non-secret) outbound gateway URL a webhook write
+ *  will target as part of its review-confirmation preview — never used
+ *  there to make a call of its own. */
+export function withScheme(base: string): string {
   return /^https?:\/\//i.test(base) ? base : `https://${base}`;
 }
 
@@ -1315,9 +1696,12 @@ export class CentralAdapter implements PlaneAdapter {
         const record = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
         const token = str(record.access_token);
         if (status !== 200 || !token) {
-          // 400/401/… = the endpoint is right and the credentials are wrong —
-          // falling through would just double-report a bad secret.
-          throw new Error(`auth: ${ep.label} answered HTTP ${status} without an access_token`);
+          // Credential statuses are authentication failures; malformed/5xx
+          // token answers are service failures. Neither exposes the body.
+          throw new CentralRequestError(
+            [400, 401, 403].includes(status) ? 'authentication' : 'service',
+            `auth: ${ep.label} answered HTTP ${status} without an access_token`,
+          );
         }
         this.resolvedToken = ep;
         const published = num(record.expires_in);
@@ -1328,7 +1712,10 @@ export class CentralAdapter implements PlaneAdapter {
         this.stateRef.token = mintedTokenInfo(published);
         return { accessToken: token, expiresInSec: published ?? 3600 };
       }
-      throw new Error(`auth: no token endpoint answered — ${lastMiss ?? 'no candidates'}`);
+      throw new CentralRequestError(
+        'service',
+        `auth: no token endpoint answered — ${lastMiss ?? 'no candidates'}`,
+      );
     });
   }
 
@@ -1354,12 +1741,22 @@ export class CentralAdapter implements PlaneAdapter {
    *                 (writeBroker.ts resolves the CentralAdapter and pushes
    *                 through request()); the ticket + lease gate is the
    *                 broker's, not a capability statement.
-   *   configRead    false — pull() reads monitoring only; PlanePull.config
-   *                 stays unset, so Configure keeps labelling its inventory
-   *                 'observed' instead of claiming a real config read.
+   *   configRead    true on New Central — pull() reads configured WLAN
+   *                 profiles. Classic gateways retain the observed fallback.
+   *   directWrite   true on New Central — ssidCatalog()/applySsidProfile()
+   *                 below are real; Classic Central is NOT writable via this
+   *                 path (its config surface is the legacy /configuration/v2
+   *                 namespace this adapter never learned to write correctly).
    */
   capabilities(): PlaneCapabilities {
-    return { localShell: false, brokeredWrite: true, configRead: false };
+    const newCentral = isNewCentralGateway(this.baseUrl);
+    return {
+      localShell: false,
+      brokeredWrite: true,
+      configRead: newCentral,
+      directWrite: newCentral,
+      activeDiagnostics: newCentral,
+    };
   }
 
   // -- ON-DEMAND DETAIL READS ------------------------------------------------
@@ -1405,10 +1802,12 @@ export class CentralAdapter implements PlaneAdapter {
    *       LEADERBOARD — a client outside the top N is simply absent from it,
    *       which would read as "no throughput" for a quiet client.
    */
-  async clientDetail(mac: string): Promise<ClientDetailLive | null> {
+  async clientDetail(mac: string, medium?: ClientRow['medium']): Promise<ClientDetailLive | null> {
     const normalized = normalizeCentralMac(mac);
     if (!normalized) return null; // no MAC = nothing this plane can be asked about
-    return this.cachedDetail(`client:${normalized}`, () => this.readClientDetail(normalized));
+    return this.cachedDetail(`client:${normalized}:${medium ?? 'unknown'}`, () =>
+      this.readClientDetail(normalized, medium),
+    );
   }
 
   /**
@@ -1429,45 +1828,347 @@ export class CentralAdapter implements PlaneAdapter {
     return this.cachedDetail(`topology:${id}`, () => this.readSiteTopology(id));
   }
 
+  // -- direct SSID write (New Central network-config v1alpha1) ---------------
+  //
+  // Also an on-demand read/write path, not poller work: the editor asks for
+  // this ONCE per drawer open (catalog) and once per reviewed Apply click
+  // (applySsidProfile), never on the 60s timer.
+
+  /**
+   * Everything the SSID editor's catalog needs: live scope choices (sites,
+   * site collections, AP device groups, individual APs) and live security
+   * dependencies (roles, authentication server groups, captive portals).
+   * Classic Central answers with every section unavailable — capabilities()
+   * already says directWrite is false there, this is the second,
+   * defense-in-depth statement of the same fact.
+   *
+   * Every section read is candidate-tolerant like pull()'s sections (see
+   * catalogRows): a 404/error on one section marks THAT section unavailable
+   * without failing the rest of the catalog, so a tenant missing e.g. AAA
+   * profiles still offers sites/roles instead of an all-or-nothing failure.
+   */
+  async ssidCatalog(): Promise<SsidCatalog> {
+    if (!isNewCentralGateway(this.baseUrl)) {
+      return {
+        scopes: [],
+        roles: [],
+        authServerGroups: [],
+        captivePortalProfiles: [],
+        unavailable: [...ALL_SSID_CATALOG_SECTIONS],
+        source: 'Central Classic — direct SSID configuration writes require the New Central gateway',
+      };
+    }
+    const [siteRows, collectionRows, groupRows, scopeRows, roleRows, serverGroupRows, portalRows] = await Promise.all([
+      this.catalogRows(['/network-config/v1alpha1/sites']),
+      this.catalogRows(['/network-config/v1alpha1/site-collections']),
+      this.catalogRows(['/network-config/v1alpha1/device-groups']),
+      this.catalogRows(['/cnxdevice/v1/debug/get_scope_data']),
+      this.catalogRows(['/network-config/v1alpha1/roles']),
+      this.catalogRows(['/network-config/v1alpha1/server-groups']),
+      this.catalogRows(['/network-config/v1alpha1/captive-portal']),
+    ]);
+    const unavailable: SsidCatalogSection[] = [];
+    const scopes: SsidScopeOption[] = [
+      ...sectionScopeOptions(siteRows, 'site', unavailable, 'sites'),
+      ...sectionScopeOptions(collectionRows, 'site-collection', unavailable, 'site-collections'),
+      ...sectionScopeOptions(groupRows, 'ap-group', unavailable, 'ap-groups'),
+      ...(scopeRows === null ? (unavailable.push('aps'), []) : apScopeOptionsFrom(scopeRows)),
+    ];
+    const roles = roleRows === null ? (unavailable.push('roles'), []) : dependencyOptionsFrom(roleRows);
+    const authServerGroups =
+      serverGroupRows === null
+        ? (unavailable.push('authServerGroups'), [])
+        : dependencyOptionsFrom(serverGroupRows);
+    const captivePortalProfiles = portalRows === null ? (unavailable.push('captivePortalProfiles'), []) : dependencyOptionsFrom(portalRows);
+    const total = ALL_SSID_CATALOG_SECTIONS.length;
+    return {
+      scopes,
+      roles,
+      authServerGroups,
+      captivePortalProfiles,
+      unavailable,
+      source: `Central /network-config/v1alpha1 · ${total - unavailable.length}/${total} sections`,
+    };
+  }
+
+  /**
+   * Direct New Central SSID apply — idempotent upsert + configuration assignment.
+   * A successfully created/updated profile is NEVER rolled back just because
+   * a later assignment fails (architecture rule): `ok` requires BOTH the
+   * profile step and every assignment to succeed; a profile success with any
+   * assignment trouble is reported `partial`, never `ok`.
+   *
+   * Sequence:
+   *   1. GET the named profile.
+   *   2. absent  → POST to the named profile path ('created');
+   *      present → a security-mode transition leaving a stale
+   *                auth-server-group/captive-portal(-type)/personal-security
+   *                field behind → PUT a full replacement built from the
+   *                current profile (see buildWlanReplacementPayload) so the
+   *                obsolete field is authoritatively cleared;
+   *                otherwise PATCH only when the written fields actually
+   *                differ ('updated'), else 'unchanged' — no write for no
+   *                change.
+   *   3. verify with a fresh GET, confirming both the requested fields AND
+   *      the absence of any stale mode field; a write this adapter cannot
+   *      confirm is reported unverified, never claimed successful.
+   *   4. only once the profile step is ok: read existing CAMPUS_AP config
+   *      assignments for this profile and POST only the ones missing.
+   */
+  async applySsidProfile(form: SsidForm): Promise<SsidApplyResult> {
+    const name = form.name.trim();
+    if (!isNewCentralGateway(this.baseUrl)) {
+      return {
+        ok: false,
+        partial: false,
+        profile: {
+          ok: false,
+          action: 'failed',
+          verified: false,
+          message: 'Central Classic is not writable via this path — direct SSID writes require the New Central gateway',
+        },
+        assignments: [],
+      };
+    }
+    if (!name) {
+      return {
+        ok: false,
+        partial: false,
+        profile: { ok: false, action: 'failed', verified: false, message: 'SSID name is required' },
+        assignments: [],
+      };
+    }
+
+    const path = `/network-config/v1alpha1/wlan-ssids/${encodeURIComponent(name)}`;
+    const desired = buildWlanSsidPayload(form);
+    const requestedPassphrase =
+      (form.security === 'wpa2-psk' || form.security === 'psk-portal') &&
+      typeof form.passphrase === 'string';
+    const getRes = await this.request('GET', path);
+    let action: SsidProfileStepResult['action'];
+    let profileOk: boolean;
+    let httpCode: number | undefined = getRes.status;
+    let message: string;
+    if (getRes.status === 404) {
+      const postRes = await this.request('POST', path, desired);
+      httpCode = postRes.status;
+      profileOk = postRes.status >= 200 && postRes.status < 300;
+      action = profileOk ? 'created' : 'failed';
+      message = profileOk ? `profile created — HTTP ${postRes.status}` : `profile create failed — HTTP ${postRes.status}`;
+    } else if (getRes.status >= 200 && getRes.status < 300) {
+      const staleFields = staleManagedModeFields(getRes.body, desired);
+      if (!requestedPassphrase && staleFields.length === 0 && !wlanProfileChanged(getRes.body, desired)) {
+        action = 'unchanged';
+        profileOk = true;
+        message = 'profile already matches the desired configuration — no write needed';
+      } else if (staleFields.length > 0) {
+        // A security-mode transition (e.g. portal → PSK, enterprise → open):
+        // PATCH only ever touches fields present in the body, so the
+        // previous mode's field(s) — auth-server-group, captive-portal(-type),
+        // personal-security — would otherwise survive untouched. PUT is the
+        // documented full-object replace, so a body built from the current
+        // profile with this write's fields applied and the stale field(s)
+        // deleted is the authoritative way to clear them without guessing at
+        // unconfirmed null-clears-a-field enum semantics.
+        const replacement = buildWlanReplacementPayload(getRes.body, desired);
+        const putRes = await this.request('PUT', path, replacement);
+        httpCode = putRes.status;
+        profileOk = putRes.status >= 200 && putRes.status < 300;
+        action = profileOk ? 'updated' : 'failed';
+        message = profileOk
+          ? `profile replaced — HTTP ${putRes.status} (cleared obsolete ${staleFields.join(', ')} from the previous security mode)`
+          : `profile replace failed — HTTP ${putRes.status}`;
+      } else {
+        const patchRes = await this.request('PATCH', path, desired);
+        httpCode = patchRes.status;
+        profileOk = patchRes.status >= 200 && patchRes.status < 300;
+        action = profileOk ? 'updated' : 'failed';
+        message = profileOk ? `profile updated — HTTP ${patchRes.status}` : `profile update failed — HTTP ${patchRes.status}`;
+      }
+    } else {
+      action = 'failed';
+      profileOk = false;
+      message = `could not read the existing profile — HTTP ${getRes.status}`;
+    }
+
+    let verified = false;
+    if (profileOk) {
+      const verifyRes = await this.request('GET', path);
+      const readBack = verifyRes.status >= 200 && verifyRes.status < 300 ? verifyRes.body : undefined;
+      const matches = readBack !== undefined && !wlanProfileChanged(readBack, readableWlanPayload(desired));
+      // Verification is not just "does the read-back contain what we asked
+      // for" — a stale auth-server-group/captive-portal(-type)/personal-security
+      // field left over from a prior security mode must be confirmed absent
+      // too, or a still-present obsolete field would silently pass review.
+      const remainingStale = readBack !== undefined ? staleManagedModeFields(readBack, desired) : [];
+      verified = matches && remainingStale.length === 0;
+      if (!verified) {
+        profileOk = false;
+        if (readBack === undefined) {
+          message = `${message}; verification read-back failed — HTTP ${verifyRes.status}`;
+        } else if (!matches) {
+          message = `${message}; verification read-back did not match the requested profile`;
+        } else {
+          message = `${message}; verification read-back still had obsolete ${remainingStale.join(', ')} field(s) from the previous security mode`;
+        }
+      }
+    }
+
+    const profile: SsidProfileStepResult = {
+      ok: profileOk,
+      action,
+      verified,
+      message,
+      ...(httpCode !== undefined ? { httpCode } : {}),
+    };
+
+    const scopeIds = form.scopeIds ?? [];
+    const assignments: SsidScopeAssignmentResult[] = [];
+    if (profileOk) {
+      const existing = await this.existingScopeAssignments(name);
+      for (const scopeId of scopeIds) {
+        if (existing.has(scopeId)) {
+          assignments.push({ scopeId, label: scopeId, ok: true, skipped: true, message: 'already assigned — no write needed' });
+          continue;
+        }
+        const res = await this.request('POST', '/network-config/v1alpha1/config-assignments', {
+          'config-assignment': [
+            {
+              'scope-id': scopeId,
+              'device-function': 'CAMPUS_AP',
+              'profile-type': 'wlan-ssids',
+              'profile-instance': name,
+            },
+          ],
+        });
+        const ok = res.status >= 200 && res.status < 300;
+        assignments.push({
+          scopeId,
+          label: scopeId,
+          ok,
+          httpCode: res.status,
+          message: ok ? `assigned — HTTP ${res.status}` : `assignment failed — HTTP ${res.status}`,
+        });
+      }
+    }
+
+    const allAssigned = scopeIds.length > 0 && assignments.every((a) => a.ok);
+    const ok = profileOk && allAssigned;
+    return { ok, partial: profileOk && !ok, profile, assignments };
+  }
+
+  /**
+   * Best-effort catalog GET: try each candidate path in order, tolerating a
+   * 404 by trying the next one — same tolerance pull()'s sections use. Any
+   * OTHER non-2xx or a transport error stops trying further candidates for
+   * an endpoint this build has not verified against a live tenant, and
+   * reports "could not read" (null) rather than guessing at more paths.
+   */
+  private async catalogRows(candidates: string[]): Promise<unknown[] | null> {
+    for (const path of candidates) {
+      try {
+        const res = await this.request('GET', path);
+        if (res.status >= 200 && res.status < 300) return extractRows(res.body);
+        if (res.status === 404) continue;
+        return null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Existing CAMPUS_AP configuration assignments for one profile — makes
+   * assignment idempotent (only POST what is missing). A read that fails or
+   * answers an unrecognised shape is NOT fatal: every requested scope simply
+   * gets (re-)attempted, which is never worse than assigning it, and Central
+   * answers its own outcome for an assignment that already exists.
+   */
+  private async existingScopeAssignments(resource: string): Promise<Set<string>> {
+    try {
+      const res = await this.request('GET', '/network-config/v1alpha1/config-assignments');
+      if (res.status < 200 || res.status >= 300) return new Set();
+      const out = new Set<string>();
+      for (const raw of extractRows(res.body)) {
+        if (!raw || typeof raw !== 'object') continue;
+        const r = raw as Record<string, unknown>;
+        const scopeId = str(r['scope-id'] ?? r.scopeId);
+        if (
+          scopeId &&
+          str(r['device-function'] ?? r.deviceFunction) === 'CAMPUS_AP' &&
+          str(r['profile-type'] ?? r.profileType) === 'wlan-ssids' &&
+          str(r['profile-instance'] ?? r.profileInstance) === resource
+        ) {
+          out.add(scopeId);
+        }
+      }
+      return out;
+    } catch {
+      return new Set();
+    }
+  }
+
   async pull(): Promise<PlanePull> {
     const missing: SectionKey[] = [];
     const truncated: SectionKey[] = [];
 
-    // Devices: the three classic inventory endpoints, merged. A sub-endpoint
-    // that 404s on every candidate is tolerated (tenant/release may not have
-    // it); all three missing means the base URL or release is wrong → fail.
-    const deviceParts = await Promise.all(
-      (['aps', 'switches', 'gateways'] as const).map(async (key) => {
-        try {
-          const section = await this.fetchSection(key);
-          if (section.truncated) truncated.push(key);
-          return section.rows;
-        } catch (err) {
-          if (err instanceof SectionMissingError) {
-            missing.push(key);
-            return [] as unknown[];
+    // New Central's unified inventory includes claimed/unprovisioned hardware.
+    // Classic tenants fall back to the split AP/switch/gateway monitoring APIs.
+    let inventoryRows: unknown[] | null = null;
+    try {
+      const inventory = await this.fetchSection('deviceInventory');
+      inventoryRows = inventory.rows;
+      if (inventory.truncated) truncated.push('deviceInventory');
+    } catch (err) {
+      if (!(err instanceof SectionMissingError)) {
+        throw new Error(`central pull: section 'devices' failed — ${(err as Error).message}`);
+      }
+    }
+
+    let deviceParts: [unknown[], unknown[], unknown[]] = [[], [], []];
+    if (inventoryRows === null) {
+      const [legacyAps, legacySwitches, legacyGateways] = await Promise.all(
+        (['aps', 'switches', 'gateways'] as const).map(async (key) => {
+          try {
+            const section = await this.fetchSection(key);
+            if (section.truncated) truncated.push(key);
+            return section.rows;
+          } catch (err) {
+            if (err instanceof SectionMissingError) {
+              missing.push(key);
+              return [] as unknown[];
+            }
+            throw new Error(`central pull: section 'devices/${key}' failed — ${(err as Error).message}`);
           }
-          throw new Error(`central pull: section 'devices/${key}' failed — ${(err as Error).message}`);
-        }
-      }),
-    );
-    const deviceSections: SectionKey[] = ['aps', 'switches', 'gateways'];
-    if (deviceSections.every((s) => missing.includes(s))) {
-      throw new Error("central pull: section 'devices' failed — no inventory endpoint answered (404 on every candidate)");
+        }),
+      );
+      deviceParts = [legacyAps, legacySwitches, legacyGateways];
+      const deviceSections: SectionKey[] = ['aps', 'switches', 'gateways'];
+      if (deviceSections.every((s) => missing.includes(s))) {
+        throw new Error("central pull: section 'devices' failed — no inventory endpoint answered (404 on every candidate)");
+      }
     }
     const [apRows, switchRows, gatewayRows] = deviceParts;
 
-    const [siteRows, clientRows, notificationRows] = await Promise.all([
+    const readConfig = isNewCentralGateway(this.baseUrl);
+    const [siteRows, clientRows, notificationRows, ssidRows] = await Promise.all([
       this.optionalSection('sites', missing, truncated),
       this.optionalSection('clients', missing, truncated),
       this.optionalSection('notifications', missing, truncated),
+      readConfig ? this.optionalSection('ssids', missing, truncated) : Promise.resolve([]),
     ]);
 
-    const devices = [
-      ...apRows.map((r) => mapCentralDevice(r, 'ap', this.approved)),
-      ...switchRows.map((r) => mapCentralDevice(r, 'switch', this.approved)),
-      ...gatewayRows.map((r) => mapCentralDevice(r, 'gateway', this.approved)),
-    ].filter((d): d is CentralDeviceRow => d !== null);
+    const devices =
+      inventoryRows === null
+        ? [
+            ...apRows.map((r) => mapCentralDevice(r, 'ap', this.approved)),
+            ...switchRows.map((r) => mapCentralDevice(r, 'switch', this.approved)),
+            ...gatewayRows.map((r) => mapCentralDevice(r, 'gateway', this.approved)),
+          ].filter((d): d is CentralDeviceRow => d !== null)
+        : inventoryRows
+            .map((r) => mapCentralInventoryDevice(r, this.approved))
+            .filter((d): d is CentralDeviceRow => d !== null);
     // The site object has no per-site sync time, so the honest stamp is the
     // plane's own: when this adapter last completed a read. lastSync is written
     // by the poller AFTER pull() resolves, so cycle 1 legitimately says '—' and
@@ -1488,12 +2189,23 @@ export class CentralAdapter implements PlaneAdapter {
     // NOT .map(mapCentralNotification): map passes the index as the 2nd arg,
     // which mapCentralNotification reads as nowMs — every age became '0s'.
     const alerts = notificationRows.map((r) => mapCentralNotification(r)).filter((a): a is AlertRow => a !== null);
+    const ssids = ssidRows.map((r) => mapCentralSsid(r)).filter((ssid): ssid is SsidObject => ssid !== null);
+    const config: ConfigInventory | undefined =
+      readConfig && !missing.includes('ssids')
+        ? {
+            mode: 'configured',
+            ssids,
+            source: 'Central /network-config/v1/wlan-ssids',
+            unavailable: ['vlans', 'ports'],
+          }
+        : undefined;
 
     // A count is an assertion of fact, so only sections we actually read get
     // one — "0 clients" for a section that 404'd would be a lie.
     const summary = [`${devices.length.toLocaleString('en-US')} devices`];
     if (!missing.includes('sites')) summary.push(`${sites.length.toLocaleString('en-US')} sites`);
     if (!missing.includes('clients')) summary.push(`${clients.length.toLocaleString('en-US')} clients`);
+    if (config) summary.push(`${ssids.length.toLocaleString('en-US')} SSIDs`);
     if (missing.length > 0) summary.push(`not available: ${missing.join(', ')}`);
     if (truncated.length > 0) summary.push(`truncated: ${truncated.join(', ')}`);
     this.stateRef.note = summary.join(' · ');
@@ -1516,6 +2228,7 @@ export class CentralAdapter implements PlaneAdapter {
       ...(missing.includes('sites') ? {} : { sites }),
       ...(missing.includes('clients') ? {} : { clients }),
       ...(missing.includes('notifications') ? {} : { alerts }),
+      ...(config ? { config } : {}),
       ...(partial.length > 0 ? { partial } : {}),
     };
   }
@@ -1594,7 +2307,7 @@ export class CentralAdapter implements PlaneAdapter {
     }
   }
 
-  private async readClientDetail(mac: string): Promise<ClientDetailLive> {
+  private async readClientDetail(mac: string, medium?: ClientRow['medium']): Promise<ClientDetailLive> {
     const startedMs = this.now();
     const startAt = new Date(startedMs - MOBILITY_WINDOW_SEC * 1000).toISOString();
     const seg = encodeURIComponent(mac);
@@ -1602,9 +2315,11 @@ export class CentralAdapter implements PlaneAdapter {
     // timestamp. Sending our clock's "now" 400s the endpoint whenever the two
     // disagree by even a few minutes (verified live).
     const [trail, usage] = await Promise.all([
-      this.detailGet(
-        `/network-monitoring/v1/clients/${seg}/mobility-trail?limit=${MOBILITY_PAGE_LIMIT}&start-at=${encodeURIComponent(startAt)}`,
-      ),
+      medium === 'wired'
+        ? Promise.resolve(null)
+        : this.detailGet(
+            `/network-monitoring/v1/clients/${seg}/mobility-trail?limit=${MOBILITY_PAGE_LIMIT}&start-at=${encodeURIComponent(startAt)}`,
+          ),
       this.detailGet(
         `/network-monitoring/v1/clients-usage?filter=${encodeURIComponent(`macAddress eq '${mac}'`)}`,
       ),
@@ -1614,7 +2329,11 @@ export class CentralAdapter implements PlaneAdapter {
     const notes: string[] = [];
     const out: ClientDetailLive = { mac, source: { plane: 'central', at: '', sections } };
 
-    if (!trail.ok) {
+    if (trail === null) {
+      // Ethernet clients have no mobility trail, RSSI, or roam count. Leave
+      // those sections not-fetched rather than spending a call or presenting
+      // an empty wireless result as a wired-client statistic.
+    } else if (!trail.ok) {
       sections.rssi = 'failed';
       sections.roams = 'failed';
       sections.timeline = 'failed';
@@ -1830,9 +2549,12 @@ export class CentralAdapter implements PlaneAdapter {
       // A cursor endpoint ignores `offset`, so sending it would only be noise
       // on the wire (and a stray param is fatal on the strict namespaces).
       const byCursor = cand.paging === 'cursor';
-      const firstPath = byCursor
-        ? `${cand.path}?limit=${spec.limit}${cand.extraQuery ?? ''}`
-        : `${cand.path}?offset=0&limit=${spec.limit}${cand.extraQuery ?? ''}`;
+      const unpaged = cand.paging === 'none';
+      const firstPath = unpaged
+        ? `${cand.path}${cand.extraQuery ? `?${cand.extraQuery.replace(/^&/, '')}` : ''}`
+        : byCursor
+          ? `${cand.path}?limit=${spec.limit}${cand.extraQuery ?? ''}`
+          : `${cand.path}?offset=0&limit=${spec.limit}${cand.extraQuery ?? ''}`;
       const first = await this.authedGet(firstPath, spec.timeoutMs);
       if (first.status === 404) continue; // release variance — try the alternate namespace
       if (first.status < 200 || first.status >= 300) throw new HttpStatusError(first.status, firstPath);
@@ -1846,7 +2568,7 @@ export class CentralAdapter implements PlaneAdapter {
       // Cursor walks end when the endpoint stops handing back a `next`; offset
       // walks end on the first short page (or once the stated total is covered).
       const hasMore = (): boolean =>
-        byCursor ? cursor !== null : lastPageSize >= spec.limit && (total === null || offset < total);
+        unpaged ? false : byCursor ? cursor !== null : lastPageSize >= spec.limit && (total === null || offset < total);
       while (page < spec.maxPages && hasMore()) {
         // Pace the walk: the gateway is quota'd and a 10-page client pull
         // fired back-to-back is exactly what earns the 429.
@@ -1884,11 +2606,11 @@ export class CentralAdapter implements PlaneAdapter {
    * every attempt is still recorded, so the Activity tab shows the real 429s
    * and the real network errors.
    */
-  private async authedGet(path: string, timeoutMs?: number): Promise<{ status: number; body: unknown }> {
+  private async authedGet(path: string, timeoutMs?: number): Promise<CentralHttpResult> {
     const opts = timeoutMs !== undefined ? { timeoutMs } : {};
     let networkTries = 0;
     for (let attempt = 0; ; attempt += 1) {
-      let res: HttpResult;
+      let res: CentralHttpResult;
       try {
         res = await this.http('GET', path, { ...opts, token: await this.tokens.get() });
         if (res.status === 401) {
@@ -1916,10 +2638,10 @@ export class CentralAdapter implements PlaneAdapter {
    * interprets the status — a non-2xx is returned, never thrown.
    */
   async request(
-    method: 'GET' | 'POST' | 'PUT',
+    method: HttpMethod,
     path: string,
     body?: unknown,
-  ): Promise<{ status: number; body: unknown }> {
+  ): Promise<CentralHttpResult> {
     const opts = { token: await this.tokens.get(), ...(body !== undefined ? { body } : {}) };
     let res = await this.http(method, path, opts);
     if (res.status === 401) {
@@ -1934,10 +2656,10 @@ export class CentralAdapter implements PlaneAdapter {
    * method + path + ms + status only — never a body, so never a secret.
    */
   private async http(
-    method: 'GET' | 'POST' | 'PUT',
+    method: HttpMethod,
     path: string,
     opts: { token?: string; body?: unknown; timeoutMs?: number } = {},
-  ): Promise<HttpResult> {
+  ): Promise<CentralHttpResult> {
     return this.httpAbsolute(method, `${this.baseUrl}${path}`, opts);
   }
 
@@ -1950,10 +2672,10 @@ export class CentralAdapter implements PlaneAdapter {
    * callers are unaffected.
    */
   private async httpAbsolute(
-    method: 'GET' | 'POST' | 'PUT',
+    method: HttpMethod,
     url: string,
     opts: { token?: string; body?: unknown; formEncoded?: boolean; timeoutMs?: number } = {},
-  ): Promise<HttpResult> {
+  ): Promise<CentralHttpResult> {
     const started = Date.now();
     const label = `${method} ${url.replace(/^https?:\/\/[^/]+/i, '') || '/'}`;
     let res: Response;
@@ -1977,17 +2699,49 @@ export class CentralAdapter implements PlaneAdapter {
       });
     } catch (err) {
       this.recordCall({ path: label, ms: Date.now() - started, code: 'network-error' });
-      throw new Error(`${label} failed: ${(err as Error).message}`);
+      throw new CentralRequestError('transport', `${label} transport failed`);
     }
     this.recordCall({ path: label, ms: Date.now() - started, code: String(res.status) });
     let body: unknown = null;
+    let bodyParse: CentralHttpBodyParse;
     try {
-      body = await res.json();
+      const rawBody = await res.text();
+      const trimmedBody = rawBody.trim();
+      if (rawBody.length === 0) {
+        bodyParse = 'empty';
+      } else if (trimmedBody.length === 0) {
+        bodyParse = 'whitespace';
+      } else {
+        try {
+          body = JSON.parse(trimmedBody) as unknown;
+          bodyParse = body === null ? 'json-null' : 'json';
+        } catch {
+          const contentType = (res.headers.get('content-type') ?? '').split(';', 1)[0].trim().toLowerCase();
+          bodyParse =
+            contentType === 'application/json' || contentType.endsWith('+json')
+              ? 'malformed-json'
+              : 'non-json';
+        }
+      }
     } catch {
-      /* tolerate a non-JSON body — status is what we needed */
+      // Preserve the old shared-helper behavior (status plus a null body)
+      // while making the failed body read distinguishable to strict callers.
+      bodyParse = 'unreadable';
     }
     // Additive field: existing callers ({ status, body }) are unaffected.
-    const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
-    return { status: res.status, body, ...(retryAfterMs !== null ? { retryAfterMs } : {}) };
+    const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'), this.now());
+    const rateLimitResetAtMs = parseRateLimitResetAtMs(
+      res.headers.get('x-ratelimit-reset') ?? res.headers.get('ratelimit-reset'),
+      this.now(),
+    );
+    const locationHeader = res.headers.get('location')?.trim();
+    return {
+      status: res.status,
+      body,
+      bodyParse,
+      ...(locationHeader ? { location: locationHeader } : {}),
+      ...(retryAfterMs !== null ? { retryAfterMs } : {}),
+      ...(rateLimitResetAtMs !== null ? { rateLimitResetAtMs } : {}),
+    };
   }
 }

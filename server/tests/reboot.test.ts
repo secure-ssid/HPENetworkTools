@@ -23,6 +23,7 @@ import type { AlertRow } from '../../shared';
 
 let RebootService: typeof import('../src/services/reboot').RebootService;
 let createApp: typeof import('../src/index').createApp;
+let createDevicesRouter: typeof import('../src/routes/devices').createDevicesRouter;
 let tmpDir: string;
 let server: Server;
 let base: string;
@@ -66,6 +67,7 @@ beforeAll(async () => {
   process.env.HPE_DATA_DIR = join(tmpDir, 'data');
   ({ RebootService } = await import('../src/services/reboot'));
   ({ createApp } = await import('../src/index'));
+  ({ createDevicesRouter } = await import('../src/routes/devices'));
   // A raised ticket in the store: NET-4201 is a real id from here on.
   const { ticketStore } = await import('../src/services/tickets');
   ticketStore.raiseFromAlert(RAISE_ALERT);
@@ -209,6 +211,97 @@ describe('RebootService push', () => {
     expect(res.ok).toBe(false);
     expect(res.message).toContain('socket hang up');
   });
+
+  it('targets the exact plane+serial among duplicate display names and audits that identity', async () => {
+    const dataDir = freshDataDir();
+    const seen: string[] = [];
+    const devices: RebootDevice[] = [
+      { name: 'shared-ap', type: 'ap', plane: 'CENTRAL', serial: 'SERIAL-A' },
+      { name: 'shared-ap', type: 'ap', plane: 'CENTRAL', serial: 'SERIAL-B' },
+    ];
+    const svc = new RebootService({
+      dataDir,
+      listDevices: () => devices,
+      demoMode: () => false,
+      knownTicket: () => true,
+      transport: {
+        request: async (method, path) => {
+          seen.push(`${method} ${path}`);
+          return { status: 202, body: {} };
+        },
+      },
+    });
+
+    const result = await svc.reboot('shared-ap', 'NET-4201', {
+      plane: 'CENTRAL',
+      serial: 'SERIAL-B',
+    });
+    expect(result).toMatchObject({ applied: true, plane: 'CENTRAL', serial: 'SERIAL-B' });
+    expect(seen).toEqual(['POST /network-troubleshooting/v1/aps/SERIAL-B/reboot']);
+    expect(logLines(dataDir)[0]).toMatchObject({
+      event: 'reboot',
+      device: 'shared-ap',
+      plane: 'CENTRAL',
+      serial: 'SERIAL-B',
+    });
+  });
+
+  it('rejects ambiguous legacy names with safe candidates and issues no action', async () => {
+    const seen: string[] = [];
+    const svc = new RebootService({
+      dataDir: freshDataDir(),
+      listDevices: () => [
+        { name: 'shared-ap', type: 'ap', plane: 'CENTRAL', serial: 'SERIAL-A' },
+        { name: 'shared-ap', type: 'ap', plane: 'MIST', serial: 'SERIAL-B' },
+      ],
+      demoMode: () => false,
+      knownTicket: () => true,
+      transport: {
+        request: async (_method, path) => {
+          seen.push(path);
+          return { status: 202, body: {} };
+        },
+      },
+    });
+
+    await expect(svc.reboot('shared-ap', 'NET-4201')).rejects.toMatchObject({
+      status: 409,
+      details: {
+        candidates: [
+          { plane: 'CENTRAL', serial: 'SERIAL-A' },
+          { plane: 'MIST', serial: 'SERIAL-B' },
+        ],
+      },
+    });
+    expect(seen).toEqual([]);
+  });
+
+  it('keeps unique legacy compatibility but never falls back from stale or mismatched identity', async () => {
+    const seen: string[] = [];
+    const svc = new RebootService({
+      dataDir: freshDataDir(),
+      listDevices: () => [AP],
+      demoMode: () => false,
+      knownTicket: () => true,
+      transport: {
+        request: async (_method, path) => {
+          seen.push(path);
+          return { status: 202, body: {} };
+        },
+      },
+    });
+
+    expect((await svc.reboot(AP.name, 'NET-4201')).applied).toBe(true);
+    await expect(svc.reboot(AP.name, 'NET-4201', {
+      plane: 'CENTRAL',
+      serial: 'STALE-SERIAL',
+    })).rejects.toMatchObject({ status: 404 });
+    await expect(svc.reboot('different-route-name', 'NET-4201', {
+      plane: 'CENTRAL',
+      serial: AP.serial,
+    })).rejects.toMatchObject({ status: 409 });
+    expect(seen).toEqual(['/network-troubleshooting/v1/aps/CN77K2X0AB/reboot']);
+  });
 });
 
 describe('POST /api/devices/:name/reboot (demo-mode app)', () => {
@@ -226,5 +319,60 @@ describe('POST /api/devices/:name/reboot (demo-mode app)', () => {
       body: JSON.stringify({ ticket: 'NET-4201' }),
     });
     expect(unknown.status).toBe(404);
+  });
+
+  it('returns 409 candidate metadata for an ambiguous legacy action and accepts an exact identity', async () => {
+    const seen: string[] = [];
+    const service = new RebootService({
+      dataDir: freshDataDir(),
+      listDevices: () => [
+        { name: 'shared-ap', type: 'ap', plane: 'CENTRAL', serial: 'SERIAL-A' },
+        { name: 'shared-ap', type: 'ap', plane: 'CENTRAL', serial: 'SERIAL-B' },
+      ],
+      demoMode: () => false,
+      knownTicket: () => true,
+      transport: {
+        request: async (_method, path) => {
+          seen.push(path);
+          return { status: 202, body: {} };
+        },
+      },
+    });
+    const express = (await import('express')).default;
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createDevicesRouter(service));
+    const identityServer = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => identityServer.once('listening', resolve));
+    const identityBase = `http://127.0.0.1:${(identityServer.address() as AddressInfo).port}`;
+    try {
+      const ambiguous = await fetch(`${identityBase}/api/devices/shared-ap/reboot`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ticket: 'NET-4201' }),
+      });
+      expect(ambiguous.status).toBe(409);
+      expect(await ambiguous.json()).toMatchObject({
+        candidates: [
+          { plane: 'CENTRAL', serial: 'SERIAL-A' },
+          { plane: 'CENTRAL', serial: 'SERIAL-B' },
+        ],
+      });
+      expect(seen).toEqual([]);
+
+      const exact = await fetch(`${identityBase}/api/devices/shared-ap/reboot`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ticket: 'NET-4201',
+          plane: 'CENTRAL',
+          serial: 'SERIAL-B',
+        }),
+      });
+      expect(exact.status).toBe(200);
+      expect(seen).toEqual(['/network-troubleshooting/v1/aps/SERIAL-B/reboot']);
+    } finally {
+      await new Promise<void>((resolve) => identityServer.close(() => resolve()));
+    }
   });
 });

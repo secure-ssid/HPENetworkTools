@@ -51,6 +51,7 @@ import type {
   SiteId,
   SiteProfile,
   SiteRow,
+  SsidCatalog,
   SsidForm,
   PortForm,
   VlanForm,
@@ -681,6 +682,7 @@ export function toSiteDeviceRow(d: DeviceRow): SiteDeviceRow {
     state: d.state,
     stateTone: d.stateTone,
     uptime: '—',
+    serial: d.serial,
   };
 }
 
@@ -831,6 +833,7 @@ export const PLANE_MARK: Record<Plane, string> = {
   LOCAL: 'var(--nd-border-strong)',
   CLEARPASS: 'var(--nd-border-strong)',
   UXI: 'var(--nd-info)',
+  SSE: 'var(--nd-border-strong)',
   'THIRD-PARTY': 'var(--nd-border-strong)',
 };
 
@@ -1248,6 +1251,14 @@ export const PLANE_WRITE_MODE: Record<PlaneKey, WriteMode> = {
   greenlake: 'read only',
   clearpass: 'read only',
   uxi: 'read only',
+  // SSE's write path is its own object CRUD + automatic commit (Systems ->
+  // Configuration tab), never a ticketed queue and never part of the
+  // Configure screen's port/SSID/VLAN capability matrix — 'read only' here is
+  // accurate for BOTH of those vocabularies. Real write capability is
+  // reported separately via PlaneCapabilities.directWrite (state().capabilities
+  // on GET /api/systems/state), which the Systems Configuration tab reads
+  // directly to enable/disable its own mutation controls.
+  sse: 'read only',
 };
 
 /**
@@ -1270,6 +1281,7 @@ export const PLANE_KEY_BY_LABEL: Record<Plane, PlaneKey | null> = {
   LOCAL: 'local',
   CLEARPASS: 'clearpass',
   UXI: 'uxi',
+  SSE: 'sse',
   'THIRD-PARTY': null,
 };
 
@@ -1306,6 +1318,36 @@ export const SSID_GROUP_OPTIONS: SelectOption[] = [
   { value: 'lakeshore-medical', label: 'lakeshore-medical (44 APs, AOS-8)' },
   { value: 'all-sites', label: 'all sites (268 APs, every plane)' },
 ];
+
+/**
+ * The SSID editor's demo catalog — what "New SSID" and "Edit SSID" load
+ * instead of a live Central read when the portal is in demo mode. Every
+ * section is populated (`unavailable: []`) so the demo drawer always shows a
+ * complete review, matching the authored estate's SSID_GROUP_OPTIONS groups
+ * reshaped across the four real scope categories.
+ */
+export const SSID_CATALOG_DEMO: SsidCatalog = {
+  scopes: [
+    { id: 'staff-wireless', label: 'staff-wireless (96 APs)', category: 'site' },
+    { id: 'guest-lobby', label: 'guest-lobby (24 APs)', category: 'site' },
+    { id: 'clinical-floors', label: 'clinical-floors (268 APs)', category: 'site-collection' },
+    { id: 'all-sites', label: 'all sites (268 APs, every plane)', category: 'site-collection' },
+    { id: 'lakeshore-medical', label: 'lakeshore-medical (44 APs, AOS-8)', category: 'ap-group' },
+    { id: 'ap-3f-12', label: 'ap-3f-12 (3rd floor, clinical)', category: 'ap' },
+  ],
+  roles: [
+    { id: 'authenticated', label: 'authenticated' },
+    { id: 'guest', label: 'guest' },
+    { id: 'clinical-device', label: 'clinical-device' },
+  ],
+  authServerGroups: [
+    { id: 'clearpass', label: 'clearpass (RadSec)' },
+    { id: 'clearpass-guest', label: 'clearpass-guest' },
+  ],
+  captivePortalProfiles: [{ id: 'guest-portal-meridian', label: 'guest-portal-meridian' }],
+  unavailable: [],
+  source: 'Central demo catalog (network-config/v1alpha1)',
+};
 
 export const SSID_BAND_OPTIONS: SelectOption[] = [
   { value: '5+6', label: '5 GHz + 6 GHz' },
@@ -1644,6 +1686,7 @@ export const CONNECT_TYPE_OPTIONS: SelectOption[] = [
   { value: 'local', label: 'Local switch collector (SSH)' },
   { value: 'clearpass', label: 'ClearPass' },
   { value: 'uxi', label: 'HPE Aruba UXI (sensors)' },
+  { value: 'sse', label: 'HPE Aruba Networking SSE' },
 ];
 
 /** Connect-a-system: type-dependent endpoint field — `endpoints` (7 variants). */
@@ -1656,6 +1699,11 @@ export const CONNECT_ENDPOINTS: Record<SystemTypeKey, EndpointVariant> = {
   local: { label: 'Collector agent address', help: 'The agent dials out; this is for verification only.', hint: '10.42.0.9:8443' },
   clearpass: { label: 'ClearPass publisher URL', help: 'Publisher node, API client credentials.', hint: 'cppm-01.meridian.health' },
   uxi: { label: 'UXI API base — optional', help: 'Defaults to api.capenetworks.com; auth is always HPE SSO client credentials.', hint: 'api.capenetworks.com' },
+  sse: {
+    label: 'SSE Admin API base — optional',
+    help: 'Defaults to admin-api.axissecurity.com; auth is a scoped static Admin API token (Settings → Admin API in the SSE console).',
+    hint: 'admin-api.axissecurity.com',
+  },
 };
 
 /**
@@ -1696,14 +1744,26 @@ export const CONNECT_FIELDS: Record<SystemTypeKey, ConnectField[]> = {
     { key: 'coaEnforcementProfile', label: 'CoA enforcement profile', help: 'Sent on a CoA disconnect when set. Leave blank to use the publisher default — a wrong name fails the request.', optional: true },
   ],
   uxi: [],
+  sse: [
+    { key: 'token', label: 'Admin API token', help: 'Scoped static token from Settings → Admin API in the SSE console — sent as Authorization: Bearer.', secret: true },
+  ],
 };
+
+/**
+ * Planes whose adapter has no use for the shared Client ID / Client secret
+ * pair the connect drawer otherwise always renders (a static-token plane) —
+ * hidden so a save can never write a value under a key that plane's
+ * `isComplete()` does not read.
+ */
+export const CONNECT_HIDE_CLIENT_CREDENTIALS: readonly SystemTypeKey[] = ['sse'];
 
 /**
  * Settings key the connect drawer's endpoint input must save under, per plane
  * — read straight off each adapter's `isComplete()` / constructor:
  *   central.ts:670 gatewayBaseUrl · mist.ts:181 apiHost · greenlake.ts:302
  *   workspaceId · aos8.ts:264 master · clearpass.ts:213 host · uxi.ts:190
- *   baseUrl (optional) · terminal.ts:410 host (the collector's jump box).
+ *   baseUrl (optional) · sse.ts baseUrl (optional) · terminal.ts:410 host
+ *   (the collector's jump box).
  * `classic` has no adapter yet; its record keeps the generic baseUrl key.
  */
 export const CONNECT_ENDPOINT_KEY: Record<SystemTypeKey, string> = {
@@ -1715,6 +1775,7 @@ export const CONNECT_ENDPOINT_KEY: Record<SystemTypeKey, string> = {
   local: 'host',
   clearpass: 'host',
   uxi: 'baseUrl',
+  sse: 'baseUrl',
 };
 
 /** Success alert body after "Test connection" — `testResult`. */

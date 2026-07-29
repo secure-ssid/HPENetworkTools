@@ -35,6 +35,9 @@ import {
   OVERVIEW_ALERTS,
   PLANE_DATASET_KEYS,
   PLANE_ROW_DATASET_KEYS,
+  SSE_LIMITED_RELEASE_KINDS,
+  SSE_OBJECT_KINDS,
+  SSE_OBJECT_KIND_LABELS,
   UNKNOWN_LANE_META,
   clientFieldProvenance,
   deriveRssiDbm,
@@ -47,6 +50,7 @@ import {
   planeKeyOf,
   planeStaleness,
   planeSupportsClientField,
+  ssidDependencyRequirementsFor,
   ssidPreview,
   staleAfterSecFor,
   type ClientDetailLive,
@@ -59,6 +63,12 @@ import {
   type ServingRadio,
   type SiteTopologyLive,
   type SsidForm,
+  type SseInventory,
+  type SseManualCleanupRequest,
+  type SseManualCleanupResult,
+  type SseMutationRequest,
+  type SseMutationResult,
+  type SseObjectSummary,
   type SubscriptionAssignment,
   type TopologyLink,
 } from '../../shared';
@@ -639,5 +649,154 @@ describe('ServingRadio / ClientWiring ride the same three-state machinery', () =
     // An absent metric is null, never 0 — 0% utilization is a real reading.
     expect(detail.servingRadio?.channelUtilPct).toBeNull();
     expect(detail.wiring?.port).toBe('1/1/8');
+  });
+});
+
+describe('ssidDependencyRequirementsFor — direct SSID apply dependency gates', () => {
+  it('requires a role for every security mode', () => {
+    for (const security of ['wpa3-enterprise', 'wpa2-enterprise', 'psk-portal', 'wpa2-psk', 'open'] as const) {
+      expect(ssidDependencyRequirementsFor(security).role).toBe(true);
+    }
+  });
+
+  it('requires an authentication server group ONLY for the enterprise modes', () => {
+    expect(ssidDependencyRequirementsFor('wpa3-enterprise').authServerGroup).toBe(true);
+    expect(ssidDependencyRequirementsFor('wpa2-enterprise').authServerGroup).toBe(true);
+    expect(ssidDependencyRequirementsFor('psk-portal').authServerGroup).toBe(false);
+    expect(ssidDependencyRequirementsFor('wpa2-psk').authServerGroup).toBe(false);
+    expect(ssidDependencyRequirementsFor('open').authServerGroup).toBe(false);
+  });
+
+  it('requires a captive-portal profile ONLY for psk-portal', () => {
+    expect(ssidDependencyRequirementsFor('psk-portal').captivePortal).toBe(true);
+    for (const security of ['wpa3-enterprise', 'wpa2-enterprise', 'wpa2-psk', 'open'] as const) {
+      expect(ssidDependencyRequirementsFor(security).captivePortal).toBe(false);
+    }
+  });
+
+  it('requires a passphrase for wpa2-psk and psk-portal only — open omits credentials entirely', () => {
+    expect(ssidDependencyRequirementsFor('wpa2-psk').passphrase).toBe(true);
+    expect(ssidDependencyRequirementsFor('psk-portal').passphrase).toBe(true);
+    expect(ssidDependencyRequirementsFor('open')).toEqual({
+      role: true,
+      authServerGroup: false,
+      captivePortal: false,
+      passphrase: false,
+    });
+    expect(ssidDependencyRequirementsFor('wpa3-enterprise').passphrase).toBe(false);
+    expect(ssidDependencyRequirementsFor('wpa2-enterprise').passphrase).toBe(false);
+  });
+});
+
+describe('SSE contracts — object kinds, inventory, and the mutation/commit split', () => {
+  it('sse joins the dataset keys as a structured object, never a row array', () => {
+    expect(PLANE_DATASET_KEYS).toContain('sse');
+    expect(PLANE_ROW_DATASET_KEYS).not.toContain('sse' as never);
+  });
+
+  it('every object kind has a display label and the limited-release set is a subset of the kinds', () => {
+    for (const kind of SSE_OBJECT_KINDS) {
+      expect(typeof SSE_OBJECT_KIND_LABELS[kind]).toBe('string');
+    }
+    for (const kind of SSE_LIMITED_RELEASE_KINDS) {
+      expect(SSE_OBJECT_KINDS).toContain(kind);
+    }
+    // locations/tunnels/applications — the vendor's own documented
+    // limited-release surfaces (README "Official facts").
+    expect([...SSE_LIMITED_RELEASE_KINDS].sort()).toEqual(['applications', 'locations', 'tunnels']);
+  });
+
+  it('an inventory can report some kinds unavailable without losing the ones that read', () => {
+    const summary: SseObjectSummary = { kind: 'connectors', id: 'c-1', name: 'edge-1', raw: { id: 'c-1', name: 'edge-1' } };
+    const inv: SseInventory = {
+      kinds: { connectors: { rows: [summary], total: 1, truncated: false } },
+      unavailable: ['users', 'locations'],
+      readStatus: {
+        connectors: { state: 'ok' },
+        users: {
+          state: 'failed',
+          reason: 'denied',
+          httpCode: 403,
+          message: 'check token scope',
+        },
+        locations: {
+          state: 'failed',
+          reason: 'unsupported',
+          httpCode: 404,
+          message: 'limited-release',
+        },
+      },
+      source: 'admin-api.axissecurity.com · 7 of 9 object kinds read',
+    };
+    expect(inv.kinds.connectors?.rows).toHaveLength(1);
+    expect(inv.kinds.users).toBeUndefined(); // absent, not an authoritative empty list
+    expect(inv.unavailable).toContain('locations');
+    expect(inv.readStatus?.users).toMatchObject({ state: 'failed', reason: 'denied' });
+  });
+
+  it('a mutation request is typed and NEVER carries a free-form path — only an allowlisted kind', () => {
+    const req: SseMutationRequest = { kind: 'connectorZones', action: 'create', fields: { name: 'HQ' }, reviewConfirmed: true };
+    expect(SSE_OBJECT_KINDS).toContain(req.kind);
+  });
+
+  it('manual cleanup has separate acknowledgments and a machine-readable durable outcome', () => {
+    const request: SseManualCleanupRequest = {
+      reviewConfirmed: true,
+      manualReconciled: true,
+    };
+    const result: SseManualCleanupResult = {
+      commit: {
+        attempted: false,
+        ok: false,
+        httpCode: null,
+        acceptance: 'not-attempted',
+        message: 'Tenant-wide Commit was not called',
+      },
+      cacheRefresh: {
+        attempted: true,
+        status: 'stale',
+        message: 'refresh status is explicit',
+      },
+      recovery: {
+        journalPhase: 'commit-transport-unknown',
+        action: 'manual-cleanup',
+        status: 'journal-removed',
+        mutationVerified: false,
+        message: 'journal removed; tenant-wide Commit was not called',
+      },
+    };
+    expect(request).toEqual({ reviewConfirmed: true, manualReconciled: true });
+    expect(result.recovery).toMatchObject({
+      action: 'manual-cleanup',
+      status: 'journal-removed',
+    });
+  });
+
+  it('mutation and commit are reported separately — a staged result is not a success', () => {
+    const staged: SseMutationResult = {
+      mutation: { ok: true, httpCode: 200, id: 'c-1', message: 'update accepted' },
+      commit: { attempted: true, ok: false, httpCode: 500, message: 'commit failed' },
+      staged: true,
+      cacheRefresh: { attempted: true, status: 'refreshed', message: 'refreshed' },
+    };
+    expect(staged.mutation.ok).toBe(true);
+    expect(staged.staged).toBe(true);
+
+    const notAttempted: SseMutationResult = {
+      mutation: { ok: false, httpCode: 409, message: 'conflict' },
+      commit: { attempted: false, ok: false, httpCode: null, message: 'not attempted' },
+      staged: false,
+      cacheRefresh: { attempted: false, status: 'skipped', message: 'nothing to refresh' },
+    };
+    expect(notAttempted.commit.attempted).toBe(false);
+  });
+
+  it('a bare pull can carry only sse and still satisfy PlanePull', () => {
+    const pull: PlanePull = {
+      sse: { kinds: {}, unavailable: [...SSE_OBJECT_KINDS], source: 'first sync pending' },
+      partial: ['sse'],
+    };
+    expect(pull.devices).toBeUndefined();
+    expect(pull.sse?.unavailable).toHaveLength(SSE_OBJECT_KINDS.length);
   });
 });

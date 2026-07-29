@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_SETTINGS,
+  acknowledgeCentralWebhookHandoff,
+  cleanupSseManualReconciliation,
+  createCentralWebhook,
+  createSseObject,
   getAlerts,
   getChangeHistory,
   getChangeQueue,
@@ -8,18 +12,29 @@ import {
   getClients,
   getConfigure,
   getDeviceDetail,
+  getDiagnosticEligibility,
+  getCentralWebhookHandoffStatus,
+  startDiagnostic,
   getDevices,
   getChatStatus,
   getOverview,
   getSettings,
   getSiteDetail,
   getSiteTopology,
+  getSseKind,
   getSystems,
   getSystemsState,
   getTerminalSession,
   getTerminalSessions,
+  isApiError,
+  isUnknownWebhookOutcome,
+  retrySseCommit,
+  rebootDevice,
+  resolveCentralWebhookHandoff,
+  rotateCentralWebhookHmacKey,
   saveSettings,
   syncSystems,
+  updateCentralWebhook,
 } from './client';
 import type { Settings } from './client';
 import {
@@ -29,6 +44,7 @@ import {
   terminalBanner,
   terminalQuickCommands,
 } from '../../../shared';
+import type { WebhookForm } from '../../../shared';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -49,6 +65,18 @@ function mockFetch(response: {
   );
 }
 
+/** Same as mockFetch, but returns the fetch mock so a test can inspect the
+ *  exact URL a client function requested. */
+function mockFetchCapture(response: { ok: boolean; status?: number; body?: unknown }) {
+  const fn = vi.fn().mockResolvedValue({
+    ok: response.ok,
+    status: response.status ?? (response.ok ? 200 : 500),
+    json: vi.fn().mockResolvedValue(response.body ?? {}),
+  });
+  vi.stubGlobal('fetch', fn);
+  return fn;
+}
+
 describe('screen API source handling', () => {
   it('preserves the server dataSource instead of relabeling demo responses as live', async () => {
     mockFetch({
@@ -67,6 +95,72 @@ describe('screen API source handling', () => {
 
     const data = await getOverview();
     expect(data.dataSource).toBe('demo');
+  });
+
+  describe('diagnostics API client', () => {
+    it('preserves live eligibility and sends the explicit confirmation gate', async () => {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({
+            operation: 'traceroute',
+            source: 'live-inventory',
+            devices: [],
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 202,
+          json: vi.fn().mockResolvedValue({
+            id: 'j1',
+            state: 'running',
+            operation: 'traceroute',
+          }),
+        });
+
+      vi.stubGlobal('fetch', fetchMock);
+
+      expect((await getDiagnosticEligibility()).source).toBe('live-inventory');
+      await startDiagnostic('review-1', 'CENTRAL', 'AP-SERIAL');
+      expect(fetchMock).toHaveBeenLastCalledWith('/api/diagnostics/start', expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ reviewId: 'review-1', confirmed: true, plane: 'CENTRAL', serial: 'AP-SERIAL' }),
+      }));
+    });
+  });
+
+  it('encodes the reboot route and sends exact plane+serial identity in the payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        ok: true,
+        applied: true,
+        device: 'ap/shared name',
+        plane: 'CENTRAL',
+        serial: 'SERIAL/1',
+        ticket: 'NET-1',
+        message: 'accepted',
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await rebootDevice('ap/shared name', 'NET-1', {
+      plane: 'CENTRAL',
+      serial: 'SERIAL/1',
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/devices/ap%2Fshared%20name/reboot',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          ticket: 'NET-1',
+          plane: 'CENTRAL',
+          serial: 'SERIAL/1',
+        }),
+      }),
+    );
   });
 
   it('returns an explicit live API error instead of fixture devices for an HTTP failure', async () => {
@@ -140,7 +234,40 @@ describe('screen API source handling', () => {
 
   it('returns null only for a genuinely missing terminal transcript', async () => {
     mockFetch({ ok: false, status: 404, body: { error: 'unknown session recording' } });
-    await expect(getTerminalSession('missing.jsonl')).resolves.toBeNull();
+    await expect(getTerminalSession('missing.jsonl', 'sw-core-a')).resolves.toBeNull();
+  });
+
+  it('encodes device+plane+serial into the recorded-sessions listing query', async () => {
+    const fetchMock = mockFetchCapture({ ok: true, body: { sessions: [] } });
+    await getTerminalSessions('shared name', { plane: 'LOCAL', serial: 'SERIAL/1' });
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('/api/terminal/sessions?');
+    expect(url).toContain('device=shared+name');
+    expect(url).toContain('plane=LOCAL');
+    expect(url).toContain('serial=SERIAL%2F1');
+  });
+
+  it('a legacy call with no identity sends no plane/serial params at all', async () => {
+    const fetchMock = mockFetchCapture({ ok: true, body: { sessions: [] } });
+    await getTerminalSessions('sw-core-a');
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).not.toContain('plane=');
+    expect(url).not.toContain('serial=');
+  });
+
+  it('throws an honest error when the server reports an ambiguous shared name, never a silently-picked list', async () => {
+    mockFetch({ ok: true, body: { sessions: [], ambiguous: true } });
+    await expect(getTerminalSessions('shared-name')).rejects.toThrow(/names more than one device/);
+  });
+
+  it('encodes device+plane+serial into the transcript read query', async () => {
+    const fetchMock = mockFetchCapture({ ok: true, body: { file: 'a.jsonl', events: [], truncated: false } });
+    await getTerminalSession('a.jsonl', 'shared name', { plane: 'LOCAL', serial: 'SERIAL/1' });
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('/api/terminal/sessions/a.jsonl?');
+    expect(url).toContain('device=shared+name');
+    expect(url).toContain('plane=LOCAL');
+    expect(url).toContain('serial=SERIAL%2F1');
   });
 
   it('distinguishes an answered optional API failure from an unreachable backend', async () => {
@@ -792,6 +919,68 @@ describe('on-demand detail payloads', () => {
     expect(topology?.source.sections.links).toBe('empty');
   });
 
+  it('preserves live success, empty, and cached topology states across the API boundary', async () => {
+    const nodes = Array.from({ length: 11 }, (_, index) => ({
+      serial: `node-${index}`,
+      name: `Node ${index}`,
+    }));
+    const links = Array.from({ length: 10 }, (_, index) => ({
+      from: 'node-0',
+      to: `node-${index + 1}`,
+      fromPorts: [{ name: `1/1/${index + 1}` }],
+      toPorts: [{ name: 'eth0' }],
+      speedBps: 1_000_000_000,
+      health: 'Good',
+    }));
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        site: { id: 'ext-securessid', name: 'SecureSSID' },
+        profile: null,
+        topology: {
+          siteId: 'SecureSSID',
+          nodes,
+          links,
+          source: {
+            plane: 'central',
+            at: '2026-07-29T06:47:26.761Z',
+            sections: { nodes: 'ok', links: 'ok' },
+            cached: true,
+          },
+        },
+      },
+    });
+    const live = await getSiteDetail('ext-securessid');
+    expect(live.topology?.nodes).toHaveLength(11);
+    expect(live.topology?.links).toHaveLength(10);
+    expect(live.topology?.source.cached).toBe(true);
+    expect(live.topology?.source.sections).toEqual({ nodes: 'ok', links: 'ok' });
+
+    mockFetch({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        site: { id: 'ext-securessid', name: 'SecureSSID' },
+        profile: null,
+        topology: {
+          siteId: 'SecureSSID',
+          nodes: [],
+          links: [],
+          source: {
+            plane: 'central',
+            at: '2026-07-29T06:48:00.000Z',
+            sections: { nodes: 'empty', links: 'empty' },
+          },
+        },
+      },
+    });
+    const empty = await getSiteDetail('ext-securessid');
+    expect(empty.topology?.nodes).toEqual([]);
+    expect(empty.topology?.links).toEqual([]);
+    expect(empty.topology?.source.sections).toEqual({ nodes: 'empty', links: 'empty' });
+  });
+
   it('drops an unreadable device detail block without blanking the device page', async () => {
     mockFetch({
       ok: true,
@@ -809,6 +998,798 @@ describe('on-demand detail payloads', () => {
     expect(data.detail).toBeUndefined();
     expect(data.device?.name).toBe('AP735-LR');
     expect(data.apiError).toBeUndefined();
+  });
+});
+
+describe('SSE mutation and commit API', () => {
+  it('preserves a failed kind read instead of returning an empty-list-shaped success', async () => {
+    mockFetch({ ok: false, status: 503, body: { error: 'SSE cache read unavailable' } });
+
+    const result = await getSseKind('connectorZones');
+
+    expect(result.rows).toEqual([]);
+    expect(result.unavailable).toBe(true);
+    expect(result.total).toBeNull();
+    expect(result.readStatus).toMatchObject({ state: 'failed', reason: 'service-error', httpCode: 503 });
+    expect(result.readError).toBe('SSE cache read unavailable');
+  });
+
+  it('does not turn an unrecognized successful list response into an empty success', async () => {
+    mockFetch({ ok: true, status: 200, body: { unexpected: [] } });
+
+    const result = await getSseKind('connectorZones');
+
+    expect(result.unavailable).toBe(true);
+    expect(result.readStatus).toMatchObject({ state: 'failed', reason: 'invalid-response', httpCode: 200 });
+    expect(result.readError).toMatch(/not recognized/i);
+  });
+
+  it('reports a portal transport failure as unreachable, not denied', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    const result = await getSseKind('connectorZones');
+
+    expect(result.readStatus).toMatchObject({ state: 'failed', reason: 'unreachable', httpCode: null });
+  });
+
+  it('identifies a pending journal from its structured code after a frontend reload', async () => {
+    mockFetch({
+      ok: false,
+      status: 409,
+      body: {
+        error: 'durable recovery is required',
+        code: 'SSE_PENDING_MUTATION',
+      },
+    });
+
+    const result = await createSseObject('connectorZones', { name: 'Blocked zone' });
+
+    expect(result.pendingCommit).toBe(true);
+    expect(result.message).toBe('durable recovery is required');
+  });
+
+  it('never infers pending journal state from human-readable message text', async () => {
+    mockFetch({
+      ok: false,
+      status: 409,
+      body: {
+        error:
+          'a previous SSE change is staged because its commit failed — resolve it with a commit-only retry before making another change',
+        code: 'SOME_OTHER_ERROR',
+      },
+    });
+
+    const result = await createSseObject('connectorZones', { name: 'Blocked zone' });
+
+    expect(result.pendingCommit).toBeUndefined();
+    expect(result.message).toMatch(/previous SSE change is staged/i);
+  });
+
+  it('sends the explicit review confirmation and consumes commit/cache outcomes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        commit: {
+          attempted: true,
+          ok: true,
+          httpCode: 204,
+          message: 'committed',
+          warning: 'Commit is tenant-wide.',
+        },
+        cacheRefresh: {
+          attempted: true,
+          status: 'stale',
+          message: 'refresh did not complete',
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await retrySseCommit(true);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/sse/commit/retry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewConfirmed: true }),
+    });
+    expect(result.result?.commit.warning).toBe('Commit is tenant-wide.');
+    expect(result.result?.cacheRefresh.status).toBe('stale');
+  });
+
+  it('treats completed cleanup-only recovery as success without requiring Commit success', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        commit: {
+          attempted: false,
+          ok: false,
+          httpCode: null,
+          acceptance: 'not-attempted',
+          message: 'the rejected mutation journal was cleaned up without calling Commit',
+        },
+        cacheRefresh: {
+          attempted: false,
+          status: 'skipped',
+          message: 'the rejected mutation required no cache refresh',
+        },
+        recovery: {
+          journalPhase: 'mutation-rejected',
+          action: 'cleanup-only',
+          mutationVerified: false,
+          message: 'the rejected mutation journal was cleaned up without calling tenant-wide Commit',
+        },
+      },
+    });
+
+    const result = await retrySseCommit(true);
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/cleaned up without calling tenant-wide Commit/i);
+    expect(result.result?.commit).toMatchObject({ attempted: false, ok: false });
+    expect(result.result?.cacheRefresh.status).toBe('skipped');
+  });
+
+  it('keeps failed and manual-reconciliation recovery unsuccessful and preserves error codes', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        commit: {
+          attempted: true,
+          ok: false,
+          httpCode: null,
+          acceptance: 'unknown',
+          message: 'Commit outcome is unknown',
+        },
+        cacheRefresh: { attempted: false, status: 'skipped', message: 'cache was not refreshed' },
+        recovery: {
+          journalPhase: 'commit-transport-unknown',
+          action: 'manual-reconciliation',
+          mutationVerified: false,
+          message: 'manual tenant reconciliation is required',
+        },
+      },
+    });
+    expect((await retrySseCommit(true)).ok).toBe(false);
+
+    mockFetch({
+      ok: true,
+      body: {
+        commit: {
+          attempted: false,
+          ok: false,
+          httpCode: null,
+          acceptance: 'not-attempted',
+          message: 'no recovery action was completed',
+        },
+        cacheRefresh: { attempted: false, status: 'skipped', message: 'cache was not refreshed' },
+      },
+    });
+    expect((await retrySseCommit(true)).ok).toBe(false);
+
+    mockFetch({
+      ok: false,
+      status: 500,
+      body: {
+        error: 'durable journal cleanup is still pending',
+        code: 'SSE_JOURNAL_PERSIST_FAILED',
+      },
+    });
+    const failed = await retrySseCommit(true);
+    expect(failed).toMatchObject({
+      ok: false,
+      message: 'durable journal cleanup is still pending',
+      code: 'SSE_JOURNAL_PERSIST_FAILED',
+    });
+  });
+
+  it('does not issue an unreviewed retry request', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await retrySseCommit(false);
+
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('sends both manual-cleanup acknowledgments and requires journal removal for success', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        commit: {
+          attempted: false,
+          ok: false,
+          httpCode: null,
+          acceptance: 'not-attempted',
+          message: 'Tenant-wide Commit was not called',
+        },
+        cacheRefresh: {
+          attempted: true,
+          status: 'refreshed',
+          message: 'cache refreshed',
+        },
+        recovery: {
+          journalPhase: 'commit-transport-unknown',
+          action: 'manual-cleanup',
+          status: 'journal-removed',
+          mutationVerified: false,
+          message: 'journal removed; tenant-wide Commit was not called',
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await cleanupSseManualReconciliation(true, true);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/sse/recovery/manual-cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewConfirmed: true, manualReconciled: true }),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.result?.recovery.status).toBe('journal-removed');
+    expect(result.result?.cacheRefresh.status).toBe('refreshed');
+  });
+
+  it('does not issue manual cleanup without both acknowledgments', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect((await cleanupSseManualReconciliation(false, true)).ok).toBe(false);
+    expect((await cleanupSseManualReconciliation(true, false)).ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves refresh and journal-retained status from a failed manual cleanup', async () => {
+    mockFetch({
+      ok: false,
+      status: 500,
+      body: {
+        error: 'internal error',
+        code: 'SSE_JOURNAL_PERSIST_FAILED',
+        result: {
+          commit: {
+            attempted: false,
+            ok: false,
+            httpCode: null,
+            acceptance: 'not-attempted',
+            message: 'Tenant-wide Commit was not called',
+          },
+          cacheRefresh: {
+            attempted: true,
+            status: 'stale',
+            message: 'refresh incomplete',
+          },
+          recovery: {
+            journalPhase: 'mutation-transport-unknown',
+            action: 'manual-cleanup',
+            status: 'journal-retained',
+            mutationVerified: false,
+            message: 'journal retained; tenant-wide Commit was not called',
+          },
+        },
+      },
+    });
+
+    const result = await cleanupSseManualReconciliation(true, true);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'SSE_JOURNAL_PERSIST_FAILED',
+      result: {
+        cacheRefresh: { status: 'stale' },
+        recovery: { action: 'manual-cleanup', status: 'journal-retained' },
+      },
+    });
+  });
+});
+
+describe('Central webhook one-time HMAC API client', () => {
+  const tenantBinding = 'a'.repeat(64);
+  const apiKeyForm: WebhookForm = {
+    name: 'noc-hook',
+    endpoint: 'https://hooks.example.com/central',
+    authMechanism: 'API_KEY',
+    apiKey: 'submitted-api-secret',
+  };
+
+  it('does not send create or rotate without both explicit acknowledgements', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createCentralWebhook(apiKeyForm, false, true, tenantBinding);
+    await createCentralWebhook(apiKeyForm, true, false, tenantBinding);
+    await rotateCentralWebhookHmacKey('wh-1', false, true, tenantBinding);
+    await rotateCentralWebhookHmacKey('wh-1', true, false, tenantBinding);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('canonicalizes create non-secret identity before sending it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        ok: true,
+        action: 'created',
+        operationId: 'canonical-op',
+        hmacKey: 'canonical-once',
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createCentralWebhook(
+      {
+        name: '  canonical hook  ',
+        endpoint: '  https://hooks.example.com/canonical  ',
+        authMechanism: 'OIDC',
+        oidcClientId: '  client-id  ',
+        oidcClientSecret: ' secret bytes ',
+        oidcWellKnownUrl: '  https://issuer.example/.well-known/openid-configuration  ',
+      },
+      true,
+      true,
+      tenantBinding,
+    );
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      form: {
+        name: 'canonical hook',
+        endpoint: 'https://hooks.example.com/canonical',
+        authMechanism: 'OIDC',
+        oidcClientId: 'client-id',
+        oidcClientSecret: ' secret bytes ',
+        oidcWellKnownUrl: 'https://issuer.example/.well-known/openid-configuration',
+      },
+      reviewConfirmed: true,
+      oneTimeSecretAcknowledged: true,
+      reviewedTenantBinding: tenantBinding,
+    });
+  });
+
+  it('loads, acknowledges, and manually resolves the server handoff journal with exact attestations', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          pending: true,
+          operation: {
+            operationId: 'pending-op',
+            opType: 'rotate',
+            state: 'outcome-unknown',
+            webhookId: 'wh-1',
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z',
+            fingerprintMatches: true,
+          },
+        }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          ok: true,
+          operationId: 'pending-op',
+          resolution: 'rotate-reconciled',
+          message: 'cleared',
+        }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(await getCentralWebhookHandoffStatus()).toMatchObject({
+      pending: true,
+      operation: { operationId: 'pending-op' },
+    });
+    await acknowledgeCentralWebhookHandoff('pending-op', true);
+    await resolveCentralWebhookHandoff({
+      operationId: 'pending-op',
+      resolution: 'rotate-reconciled',
+      reviewConfirmed: true,
+      attestations: { receiverReconciled: true, centralReconciled: true },
+    });
+
+    expect(fetchMock.mock.calls[1]).toEqual([
+      '/api/central/webhooks/handoff/acknowledge',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ operationId: 'pending-op', secretStored: true }),
+      }),
+    ]);
+    expect(fetchMock.mock.calls[2]).toEqual([
+      '/api/central/webhooks/handoff/resolve',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          operationId: 'pending-op',
+          resolution: 'rotate-reconciled',
+          reviewConfirmed: true,
+          attestations: { receiverReconciled: true, centralReconciled: true },
+        }),
+      }),
+    ]);
+  });
+
+  it('sends the exact reviewed create body and returns only the recognized one-time result without persistence', async () => {
+    const hmacKey = 'client-create-one-time';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        ok: true,
+        action: 'created',
+        operationId: 'client-create-op',
+        hmacKey,
+        message: 'copy now',
+      }),
+    });
+    const storageSpy = vi.spyOn(Storage.prototype, 'setItem');
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await createCentralWebhook(
+      { ...apiKeyForm, allowInsecureCallback: true, uiOnly: 'strip-me' } as WebhookForm,
+      true,
+      true,
+      tenantBinding,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      action: 'created',
+      operationId: 'client-create-op',
+      hmacKey,
+      message: 'webhook created — copy the one-time HMAC key now',
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/central/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        form: apiKeyForm,
+        reviewConfirmed: true,
+        oneTimeSecretAcknowledged: true,
+        reviewedTenantBinding: tenantBinding,
+      }),
+    });
+    expect(storageSpy).not.toHaveBeenCalled();
+    storageSpy.mockRestore();
+  });
+
+  it('uses the official rotate path and both acknowledgements', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        ok: true,
+        action: 'rotated',
+        operationId: 'client-rotate-op',
+        hmacKey: 'client-rotate-one-time',
+        message: 'copy now',
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await rotateCentralWebhookHmacKey('wh/1', true, true, tenantBinding);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/central/webhooks/wh%2F1/rotate-hmac-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reviewConfirmed: true,
+        oneTimeSecretAcknowledged: true,
+        reviewedTenantBinding: tenantBinding,
+      }),
+    });
+  });
+
+  it('does not return a secret from an unrecognized success or expose submitted credentials in unknown errors', async () => {
+    const providerSecret = 'provider-secret-must-not-escape';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          ok: true,
+          action: 'failed',
+          hmacKey: providerSecret,
+          message: providerSecret,
+        }),
+      }),
+    );
+    const malformed = await createCentralWebhook(apiKeyForm, true, true, tenantBinding);
+    expect(JSON.stringify(malformed)).not.toContain(providerSecret);
+    expect(malformed).toMatchObject({
+      outcome: 'unknown',
+      code: 'WEBHOOK_CREATE_HMAC_OUTCOME_UNKNOWN',
+      httpCode: 200,
+    });
+    expect(isApiError(malformed)).toBe(true);
+    if (!isApiError(malformed)) throw new Error('expected API error');
+    expect(isUnknownWebhookOutcome(malformed)).toBe(true);
+
+    mockFetch({
+      ok: false,
+      status: 502,
+      body: { error: `outcome unknown after submitted-api-secret` },
+    });
+    const unknown = await createCentralWebhook(apiKeyForm, true, true, tenantBinding);
+    expect(isApiError(unknown)).toBe(true);
+    if (!isApiError(unknown)) throw new Error('expected API error');
+    expect(unknown.error).not.toContain('submitted-api-secret');
+    expect(isUnknownWebhookOutcome(unknown)).toBe(true);
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { ok: true, action: 'created', hmacKey: '' },
+    { ok: true, action: 'created', hmacKey: '   ' },
+    { ok: true, action: 'created', hmacKey: 42 },
+  ])('classifies malformed successful create payloads as stable unknown outcomes: %#', async (body) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue(body),
+      }),
+    );
+
+    const result = await createCentralWebhook(apiKeyForm, true, true, tenantBinding);
+
+    expect(result).toMatchObject({
+      outcome: 'unknown',
+      code: 'WEBHOOK_CREATE_HMAC_OUTCOME_UNKNOWN',
+      httpCode: 200,
+    });
+    expect(isApiError(result)).toBe(true);
+    if (!isApiError(result)) throw new Error('expected API error');
+    expect(result.error).toContain('retrying blindly may duplicate the webhook');
+    expect(isUnknownWebhookOutcome(result)).toBe(true);
+  });
+
+  it('preserves the server rotate unknown code but replaces all response text with a stable safe message', async () => {
+    const rawSecret = 'raw-provider-body-secret';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          ok: false,
+          action: 'unknown',
+          outcome: 'unknown',
+          code: 'WEBHOOK_ROTATE_HMAC_OUTCOME_UNKNOWN',
+          message: 'reconcile receiver and key; retrying may rotate again',
+          raw: rawSecret,
+        }),
+      }),
+    );
+
+    const result = await rotateCentralWebhookHmacKey('wh-1', true, true, tenantBinding);
+
+    expect(result).toEqual({
+      error: 'The HMAC rotation outcome is unknown because the one-time key response was unavailable. Reconcile the receiver and key before another rotation; retrying blindly may rotate the key again.',
+      httpCode: 200,
+      outcome: 'unknown',
+      code: 'WEBHOOK_ROTATE_HMAC_OUTCOME_UNKNOWN',
+    });
+    expect(JSON.stringify(result)).not.toContain(rawSecret);
+    expect(isApiError(result) && isUnknownWebhookOutcome(result)).toBe(true);
+  });
+
+  it('treats an unreadable successful response body as unknown', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockRejectedValue(new Error('unreadable raw body')),
+      }),
+    );
+
+    const result = await rotateCentralWebhookHmacKey('wh-1', true, true, tenantBinding);
+
+    expect(result).toMatchObject({
+      outcome: 'unknown',
+      code: 'WEBHOOK_ROTATE_HMAC_OUTCOME_UNKNOWN',
+      httpCode: 200,
+    });
+    expect(JSON.stringify(result)).not.toContain('unreadable raw body');
+  });
+});
+
+describe('Central webhook PATCH API client', () => {
+  const apiKeyForm: WebhookForm = {
+    name: 'noc-hook',
+    endpoint: 'https://hooks.example.com/central',
+    authMechanism: 'API_KEY',
+    apiKey: 'submitted-api-secret',
+  };
+
+  it('sends only the strict API_KEY PATCH variant, nesting expectedGeneration and stripping legacy/UI fields', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ ok: true, action: 'patched', message: 'webhook patched' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const form = {
+      ...apiKeyForm,
+      allowInsecureCallback: true,
+      oidcClientId: 'stale-client',
+      oidcClientSecret: 'stale-secret',
+      oidcWellKnownUrl: 'https://stale.example/.well-known/openid-configuration',
+      uiOnly: 'must-not-cross-the-boundary',
+    } as WebhookForm;
+
+    await updateCentralWebhook('wh-1', form, true, 7);
+
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
+      form: {
+        expectedGeneration: 7,
+        name: 'noc-hook',
+        endpoint: 'https://hooks.example.com/central',
+        authMechanism: 'API_KEY',
+        apiKey: 'submitted-api-secret',
+      },
+      reviewConfirmed: true,
+    });
+  });
+
+  it('sends the exact OIDC auth variant without an API key or unknown fields', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ ok: true, action: 'patched', message: 'webhook patched' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await updateCentralWebhook(
+      'wh-oidc',
+      {
+        name: 'oidc-hook',
+        endpoint: 'https://hooks.example.com/oidc',
+        authMechanism: 'OIDC',
+        apiKey: 'stale-api-key',
+        oidcClientId: 'client-1',
+        oidcClientSecret: 'oidc-secret',
+        oidcWellKnownUrl: 'https://issuer.example/.well-known/openid-configuration',
+      },
+      true,
+      8,
+    );
+
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
+      form: {
+        expectedGeneration: 8,
+        name: 'oidc-hook',
+        endpoint: 'https://hooks.example.com/oidc',
+        authMechanism: 'OIDC',
+        oidcClientId: 'client-1',
+        oidcClientSecret: 'oidc-secret',
+        oidcWellKnownUrl: 'https://issuer.example/.well-known/openid-configuration',
+      },
+      reviewConfirmed: true,
+    });
+  });
+
+  it('returns the server structured HTTP 409 conflict so callers can refetch', async () => {
+    mockFetch({
+      ok: false,
+      status: 409,
+      body: {
+        ok: false,
+        action: 'conflict',
+        httpCode: 409,
+        callbackValidatedAt: '2026-07-29T17:00:00.000Z',
+        message: 'webhook generation conflict: reviewed 7, current 8',
+      },
+    });
+
+    const result = await updateCentralWebhook('wh-1', apiKeyForm, true, 7);
+
+    expect(result).toEqual({
+      ok: false,
+      action: 'conflict',
+      httpCode: 409,
+      callbackValidatedAt: '2026-07-29T17:00:00.000Z',
+      message: 'webhook generation conflict: reviewed 7, current 8',
+    });
+    expect(isApiError(result)).toBe(false);
+  });
+
+  it('keeps a 502 outcome identifiable while redacting a submitted secret from an unsafe error echo', async () => {
+    mockFetch({
+      ok: false,
+      status: 502,
+      body: { error: 'central did not answer after submitted-api-secret; the outcome is unknown' },
+    });
+
+    const result = await updateCentralWebhook('wh-1', apiKeyForm, true, 7);
+
+    expect(isApiError(result)).toBe(true);
+    if (!isApiError(result)) throw new Error('expected an API error');
+    expect(result).toMatchObject({ httpCode: 502 });
+    expect(result.error).toContain('outcome is unknown');
+    expect(result.error).not.toContain('submitted-api-secret');
+    expect(isUnknownWebhookOutcome(result)).toBe(true);
+  });
+
+  it('emits JSON that an HTTP route boundary accepts under the strict API_KEY shape', async () => {
+    const nativeFetch = globalThis.fetch.bind(globalThis);
+    const { createServer } = await import('node:http');
+    let received: unknown;
+    const server = createServer((req, res) => {
+      req.setEncoding('utf8');
+      let raw = '';
+      req.on('data', (chunk: string) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        received = JSON.parse(raw);
+        const body = received as Record<string, unknown>;
+        const form = body.form as Record<string, unknown>;
+        const exactTopLevel = Object.keys(body).sort().join(',') === 'form,reviewConfirmed';
+        const exactForm =
+          Object.keys(form).sort().join(',') ===
+          'apiKey,authMechanism,endpoint,expectedGeneration,name';
+        const valid =
+          req.method === 'PATCH' &&
+          req.url === '/api/central/webhooks/wh-1' &&
+          exactTopLevel &&
+          exactForm &&
+          body.reviewConfirmed === true &&
+          form.expectedGeneration === 9 &&
+          form.authMechanism === 'API_KEY' &&
+          typeof form.apiKey === 'string';
+        res.writeHead(valid ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify(
+            valid
+              ? { ok: true, action: 'patched', message: 'strict route accepted webhook patch' }
+              : { error: 'strict webhook PATCH shape rejected' },
+          ),
+        );
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as { port: number };
+    vi.stubGlobal('fetch', (path: string, init?: RequestInit) =>
+      nativeFetch(`http://127.0.0.1:${address.port}${path}`, init),
+    );
+
+    try {
+      const result = await updateCentralWebhook(
+        'wh-1',
+        {
+          ...apiKeyForm,
+          allowInsecureCallback: true,
+          oidcClientSecret: 'legacy-oidc-secret',
+        },
+        true,
+        9,
+      );
+      expect(result).toMatchObject({ ok: true, action: 'patched' });
+      expect(received).toEqual({
+        form: {
+          expectedGeneration: 9,
+          name: 'noc-hook',
+          endpoint: 'https://hooks.example.com/central',
+          authMechanism: 'API_KEY',
+          apiKey: 'submitted-api-secret',
+        },
+        reviewConfirmed: true,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve())),
+      );
+    }
   });
 });
 

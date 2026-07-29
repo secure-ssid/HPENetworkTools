@@ -135,9 +135,10 @@ import {
   type PortObject,
   type VlanObject,
 } from '../../../shared';
-import { settings } from '../config/settings';
+import { effectiveSectionSource, settings } from '../config/settings';
 import { poller } from '../services/poller';
 import { ticketStore } from '../services/tickets';
+import { resolveDeviceIdentity, safeDeviceCandidates, type DeviceIdentity } from '../services/deviceIdentity';
 import { terminalManager } from '../services/terminal';
 import { writeBroker } from '../services/writeBroker';
 import { registry } from '../planes/registry';
@@ -166,7 +167,7 @@ function dataSource(): DataSource {
 
 /** Effective source for one screen section: its override, else portal demoMode. */
 function sourceFor(section: ScreenSection): DataSource {
-  return settings.get().sectionMode?.[section] ?? dataSource();
+  return effectiveSectionSource(settings.get(), section);
 }
 
 /**
@@ -614,6 +615,18 @@ interface ObservedConfigureInventory {
   vlans: VlanObject[];
 }
 
+function portDeviceIdentities(ports: readonly PortObject[]): PortObject[] {
+  const devices = liveDeviceData().devices;
+  return ports.map((port) => {
+    if (port.plane && port.serial) return port;
+    const matches = devices.filter((device) => device.name === port.device);
+    const device = matches.length === 1 ? matches[0] : null;
+    return device?.serial
+      ? { ...port, plane: device.plane, serial: device.serial }
+      : port;
+  });
+}
+
 function observedConfigureInventory(clients: ClientRow[]): ObservedConfigureInventory {
   const ssidGroups = new Map<string, ClientRow[]>();
   const portGroups = new Map<string, ClientRow[]>();
@@ -690,6 +703,60 @@ function observedConfigureInventory(clients: ClientRow[]): ObservedConfigureInve
   });
 
   return { ssids, ports, vlans };
+}
+
+interface LiveConfigureInventory extends ObservedConfigureInventory {
+  mode: 'configured' | 'observed' | 'unavailable';
+  detail: string;
+}
+
+/** Merge configuration reads per section. A configured section wins even when
+ * it is empty; sections no plane could read retain the observed-session
+ * fallback instead of hiding useful live evidence. */
+function liveConfigureInventory(): LiveConfigureInventory {
+  const observedAvailable = datasetReported('clients');
+  const observed = observedConfigureInventory(liveClients());
+  const configs = [...poller.contributionsByPlane().values()]
+    .map((pull) => pull.config)
+    .filter((config): config is NonNullable<PlanePull['config']> => config !== undefined);
+
+  const ssidsReported = configs.some((config) => config.ssids !== undefined);
+  const portsReported = configs.some((config) => config.ports !== undefined);
+  const vlansReported = configs.some((config) => config.vlans !== undefined);
+  const configured = ssidsReported || portsReported || vlansReported;
+
+  const dedupe = <T>(rows: T[], key: (row: T) => string): T[] =>
+    [...new Map(rows.map((row) => [key(row), row])).values()];
+  const configuredSsids = dedupe(
+    configs.flatMap((config) => config.ssids ?? []),
+    (row) => `${row.plane}|${row.name}`.toLowerCase(),
+  );
+  const configuredPorts = dedupe(
+    configs.flatMap((config) => config.ports ?? []),
+    (row) => `${row.device}|${row.port}`.toLowerCase(),
+  );
+  const configuredVlans = dedupe(
+    configs.flatMap((config) => config.vlans ?? []),
+    (row) => row.id.toLowerCase(),
+  );
+
+  const sections = [
+    ssidsReported ? 'configured SSIDs' : observedAvailable ? 'observed SSIDs' : null,
+    portsReported ? 'configured ports' : observedAvailable ? 'observed ports' : null,
+    vlansReported ? 'configured VLANs' : observedAvailable ? 'observed VLANs' : null,
+  ].filter((section): section is string => section !== null);
+  const sources = [...new Set(configs.map((config) => config.source).filter((source): source is string => !!source))];
+
+  return {
+    ssids: ssidsReported ? configuredSsids : observedAvailable ? observed.ssids : [],
+    ports: portDeviceIdentities(portsReported ? configuredPorts : observedAvailable ? observed.ports : []),
+    vlans: vlansReported ? configuredVlans : observedAvailable ? observed.vlans : [],
+    mode: configured ? 'configured' : observedAvailable ? 'observed' : 'unavailable',
+    detail:
+      sections.length === 0
+        ? 'no live config inventory source'
+        : `${sections.join(' · ')}${sources.length > 0 ? ` · ${sources.join(' + ')}` : ''}`,
+  };
 }
 
 /** Findings read in severity order, like the alert queue reads in P-order. */
@@ -911,6 +978,10 @@ function skeletonSite(id: SiteId, name: string): SiteRow {
   };
 }
 
+function isBookkeepingSiteId(id: SiteId): boolean {
+  return id === 'core-services' || id === 'workspace' || id === 'multiple';
+}
+
 /**
  * "Last sync" for a merged site row: the OLDEST last-sync across the planes
  * that claim it, because staleness is the point of the column (README §"State
@@ -937,7 +1008,8 @@ function siteSyncFor(badges: Iterable<Plane>): string {
  * planes (a site can answer to two planes — the design's point), while
  * device/client counts, the mix and the health bar are derived from the
  * reconciled inventory + live alerts rather than any single plane's say-so.
- * Devices/clients at a site no plane reported a row for still get a row.
+ * Devices/clients at a physical site no plane reported a row for still get a
+ * row. Bookkeeping ids such as `multiple` never become fake Sites entries.
  */
 function mergeLiveSites(
   rows: SiteRow[],
@@ -959,8 +1031,12 @@ function mergeLiveSites(
     }
   };
   for (const row of rows) note(row.id, row);
-  for (const d of devices) if (!byId.has(d.siteId)) note(d.siteId, skeletonSite(d.siteId, d.siteName));
-  for (const c of clients) if (!byId.has(c.siteId)) note(c.siteId, skeletonSite(c.siteId, c.siteName));
+  for (const d of devices) {
+    if (!isBookkeepingSiteId(d.siteId) && !byId.has(d.siteId)) note(d.siteId, skeletonSite(d.siteId, d.siteName));
+  }
+  for (const c of clients) {
+    if (!isBookkeepingSiteId(c.siteId) && !byId.has(c.siteId)) note(c.siteId, skeletonSite(c.siteId, c.siteName));
+  }
 
   const merged: SiteRow[] = [];
   for (const id of ids) {
@@ -1115,11 +1191,11 @@ function relSync(iso: string | null): string {
 
 /**
  * "Management planes" — the WHOLE roster, linked first. The tile beside this
- * panel counts "Planes linked N / 9"; omitting the unlinked ones made that
- * fraction unreconcilable and hid the reason a plane is dark. The kicker is a
- * coverage fact where the registry has one (what the plane actually claims),
- * falling back to its status note — the note alone just repeated the state
- * Badge next to it while deviceCount was thrown away.
+ * panel counts "Planes linked N / 10" (PLANE_IDS.length) — omitting the
+ * unlinked ones made that fraction unreconcilable and hid the reason a plane
+ * is dark. The kicker is a coverage fact where the registry has one (what the
+ * plane actually claims), falling back to its status note — the note alone
+ * just repeated the state Badge next to it while deviceCount was thrown away.
  */
 function liveOverviewPlanes(): OverviewPlaneRow[] {
   const rows: OverviewPlaneRow[] = [];
@@ -2228,9 +2304,9 @@ function liveClientDetail(client: ClientRow | null | undefined): Promise<ClientD
   const budget = detailBudgetNote(planeId);
   if (budget) return Promise.resolve(clientDetailStub(mac, planeId, budget, false));
   return neverThrows(
-    cachedDetail(`client:${planeId}:${normalizeMac(mac)}`, DETAIL_TTL_MS, () =>
+    cachedDetail(`client:${planeId}:${normalizeMac(mac)}:${client.medium}`, DETAIL_TTL_MS, () =>
       attemptDetail(
-        () => read.call(adapter, mac),
+        () => read.call(adapter, mac, client.medium),
         (note) => clientDetailStub(mac, planeId, note, true),
       ),
     ),
@@ -2961,11 +3037,59 @@ async function deviceDetailKeys(
   return { detail, topology };
 }
 
+/** Identity a /devices/:name request can carry on the query string, straight
+ *  off the row that linked here (Devices.tsx, the Devices platform-lanes
+ *  view, SiteDetail's device table). */
+type DeviceIdentityQuery = DeviceIdentity;
+
+function deviceIdentityQuery(req: { query: Record<string, unknown> }): DeviceIdentityQuery {
+  const { plane, serial } = req.query;
+  return {
+    plane: typeof plane === 'string' && plane.length > 0 ? plane : undefined,
+    serial: typeof serial === 'string' && serial.length > 0 ? serial : undefined,
+  };
+}
+
+/**
+ * Resolve ONE row for /api/devices/:name — plane+serial is the only identity
+ * that survives reconciliation (services/reconcile.ts identityKey): two rows
+ * can carry the same display name after two planes each claim a physically
+ * distinct device under it (different serial), and `.find` on name alone
+ * would silently serve whichever happened to sort first — the exact bug this
+ * resolver exists to close.
+ *
+ *   - `serial` given → resolved by serial ONLY (the one key every plane
+ *     agrees on); a name mismatch is not consulted, so a stale name in an old
+ *     deep link never blocks a resolution its serial still answers.
+ *   - no serial, name matches exactly one row → that row (legacy links —
+ *     search hits, other screens' name-only fields — keep working for as
+ *     long as the name stays unique).
+ *   - no serial, name matches more than one row → `plane` narrows it when
+ *     that alone is unambiguous; otherwise every match comes back so the
+ *     caller can report the ambiguity honestly instead of guessing.
+ */
+/** Honest 409 for a name that resolves to more than one physical device —
+ *  never picked-first, never a 404 (the name IS known, just not to one row). */
+function ambiguousDeviceResponse(
+  res: Response,
+  name: string,
+  dataSource: DataSource,
+  matches: ReadonlyArray<{ plane: Plane; serial?: string; claimedBy?: Plane[] }>,
+  extra: Record<string, unknown> = {},
+): void {
+  res.status(409).json({
+    error: `'${name}' names ${matches.length} devices — pass plane and serial to pick one`,
+    dataSource,
+    candidates: safeDeviceCandidates(matches),
+    ...extra,
+  });
+}
+
 screensRouter.get('/devices/:name', (req, res) => {
-  settle(res, serveDeviceDetail(res, req.params.name));
+  settle(res, serveDeviceDetail(res, req.params.name, deviceIdentityQuery(req)));
 });
 
-async function serveDeviceDetail(res: Response, name: string): Promise<void> {
+async function serveDeviceDetail(res: Response, name: string, identity: DeviceIdentityQuery): Promise<void> {
   if (sourceFor('devices') === 'demo') {
     // Blend: the devices section has swapped to live rows — a fixture detail
     // (config, clients) for a name the live inventory doesn't know would be
@@ -2974,7 +3098,15 @@ async function serveDeviceDetail(res: Response, name: string): Promise<void> {
       const liveDevices = liveDeviceData().devices;
       if (liveDevices.length > 0) {
         // Rows arrive shell-gated from liveDeviceData(); nothing to correct here.
-        const device = liveDevices.find((d) => d.name === name) ?? null;
+        const { device, ambiguous, invalid } = resolveDeviceIdentity(liveDevices, name, identity);
+        if (invalid) {
+          res.status(400).json({ error: invalid, dataSource: 'demo', blended: ['devices'] });
+          return;
+        }
+        if (ambiguous) {
+          ambiguousDeviceResponse(res, name, 'demo', ambiguous, { blended: ['devices'] });
+          return;
+        }
         if (!device) {
           res.status(404).json({ error: `device '${name}' not in the live inventory`, dataSource: 'demo', blended: ['devices'] });
           return;
@@ -2985,7 +3117,7 @@ async function serveDeviceDetail(res: Response, name: string): Promise<void> {
               device,
               profile: null,
               config: null,
-              clients: liveDeviceClients(name),
+              clients: liveDeviceClients(device.name),
               evidence: liveDeviceEvidence(device),
               ...liveTerminalPayload(device),
               ...(await deviceDetailKeys(device)),
@@ -2997,12 +3129,20 @@ async function serveDeviceDetail(res: Response, name: string): Promise<void> {
         return;
       }
     }
-    const fixtureDevice = DEVICES.find((d) => d.name === name) ?? null;
+    const { device: fixtureDevice, ambiguous, invalid } = resolveDeviceIdentity(DEVICES, name, identity);
+    if (invalid) {
+      res.status(400).json({ error: invalid, dataSource: 'demo' });
+      return;
+    }
+    if (ambiguous) {
+      ambiguousDeviceResponse(res, name, 'demo', ambiguous);
+      return;
+    }
     if (!fixtureDevice) {
       res.status(404).json({ error: `unknown device '${name}'`, dataSource: 'demo' });
       return;
     }
-    const profile = deviceProfile(name);
+    const profile = deviceProfile(fixtureDevice.name);
     res.json(
       envelopeFor('devices', {
         device: fixtureDevice,
@@ -3023,7 +3163,15 @@ async function serveDeviceDetail(res: Response, name: string): Promise<void> {
 
   // liveDeviceData() has already replaced `localShell` with the live gate, so
   // the served row and the terminal block below cannot disagree.
-  const device = liveDeviceData().devices.find((d) => d.name === name) ?? null;
+  const { device, ambiguous, invalid } = resolveDeviceIdentity(liveDeviceData().devices, name, identity);
+  if (invalid) {
+    res.status(400).json({ error: invalid, dataSource: 'live' });
+    return;
+  }
+  if (ambiguous) {
+    ambiguousDeviceResponse(res, name, 'live', ambiguous);
+    return;
+  }
   if (!device) {
     res.status(404).json({ error: `device '${name}' not in the live cache`, dataSource: 'live' });
     return;
@@ -3033,7 +3181,7 @@ async function serveDeviceDetail(res: Response, name: string): Promise<void> {
       device,
       profile: null,
       config: null,
-      clients: liveDeviceClients(name),
+      clients: liveDeviceClients(device.name),
       // The two facts the live pane was missing next to the reconciled row:
       // this device's own evidence verdicts, and the shell block when the
       // portal can really open one.
@@ -3107,6 +3255,14 @@ function effectiveScope(
 ): ReturnType<typeof scopeForPlane> {
   const caps = state.capabilities;
   if (!caps) return granted;
+  // SSE has no ticketed broker at all — PLANE_WRITE_MODE.sse is 'read only'
+  // (accurate for the Configure screen's port/SSID/VLAN capability matrix,
+  // which SSE never participates in), so scopeForPlane('sse', …) can never
+  // itself answer 'read + broker'. Its real write capability is reported
+  // through capabilities().directWrite instead (the Systems Configuration
+  // tab's object CRUD), which this helper is not asked to upgrade a scope
+  // for — there is nothing to downgrade here for a plane that was never
+  // granted 'read + broker' in the first place.
   if (granted === 'read + broker' && caps.brokeredWrite === false) return 'read only';
   if (granted === 'read + ssh' && caps.localShell === false) return 'read only';
   return granted;
@@ -3157,26 +3313,25 @@ screensRouter.get('/configure', (_req, res) => {
   // capabilities). The broker queue is authoritative in every source mode;
   // demo fixtures only supply the read-only inventory examples.
   if (sourceFor('configure') === 'demo') {
-    // Blend: once a plane reports client sessions the authored SSID/port/VLAN
-    // examples describe an estate that is not there — swap the whole section
-    // to the observed inventory, the same rule every other screen follows.
-    if (blendFor('configure') && datasetReported('clients')) {
+    // Blend: configured API reads or live client evidence replace the authored
+    // SSID/port/VLAN examples as one coherent live section.
+    const inventory = liveConfigureInventory();
+    if (blendFor('configure') && inventory.mode !== 'unavailable') {
       const blendQueue = liveConfigureQueue();
-      const observed = observedConfigureInventory(liveClients());
       const blendCompliance = datasetReported('devices') ? liveComplianceData(liveDeviceData().devices) : null;
       res.json(
         withBlended(
           envelopeFor('configure', {
             stats: liveConfigureStats(
               blendQueue,
-              observed.ssids.length + observed.ports.length + observed.vlans.length,
-              'observed from active client sessions',
+              inventory.ssids.length + inventory.ports.length + inventory.vlans.length,
+              inventory.detail,
               blendCompliance ? blendCompliance.findings.length : null,
             ),
-            ssids: observed.ssids,
-            ports: observed.ports,
-            vlans: observed.vlans,
-            inventoryMode: 'observed',
+            ssids: inventory.ssids,
+            ports: inventory.ports,
+            vlans: inventory.vlans,
+            inventoryMode: inventory.mode,
             queued: blendQueue,
             capabilities: liveCapabilityMatrix(),
           }),
@@ -3201,8 +3356,7 @@ screensRouter.get('/configure', (_req, res) => {
     return;
   }
   const queued = liveConfigureQueue();
-  const clientsReported = datasetReported('clients');
-  const inventory = observedConfigureInventory(liveClients());
+  const inventory = liveConfigureInventory();
   const configObjects = inventory.ssids.length + inventory.ports.length + inventory.vlans.length;
   const compliance = datasetReported('devices') ? liveComplianceData(liveDeviceData().devices) : null;
   res.json(
@@ -3212,14 +3366,14 @@ screensRouter.get('/configure', (_req, res) => {
     envelopeFor('configure', {
       stats: liveConfigureStats(
         queued,
-        clientsReported ? configObjects : null,
-        clientsReported ? 'observed from active client sessions' : 'no live config inventory source',
+        inventory.mode === 'unavailable' ? null : configObjects,
+        inventory.detail,
         compliance ? compliance.findings.length : null,
       ),
       ssids: inventory.ssids,
       ports: inventory.ports,
       vlans: inventory.vlans,
-      inventoryMode: clientsReported ? 'observed' : 'unavailable',
+      inventoryMode: inventory.mode,
       queued,
       capabilities: liveCapabilityMatrix(),
     }),
@@ -3278,6 +3432,7 @@ const SYSTEM_DISPLAY: Partial<Record<PlaneId, string>> = {
   local: 'Local switch collector',
   clearpass: 'ClearPass',
   uxi: 'UXI',
+  sse: 'HPE Aruba Networking SSE',
 };
 
 const SYSTEM_HEALTH_TONE: Record<PlaneHealth, Tone> = {
@@ -3323,6 +3478,14 @@ function planeLiveStats(pull: PlanePull | undefined): LiveStat[] {
   if (pull.alerts) rows.push({ value: String(pull.alerts.filter((a) => a.state === 'open').length), label: 'open alerts' });
   if (pull.subscriptions) rows.push({ value: String(pull.subscriptions.length), label: 'subscriptions' });
   if (pull.authEvents) rows.push({ value: String(pull.authEvents.length), label: 'auth events' });
+  if (pull.sse) {
+    const kinds = Object.values(pull.sse.kinds);
+    const totalObjects = kinds.reduce((sum, k) => sum + (k?.rows.length ?? 0), 0);
+    rows.push({ value: String(totalObjects), label: `SSE objects across ${kinds.length} kind${kinds.length === 1 ? '' : 's'}` });
+    if (pull.sse.unavailable.length > 0) {
+      rows.push({ value: String(pull.sse.unavailable.length), label: 'SSE kinds unavailable (scope or limited release)' });
+    }
+  }
   return rows;
 }
 
@@ -3366,7 +3529,7 @@ function tokenFact(s: PlaneState): string {
  * itself — the host an operator logs into: an AOS-8 mobility master (its own
  * HTTPS UI), a ClearPass publisher, a classic-Central region URL.
  *
- * The other four deliberately publish no console, so "Open console" stays
+ * The other five deliberately publish no console, so "Open console" stays
  * inert for them and says so (SystemRow.consoleUrl's contract) rather than
  * opening a page that is not a console:
  *   central   — stores an API GATEWAY (apigw-…); the console is a different
@@ -3375,6 +3538,9 @@ function tokenFact(s: PlaneState): string {
  *   greenlake — stores a workspace UUID, which is not a host at all.
  *   local     — an SSH jump box; the collector has no web console (SYSTEMS
  *               records none for it either).
+ *   sse       — stores the Admin API host (admin-api.axissecurity.com); the
+ *               operator console is a different hostname the portal does not
+ *               hold and must not guess, same reasoning as central/mist.
  */
 const CONSOLE_ENDPOINT_PLANES = ['classic', 'aos8', 'clearpass'] as const;
 type ConsoleEndpointPlane = (typeof CONSOLE_ENDPOINT_PLANES)[number];

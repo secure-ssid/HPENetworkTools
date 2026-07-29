@@ -9,8 +9,11 @@
 import { Router } from 'express';
 import { settings } from '../config/settings';
 import { registry } from '../planes/registry';
+import { normalizeSseBaseUrl, SseEndpointValidationError } from '../planes/sse';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
 import { poller } from '../services/poller';
+import { SseObjectsError, sseObjects, sseObjectsErrorBody } from '../services/sseObjects';
+import { CentralWebhooksError, centralWebhooks } from '../services/centralWebhooks';
 
 export const settingsRouter = Router();
 
@@ -67,6 +70,56 @@ settingsRouter.put('/settings', (req, res) => {
   if (bodyError) {
     res.status(400).json({ error: bodyError });
     return;
+  }
+  const requestedPlanes = (req.body as Record<string, unknown>).planes;
+  if (
+    requestedPlanes &&
+    typeof requestedPlanes === 'object' &&
+    !Array.isArray(requestedPlanes) &&
+    Object.prototype.hasOwnProperty.call(requestedPlanes, 'central')
+  ) {
+    try {
+      centralWebhooks.assertCentralCredentialsMutable();
+    } catch (err) {
+      if (err instanceof CentralWebhooksError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  }
+  if (
+    requestedPlanes &&
+    typeof requestedPlanes === 'object' &&
+    !Array.isArray(requestedPlanes) &&
+    Object.prototype.hasOwnProperty.call(requestedPlanes, 'sse')
+  ) {
+    const requestedSse = (requestedPlanes as Record<string, unknown>).sse;
+    if (requestedSse !== null && typeof requestedSse === 'object' && !Array.isArray(requestedSse)) {
+      const ssePatch = requestedSse as Record<string, unknown>;
+      const existingBaseUrl = settings.get().planes.sse?.baseUrl;
+      const effectiveBaseUrl = typeof ssePatch.baseUrl === 'string' ? ssePatch.baseUrl : existingBaseUrl;
+      try {
+        const normalized = normalizeSseBaseUrl(effectiveBaseUrl);
+        if (typeof ssePatch.baseUrl === 'string') ssePatch.baseUrl = normalized;
+      } catch (err) {
+        if (err instanceof SseEndpointValidationError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    }
+    try {
+      sseObjects.assertCredentialsMutable();
+    } catch (err) {
+      if (err instanceof SseObjectsError) {
+        if (err.status >= 500) console.error(`error: ${err.message}`);
+        res.status(err.status).json(sseObjectsErrorBody(err));
+        return;
+      }
+      throw err;
+    }
   }
   const previous = settings.get();
   const before = previous.pollIntervalSec;

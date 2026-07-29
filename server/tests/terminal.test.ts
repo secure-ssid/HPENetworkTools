@@ -371,7 +371,294 @@ describe('TerminalManager.readSession', () => {
   });
 });
 
-// -- local-plane credentials round-trip -----------------------------------------
+// -- identity migration / parser compatibility ---------------------------------
+
+describe('listSessions — plane/serial/identityKey persistence and migration compatibility', () => {
+  it('parses plane=/serial= off a new-generation open line into plane, serial and identityKey', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-identity-'));
+    writeFileSync(
+      join(dir, 'sw-core-a-2026-07-25T09-00-00.jsonl'),
+      JSON.stringify({
+        type: 'open',
+        at: '2026-07-25T09:00:00.000Z',
+        text: 'device=sw-core-a user=r.okafor target=10.42.8.11 plane=LOCAL serial=SERIAL-A identity=LOCAL/SERIAL-A via=collector-01 note=x',
+      }) + '\n',
+    );
+    const mgr = new TerminalManager({ logDir: dir });
+    const [session] = mgr.listSessions();
+    expect(session).toMatchObject({
+      device: 'sw-core-a',
+      user: 'r.okafor',
+      target: '10.42.8.11',
+      plane: 'LOCAL',
+      serial: 'SERIAL-A',
+      identityKey: 'LOCAL/SERIAL-A',
+    });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a legacy open line (no plane=/serial=) still parses cleanly, with identity fields undefined', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-legacy-'));
+    writeFileSync(
+      join(dir, 'sw-core-a-2026-01-01T09-00-00.jsonl'),
+      JSON.stringify({
+        type: 'open',
+        at: '2026-01-01T09:00:00.000Z',
+        text: 'device=sw-core-a user=r.okafor target=10.42.8.11 via=collector-01 note=x',
+      }) + '\n',
+    );
+    const mgr = new TerminalManager({ logDir: dir });
+    const [session] = mgr.listSessions();
+    expect(session).toMatchObject({ device: 'sw-core-a', user: 'r.okafor', target: '10.42.8.11' });
+    expect(session.plane).toBeUndefined();
+    expect(session.serial).toBeUndefined();
+    expect(session.identityKey).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a session opened with a complete plane+serial identity persists it into the recording file', async () => {
+    const dialled = { target: null as string | null };
+    const mgr = new TerminalManager({
+      logDir: tmpDir,
+      demoMode: () => false,
+      liveDevices: () => [{ name: 'identity-recorded', ip: '10.99.1.1', plane: 'LOCAL', serial: 'SERIAL-Z' }],
+      creds: () => FAKE_CREDS,
+      connect: async (target) => {
+        dialled.target = target;
+        return new FakeSshClient() as unknown as Client;
+      },
+    });
+    openSession(mgr, 'identity-recorded', { plane: 'LOCAL', serial: 'SERIAL-Z' });
+    await flush();
+    const session = mgr.listSessions().find((s) => s.device === 'identity-recorded');
+    expect(session).toMatchObject({ plane: 'LOCAL', serial: 'SERIAL-Z', identityKey: 'LOCAL/SERIAL-Z' });
+  });
+
+  it('a session opened with no identity (name-only) records no plane/serial — never fabricated', async () => {
+    const mgr = new TerminalManager({
+      logDir: tmpDir,
+      demoMode: () => true,
+      creds: () => FAKE_CREDS,
+      connect: async () => new FakeSshClient() as unknown as Client,
+    });
+    openSession(mgr, 'name-only-device', {});
+    await flush();
+    const session = mgr.listSessions().find((s) => s.device === 'name-only-device');
+    expect(session?.plane).toBeUndefined();
+    expect(session?.serial).toBeUndefined();
+    expect(session?.identityKey).toBeUndefined();
+  });
+});
+
+// -- duplicate-name isolation / exact filtering / legacy unique-or-ambiguous ---
+
+describe('TerminalManager.listSessionsForDevice — never guesses across a shared display name', () => {
+  const writeOpen = (dir: string, file: string, at: string, text: string): void => {
+    writeFileSync(join(dir, file), JSON.stringify({ type: 'open', at, text }) + '\n');
+  };
+
+  it('an exact plane+serial query returns only that identity’s recordings — never the other device sharing the name', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-dupname-'));
+    writeOpen(dir, 'shared-a-2026-01-01T09-00-00.jsonl', '2026-01-01T09:00:00.000Z',
+      'device=shared user=alice target=10.1.1.1 plane=LOCAL serial=SERIAL-A identity=LOCAL/SERIAL-A');
+    writeOpen(dir, 'shared-b-2026-01-01T09-01-00.jsonl', '2026-01-01T09:01:00.000Z',
+      'device=shared user=bob target=10.1.1.2 plane=CENTRAL serial=SERIAL-B identity=CENTRAL/SERIAL-B');
+
+    const mgr = new TerminalManager({
+      logDir: dir,
+      demoMode: () => false,
+      liveDevices: () => [
+        { name: 'shared', ip: '10.1.1.1', plane: 'LOCAL', serial: 'SERIAL-A' },
+        { name: 'shared', ip: '10.1.1.2', plane: 'CENTRAL', serial: 'SERIAL-B' },
+      ],
+    });
+
+    const a = mgr.listSessionsForDevice('shared', { plane: 'LOCAL', serial: 'SERIAL-A' });
+    expect(a.ambiguous).toBe(false);
+    expect(a.sessions).toHaveLength(1);
+    expect(a.sessions[0]).toMatchObject({ user: 'alice', serial: 'SERIAL-A' });
+
+    const b = mgr.listSessionsForDevice('shared', { plane: 'CENTRAL', serial: 'SERIAL-B' });
+    expect(b.ambiguous).toBe(false);
+    expect(b.sessions).toHaveLength(1);
+    expect(b.sessions[0]).toMatchObject({ user: 'bob', serial: 'SERIAL-B' });
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('no identity supplied for a genuinely shared name reports ambiguous — never a first-match guess', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-dupname-bare-'));
+    writeOpen(dir, 'shared-a-2026-01-01T09-00-00.jsonl', '2026-01-01T09:00:00.000Z',
+      'device=shared user=alice target=10.1.1.1 plane=LOCAL serial=SERIAL-A identity=LOCAL/SERIAL-A');
+    writeOpen(dir, 'shared-b-2026-01-01T09-01-00.jsonl', '2026-01-01T09:01:00.000Z',
+      'device=shared user=bob target=10.1.1.2 plane=CENTRAL serial=SERIAL-B identity=CENTRAL/SERIAL-B');
+
+    const mgr = new TerminalManager({
+      logDir: dir,
+      demoMode: () => false,
+      liveDevices: () => [
+        { name: 'shared', ip: '10.1.1.1', plane: 'LOCAL', serial: 'SERIAL-A' },
+        { name: 'shared', ip: '10.1.1.2', plane: 'CENTRAL', serial: 'SERIAL-B' },
+      ],
+    });
+
+    const result = mgr.listSessionsForDevice('shared');
+    expect(result.ambiguous).toBe(true);
+    expect(result.sessions).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('legacy recordings under a name that is provably unique (single identity, no live duplicate) are shown', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-legacy-unique-'));
+    writeOpen(dir, 'lonely-2026-01-01T09-00-00.jsonl', '2026-01-01T09:00:00.000Z',
+      'device=lonely user=carol target=10.5.5.5'); // no identity — pre-migration recording
+
+    const mgr = new TerminalManager({
+      logDir: dir,
+      demoMode: () => false,
+      liveDevices: () => [{ name: 'lonely', ip: '10.5.5.5', plane: 'LOCAL', serial: 'SERIAL-LONELY' }],
+    });
+
+    const result = mgr.listSessionsForDevice('lonely', { plane: 'LOCAL', serial: 'SERIAL-LONELY' });
+    expect(result.ambiguous).toBe(false);
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]).toMatchObject({ user: 'carol' });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('legacy recordings under a name the live inventory now shares are omitted, never guessed onto either device', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-legacy-ambiguous-'));
+    writeOpen(dir, 'shared-2026-01-01T09-00-00.jsonl', '2026-01-01T09:00:00.000Z',
+      'device=shared user=carol target=10.5.5.5'); // pre-migration — no identity on file
+
+    const mgr = new TerminalManager({
+      logDir: dir,
+      demoMode: () => false,
+      // The name is now claimed by two physically distinct live devices —
+      // the legacy recording cannot honestly be attributed to either.
+      liveDevices: () => [
+        { name: 'shared', ip: '10.5.5.5', plane: 'LOCAL', serial: 'SERIAL-A' },
+        { name: 'shared', ip: '10.5.5.6', plane: 'CENTRAL', serial: 'SERIAL-B' },
+      ],
+    });
+
+    const exact = mgr.listSessionsForDevice('shared', { plane: 'LOCAL', serial: 'SERIAL-A' });
+    expect(exact.ambiguous).toBe(false);
+    expect(exact.sessions).toEqual([]); // no recording carries this identity, and the legacy one is unsafe to attribute
+
+    const bare = mgr.listSessionsForDevice('shared');
+    expect(bare.ambiguous).toBe(true);
+    expect(bare.sessions).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('two distinct identities ever recorded under one name make even a legacy-free request honest without a live row to confirm uniqueness', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-distinct-history-'));
+    writeOpen(dir, 'shared-a-2026-01-01T09-00-00.jsonl', '2026-01-01T09:00:00.000Z',
+      'device=shared user=alice target=10.1.1.1 plane=LOCAL serial=SERIAL-A identity=LOCAL/SERIAL-A');
+    writeOpen(dir, 'shared-b-2026-01-01T09-01-00.jsonl', '2026-01-01T09:01:00.000Z',
+      'device=shared user=bob target=10.1.1.2 plane=CENTRAL serial=SERIAL-B identity=CENTRAL/SERIAL-B');
+    // Neither device is live any more — the inventory alone cannot prove
+    // uniqueness, but the recordings' own history already disproves it.
+    const mgr = new TerminalManager({ logDir: dir, demoMode: () => false, liveDevices: () => [] });
+
+    const result = mgr.listSessionsForDevice('shared');
+    expect(result.ambiguous).toBe(true);
+    expect(result.sessions).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('rejects a half identity pair (plane without serial, or serial without plane)', () => {
+    const mgr = new TerminalManager({ logDir: tmpDir, demoMode: () => false, liveDevices: () => [] });
+    expect(mgr.listSessionsForDevice('anything', { plane: 'LOCAL' }).invalid).toMatch(/together/);
+    expect(mgr.listSessionsForDevice('anything', { serial: 'X' }).invalid).toMatch(/together/);
+  });
+
+  it('an unknown device name returns an honest empty list, not ambiguous', () => {
+    const mgr = new TerminalManager({ logDir: tmpDir, demoMode: () => false, liveDevices: () => [] });
+    const result = mgr.listSessionsForDevice('never-recorded');
+    expect(result).toEqual({ sessions: [], ambiguous: false, invalid: null });
+  });
+});
+
+describe('TerminalManager.readSessionForDevice — a transcript is gated by the same identity rule as the listing', () => {
+  const writeSession = (dir: string, file: string, text: string): void => {
+    writeFileSync(
+      join(dir, file),
+      [
+        JSON.stringify({ type: 'open', at: '2026-01-01T09:00:00.000Z', text }),
+        JSON.stringify({ type: 'out', at: '2026-01-01T09:00:01.000Z', text: 'OUTPUT-FOR-THIS-FILE' }),
+      ].join('\n') + '\n',
+    );
+  };
+
+  it('serves the transcript when the file belongs to the exact requested identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-read-exact-'));
+    writeSession(dir, 'shared-a.jsonl', 'device=shared user=alice target=10.1.1.1 plane=LOCAL serial=SERIAL-A identity=LOCAL/SERIAL-A');
+    writeSession(dir, 'shared-b.jsonl', 'device=shared user=bob target=10.1.1.2 plane=CENTRAL serial=SERIAL-B identity=CENTRAL/SERIAL-B');
+    const mgr = new TerminalManager({
+      logDir: dir,
+      demoMode: () => false,
+      liveDevices: () => [
+        { name: 'shared', ip: '10.1.1.1', plane: 'LOCAL', serial: 'SERIAL-A' },
+        { name: 'shared', ip: '10.1.1.2', plane: 'CENTRAL', serial: 'SERIAL-B' },
+      ],
+    });
+
+    const result = mgr.readSessionForDevice('shared-a.jsonl', 'shared', { plane: 'LOCAL', serial: 'SERIAL-A' });
+    expect(result.invalid).toBeNull();
+    expect(result.ambiguous).toBe(false);
+    expect(result.transcript?.events.some((e) => e.text === 'OUTPUT-FOR-THIS-FILE')).toBe(true);
+  });
+
+  it('refuses another identity’s file even when the caller already knows its exact name — never leaks content across a shared name', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-read-cross-'));
+    writeSession(dir, 'shared-a.jsonl', 'device=shared user=alice target=10.1.1.1 plane=LOCAL serial=SERIAL-A identity=LOCAL/SERIAL-A');
+    writeSession(dir, 'shared-b.jsonl', 'device=shared user=bob target=10.1.1.2 plane=CENTRAL serial=SERIAL-B identity=CENTRAL/SERIAL-B');
+    const mgr = new TerminalManager({
+      logDir: dir,
+      demoMode: () => false,
+      liveDevices: () => [
+        { name: 'shared', ip: '10.1.1.1', plane: 'LOCAL', serial: 'SERIAL-A' },
+        { name: 'shared', ip: '10.1.1.2', plane: 'CENTRAL', serial: 'SERIAL-B' },
+      ],
+    });
+
+    // Ask for B's file while presenting A's identity — must miss, not leak.
+    const result = mgr.readSessionForDevice('shared-b.jsonl', 'shared', { plane: 'LOCAL', serial: 'SERIAL-A' });
+    expect(result.transcript).toBeNull();
+    expect(result.ambiguous).toBe(false);
+    expect(result.invalid).toBeNull();
+  });
+
+  it('an ambiguous bare-name request reports ambiguous rather than serving any transcript', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-read-ambiguous-'));
+    writeSession(dir, 'shared-a.jsonl', 'device=shared user=alice target=10.1.1.1 plane=LOCAL serial=SERIAL-A identity=LOCAL/SERIAL-A');
+    writeSession(dir, 'shared-b.jsonl', 'device=shared user=bob target=10.1.1.2 plane=CENTRAL serial=SERIAL-B identity=CENTRAL/SERIAL-B');
+    const mgr = new TerminalManager({
+      logDir: dir,
+      demoMode: () => false,
+      liveDevices: () => [
+        { name: 'shared', ip: '10.1.1.1', plane: 'LOCAL', serial: 'SERIAL-A' },
+        { name: 'shared', ip: '10.1.1.2', plane: 'CENTRAL', serial: 'SERIAL-B' },
+      ],
+    });
+
+    const result = mgr.readSessionForDevice('shared-a.jsonl', 'shared');
+    expect(result.ambiguous).toBe(true);
+    expect(result.transcript).toBeNull();
+  });
+
+  it('rejects traversal file names even when routed through readSessionForDevice', () => {
+    const mgr = new TerminalManager({ logDir: tmpDir, demoMode: () => false, liveDevices: () => [] });
+    writeFileSync(join(tmpDir, 'legit-2026-01-01.jsonl'), JSON.stringify({ type: 'open', at: '2026-01-01T09:00:00.000Z', text: 'device=legit user=a target=b' }) + '\n');
+    const result = mgr.readSessionForDevice('../settings.json', 'legit');
+    expect(result.transcript).toBeNull();
+    expect(result.ambiguous).toBe(false);
+    expect(result.invalid).toBeNull();
+  });
+});
+
 
 describe('local-plane credential handling (settings store)', () => {
   it('saves username/password/privateKey/passphrase and never exposes secrets', () => {
@@ -481,9 +768,13 @@ class LiveShellClient extends EventEmitter {
 const FAKE_CREDS = { username: 'netops', password: 'lab-password', jumpHost: null, jumpPort: 22, allowHostOverride: false };
 
 /** Drive a connection straight to {type:'open'}; returns the fake socket. */
-function openSession(mgr: TerminalManager, device = 'sw-core-a'): FakeWs {
+function openSession(
+  mgr: TerminalManager,
+  device = 'sw-core-a',
+  identity: { plane?: string; serial?: string } = {},
+): FakeWs {
   const ws = new FakeWs();
-  mgr.handleConnection(ws as unknown as WebSocket, device, null);
+  mgr.handleConnection(ws as unknown as WebSocket, device, null, identity);
   ws.emit('message', Buffer.from(JSON.stringify({ type: 'open' })));
   return ws;
 }
@@ -492,7 +783,10 @@ function openSession(mgr: TerminalManager, device = 'sw-core-a'): FakeWs {
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 describe('session open — live-mode target resolution', () => {
-  const manager = (liveDevices: Array<{ name: string; ip?: string }>, dialled: { target: string | null }) =>
+  const manager = (
+    liveDevices: Array<{ name: string; ip?: string; plane?: 'CENTRAL' | 'LOCAL'; serial?: string }>,
+    dialled: { target: string | null },
+  ) =>
     new TerminalManager({
       logDir: tmpDir,
       demoMode: () => false,
@@ -535,6 +829,29 @@ describe('session open — live-mode target resolution', () => {
     expect(rec).toBeTruthy();
     expect(rec).toContain('device=sw-core-a');
     expect(rec).toContain('target=10.99.0.7');
+  });
+
+  it('uses plane+serial to open the exact duplicate-name device', async () => {
+    const dialled = { target: null as string | null };
+    const mgr = manager([
+      { name: 'sw-core-a', ip: '10.99.0.7', plane: 'LOCAL', serial: 'SERIAL-A' },
+      { name: 'sw-core-a', ip: '10.99.0.8', plane: 'LOCAL', serial: 'SERIAL-B' },
+    ], dialled);
+    openSession(mgr, 'sw-core-a', { plane: 'LOCAL', serial: 'SERIAL-B' });
+    await flush();
+    expect(dialled.target).toBe('10.99.0.8');
+  });
+
+  it('rejects an ambiguous legacy terminal action without dialing either device', () => {
+    const dialled = { target: null as string | null };
+    const ws = openSession(manager([
+      { name: 'sw-core-a', ip: '10.99.0.7', plane: 'LOCAL', serial: 'SERIAL-A' },
+      { name: 'sw-core-a', ip: '10.99.0.8', plane: 'CENTRAL', serial: 'SERIAL-B' },
+    ], dialled));
+    expect(ws.errorFrame()).toContain("'sw-core-a' names 2 devices");
+    expect(ws.errorFrame()).toContain('LOCAL/SERIAL-A');
+    expect(ws.errorFrame()).toContain('CENTRAL/SERIAL-B');
+    expect(dialled.target).toBeNull();
   });
 
   it('demo mode keeps the fixture profile IP (unchanged behaviour)', async () => {

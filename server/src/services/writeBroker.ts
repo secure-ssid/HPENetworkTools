@@ -35,6 +35,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   PORT_MODE_OPTIONS,
+  DEVICES,
   SSID_BAND_OPTIONS,
   SSID_SECURITY_OPTIONS,
   VLAN_SCOPE_OPTIONS,
@@ -47,11 +48,14 @@ import {
   type PortForm,
   type SsidForm,
   type VlanForm,
+  type Plane,
 } from '../../../shared';
 import { CentralAdapter } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { settings } from '../config/settings';
 import { knownTicketId } from './tickets';
+import { poller } from './poller';
+import { resolveDeviceIdentity, safeDeviceCandidates } from './deviceIdentity';
 
 export const LEASE_MS = 15 * 60 * 1000;
 export const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -61,8 +65,19 @@ export const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 // ---------------------------------------------------------------------------
 
 /** The auth'd transport the broker pushes through (CentralAdapter qualifies). */
+export interface BrokerResponse {
+  status: number;
+  body: unknown;
+  /** Sanitized Location response header, when the upstream returned one. */
+  location?: string;
+  /** Retry-After converted to a relative delay. */
+  retryAfterMs?: number;
+  /** X-RateLimit-Reset (or equivalent) converted to an absolute epoch. */
+  rateLimitResetAtMs?: number;
+}
+
 export interface BrokerTransport {
-  request(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<{ status: number; body: unknown }>;
+  request(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<BrokerResponse>;
 }
 
 export type ChangeState = 'ready' | 'applying' | 'needs window' | 'console';
@@ -308,6 +323,17 @@ const enc = encodeURIComponent;
  * ONE conservative candidate path per kind — never a list. These are the
  * best-known new-Central config paths; a 404 is tolerated and reported as
  * "unverified against this tenant", never as success.
+ *
+ * SSID's case below is legacy/superseded: the real New Central write surface
+ * is a WLAN profile upsert plus separate scope-map assignment (see
+ * CentralAdapter.applySsidProfile()/ssidCatalog() and
+ * services/ssidDirectWrite.ts), which this broker's one-ticket-one-PUT model
+ * cannot express — a single PUT can neither create-vs-update correctly nor
+ * assign scopes. Configure.tsx no longer calls queue()/dryRun()/push() for
+ * kind 'ssid'; this branch remains only so the broker's generic ticket/lease/
+ * snapshot/log mechanics stay exercised by kind-agnostic tests using 'ssid'
+ * as their example kind, and so a change already queued under an older build
+ * is still something push() can attempt rather than throw on unconditionally.
  */
 function pushPathFor(kind: ConfigKind, form: ConfigForm): string {
   if (kind === 'ssid') return `/configuration/v2/wlan/${enc((form as SsidForm).group)}`;
@@ -316,7 +342,7 @@ function pushPathFor(kind: ConfigKind, form: ConfigForm): string {
     return `/configuration/v2/vlan/${enc(f.scope)}/${enc(f.id)}`;
   }
   const f = form as PortForm;
-  return `/configuration/v2/switch-port/${enc(f.device)}/${enc(f.id)}`;
+  return `/configuration/v2/switch-port/${enc(f.serial ?? f.device)}/${enc(f.id)}`;
 }
 
 /** Read-back candidates for the rollback snapshot (GETs may safely try alternates). */
@@ -346,7 +372,10 @@ function pushBodyFor(kind: ConfigKind, form: ConfigForm): Record<string, unknown
   if (kind === 'port') {
     const f = form as PortForm;
     return {
-      device: f.device,
+      device: f.serial ?? f.device,
+      deviceName: f.device,
+      ...(f.plane ? { plane: f.plane } : {}),
+      ...(f.serial ? { serial: f.serial } : {}),
       interface: f.id,
       description: f.desc,
       mode: f.mode,
@@ -421,6 +450,10 @@ export interface BrokerLogEntry {
   kind: string;
   result: string;
   httpCode?: number;
+  callbackValidatedAt?: string;
+  device?: string;
+  plane?: string;
+  serial?: string | null;
 }
 
 /**
@@ -445,6 +478,12 @@ export interface WriteBrokerOptions {
   dataDir?: string; // default: HPE_DATA_DIR or <repo>/data
   nowMs?: () => number; // injected clock for tests (lease/snapshot timing)
   knownTicket?: (id: string) => boolean; // default: the ticket store (+ fixture ids in demo mode)
+  listDevices?: () => Array<{
+    name: string;
+    plane: Plane | string;
+    serial?: string;
+    claimedBy?: Plane[];
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +496,7 @@ export class WriteBroker {
   private readonly dataDir: string;
   private readonly nowMs: () => number;
   private readonly knownTicket: (id: string) => boolean;
+  private readonly listDevices: NonNullable<WriteBrokerOptions['listDevices']>;
   private changes: BrokeredChange[] | null = null; // lazy-loaded from disk
   private readonly pushing = new Set<string>(); // change ids with a push in flight (double-apply guard)
 
@@ -466,6 +506,52 @@ export class WriteBroker {
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
     this.knownTicket = opts.knownTicket ?? ((id) => knownTicketId(id, settings.get().demoMode));
+    this.listDevices = opts.listDevices ?? (() => {
+      const devices = settings.get().demoMode ? DEVICES : poller.getCache().devices;
+      return devices.map((device) => ({
+        name: device.name,
+        plane: device.plane,
+        ...(device.serial ? { serial: device.serial } : {}),
+        ...(device.claimedBy ? { claimedBy: device.claimedBy } : {}),
+      }));
+    });
+  }
+
+  private actionForm(kind: ConfigKind, form: ConfigForm): ConfigForm {
+    if (kind !== 'port') return form;
+    const port = form as PortForm;
+    const hasPlane = typeof port.plane === 'string' && port.plane.trim().length > 0;
+    const hasSerial = typeof port.serial === 'string' && port.serial.trim().length > 0;
+    if (hasPlane !== hasSerial) {
+      throw new BrokerError(400, 'port device plane and serial must be supplied together');
+    }
+    const resolution = resolveDeviceIdentity(
+      this.listDevices(),
+      port.device,
+      { plane: port.plane, serial: port.serial },
+      { requireCompleteIdentity: true, requireNameMatch: true },
+    );
+    if (resolution.invalid) throw new BrokerError(409, resolution.invalid);
+    if (resolution.ambiguous) {
+      throw new BrokerError(
+        409,
+        `'${port.device}' names ${resolution.ambiguous.length} devices — pass plane and serial (${safeDeviceCandidates(resolution.ambiguous)
+          .map((candidate) => `${candidate.plane}/${candidate.serial ?? 'no-serial'}`)
+          .join(', ')})`,
+      );
+    }
+    if (!resolution.device) {
+      throw new BrokerError(404, `device '${port.device}' not found in inventory`);
+    }
+    const { plane: _plane, serial: _serial, ...rest } = port;
+    return resolution.device.serial && resolution.device.plane
+      ? {
+          ...rest,
+          device: resolution.device.name,
+          plane: resolution.device.plane as Plane,
+          serial: resolution.device.serial,
+        }
+      : { ...rest, device: resolution.device.name };
   }
 
   // -- render -----------------------------------------------------------------
@@ -490,7 +576,7 @@ export class WriteBroker {
    */
   async dryRun(kind: unknown, form: unknown, ticketRaw: unknown): Promise<DryRunResult> {
     const k = asConfigKind(kind);
-    const f = asForm(k, form);
+    const f = this.actionForm(k, asForm(k, form));
     const ticket = requireKnownTicket(ticketRaw, this.knownTicket);
     const rendered = this.renderPayload(k, f);
     const base = { kind: k, ticket, ...rendered };
@@ -590,7 +676,7 @@ export class WriteBroker {
    */
   queue(kind: unknown, form: unknown, ticketRaw: unknown): BrokeredChange {
     const k = asConfigKind(kind);
-    const f = asForm(k, form);
+    const f = this.actionForm(k, asForm(k, form));
     const ticket = requireKnownTicket(ticketRaw, this.knownTicket);
     const target = targetFor(k, f);
     const writable = target === 'central' && this.centralTransport() !== null;
@@ -670,7 +756,8 @@ export class WriteBroker {
   /** The push pipeline itself — re-entry is guarded by push(). */
   private async executePush(changeIdRaw: unknown): Promise<PushResult> {
     const change = this.getChange(changeIdRaw);
-    const { kind, form } = change.object;
+    const { kind } = change.object;
+    const form = this.actionForm(kind, change.object.form);
     const base = { changeId: change.id, ticket: change.ticket, kind };
 
     if (!change.ticket.trim()) throw new BrokerError(400, 'change has no ticket reference — discard and re-queue with a ticket');

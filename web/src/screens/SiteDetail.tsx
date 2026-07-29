@@ -44,11 +44,21 @@ import {
 import { getSiteDetail, type SiteDetailData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { Density } from '../app/SettingsContext';
-import { SITE_CHAIN, buildSiteTopology } from '../../../shared';
-import type { SiteAlertRow, SiteDeviceRow, SiteReachability } from '../../../shared';
+import { deviceDetailPath } from '../app/nav';
+import { SITE_CHAIN, buildSiteTopology, detailState } from '../../../shared';
+import type {
+  SiteAlertRow,
+  SiteDeviceRow,
+  SiteReachability,
+  SiteTopologyLive,
+} from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
-import { SiteTopologyDiagram } from './SiteTopology';
+import {
+  SiteTopologyDiagram,
+  buildLiveSiteTopology,
+  liveTopologyLinkFact,
+} from './SiteTopology';
 
 /** The per-site sections the live/blend envelope carries alongside the site
  *  row (server: liveSiteSections). Optional on the wire — a server that does
@@ -59,6 +69,7 @@ type LiveSiteSections = {
   devices?: SiteDeviceRow[];
   alerts?: SiteAlertRow[];
   reachability?: SiteReachability;
+  topology?: SiteTopologyLive | null;
 };
 
 function hhmm(iso: string): string {
@@ -105,7 +116,7 @@ function SiteDeviceTable({
   devices: SiteDeviceRow[];
   density: Density;
   showPlatformTags: boolean;
-  onOpen: (name: string) => void;
+  onOpen: (device: SiteDeviceRow) => void;
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
@@ -123,11 +134,11 @@ function SiteDeviceTable({
         </Table.Head>
         <Table.Body>
           {devices.map((d) => (
-            <Table.Row key={d.name}>
+            <Table.Row key={`${d.name}:${d.serial ?? d.plane}`}>
               <Table.Cell>
                 <button
                   type="button"
-                  onClick={() => onOpen(d.name)}
+                  onClick={() => onOpen(d)}
                   style={{
                     background: 'none',
                     border: 'none',
@@ -321,6 +332,122 @@ function OpenHereList({
   );
 }
 
+function LiveTopologyPanel({
+  topology,
+  devices,
+  onDevice,
+}: {
+  topology: SiteTopologyLive | null | undefined;
+  devices: SiteDeviceRow[];
+  onDevice: (name: string) => void;
+}) {
+  const nodeState = detailState(topology?.source, 'nodes');
+  const linkState = detailState(topology?.source, 'links');
+  const nodes = topology?.nodes ?? [];
+  const links = topology?.links ?? [];
+  const hasNodes = nodeState === 'ok' && nodes.length > 0;
+  const plane = topology?.source.plane.toUpperCase() ?? null;
+
+  if (!hasNodes) {
+    const failed = nodeState === 'failed' || linkState === 'failed';
+    const empty = nodeState === 'empty' || linkState === 'empty';
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <SectionHeader
+          label="Topology"
+          meta={failed ? 'READ FAILED' : empty ? 'EMPTY' : 'NOT REPORTED'}
+        />
+        <div
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 'var(--nd-text-11)',
+            color: 'var(--nd-text-muted)',
+            lineHeight: 1.6,
+          }}
+        >
+          {failed
+            ? `The topology read did not complete${
+                topology?.source.note ? ` — ${topology.source.note}` : ''
+              }. No graph is drawn rather than substituting a guessed or demo topology.`
+            : empty
+              ? `${plane ?? 'The linked plane'} answered for this site and reported no topology nodes or links.`
+              : 'No linked source reported a topology for this site. The portal will not substitute the demo site profile.'}
+        </div>
+      </div>
+    );
+  }
+
+  const diagram = buildLiveSiteTopology(topology as SiteTopologyLive, devices);
+  const readAt = topology?.source.at ? hhmm(topology.source.at) : null;
+  const sourceMeta = topology?.source.cached
+    ? `${nodes.length} NODES · ${links.length} LINKS · CACHED`
+    : `${nodes.length} NODES · ${links.length} LINKS · ${plane ?? 'LIVE'}`;
+  const names = new Map(nodes.map((node) => [node.serial, node.name]));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <SectionHeader label="Topology" meta={sourceMeta} />
+      <SiteTopologyDiagram topology={diagram} onDevice={onDevice} />
+      <div
+        style={{
+          fontFamily: 'var(--nd-font-mono)',
+          fontSize: 10.5,
+          color: 'var(--nd-text-muted)',
+          lineHeight: 1.5,
+        }}
+      >
+        {diagram.note}
+        {topology?.source.cached && readAt ? ` Cached read from ${readAt}.` : ''}
+        {linkState === 'failed'
+          ? ` Link details failed${topology?.source.note ? ` — ${topology.source.note}` : ''}.`
+          : ''}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <SectionHeader label="Reported physical links" meta="PORT-TO-PORT" />
+        {links.map((link, index) => (
+          <div
+            key={`${link.from}:${link.to}:${index}`}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(180px, .8fr) minmax(220px, 1.2fr)',
+              gap: 16,
+              padding: '8px 0',
+              borderBottom: '1px solid var(--nd-border-subtle)',
+            }}
+          >
+            <span style={{ color: 'var(--nd-text-secondary)' }}>
+              {names.get(link.from) ?? link.from} ↔ {names.get(link.to) ?? link.to}
+            </span>
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-10)',
+                color: 'var(--nd-text-muted)',
+              }}
+            >
+              {liveTopologyLinkFact(link) || 'ports and speed not reported'}
+            </span>
+          </div>
+        ))}
+        {links.length === 0 ? (
+          <div
+            style={{
+              fontFamily: 'var(--nd-font-mono)',
+              fontSize: 10.5,
+              color: 'var(--nd-text-muted)',
+              padding: '8px 0',
+            }}
+          >
+            {linkState === 'empty'
+              ? `${plane ?? 'The linked plane'} reported devices but no physical links.`
+              : 'Physical links were not fetched.'}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export default function SiteDetail() {
   const navigate = useNavigate();
   const { density, showPlatformTags } = useSettings();
@@ -391,6 +518,10 @@ export default function SiteDetail() {
     // LOCAL-claimed share of this site's devices. Absent = the route does not
     // compute it, and the panel stays the honest NOT REPORTED note below.
     const reachability = sections.reachability ?? null;
+    const liveTopology = sections.topology;
+    const liveTopologyReported =
+      detailState(liveTopology?.source, 'nodes') === 'ok' &&
+      (liveTopology?.nodes?.length ?? 0) > 0;
     // README §7 header actions. The launch plane is whatever claimed the site —
     // never a hardcoded label, and no button at all when nothing claimed it.
     const launchPlane = site.planes[0]?.name ?? null;
@@ -410,9 +541,9 @@ export default function SiteDetail() {
           overline={`Sites / ${name}`}
           title={name}
           subtitle={
-            reachability
-              ? 'Live summary from linked plane inventory. Profile and topology are not reported by the current feeds.'
-              : 'Live summary from linked plane inventory. Profile, topology, and local reachability are not reported by the current feeds.'
+            liveTopologyReported
+              ? 'Live summary and physical topology from linked plane inventory. The authored site profile is not available.'
+              : 'Live summary from linked plane inventory. Topology and local reachability status are shown below.'
           }
           actions={
             <>
@@ -479,8 +610,14 @@ export default function SiteDetail() {
 
         <Divider variant="flair" />
 
+        <LiveTopologyPanel
+          topology={liveTopology}
+          devices={liveDevices}
+          onDevice={(deviceName) => navigate(`/devices/${encodeURIComponent(deviceName)}`)}
+        />
+
         {/* Same two columns as the authored branch (README §7): the per-site
-            device table on the left, facts / topology / open alerts on the
+            device table on the left, facts / reachability / open alerts on the
             right — the API sends both projections with a live site row. */}
         <div
           style={{
@@ -494,7 +631,7 @@ export default function SiteDetail() {
             devices={liveDevices}
             density={density}
             showPlatformTags={showPlatformTags}
-            onOpen={(deviceName) => navigate(`/devices/${encodeURIComponent(deviceName)}`)}
+            onOpen={(device) => navigate(deviceDetailPath({ name: device.name, plane: device.plane, serial: device.serial }))}
           />
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
@@ -527,35 +664,14 @@ export default function SiteDetail() {
               ))}
             </div>
 
-            {/* Reachability IS derivable from the local collector's registry
-                state; topology is not. So the two are only merged into one
-                NOT REPORTED note while the route sends no reachability block —
-                once it does, that half renders for real and only topology
-                stays unreported. */}
             {reachability ? (
-              <>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <SectionHeader label="Topology" meta="NOT REPORTED" />
-                  <div
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-11)',
-                      color: 'var(--nd-text-muted)',
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    No linked source supplied uplinks, device-level topology or configuration drift
-                    for this site. The portal will not substitute the demo site profile.
-                  </div>
-                </div>
-                <LocalReachabilityPanel
-                  reachability={reachability}
-                  onTerminal={(target) => navigate(`/devices/${encodeURIComponent(target)}`)}
-                />
-              </>
+              <LocalReachabilityPanel
+                reachability={reachability}
+                onTerminal={(target) => navigate(`/devices/${encodeURIComponent(target)}`)}
+              />
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <SectionHeader label="Topology and reachability" meta="NOT REPORTED" />
+                <SectionHeader label="Local reachability" meta="NOT REPORTED" />
                 <div
                   style={{
                     fontFamily: 'var(--nd-font-mono)',
@@ -564,9 +680,7 @@ export default function SiteDetail() {
                     lineHeight: 1.6,
                   }}
                 >
-                  No linked source supplied uplinks, device-level topology, configuration drift, or
-                  collector reachability for this site. The portal will not substitute the demo site
-                  profile.
+                  No linked local collector reported reachability for this site.
                 </div>
               </div>
             )}
@@ -714,7 +828,7 @@ export default function SiteDetail() {
               devices={profile.devices}
               density={density}
               showPlatformTags={showPlatformTags}
-              onOpen={(deviceName) => navigate(`/devices/${encodeURIComponent(deviceName)}`)}
+              onOpen={(device) => navigate(deviceDetailPath({ name: device.name, plane: device.plane, serial: device.serial }))}
             />
 
             {/* ---------------- right column ---------------- */}

@@ -55,6 +55,7 @@ import {
   SYSTEMS,
   TICKETS,
   VLANS,
+  canonicalizeWebhookCreateForm,
   deriveSiteProfile,
   deviceProfile,
   isRealSiteId,
@@ -80,6 +81,12 @@ import type {
   DeviceClientSet,
   DeviceDetailLive,
   DeviceEvidence,
+  DiagnosticAuditEntry,
+  DiagnosticEligibilityResponse,
+  DiagnosticJob,
+  DiagnosticReview,
+  DiagnosticReviewRequest,
+  DiagnosticStartRequest,
   DeviceProfile,
   DeviceRow,
   FailReasonRow,
@@ -106,7 +113,16 @@ import type {
   SiteReachability,
   SiteRow,
   SiteTopologyLive,
+  SsidApplyResult,
+  SsidCatalog,
   SsidObject,
+  SseCommitRetryResult,
+  SseInventory,
+  SseKindReadStatus,
+  SseManualCleanupResult,
+  SseMutationResult,
+  SseObjectKind,
+  SseObjectSummary,
   StatDef,
   SubscriptionRow,
   SyncHistoryRow,
@@ -114,6 +130,15 @@ import type {
   TerminalLine,
   TicketRow,
   VlanObject,
+  WebhookDetail,
+  WebhookForm,
+  WebhookHandoffResolutionResult,
+  WebhookHandoffStatus,
+  WebhookListEnvelope,
+  WebhookMutationResult,
+  WebhookOneTimeSecretResult,
+  WebhookPatchForm,
+  WebhookUnknownOutcomeCode,
 } from '../../../shared';
 
 // ---------------------------------------------------------------------------
@@ -140,6 +165,8 @@ export interface OverviewData extends ScreenEnvelope {
   syncedAt: string | null; // null in live mode before the first successful poll
   workspace?: string;
 }
+
+export type SystemCredentialPayload = Record<string, string | string[]>;
 
 export interface AlertsData extends ScreenEnvelope {
   alerts: AlertRow[];
@@ -701,9 +728,26 @@ function normalizeEvidence(data: DeviceDetailData & { checks?: DeviceCheckRow[] 
   };
 }
 
-export async function getDeviceDetail(name: string): Promise<DeviceDetailData> {
+/** Identity carried alongside `name` on GET /api/devices/:name — the same
+ *  plane+serial pair the server needs to pick one row when reconciliation has
+ *  left two rows sharing a display name (see server/src/routes/screens.ts
+ *  resolveDeviceIdentity). Both optional: search hits and other screens'
+ *  name-only fields still work as long as the name stays unique. */
+export interface DeviceDetailIdentity {
+  plane?: string;
+  serial?: string;
+}
+
+export async function getDeviceDetail(
+  name: string,
+  identity: DeviceDetailIdentity = {},
+): Promise<DeviceDetailData> {
+  const params = new URLSearchParams();
+  if (identity.plane) params.set('plane', identity.plane);
+  if (identity.serial) params.set('serial', identity.serial);
+  const qs = params.toString();
   const r = await fetchDetail<DeviceDetailData & { checks?: DeviceCheckRow[] }>(
-    `/api/devices/${encodeURIComponent(name)}`,
+    `/api/devices/${encodeURIComponent(name)}${qs ? `?${qs}` : ''}`,
   );
   if (r.kind === 'ok') return dropUnreadableBlocks(normalizeEvidence(r.data), 'detail', 'topology');
   if (r.kind === 'answered') {
@@ -726,11 +770,17 @@ export async function getDeviceDetail(name: string): Promise<DeviceDetailData> {
       ...(r.blended ? { blended: r.blended } : {}),
     };
   }
-  const device = DEVICES.find((row) => row.name === name) ?? null;
+  // Offline demo fallback: the authored fixtures never carry a duplicate
+  // name, but resolve by serial first anyway so this path matches the
+  // server's own identity order rather than a name-only shortcut.
+  const device =
+    (identity.serial ? DEVICES.find((row) => row.serial === identity.serial) : undefined) ??
+    DEVICES.find((row) => row.name === name) ??
+    null;
   if (!device) {
     return { device: null, profile: null, config: null, clients: null, dataSource: 'demo' };
   }
-  const profile = deviceProfile(name);
+  const profile = deviceProfile(device.name);
   return {
     device,
     profile,
@@ -809,10 +859,17 @@ export async function getConfigure(): Promise<ConfigureData> {
 // so the Configure screen can fall back to its local-only behavior.
 // ---------------------------------------------------------------------------
 
-/** Uniform failure half of ApiResult; `offline` = backend unreachable. */
+/** Uniform failure half of ApiResult; `offline` = backend unreachable.
+ *  `httpCode` (set only when a real HTTP response came back) lets a caller
+ *  distinguish a definite server answer (400/403/409) from a transport-
+ *  level 502 "the outcome is unknown" — see isUnknownWebhookOutcome. */
 export interface ApiError {
   error: string;
   offline?: boolean;
+  httpCode?: number;
+  outcome?: 'unknown';
+  code?: WebhookUnknownOutcomeCode;
+  operationId?: string;
 }
 
 export function isApiError(value: unknown): value is ApiError {
@@ -951,6 +1008,513 @@ export async function discardChange(changeId: string): Promise<ApiResult<{ ok: b
   return postForResult<{ ok: boolean; changeId: string }>('/api/configure/discard', { changeId });
 }
 
+// ---------------------------------------------------------------------------
+// SSID direct write — /api/configure/ssids/* (catalog + reviewed apply)
+//
+// SSIDs do NOT go through the ticketed queue/dry-run/push above: the editor
+// loads a live catalog when its drawer opens, then applies a reviewed change
+// directly (no ticket — an explicit reviewConfirmed:true stands in for one).
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/configure/ssids/catalog — never 4xx on its own; an unlinked or
+ * Classic-only Central answers 200 with every section named in
+ * `unavailable` so the drawer can disable what it cannot offer instead of
+ * guessing. `null` means the backend itself did not answer at all.
+ */
+export async function getSsidCatalog(): Promise<SsidCatalog | ApiError | null> {
+  const result = await fetchScreen<SsidCatalog>('/api/configure/ssids/catalog');
+  if (result.kind === 'ok') return result.data;
+  if (result.kind === 'http-error') return { error: result.message };
+  return null;
+}
+
+/**
+ * POST /api/configure/ssids/apply — a reviewed direct SSID change.
+ * `reviewConfirmed` must be `true`; the server logs one audit line per
+ * attempt (success, partial, or failure) with no ticket and no payload body.
+ */
+export async function applySsidDirect(form: ConfigForm, reviewConfirmed: boolean): Promise<ApiResult<SsidApplyResult>> {
+  return postForResult<SsidApplyResult>('/api/configure/ssids/apply', { form, reviewConfirmed });
+}
+
+// ---------------------------------------------------------------------------
+// New Central webhook management — /api/central/webhooks/*
+//
+// Reads never throw for an unlinked/Classic/permission-denied Central; they
+// answer with the envelope's own honest `error` (list) so the panel can
+// render "nothing to show, and why" without treating it as a network
+// failure. Mutations require `reviewConfirmed: true`; the server's own
+// response is always the outcome to render (ok:false is a normal result,
+// not a thrown error) — see server/src/services/centralWebhooks.ts.
+//
+// Create and HMAC-key rotation require two independent confirmations. Their
+// successful response is the only client
+// contract carrying `hmacKey`; callers must hand it directly to the dedicated
+// one-time modal and discard it on close. A separate secretStored:true
+// acknowledgement clears the server's durable, secret-free handoff journal.
+// The key never enters list/detail state, browser storage, settings, generic
+// mutation history, or toast text.
+// ---------------------------------------------------------------------------
+
+function emptyWebhookEnvelope(opts: { limit?: number; offset?: number }, error: string): WebhookListEnvelope {
+  return {
+    items: [],
+    totalCount: 0,
+    count: 0,
+    limit: opts.limit ?? 10,
+    offset: opts.offset ?? 0,
+    hasMore: false,
+    source: 'unavailable',
+    error,
+    gatewayBaseUrl: null,
+    tenantBinding: null,
+  };
+}
+
+/** GET /api/central/webhooks — never throws; an unreachable backend or a
+ *  non-OK response both answer the same honest envelope shape with `error`
+ *  set and `items: []`. */
+export async function getCentralWebhooks(
+  opts: { limit?: number; offset?: number; q?: string } = {},
+): Promise<WebhookListEnvelope> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+  if (opts.q?.trim()) params.set('q', opts.q.trim());
+  const qs = params.toString();
+  try {
+    const r = await fetch(`/api/central/webhooks${qs ? `?${qs}` : ''}`);
+    if (!r.ok) return emptyWebhookEnvelope(opts, await serverMessage(r, `request failed — HTTP ${r.status}`));
+    const body = (await r.json()) as Partial<WebhookListEnvelope>;
+    if (!Array.isArray(body.items)) {
+      return emptyWebhookEnvelope(opts, 'the portal returned a successful but unrecognized webhook list response');
+    }
+    return body as WebhookListEnvelope;
+  } catch (err) {
+    return emptyWebhookEnvelope(opts, `cannot reach the portal backend: ${(err as Error).message}`);
+  }
+}
+
+/** GET /api/central/webhooks/:id — fresh single-webhook detail, used to
+ *  populate the edit drawer's "before" state for the review diff. */
+export async function getCentralWebhook(id: string): Promise<ApiResult<WebhookDetail>> {
+  try {
+    const r = await fetch(`/api/central/webhooks/${encodeURIComponent(id)}`);
+    if (r.ok) return (await r.json()) as WebhookDetail;
+    return { error: await serverMessage(r, `request failed — HTTP ${r.status}`) };
+  } catch (err) {
+    return { error: `cannot reach the portal backend: ${(err as Error).message}`, offline: true };
+  }
+}
+
+export async function getCentralWebhookHandoffStatus(): Promise<ApiResult<WebhookHandoffStatus>> {
+  try {
+    const r = await fetch('/api/central/webhooks/handoff');
+    if (r.ok) return (await r.json()) as WebhookHandoffStatus;
+    return { error: await serverMessage(r, `request failed — HTTP ${r.status}`), httpCode: r.status };
+  } catch (err) {
+    return { error: `cannot reach the portal backend: ${(err as Error).message}`, offline: true };
+  }
+}
+
+export async function acknowledgeCentralWebhookHandoff(
+  operationId: string,
+  secretStored: true,
+): Promise<ApiResult<WebhookHandoffResolutionResult>> {
+  try {
+    const r = await fetch('/api/central/webhooks/handoff/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operationId, secretStored }),
+    });
+    if (r.ok) return (await r.json()) as WebhookHandoffResolutionResult;
+    return { error: await serverMessage(r, `request failed — HTTP ${r.status}`), httpCode: r.status };
+  } catch (err) {
+    return { error: `cannot reach the portal backend: ${(err as Error).message}`, offline: true };
+  }
+}
+
+export async function resolveCentralWebhookHandoff(input: {
+  operationId: string;
+  resolution: 'create-located' | 'create-absent' | 'rotate-reconciled';
+  reviewConfirmed: true;
+  attestations: Record<string, true>;
+  matchedWebhookId?: string;
+}): Promise<ApiResult<WebhookHandoffResolutionResult>> {
+  try {
+    const r = await fetch('/api/central/webhooks/handoff/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (r.ok) return (await r.json()) as WebhookHandoffResolutionResult;
+    return { error: await serverMessage(r, `request failed — HTTP ${r.status}`), httpCode: r.status };
+  } catch (err) {
+    return { error: `cannot reach the portal backend: ${(err as Error).message}`, offline: true };
+  }
+}
+
+async function webhookMutate(
+  path: string,
+  method: 'PATCH' | 'DELETE',
+  body: unknown,
+  secrets: readonly string[] = [],
+): Promise<ApiResult<WebhookMutationResult>> {
+  try {
+    const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (r.ok) return (await r.json()) as WebhookMutationResult;
+    const responseBody = await responseJson(r);
+    if (r.status === 409) {
+      const conflict = webhookConflictResult(responseBody, secrets);
+      if (conflict) return conflict;
+    }
+    // `httpCode` lets the caller tell a definite, known failure (400/403/409
+    // — safe to let the operator see and retry immediately) apart from a 502
+    // "the outcome is unknown" transport answer, which is not (see
+    // isUnknownWebhookOutcome below).
+    return {
+      error: redactWebhookSecrets(messageFromBody(responseBody, `request failed — HTTP ${r.status}`), secrets),
+      httpCode: r.status,
+    };
+  } catch (err) {
+    return {
+      error: redactWebhookSecrets(`cannot reach the portal backend: ${(err as Error).message}`, secrets),
+      offline: true,
+    };
+  }
+}
+
+function webhookCreateForm(form: WebhookForm): WebhookForm | null {
+  if (form.authMechanism === 'API_KEY' || form.authMechanism === 'OIDC') {
+    return canonicalizeWebhookCreateForm(form);
+  }
+  return null;
+}
+
+function parseOneTimeWebhookResult(
+  body: unknown,
+  expectedAction: 'created' | 'rotated',
+): WebhookOneTimeSecretResult | null {
+  try {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    const record = body as Record<string, unknown>;
+    if (
+      record.ok !== true ||
+      record.action !== expectedAction ||
+      typeof record.operationId !== 'string' ||
+      typeof record.hmacKey !== 'string' ||
+      record.hmacKey.trim().length === 0
+    ) {
+      return null;
+    }
+    return {
+      ok: true,
+      action: expectedAction,
+      operationId: record.operationId,
+      hmacKey: record.hmacKey,
+      message:
+        expectedAction === 'created'
+          ? 'webhook created — copy the one-time HMAC key now'
+          : 'webhook HMAC key rotated — copy the one-time key now',
+      ...(typeof record.callbackValidatedAt === 'string'
+        ? { callbackValidatedAt: record.callbackValidatedAt }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function oneTimeUnknownCode(action: 'created' | 'rotated'): WebhookUnknownOutcomeCode {
+  return action === 'created'
+    ? 'WEBHOOK_CREATE_HMAC_OUTCOME_UNKNOWN'
+    : 'WEBHOOK_ROTATE_HMAC_OUTCOME_UNKNOWN';
+}
+
+function oneTimeUnknownMessage(action: 'created' | 'rotated'): string {
+  return action === 'created'
+    ? 'The webhook create outcome is unknown because the one-time HMAC key response was unavailable. Reconcile the webhook list before another create; retrying blindly may duplicate the webhook.'
+    : 'The HMAC rotation outcome is unknown because the one-time key response was unavailable. Reconcile the receiver and key before another rotation; retrying blindly may rotate the key again.';
+}
+
+function parseOneTimeUnknownResult(
+  body: unknown,
+  expectedAction: 'created' | 'rotated',
+  httpCode: number,
+): ApiError | null {
+  try {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    const record = body as Record<string, unknown>;
+    const code = oneTimeUnknownCode(expectedAction);
+    if (
+      record.ok !== false ||
+      record.action !== 'unknown' ||
+      record.outcome !== 'unknown' ||
+      record.code !== code
+    ) {
+      return null;
+    }
+    return {
+      error: oneTimeUnknownMessage(expectedAction),
+      httpCode,
+      outcome: 'unknown',
+      code,
+      ...(typeof record.operationId === 'string' ? { operationId: record.operationId } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseOneTimeFailureResult(
+  body: unknown,
+  httpCode: number,
+  secrets: readonly string[],
+): ApiError | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  if (
+    record.ok !== false ||
+    record.action !== 'failed' ||
+    typeof record.message !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    error: redactWebhookSecrets(record.message, secrets),
+    httpCode,
+    ...(typeof record.operationId === 'string' ? { operationId: record.operationId } : {}),
+  };
+}
+
+async function webhookSecretMutate(
+  path: string,
+  body: unknown,
+  expectedAction: 'created' | 'rotated',
+  secrets: readonly string[] = [],
+): Promise<ApiResult<WebhookOneTimeSecretResult>> {
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const responseBody = await responseJson(r);
+    if (r.ok) {
+      const success = parseOneTimeWebhookResult(responseBody, expectedAction);
+      if (success) return success;
+      const unknown = parseOneTimeUnknownResult(responseBody, expectedAction, r.status);
+      if (unknown) return unknown;
+      const failure = parseOneTimeFailureResult(responseBody, r.status, secrets);
+      if (failure) return failure;
+      return {
+        error: oneTimeUnknownMessage(expectedAction),
+        httpCode: r.status,
+        outcome: 'unknown',
+        code: oneTimeUnknownCode(expectedAction),
+      };
+    }
+    const unknown = parseOneTimeUnknownResult(responseBody, expectedAction, r.status);
+    if (unknown) return unknown;
+    return {
+      error: redactWebhookSecrets(
+        messageFromBody(responseBody, `request failed — HTTP ${r.status}`),
+        secrets,
+      ),
+      httpCode: r.status,
+    };
+  } catch (err) {
+    return {
+      error: redactWebhookSecrets(`cannot reach the portal backend: ${(err as Error).message}`, secrets),
+      offline: true,
+    };
+  }
+}
+
+function responseJson(r: Response): Promise<unknown> {
+  return r.json().catch(() => undefined);
+}
+
+function messageFromBody(body: unknown, fallback: string): string {
+  if (!body || typeof body !== 'object') return fallback;
+  const record = body as Record<string, unknown>;
+  if (typeof record.error === 'string') return record.error;
+  if (typeof record.message === 'string') return record.message;
+  return fallback;
+}
+
+function webhookConflictResult(body: unknown, secrets: readonly string[]): WebhookMutationResult | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  if (
+    record.ok !== false ||
+    record.action !== 'conflict' ||
+    record.httpCode !== 409 ||
+    typeof record.message !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    ok: false,
+    action: 'conflict',
+    httpCode: 409,
+    message: redactWebhookSecrets(record.message, secrets),
+    ...(typeof record.callbackValidatedAt === 'string'
+      ? { callbackValidatedAt: record.callbackValidatedAt }
+      : {}),
+  };
+}
+
+function redactWebhookSecrets(message: string, secrets: readonly string[]): string {
+  return secrets.reduce(
+    (safe, secret) => (secret ? safe.split(secret).join('[redacted]') : safe),
+    message,
+  );
+}
+
+function webhookPatchForm(form: WebhookForm, expectedGeneration: number): WebhookPatchForm | null {
+  const common = {
+    expectedGeneration,
+    name: form.name,
+    endpoint: form.endpoint,
+  };
+  if (form.authMechanism === 'OIDC') {
+    return {
+      ...common,
+      authMechanism: 'OIDC',
+      oidcClientId: form.oidcClientId,
+      oidcClientSecret: form.oidcClientSecret,
+      oidcWellKnownUrl: form.oidcWellKnownUrl,
+    };
+  }
+  if (form.authMechanism === 'API_KEY') {
+    return {
+      ...common,
+      authMechanism: 'API_KEY',
+      apiKey: form.apiKey,
+    };
+  }
+  return null;
+}
+
+/**
+ * PATCH /api/central/webhooks/:id — the only edit path this app exposes,
+ * review-confirmed. `expectedGeneration` (the generation the operator's
+ * reviewed diff was built from) rides along on every request as an
+ * optimistic-concurrency check; a stale generation is expected to come back
+ * as an `ok:false` result with `httpCode: 409` (see
+ * isWebhookGenerationConflict below) rather than silently applying over a
+ * change the operator never saw.
+ */
+export async function updateCentralWebhook(
+  id: string,
+  form: WebhookForm,
+  reviewConfirmed: boolean,
+  expectedGeneration?: number,
+): Promise<ApiResult<WebhookMutationResult>> {
+  if (typeof expectedGeneration !== 'number' || !Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) {
+    return { error: 'expectedGeneration must be a non-negative safe integer' };
+  }
+  const patchForm = webhookPatchForm(form, expectedGeneration);
+  if (!patchForm) return { error: 'authMechanism must be exactly API_KEY or OIDC' };
+  const secrets = [patchForm.apiKey, patchForm.oidcClientSecret].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+  return webhookMutate(
+    `/api/central/webhooks/${encodeURIComponent(id)}`,
+    'PATCH',
+    { form: patchForm, reviewConfirmed },
+    secrets,
+  );
+}
+
+/** POST /api/central/webhooks — reviewed create with a second
+ * one-time-secret acknowledgement. The success result must be discarded as
+ * soon as its dedicated modal closes. */
+export async function createCentralWebhook(
+  form: WebhookForm,
+  reviewConfirmed: boolean,
+  oneTimeSecretAcknowledged: boolean,
+  reviewedTenantBinding: string | null,
+): Promise<ApiResult<WebhookOneTimeSecretResult>> {
+  if (reviewConfirmed !== true) {
+    return { error: 'webhook creation requires an explicit review confirmation' };
+  }
+  if (oneTimeSecretAcknowledged !== true) {
+    return { error: 'acknowledge that the returned HMAC key is one-time and must be copied now' };
+  }
+  if (!reviewedTenantBinding) {
+    return { error: 'the reviewed Central tenant binding is missing; refresh the webhook list and review again' };
+  }
+  const createForm = webhookCreateForm(form);
+  if (!createForm) return { error: 'authMechanism must be exactly API_KEY or OIDC' };
+  const secrets = [createForm.apiKey, createForm.oidcClientSecret].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+  return webhookSecretMutate(
+    '/api/central/webhooks',
+    { form: createForm, reviewConfirmed, oneTimeSecretAcknowledged, reviewedTenantBinding },
+    'created',
+    secrets,
+  );
+}
+
+/** POST /api/central/webhooks/:id/rotate-hmac-key — reviewed
+ * rotation with the same one-time-secret acknowledgement. */
+export async function rotateCentralWebhookHmacKey(
+  id: string,
+  reviewConfirmed: boolean,
+  oneTimeSecretAcknowledged: boolean,
+  reviewedTenantBinding: string | null,
+): Promise<ApiResult<WebhookOneTimeSecretResult>> {
+  if (reviewConfirmed !== true) {
+    return { error: 'HMAC rotation requires an explicit review confirmation' };
+  }
+  if (oneTimeSecretAcknowledged !== true) {
+    return { error: 'acknowledge that the returned HMAC key is one-time and must be copied now' };
+  }
+  if (!reviewedTenantBinding) {
+    return { error: 'the reviewed Central tenant binding is missing; refresh the webhook list and review again' };
+  }
+  return webhookSecretMutate(
+    `/api/central/webhooks/${encodeURIComponent(id)}/rotate-hmac-key`,
+    { reviewConfirmed, oneTimeSecretAcknowledged, reviewedTenantBinding },
+    'rotated',
+  );
+}
+
+/** DELETE /api/central/webhooks/:id — review-confirmed. */
+export async function deleteCentralWebhook(id: string, reviewConfirmed: boolean): Promise<ApiResult<WebhookMutationResult>> {
+  return webhookMutate(`/api/central/webhooks/${encodeURIComponent(id)}`, 'DELETE', { reviewConfirmed });
+}
+
+/**
+ * True when a webhook mutation's failure means Central never confirmed the
+ * outcome — a fetch-level exception (`offline`), or the server's own 502
+ * "the outcome is unknown" answer for a transport failure it caught (see
+ * CentralWebhooksError(502, ...) in server/src/services/centralWebhooks.ts)
+ * — as opposed to a definite, known failure (400 validation, 409 not
+ * linked/conflict, or an ok:false result). The caller must refetch/
+ * reconcile the real state before trying again; retrying blindly risks
+ * double-applying a mutation that may already have gone through.
+ */
+export function isUnknownWebhookOutcome(err: ApiError): boolean {
+  return err.outcome === 'unknown' || err.offline === true || err.httpCode === 502;
+}
+
+/**
+ * True when a PATCH's ok:false result reports a generation conflict — the
+ * webhook changed since this operator's copy was loaded and reviewed.
+ * Server-side enforcement of `expectedGeneration` is a follow-up outside
+ * this client; this checks the httpCode:409 convention the client is ready
+ * to interpret as soon as that lands, so the UI never silently overwrites a
+ * change it never showed the operator.
+ */
+export function isWebhookGenerationConflict(result: WebhookMutationResult): boolean {
+  return result.ok === false && result.httpCode === 409;
+}
+
 export async function getCompliance(): Promise<ComplianceData> {
   const result = await fetchScreen<ComplianceData>('/api/compliance');
   if (result.kind === 'ok') return result.data;
@@ -1011,6 +1575,12 @@ export interface LivePlaneCapabilities {
   localShell?: boolean;
   brokeredWrite?: boolean;
   configRead?: boolean;
+  /** This plane accepts reviewed direct writes + automatic commit outside any
+   *  ticketed queue (New Central's SSID apply, SSE's object CRUD) — false when
+   *  the plane cannot, or when a linked SSE token's declared scope excludes
+   *  write. The Systems Configuration tab's SSE object browser reads this
+   *  directly to enable/disable its own mutation controls. */
+  directWrite?: boolean;
 }
 
 /**
@@ -1137,7 +1707,7 @@ async function serverMessage(r: Response, fallback: string): Promise<string> {
  */
 export async function testSystem(
   plane: string,
-  creds: Record<string, string>,
+  creds: SystemCredentialPayload,
 ): Promise<SystemMutationResult> {
   try {
     const r = await fetch(`/api/systems/${encodeURIComponent(plane)}/test`, {
@@ -1163,7 +1733,7 @@ export async function testSystem(
 /** POST /api/systems/:plane/credentials — store creds and re-init the adapter. */
 export async function saveSystemCredentials(
   plane: string,
-  creds: Record<string, string>,
+  creds: SystemCredentialPayload,
 ): Promise<SystemMutationResult> {
   try {
     const r = await fetch(`/api/systems/${encodeURIComponent(plane)}/credentials`, {
@@ -1184,6 +1754,307 @@ export async function retireSystem(plane: string): Promise<SystemMutationResult>
     const r = await fetch(`/api/systems/${encodeURIComponent(plane)}`, { method: 'DELETE' });
     if (r.ok) return { ok: true, message: 'plane retired — credentials cleared, adapter unlinked' };
     return { ok: false, message: await serverMessage(r, `retire failed — HTTP ${r.status}`) };
+  } catch (err) {
+    return { ok: false, message: `cannot reach the portal backend: ${(err as Error).message}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HPE Aruba Networking SSE — object inventory + reviewed CRUD, all under
+// /api/sse/*. The inventory read is always served from the poller's cache
+// (never a live call); mutations require an explicit reviewConfirmed:true
+// (the review dialog's job) and are gated server-side on the token's declared
+// write scope — a 403 here means "this token is read-only", not a bug.
+// ---------------------------------------------------------------------------
+
+/** GET /api/sse/inventory — null when the plane is not linked (409) or the
+ *  backend cannot be reached; the caller renders the same "not linked" panel
+ *  either way rather than a spinner that never resolves. */
+export async function getSseInventory(): Promise<SseInventory | null> {
+  try {
+    const r = await fetch('/api/sse/inventory');
+    if (!r.ok) return null;
+    return (await r.json()) as SseInventory;
+  } catch {
+    return null;
+  }
+}
+
+export interface SseKindListing {
+  rows: SseObjectSummary[];
+  total: number | null;
+  truncated: boolean;
+  unavailable: boolean;
+  /** Secret-free vendor read outcome supplied by the cached inventory. */
+  readStatus?: SseKindReadStatus;
+  /** Present when the portal could not complete the list read. */
+  readError?: string;
+}
+
+function failedSseReadStatus(status: number): SseKindReadStatus {
+  if (status === 401 || status === 403) {
+    return {
+      state: 'failed',
+      reason: 'denied',
+      httpCode: status,
+      message: `The SSE read was denied (HTTP ${status}); check the token's granted scope.`,
+    };
+  }
+  if (status === 404) {
+    return {
+      state: 'failed',
+      reason: 'unsupported',
+      httpCode: 404,
+      message: 'This SSE kind is unsupported or limited-release for this tenant (HTTP 404).',
+    };
+  }
+  return {
+    state: 'failed',
+    reason: 'service-error',
+    httpCode: status,
+    message:
+      status === 429
+        ? 'The SSE service rate-limited the read (HTTP 429).'
+        : `The SSE service returned an error for the read (HTTP ${status}).`,
+  };
+}
+
+/** GET /api/sse/objects/:kind — one kind's cached rows, optionally filtered. */
+export async function getSseKind(kind: SseObjectKind, q?: string): Promise<SseKindListing> {
+  try {
+    const qs = q?.trim() ? `?q=${encodeURIComponent(q.trim())}` : '';
+    const r = await fetch(`/api/sse/objects/${encodeURIComponent(kind)}${qs}`);
+    if (!r.ok) {
+      return {
+        rows: [],
+        total: null,
+        truncated: false,
+        unavailable: true,
+        readStatus: failedSseReadStatus(r.status),
+        readError: await serverMessage(r, `read failed — HTTP ${r.status}`),
+      };
+    }
+    const body = (await r.json()) as Partial<SseKindListing>;
+    if (!Array.isArray(body.rows) || typeof body.unavailable !== 'boolean') {
+      return {
+        rows: [],
+        total: null,
+        truncated: false,
+        unavailable: true,
+        readStatus: {
+          state: 'failed',
+          reason: 'invalid-response',
+          httpCode: r.status,
+          message: 'The portal returned a successful but unrecognized SSE list response.',
+        },
+        readError: 'successful SSE list response was not recognized',
+      };
+    }
+    return body as SseKindListing;
+  } catch (err) {
+    return {
+      rows: [],
+      total: null,
+      truncated: false,
+      unavailable: true,
+      readStatus: {
+        state: 'failed',
+        reason: 'unreachable',
+        httpCode: null,
+        message: 'The portal backend could not be reached for this SSE read.',
+      },
+      readError: `cannot reach the portal backend: ${(err as Error).message}`,
+    };
+  }
+}
+
+/** GET /api/sse/objects/:kind/:id — on-demand fresh detail read (edit drawer). */
+export async function getSseObject(kind: SseObjectKind, id: string): Promise<{ ok: boolean; object?: Record<string, unknown>; message?: string }> {
+  try {
+    const r = await fetch(`/api/sse/objects/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`);
+    if (r.ok) return { ok: true, object: (await r.json()) as Record<string, unknown> };
+    return { ok: false, message: await serverMessage(r, `read failed — HTTP ${r.status}`) };
+  } catch (err) {
+    return { ok: false, message: `cannot reach the portal backend: ${(err as Error).message}` };
+  }
+}
+
+/** Uniform result for the SSE mutation endpoints (create/update/delete). */
+export interface SseMutationCallResult {
+  ok: boolean;
+  message: string;
+  result?: SseMutationResult;
+  code?: string;
+  /** A previous mutation is staged and must be committed before another write. */
+  pendingCommit?: boolean;
+}
+
+export interface SseCommitRetryCallResult {
+  ok: boolean;
+  message: string;
+  result?: SseCommitRetryResult;
+  code?: string;
+}
+
+export interface SseManualCleanupCallResult {
+  ok: boolean;
+  message: string;
+  result?: SseManualCleanupResult;
+  code?: string;
+}
+
+interface SseErrorResponse {
+  message: string;
+  code?: string;
+  result?: SseManualCleanupResult;
+}
+
+async function sseErrorResponse(r: Response, fallback: string): Promise<SseErrorResponse> {
+  try {
+    const body = (await r.json()) as {
+      error?: unknown;
+      message?: unknown;
+      code?: unknown;
+      result?: unknown;
+    };
+    return {
+      message:
+        typeof body.error === 'string'
+          ? body.error
+          : typeof body.message === 'string'
+            ? body.message
+            : fallback,
+      ...(typeof body.code === 'string' ? { code: body.code } : {}),
+      ...(body.result && typeof body.result === 'object'
+        ? { result: body.result as SseManualCleanupResult }
+        : {}),
+    };
+  } catch {
+    return { message: fallback };
+  }
+}
+
+async function sseMutate(url: string, method: 'POST' | 'PUT' | 'DELETE', body: unknown): Promise<SseMutationCallResult> {
+  try {
+    const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (r.ok) {
+      const result = (await r.json()) as SseMutationResult;
+      const message = !result.mutation.ok
+        ? result.mutation.message
+        : result.staged
+          ? `applied, but the commit failed — the change is staged: ${result.commit.message}`
+          : 'applied and committed';
+      return { ok: result.mutation.ok, message, result };
+    }
+    const { message, code } = await sseErrorResponse(r, `request failed — HTTP ${r.status}`);
+    const pendingCommit = code === 'SSE_PENDING_MUTATION';
+    return {
+      ok: false,
+      message,
+      ...(code ? { code } : {}),
+      ...(pendingCommit ? { pendingCommit: true } : {}),
+    };
+  } catch (err) {
+    return { ok: false, message: `cannot reach the portal backend: ${(err as Error).message}` };
+  }
+}
+
+/** POST /api/sse/objects/:kind — create, review-confirmed. */
+export async function createSseObject(kind: SseObjectKind, fields: Record<string, unknown>): Promise<SseMutationCallResult> {
+  return sseMutate(`/api/sse/objects/${encodeURIComponent(kind)}`, 'POST', { fields, reviewConfirmed: true });
+}
+
+/** PUT /api/sse/objects/:kind/:id — update, review-confirmed. */
+export async function updateSseObject(kind: SseObjectKind, id: string, fields: Record<string, unknown>): Promise<SseMutationCallResult> {
+  return sseMutate(`/api/sse/objects/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, 'PUT', { fields, reviewConfirmed: true });
+}
+
+/** DELETE /api/sse/objects/:kind/:id — delete, review-confirmed. */
+export async function deleteSseObject(kind: SseObjectKind, id: string): Promise<SseMutationCallResult> {
+  return sseMutate(`/api/sse/objects/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, 'DELETE', { reviewConfirmed: true });
+}
+
+/** POST /api/sse/commit/retry — commit-only retry for a staged change; never
+ *  replays the mutation that already landed. The caller must supply the
+ *  explicit review action rather than this client silently confirming it. */
+export async function retrySseCommit(reviewConfirmed: boolean): Promise<SseCommitRetryCallResult> {
+  if (reviewConfirmed !== true) {
+    return { ok: false, message: 'review the tenant-wide commit before retrying' };
+  }
+  try {
+    const r = await fetch('/api/sse/commit/retry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewConfirmed: true }),
+    });
+    if (r.ok) {
+      const result = (await r.json()) as SseCommitRetryResult;
+      const recoveryAction = result.recovery?.action;
+      const ok =
+        recoveryAction === 'cleanup-only' || recoveryAction === 'refresh-and-cleanup'
+          ? true
+          : recoveryAction === 'manual-reconciliation'
+            ? false
+            : result.commit.ok;
+      return {
+        ok,
+        message:
+          recoveryAction === 'cleanup-only' || recoveryAction === 'refresh-and-cleanup'
+            ? result.recovery?.message || result.commit.message
+            : result.commit.message,
+        result,
+      };
+    }
+    const { message, code } = await sseErrorResponse(r, `retry failed — HTTP ${r.status}`);
+    return { ok: false, message, ...(code ? { code } : {}) };
+  } catch (err) {
+    return { ok: false, message: `cannot reach the portal backend: ${(err as Error).message}` };
+  }
+}
+
+/** POST /api/sse/recovery/manual-cleanup — removes only an ambiguous journal
+ * after separate reviewed-action and manual-reconciliation acknowledgments.
+ * The server never calls a mutation or tenant-wide Commit on this path. */
+export async function cleanupSseManualReconciliation(
+  reviewConfirmed: boolean,
+  manualReconciled: boolean,
+): Promise<SseManualCleanupCallResult> {
+  if (reviewConfirmed !== true) {
+    return { ok: false, message: 'review the cleanup-only recovery before continuing' };
+  }
+  if (manualReconciled !== true) {
+    return {
+      ok: false,
+      message: 'attest that the ambiguous outcome was manually reconciled in the SSE admin console',
+    };
+  }
+  try {
+    const r = await fetch('/api/sse/recovery/manual-cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewConfirmed: true, manualReconciled: true }),
+    });
+    if (r.ok) {
+      const result = (await r.json()) as SseManualCleanupResult;
+      const removed =
+        result.recovery?.action === 'manual-cleanup' &&
+        result.recovery.status === 'journal-removed';
+      return {
+        ok: removed,
+        message: result.recovery?.message || result.commit.message,
+        result,
+      };
+    }
+    const { message, code, result } = await sseErrorResponse(
+      r,
+      `manual cleanup failed — HTTP ${r.status}`,
+    );
+    return {
+      ok: false,
+      message,
+      ...(code ? { code } : {}),
+      ...(result ? { result } : {}),
+    };
   } catch (err) {
     return { ok: false, message: `cannot reach the portal backend: ${(err as Error).message}` };
   }
@@ -1360,27 +2231,119 @@ export interface RebootResult {
   ok: boolean;
   applied: boolean; // true ONLY on a 202 from the troubleshooting API
   device: string;
+  plane: string;
+  serial: string | null;
   ticket: string;
   httpCode?: number;
   message: string;
 }
 
-/** POST /api/devices/:name/reboot — surfaces the server's message verbatim on failure. */
+/** POST /api/devices/:name/reboot with exact identity when the resolved row has it. */
 export async function rebootDevice(
   name: string,
   ticket: string,
+  identity: DeviceDetailIdentity = {},
 ): Promise<RebootResult | { ok: false; applied: false; message: string }> {
   try {
     const r = await fetch(`/api/devices/${encodeURIComponent(name)}/reboot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticket }),
+      body: JSON.stringify({
+        ticket,
+        ...(identity.plane && identity.serial
+          ? { plane: identity.plane, serial: identity.serial }
+          : {}),
+      }),
     });
     if (r.ok) return (await r.json()) as RebootResult;
     return { ok: false, applied: false, message: await serverMessage(r, `reboot failed — HTTP ${r.status}`) };
   } catch (err) {
     return { ok: false, applied: false, message: `cannot reach the portal backend: ${(err as Error).message}` };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Reviewed active diagnostics — New Central traceroute only
+// ---------------------------------------------------------------------------
+
+export async function getDiagnosticEligibility(): Promise<DiagnosticEligibilityResponse> {
+  const r = await fetch('/api/diagnostics/eligible');
+  if (!r.ok) throw new Error(await serverMessage(r, `diagnostic eligibility failed — HTTP ${r.status}`));
+  return (await r.json()) as DiagnosticEligibilityResponse;
+}
+
+export async function reviewDiagnostic(request: DiagnosticReviewRequest): Promise<DiagnosticReview> {
+  const r = await fetch('/api/diagnostics/review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!r.ok) throw new Error(await serverMessage(r, `diagnostic review failed — HTTP ${r.status}`));
+  return (await r.json()) as DiagnosticReview;
+}
+
+/**
+ * Confirming a review requires the exact plane+serial identity the review
+ * was issued for (the server rejects a mismatch with 409) — never just the
+ * reviewId, so a stale confirmation can't be replayed against a device the
+ * operator has since navigated away from.
+ */
+export async function startDiagnostic(
+  reviewId: string,
+  plane: Plane,
+  serial: string,
+): Promise<DiagnosticJob> {
+  const body: DiagnosticStartRequest = { reviewId, confirmed: true, plane, serial };
+  const r = await fetch('/api/diagnostics/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await serverMessage(r, `diagnostic start failed — HTTP ${r.status}`));
+  return (await r.json()) as DiagnosticJob;
+}
+
+/**
+ * Diagnostic job-status fetch failure that preserves the HTTP status, so
+ * pollers can tell an honest terminal answer (401/403 auth, 404 job gone)
+ * from a transient failure (network error, 5xx) worth retrying.
+ */
+export class DiagnosticJobStatusError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'DiagnosticJobStatusError';
+    this.status = status;
+  }
+}
+
+export async function getDiagnosticJob(id: string): Promise<DiagnosticJob> {
+  const r = await fetch(`/api/diagnostics/jobs/${encodeURIComponent(id)}`);
+  if (!r.ok) {
+    throw new DiagnosticJobStatusError(
+      r.status,
+      await serverMessage(r, `diagnostic status failed — HTTP ${r.status}`),
+    );
+  }
+  return (await r.json()) as DiagnosticJob;
+}
+
+export async function cancelDiagnostic(id: string): Promise<DiagnosticJob> {
+  const r = await fetch(`/api/diagnostics/jobs/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  if (!r.ok) throw new Error(await serverMessage(r, `diagnostic cancel failed — HTTP ${r.status}`));
+  return (await r.json()) as DiagnosticJob;
+}
+
+export async function getDiagnosticHistory(): Promise<DiagnosticAuditEntry[]> {
+  const r = await fetch('/api/diagnostics/history');
+  if (!r.ok) throw new Error(await serverMessage(r, `diagnostic history failed — HTTP ${r.status}`));
+  const body = (await r.json()) as { entries?: DiagnosticAuditEntry[] };
+  return body.entries ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -1477,14 +2440,39 @@ export interface TerminalSession {
   user: string;
   target: string;
   openedAt: string;
+  /** Plane+serial this recording was opened against, when the session
+   *  carried a complete identity pair — absent for a legacy recording or one
+   *  opened without one. Mirrors server SessionInfo (services/terminal.ts). */
+  plane?: string;
+  serial?: string;
 }
 
-/** Recorded sessions for one device; [] when none or backend absent. */
-export async function getTerminalSessions(device: string): Promise<TerminalSession[]> {
-  const r = await fromStrictOptionalApi<{ sessions: TerminalSession[] }>(
-    `/api/terminal/sessions?device=${encodeURIComponent(device)}`,
+/**
+ * Recorded sessions for one device, scoped to the exact plane+serial pair
+ * when supplied (see server services/terminal.ts listSessionsForDevice) —
+ * [] when none or backend absent. When the display name still names more
+ * than one physical device without an exact identity, the server answers
+ * `ambiguous: true` rather than guessing a match; that is surfaced as a
+ * thrown error so the caller's existing failure path renders a reason
+ * instead of a misleadingly empty "no sessions on file".
+ */
+export async function getTerminalSessions(
+  device: string,
+  identity: DeviceDetailIdentity = {},
+): Promise<TerminalSession[]> {
+  const params = new URLSearchParams({ device });
+  if (identity.plane) params.set('plane', identity.plane);
+  if (identity.serial) params.set('serial', identity.serial);
+  const r = await fromStrictOptionalApi<{ sessions: TerminalSession[]; ambiguous?: boolean }>(
+    `/api/terminal/sessions?${params.toString()}`,
   );
-  return r?.sessions ?? [];
+  if (!r) return [];
+  if (r.ambiguous) {
+    throw new Error(
+      `'${device}' names more than one device — recorded sessions need an exact plane and serial to show safely`,
+    );
+  }
+  return r.sessions;
 }
 
 export interface TerminalSessionEvent {
@@ -1500,10 +2488,21 @@ export interface TerminalTranscript {
   truncated: boolean;
 }
 
-/** One recorded transcript; null when unknown or backend absent. */
-export async function getTerminalSession(file: string): Promise<TerminalTranscript | null> {
+/** One recorded transcript, gated by the same device+identity the listing
+ *  used to name it — a bare file name is never enough on its own (it would
+ *  let a caller that merely knows another device's file name read a
+ *  transcript that does not belong to it). Null when unknown, ambiguous, or
+ *  the backend is absent. */
+export async function getTerminalSession(
+  file: string,
+  device: string,
+  identity: DeviceDetailIdentity = {},
+): Promise<TerminalTranscript | null> {
+  const params = new URLSearchParams({ device });
+  if (identity.plane) params.set('plane', identity.plane);
+  if (identity.serial) params.set('serial', identity.serial);
   return fromStrictOptionalApi<TerminalTranscript>(
-    `/api/terminal/sessions/${encodeURIComponent(file)}`,
+    `/api/terminal/sessions/${encodeURIComponent(file)}?${params.toString()}`,
     true,
   );
 }

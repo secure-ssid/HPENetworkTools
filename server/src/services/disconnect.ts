@@ -28,12 +28,22 @@ import { appendBrokerLog, brokerDataDir, type BrokerTransport } from './writeBro
 import { knownTicketId } from './tickets';
 import { poller } from './poller';
 import { CLIENTS } from '../../../shared';
+import type { Plane } from '../../../shared';
+import { resolveDeviceIdentity, safeDeviceCandidates } from './deviceIdentity';
 
 export interface DisconnectClient {
   mac: string;
   name: string;
   attach: string; // device name the client is associated with
   plane: string; // display label, e.g. 'CENTRAL'
+}
+
+export interface DisconnectDevice {
+  name: string;
+  type: string;
+  plane: Plane | string;
+  serial?: string;
+  claimedBy?: Plane[];
 }
 
 export interface DisconnectResult {
@@ -50,6 +60,7 @@ export class DisconnectError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly details: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = 'DisconnectError';
@@ -61,7 +72,9 @@ export interface DisconnectServiceOptions {
   transport?: BrokerTransport | null; // undefined → resolve the CentralAdapter from the registry
   demoMode?: () => boolean; // default: settings store
   lookupClient?: (mac: string) => DisconnectClient | null; // default: fixtures (demo) / poller cache (live)
-  lookupDevice?: (name: string) => { type: string; plane: string; serial?: string } | null;
+  listDevices?: () => DisconnectDevice[];
+  /** @deprecated Test compatibility. Cannot represent duplicate names. */
+  lookupDevice?: (name: string) => Omit<DisconnectDevice, 'name'> | null;
   knownTicket?: (id: string) => boolean; // default: the ticket store (+ fixture ids in demo mode)
   dataDir?: string; // default: HPE_DATA_DIR or <repo>/data
   nowMs?: () => number; // injected clock for tests
@@ -92,11 +105,14 @@ function defaultLookupClient(mac: string): DisconnectClient | null {
 }
 
 /** Default device lookup (poller cache; demo mode never reaches it). */
-function defaultLookupDevice(name: string): { type: string; plane: string; serial?: string } | null {
-  const d = poller.getCache().devices.find((x) => x.name === name) as
-    | { type: string; plane: string; serial?: string }
-    | undefined;
-  return d ? { type: d.type, plane: d.plane, ...(d.serial ? { serial: d.serial } : {}) } : null;
+function defaultDevices(): DisconnectDevice[] {
+  return poller.getCache().devices.map((device) => ({
+    name: device.name,
+    type: device.type,
+    plane: device.plane,
+    ...(device.serial ? { serial: device.serial } : {}),
+    ...(device.claimedBy ? { claimedBy: device.claimedBy } : {}),
+  }));
 }
 
 export class DisconnectService {
@@ -104,7 +120,7 @@ export class DisconnectService {
   private readonly transportOverride: BrokerTransport | null | undefined;
   private readonly demoMode: () => boolean;
   private readonly lookupClient: (mac: string) => DisconnectClient | null;
-  private readonly lookupDevice: (name: string) => { type: string; plane: string; serial?: string } | null;
+  private readonly listDevices: (name: string) => DisconnectDevice[];
   private readonly knownTicket: (id: string) => boolean;
   private readonly dataDir: string;
   private readonly nowMs: () => number;
@@ -114,7 +130,14 @@ export class DisconnectService {
     this.transportOverride = opts.transport;
     this.demoMode = opts.demoMode ?? (() => settings.get().demoMode);
     this.lookupClient = opts.lookupClient ?? defaultLookupClient;
-    this.lookupDevice = opts.lookupDevice ?? defaultLookupDevice;
+    this.listDevices = opts.listDevices
+      ? () => opts.listDevices!()
+      : opts.lookupDevice
+        ? (name) => {
+            const device = opts.lookupDevice!(name);
+            return device ? [{ name, ...device }] : [];
+          }
+        : () => defaultDevices();
     this.knownTicket = opts.knownTicket ?? ((id) => knownTicketId(id, this.demoMode()));
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
@@ -152,7 +175,18 @@ export class DisconnectService {
       );
     }
 
-    const device = this.lookupDevice(client.attach);
+    const resolution = resolveDeviceIdentity(this.listDevices(client.attach), client.attach, {});
+    if (resolution.ambiguous) {
+      const candidates = safeDeviceCandidates(resolution.ambiguous);
+      throw new DisconnectError(
+        409,
+        `attachment '${client.attach}' names ${resolution.ambiguous.length} devices — disconnect refused; candidates ${candidates
+          .map((candidate) => `${candidate.plane}/${candidate.serial ?? 'no-serial'}`)
+          .join(', ')}`,
+        { candidates },
+      );
+    }
+    const device = resolution.device;
     if (!device) {
       throw new DisconnectError(409, `attachment device '${client.attach}' is not in the device cache — wait for the next poll`);
     }
@@ -184,7 +218,7 @@ export class DisconnectService {
     try {
       res = await transport.request('POST', path, body);
     } catch (err) {
-      this.log(client.mac, ticket, 'network-error');
+      this.log(client.mac, ticket, 'network-error', undefined, device);
       return {
         ...base,
         ok: false,
@@ -194,7 +228,7 @@ export class DisconnectService {
     }
 
     if (res.status === 202) {
-      this.log(client.mac, ticket, 'disconnect-initiated', res.status);
+      this.log(client.mac, ticket, 'disconnect-initiated', res.status, device);
       return {
         ...base,
         ok: true,
@@ -203,7 +237,7 @@ export class DisconnectService {
         message: `disconnect accepted by Central (HTTP 202) — ${client.name} will reauthenticate on rejoin`,
       };
     }
-    this.log(client.mac, ticket, 'rejected', res.status);
+    this.log(client.mac, ticket, 'rejected', res.status, device);
     return {
       ...base,
       ok: false,
@@ -220,7 +254,13 @@ export class DisconnectService {
     return adapter instanceof CentralAdapter ? adapter : null;
   }
 
-  private log(mac: string, ticket: string, result: string, httpCode?: number): void {
+  private log(
+    mac: string,
+    ticket: string,
+    result: string,
+    httpCode?: number,
+    device?: DisconnectDevice,
+  ): void {
     appendBrokerLog(this.dataDir, {
       ts: new Date(this.nowMs()).toISOString(),
       event: 'disconnect',
@@ -228,6 +268,9 @@ export class DisconnectService {
       ticket,
       kind: 'client',
       result,
+      ...(device
+        ? { device: device.name, plane: device.plane, serial: device.serial ?? null }
+        : {}),
       ...(httpCode !== undefined ? { httpCode } : {}),
     });
   }

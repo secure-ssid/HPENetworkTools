@@ -10,10 +10,12 @@ import {
   getPortalSettings,
   getSystems,
   getSystemsState,
+  saveSystemCredentials,
   testSystem,
 } from '../api/client';
 import type { LivePlaneState, SystemsData, SystemsState } from '../api/client';
 import { PERMISSIONS, SYNC_HISTORY, SYSTEMS } from '../../../shared';
+import type { SystemRow } from '../../../shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -37,6 +39,7 @@ vi.mock('../api/client', async (importOriginal) => {
     getPortalSettings: vi.fn(),
     getChatStatus: vi.fn(),
     getChatSettings: vi.fn(),
+    saveSystemCredentials: vi.fn(),
     testSystem: vi.fn(),
   };
 });
@@ -46,6 +49,7 @@ const mockGetSystemsState = vi.mocked(getSystemsState);
 const mockGetPortalSettings = vi.mocked(getPortalSettings);
 const mockGetChatStatus = vi.mocked(getChatStatus);
 const mockGetChatSettings = vi.mocked(getChatSettings);
+const mockSaveSystemCredentials = vi.mocked(saveSystemCredentials);
 const mockTestSystem = vi.mocked(testSystem);
 
 /** A registry entry as a stock install reports it: nothing configured. */
@@ -448,6 +452,7 @@ describe('Systems connect drawer', () => {
     mockGetChatStatus.mockResolvedValue(null);
     mockGetChatSettings.mockResolvedValue(null);
     mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+    mockSaveSystemCredentials.mockResolvedValue({ ok: true, message: 'saved' });
 
     renderSystems();
 
@@ -475,6 +480,16 @@ describe('Systems connect drawer', () => {
     // publisher default rather than a wrong profile name that fails the CoA.
     expect(screen.getByLabelText('CoA enforcement profile — optional')).toBeTruthy();
     expect(creds.coaEnforcementProfile).toBeUndefined();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save and index' }).hasAttribute('disabled')).toBe(
+        false,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save and index' }));
+    await waitFor(() =>
+      expect(mockSaveSystemCredentials).toHaveBeenCalledWith('clearpass', creds),
+    );
   });
 
   it('sends the optional CoA enforcement profile under the key the adapter honours', async () => {
@@ -506,5 +521,634 @@ describe('Systems connect drawer', () => {
     expect(creds.coaEnforcementProfile).toBe('Quarantine-Profile');
     expect(creds.host).toBe('cppm-01.meridian.health');
     expect(creds.token).toBe('tok-123');
+  });
+
+  it('does not authorize credentials edited while their test is in flight', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    let resolveTest!: (result: { ok: boolean; message: string }) => void;
+    mockTestSystem.mockReturnValue(
+      new Promise((resolve) => {
+        resolveTest = resolve;
+      }),
+    );
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'clearpass' } });
+    await waitFor(() => expect(screen.getByText('ClearPass publisher URL')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
+      target: { value: 'cppm-01.meridian.health' },
+    });
+    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tested-token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'untested-token' } });
+    resolveTest({ ok: true, message: 'authenticated' });
+
+    await waitFor(() => expect(screen.getByText('Re-test required')).toBeTruthy());
+    const save = screen.getByRole('button', { name: 'Save and index' });
+    expect(save.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(save);
+    expect(mockSaveSystemCredentials).not.toHaveBeenCalled();
+  });
+
+  it('prefills the stored endpoint when re-keying another system type', async () => {
+    const clearPassRow: SystemRow = {
+      ...SYSTEMS.find((row) => row.name === 'ClearPass')!,
+      planeId: 'clearpass',
+      configText:
+        'plane: clearpass\nlinked: true\nhost: https://cppm.custom.example\nscope: read only',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [clearPassRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: { clearpass: unlinked('clearpass', { linked: true, health: 'healthy' }) },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('ClearPass')).toBeTruthy());
+    fireEvent.click(screen.getByText('ClearPass'));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
+
+    expect(screen.getByLabelText('ClearPass publisher URL')).toHaveProperty(
+      'value',
+      'https://cppm.custom.example',
+    );
+  });
+});
+
+describe('Systems connect drawer — SSE (token-only plane)', () => {
+  it('hides the shared Client ID/secret pair and saves baseUrl + token under the keys the adapter reads', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'sse' } });
+
+    await waitFor(() => expect(screen.getByLabelText('Admin API token')).toBeTruthy());
+    // Token-only plane: the generic Client ID / Client secret block never renders.
+    expect(screen.queryByLabelText('Client ID')).toBeNull();
+    expect(screen.queryByLabelText('Client secret')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('SSE Admin API base — optional'), {
+      target: { value: 'admin-api.axissecurity.com' },
+    });
+    fireEvent.change(screen.getByLabelText('Admin API token'), { target: { value: 'sse-tok-123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
+    const [plane, creds] = mockTestSystem.mock.calls[0]!;
+    expect(plane).toBe('sse');
+    expect(creds.baseUrl).toBe('admin-api.axissecurity.com');
+    expect(creds.token).toBe('sse-tok-123');
+    expect(creds.clientId).toBeUndefined();
+    expect(creds.clientSecret).toBeUndefined();
+  });
+
+  it('re-keys against the stored custom base URL and saves the tested snapshot', async () => {
+    const sseRow: SystemRow = {
+      ...SYSTEMS[0]!,
+      name: 'HPE Aruba Networking SSE',
+      planeId: 'sse',
+      configText:
+        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscope: read only',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [sseRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: { sse: unlinked('sse', { linked: true, health: 'healthy' }) },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+    mockSaveSystemCredentials.mockResolvedValue({ ok: true, message: 'saved' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Networking SSE')).toBeTruthy());
+    fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
+
+    expect(screen.getByLabelText('SSE Admin API base — optional')).toHaveProperty(
+      'value',
+      'https://sse.custom.example/api',
+    );
+    fireEvent.change(screen.getByLabelText('Admin API token'), { target: { value: 'new-token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() =>
+      expect(mockTestSystem).toHaveBeenCalledWith('sse', {
+        displayName: 'HPE Aruba Networking SSE',
+        baseUrl: 'https://sse.custom.example/api',
+        token: 'new-token',
+        scopes: ['read:inventory', 'read:clients-auth', 'read:config-licences'],
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save and index' }).hasAttribute('disabled')).toBe(
+        false,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save and index' }));
+    await waitFor(() =>
+      expect(mockSaveSystemCredentials).toHaveBeenCalledWith(
+        'sse',
+        mockTestSystem.mock.calls[0]![1],
+      ),
+    );
+  });
+});
+
+describe('Systems connect drawer — credential hygiene', () => {
+  it('never sends a hidden stale client secret after switching Central → SSE', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+
+    // Default type is Central, which shows the shared Client ID/secret pair —
+    // fill both in before switching to a token-only plane.
+    await waitFor(() => expect(screen.getByLabelText('Client ID')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'a41f-central' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'shh-central-secret' } });
+
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'sse' } });
+    await waitFor(() => expect(screen.getByLabelText('Admin API token')).toBeTruthy());
+    // The now-irrelevant pair must not still render, hidden, with the old
+    // plane's values trapped inside it.
+    expect(screen.queryByLabelText('Client ID')).toBeNull();
+    expect(screen.queryByLabelText('Client secret')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Admin API token'), { target: { value: 'sse-tok-999' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
+    const [plane, creds] = mockTestSystem.mock.calls[0]!;
+    expect(plane).toBe('sse');
+    expect(creds.token).toBe('sse-tok-999');
+    expect(creds.clientId).toBeUndefined();
+    expect(creds.clientSecret).toBeUndefined();
+  });
+
+  it('clears the prior plane endpoint, extra fields and scope selection on a type switch', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+
+    // Central: set an endpoint, uncheck a default-on read scope, and check the
+    // write scope — all of this belongs to Central and must not survive.
+    fireEvent.change(screen.getByLabelText('Central region / base URL'), {
+      target: { value: 'us4.api.central.arubanetworks.com' },
+    });
+    fireEvent.click(
+      screen.getByLabelText('Read configuration and licences'),
+    );
+    fireEvent.click(
+      screen.getByLabelText('Brokered write — config push, requires a ticket reference'),
+    );
+    expect(
+      screen.getByLabelText('Brokered write — config push, requires a ticket reference'),
+    ).toHaveProperty('checked', true);
+
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'clearpass' } });
+    await waitFor(() => expect(screen.getByText('ClearPass publisher URL')).toBeTruthy());
+
+    // Endpoint is the clearpass variant, blank — not Central's leftover value.
+    expect(screen.getByLabelText('ClearPass publisher URL')).toHaveProperty('value', '');
+    // Scopes reset to the connect-drawer defaults: read flags back on, write off.
+    expect(
+      screen.getByLabelText('Read configuration and licences'),
+    ).toHaveProperty('checked', true);
+    expect(
+      screen.getByLabelText('Brokered write — config push, requires a ticket reference'),
+    ).toHaveProperty('checked', false);
+
+    fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
+      target: { value: 'cppm-01.meridian.health' },
+    });
+    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tok-123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
+    const [, creds] = mockTestSystem.mock.calls[0]!;
+    expect(creds.scopes).toEqual(['read:inventory', 'read:clients-auth', 'read:config-licences']);
+  });
+
+  it('re-keys a writable SSE plane with its write scope prefilled and preserved', async () => {
+    const sseRow: SystemRow = {
+      ...SYSTEMS[0]!,
+      name: 'HPE Aruba Networking SSE',
+      planeId: 'sse',
+      configText:
+        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscope: read only',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [sseRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: {
+        sse: unlinked('sse', {
+          linked: true,
+          health: 'healthy',
+          capabilities: { localShell: false, brokeredWrite: false, configRead: false, directWrite: true },
+        }),
+      },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Networking SSE')).toBeTruthy());
+    fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
+
+    // Token rotation must not silently downgrade directWrite: the write
+    // checkbox comes in already checked, reflecting the plane's real grant.
+    expect(
+      screen.getByLabelText(
+        'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
+      ),
+    ).toHaveProperty('checked', true);
+
+    fireEvent.change(screen.getByLabelText('Admin API token'), { target: { value: 'rotated-token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() =>
+      expect(mockTestSystem).toHaveBeenCalledWith('sse', {
+        displayName: 'HPE Aruba Networking SSE',
+        baseUrl: 'https://sse.custom.example/api',
+        token: 'rotated-token',
+        scopes: [
+          'read:inventory',
+          'read:clients-auth',
+          'read:config-licences',
+          'write:brokered',
+        ],
+      }),
+    );
+  });
+
+  it('lets the operator explicitly downgrade a writable SSE plane by unchecking write', async () => {
+    const sseRow: SystemRow = {
+      ...SYSTEMS[0]!,
+      name: 'HPE Aruba Networking SSE',
+      planeId: 'sse',
+      configText:
+        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscope: read only',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [sseRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: {
+        sse: unlinked('sse', {
+          linked: true,
+          health: 'healthy',
+          capabilities: { localShell: false, brokeredWrite: false, configRead: false, directWrite: true },
+        }),
+      },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Networking SSE')).toBeTruthy());
+    fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
+
+    const writeCheckbox = screen.getByLabelText(
+      'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
+    );
+    expect(writeCheckbox).toHaveProperty('checked', true);
+    // An explicit operator toggle — not the rotation itself — is what may
+    // downgrade directWrite.
+    fireEvent.click(writeCheckbox);
+    expect(writeCheckbox).toHaveProperty('checked', false);
+
+    fireEvent.change(screen.getByLabelText('Admin API token'), { target: { value: 'rotated-token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() =>
+      expect(mockTestSystem).toHaveBeenCalledWith('sse', {
+        displayName: 'HPE Aruba Networking SSE',
+        baseUrl: 'https://sse.custom.example/api',
+        token: 'rotated-token',
+        scopes: ['read:inventory', 'read:clients-auth', 'read:config-licences'],
+      }),
+    );
+  });
+
+  it('tests and saves an exact empty scope array when every writable SSE scope is revoked', async () => {
+    const sseRow: SystemRow = {
+      ...SYSTEMS[0]!,
+      name: 'HPE Aruba Networking SSE',
+      planeId: 'sse',
+      configText:
+        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscopes: read:inventory,read:clients-auth,read:config-licences,write:brokered\nscope: read only',
+    };
+    const revokedRow: SystemRow = {
+      ...sseRow,
+      configText:
+        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscopes: \nscope: read only',
+    };
+    mockGetSystems.mockResolvedValueOnce({
+      systems: [sseRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    }).mockResolvedValue({
+      systems: [revokedRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValueOnce({
+      demoMode: false,
+      planes: {
+        sse: unlinked('sse', {
+          linked: true,
+          health: 'healthy',
+          capabilities: {
+            localShell: false,
+            brokeredWrite: false,
+            configRead: false,
+            directWrite: true,
+          },
+        }),
+      },
+      history: [],
+    }).mockResolvedValue({
+      demoMode: false,
+      planes: {
+        sse: unlinked('sse', {
+          linked: true,
+          health: 'healthy',
+          capabilities: {
+            localShell: false,
+            brokeredWrite: false,
+            configRead: false,
+            directWrite: false,
+          },
+        }),
+      },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+    mockSaveSystemCredentials.mockResolvedValue({ ok: true, message: 'saved' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Networking SSE')).toBeTruthy());
+    fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
+
+    for (const label of [
+      'Read inventory, sites and topology',
+      'Read clients, sessions and auth events',
+      'Read configuration and licences',
+      'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
+    ]) {
+      const checkbox = screen.getByLabelText(label);
+      expect(checkbox).toHaveProperty('checked', true);
+      fireEvent.click(checkbox);
+    }
+    fireEvent.change(screen.getByLabelText('Admin API token'), {
+      target: { value: 'rotated-token' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalledTimes(1));
+    const testedPayload = mockTestSystem.mock.calls[0]![1];
+    expect(testedPayload).toEqual({
+      displayName: 'HPE Aruba Networking SSE',
+      baseUrl: 'https://sse.custom.example/api',
+      token: 'rotated-token',
+      scopes: [],
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save and index' }).hasAttribute('disabled')).toBe(
+        false,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save and index' }));
+    await waitFor(() => expect(mockSaveSystemCredentials).toHaveBeenCalledTimes(1));
+    expect(mockSaveSystemCredentials.mock.calls[0]![1]).toBe(testedPayload);
+
+    await waitFor(() => expect(mockGetSystemsState).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
+    for (const label of [
+      'Read inventory, sites and topology',
+      'Read clients, sessions and auth events',
+      'Read configuration and licences',
+      'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
+    ]) {
+      expect(screen.getByLabelText(label)).toHaveProperty('checked', false);
+    }
+  });
+
+  it('defaults a brand-new SSE connection to read-only (write off)', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'sse' } });
+    await waitFor(() => expect(screen.getByLabelText('Admin API token')).toBeTruthy());
+
+    expect(
+      screen.getByLabelText(
+        'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
+      ),
+    ).toHaveProperty('checked', false);
+    expect(
+      screen.getByText(
+        'Each reviewed mutation is sent directly to SSE, then the portal runs tenant-wide Commit.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByLabelText('Brokered write — config push, requires a ticket reference'),
+    ).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Admin API token'), { target: { value: 'new-tok' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
+    const [, creds] = mockTestSystem.mock.calls[0]!;
+    expect(creds.scopes).toEqual(['read:inventory', 'read:clients-auth', 'read:config-licences']);
+  });
+});
+
+describe('Systems Configuration tab — SSE object inventory', () => {
+  it('renders the SSE inventory panel for a linked plane with a declared write scope', async () => {
+    const sseRow: SystemRow = {
+      name: 'HPE Aruba Networking SSE',
+      planeId: 'sse',
+      kind: 'live plane registry',
+      state: 'healthy',
+      tone: 'success',
+      scope: 'read only',
+      scopeTone: 'neutral',
+      scopeNote: 'no write path from the portal to this plane',
+      facts: [{ k: 'Last sync', v: '5s ago' }],
+      sites: [],
+      live: [],
+      calls: [],
+      events: [],
+      pulls: [{ what: 'poll()', every: 'every 60s', mode: 'read', tone: 'neutral' }],
+      configText: 'plane: sse\nlinked: true',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [sseRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: {
+        sse: unlinked('sse', {
+          linked: true,
+          health: 'healthy',
+          capabilities: { localShell: false, brokeredWrite: false, configRead: false, directWrite: true },
+        }),
+      },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Networking SSE')).toBeTruthy());
+    fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Configuration' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+
+    await waitFor(() => expect(screen.getByText('Object inventory')).toBeTruthy());
+    // A write-capable token gets the auto-commit badge, not the read-only one.
+    expect(screen.getByText('reviewed writes · auto-commit')).toBeTruthy();
+  });
+
+  it('shows a "connect to browse" message instead of the panel when SSE is not linked', async () => {
+    const sseRow: SystemRow = {
+      name: 'HPE Aruba Networking SSE',
+      planeId: 'sse',
+      kind: 'not linked',
+      state: 'warning',
+      tone: 'warning',
+      scope: 'read only',
+      scopeTone: 'neutral',
+      scopeNote: 'no credentials stored',
+      facts: [{ k: 'Last sync', v: 'never' }],
+      sites: [],
+      live: [],
+      calls: [],
+      events: [],
+      pulls: [{ what: 'poll()', every: 'every 60s', mode: 'read', tone: 'neutral' }],
+      configText: 'plane: sse\nlinked: false',
+    };
+    mockGetSystems.mockResolvedValue({ systems: [sseRow], syncHistory: [], permissions: PERMISSIONS, dataSource: 'live' });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: { sse: unlinked('sse') },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('HPE Aruba Networking SSE')).toBeTruthy());
+    fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Configuration' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+
+    await waitFor(() =>
+      expect(screen.getByText('connect this plane with an Admin API token to browse its object inventory')).toBeTruthy(),
+    );
+    // The not-linked message renders instead of the panel's own controls.
+    expect(screen.queryByText('reviewed writes · auto-commit')).toBeNull();
+    expect(screen.queryByLabelText('Object kind')).toBeNull();
   });
 });

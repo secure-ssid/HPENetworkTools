@@ -3,8 +3,9 @@
  * backed by the recorded SSH bridge (server/src/services/terminal.ts) instead
  * of the canned responder.
  *
- * createWsTransport(name) returns { transport, connect, close }:
- *   connect()  opens the WebSocket to /api/terminal/:name, sends {type:'open'}
+ * createWsTransport(name, identity) returns { transport, connect, close }:
+ *   connect()  opens /api/terminal/:name with plane+serial when available,
+ *              sends {type:'open'}
  *              and resolves true only once the server reports {type:'ready'}
  *              (SSH up, shell live, prompt seen) — false on any failure or
  *              timeout, in which case DeviceDetail falls back to the canned
@@ -29,6 +30,7 @@
 
 import type { TerminalLine } from '../../../shared';
 import type { TerminalTransport } from './TerminalPane';
+import type { DeviceDetailIdentity } from '../api/client';
 
 /** A transport that answers asynchronously — the pane prefers this when set. */
 export interface AsyncTerminalTransport extends TerminalTransport {
@@ -91,17 +93,42 @@ const CONNECTING_LINES: TerminalLine[] = [
   { text: '', tone: 'muted' },
 ];
 
-export function createWsTransport(
-  name: string,
-  opts: WsTerminalOptions = {},
-): {
+type WsTerminalSession = {
   transport: AsyncTerminalTransport;
   connect(): Promise<boolean>;
   close(): void;
-} {
+};
+
+export function createWsTransport(name: string, opts?: WsTerminalOptions): WsTerminalSession;
+export function createWsTransport(
+  name: string,
+  identity: DeviceDetailIdentity,
+  opts?: WsTerminalOptions,
+): WsTerminalSession;
+export function createWsTransport(
+  name: string,
+  identityOrOpts: DeviceDetailIdentity | WsTerminalOptions = {},
+  explicitOpts?: WsTerminalOptions,
+): WsTerminalSession {
+  const oldStyle = explicitOpts === undefined && (
+    'url' in identityOrOpts ||
+    'readyTimeoutMs' in identityOrOpts ||
+    'commandTimeoutMs' in identityOrOpts ||
+    'onPrompt' in identityOrOpts ||
+    'onSession' in identityOrOpts ||
+    'onDisconnect' in identityOrOpts
+  );
+  const identity = oldStyle ? {} : identityOrOpts as DeviceDetailIdentity;
+  const opts = oldStyle ? identityOrOpts as WsTerminalOptions : explicitOpts ?? {};
+  const params = new URLSearchParams();
+  if (identity.plane && identity.serial) {
+    params.set('plane', identity.plane);
+    params.set('serial', identity.serial);
+  }
+  const query = params.toString();
   const url =
     opts.url ??
-    `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/terminal/${encodeURIComponent(name)}`;
+    `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/terminal/${encodeURIComponent(name)}${query ? `?${query}` : ''}`;
   const readyTimeoutMs = opts.readyTimeoutMs ?? 12_000;
   const commandTimeoutMs = opts.commandTimeoutMs ?? 30_000;
 

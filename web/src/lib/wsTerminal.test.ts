@@ -84,6 +84,21 @@ async function connectReady(url = 'ws://test/terminal/sw1'): Promise<ReturnType<
 }
 
 describe('createWsTransport — happy path', () => {
+  it('encodes exact plane+serial identity on the terminal action URL', async () => {
+    setup();
+    const session = createWsTransport(
+      'sw/shared name',
+      { plane: 'LOCAL', serial: 'SERIAL/1' },
+    );
+    const connected = session.connect();
+    const sock = lastSocket();
+    expect(sock.url).toContain('/api/terminal/sw%2Fshared%20name?plane=LOCAL&serial=SERIAL%2F1');
+    sock.open();
+    sock.emit({ type: 'ready', prompt: 'sw#' });
+    await expect(connected).resolves.toBe(true);
+    session.close();
+  });
+
   it('open → banner/ready → cmd echoes out frames → end resolves with collected output', async () => {
     setup();
     const session = createWsTransport('sw1', { url: 'ws://test/terminal/sw1' });

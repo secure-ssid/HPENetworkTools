@@ -32,7 +32,7 @@ clientsRouter.post(
       res.json(await disconnectService.disconnect(req.params.mac, body.ticket));
     } catch (err) {
       if (err instanceof DisconnectError) {
-        res.status(err.status).json({ error: err.message });
+        res.status(err.status).json({ error: err.message, ...err.details });
         return;
       }
       throw err;

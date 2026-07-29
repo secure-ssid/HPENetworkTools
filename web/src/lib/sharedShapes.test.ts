@@ -248,6 +248,7 @@ describe('connect-drawer credential keys match what the adapters read', () => {
       local: 'host',
       clearpass: 'host',
       uxi: 'baseUrl',
+      sse: 'baseUrl',
     });
   });
 

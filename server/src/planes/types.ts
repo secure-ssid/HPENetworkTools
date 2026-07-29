@@ -2,14 +2,18 @@
  * server/src/planes/types.ts — plane adapter contract.
  *
  * Every control plane (Central new, Classic, Mist, GreenLake, AOS-8, AOS-10,
- * the local SSH collector, ClearPass, UXI) has one adapter. Adapters with
- * complete credentials are real (central, greenlake, clearpass, uxi, mist,
- * aos8 today); adapters with partial credentials are `StubAdapter`s (linked,
- * but pull() returns nothing — real implementations land later), adapters
- * without credentials are `UnconfiguredAdapter`s.
+ * the local SSH collector, ClearPass, UXI, HPE Aruba Networking SSE) has one
+ * adapter. Adapters with complete credentials are real (central, greenlake,
+ * clearpass, uxi, mist, aos8, sse today); adapters with partial credentials
+ * are `StubAdapter`s (linked, but pull() returns nothing — real
+ * implementations land later), adapters without credentials are
+ * `UnconfiguredAdapter`s.
  *
  * PlanePull datasets use the normalized shared row types so a real adapter's
  * output can flow straight into the poller cache and the screen endpoints.
+ * SSE is the one exception: it has no devices/clients/alerts at all, so its
+ * whole contribution rides on the single `sse` field (an SseInventory), the
+ * same "structured object, not a row array" pattern `config` already uses.
  */
 
 import type {
@@ -25,6 +29,7 @@ import type {
   PlaneScope,
   SiteRow,
   SiteTopologyLive,
+  SseInventory,
   SubscriptionAssignment,
   SubscriptionRow,
 } from '../../../shared';
@@ -39,6 +44,7 @@ export const PLANE_IDS = [
   'local',
   'clearpass',
   'uxi',
+  'sse',
 ] as const;
 
 export type PlaneId = (typeof PLANE_IDS)[number];
@@ -65,6 +71,18 @@ export interface PlaneCapabilities {
   /** pull() can populate PlanePull.config (real SSID/VLAN/port reads) rather
    *  than the Configure screen observing them from client sessions. */
   configRead?: boolean;
+  /** This plane accepts REVIEWED direct writes outside the ticketed broker
+   *  queue — New Central's WLAN-profile upsert + scope-map assignment
+   *  (server/src/services/ssidDirectWrite.ts) and HPE Aruba Networking SSE's
+   *  object CRUD + automatic commit (server/src/planes/sse.ts). false/absent
+   *  on Classic Central and every other plane: Classic is not writable via
+   *  this path, and an SSE token whose granted scope excludes write reports
+   *  false here too — see SseAdapter.capabilities(). */
+  directWrite?: boolean;
+  /** New Central's network-troubleshooting API can run reviewed operational
+   *  diagnostics. This is an action/write, but not a configuration mutation.
+   *  Classic Central and every non-Central plane leave it false/absent. */
+  activeDiagnostics?: boolean;
 }
 
 /**
@@ -140,6 +158,10 @@ export interface PlanePull {
   /** Device→subscription assignments (GreenLake) — the feed the Licences
    *  screen needs to count unlicensed devices and derive orphan/gap rows. */
   assignments?: SubscriptionAssignment[];
+  /** HPE Aruba Networking SSE's object inventory (connector zones, connectors,
+   *  locations, tunnels, applications, users, groups, categories) — a
+   *  structured object, not a row array, same pattern as `config`. */
+  sse?: SseInventory;
   /** Datasets this pull could NOT read (404, truncated page, no permission).
    *  The registry holds health at 'warning' for a pull that names any, so a
    *  half-read plane is never stamped as a complete sync; the poller must not
@@ -183,10 +205,11 @@ export interface PlaneAdapter {
   // change; callers must feature-detect (`adapter.clientDetail?.(…)`).
 
   /**
-   * Per-client detail for ONE MAC — signal, throughput, roam count and the
-   * session timeline the flat /clients list does not carry.
+   * Per-client detail for ONE MAC. `medium` lets an adapter avoid wireless
+   * mobility/radio reads for an Ethernet client while still fetching shared
+   * facts such as usage.
    */
-  clientDetail?(mac: string): Promise<ClientDetailLive | null>;
+  clientDetail?(mac: string, medium?: ClientRow['medium']): Promise<ClientDetailLive | null>;
 
   /**
    * Per-device detail for ONE serial. `kind` tells the adapter which

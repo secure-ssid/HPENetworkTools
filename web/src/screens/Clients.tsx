@@ -194,7 +194,7 @@ function timelineRowsFrom(events: ClientTimelineEvent[], plane: string): Timelin
 }
 
 // ---------------------------------------------------------------------------
-// Path to the internet, from the plane's own site graph
+// Managed-device adjacency, from the plane's own site graph
 // ---------------------------------------------------------------------------
 
 /** Mirrors shared decorateHops(), which is internal to logic.ts. */
@@ -229,12 +229,12 @@ function isGatewayNode(node: TopologyDeviceNode): boolean {
   return /gateway|gw|router|wan/i.test(`${node.deviceFunction} ${node.type}`);
 }
 
-/** One segment as a fact about the wiring, in the direction of travel. */
+/** One physical link as reported by the plane; topology does not prove traffic direction. */
 function linkFact(link: TopologyLink, forward: boolean): string {
   const near = (forward ? link.fromPorts : link.toPorts).map((p) => p.name).filter(Boolean);
   const far = (forward ? link.toPorts : link.fromPorts).map((p) => p.name).filter(Boolean);
   return nonEmpty([
-    near.length || far.length ? `${near.join('+') || '?'} → ${far.join('+') || '?'}` : null,
+    near.length || far.length ? `${near.join('+') || '?'} ↔ ${far.join('+') || '?'}` : null,
     typeof link.speedBps === 'number' && link.speedBps > 0 ? formatBps(link.speedBps) : null,
     link.health && link.health.toLowerCase() !== 'good' ? `link ${link.health.toLowerCase()}` : null,
   ]).join(' · ');
@@ -243,15 +243,17 @@ function linkFact(link: TopologyLink, forward: boolean): string {
 type LivePath = {
   hops: PathHopView[];
   /** Why the chain looks the way it does — the drawer says each differently. */
-  reason: 'ok' | 'no-graph' | 'not-on-graph' | 'no-uplink';
+  reason: 'ok' | 'wired-attachment' | 'no-graph' | 'not-on-graph' | 'no-uplink';
   /** The node the chain ends on, when it ended on one. */
   end: TopologyDeviceNode | null;
 };
 
 /**
- * Walk the plane's own site graph from the device this client is attached to
- * out to the nearest gateway. Nothing here is invented: every hop is a node
- * the plane returned, every segment label is that link's own ports and speed.
+ * Walk the plane's own site graph from a wireless client's AP out to the
+ * nearest managed gateway. A wired client stops at its reported attachment
+ * switch because extending it would invent a routing claim. In both cases this
+ * is physical adjacency, not an assertion about internet egress.
+ * Every node and segment comes directly from the plane's topology response.
  * When the plane does not place the attach device on the graph we say so —
  * we do not guess the uplink.
  */
@@ -280,7 +282,8 @@ function livePathFor(client: ClientRow, topo: SiteTopologyLive): LivePath {
     push(link.to, link.from, link, false);
   }
 
-  /* Breadth-first: the shortest hop chain is the one the traffic takes. */
+  /* Breadth-first finds the shortest physical adjacency chain. It does not
+     assert that client traffic follows that chain. */
   const prev = new Map<string, { from: string; link: TopologyLink; forward: boolean }>();
   const dist = new Map<string, number>([[start.serial, 0]]);
   const queue = [start.serial];
@@ -298,9 +301,16 @@ function livePathFor(client: ClientRow, topo: SiteTopologyLive): LivePath {
     (dist.get(n.serial) ?? 99) * 10 +
     ((n.status ?? '').toUpperCase() === 'ONLINE' ? 0 : 2) +
     ((n.health ?? '').toLowerCase() === 'good' ? 0 : 1);
-  const target = nodes
-    .filter((n) => n.serial !== start.serial && dist.has(n.serial) && isGatewayNode(n))
-    .sort((a, b) => rank(a) - rank(b))[0];
+  // A wired row proves only the client-facing switch and port. Walking from
+  // that switch to the nearest managed gateway would turn physical adjacency
+  // into an invented routing claim (and can contradict a third-party
+  // 9400 → 6300 → OPNsense path that the managed graph does not contain).
+  const target =
+    client.medium === 'wired'
+      ? undefined
+      : nodes
+          .filter((n) => n.serial !== start.serial && dist.has(n.serial) && isGatewayNode(n))
+          .sort((a, b) => rank(a) - rank(b))[0];
 
   const chain: TopologyDeviceNode[] = [];
   if (target) {
@@ -361,7 +371,11 @@ function livePathFor(client: ClientRow, topo: SiteTopologyLive): LivePath {
       device: false,
     });
   }
-  return { hops: decorate(hops), reason: target ? 'ok' : 'no-uplink', end };
+  return {
+    hops: decorate(hops),
+    reason: target ? 'ok' : client.medium === 'wired' ? 'wired-attachment' : 'no-uplink',
+    end,
+  };
 }
 
 export default function Clients() {
@@ -668,7 +682,7 @@ export default function Clients() {
           addPlace('Wiring', 'closet', cur.closet);
         }
 
-        /* Path to the internet. pathFor() stitches the DEMO topology; for a
+        /* Managed topology. pathFor() stitches the DEMO internet path; for a
          * live client it would fabricate hops through devices the estate does
          * not have (sw-core-a, gw-edge-1…), so a live chain may only come from
          * the plane's own site graph. */
@@ -676,7 +690,9 @@ export default function Clients() {
         const live = sectionLive ? (topo ? livePathFor(cur, topo) : null) : null;
         const path = sectionLive ? (live?.hops ?? []) : pathFor(cur);
         const weakHops = path.filter((h) => h.tone === 'warning' || h.tone === 'danger').length;
-        const hopsMeta = `${path.length} HOPS${weakHops ? ` · ${weakHops} DEGRADED` : ' · ALL HEALTHY'}`;
+        const hopsMeta = `${path.length} ${sectionLive ? 'NODES' : 'HOPS'}${
+          weakHops ? ` · ${weakHops} DEGRADED` : ' · ALL HEALTHY'
+        }`;
         const topoState = detailState(topo?.source, 'nodes');
         const pathMeta = !sectionLive
           ? hopsMeta
@@ -699,14 +715,16 @@ export default function Clients() {
               : live?.reason === 'no-graph' || topoState === 'empty'
                 ? `${cur.plane} reports no link topology for ${cur.siteName}.`
                 : 'No linked topology source reported a path for this live client. The portal will not substitute the demo topology.';
-        /* The chain stops where the plane's knowledge stops. Central reports
-         * internet=false on every node of this estate, so say that instead of
-         * drawing an internet hop nobody reported. */
+        /* A managed-device graph proves physical adjacency only. It does not
+         * identify traffic direction or an internet egress, and third-party
+         * routers may not appear in the plane's topology at all. */
         const pathNote =
-          live?.reason === 'ok' && live.end && live.end.internet !== true
-            ? `${cur.plane}'s site graph ends at ${live.end.name} — it does not report the upstream internet path.`
+          live?.reason === 'ok' && live.end
+            ? `${cur.plane} reports these managed-device links as physical adjacency, not traffic direction. The internet egress is not identified, and third-party routers may be absent.`
+            : live?.reason === 'wired-attachment' && path.length
+              ? `${cur.plane} identifies the wired attachment switch and port. The portal does not infer that this session routes through a managed gateway; the internet egress and any third-party 9400 → 6300 → OPNsense path remain separate physical facts.`
             : live?.reason === 'no-uplink' && path.length
-              ? `${cur.plane} places ${cur.attach} on the site graph but reports no gateway beyond it.`
+              ? `${cur.plane} places ${cur.attach} on the site graph but reports no connected managed gateway. The internet egress is not identified.`
               : null;
 
         /* Session timeline. "Fetched and genuinely empty" (a stationary camera
@@ -735,87 +753,128 @@ export default function Clients() {
                 }. Nothing is shown rather than a stale or invented timeline.`
               : 'No linked plane reported session events for this client. The portal will not substitute the demo timeline.';
 
-        return {
-          summary: sectionLive ? known(cur.model, cur.siteName) : known(cur.role, cur.group, cur.siteName),
-          metrics: [
-            {
-              k: 'Signal',
-              v: rssiNum !== null ? dbm(rssiNum) : cur.rssi,
-              note: wired
-                ? 'wired link'
-                : rssiDerived
+        const throughputMetric = {
+          k: 'Throughput',
+          v: tputNum !== null ? formatBps(tputNum) : cur.tput,
+          /* Central reports usage totals over a window, never an
+           * instantaneous rate — label the average as an average. */
+          note:
+            detailNote(
+              'tput',
+              `avg over ${formatWindow(det?.tputWindowSec) ?? 'the read window'}`,
+              `no usage samples in ${windowPhrase(det?.tputWindowSec)}`,
+            ) || metricNote(cur.tput, 'current rate'),
+          color: warn(false),
+        };
+        const metrics = wired
+          ? [
+              {
+                k: 'Switch port',
+                v: cur.where,
+                note: cur.where === '—' ? metricNote(cur.where, 'access port') : cur.attach,
+                color: warn(false),
+              },
+              {
+                k: 'VLAN',
+                v: vlanNumber(cur.vlan) ?? cur.vlan,
+                note: metricNote(cur.vlan, 'client VLAN'),
+                color: warn(false),
+              },
+              throughputMetric,
+              {
+                k: 'Session',
+                v: cur.session,
+                note: metricNote(cur.session, 'connected duration'),
+                color: warn(false),
+              },
+              {
+                k: 'Authentication',
+                v: cur.auth,
+                note:
+                  cur.authBy !== '—'
+                    ? `authenticated by ${cur.authBy}`
+                    : metricNote(cur.auth, 'access authentication'),
+                color: warn(false),
+              },
+              {
+                k: 'IP',
+                v: cur.ip,
+                note: 'client address',
+                color: warn(cur.ip === 'pending' || cur.ip === '—'),
+              },
+            ]
+          : [
+              {
+                k: 'Signal',
+                v: rssiNum !== null ? dbm(rssiNum) : cur.rssi,
+                note: rssiDerived
                   ? 'derived from SNR + noise floor'
                   : detailNote('rssi', 'target ≥ −67 dBm', noSignalNote) ||
                     metricNote(cur.rssi, 'target ≥ −67 dBm'),
-              color: warn(rssiNum !== null ? rssiNum < -67 : cur.rssi !== '—' && metricNum(cur.rssi) < -67),
-            },
-            {
-              k: 'SNR',
-              /* Radio metrics on a wired session: the plane did not fail to
-               * report them, there is no radio to report. Blaming the plane
-               * for a figure the link cannot have is the same lie as blaming
-               * it for a zone it does not model. */
-              v: cur.snr,
-              note: wired ? 'not applicable to wired links' : metricNote(cur.snr, 'target ≥ 25 dB'),
-              color: warn(cur.snr !== '—' && metricNum(cur.snr) < 25),
-            },
-            {
-              k: 'Retries',
-              v: radioRetries !== null ? `${radioRetries}%` : cur.retries,
-              note: wired
-                ? 'not applicable to wired links'
-                : radio
+                color: warn(rssiNum !== null ? rssiNum < -67 : cur.rssi !== '—' && metricNum(cur.rssi) < -67),
+              },
+              {
+                k: 'SNR',
+                v: cur.snr,
+                note: metricNote(cur.snr, 'target ≥ 25 dB'),
+                color: warn(cur.snr !== '—' && metricNum(cur.snr) < 25),
+              },
+              {
+                k: 'Retries',
+                v: radioRetries !== null ? `${radioRetries}%` : cur.retries,
+                note: radio
                   ? `${servingRadioLabel(radio)} — the radio's, not this client's`
                   : metricNote(cur.retries, 'target under 8%'),
-              color: warn(
-                radioRetries !== null
-                  ? radioRetries > 8
-                  : cur.retries !== '—' && metricNum(cur.retries) > 8,
-              ),
-            },
-            {
-              k: 'Throughput',
-              v: tputNum !== null ? formatBps(tputNum) : cur.tput,
-              /* Central reports usage totals over a window, never an
-               * instantaneous rate — label the average as an average. */
-              note:
-                detailNote(
-                  'tput',
-                  `avg over ${formatWindow(det?.tputWindowSec) ?? 'the read window'}`,
-                  `no usage samples in ${windowPhrase(det?.tputWindowSec)}`,
-                ) || metricNote(cur.tput, 'current rate'),
-              color: warn(false),
-            },
-            {
-              k: 'Roams',
-              v: roamsNum !== null ? String(roamsNum) : cur.roams,
-              note:
-                detailNote(
-                  'roams',
-                  roamsNum === 0 ? `no roaming in ${roamWindow}` : `in ${roamWindow}`,
-                  `no roaming in ${roamWindow}`,
-                ) ||
-                (wired ? 'not applicable to wired links' : metricNote(cur.roams, 'this session')),
-              color: warn(roamsNum !== null ? roamsNum > 8 : parseInt(cur.roams, 10) > 8),
-            },
-            {
-              k: 'IP',
-              v: cur.ip,
-              // Fixtures store the VLAN already prefixed ('vlan 820'); Central
-              // reports the bare id ('200'). One label, no stutter.
-              note: vlanNumber(cur.vlan) ? `VLAN ${vlanNumber(cur.vlan)}` : metricNote(cur.vlan, 'VLAN'),
-              color: warn(cur.ip === 'pending' || cur.ip === '—'),
-            },
-          ],
+                color: warn(
+                  radioRetries !== null
+                    ? radioRetries > 8
+                    : cur.retries !== '—' && metricNum(cur.retries) > 8,
+                ),
+              },
+              throughputMetric,
+              {
+                k: 'Roams',
+                v: roamsNum !== null ? String(roamsNum) : cur.roams,
+                note:
+                  detailNote(
+                    'roams',
+                    roamsNum === 0 ? `no roaming in ${roamWindow}` : `in ${roamWindow}`,
+                    `no roaming in ${roamWindow}`,
+                  ) || metricNote(cur.roams, 'this session'),
+                color: warn(roamsNum !== null ? roamsNum > 8 : parseInt(cur.roams, 10) > 8),
+              },
+              {
+                k: 'IP',
+                v: cur.ip,
+                // Fixtures store the VLAN already prefixed ('vlan 820'); Central
+                // reports the bare id ('200'). One label, no stutter.
+                note: vlanNumber(cur.vlan) ? `VLAN ${vlanNumber(cur.vlan)}` : metricNote(cur.vlan, 'VLAN'),
+                color: warn(cur.ip === 'pending' || cur.ip === '—'),
+              },
+            ];
+
+        return {
+          summary: sectionLive ? known(cur.model, cur.siteName) : known(cur.role, cur.group, cur.siteName),
+          metrics,
           qualityNote:
             cur.quality === null
               ? `${cur.plane} reports health as “${cur.health}” but did not provide a numeric experience score.`
+              : wired && cur.quality >= 85
+                ? 'Wired session health is within target.'
+                : wired && cur.quality >= 50
+                  ? 'Wired session health is below target; inspect the switch port, VLAN, and authentication.'
+                  : wired
+                    ? 'Wired session health is poor; inspect the switch port, VLAN, and authentication.'
               : cur.quality >= 85
               ? 'Signal, retries and throughput all within the clinical target.'
               : cur.quality >= 50
                 ? 'Below the clinical target — signal or retries are the limiting factor.'
                 : 'Session is effectively unusable; see the timeline for why.',
-          experienceMeta: cur.link === '—' && sectionLive ? 'PARTIAL PLANE METRICS' : cur.link,
+          experienceMeta: wired
+            ? `WIRED · ${known(cur.attach, cur.where)}`
+            : cur.link === '—' && sectionLive
+              ? 'PARTIAL PLANE METRICS'
+              : cur.link,
           place,
           placeNotes,
           /* The section meta named the config group; for a plane that has no
@@ -1308,7 +1367,10 @@ export default function Clients() {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <SectionHeader label="Path to the internet" meta={drawer.pathMeta} />
+              <SectionHeader
+                label={sectionLive ? 'Reported network topology' : 'Path to the internet'}
+                meta={drawer.pathMeta}
+              />
               {drawer.path.length === 0 ? (
                 <div
                   style={{
@@ -1419,6 +1481,7 @@ export default function Clients() {
               ) : null}
             </div>
 
+            {cur.medium === 'wireless' ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <SectionHeader label="Session timeline" meta={drawer.timelineMeta} />
               {drawer.timeline.length === 0 ? (
@@ -1491,6 +1554,7 @@ export default function Clients() {
               ))
               )}
             </div>
+            ) : null}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <SectionHeader label="Actions" />

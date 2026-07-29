@@ -297,6 +297,63 @@ describe('push', () => {
     expect(broker.list().map((c) => c.id)).toContain(change.id);
   });
 
+  it('binds a port change to exact plane+serial and revalidates before issuing the action', async () => {
+    let devices = [
+      { name: 'duplicate-switch', plane: 'CENTRAL' as const, serial: 'SERIAL-A' },
+      { name: 'duplicate-switch', plane: 'CENTRAL' as const, serial: 'SERIAL-B' },
+    ];
+    const transport = transportWith(200);
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport,
+      knownTicket: anyTicket,
+      listDevices: () => devices,
+    });
+    const form = {
+      ...DEFAULT_PORT_FORM,
+      device: 'duplicate-switch',
+      plane: 'CENTRAL' as const,
+      serial: 'SERIAL-B',
+    };
+    const change = broker.queue('port', form, 'NET-IDENTITY');
+    await broker.push(change.id);
+    expect(transport.calls.map((call) => call.path)).toEqual([
+      '/configuration/v2/switch-port/SERIAL-B/1%2F1%2F14',
+      '/configuration/v2/switch-port/SERIAL-B/1%2F1%2F14',
+    ]);
+
+    const staleTransport = transportWith(200);
+    const staleBroker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport: staleTransport,
+      knownTicket: anyTicket,
+      listDevices: () => devices,
+    });
+    const stale = staleBroker.queue('port', form, 'NET-STALE');
+    devices = devices.filter((device) => device.serial !== 'SERIAL-B');
+    await expect(staleBroker.push(stale.id)).rejects.toMatchObject({ status: 404 });
+    expect(staleTransport.calls).toEqual([]);
+  });
+
+  it('rejects an ambiguous legacy port target before queueing or transport', () => {
+    const transport = transportWith(200);
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport,
+      knownTicket: anyTicket,
+      listDevices: () => [
+        { name: 'duplicate-switch', plane: 'CENTRAL', serial: 'SERIAL-A' },
+        { name: 'duplicate-switch', plane: 'LOCAL', serial: 'SERIAL-B' },
+      ],
+    });
+    expect(() => broker.queue(
+      'port',
+      { ...DEFAULT_PORT_FORM, device: 'duplicate-switch' },
+      'NET-AMBIGUOUS',
+    )).toThrow(/pass plane and serial/);
+    expect(transport.calls).toEqual([]);
+  });
+
   it('a 2xx applies, dequeues, and keeps the read-back snapshot (0600)', async () => {
     const currentState = { wlans: [{ name: 'MRDN-Staff' }] };
     const dataDir = freshDataDir();

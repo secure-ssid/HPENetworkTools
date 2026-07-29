@@ -34,7 +34,7 @@
  * control, never a toast claiming a hand-off the portal cannot make.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -71,6 +71,7 @@ import type {
   LivePlaneState,
   LiveSyncEvent,
   PortalSettings,
+  SystemCredentialPayload,
   SystemsData,
   SystemsState,
 } from '../api/client';
@@ -78,6 +79,7 @@ import {
   CONNECT_ENDPOINTS,
   CONNECT_ENDPOINT_KEY,
   CONNECT_FIELDS,
+  CONNECT_HIDE_CLIENT_CREDENTIALS,
   CONNECT_TYPE_OPTIONS,
   SCREEN_SECTIONS,
   type ScreenSection,
@@ -87,6 +89,8 @@ import { useSettings } from '../app/SettingsContext';
 import type { Density } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
+import { SseInventoryPanel } from './SseInventoryPanel';
+import { CentralWebhooksPanel } from './CentralWebhooksPanel';
 import '../app/app.css';
 
 /** Fixture system name → registry plane id (the seven connectable planes). */
@@ -154,6 +158,89 @@ const DEFAULT_SCOPES: ScopeFlags = {
   configLicences: true,
   write: false,
 };
+
+interface CredentialSnapshot {
+  plane: SystemTypeKey;
+  credentials: SystemCredentialPayload;
+}
+
+function sameCredentialValue(
+  left: SystemCredentialPayload[string],
+  right: SystemCredentialPayload[string],
+): boolean {
+  if (typeof left === 'string' || typeof right === 'string') return left === right;
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameCredentialSnapshot(
+  left: CredentialSnapshot | null,
+  right: CredentialSnapshot | null,
+): boolean {
+  if (!left || !right || left.plane !== right.plane) return false;
+  const leftKeys = Object.keys(left.credentials).sort();
+  const rightKeys = Object.keys(right.credentials).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) =>
+        key === rightKeys[index] &&
+        sameCredentialValue(left.credentials[key]!, right.credentials[key]!),
+    )
+  );
+}
+
+function storedEndpoint(row: SystemRow, plane: SystemTypeKey): string {
+  const prefix = `${CONNECT_ENDPOINT_KEY[plane]}:`;
+  const line = row.configText.split('\n').find((candidate) => candidate.startsWith(prefix));
+  const value = line?.slice(prefix.length).trim() ?? '';
+  return value.includes('••') ? '' : value;
+}
+
+/** credPayload()'s own scope tokens, keyed by the ScopeFlags field they came
+ *  from — the one vocabulary storedScopes() reads back and selectedScopes()
+ *  writes, so a re-key can never drift from what a save actually recorded. */
+const SCOPE_TOKEN: Record<keyof ScopeFlags, string> = {
+  inventory: 'read:inventory',
+  clientsAuth: 'read:clients-auth',
+  configLicences: 'read:config-licences',
+  write: 'write:brokered',
+};
+
+const BROKERED_WRITE_SCOPE_LABEL =
+  'Brokered write — config push, requires a ticket reference';
+const SSE_WRITE_SCOPE_LABEL =
+  'Direct write — reviewed SSE object mutations followed by tenant-wide Commit';
+
+/**
+ * The scopes a linked plane actually has, read back for re-key so rotating a
+ * token prefills — and, absent an explicit operator toggle, PRESERVES —
+ * what was already granted rather than resetting to the connect-drawer's
+ * safe-for-a-new-connection defaults (write off). The granular `scopes:`
+ * line in configText (unmasked — it is not secret-shaped) carries the read
+ * flags; the write bit additionally trusts the registry's own
+ * `capabilities.directWrite` when the plane reports one, because SSE's write
+ * grant lives ENTIRELY there (PLANE_WRITE_MODE says 'read only' for SSE
+ * either way, so the coarse `scope:` line can never carry it) — that is the
+ * one signal a rotated token must never silently contradict.
+ */
+function storedScopes(row: SystemRow, live: LivePlaneState | null): ScopeFlags {
+  const line = row.configText.split('\n').find((candidate) => candidate.startsWith('scopes:'));
+  const tokens = (line?.slice('scopes:'.length).trim() ?? '').split(',').map((t) => t.trim());
+  // An absent line is a legacy/unconfigured record and gets safe defaults.
+  // A present-but-empty line is different: it is the persisted representation
+  // of scopes: [] and must reopen with every checkbox still revoked.
+  const base: ScopeFlags = line !== undefined
+    ? {
+        inventory: tokens.includes(SCOPE_TOKEN.inventory),
+        clientsAuth: tokens.includes(SCOPE_TOKEN.clientsAuth),
+        configLicences: tokens.includes(SCOPE_TOKEN.configLicences),
+        write: tokens.includes(SCOPE_TOKEN.write),
+      }
+    : DEFAULT_SCOPES;
+  return live?.capabilities?.directWrite === undefined
+    ? base
+    : { ...base, write: live.capabilities.directWrite === true };
+}
 
 // -- formatting helpers -------------------------------------------------------
 
@@ -873,6 +960,9 @@ export default function Systems() {
   const [testedOk, setTestedOk] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const credentialVersionRef = useRef(0);
+  const currentCredentialSnapshotRef = useRef<CredentialSnapshot | null>(null);
+  const successfulTestRef = useRef<CredentialSnapshot | null>(null);
   // Set when a field change invalidates a PASSED test — surfaced as a warning
   // so a green-then-edited drawer never looks saved when it cannot be.
   const [retestNeeded, setRetestNeeded] = useState(false);
@@ -952,14 +1042,25 @@ export default function Systems() {
     toast('sync complete', { description: result.message, tone: 'success' });
   };
 
-  const openConnect = (prefill?: { type: SystemTypeKey; name: string }) => {
+  const openConnect = (prefill?: {
+    type: SystemTypeKey;
+    name: string;
+    endpoint?: string;
+    scopes?: ScopeFlags;
+  }) => {
+    credentialVersionRef.current += 1;
+    successfulTestRef.current = null;
     setNewType(prefill?.type ?? 'central');
     setDisplayName(prefill?.name ?? '');
-    setEndpoint('');
+    setEndpoint(prefill?.endpoint ?? '');
     setClientId('');
     setClientSecret('');
     setExtraCreds({});
-    setScopes(DEFAULT_SCOPES);
+    // A new connection always starts write-off (safe default); a re-key
+    // prefills — and thereby preserves — the plane's existing scopes unless
+    // the caller passed none (storedScopes() falls back to DEFAULT_SCOPES
+    // itself when nothing was ever recorded).
+    setScopes(prefill?.scopes ?? DEFAULT_SCOPES);
     setTesting(false);
     setTestedOk(false);
     setTestResult(null);
@@ -1006,7 +1107,9 @@ export default function Systems() {
 
   // -- connect form ---------------------------------------------------------------
   const invalidate = () => {
-    if (testedOk) setRetestNeeded(true);
+    credentialVersionRef.current += 1;
+    if (testedOk || successfulTestRef.current) setRetestNeeded(true);
+    successfulTestRef.current = null;
     setTestedOk(false);
     setTestResult(null);
   };
@@ -1023,35 +1126,77 @@ export default function Systems() {
   /* Saved under the exact keys each adapter's isComplete() reads (shared
    * CONNECT_ENDPOINT_KEY / CONNECT_FIELDS) — a record written under any other
    * key links the plane to a stub that never syncs. */
-  const credPayload = (): Record<string, string> => {
-    const out: Record<string, string> = {};
+  const credPayload = (): SystemCredentialPayload => {
+    const out: SystemCredentialPayload = {};
     if (displayName.trim()) out.displayName = displayName.trim();
     if (endpoint.trim()) out[CONNECT_ENDPOINT_KEY[newType]] = endpoint.trim();
-    if (clientId.trim()) out.clientId = clientId.trim();
-    if (clientSecret.trim()) out.clientSecret = clientSecret.trim();
+    // Token-only planes (CONNECT_HIDE_CLIENT_CREDENTIALS, e.g. SSE) never
+    // render this pair, so it must never be serialized for them either — a
+    // stale clientId/clientSecret left over from an earlier type selection
+    // is invisible in the drawer but would otherwise still ride along in the
+    // saved/tested payload.
+    if (!CONNECT_HIDE_CLIENT_CREDENTIALS.includes(newType)) {
+      if (clientId.trim()) out.clientId = clientId.trim();
+      if (clientSecret.trim()) out.clientSecret = clientSecret.trim();
+    }
     CONNECT_FIELDS[newType].forEach((f) => {
       const v = (extraCreds[f.key] ?? '').trim();
       if (v) out[f.key] = v;
     });
-    const sc = selectedScopes();
-    if (sc.length > 0) out.scopes = sc.join(',');
+    // Unlike optional credential fields, the scope controls are an explicit
+    // complete selection. Always serialize their exact array, including [],
+    // so test/save binding can distinguish full revocation from omission.
+    out.scopes = selectedScopes();
     return out;
   };
 
+  const credentialSnapshot = (): CredentialSnapshot => ({
+    plane: newType,
+    credentials: credPayload(),
+  });
+  currentCredentialSnapshotRef.current = credentialSnapshot();
+
   const testConnection = async () => {
+    if (testing) return;
+    const request = credentialSnapshot();
+    const requestVersion = credentialVersionRef.current;
     setTesting(true);
     setTestResult(null);
     setTestedOk(false);
     setRetestNeeded(false);
-    const res = await testSystem(newType, credPayload());
+    successfulTestRef.current = null;
+    const res = await testSystem(request.plane, request.credentials);
     setTesting(false);
+    if (
+      requestVersion !== credentialVersionRef.current ||
+      !sameCredentialSnapshot(request, currentCredentialSnapshotRef.current)
+    ) {
+      setTestResult(null);
+      setTestedOk(false);
+      successfulTestRef.current = null;
+      if (res.ok) setRetestNeeded(true);
+      return;
+    }
     setTestResult(res);
     setTestedOk(res.ok);
+    successfulTestRef.current = res.ok ? request : null;
   };
 
   const saveAndIndex = async () => {
-    if (!testedOk) return;
-    const res = await saveSystemCredentials(newType, credPayload());
+    const tested = successfulTestRef.current;
+    const current = credentialSnapshot();
+    if (!tested || !testedOk || !sameCredentialSnapshot(tested, current)) {
+      successfulTestRef.current = null;
+      setTestedOk(false);
+      setTestResult(null);
+      setRetestNeeded(true);
+      toast('Re-test required', {
+        description: 'The current credentials are different from the successful test.',
+        tone: 'warning',
+      });
+      return;
+    }
+    const res = await saveSystemCredentials(tested.plane, tested.credentials);
     if (!res.ok) {
       toast(res.message, { tone: 'danger' });
       return;
@@ -1727,6 +1872,24 @@ export default function Systems() {
 
             {tab === 'config' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                {curView?.planeId === 'sse' ? (
+                  curView.live?.linked ? (
+                    <SseInventoryPanel canWrite={curView.live?.capabilities?.directWrite === true} />
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <SectionHeader label="Object inventory" />
+                      <NothingReported label="connect this plane with an Admin API token to browse its object inventory" />
+                    </div>
+                  )
+                ) : null}
+                {curView?.planeId === 'central' ? (
+                  // Mounted unconditionally (unlike SSE above): the demo
+                  // 'configure' section serves canned webhooks even with no
+                  // linked plane, and a not-linked/Classic-gateway live plane
+                  // is itself an honest state the envelope's own `error`
+                  // reports — see CentralWebhooksPanel / centralWebhooks.ts.
+                  <CentralWebhooksPanel />
+                ) : null}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <SectionHeader label="What the portal pulls" />
                   {cur.pulls.map((p) => (
@@ -1775,7 +1938,12 @@ export default function Systems() {
                       size="sm"
                       onClick={() =>
                         curView.planeId
-                          ? openConnect({ type: curView.planeId, name: cur.name })
+                          ? openConnect({
+                              type: curView.planeId,
+                              name: cur.name,
+                              endpoint: storedEndpoint(cur, curView.planeId),
+                              scopes: storedScopes(cur, curView.live),
+                            })
                           : undefined
                       }
                     >
@@ -1823,7 +1991,11 @@ export default function Systems() {
         onOpenChange={setAddOpen}
         width="lg"
         title="Connect a system"
-        description="The portal needs read scope to index devices, and an optional brokered write scope for changes."
+        description={
+          newType === 'sse'
+            ? 'The portal needs read scope to index SSE objects. Direct write applies reviewed SSE object mutations followed by tenant-wide Commit.'
+            : 'The portal needs read scope to index devices, and an optional brokered write scope for changes.'
+        }
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <FormField label="System type" help="Pick the plane this credential belongs to.">
@@ -1833,8 +2005,19 @@ export default function Systems() {
               onValueChange={(v) => {
                 setNewType(v as SystemTypeKey);
                 // Another plane's fields would be saved under keys this one
-                // never reads — start its credential record clean.
+                // never reads, and a hidden-for-this-plane clientId/secret
+                // (e.g. switching onto SSE) must not silently ride along
+                // invisibly either — every shared and extra credential field,
+                // the endpoint, and the scope selection all belong to the
+                // PRIOR plane and must not leak onto the new one. A re-key's
+                // preserved scopes are prior-plane state too, so a mid-drawer
+                // type change resets to the safe connect-drawer defaults
+                // rather than carrying them across.
+                setEndpoint('');
+                setClientId('');
+                setClientSecret('');
                 setExtraCreds({});
+                setScopes(DEFAULT_SCOPES);
                 invalidate();
               }}
             />
@@ -1878,33 +2061,38 @@ export default function Systems() {
             />
           </FormField>
 
-          <div
-            style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
-          >
-            <FormField label="Client ID">
-              <Input
-                mono
-                placeholder="a41f…"
-                value={clientId}
-                onChange={(e) => {
-                  setClientId(e.target.value);
-                  invalidate();
-                }}
-              />
-            </FormField>
-            <FormField label="Client secret" help="Stored in the workspace vault, never shown again.">
-              <Input
-                mono
-                type="password"
-                placeholder="••••••••••••"
-                value={clientSecret}
-                onChange={(e) => {
-                  setClientSecret(e.target.value);
-                  invalidate();
-                }}
-              />
-            </FormField>
-          </div>
+          {/* Token-only planes (e.g. SSE) have no use for the shared Client
+              ID/secret pair — hidden so a save can never write a value under
+              a key that plane's isComplete() does not read. */}
+          {!CONNECT_HIDE_CLIENT_CREDENTIALS.includes(newType) && (
+            <div
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
+            >
+              <FormField label="Client ID">
+                <Input
+                  mono
+                  placeholder="a41f…"
+                  value={clientId}
+                  onChange={(e) => {
+                    setClientId(e.target.value);
+                    invalidate();
+                  }}
+                />
+              </FormField>
+              <FormField label="Client secret" help="Stored in the workspace vault, never shown again.">
+                <Input
+                  mono
+                  type="password"
+                  placeholder="••••••••••••"
+                  value={clientSecret}
+                  onChange={(e) => {
+                    setClientSecret(e.target.value);
+                    invalidate();
+                  }}
+                />
+              </FormField>
+            </div>
+          )}
 
           {/* What this plane's adapter needs beyond the endpoint and the
               client pair — without these the record saves, the plane links,
@@ -1974,13 +2162,29 @@ export default function Systems() {
               }}
             />
             <Checkbox
-              label="Brokered write — config push, requires a ticket reference"
+              label={
+                newType === 'sse'
+                  ? SSE_WRITE_SCOPE_LABEL
+                  : BROKERED_WRITE_SCOPE_LABEL
+              }
               checked={scopes.write}
               onChange={(e) => {
                 setScopes({ ...scopes, write: e.target.checked });
                 invalidate();
               }}
             />
+            {newType === 'sse' ? (
+              <span
+                style={{
+                  marginLeft: 24,
+                  fontSize: 12,
+                  color: 'var(--nd-text-muted)',
+                }}
+              >
+                Each reviewed mutation is sent directly to SSE, then the portal runs tenant-wide
+                Commit.
+              </span>
+            ) : null}
           </div>
 
           {testResult ? (

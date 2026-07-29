@@ -105,6 +105,7 @@ import { registry } from '../planes/registry';
 import type { PlaneCapabilities } from '../planes/types';
 import { planeIdForLabel } from './reconcile';
 import { poller } from './poller';
+import { deviceIdentityKey, resolveDeviceIdentity, safeDeviceCandidates, type DeviceIdentity } from './deviceIdentity';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -259,12 +260,41 @@ export interface SessionInfo {
   user: string;
   target: string;
   openedAt: string;
+  /** Plane+serial the recording was opened against, when the caller supplied
+   *  a complete identity pair at connect time — undefined for a recording
+   *  written before this field existed, or one opened with a name only.
+   *  Never derived from the display name: see TerminalManager.listSessionsForDevice. */
+  plane?: string;
+  serial?: string;
+  /** Literal key written at open time (see deviceIdentityKey) — undefined
+   *  exactly when plane/serial are undefined. */
+  identityKey?: string;
 }
 
 export interface SessionTranscript {
   file: string;
   events: SessionRecordEvent[];
   truncated: boolean; // true when the cap cut the read short — never silently
+}
+
+/** Result of listSessionsForDevice — see its doc comment for the identity rule. */
+export interface SessionQueryResult {
+  sessions: SessionInfo[];
+  /** true = the name (with the supplied identity, if any) still names more
+   *  than one physical device; `sessions` is always [] in that case. */
+  ambiguous: boolean;
+  /** Set only when plane/serial were supplied as a half pair. */
+  invalid: string | null;
+}
+
+/** Result of readSessionForDevice — mirrors SessionQueryResult's honesty
+ *  rule: a miss (transcript null, not ambiguous, not invalid) means the file
+ *  is either unknown or belongs to a different physical device — the two
+ *  are indistinguishable from the outside on purpose. */
+export interface SessionTranscriptQueryResult {
+  transcript: SessionTranscript | null;
+  ambiguous: boolean;
+  invalid: string | null;
 }
 
 /** Safety bound on one transcript read (recordings are operator-driven, small). */
@@ -282,6 +312,12 @@ class SessionRecorder {
     private readonly user: string,
     private readonly target: string,
     private readonly jumpHost: string | null,
+    /** Plane+serial this session was actually opened against, when the
+     *  caller supplied a complete pair — persisted so a later listing binds
+     *  to the exact device instead of guessing from `device` (a display name
+     *  two physically distinct devices can share). Written right after
+     *  `target=`, ahead of `via=`/`note=`, which stay last — see below. */
+    identity: DeviceIdentity = {},
     /** Provenance of the shell path (see TerminalManager.shellPathNote) —
      *  appended last so the `device= user= target=` prefix a transcript
      *  listing parses stays exactly where it was. */
@@ -309,10 +345,15 @@ class SessionRecorder {
     if (fd === null) throw new Error(`could not open a recording for ${device} — 20 name collisions`);
     this.filePath = filePath;
     this.fd = fd;
+    // identity= is only ever both-or-neither: a half pair would be worse than
+    // no identity at all (a false promise that the recording is bound to one
+    // exact device), and deviceIdentityKey() already enforces that.
+    const key = deviceIdentityKey(identity.plane, identity.serial);
+    const identityText = key ? ` plane=${identity.plane} serial=${identity.serial} identity=${key}` : '';
     this.event({
       type: 'open',
       at: now.toISOString(),
-      text: `device=${device} user=${user} target=${target}${jumpHost ? ` via=${jumpHost}` : ''}${note ? ` note=${note}` : ''}`,
+      text: `device=${device} user=${user} target=${target}${identityText}${jumpHost ? ` via=${jumpHost}` : ''}${note ? ` note=${note}` : ''}`,
     });
   }
 
@@ -363,10 +404,12 @@ export interface LiveDeviceRef {
   name: string;
   ip?: string;
   type?: DeviceType;
+  serial?: string;
   /** Display label of the plane that claimed the row, when the caller knows
    *  it. Used only to disclose who provides the shell path — see
    *  shellPathNote(). Absent means "unattributed", never "no shell". */
   plane?: Plane;
+  claimedBy?: Plane[];
 }
 
 export class TerminalManager {
@@ -459,13 +502,100 @@ export class TerminalManager {
       try {
         const first = fs.readFileSync(path.join(dir, file), 'utf8').split('\n', 1)[0];
         const e = JSON.parse(first) as SessionRecordEvent;
-        const m = /^device=(\S+) user=(\S+) target=(\S+)/.exec(e.text ?? '');
-        if (m) out.push({ file, device: m[1], user: m[2], target: m[3], openedAt: e.at });
+        const text = e.text ?? '';
+        const m = /^device=(\S+) user=(\S+) target=(\S+)/.exec(text);
+        if (m) {
+          // plane=/serial= are additive fields (see SessionRecorder) — absent
+          // on a recording written before this field existed, or one opened
+          // without a complete identity. Never guessed back from `device`.
+          const plane = /(?:^| )plane=(\S+)/.exec(text)?.[1];
+          const serial = /(?:^| )serial=(\S+)/.exec(text)?.[1];
+          out.push({
+            file,
+            device: m[1],
+            user: m[2],
+            target: m[3],
+            openedAt: e.at,
+            plane,
+            serial,
+            identityKey: deviceIdentityKey(plane, serial),
+          });
+        }
       } catch {
         // unreadable/corrupt file — skip, never fail the listing
       }
     }
     return out.sort((a, b) => b.openedAt.localeCompare(a.openedAt));
+  }
+
+  /**
+   * Recorded sessions for ONE physical device — never guessed across a
+   * shared display name. See resolveDeviceIdentity/deviceIdentity.ts for the
+   * same rule applied to opening a session in the first place.
+   *
+   *   - plane+serial supplied → only recordings written with that EXACT
+   *     identity match. A legacy recording under the same name (no identity
+   *     on file — written before this field existed) joins in ONLY when the
+   *     name is provably unique: no OTHER identity was ever recorded under
+   *     it, and the live inventory does not currently claim two devices
+   *     under it either. Otherwise the legacy recording is omitted — never
+   *     guessed onto the wrong device.
+   *   - no identity supplied → every recording under the name, but only
+   *     under the same proven-unique rule; otherwise `ambiguous: true` and
+   *     no sessions, so the caller must supply plane+serial to see any of
+   *     them (never a guessed first match).
+   */
+  listSessionsForDevice(deviceName: string, identity: DeviceIdentity = {}): SessionQueryResult {
+    const plane = identity.plane?.trim() || undefined;
+    const serial = identity.serial?.trim() || undefined;
+    if ((plane && !serial) || (serial && !plane)) {
+      return { sessions: [], ambiguous: false, invalid: 'plane and serial must be supplied together' };
+    }
+
+    const named = this.listSessions().filter((s) => s.device === deviceName);
+    if (named.length === 0) return { sessions: [], ambiguous: false, invalid: null };
+
+    const identified = named.filter((s) => s.identityKey);
+    const legacy = named.filter((s) => !s.identityKey);
+    const distinctKeys = new Set(identified.map((s) => s.identityKey));
+    // The live inventory is the OTHER source of truth for "this name is
+    // shared" — a name can be unique across every recording ever made yet be
+    // actively shared right now (a second device just showed up under it),
+    // and a legacy recording must not be attributed to the wrong one from here on.
+    const inventoryAmbiguous = this.nameIsAmbiguousInInventory(deviceName);
+    const nameProvenUnique = distinctKeys.size <= 1 && !inventoryAmbiguous;
+
+    if (plane && serial) {
+      const key = deviceIdentityKey(plane, serial);
+      const exact = identified.filter((s) => s.identityKey === key);
+      const sessions = nameProvenUnique ? [...exact, ...legacy].sort((a, b) => b.openedAt.localeCompare(a.openedAt)) : exact;
+      return { sessions, ambiguous: false, invalid: null };
+    }
+
+    if (distinctKeys.size > 1 || inventoryAmbiguous) {
+      return { sessions: [], ambiguous: true, invalid: null };
+    }
+    return { sessions: named, ambiguous: false, invalid: null };
+  }
+
+  /** Does the live inventory currently claim more than one device under this
+   *  display name? Demo mode has no duplicate-name fixtures, so it never is. */
+  private nameIsAmbiguousInInventory(name: string): boolean {
+    if (this.demoMode()) return false;
+    return resolveDeviceIdentity(this.liveDevices(), name, {}).ambiguous !== null;
+  }
+
+  /**
+   * One transcript, gated by the SAME identity rule as listSessionsForDevice
+   * — the file name alone is never enough to read a recording back, or a
+   * caller that merely knows another device's file name (same display name,
+   * different physical device) could read its content. */
+  readSessionForDevice(file: string, deviceName: string, identity: DeviceIdentity = {}): SessionTranscriptQueryResult {
+    const query = this.listSessionsForDevice(deviceName, identity);
+    if (query.invalid) return { transcript: null, ambiguous: false, invalid: query.invalid };
+    if (query.ambiguous) return { transcript: null, ambiguous: true, invalid: null };
+    if (!query.sessions.some((s) => s.file === file)) return { transcript: null, ambiguous: false, invalid: null };
+    return { transcript: this.readSession(file), ambiguous: false, invalid: null };
   }
 
   /**
@@ -593,14 +723,44 @@ export class TerminalManager {
    */
   /** The live inventory row for a device, or null in demo mode / when the
    *  inventory does not know it. */
-  private liveRow(deviceName: string): LiveDeviceRef | null {
-    if (this.demoMode()) return null;
-    return this.liveDevices().find((d) => d.name === deviceName) ?? null;
+  private liveRow(
+    deviceName: string,
+    identity: DeviceIdentity,
+  ): { row: LiveDeviceRef | null; error: string | null } {
+    if (this.demoMode()) return { row: null, error: null };
+    const hasPlane = typeof identity.plane === 'string' && identity.plane.trim().length > 0;
+    const hasSerial = typeof identity.serial === 'string' && identity.serial.trim().length > 0;
+    if (hasPlane !== hasSerial) {
+      return { row: null, error: 'plane and serial must be supplied together' };
+    }
+    const resolution = resolveDeviceIdentity(this.liveDevices(), deviceName, identity, {
+      requireCompleteIdentity: true,
+      requireNameMatch: true,
+    });
+    if (resolution.invalid) return { row: null, error: resolution.invalid };
+    if (resolution.ambiguous) {
+      const candidates = safeDeviceCandidates(resolution.ambiguous)
+        .map((candidate) => `${candidate.plane}/${candidate.serial ?? 'no-serial'}`)
+        .join(', ');
+      return {
+        row: null,
+        error: `'${deviceName}' names ${resolution.ambiguous.length} devices — pass plane and serial (${candidates})`,
+      };
+    }
+    return {
+      row: resolution.device,
+      error: resolution.device
+        ? null
+        : `device '${deviceName}' is not in the live inventory — refusing to dial a fixture address`,
+    };
   }
 
-  private resolveTarget(deviceName: string, profileIp: string): { target: string } | { error: string } {
+  private resolveTarget(
+    deviceName: string,
+    profileIp: string,
+    row: LiveDeviceRef | null,
+  ): { target: string } | { error: string } {
     if (this.demoMode()) return { target: profileIp };
-    const row = this.liveRow(deviceName);
     if (!row) {
       return { error: `device '${deviceName}' is not in the live inventory — refusing to dial a fixture address` };
     }
@@ -612,7 +772,12 @@ export class TerminalManager {
 
   // -- one WebSocket = one session -------------------------------------------
 
-  handleConnection(ws: WebSocket, deviceName: string, hostOverride: string | null): void {
+  handleConnection(
+    ws: WebSocket,
+    deviceName: string,
+    hostOverride: string | null,
+    identity: DeviceIdentity = {},
+  ): void {
     const send = (frame: Record<string, unknown>): void => {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
     };
@@ -761,7 +926,12 @@ export class TerminalManager {
       // session is riding — that is disclosed in the banner and the recording.
       // Whether this device can actually be dialled is resolveTarget()'s call,
       // a few lines down.
-      const row = this.liveRow(deviceName);
+      const resolved = this.liveRow(deviceName, identity);
+      if (resolved.error) {
+        fail(resolved.error);
+        return;
+      }
+      const row = resolved.row;
       const known = this.demoMode() || row !== null;
       kind = deviceTerminalKind(row?.type ? { type: row.type } : null, deviceName);
       pathNote = this.shellPathNote(row);
@@ -779,12 +949,12 @@ export class TerminalManager {
       if (hostOverride && creds.allowHostOverride) {
         target = hostOverride;
       } else {
-        const resolved = this.resolveTarget(deviceName, profile.ip);
-        if ('error' in resolved) {
-          fail(resolved.error);
+        const targetResolution = this.resolveTarget(deviceName, profile.ip, row);
+        if ('error' in targetResolution) {
+          fail(targetResolution.error);
           return;
         }
-        target = resolved.target;
+        target = targetResolution.target;
       }
       if (!/^[A-Za-z0-9_.:-]+$/.test(target)) {
         fail(`refusing to dial unsafe target '${target}'`);
@@ -824,7 +994,7 @@ export class TerminalManager {
       });
 
       try {
-        recorder = new SessionRecorder(this.logDir(), deviceName, creds.username, target, creds.jumpHost, pathNote);
+        recorder = new SessionRecorder(this.logDir(), deviceName, creds.username, target, creds.jumpHost, identity, pathNote);
       } catch (err) {
         // Recording is mandatory — no recording, no session. Fail through the
         // normal path (error frame + teardown of the live connection); letting
@@ -952,7 +1122,10 @@ export function attachTerminalWs(server: HttpServer, manager: TerminalManager = 
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const host = url.searchParams.get('host');
-      manager.handleConnection(ws, decodeURIComponent(m[1]), host);
+      manager.handleConnection(ws, decodeURIComponent(m[1]), host, {
+        plane: url.searchParams.get('plane') ?? undefined,
+        serial: url.searchParams.get('serial') ?? undefined,
+      });
     });
   });
   return wss;

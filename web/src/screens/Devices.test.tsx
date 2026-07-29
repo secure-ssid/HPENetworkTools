@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Devices from './Devices';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -47,6 +47,29 @@ function renderDevices() {
       <SettingsProvider>
         <ToastProvider>
           <Devices />
+        </ToastProvider>
+      </SettingsProvider>
+    </MemoryRouter>,
+  );
+}
+
+/** Reads the location a device-row click actually navigated to, so a test can
+ *  assert the exact plane+serial query string a row link carries — not just
+ *  that navigation happened. */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
+}
+
+function renderDevicesWithRouting() {
+  return render(
+    <MemoryRouter initialEntries={['/devices']}>
+      <SettingsProvider>
+        <ToastProvider>
+          <Routes>
+            <Route path="/devices" element={<Devices />} />
+            <Route path="/devices/:name" element={<LocationProbe />} />
+          </Routes>
         </ToastProvider>
       </SettingsProvider>
     </MemoryRouter>,
@@ -287,5 +310,92 @@ describe('Devices platform lanes', () => {
 
     expect(await screen.findByText('Nothing in this lane matches the filter.')).toBeTruthy();
     expect(screen.queryByText('No inventory reported by this plane.')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Routing — every row link must carry exact plane+serial identity
+// (fix-device-detail-identity): reconciliation can leave two rows sharing a
+// display name (same name, different serial — services/reconcile.ts
+// identityKey), so a bare `/devices/:name` link cannot tell them apart. Each
+// row's link must resolve its OWN serial, never the other row's.
+// ---------------------------------------------------------------------------
+describe('Devices row links carry exact plane+serial identity', () => {
+  it('two rows sharing a display name each link to their own plane+serial', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [
+        liveRow({ name: 'ap-dup', plane: 'CENTRAL', planeTone: 'accent', serial: 'DUP-CENTRAL-001' }),
+        liveRow({ name: 'ap-dup', plane: 'MIST', planeTone: 'info', serial: 'DUP-MIST-002' }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderDevicesWithRouting();
+
+    const rows = await screen.findAllByText('ap-dup');
+    expect(rows).toHaveLength(2);
+
+    fireEvent.click(rows[0]);
+    expect((await screen.findByTestId('location')).textContent).toBe(
+      '/devices/ap-dup?plane=CENTRAL&serial=DUP-CENTRAL-001',
+    );
+  });
+
+  it("the SECOND duplicate row's link resolves its own serial, not the first row's", async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [
+        liveRow({ name: 'ap-dup', plane: 'CENTRAL', planeTone: 'accent', serial: 'DUP-CENTRAL-001' }),
+        liveRow({ name: 'ap-dup', plane: 'MIST', planeTone: 'info', serial: 'DUP-MIST-002' }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderDevicesWithRouting();
+
+    const rows = await screen.findAllByText('ap-dup');
+    fireEvent.click(rows[1]);
+    expect((await screen.findByTestId('location')).textContent).toBe(
+      '/devices/ap-dup?plane=MIST&serial=DUP-MIST-002',
+    );
+  });
+
+  it('a unique row with no serial still links by name alone (legacy fallback stays honoured)', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [liveRow({ name: 'sw-fixture-only', plane: 'CENTRAL' })],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderDevicesWithRouting();
+
+    fireEvent.click(await screen.findByText('sw-fixture-only'));
+    expect((await screen.findByTestId('location')).textContent).toBe(
+      '/devices/sw-fixture-only?plane=CENTRAL',
+    );
+  });
+
+  it('the platform-lanes row link also carries plane+serial, matching the unified table', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [liveRow({ name: 'ap-dup', plane: 'CENTRAL', planeTone: 'accent', serial: 'DUP-CENTRAL-001' })],
+      lanes: {
+        CENTRAL: { tone: 'success', sync: 'synced 40s', note: '', mark: 'var(--nd-accent)' },
+      },
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderDevicesWithRouting();
+
+    await screen.findByText('1 of 1 indexed');
+    fireEvent.click(screen.getByRole('tab', { name: 'Platform lanes' }));
+    fireEvent.click(await screen.findByText('ap-dup'));
+    expect((await screen.findByTestId('location')).textContent).toBe(
+      '/devices/ap-dup?plane=CENTRAL&serial=DUP-CENTRAL-001',
+    );
   });
 });

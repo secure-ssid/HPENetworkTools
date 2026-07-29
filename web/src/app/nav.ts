@@ -81,6 +81,38 @@ export function pathForView(view: View): string {
   }
 }
 
+/**
+ * Identity a device-row link can carry — mirrors the plane+serial pair
+ * DiagnosticsPanel already keys on (web/src/components/DiagnosticsPanel.tsx
+ * identityOf/findEligibleDevice): the display name alone is not enough to
+ * tell two rows apart once reconciliation can leave the same name on two
+ * different serials (services/reconcile.ts identityKey — serial beats MAC
+ * beats name).
+ */
+export interface DeviceLinkIdentity {
+  name: string;
+  plane?: Plane | string;
+  serial?: string;
+}
+
+/**
+ * Canonical /devices/:name path. Every row that HAS a serial/plane (the
+ * Devices screen's own rows, the site device table) must build its link with
+ * this helper, never a bare `/devices/${name}` — the server resolves the
+ * query pair first and only falls back to the bare name when it stays
+ * unambiguous (an honest 409 otherwise, never a picked-first guess). Rows
+ * from data with no identity hint (alerts, tickets, auth events, …) still
+ * call this with just a name — the same legacy fallback the server honours.
+ */
+export function deviceDetailPath(identity: DeviceLinkIdentity): string {
+  const path = `/devices/${encodeURIComponent(identity.name)}`;
+  const params = new URLSearchParams();
+  if (identity.plane) params.set('plane', identity.plane);
+  if (identity.serial) params.set('serial', identity.serial);
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
 /** Registry plane id (Systems drawer deep links) → inventory Plane label. */
 const PLANE_LABEL_BY_ID: Record<string, Plane> = {
   central: 'CENTRAL',

@@ -57,6 +57,7 @@ export const PLANE_LABEL: Record<PlaneId, Plane> = {
   local: 'LOCAL',
   clearpass: 'CLEARPASS',
   uxi: 'UXI',
+  sse: 'SSE',
 };
 
 /**
@@ -126,6 +127,10 @@ const PLANE_RANK: Record<PlaneId, number> = {
   aos10: 6,
   clearpass: 7,
   uxi: 8,
+  // SSE never contributes a DeviceRow (it has no devices dataset at all — see
+  // shared SseInventory) so this rank is never actually consulted; it exists
+  // only to keep this map exhaustive over PlaneId.
+  sse: 9,
 };
 
 /** 'AA:BB:CC:DD:EE:FF', 'aabb.ccdd.eeff' and 'aabb-ccdd-eeff' all → 'aabbccddeeff'. */

@@ -12,33 +12,87 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { PlaneRegistry } from '../src/planes/registry';
 import type { SettingsStore } from '../src/config/settings';
+import { normalizeSseBaseUrl, SSE_INSECURE_HTTP_OVERRIDE_ENV } from '../src/planes/sse';
 
 let server: Server;
 let base: string;
 let tmpDir: string;
 let settings: (typeof import('../src/config/settings'))['settings'];
 let poller: (typeof import('../src/services/poller'))['poller'];
+let registry: (typeof import('../src/planes/registry'))['registry'];
+let mockSse: Server;
+let mockSseBase: string;
+const sseRequests: Array<{ url: string; authorization: string | undefined }> = [];
+let previousSseHttpOverride: string | undefined;
 
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'hpe-systems-'));
   process.env.HPE_SETTINGS_PATH = join(tmpDir, 'settings.json');
   process.env.HPE_DATA_DIR = join(tmpDir, 'data'); // ticket writes land in tmp, never real data/
+  previousSseHttpOverride = process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV];
+  process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV] = '1';
   const index = await import('../src/index');
   ({ settings } = await import('../src/config/settings'));
   ({ poller } = await import('../src/services/poller'));
+  ({ registry } = await import('../src/planes/registry'));
   server = index.createApp().listen(0, '127.0.0.1');
   await new Promise<void>((resolve) => server.once('listening', resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  mockSse = createServer((req, res) => {
+    const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined;
+    sseRequests.push({ url: req.url ?? '', authorization });
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/') {
+      res.end('{}');
+      return;
+    }
+    if (req.url === '/api/v1.0/Connectors?pagenumber=1&pagesize=1') {
+      const token = authorization?.replace(/^Bearer /, '');
+      if (token === 'valid-sse-token') {
+        res.end(JSON.stringify({ data: [], totalRecords: 0 }));
+        return;
+      }
+      if (token === 'nonempty-sse-token') {
+        res.end(JSON.stringify({ data: [{ id: 'c-1', name: 'Branch connector' }], totalRecords: 1 }));
+        return;
+      }
+      if (token === 'html-sse-token') {
+        res.setHeader('content-type', 'text/html');
+        res.end('<html><body>not json</body></html>');
+        return;
+      }
+      if (token === 'malformed-json-sse-token') {
+        res.end('{ this is not valid json');
+        return;
+      }
+      if (token === 'unrecognized-json-sse-token') {
+        res.end(JSON.stringify({ foo: 'bar' }));
+        return;
+      }
+      res.statusCode = 401;
+      res.end('{}');
+      return;
+    }
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  mockSse.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => mockSse.once('listening', resolve));
+  mockSseBase = `http://127.0.0.1:${(mockSse.address() as AddressInfo).port}`;
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  await new Promise<void>((resolve) => mockSse.close(() => resolve()));
   rmSync(tmpDir, { recursive: true, force: true });
   delete process.env.HPE_SETTINGS_PATH;
   delete process.env.HPE_DATA_DIR;
+  if (previousSseHttpOverride === undefined) delete process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV];
+  else process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV] = previousSseHttpOverride;
 });
 
 async function postJson(path: string, payload?: unknown): Promise<{ status: number; body: any }> {
@@ -98,6 +152,233 @@ describe('connection tests never disclose or dial stored secrets', () => {
     expect(res.status).toBe(502);
     expect(res.body.message).toBe('cannot reach http://127.0.0.1:1');
     expect(JSON.stringify(res.body)).not.toContain('body-secret');
+  });
+});
+
+describe('SSE connection validation', () => {
+  it('rejects HTTP from request data before fetch unless the process override is set', async () => {
+    sseRequests.length = 0;
+    delete process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV];
+    try {
+      const result = await postJson('/api/systems/sse/test', {
+        token: 'must-not-leak',
+        baseUrl: mockSseBase,
+        allowInsecureHttp: '1',
+      });
+
+      expect(result.status).toBe(400);
+      expect(result.body.error).toMatch(/must use https:\/\//);
+      expect(JSON.stringify(result.body)).not.toContain('must-not-leak');
+      expect(sseRequests).toEqual([]);
+    } finally {
+      process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV] = '1';
+    }
+  });
+
+  it('rejects a bare custom endpoint even when the HTTP test override is set', async () => {
+    sseRequests.length = 0;
+    const bare = mockSseBase.replace(/^http:\/\//, '');
+
+    const result = await postJson('/api/systems/sse/test', { token: 'must-not-leak', baseUrl: bare });
+
+    expect(result.status).toBe(400);
+    expect(result.body.error).toMatch(/must start with https:\/\//);
+    expect(JSON.stringify(result.body)).not.toContain('must-not-leak');
+    expect(sseRequests).toEqual([]);
+  });
+
+  it('rejects insecure SSE endpoints through both credential save routes', async () => {
+    delete process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV];
+    try {
+      const direct = await postJson('/api/systems/sse/credentials', {
+        token: 'must-not-leak',
+        baseUrl: mockSseBase,
+      });
+      expect(direct.status).toBe(400);
+      expect(direct.body.error).toMatch(/must use https:\/\//);
+      expect(JSON.stringify(direct.body)).not.toContain('must-not-leak');
+
+      const settingsSave = await putSettings({
+        planes: { sse: { token: 'must-not-leak', baseUrl: mockSseBase } },
+      });
+      expect(settingsSave.status).toBe(400);
+      expect(settingsSave.body.error).toMatch(/must use https:\/\//);
+      expect(JSON.stringify(settingsSave.body)).not.toContain('must-not-leak');
+      expect(settings.get().planes.sse).toBeNull();
+    } finally {
+      process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV] = '1';
+    }
+  });
+
+  it('dispatches to the authenticated minimal Connectors read and accepts a valid token', async () => {
+    sseRequests.length = 0;
+    const token = 'valid-sse-token';
+
+    const result = await postJson('/api/systems/sse/test', { token, baseUrl: `${mockSseBase}///` });
+
+    expect(result.status).toBe(200);
+    expect(result.body.ok).toBe(true);
+    expect(result.body.message).toContain('token accepted; Connectors query ok');
+    expect(JSON.stringify(result.body)).not.toContain(token);
+    expect(sseRequests).toEqual([
+      {
+        url: '/api/v1.0/Connectors?pagenumber=1&pagesize=1',
+        authorization: `Bearer ${token}`,
+      },
+    ]);
+    const call = registry.recentCalls('sse')[0];
+    expect(call.path).toBe('GET /api/v1.0/Connectors?pagenumber=1&pagesize=1 (connection test)');
+    expect(JSON.stringify(call)).not.toContain(token);
+  });
+
+  it('rejects an invalid token even when the custom base URL is reachable', async () => {
+    const reachable = await fetch(mockSseBase);
+    expect(reachable.status).toBe(200);
+    sseRequests.length = 0;
+    const token = 'invalid-sse-token';
+
+    const result = await postJson('/api/systems/sse/test', { token, baseUrl: `${mockSseBase}/` });
+
+    expect(result.status).toBe(502);
+    expect(result.body.ok).toBe(false);
+    expect(result.body.message).toBe('Admin API rejected the token — HTTP 401');
+    expect(JSON.stringify(result.body)).not.toContain(token);
+    expect(sseRequests).toEqual([
+      {
+        url: '/api/v1.0/Connectors?pagenumber=1&pagesize=1',
+        authorization: `Bearer ${token}`,
+      },
+    ]);
+    const call = registry.recentCalls('sse')[0];
+    expect(call.code).toBe('fail');
+    expect(JSON.stringify(call)).not.toContain(token);
+  });
+
+  it('accepts a valid, nonempty Connectors envelope and reports its row count', async () => {
+    sseRequests.length = 0;
+    const token = 'nonempty-sse-token';
+
+    const result = await postJson('/api/systems/sse/test', { token, baseUrl: mockSseBase });
+
+    expect(result.status).toBe(200);
+    expect(result.body.ok).toBe(true);
+    expect(result.body.message).toContain('reported connectors: 1');
+    expect(JSON.stringify(result.body)).not.toContain(token);
+  });
+
+  it('rejects a 200 response with an HTML body instead of reporting authenticated', async () => {
+    sseRequests.length = 0;
+    const token = 'html-sse-token';
+
+    const result = await postJson('/api/systems/sse/test', { token, baseUrl: mockSseBase });
+
+    expect(result.status).toBe(502);
+    expect(result.body.ok).toBe(false);
+    expect(result.body.message).toMatch(/unreadable \(non-JSON\) body/);
+    expect(JSON.stringify(result.body)).not.toContain(token);
+    expect(sseRequests).toHaveLength(1); // the request WAS made — this is a response-shape rejection, not a pre-flight one
+  });
+
+  it('rejects a 200 response with malformed JSON instead of reporting authenticated', async () => {
+    sseRequests.length = 0;
+    const token = 'malformed-json-sse-token';
+
+    const result = await postJson('/api/systems/sse/test', { token, baseUrl: mockSseBase });
+
+    expect(result.status).toBe(502);
+    expect(result.body.ok).toBe(false);
+    expect(result.body.message).toMatch(/unreadable \(non-JSON\) body/);
+    expect(JSON.stringify(result.body)).not.toContain(token);
+    expect(sseRequests).toHaveLength(1);
+  });
+
+  it('rejects a 200 response with valid but unrecognized JSON instead of reporting authenticated', async () => {
+    sseRequests.length = 0;
+    const token = 'unrecognized-json-sse-token';
+
+    const result = await postJson('/api/systems/sse/test', { token, baseUrl: mockSseBase });
+
+    expect(result.status).toBe(502);
+    expect(result.body.ok).toBe(false);
+    expect(result.body.message).toMatch(/unrecognized response body/);
+    expect(JSON.stringify(result.body)).not.toContain(token);
+    expect(sseRequests).toHaveLength(1);
+  });
+
+  it('a token-only re-key tests and saves the SAME record — the stored custom base URL, not the default', async () => {
+    // Establish a custom (non-default) base URL and a token together first.
+    const initialSave = await postJson('/api/systems/sse/credentials', {
+      token: 'valid-sse-token',
+      baseUrl: mockSseBase,
+    });
+    expect(initialSave.status).toBe(200);
+    const normalizedCustomBase = normalizeSseBaseUrl(mockSseBase);
+    expect(settings.get().planes.sse?.baseUrl).toBe(normalizedCustomBase);
+
+    // Re-key with the token alone — baseUrl omitted, exactly what a rotate
+    // flow that only wants to swap the secret should be able to send.
+    sseRequests.length = 0;
+    const testResult = await postJson('/api/systems/sse/test', { token: 'valid-sse-token' });
+    expect(testResult.status).toBe(200);
+    expect(testResult.body.ok).toBe(true);
+    // The mock server (the custom base) must have been hit — not the real
+    // default host, which is unreachable from this test environment.
+    expect(sseRequests).toEqual([
+      {
+        url: '/api/v1.0/Connectors?pagenumber=1&pagesize=1',
+        authorization: `Bearer valid-sse-token`,
+      },
+    ]);
+
+    const rekeySave = await postJson('/api/systems/sse/credentials', { token: 'valid-sse-token' });
+    expect(rekeySave.status).toBe(200);
+    // The saved record must retain the stored custom base URL — not silently
+    // revert to the default while the test above quietly exercised something
+    // else.
+    expect(settings.get().planes.sse?.baseUrl).toBe(normalizedCustomBase);
+    expect(rekeySave.body.credentials.baseUrl).toBe(normalizedCustomBase);
+
+    await fetch(`${base}/api/systems/sse`, { method: 'DELETE' }); // restore for later tests
+  });
+
+  it('replaces writable SSE scopes with an explicitly empty tested and saved array', async () => {
+    try {
+      const initialSave = await postJson('/api/systems/sse/credentials', {
+        token: 'valid-sse-token',
+        baseUrl: mockSseBase,
+        scopes: ['read:inventory', 'write:brokered'],
+      });
+      expect(initialSave.status).toBe(200);
+      expect(registry.states().sse.capabilities?.directWrite).toBe(true);
+
+      const revoked = { token: 'valid-sse-token', scopes: [] };
+      const testResult = await postJson('/api/systems/sse/test', revoked);
+      expect(testResult.status).toBe(200);
+
+      const saved = await postJson('/api/systems/sse/credentials', revoked);
+      expect(saved.status).toBe(200);
+      expect(settings.get().planes.sse?.scopes).toBe('');
+      expect(registry.states().sse.capabilities?.directWrite).toBe(false);
+    } finally {
+      await fetch(`${base}/api/systems/sse`, { method: 'DELETE' });
+    }
+  });
+
+  it('never logs the submitted token, on success or on any failure path', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const token = 'log-secrecy-sse-token-should-not-leak';
+      await postJson('/api/systems/sse/test', { token, baseUrl: mockSseBase }); // 401 — unrecognized token
+      await postJson('/api/systems/sse/test', { token, baseUrl: 'http://127.0.0.1:1' }); // unreachable
+      await postJson('/api/systems/sse/credentials', { token, baseUrl: mockSseBase });
+      await fetch(`${base}/api/systems/sse`, { method: 'DELETE' }); // restore
+
+      for (const call of errorSpy.mock.calls) {
+        expect(call.join(' ')).not.toContain(token);
+      }
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 
@@ -211,7 +492,7 @@ describe('poller tick guard', () => {
     const reg = {
       states: () => {
         const states: Record<string, { linked: boolean }> = {};
-        for (const id of ['central', 'classic', 'mist', 'greenlake', 'aos8', 'aos10', 'local', 'clearpass', 'uxi']) {
+        for (const id of ['central', 'classic', 'mist', 'greenlake', 'aos8', 'aos10', 'local', 'clearpass', 'uxi', 'sse']) {
           states[id] = { linked: id === 'mist' };
         }
         return states;

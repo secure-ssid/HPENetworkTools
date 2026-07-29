@@ -120,7 +120,38 @@ describe('DisconnectService gating', () => {
       lookupClient: () => ({ ...WIRELESS, plane: 'MIST' }),
       demoMode: () => false,
     });
+
     await expect(svc.disconnect(WIRELESS.mac, 'NET-4201')).rejects.toMatchObject({ status: 409, message: expect.stringContaining('MIST') });
+  });
+
+  it('rejects an ambiguous attachment name with safe candidates and no action', async () => {
+    const seen: string[] = [];
+    const svc = new DisconnectService({
+      dataDir: freshDataDir(),
+      lookupClient: () => WIRELESS,
+      listDevices: () => [
+        { name: WIRELESS.attach, type: 'ap', plane: 'CENTRAL', serial: 'SERIAL-A' },
+        { name: WIRELESS.attach, type: 'ap', plane: 'CENTRAL', serial: 'SERIAL-B' },
+      ],
+      demoMode: () => false,
+      knownTicket: () => true,
+      transport: {
+        request: async (_method, path) => {
+          seen.push(path);
+          return { status: 202, body: {} };
+        },
+      },
+    });
+    await expect(svc.disconnect(WIRELESS.mac, 'NET-4201')).rejects.toMatchObject({
+      status: 409,
+      details: {
+        candidates: [
+          { plane: 'CENTRAL', serial: 'SERIAL-A' },
+          { plane: 'CENTRAL', serial: 'SERIAL-B' },
+        ],
+      },
+    });
+    expect(seen).toEqual([]);
   });
 
   it('409s when the attachment device is not an AP or gateway', async () => {

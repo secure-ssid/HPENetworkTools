@@ -13,8 +13,11 @@
 import { describe, expect, it } from 'vitest';
 import type { PlaneState } from '../src/planes/types';
 import {
+  ALL_SSID_CATALOG_SECTIONS,
   CentralAdapter,
   GREENLAKE_CCS_TOKEN_URL,
+  buildWlanSsidPayload,
+  buildWlanReplacementPayload,
   isNewCentralGateway,
   TokenManager,
   ageString,
@@ -23,9 +26,12 @@ import {
   firmwareIsApproved,
   mapCentralClient,
   mapCentralDevice,
+  mapCentralInventoryDevice,
   mapCentralNotification,
+  mapCentralSsid,
   mapCentralSite,
   parseApprovedFirmware,
+  parseRateLimitResetAtMs,
   parseRetryAfterMs,
   parseTimestamp,
   parseUsageIntervalSec,
@@ -40,8 +46,11 @@ import {
   mapTopologyNode,
   mapUsageSamples,
   normalizeCentralMac,
+  staleManagedModeFields,
+  wlanProfileChanged,
   type FetchLike,
 } from '../src/planes/central';
+import type { SsidForm } from '../../shared';
 
 // -- Recorded fixtures (shapes as the classic Central APIs return them) -------
 
@@ -228,6 +237,15 @@ describe('pure helpers', () => {
     expect(parseRetryAfterMs('soon', now)).toBeNull();
     expect(parseRetryAfterMs(null, now)).toBeNull();
   });
+
+  it('parseRateLimitResetAtMs reads epoch, delta, and date forms', () => {
+    const now = 1_753_000_000_000;
+    expect(parseRateLimitResetAtMs(String((now + 12_000) / 1000), now)).toBe(now + 12_000);
+    expect(parseRateLimitResetAtMs(String(now + 8_000), now)).toBe(now + 8_000);
+    expect(parseRateLimitResetAtMs('5', now)).toBe(now + 5_000);
+    expect(parseRateLimitResetAtMs(new Date(now + 4_000).toUTCString(), now)).toBe(now + 4_000);
+    expect(parseRateLimitResetAtMs('soon', now)).toBeNull();
+  });
 });
 
 // -- Row mapping -------------------------------------------------------------------
@@ -319,6 +337,48 @@ describe('mapCentralDevice', () => {
     expect(mapCentralDevice(AP_ROW, 'ap')!.ip).toBe('10.42.1.20');
     expect(mapCentralDevice({ deviceName: 'ap-x', ipAddress: '10.9.9.9' }, 'ap')!.ip).toBe('10.9.9.9');
     expect(mapCentralDevice({ name: 'ap-y' }, 'ap')).not.toHaveProperty('ip');
+  });
+
+  it('maps unified inventory type and entitlement tier', () => {
+    const device = mapCentralInventoryDevice({
+      deviceName: 'claimed-ap',
+      deviceType: 'ACCESS_POINT',
+      serialNumber: 'PHSXM52029',
+      model: 'AP-735-US',
+      tier: 'ADVANCED_AP',
+      isProvisioned: 'No',
+      siteName: null,
+      status: null,
+    });
+    expect(device).toMatchObject({
+      name: 'claimed-ap',
+      type: 'ap',
+      siteId: 'multiple',
+      licence: 'ADVANCED_AP',
+      state: 'unknown',
+    });
+  });
+});
+
+describe('mapCentralSsid', () => {
+  it('maps configured WLAN profiles without inventing scope targets', () => {
+    expect(
+      mapCentralSsid({
+        ssid: 'SecureSSID',
+        enable: true,
+        opmode: 'WPA3_SAE',
+        'vlan-id-range': ['200'],
+      }),
+    ).toEqual({
+      kind: 'ssid',
+      origin: 'configured',
+      name: 'SecureSSID',
+      vlan: '200',
+      security: 'WPA3-SAE',
+      targets: 'Enabled profile · scope assignment not read',
+      plane: 'CENTRAL',
+      tone: 'accent',
+    });
   });
 });
 
@@ -736,6 +796,7 @@ function makeState(): PlaneState {
 }
 
 const CREDS = { gatewayBaseUrl: 'https://apigw-prod2.central.arubanetworks.com', clientId: 'id-1', clientSecret: 'shh-secret' };
+const NEW_CREDS = { gatewayBaseUrl: 'https://internal.api.central.arubanetworks.com', clientId: 'id-1', clientSecret: 'shh-secret' };
 
 function makeAdapter(handler: Handler) {
   const { fn, calls } = fakeFetch(handler);
@@ -749,6 +810,185 @@ function makeAdapter(handler: Handler) {
   });
   return { adapter, state, recorded, calls, slept };
 }
+
+function makeNewAdapter(handler: Handler) {
+  const { fn, calls } = fakeFetch(handler);
+  const recorded: { path: string; ms: number; code: string }[] = [];
+  const state = makeState();
+  const slept: number[] = [];
+  const adapter = new CentralAdapter(NEW_CREDS, state, (c) => recorded.push(c), fn, async (ms) => {
+    slept.push(ms);
+  });
+  return { adapter, state, recorded, calls, slept };
+}
+
+describe('Central active diagnostics capability', () => {
+  it('is advertised only by a New Central gateway, never Classic Central', () => {
+    expect(makeNewAdapter(() => undefined).adapter.capabilities().activeDiagnostics).toBe(true);
+    expect(makeAdapter(() => undefined).adapter.capabilities().activeDiagnostics).toBe(false);
+  });
+
+  it('propagates retry and reset metadata from authd diagnostic requests', async () => {
+    const resetSeconds = Math.floor((Date.now() + 10_000) / 1000);
+    const { adapter } = makeNewAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/as/token.oauth2') {
+        return { body: { access_token: 'new-token', expires_in: 7200 } };
+      }
+      if (method === 'GET' && pathname === '/network-troubleshooting/v1/test') {
+        return {
+          status: 429,
+          body: {},
+          headers: { 'retry-after': '3', 'x-ratelimit-reset': String(resetSeconds) },
+        };
+      }
+      return undefined;
+    });
+    const response = await adapter.request('GET', '/network-troubleshooting/v1/test');
+    expect(response.retryAfterMs).toBe(3_000);
+    expect(response.rateLimitResetAtMs).toBe(resetSeconds * 1000);
+  });
+
+  it('classifies token acquisition failure without returning its body', async () => {
+    const { adapter } = makeNewAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/as/token.oauth2') {
+        return { status: 401, body: { client_secret: 'must-not-escape' } };
+      }
+      return undefined;
+    });
+    await expect(adapter.request('GET', '/network-troubleshooting/v1/test')).rejects.toMatchObject({
+      name: 'CentralRequestError',
+      kind: 'authentication',
+      message: expect.not.stringContaining('must-not-escape'),
+    });
+  });
+
+  it('classifies token endpoint 5xx as service failure, not bad credentials', async () => {
+    const { adapter } = makeNewAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/as/token.oauth2') {
+        return { status: 503, body: { access_token: 'must-not-escape' } };
+      }
+      return undefined;
+    });
+    await expect(adapter.request('GET', '/network-troubleshooting/v1/test')).rejects.toMatchObject({
+      name: 'CentralRequestError',
+      kind: 'service',
+      message: expect.not.stringContaining('must-not-escape'),
+    });
+  });
+});
+
+describe('CentralAdapter response parse provenance', () => {
+  it('preserves a trimmed Location header for accepted async operations', async () => {
+    const fn: FetchLike = async (url) =>
+      url === GREENLAKE_CCS_TOKEN_URL
+        ? new Response('{"access_token":"new-token","expires_in":7200}', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        : new Response('', {
+            status: 202,
+            headers: { location: '  /network-troubleshooting/v1/aps/AP-1/traceroute/async-operations/task-1  ' },
+          });
+    const adapter = new CentralAdapter(NEW_CREDS, makeState(), () => {}, fn);
+
+    await expect(adapter.request('POST', '/network-troubleshooting/v1/aps/AP-1/traceroute'))
+      .resolves.toMatchObject({
+        status: 202,
+        location: '/network-troubleshooting/v1/aps/AP-1/traceroute/async-operations/task-1',
+      });
+  });
+
+  it.each([
+    {
+      name: 'empty bytes',
+      raw: '',
+      contentType: 'application/json',
+      bodyParse: 'empty',
+      body: null,
+    },
+    {
+      name: 'whitespace',
+      raw: ' \n\t',
+      contentType: 'application/json',
+      bodyParse: 'whitespace',
+      body: null,
+    },
+    {
+      name: 'JSON null',
+      raw: 'null',
+      contentType: 'application/json',
+      bodyParse: 'json-null',
+      body: null,
+    },
+    {
+      name: 'malformed JSON',
+      raw: '{"items":',
+      contentType: 'application/json',
+      bodyParse: 'malformed-json',
+      body: null,
+    },
+    {
+      name: 'HTML',
+      raw: '<html><body>gateway error</body></html>',
+      contentType: 'text/html',
+      bodyParse: 'non-json',
+      body: null,
+    },
+    {
+      name: 'recognized empty envelope bytes',
+      raw: '{"items":[]}',
+      contentType: 'application/json',
+      bodyParse: 'json',
+      body: { items: [] },
+    },
+    {
+      name: 'row envelope bytes',
+      raw: '{"items":[{"id":"wh-1"}]}',
+      contentType: 'application/json',
+      bodyParse: 'json',
+      body: { items: [{ id: 'wh-1' }] },
+    },
+  ])('preserves $name distinctly', async ({ raw, contentType, bodyParse, body }) => {
+    const fn: FetchLike = async (url) =>
+      url === GREENLAKE_CCS_TOKEN_URL
+        ? new Response('{"access_token":"new-token","expires_in":7200}', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        : new Response(raw, { status: 200, headers: { 'content-type': contentType } });
+    const adapter = new CentralAdapter(NEW_CREDS, makeState(), () => {}, fn);
+
+    const response = await adapter.request('GET', '/network-services/v1/webhooks');
+
+    expect(response.bodyParse).toBe(bodyParse);
+    expect(response.body).toEqual(body);
+  });
+
+  it('keeps a body-read failure non-throwing for existing shared-helper callers', async () => {
+    const fn: FetchLike = async (url) => {
+      if (url === GREENLAKE_CCS_TOKEN_URL) {
+        return new Response('{"access_token":"new-token","expires_in":7200}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return {
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        text: async () => {
+          throw new Error('body stream failed');
+        },
+      } as unknown as Response;
+    };
+    const adapter = new CentralAdapter(NEW_CREDS, makeState(), () => {}, fn);
+
+    await expect(adapter.request('GET', '/network-services/v1/webhooks')).resolves.toMatchObject({
+      status: 200,
+      body: null,
+      bodyParse: 'unreadable',
+    });
+  });
+});
 
 const HAPPY_ROUTES: Record<string, unknown> = {
   'POST /oauth2/token': { access_token: 'tok-1', expires_in: 7200 },
@@ -785,6 +1025,93 @@ describe('CentralAdapter.pull()', () => {
     // secrets never appear in the recorded call log
     expect(JSON.stringify(recorded)).not.toContain('shh-secret');
     expect(recorded.some((c) => c.path === 'POST /oauth2/token' && c.code === '200')).toBe(true);
+  });
+
+  it('uses New Central unified inventory, active alerts, unpaged sites and configured SSIDs', async () => {
+    const inventory = [
+      {
+        deviceName: 'online-ap',
+        deviceType: 'ACCESS_POINT',
+        serialNumber: 'AP-1',
+        siteName: 'SecureSSID',
+        status: 'ONLINE',
+        tier: 'ADVANCED_AP',
+      },
+      {
+        deviceName: 'claimed-ap',
+        deviceType: 'ACCESS_POINT',
+        serialNumber: 'AP-2',
+        siteName: null,
+        status: null,
+        tier: 'ADVANCED_AP',
+      },
+      {
+        deviceName: 'core',
+        deviceType: 'SWITCH',
+        serialNumber: 'SW-1',
+        siteName: 'SecureSSID',
+        status: 'ONLINE',
+        tier: 'ADVANCED_SWITCH_6300',
+      },
+    ];
+    const { adapter, calls } = makeNewAdapter((method, pathname, query) => {
+      if (method === 'POST' && pathname === '/as/token.oauth2') {
+        return { body: { access_token: 'new-token', expires_in: 7200 } };
+      }
+      if (method === 'GET' && pathname === '/network-monitoring/v1/device-inventory') {
+        return { body: { devices: inventory, next: null } };
+      }
+      if (method === 'GET' && pathname === '/network-config/v1/sites') {
+        return { body: { items: [{ scopeName: 'SecureSSID', scopeId: 'site-1', deviceCount: 2 }] } };
+      }
+      if (method === 'GET' && pathname === '/network-monitoring/v1/clients') {
+        return { body: { items: [CLIENT_ROW], next: null } };
+      }
+      if (method === 'GET' && pathname === '/network-notifications/v1/alerts') {
+        const page = query.get('next');
+        return {
+          body:
+            page === '2'
+              ? { items: [{ ...NOTIFICATION_ROW, id: 'a-2' }], next: null, total: 2 }
+              : { items: [{ ...NOTIFICATION_ROW, id: 'a-1' }], next: '2', total: 2 },
+        };
+      }
+      if (method === 'GET' && pathname === '/network-config/v1/wlan-ssids') {
+        return {
+          body: {
+            'wlan-ssid': [
+              { ssid: 'SecureSSID', enable: true, opmode: 'WPA3_SAE', 'vlan-id-range': ['200'] },
+              { ssid: 'aruba-home', enable: true, opmode: 'WPA2_MPSK_LOCAL', 'vlan-id-range': ['200'] },
+            ],
+          },
+        };
+      }
+      return undefined;
+    });
+
+    const pull = await adapter.pull();
+    expect(pull.devices).toHaveLength(3);
+    expect(pull.devices!.find((device) => device.name === 'claimed-ap')).toMatchObject({
+      siteId: 'multiple',
+      licence: 'ADVANCED_AP',
+    });
+    expect(pull.sites).toHaveLength(1);
+    expect(pull.alerts).toHaveLength(2);
+    expect(pull.config).toMatchObject({
+      mode: 'configured',
+      unavailable: ['vlans', 'ports'],
+    });
+    expect(pull.config!.ssids).toHaveLength(2);
+    expect(adapter.capabilities().configRead).toBe(true);
+    expect(adapter.capabilities().directWrite).toBe(true);
+
+    const siteCall = calls.find((call) => call.startsWith('GET /network-config/v1/sites'));
+    expect(siteCall).toBe('GET /network-config/v1/sites');
+    const alertCalls = calls.filter((call) => call.startsWith('GET /network-notifications/v1/alerts'));
+    expect(alertCalls).toHaveLength(2);
+    expect(alertCalls[0]).toContain('filter=status%20eq%20%27Active%27');
+    expect(alertCalls[1]).toContain('next=2');
+    expect(calls.some((call) => call.startsWith('GET /monitoring/v1/aps'))).toBe(false);
   });
 
   it('publishes the minted credential expiry on plane state (never the token)', async () => {
@@ -1043,8 +1370,20 @@ describe('CentralAdapter.pull()', () => {
 
   it('claims brokered write but no shell: cloud-claimed devices get no portal shell', async () => {
     const { adapter, state } = makeAdapter(routeHandler(HAPPY_ROUTES));
-    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: true, configRead: false });
-    expect(state.capabilities).toEqual({ localShell: false, brokeredWrite: true, configRead: false });
+    expect(adapter.capabilities()).toEqual({
+      localShell: false,
+      brokeredWrite: true,
+      configRead: false,
+      directWrite: false,
+      activeDiagnostics: false,
+    });
+    expect(state.capabilities).toEqual({
+      localShell: false,
+      brokeredWrite: true,
+      configRead: false,
+      directWrite: false,
+      activeDiagnostics: false,
+    });
   });
 
   it('retries a transport failure on one page instead of losing the whole cycle', async () => {
@@ -1714,6 +2053,21 @@ describe('CentralAdapter.clientDetail()', () => {
     expect(trail).not.toContain('end-at');
   });
 
+  it('skips wireless mobility reads for a wired client while retaining usage', async () => {
+    const { adapter, calls } = makeDetailAdapter(detailHandler());
+    const d = (await adapter.clientDetail(DETAIL_MAC, 'wired'))!;
+
+    expect(calls.some((call) => call.includes('/mobility-trail'))).toBe(false);
+    expect(calls.some((call) => call.includes('/clients-usage'))).toBe(true);
+    expect(d.rssi).toBeUndefined();
+    expect(d.roams).toBeUndefined();
+    expect(d.timeline).toBeUndefined();
+    expect(d.source.sections.rssi).toBeUndefined();
+    expect(d.source.sections.roams).toBeUndefined();
+    expect(d.source.sections.timeline).toBeUndefined();
+    expect(d.source.sections.tput).toBe('ok');
+  });
+
   it('a stationary client with no roams is empty, NOT failed', async () => {
     const { adapter } = makeDetailAdapter(
       detailHandler({ '/mobility-trail': { body: { items: [], total: 0, count: 0, next: null } } }),
@@ -1884,6 +2238,40 @@ describe('CentralAdapter.siteTopology()', () => {
     expect(t.source.sections).toEqual({ nodes: 'ok', links: 'ok' });
   });
 
+  it('uses the native site id remembered during pull when the route supplies the site name', async () => {
+    const nativeSiteId = '79244870000394240';
+    const { adapter, calls } = makeNewAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/as/token.oauth2') {
+        return { body: { access_token: 'new-token', expires_in: 7200 } };
+      }
+      if (method === 'GET' && pathname === '/network-monitoring/v1/device-inventory') {
+        return { body: { devices: [], next: null } };
+      }
+      if (method === 'GET' && pathname === '/network-config/v1/sites') {
+        return { body: { items: [{ scopeName: 'SecureSSID', scopeId: nativeSiteId }] } };
+      }
+      if (method === 'GET' && pathname === '/network-monitoring/v1/clients') {
+        return { body: { items: [], next: null } };
+      }
+      if (method === 'GET' && pathname === '/network-notifications/v1/alerts') {
+        return { body: { items: [], next: null } };
+      }
+      if (method === 'GET' && pathname === '/network-config/v1/wlan-ssids') {
+        return { body: { 'wlan-ssid': [] } };
+      }
+      if (method === 'GET' && pathname === `/network-monitoring/v1/topology/${nativeSiteId}`) {
+        return { body: TOPOLOGY_BODY };
+      }
+      return undefined;
+    });
+
+    await adapter.pull();
+    const topology = await adapter.siteTopology('SecureSSID');
+    expect(topology?.nodes).toHaveLength(3);
+    expect(calls).toContain(`GET /network-monitoring/v1/topology/${nativeSiteId}`);
+    expect(calls).not.toContain('GET /network-monitoring/v1/topology/SecureSSID');
+  });
+
   it('reads devices and links BY NAME, never by "first array in the payload"', async () => {
     // The topology payload carries two sibling arrays; a first-array heuristic
     // would happily return a decoy.
@@ -1903,6 +2291,21 @@ describe('CentralAdapter.siteTopology()', () => {
     expect(t.source.note).toContain('topology: HTTP 404');
   });
 
+  it('an answered graph with no devices or links is empty, not failed', async () => {
+    const { adapter } = makeDetailAdapter(
+      detailHandler({
+        '/topology/': {
+          body: { devices: [], links: [], isolatedDevicesCount: 0, isolatedHealth: null },
+        },
+      }),
+    );
+    const t = (await adapter.siteTopology('empty-site'))!;
+    expect(t.nodes).toEqual([]);
+    expect(t.links).toEqual([]);
+    expect(t.source.sections).toEqual({ nodes: 'empty', links: 'empty' });
+    expect(t.source.note).toBeNull();
+  });
+
   it('a blank site id is answered with null and costs no call', async () => {
     const { adapter, calls } = makeDetailAdapter(detailHandler());
     expect(await adapter.siteTopology('')).toBeNull();
@@ -1919,5 +2322,916 @@ describe('detail reads are not poller work', () => {
     for (const fragment of ['/mobility-trail', '/clients-usage', '/radios', '/wlans', '/interfaces', '/topology/']) {
       expect(calls.some((c) => c.includes(fragment))).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct SSID write — New Central network-config v1alpha1 (WLAN profile
+// upsert + configuration assignment). Covers every SSID security payload, the
+// idempotent upsert (create / unchanged / update), partial assignment
+// failure, Classic Central rejection, and secret redaction.
+// ---------------------------------------------------------------------------
+
+const BASE_SSID_FORM: SsidForm = {
+  name: 'MRDN-Guest',
+  vlan: '830',
+  security: 'wpa2-psk',
+  group: 'staff-wireless',
+  bands: '5+6',
+  broadcast: true,
+  isolate: false,
+  noDfs: false,
+  plane: 'CENTRAL',
+  scopeIds: ['site-1', 'site-2'],
+  defaultRole: 'guest',
+  passphrase: 'super-secret-pw',
+};
+
+/** One recorded outbound call, body parsed back from JSON for assertions. */
+interface BodyCall {
+  method: string;
+  path: string;
+  body: unknown;
+}
+
+type ScriptedHandler = (method: string, pathname: string, body: unknown) => HandlerResult | undefined;
+
+/** Same shape as fakeFetch, but also records + parses the JSON request body —
+ *  the plain Handler used everywhere else in this file has no way to see it,
+ *  and the scope-map / wlan-ssids payload shape is exactly what these tests
+ *  need to verify. */
+function fakeFetchWithBody(handler: ScriptedHandler): { fn: FetchLike; calls: BodyCall[] } {
+  const calls: BodyCall[] = [];
+  const fn: FetchLike = async (url, init) => {
+    const u = new URL(url);
+    const method = (init?.method as string | undefined) ?? 'GET';
+    let body: unknown;
+    if (typeof init?.body === 'string') {
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        body = init.body;
+      }
+    }
+    calls.push({ method, path: `${u.pathname}${u.search}`, body });
+    const result = handler(method, u.pathname, body);
+    if (!result) return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify(result.body ?? {}), {
+      status: result.status ?? 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  return { fn, calls };
+}
+
+function makeSsidAdapter(handler: ScriptedHandler, creds: typeof CREDS | typeof NEW_CREDS = NEW_CREDS) {
+  const { fn, calls } = fakeFetchWithBody(handler);
+  const state = makeState();
+  const adapter = new CentralAdapter(creds, state, () => {}, fn, async () => {});
+  return { adapter, calls };
+}
+
+/** A per-key call counter, so a route can answer a first GET (existence
+ *  check) differently from a later GET (post-write verification) without
+ *  each test hand-rolling its own counter. */
+function scriptedCounter(): { next(key: string): number } {
+  const counts = new Map<string, number>();
+  return {
+    next(key: string): number {
+      const n = (counts.get(key) ?? 0) + 1;
+      counts.set(key, n);
+      return n;
+    },
+  };
+}
+
+describe('buildWlanSsidPayload — the write-side schema mapping', () => {
+  it('maps every SsidSecurity value to the real Central opmode enum', () => {
+    expect(buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa3-enterprise' }).opmode).toBe(
+      'WPA3_ENTERPRISE_CCM_128',
+    );
+    expect(buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa2-enterprise' }).opmode).toBe('WPA2_ENTERPRISE');
+    expect(buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'psk-portal' }).opmode).toBe('WPA2_PERSONAL');
+    expect(buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa2-psk' }).opmode).toBe('WPA2_PERSONAL');
+    expect(buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'open' }).opmode).toBe('OPEN');
+  });
+
+  it('carries the authoritative common WLAN fields on every mode', () => {
+    const body = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'open', passphrase: undefined });
+    expect(body).toMatchObject({
+      ssid: 'MRDN-Guest',
+      essid: { name: 'MRDN-Guest', 'use-alias': false },
+      enable: true,
+      'hide-ssid': false,
+      'forward-mode': 'FORWARD_MODE_BRIDGE',
+      'rf-band': '5GHZ_6GHZ',
+      'client-isolation': false,
+      'vlan-id-range': ['830'],
+      'vlan-selector': 'VLAN_RANGES',
+      'default-role': 'guest',
+    });
+    expect(body).not.toHaveProperty('name');
+  });
+
+  it('sends 8-63 character PSKs as STRING personal-security values', () => {
+    const psk = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa2-psk', passphrase: 'p@ssword' });
+    expect(psk['personal-security']).toEqual({
+      'passphrase-format': 'STRING',
+      'wpa-passphrase': 'p@ssword',
+    });
+    const portal = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'psk-portal',
+      passphrase: 'p@ssword',
+    });
+    expect(portal['personal-security']).toEqual({
+      'passphrase-format': 'STRING',
+      'wpa-passphrase': 'p@ssword',
+    });
+    const open = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'open', passphrase: undefined });
+    expect(open['personal-security']).toBeUndefined();
+    const ent = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'wpa2-enterprise',
+      authServerGroupId: 'clearpass',
+    });
+    expect(ent['personal-security']).toBeUndefined();
+  });
+
+  it('sends an exactly 64-character hexadecimal PSK as HEX', () => {
+    const passphrase = '0123456789abcdef'.repeat(4);
+    expect(buildWlanSsidPayload({ ...BASE_SSID_FORM, passphrase })['personal-security']).toEqual({
+      'passphrase-format': 'HEX',
+      'wpa-passphrase': passphrase,
+    });
+  });
+
+  it('includes auth-server-group only for enterprise modes', () => {
+    const ent = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'wpa3-enterprise',
+      authServerGroupId: 'clearpass',
+    });
+    expect(ent['auth-server-group']).toBe('clearpass');
+    const entNoGroup = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'wpa3-enterprise',
+      authServerGroupId: undefined,
+    });
+    expect(entNoGroup['auth-server-group']).toBeUndefined();
+    const psk = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'wpa2-psk',
+      authServerGroupId: 'clearpass',
+    });
+    expect(psk['auth-server-group']).toBeUndefined();
+  });
+
+  it('includes captive-portal and EXTERNAL_CP only for psk-portal', () => {
+    const portal = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'psk-portal',
+      passphrase: 'p@ssword',
+      captivePortalProfileId: 'guest-portal',
+    });
+    expect(portal['captive-portal']).toBe('guest-portal');
+    expect(portal['captive-portal-type']).toBe('EXTERNAL_CP');
+    const psk = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa2-psk', captivePortalProfileId: 'guest-portal' });
+    expect(psk['captive-portal']).toBeUndefined();
+    expect(psk['captive-portal-type']).toBeUndefined();
+  });
+
+  it('omits default-role entirely when the form does not carry one', () => {
+    const body = buildWlanSsidPayload({ ...BASE_SSID_FORM, defaultRole: undefined });
+    expect('default-role' in body).toBe(false);
+  });
+});
+
+describe('wlanProfileChanged — the idempotent-upsert diff', () => {
+  it('is false when every diffed field already matches', () => {
+    const desired = buildWlanSsidPayload(BASE_SSID_FORM);
+    expect(wlanProfileChanged(desired, desired)).toBe(false);
+  });
+
+  it('detects an explicitly requested passphrase change or a redacted read-back', () => {
+    const desired = buildWlanSsidPayload(BASE_SSID_FORM);
+    const current = {
+      ...desired,
+      'personal-security': {
+        'passphrase-format': 'STRING',
+        'wpa-passphrase': 'a-completely-different-value',
+      },
+    };
+    expect(wlanProfileChanged(current, desired)).toBe(true);
+    expect(
+      wlanProfileChanged(
+        { ...desired, 'personal-security': { 'passphrase-format': 'STRING' } },
+        desired,
+      ),
+    ).toBe(true);
+  });
+
+  it('is true when a written field actually differs', () => {
+    const desired = buildWlanSsidPayload(BASE_SSID_FORM);
+    expect(wlanProfileChanged({ ...desired, opmode: 'OPEN' }, desired)).toBe(true);
+    expect(wlanProfileChanged({ ...desired, 'vlan-id-range': ['1'] }, desired)).toBe(true);
+    expect(wlanProfileChanged(null, desired)).toBe(true); // an unreadable/empty current profile always looks changed
+  });
+});
+
+describe('CentralAdapter.applySsidProfile()', () => {
+  it('rejects Classic Central outright — never writable via this path', async () => {
+    const { adapter, calls } = makeSsidAdapter(() => undefined, CREDS);
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+    expect(result.ok).toBe(false);
+    expect(result.partial).toBe(false);
+    expect(result.profile.action).toBe('failed');
+    expect(result.profile.message).toMatch(/Central Classic is not writable/);
+    expect(result.assignments).toEqual([]);
+    // Not even a read was attempted against Classic.
+    expect(calls.filter((c) => c.method !== 'POST' || c.path !== '/oauth2/token')).toHaveLength(0);
+  });
+
+  it('creates an absent profile, verifies it, and assigns every requested scope', async () => {
+    const counter = scriptedCounter();
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? undefined : { body: buildWlanSsidPayload(BASE_SSID_FORM) }; // absent, then verified
+      }
+      if (method === 'POST' && pathname === profilePath) return { status: 201, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'created', verified: true, httpCode: 201 });
+    expect(result.assignments).toHaveLength(2);
+    expect(result.assignments.every((a) => a.ok && !a.skipped)).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.partial).toBe(false);
+
+    const createCall = calls.find((c) => c.method === 'POST' && c.path === profilePath)!;
+    expect((createCall.body as Record<string, unknown>).ssid).toBe('MRDN-Guest');
+    expect(
+      (createCall.body as { 'personal-security': { 'wpa-passphrase': string } })['personal-security'][
+        'wpa-passphrase'
+      ],
+    ).toBe('super-secret-pw');
+
+    const assignCalls = calls.filter(
+      (c) => c.method === 'POST' && c.path === '/network-config/v1alpha1/config-assignments',
+    );
+    expect(assignCalls).toHaveLength(2);
+    expect(assignCalls[0].body).toEqual({
+      'config-assignment': [
+        {
+          'scope-id': 'site-1',
+          'device-function': 'CAMPUS_AP',
+          'profile-type': 'wlan-ssids',
+          'profile-instance': 'MRDN-Guest',
+        },
+      ],
+    });
+    expect(assignCalls[1].body).toEqual({
+      'config-assignment': [
+        {
+          'scope-id': 'site-2',
+          'device-function': 'CAMPUS_AP',
+          'profile-type': 'wlan-ssids',
+          'profile-instance': 'MRDN-Guest',
+        },
+      ],
+    });
+
+    // SECURITY: the passphrase must never surface in the reported result.
+    expect(JSON.stringify(result)).not.toMatch(/super-secret-pw/);
+  });
+
+  it('reports unchanged with no write when the existing profile already matches, and skips an already-assigned scope', async () => {
+    const form: SsidForm = { ...BASE_SSID_FORM, security: 'open', passphrase: undefined };
+    const desired = buildWlanSsidPayload(form);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) return { body: desired };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return {
+          body: {
+            'config-assignment': [
+              {
+                'scope-id': 'site-1',
+                'device-function': 'CAMPUS_AP',
+                'profile-type': 'wlan-ssids',
+                'profile-instance': 'MRDN-Guest',
+              },
+            ],
+          },
+        };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(form);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'unchanged', verified: true });
+    expect(result.ok).toBe(true);
+    // No PATCH/POST attempted against the profile — it already matched.
+    expect(calls.some((c) => c.method === 'PATCH' || (c.method === 'POST' && c.path === profilePath))).toBe(false);
+    const site1 = result.assignments.find((a) => a.scopeId === 'site-1')!;
+    expect(site1).toMatchObject({ ok: true, skipped: true });
+    const site2 = result.assignments.find((a) => a.scopeId === 'site-2')!;
+    expect(site2).toMatchObject({ ok: true });
+    expect(site2.skipped).toBeFalsy();
+  });
+
+  it.each([
+    ['redacts', '********'],
+    ['omits', undefined],
+  ])(
+    'always PATCHes an explicitly supplied PSK and verifies when Central %s the read-back PSK',
+    async (_behavior, readBackPassphrase) => {
+    const desired = buildWlanSsidPayload(BASE_SSID_FORM);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1
+          ? { body: desired }
+          : {
+              body: {
+                ...desired,
+                'personal-security': {
+                  'passphrase-format': 'STRING',
+                  ...(readBackPassphrase === undefined ? {} : { 'wpa-passphrase': readBackPassphrase }),
+                },
+              },
+            };
+      }
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'updated', verified: true });
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === profilePath)).toBe(true);
+    expect(JSON.stringify(result)).not.toMatch(/super-secret-pw/);
+    },
+  );
+
+  it('PATCHes only the changed profile, reporting "updated"', async () => {
+    const desired = buildWlanSsidPayload(BASE_SSID_FORM);
+    const stale = { ...desired, opmode: 'OPEN' };
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? { body: stale } : { body: desired }; // stale, then verified-updated
+      }
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'updated', verified: true, httpCode: 200 });
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === profilePath)).toBe(true);
+    expect(calls.some((c) => c.method === 'POST' && c.path === profilePath)).toBe(false);
+  });
+
+  it('reports the profile step failed — and attempts no assignments — when the post-write verification read-back fails', async () => {
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? undefined : { status: 500, body: {} }; // absent, then verification fails
+      }
+      if (method === 'POST' && pathname === profilePath) return { status: 201, body: {} };
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    expect(result.profile.ok).toBe(false);
+    expect(result.profile.verified).toBe(false);
+    expect(result.profile.action).toBe('created'); // the write itself was accepted…
+    expect(result.profile.message).toMatch(/verification read-back failed/);
+    expect(result.assignments).toEqual([]); // …but nothing else was attempted on an unverified profile
+    expect(result.ok).toBe(false);
+    expect(
+      calls.some((c) => c.method === 'POST' && c.path === '/network-config/v1alpha1/config-assignments'),
+    ).toBe(false);
+  });
+
+  it('fails verification when Central returns a successful read with mismatched profile fields', async () => {
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const desired = buildWlanSsidPayload(BASE_SSID_FORM);
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1
+          ? undefined
+          : {
+              body: {
+                ...desired,
+                opmode: 'OPEN',
+                'personal-security': { 'passphrase-format': 'STRING' },
+              },
+            };
+      }
+      if (method === 'POST' && pathname === profilePath) return { status: 201, body: {} };
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    expect(result.profile).toMatchObject({ ok: false, action: 'created', verified: false });
+    expect(result.profile.message).toMatch(/did not match the requested profile/);
+    expect(result.assignments).toEqual([]);
+    expect(
+      calls.some((c) => c.method === 'POST' && c.path === '/network-config/v1alpha1/config-assignments'),
+    ).toBe(false);
+  });
+
+  it('reports a profile success with a failed assignment as partial, never ok, and never deletes the profile', async () => {
+    const desired = buildWlanSsidPayload(BASE_SSID_FORM);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) return { body: desired };
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 500, body: { error: 'boom' } };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    expect(result.profile.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.partial).toBe(true);
+    expect(result.assignments.every((a) => !a.ok)).toBe(true);
+    expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
+  });
+
+  it('reports failed, not ok, when no scope is selected', async () => {
+    const desired = buildWlanSsidPayload(BASE_SSID_FORM);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const { adapter } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) return { body: desired };
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile({ ...BASE_SSID_FORM, scopeIds: [] });
+    expect(result.profile.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.partial).toBe(true);
+    expect(result.assignments).toEqual([]);
+  });
+});
+
+describe('staleManagedModeFields / buildWlanReplacementPayload — the mode-transition clear', () => {
+  it('finds no stale fields when current already matches the new mode', () => {
+    const desired = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa2-psk' });
+    expect(staleManagedModeFields(desired, desired)).toEqual([]);
+  });
+
+  it('flags captive-portal and captive-portal-type left over from a portal profile', () => {
+    const current = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'psk-portal',
+      captivePortalProfileId: 'guest-portal',
+    });
+    const desired = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa2-psk' });
+    expect(staleManagedModeFields(current, desired).sort()).toEqual(['captive-portal', 'captive-portal-type']);
+  });
+
+  it('flags auth-server-group left over from an enterprise profile', () => {
+    const current = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'wpa2-enterprise',
+      authServerGroupId: 'clearpass',
+      passphrase: undefined,
+    });
+    const desired = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'open', passphrase: undefined });
+    expect(staleManagedModeFields(current, desired)).toEqual(['auth-server-group']);
+  });
+
+  it('flags personal-security left over from a PSK profile', () => {
+    const current = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa2-psk' });
+    const desired = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'wpa2-enterprise',
+      authServerGroupId: 'clearpass',
+      passphrase: undefined,
+    });
+    expect(staleManagedModeFields(current, desired)).toEqual(['personal-security']);
+  });
+
+  it('builds a replacement body that preserves unrelated current fields and drops the stale ones', () => {
+    const current = {
+      ...buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'psk-portal', captivePortalProfileId: 'guest-portal' }),
+      description: 'kept because this form never manages it',
+    };
+    const desired = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'open', passphrase: undefined });
+    const replacement = buildWlanReplacementPayload(current, desired);
+    expect(replacement.description).toBe('kept because this form never manages it');
+    expect(replacement.opmode).toBe('OPEN');
+    expect(replacement).not.toHaveProperty('captive-portal');
+    expect(replacement).not.toHaveProperty('captive-portal-type');
+    expect(replacement).not.toHaveProperty('personal-security');
+  });
+});
+
+describe('CentralAdapter.applySsidProfile() — security-mode transitions', () => {
+  it('portal → PSK: PUTs a replacement that drops captive-portal and captive-portal-type', async () => {
+    const portalCurrent = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'psk-portal',
+      captivePortalProfileId: 'guest-portal',
+    });
+    const form: SsidForm = { ...BASE_SSID_FORM, security: 'wpa2-psk', captivePortalProfileId: undefined };
+    const desired = buildWlanSsidPayload(form);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? { body: portalCurrent } : { body: desired }; // stale portal profile, then clean verified profile
+      }
+      if (method === 'PUT' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(form);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'updated', verified: true });
+    expect(result.profile.message).toMatch(/cleared obsolete captive-portal, captive-portal-type/);
+    // A PUT, never a PATCH, moved this profile off the portal mode.
+    expect(calls.some((c) => c.method === 'PUT' && c.path === profilePath)).toBe(true);
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === profilePath)).toBe(false);
+    const putCall = calls.find((c) => c.method === 'PUT' && c.path === profilePath)!;
+    const putBody = putCall.body as Record<string, unknown>;
+    expect(putBody).not.toHaveProperty('captive-portal');
+    expect(putBody).not.toHaveProperty('captive-portal-type');
+    expect(putBody.opmode).toBe('WPA2_PERSONAL');
+  });
+
+  it('portal → open: PUTs a replacement that drops captive-portal(-type) AND personal-security', async () => {
+    const portalCurrent = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'psk-portal',
+      captivePortalProfileId: 'guest-portal',
+    });
+    const form: SsidForm = { ...BASE_SSID_FORM, security: 'open', passphrase: undefined, captivePortalProfileId: undefined };
+    const desired = buildWlanSsidPayload(form);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? { body: portalCurrent } : { body: desired };
+      }
+      if (method === 'PUT' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(form);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'updated', verified: true });
+    const putCall = calls.find((c) => c.method === 'PUT' && c.path === profilePath)!;
+    const putBody = putCall.body as Record<string, unknown>;
+    expect(putBody).not.toHaveProperty('captive-portal');
+    expect(putBody).not.toHaveProperty('captive-portal-type');
+    expect(putBody).not.toHaveProperty('personal-security');
+    expect(putBody.opmode).toBe('OPEN');
+  });
+
+  it('enterprise → PSK: PUTs a replacement that drops auth-server-group', async () => {
+    const enterpriseCurrent = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'wpa2-enterprise',
+      authServerGroupId: 'clearpass',
+      passphrase: undefined,
+    });
+    const form: SsidForm = { ...BASE_SSID_FORM, security: 'wpa2-psk', authServerGroupId: undefined };
+    const desired = buildWlanSsidPayload(form);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? { body: enterpriseCurrent } : { body: desired };
+      }
+      if (method === 'PUT' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(form);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'updated', verified: true });
+    const putCall = calls.find((c) => c.method === 'PUT' && c.path === profilePath)!;
+    const putBody = putCall.body as Record<string, unknown>;
+    expect(putBody).not.toHaveProperty('auth-server-group');
+    expect(putBody['personal-security']).toMatchObject({ 'wpa-passphrase': 'super-secret-pw' });
+  });
+
+  it('enterprise → open: PUTs a replacement that drops auth-server-group', async () => {
+    const enterpriseCurrent = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'wpa3-enterprise',
+      authServerGroupId: 'clearpass',
+      passphrase: undefined,
+    });
+    const form: SsidForm = { ...BASE_SSID_FORM, security: 'open', passphrase: undefined, authServerGroupId: undefined };
+    const desired = buildWlanSsidPayload(form);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? { body: enterpriseCurrent } : { body: desired };
+      }
+      if (method === 'PUT' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(form);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'updated', verified: true });
+    const putCall = calls.find((c) => c.method === 'PUT' && c.path === profilePath)!;
+    const putBody = putCall.body as Record<string, unknown>;
+    expect(putBody).not.toHaveProperty('auth-server-group');
+    expect(putBody).not.toHaveProperty('personal-security');
+  });
+
+  it('PSK → enterprise: PUTs a replacement that drops personal-security', async () => {
+    const pskCurrent = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa2-psk' });
+    const form: SsidForm = {
+      ...BASE_SSID_FORM,
+      security: 'wpa2-enterprise',
+      authServerGroupId: 'clearpass',
+      passphrase: undefined,
+    };
+    const desired = buildWlanSsidPayload(form);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? { body: pskCurrent } : { body: desired };
+      }
+      if (method === 'PUT' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(form);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'updated', verified: true });
+    const putCall = calls.find((c) => c.method === 'PUT' && c.path === profilePath)!;
+    const putBody = putCall.body as Record<string, unknown>;
+    expect(putBody).not.toHaveProperty('personal-security');
+    expect(putBody['auth-server-group']).toBe('clearpass');
+  });
+
+  it('PSK → open: PUTs a replacement that drops personal-security', async () => {
+    const pskCurrent = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'wpa2-psk' });
+    const form: SsidForm = { ...BASE_SSID_FORM, security: 'open', passphrase: undefined };
+    const desired = buildWlanSsidPayload(form);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? { body: pskCurrent } : { body: desired };
+      }
+      if (method === 'PUT' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(form);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'updated', verified: true });
+    const putCall = calls.find((c) => c.method === 'PUT' && c.path === profilePath)!;
+    expect(putCall.body).not.toHaveProperty('personal-security');
+    expect(JSON.stringify(result)).not.toMatch(/super-secret-pw/);
+  });
+
+  it('same-mode change with no stale fields still PATCHes, never PUTs', async () => {
+    const desired = buildWlanSsidPayload(BASE_SSID_FORM);
+    const stale = { ...desired, 'vlan-id-range': ['1'] };
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        return n === 1 ? { body: stale } : { body: desired };
+      }
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    expect(result.profile).toMatchObject({ ok: true, action: 'updated', verified: true });
+    expect(calls.some((c) => c.method === 'PATCH' && c.path === profilePath)).toBe(true);
+    expect(calls.some((c) => c.method === 'PUT' && c.path === profilePath)).toBe(false);
+  });
+
+  it('fails verification when the read-back still carries a stale mode field a PUT was supposed to clear', async () => {
+    const enterpriseCurrent = buildWlanSsidPayload({
+      ...BASE_SSID_FORM,
+      security: 'wpa2-enterprise',
+      authServerGroupId: 'clearpass',
+      passphrase: undefined,
+    });
+    const form: SsidForm = { ...BASE_SSID_FORM, security: 'open', passphrase: undefined, authServerGroupId: undefined };
+    const desired = buildWlanSsidPayload(form);
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const counter = scriptedCounter();
+    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) {
+        const n = counter.next(`GET ${profilePath}`);
+        // First read: stale enterprise profile. Second read (post-PUT
+        // verification): Central answers with auth-server-group still
+        // present — the tenant did not actually drop it.
+        return n === 1 ? { body: enterpriseCurrent } : { body: { ...desired, 'auth-server-group': 'clearpass' } };
+      }
+      if (method === 'PUT' && pathname === profilePath) return { status: 200, body: {} };
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(form);
+
+    expect(result.profile.ok).toBe(false);
+    expect(result.profile.verified).toBe(false);
+    expect(result.profile.message).toMatch(/still had obsolete auth-server-group field\(s\)/);
+    expect(result.assignments).toEqual([]); // no assignment attempted on an unverified profile
+    expect(calls.some((c) => c.method === 'POST' && c.path === '/network-config/v1alpha1/config-assignments')).toBe(
+      false,
+    );
+  });
+});
+
+describe('CentralAdapter.ssidCatalog()', () => {
+  it('reports every section unavailable on Classic Central', async () => {
+    const { adapter } = makeSsidAdapter(() => undefined, CREDS);
+    const catalog = await adapter.ssidCatalog();
+    expect(catalog.unavailable).toEqual(ALL_SSID_CATALOG_SECTIONS);
+    expect(catalog.scopes).toEqual([]);
+    expect(catalog.roles).toEqual([]);
+    expect(catalog.source).toMatch(/Classic/);
+  });
+
+  it('reads every section into one catalog on New Central', async () => {
+    const { adapter } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (pathname === '/network-config/v1alpha1/sites') return { body: { items: [{ id: 'site-1', name: 'Campus-01' }] } };
+      if (pathname === '/network-config/v1alpha1/site-collections') return { body: { items: [{ id: 'coll-1', name: 'All clinics' }] } };
+      if (pathname === '/network-config/v1alpha1/device-groups') return { body: { items: [{ id: 'grp-1', name: 'lakeshore-medical' }] } };
+      if (pathname === '/cnxdevice/v1/debug/get_scope_data') {
+        return {
+          body: {
+            devices: [
+              {
+                type: 'DEVICE',
+                persona: 'CAMPUS_AP',
+                scope_id: 'ap-scope-1',
+                meta: { hostname: 'ap-3f-12', device_model: 'AP-635', serial_number: 'CN1' },
+              },
+            ],
+          },
+        };
+      }
+      if (pathname === '/network-config/v1alpha1/roles') return { body: { items: [{ name: 'guest' }] } };
+      if (pathname === '/network-config/v1alpha1/server-groups') {
+        return { body: { 'server-group': [{ name: 'clearpass' }] } };
+      }
+      if (pathname === '/network-config/v1alpha1/captive-portal') return { body: { items: [{ name: 'guest-portal-meridian' }] } };
+      return undefined;
+    });
+
+    const catalog = await adapter.ssidCatalog();
+
+    expect(catalog.unavailable).toEqual([]);
+    expect(catalog.scopes).toEqual(
+      expect.arrayContaining([
+        { id: 'site-1', label: 'Campus-01', category: 'site' },
+        { id: 'coll-1', label: 'All clinics', category: 'site-collection' },
+        { id: 'grp-1', label: 'lakeshore-medical', category: 'ap-group' },
+        { id: 'ap-scope-1', label: 'ap-3f-12 (AP-635 · CN1)', category: 'ap' },
+      ]),
+    );
+    expect(catalog.roles).toEqual([{ id: 'guest', label: 'guest' }]);
+    expect(catalog.authServerGroups).toEqual([{ id: 'clearpass', label: 'clearpass' }]);
+    expect(catalog.captivePortalProfiles).toEqual([{ id: 'guest-portal-meridian', label: 'guest-portal-meridian' }]);
+    expect(catalog.source).toBe('Central /network-config/v1alpha1 · 7/7 sections');
+  });
+
+  it('marks only the sections that 404, never failing the whole catalog', async () => {
+    const { adapter } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (pathname === '/network-config/v1alpha1/sites') return { body: { items: [{ id: 'site-1', name: 'Campus-01' }] } };
+      if (pathname === '/network-config/v1alpha1/roles') return { body: { items: [{ name: 'guest' }] } };
+      // site-collections, device-groups, scope data, server-groups and captive-portal all 404.
+      return undefined;
+    });
+
+    const catalog = await adapter.ssidCatalog();
+
+    expect(catalog.unavailable.sort()).toEqual(
+      ['authServerGroups', 'ap-groups', 'aps', 'captivePortalProfiles', 'site-collections'].sort(),
+    );
+    expect(catalog.scopes).toEqual([{ id: 'site-1', label: 'Campus-01', category: 'site' }]);
+    expect(catalog.roles).toEqual([{ id: 'guest', label: 'guest' }]);
+    expect(catalog.authServerGroups).toEqual([]);
   });
 });

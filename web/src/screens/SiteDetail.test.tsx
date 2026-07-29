@@ -7,7 +7,7 @@ import { ToastProvider } from '../nightdesk';
 import { getSettings, getSiteDetail } from '../api/client';
 import type { SiteDetailData } from '../api/client';
 import { SITE_PROFILES } from '../../../shared';
-import type { SiteRow } from '../../../shared';
+import type { SiteRow, SiteTopologyLive, TopologyDeviceNode } from '../../../shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -48,6 +48,56 @@ const LIVE_SITE: SiteRow = {
   alerts: '—',
   alertTone: 'neutral',
   sync: '2m ago',
+};
+
+function topologyNode(
+  serial: string,
+  name: string,
+  type: string,
+  deviceFunction: string,
+): TopologyDeviceNode {
+  return {
+    serial,
+    name,
+    type,
+    deviceFunction,
+    status: 'ONLINE',
+    health: 'Good',
+    healthReason: null,
+    model: type === 'Switch' ? 'CX-6300M' : type === 'Gateway' ? 'A9004' : 'AP-655',
+    ipv4: null,
+    mac: null,
+    internet: false,
+  };
+}
+
+const LIVE_TOPOLOGY: SiteTopologyLive = {
+  siteId: 'SecureSSID',
+  nodes: [
+    topologyNode('SW', 'CX6300-CORE', 'Switch', 'Access Switch'),
+    topologyNode('GW', 'SS_9004_Gateway', 'Gateway', 'Mobility GW'),
+    ...Array.from({ length: 7 }, (_, index) =>
+      topologyNode(`AP${index}`, `AP-${index + 1}`, 'Access Point', 'Campus Access Point'),
+    ),
+    { ...topologyNode('U1', 'Room 525', 'Unmanaged', '-'), health: null, model: null, internet: null },
+    { ...topologyNode('U2', '20:4c:03:ff:61:e2', 'Unmanaged', '-'), health: null, model: null, internet: null },
+  ],
+  links: ['GW', 'AP0', 'AP1', 'AP2', 'AP3', 'AP4', 'AP5', 'AP6', 'U1', 'U2'].map(
+    (to, index) => ({
+      from: 'SW',
+      to,
+      fromPorts: [{ name: `1/1/${index + 1}` }],
+      toPorts: [{ name: to === 'GW' ? 'GE 0/0/1' : 'eth0' }],
+      speedBps: index === 0 ? 1_000_000_000 : 5_000_000_000,
+      health: 'Good',
+    }),
+  ),
+  source: {
+    plane: 'central',
+    at: '2026-07-29T06:47:26.761Z',
+    sections: { nodes: 'ok', links: 'ok' },
+    cached: false,
+  },
 };
 
 beforeEach(() => {
@@ -99,9 +149,92 @@ describe('SiteDetail live summary', () => {
     expect(screen.getByText('SecureSSID')).toBeTruthy();
     expect(screen.getByText('device state not reported')).toBeTruthy();
     expect(screen.getByText('alert feed not reported')).toBeTruthy();
-    expect(screen.getByText('NOT REPORTED')).toBeTruthy();
+    expect(screen.getAllByText('NOT REPORTED').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/will not substitute the demo site profile/)).toBeTruthy();
     expect(screen.queryByText('No data — plane not linked')).toBeNull();
+  });
+
+  it('renders an ok 11-node/10-link live topology instead of NOT REPORTED', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      topology: LIVE_TOPOLOGY,
+      devices: [
+        {
+          name: 'CX6300-CORE',
+          model: 'CX-6300M',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access switch',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '—',
+        },
+      ],
+    } as SiteDetailData);
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('11 NODES · 10 LINKS · CENTRAL')).toBeTruthy());
+    expect(screen.getAllByText('CX6300-CORE').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('SS_9004_Gateway').length).toBeGreaterThan(0);
+    expect(screen.getByText('Reported physical links')).toBeTruthy();
+    expect(screen.getAllByText(/1\/1\/1 ↔ GE 0\/0\/1 · 1.0 Gbps/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/physical adjacency, not traffic direction or internet routing/)).toBeTruthy();
+    expect(screen.queryByText('READ FAILED')).toBeNull();
+    expect(screen.queryByText('EMPTY')).toBeNull();
+  });
+
+  it('keeps empty, failed, and cached topology outcomes distinct', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      topology: {
+        siteId: 'SecureSSID',
+        nodes: [],
+        links: [],
+        source: {
+          plane: 'central',
+          at: '2026-07-29T06:47:26.761Z',
+          sections: { nodes: 'empty', links: 'empty' },
+        },
+      },
+    } as SiteDetailData);
+    const first = renderDetail();
+    await waitFor(() => expect(screen.getByText('EMPTY')).toBeTruthy());
+    expect(screen.getByText(/answered for this site and reported no topology nodes or links/)).toBeTruthy();
+
+    first.unmount();
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      topology: {
+        siteId: 'SecureSSID',
+        source: {
+          plane: 'central',
+          at: '2026-07-29T06:47:26.761Z',
+          sections: { nodes: 'failed', links: 'failed' },
+          note: 'topology: HTTP 503',
+        },
+      },
+    } as SiteDetailData);
+    renderDetail();
+    await waitFor(() => expect(screen.getByText('READ FAILED')).toBeTruthy());
+    expect(screen.getByText(/topology: HTTP 503/)).toBeTruthy();
+
+    cleanup();
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      topology: { ...LIVE_TOPOLOGY, source: { ...LIVE_TOPOLOGY.source, cached: true } },
+    } as SiteDetailData);
+    renderDetail();
+    await waitFor(() => expect(screen.getByText('11 NODES · 10 LINKS · CACHED')).toBeTruthy());
+    expect(screen.getByText(/Cached read from/)).toBeTruthy();
   });
 
   it('renders the per-site device table and Open here alerts the live envelope carries', async () => {

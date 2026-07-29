@@ -71,6 +71,16 @@ export interface Settings {
   showPlatformTags?: boolean;
 }
 
+export type SectionSource = 'demo' | 'live';
+
+/** Resolve a section's explicit source before falling back to the portal-wide mode. */
+export function effectiveSectionSource(
+  value: Pick<Settings, 'demoMode' | 'sectionMode'>,
+  section: ScreenSection,
+): SectionSource {
+  return value.sectionMode?.[section] ?? (value.demoMode ? 'demo' : 'live');
+}
+
 const SECRET_KEY = /secret|token|key|password|passphrase/i;
 const MASK = '••••••';
 

@@ -618,7 +618,7 @@ describe('live-mode screen contracts', () => {
     expect(status).toBe(200);
     expect(body.dataSource).toBe('live');
     expect(Array.isArray(body.systems)).toBe(true);
-    expect(body.systems).toHaveLength(9); // the screen's plane rows, from the registry
+    expect(body.systems).toHaveLength(10); // the screen's plane rows, from the registry
     const names = (body.systems as any[]).map((s) => s.name);
     expect(names).toContain('HPE Aruba Central');
     expect(names).toContain('Mist');
@@ -807,6 +807,45 @@ describe('live-mode screen contracts', () => {
       expect(observedConfigure.body.vlans[0]).toMatchObject({ id: '110', origin: 'observed' });
       expect(observedConfigure.body.stats[2].value).not.toBe('—');
 
+      contributions.set('central', {
+        devices: [DEVICE],
+        clients: [
+          clientRow('AA:BB:CC:DD:EE:FF', 'CENTRAL'),
+          {
+            ...clientRow('AA:BB:CC:DD:EE:11', 'CENTRAL'),
+            medium: 'wired',
+            attach: 'sw-test-1',
+            where: 'port 1/1/8',
+          },
+        ],
+        config: {
+          mode: 'configured',
+          source: 'Central /network-config/v1/wlan-ssids',
+          ssids: [
+            {
+              kind: 'ssid',
+              origin: 'configured',
+              name: 'Central-Staff',
+              vlan: '820',
+              security: 'WPA3-Enterprise',
+              targets: 'Enabled profile · scope assignment not read',
+              plane: 'CENTRAL',
+              tone: 'accent',
+            },
+          ],
+          unavailable: ['vlans', 'ports'],
+        },
+      });
+      const configured = await getJson('/api/configure');
+      expect(configured.body.inventoryMode).toBe('configured');
+      expect(configured.body.ssids).toEqual([
+        expect.objectContaining({ name: 'Central-Staff', origin: 'configured' }),
+      ]);
+      expect(configured.body.ports[0].origin).toBe('observed');
+      expect(configured.body.vlans[0]).toMatchObject({ id: '110', origin: 'observed' });
+      expect(configured.body.stats[2].delta).toContain('configured SSIDs');
+      expect(configured.body.stats[2].delta).toContain('observed ports');
+
       const compliance = await getJson('/api/compliance');
       expect(compliance.body.dataSource).toBe('live');
       expect(compliance.body.findings).toEqual([]);
@@ -924,6 +963,22 @@ describe('live-mode screen contracts', () => {
     const full = await getJson('/api/sites');
     expect(full.body.stats[2].value).toBe('1');
     expect(full.body.stats[3]).toMatchObject({ value: '1', tone: 'negative' });
+  });
+
+  it('unassigned inventory stays on Devices without becoming a fake site', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      sites: [SITE],
+      devices: [
+        DEVICE,
+        { ...DEVICE, name: 'claimed-unassigned', serial: 'UNASSIGNED-1', siteId: 'multiple', siteName: 'Multiple' },
+      ],
+    });
+    const devices = await getJson('/api/devices');
+    expect((devices.body.devices as any[]).map((device) => device.name)).toContain('claimed-unassigned');
+
+    const sites = await getJson('/api/sites');
+    expect((sites.body.sites as any[]).map((site) => site.id)).toEqual(['campus-01']);
   });
 
   it('live site rows badge every claiming plane and take Last sync from plane freshness', async () => {
@@ -1598,8 +1653,8 @@ describe('live-mode screen contracts', () => {
     contributions.clear();
     const { body } = await getJson('/api/overview');
     const planes = body.planes as any[];
-    // "Planes linked N / 9" beside it must be reconcilable with the list.
-    expect(planes).toHaveLength(9);
+    // "Planes linked N / 10" beside it must be reconcilable with the list.
+    expect(planes).toHaveLength(10);
     const central = planes[0];
     expect(central.name).toBe('CENTRAL'); // linked planes lead
     const mist = planes.find((p) => p.name === 'MIST');
@@ -1816,6 +1871,21 @@ describe('blend mode (demoMode + blendLive)', () => {
     // A fixture-only name must NOT serve its demo config once live rows lead.
     const bogus = await getJson('/api/devices/sw-core-a');
     expect(bogus.status).toBe(404);
+  });
+
+  it('a duplicate name across the blended live rows is rejected honestly, not picked first', async () => {
+    contributions.set('central', { devices: [{ ...DEVICE, name: 'sw-blend-dup', serial: 'BLEND-A' }] });
+    contributions.set('mist', {
+      devices: [{ ...DEVICE, name: 'sw-blend-dup', serial: 'BLEND-B', plane: 'MIST', planeTone: 'info' }],
+    });
+    const ambiguous = await getJson('/api/devices/sw-blend-dup');
+    expect(ambiguous.status).toBe(409);
+    expect((ambiguous.body.candidates as any[]).map((c) => c.serial).sort()).toEqual(['BLEND-A', 'BLEND-B']);
+
+    const resolved = await getJson('/api/devices/sw-blend-dup?serial=BLEND-B');
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.device.plane).toBe('MIST');
+    contributions.delete('mist');
   });
 
   it('auth events and licences blend as whole live sections with honest metadata', async () => {
@@ -2597,8 +2667,12 @@ describe('on-demand per-object detail reads', () => {
   it('a wired session is asked for no radio at all and gets no wireless joins', async () => {
     contributions.set('central', { devices: [AP, SW], clients: [WIRED] });
     let radioCalls = 0;
+    let requestedMedium: 'wired' | 'wireless' | undefined;
     stub('central', {
-      clientDetail: async (mac: string) => ({ mac, rssi: null, source: source({ rssi: 'empty' }) }),
+      clientDetail: async (mac: string, medium?: 'wired' | 'wireless') => {
+        requestedMedium = medium;
+        return { mac, source: source({}) };
+      },
       deviceDetail: async (serial: string, kind: string) => {
         radioCalls += 1;
         return { serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) };
@@ -2609,10 +2683,11 @@ describe('on-demand per-object detail reads', () => {
     expect(status).toBe(200);
     // A wired client has no serving radio, and its switch port is on its own
     // row (attach + where) — there is no hop to join and no call to spend.
+    expect(requestedMedium).toBe('wired');
     expect(radioCalls).toBe(0);
     expect(body.detail.servingRadio).toBeUndefined();
     expect(body.detail.wiring).toBeUndefined();
-    expect(body.detail.rssi).toBeNull();
+    expect(body.detail.rssi).toBeUndefined();
     expect(body.detail.source.sections.servingRadio).toBeUndefined();
   });
 
@@ -2689,6 +2764,109 @@ describe('on-demand per-object detail reads', () => {
     expect(asked).toHaveLength(1);
   });
 
+  // -- Duplicate display name identity (fix-device-detail-identity) -------
+  //
+  // Reconciliation keys on serial first (services/reconcile.ts identityKey),
+  // NOT name, so two planes each claiming a physically distinct device under
+  // the SAME display name reconcile to TWO rows, not one. `/api/devices/:name`
+  // used to `.find` the first row with that name — these tests prove the
+  // route now resolves the exact plane+serial pair a row link carries, and
+  // refuses to guess when a bare name cannot tell the two apart.
+  describe('duplicate display names resolve by plane+serial, never by first match', () => {
+    const DUP_CENTRAL = { ...AP, name: 'ap-dup', serial: 'DUP-CENTRAL-001' };
+    const DUP_MIST = { ...AP, name: 'ap-dup', serial: 'DUP-MIST-002', plane: 'MIST', planeTone: 'info' };
+
+    function seedDuplicates(): void {
+      contributions.set('central', { devices: [DUP_CENTRAL] });
+      contributions.set('mist', { devices: [DUP_MIST] });
+    }
+
+    it('a serial query resolves its own row even though the name is shared', async () => {
+      seedDuplicates();
+      const central = await getJson('/api/devices/ap-dup?serial=DUP-CENTRAL-001');
+      expect(central.status).toBe(200);
+      expect(central.body.device.plane).toBe('CENTRAL');
+      expect(central.body.device.serial).toBe('DUP-CENTRAL-001');
+
+      const mist = await getJson('/api/devices/ap-dup?serial=DUP-MIST-002');
+      expect(mist.status).toBe(200);
+      expect(mist.body.device.plane).toBe('MIST');
+      expect(mist.body.device.serial).toBe('DUP-MIST-002');
+    });
+
+    it('diagnostics eligibility targets the exact serial the resolved row carries', async () => {
+      seedDuplicates();
+      const central = await getJson('/api/devices/ap-dup?serial=DUP-CENTRAL-001');
+      const mist = await getJson('/api/devices/ap-dup?serial=DUP-MIST-002');
+      // Same name on both rows — the field DiagnosticsPanel keys eligibility
+      // and audit matching on (plane+serial) must still point at two
+      // different physical devices.
+      expect(central.body.device.name).toBe(mist.body.device.name);
+      expect([central.body.device.plane, central.body.device.serial]).not.toEqual([
+        mist.body.device.plane,
+        mist.body.device.serial,
+      ]);
+    });
+
+    it('a plane query narrows an otherwise-ambiguous name when that alone is unique', async () => {
+      seedDuplicates();
+      const byPlane = await getJson('/api/devices/ap-dup?plane=MIST');
+      expect(byPlane.status).toBe(200);
+      expect(byPlane.body.device.serial).toBe('DUP-MIST-002');
+    });
+
+    it('a bare duplicate name is rejected honestly, never resolved to whichever row sorts first', async () => {
+      seedDuplicates();
+      const { status, body } = await getJson('/api/devices/ap-dup');
+      expect(status).toBe(409);
+      expect(body.error).toMatch(/ap-dup/);
+      expect(body.error).toMatch(/plane and serial/i);
+      const serials = (body.candidates as any[]).map((c) => c.serial).sort();
+      expect(serials).toEqual(['DUP-CENTRAL-001', 'DUP-MIST-002']);
+    });
+
+    it('a unique legacy name-only link still resolves — backward compatibility is real, not assumed', async () => {
+      contributions.set('central', { devices: [AP, SW] });
+      const { status, body } = await getJson('/api/devices/ap-detail-1');
+      expect(status).toBe(200);
+      expect(body.device.serial).toBe('PHT5M520SZ');
+    });
+
+    it('an unknown serial 404s rather than falling back to a name match', async () => {
+      seedDuplicates();
+      const { status, body } = await getJson('/api/devices/ap-dup?serial=NO-SUCH-SERIAL');
+      expect(status).toBe(404);
+      expect(body.error).toBeDefined();
+    });
+
+    it('a plane query matches a double-claimed row by ANY claiming plane, not just its display plane', async () => {
+      // sw-both is claimed by both CENTRAL and CLASSIC — reconciliation picks
+      // CENTRAL (higher priority) for the display `plane` field, but the row
+      // still carries CLASSIC in `claimedBy`. A second, unrelated device
+      // shares the name from MIST, making the bare name ambiguous.
+      contributions.set('central', { devices: [{ ...AP, name: 'sw-both', serial: 'SHARED-SN' }] });
+      contributions.set('classic', {
+        devices: [{ ...AP, name: 'sw-both', serial: 'SHARED-SN', plane: 'CLASSIC', planeTone: 'warning' }],
+      });
+      contributions.set('mist', {
+        devices: [{ ...AP, name: 'sw-both', serial: 'OTHER-MIST-SN', plane: 'MIST', planeTone: 'info' }],
+      });
+      const ambiguous = await getJson('/api/devices/sw-both');
+      expect(ambiguous.status).toBe(409);
+
+      // ?plane=CLASSIC is NOT the merged row's display plane (CENTRAL outranks
+      // CLASSIC), yet it still resolves — claimedBy, not just `plane`, is
+      // consulted.
+      const byPlane = await getJson('/api/devices/sw-both?plane=CLASSIC');
+      expect(byPlane.status).toBe(200);
+      expect(byPlane.body.device.serial).toBe('SHARED-SN');
+      expect(byPlane.body.device.plane).toBe('CENTRAL');
+      expect(byPlane.body.device.claimedBy).toEqual(expect.arrayContaining(['CENTRAL', 'CLASSIC']));
+      contributions.delete('classic');
+      contributions.delete('mist');
+    });
+  });
+
   it('a live site page carries the plane link graph and leaves the collector panel alone', async () => {
     contributions.set('central', { devices: [AP, SW] });
     const asked: string[] = [];
@@ -2714,6 +2892,37 @@ describe('on-demand per-object detail reads', () => {
     expect(asked).toEqual(['Campus-01 — Meridian HQ']);
   });
 
+  it('preserves authoritative empty and failed site topology outcomes', async () => {
+    contributions.set('central', { devices: [AP, SW] });
+    stub('central', {
+      siteTopology: async (siteId: string) => ({
+        siteId,
+        nodes: [],
+        links: [],
+        source: source({ nodes: 'empty', links: 'empty' }),
+      }),
+    });
+    const empty = await getJson('/api/sites/campus-01');
+    expect(empty.status).toBe(200);
+    expect(empty.body.topology.nodes).toEqual([]);
+    expect(empty.body.topology.links).toEqual([]);
+    expect(empty.body.topology.source.sections).toEqual({ nodes: 'empty', links: 'empty' });
+
+    clearDetailCache();
+    while (undo.length > 0) undo.pop()!();
+    stub('central', {
+      siteTopology: async () => {
+        throw new Error('central topology unavailable');
+      },
+    });
+    const failed = await getJson('/api/sites/campus-01');
+    expect(failed.status).toBe(200);
+    expect(failed.body.topology.nodes).toBeUndefined();
+    expect(failed.body.topology.links).toBeUndefined();
+    expect(failed.body.topology.source.sections).toEqual({ nodes: 'failed', links: 'failed' });
+    expect(failed.body.topology.source.note).toContain('central topology unavailable');
+  });
+
   it('the site graph is read once and shared by the site page, the device page and the client drawer', async () => {
     contributions.set('central', { devices: [AP, SW], clients: [CLIENT] });
     let calls = 0;
@@ -2729,6 +2938,9 @@ describe('on-demand per-object detail reads', () => {
     expect(site.body.topology.links).toHaveLength(1);
     expect(device.body.topology.links).toHaveLength(1);
     expect(client.body.topology.links).toHaveLength(1);
+    expect(site.body.topology.source.cached).toBeFalsy();
+    expect(device.body.topology.source.cached).toBe(true);
+    expect(client.body.topology.source.cached).toBe(true);
     // Three pages, one call. Without the shared cache this is three per open.
     expect(calls).toBe(1);
   });

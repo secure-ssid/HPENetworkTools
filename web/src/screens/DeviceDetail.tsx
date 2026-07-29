@@ -49,7 +49,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Badge,
@@ -90,6 +90,7 @@ import { useSettings } from '../app/SettingsContext';
 import { TerminalPane, createCannedTransport } from '../lib/TerminalPane';
 import { createWsTransport } from '../lib/wsTerminal';
 import type { AsyncTerminalTransport, TerminalSessionIdentity } from '../lib/wsTerminal';
+import { DiagnosticsPanel } from '../components/DiagnosticsPanel';
 import { DiffCode } from '../lib/DiffCode';
 import { ApiErrorState } from './ApiErrorState';
 
@@ -708,6 +709,15 @@ function RecordedSessions({
 export default function DeviceDetail() {
   const { name = '' } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // The plane+serial the row that linked here carried (Devices.tsx,
+  // SiteDetail's device table) — the exact identity that survives
+  // reconciliation when two rows share this display name. Absent for legacy
+  // name-only links (search hits, other screens' name-only fields); the
+  // server still resolves those, honestly, only while the name stays unique.
+  const linkPlane = searchParams.get('plane') ?? undefined;
+  const linkSerial = searchParams.get('serial') ?? undefined;
+  const routeIdentity = `${name}\u0000${linkPlane ?? ''}\u0000${linkSerial ?? ''}`;
   const { showPlatformTags } = useSettings();
   const { toast } = useToast();
   const [data, setData] = useState<DeviceDetailData | null>(null);
@@ -716,19 +726,20 @@ export default function DeviceDetail() {
 
   useEffect(() => {
     let live = true;
-    void getDeviceDetail(name).then((d) => {
+    setData(null);
+    void getDeviceDetail(name, { plane: linkPlane, serial: linkSerial }).then((d) => {
       if (live) setData(d);
     });
     return () => {
       live = false;
     };
-  }, [name]);
+  }, [name, linkPlane, linkSerial]);
 
   // Config tab and locally-snapshotted rows are per-device state.
   useEffect(() => {
     setCfgTab('running');
     setExtraHistory([]);
-  }, [name]);
+  }, [routeIdentity]);
 
   const kind = data?.profile?.kind ?? 'sw';
   // The route computes the shell banner and the quick-command chips for the
@@ -771,7 +782,7 @@ export default function DeviceDetail() {
     setSessions([]);
     setSessionsError(null);
     transcriptReq.current = null;
-    void getTerminalSessions(name)
+    void getTerminalSessions(name, { plane: linkPlane, serial: linkSerial })
       .then((s) => {
         if (live) setSessions(s);
       })
@@ -781,10 +792,10 @@ export default function DeviceDetail() {
     return () => {
       live = false;
     };
-  }, [name, sessionsRefresh]);
+  }, [name, sessionsRefresh, linkPlane, linkSerial]);
 
   // Shell-capable devices get a shot at the real recorded-SSH bridge
-  // (web/src/lib/wsTerminal.ts → /api/terminal/:name). On any failure the
+  // (web/src/lib/wsTerminal.ts → /api/terminal/:name?plane=&serial=). On any failure the
   // canned transport below renders exactly as before — the fallback is the
   // demo path, untouched.
   useEffect(() => {
@@ -805,7 +816,10 @@ export default function DeviceDetail() {
     }
     let live = true;
     setTerminalState('connecting');
-    const session = createWsTransport(name, {
+    const session = createWsTransport(
+      data.device?.name ?? name,
+      data.device?.serial ? { plane: data.device.plane, serial: data.device.serial } : {},
+      {
       onPrompt: (prompt) => {
         if (live) setLivePrompt(prompt);
       },
@@ -818,7 +832,8 @@ export default function DeviceDetail() {
         setTerminalState('disconnected');
         setSessionsRefresh((n) => n + 1);
       },
-    });
+      },
+    );
     void session.connect().then((ok) => {
       if (!live) return;
       if (ok) {
@@ -849,7 +864,7 @@ export default function DeviceDetail() {
     }
     transcriptReq.current = file;
     setSessionsError(null);
-    void getTerminalSession(file)
+    void getTerminalSession(file, name, { plane: linkPlane, serial: linkSerial })
       .then((t) => {
         if (t && transcriptReq.current === file) setExpanded(t);
       })
@@ -866,6 +881,15 @@ export default function DeviceDetail() {
   const [rebootTickets, setRebootTickets] = useState<TicketRow[]>([]);
   const [rebootTicket, setRebootTicket] = useState('');
   const [rebooting, setRebooting] = useState(false);
+  const actionGeneration = useRef(0);
+
+  useEffect(() => {
+    actionGeneration.current += 1;
+    setRebootOpen(false);
+    setRebootTickets([]);
+    setRebootTicket('');
+    setRebooting(false);
+  }, [routeIdentity]);
 
   // Ticket options load when the drawer opens; open tickets first.
   useEffect(() => {
@@ -933,8 +957,20 @@ export default function DeviceDetail() {
       });
       return;
     }
+    if (!device) {
+      toast('Device identity is no longer available — reload the device before rebooting', {
+        tone: 'danger',
+      });
+      return;
+    }
+    const generation = actionGeneration.current;
     setRebooting(true);
-    const res = await rebootDevice(name, rebootTicket);
+    const res = await rebootDevice(
+      device.name,
+      rebootTicket,
+      device.serial ? { plane: device.plane, serial: device.serial } : {},
+    );
+    if (generation !== actionGeneration.current) return;
     setRebooting(false);
     if (!res.ok) {
       toast(res.message, { tone: 'danger' });
@@ -1339,6 +1375,11 @@ export default function DeviceDetail() {
                 <PortsPanel key={section} detail={liveDetail} plane={detailPlane} />
               ),
             )}
+
+            <div>
+              <SectionHeader label="Active diagnostics" meta="NEW CENTRAL · REVIEWED" />
+              <DiagnosticsPanel deviceName={device.name} plane={device.plane} serial={device.serial ?? null} />
+            </div>
 
             <div>
               <SectionHeader label="Clients on this device" meta={clients?.meta} />

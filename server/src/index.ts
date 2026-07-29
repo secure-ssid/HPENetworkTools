@@ -16,10 +16,14 @@ import { chatRouter } from './routes/chat';
 import { alertsRouter } from './routes/alerts';
 import { clientsRouter } from './routes/clients';
 import { configureRouter } from './routes/configure';
+import { centralWebhooksRouter } from './routes/centralWebhooks';
 import { devicesRouter } from './routes/devices';
+import { diagnosticsRouter } from './routes/diagnostics';
 import { screensRouter } from './routes/screens';
 import { settingsRouter } from './routes/settings';
+import { sseRouter } from './routes/sse';
 import { systemsRouter } from './routes/systems';
+import { SsidDirectWriteError } from './services/ssidDirectWrite';
 
 export function createApp(): express.Express {
   const app = express();
@@ -39,28 +43,69 @@ export function createApp(): express.Express {
     res.json({ ok: true });
   });
 
-  // Recorded shell sessions (data/shell-logs) — optional ?device=<name> filter.
+  // Recorded shell sessions (data/shell-logs) — optional ?device=<name> filter,
+  // itself narrowed by ?plane=&serial= to one physical device when the name
+  // is shared. Without a device filter this is an unscoped admin dump (no
+  // display name to disambiguate); with one, terminalManager.listSessionsForDevice
+  // is the single place that decides which recordings a shared name may see
+  // (see server/src/services/terminal.ts).
   app.get('/api/terminal/sessions', (req, res) => {
     const device = typeof req.query.device === 'string' ? req.query.device : null;
-    const sessions = terminalManager.listSessions().filter((s) => !device || s.device === device);
-    res.json({ sessions });
+    if (!device) {
+      res.json({ sessions: terminalManager.listSessions() });
+      return;
+    }
+    const identity = {
+      plane: typeof req.query.plane === 'string' ? req.query.plane : undefined,
+      serial: typeof req.query.serial === 'string' ? req.query.serial : undefined,
+    };
+    const result = terminalManager.listSessionsForDevice(device, identity);
+    if (result.invalid) {
+      res.status(400).json({ error: result.invalid });
+      return;
+    }
+    res.json({ sessions: result.sessions, ambiguous: result.ambiguous });
   });
 
+  // A transcript is gated by the same device+identity rule as the listing
+  // above — ?device=<name> is required so a caller that only knows a file
+  // name (which carries no secret, but does carry another device's shell
+  // output) cannot read a recording that does not belong to it.
   app.get('/api/terminal/sessions/:file', (req, res) => {
-    const transcript = terminalManager.readSession(req.params.file);
-    if (!transcript) {
+    const device = typeof req.query.device === 'string' ? req.query.device : null;
+    if (!device) {
+      res.status(400).json({ error: 'device is required to read a recorded session' });
+      return;
+    }
+    const identity = {
+      plane: typeof req.query.plane === 'string' ? req.query.plane : undefined,
+      serial: typeof req.query.serial === 'string' ? req.query.serial : undefined,
+    };
+    const result = terminalManager.readSessionForDevice(req.params.file, device, identity);
+    if (result.invalid) {
+      res.status(400).json({ error: result.invalid });
+      return;
+    }
+    if (result.ambiguous) {
+      res.status(409).json({ error: `'${device}' names multiple devices — pass plane and serial to pick one` });
+      return;
+    }
+    if (!result.transcript) {
       res.status(404).json({ error: 'unknown session recording' });
       return;
     }
-    res.json(transcript);
+    res.json(result.transcript);
   });
 
   app.use('/api', screensRouter);
   app.use('/api', settingsRouter);
   app.use('/api', systemsRouter);
+  app.use('/api', sseRouter);
   app.use('/api', chatRouter);
   app.use('/api', configureRouter);
+  app.use('/api', centralWebhooksRouter);
   app.use('/api', devicesRouter);
+  app.use('/api', diagnosticsRouter);
   app.use('/api', clientsRouter);
   app.use('/api', alertsRouter);
 
@@ -80,11 +125,20 @@ export function createApp(): express.Express {
 
   // Consistent { error } JSON for anything thrown in a handler. 5xx detail
   // (fs paths, upstream URLs, …) stays in the server log, never in responses.
+  //
+  // SsidDirectWriteError is the one 5xx exception: its 502 "central did not
+  // answer the SSID write; the outcome is unknown" is a fixed, secret-free
+  // constant the class always throws verbatim (never an interpolated
+  // upstream message), so surfacing err.message for it is safe and useful —
+  // the caller needs to know the outcome is unknown, not just "internal
+  // error". Every other 5xx (arbitrary thrown errors, unexpected faults)
+  // still collapses to the generic message so raw upstream detail never leaks.
   app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
     console.error(`error: ${err.message}`);
     if (res.headersSent) return;
     const status = err.status ?? 500;
-    res.status(status).json({ error: status >= 500 ? 'internal error' : err.message || 'internal error' });
+    const safe5xxMessage = err instanceof SsidDirectWriteError ? err.message : undefined;
+    res.status(status).json({ error: status >= 500 ? (safe5xxMessage ?? 'internal error') : err.message || 'internal error' });
   });
 
   return app;

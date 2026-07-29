@@ -1,13 +1,12 @@
 /**
  * web/src/screens/SiteTopology.tsx — the site's layered wiring diagram.
  *
- * Renders a shared SiteTopology (buildSiteTopology — recorded chain + AP
- * uplinks + the profile's device rows) as HTML node cards over a hairline
- * SVG edge layer. Layers run WAN side on top → edge at the bottom; nodes
- * spread evenly across the full width so the diagram breathes on wide
- * screens. APs open collapsed into one chip per parent switch (worst member
- * tone rolled up); clicking a chip swaps it for its member cards in place,
- * edges fanning out to each. Device cards click through to Device detail.
+ * Renders a shared SiteTopology as HTML node cards over a hairline SVG edge
+ * layer. The view model may come from buildSiteTopology (recorded profile
+ * wiring) or buildLiveSiteTopology (a plane's raw physical graph). Layers run
+ * WAN side on top → edge at the bottom; nodes spread evenly across the full
+ * width, with dense live layers scrolling rather than overlapping. Recorded
+ * AP groups open in place. Device cards click through to Device detail.
  *
  * Text stays in HTML (crisp at any width); only the hairlines are SVG, with
  * non-scaling stroke so they stay 1px under preserveAspectRatio="none".
@@ -16,10 +15,21 @@
  */
 
 import { useMemo, useState } from 'react';
-import type { SiteTopology, Tone, TopologyLayerKey, TopologyNode } from '../../../shared';
+import type {
+  SiteDeviceRow,
+  SiteTopology,
+  SiteTopologyLive,
+  Tone,
+  TopologyDeviceNode,
+  TopologyLayerKey,
+  TopologyLink,
+  TopologyNode,
+} from '../../../shared';
 
 const ROW_H = 96;
 const CARD_H = 56;
+
+const LAYER_ORDER: TopologyLayerKey[] = ['wan', 'gateway', 'core', 'access', 'edge'];
 
 const LAYER_LABEL: Record<TopologyLayerKey, string> = {
   wan: 'WAN',
@@ -38,6 +48,114 @@ const DOT: Partial<Record<Tone, string>> = {
   accent: 'var(--nd-accent)',
   info: 'var(--nd-info, var(--nd-border-strong))',
 };
+
+function liveTone(node: TopologyDeviceNode): Tone {
+  const status = node.status.toUpperCase();
+  if (status === 'OFFLINE' || status === 'DOWN') return 'danger';
+  const health = (node.health ?? '').toLowerCase();
+  if (health === 'poor' || health === 'bad') return 'danger';
+  if (health === 'fair') return 'warning';
+  if (health === 'good') return 'success';
+  return 'neutral';
+}
+
+function formatBps(bps: number | null): string | null {
+  if (typeof bps !== 'number' || !Number.isFinite(bps) || bps <= 0) return null;
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(1)} Gbps`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mbps`;
+  if (bps >= 1e3) return `${Math.round(bps / 1e3)} kbps`;
+  return `${Math.round(bps)} bps`;
+}
+
+/** Port-to-port wording for an undirected physical link. */
+export function liveTopologyLinkFact(link: TopologyLink, forward = true): string {
+  const near = (forward ? link.fromPorts : link.toPorts).map((p) => p.name).filter(Boolean);
+  const far = (forward ? link.toPorts : link.fromPorts).map((p) => p.name).filter(Boolean);
+  return [
+    near.length || far.length ? `${near.join('+') || '?'} ↔ ${far.join('+') || '?'}` : null,
+    formatBps(link.speedBps),
+    link.health && link.health.toLowerCase() !== 'good'
+      ? `link ${link.health.toLowerCase()}`
+      : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(' · ');
+}
+
+/**
+ * Convert a plane's raw, undirected graph into the existing diagram view
+ * model. Layers are layout only: links keep ↔ wording and the note explicitly
+ * refuses to infer traffic direction or internet routing.
+ */
+export function buildLiveSiteTopology(
+  topology: SiteTopologyLive,
+  devices: SiteDeviceRow[] = [],
+): SiteTopology {
+  const rawNodes = topology.nodes ?? [];
+  const managedNames = new Set(devices.map((device) => device.name));
+  const degree = new Map<string, number>();
+  for (const link of topology.links ?? []) {
+    degree.set(link.from, (degree.get(link.from) ?? 0) + 1);
+    degree.set(link.to, (degree.get(link.to) ?? 0) + 1);
+  }
+  const switches = rawNodes.filter((node) => /switch/i.test(`${node.type} ${node.deviceFunction}`));
+  const hubSerial =
+    switches
+      .slice()
+      .sort(
+        (a, b) =>
+          (degree.get(b.serial) ?? 0) - (degree.get(a.serial) ?? 0) ||
+          a.name.localeCompare(b.name),
+      )[0]?.serial ?? null;
+
+  const layerFor = (node: TopologyDeviceNode): TopologyLayerKey => {
+    const kind = `${node.type} ${node.deviceFunction}`;
+    if (/gateway|router|wan/i.test(kind)) return 'gateway';
+    if (node.serial === hubSerial) return 'core';
+    if (/switch/i.test(kind)) return 'access';
+    return 'edge';
+  };
+  const nodeBySerial = new Map(rawNodes.map((node) => [node.serial, node]));
+  const layerBySerial = new Map(rawNodes.map((node) => [node.serial, layerFor(node)]));
+  const nodes: TopologyNode[] = rawNodes.map((node) => {
+    const details = [
+      node.model,
+      node.deviceFunction && node.deviceFunction !== '-' ? node.deviceFunction.toLowerCase() : null,
+      node.type.toLowerCase() === 'unmanaged' ? 'unmanaged neighbor' : null,
+    ].filter((part): part is string => Boolean(part));
+    return {
+      id: `live:${node.serial}`,
+      layer: layerFor(node),
+      label: node.name,
+      sub: details.join(' · ') || node.type.toLowerCase(),
+      state: node.status.toLowerCase(),
+      tone: liveTone(node),
+      device: managedNames.has(node.name) ? node.name : null,
+      members: null,
+    };
+  });
+  const edges = (topology.links ?? []).flatMap((link) => {
+    if (!nodeBySerial.has(link.from) || !nodeBySerial.has(link.to)) return [];
+    const fromLayer = layerBySerial.get(link.from) as TopologyLayerKey;
+    const toLayer = layerBySerial.get(link.to) as TopologyLayerKey;
+    const forward = LAYER_ORDER.indexOf(fromLayer) <= LAYER_ORDER.indexOf(toLayer);
+    return [
+      {
+        from: `live:${forward ? link.from : link.to}`,
+        to: `live:${forward ? link.to : link.from}`,
+        label: liveTopologyLinkFact(link, forward),
+      },
+    ];
+  });
+  const layers = LAYER_ORDER.filter((layer) => nodes.some((node) => node.layer === layer));
+  const plane = topology.source.plane.toUpperCase();
+  return {
+    layers,
+    nodes,
+    edges,
+    note: `${plane} reports these links as physical adjacency, not traffic direction or internet routing. No Internet hop is inferred, and unmanaged neighbors keep the names the plane supplied.`,
+  };
+}
 
 interface Placed {
   node: TopologyNode;
@@ -178,6 +296,11 @@ export function SiteTopologyDiagram({
   }, [topology, expanded]);
 
   const height = topology.layers.length * ROW_H + 8;
+  const layerCounts = new Map<number, number>();
+  for (const item of placed) {
+    layerCounts.set(item.layerIdx, (layerCounts.get(item.layerIdx) ?? 0) + 1);
+  }
+  const diagramMinWidth = Math.max(640, Math.max(1, ...layerCounts.values()) * 184);
 
   // Edge endpoints: a group target fans out to member cards when expanded.
   const targetsFor = (id: string): Placed[] => {
@@ -191,7 +314,7 @@ export function SiteTopologyDiagram({
   };
 
   return (
-    <div style={{ display: 'flex', gap: 12 }}>
+    <div style={{ display: 'flex', gap: 12, overflowX: 'auto' }}>
       {/* layer micro-labels */}
       <div style={{ width: 64, flex: '0 0 64px', position: 'relative', height }}>
         {topology.layers.map((layer, i) => (
@@ -213,7 +336,7 @@ export function SiteTopologyDiagram({
       </div>
 
       {/* diagram area */}
-      <div style={{ position: 'relative', flex: 1, minWidth: 0, height }}>
+      <div style={{ position: 'relative', flex: '1 0 auto', minWidth: diagramMinWidth, height }}>
         <svg
           aria-hidden
           width="100%"

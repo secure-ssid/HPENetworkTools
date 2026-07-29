@@ -38,6 +38,7 @@ export type Plane =
   | 'LOCAL'
   | 'CLEARPASS'
   | 'UXI'
+  | 'SSE'
   | 'THIRD-PARTY';
 
 export type Sev = 'P1' | 'P2' | 'P3';
@@ -358,6 +359,9 @@ export interface PortObject {
   kind: 'port';
   origin?: 'configured' | 'observed';
   device: string;
+  /** Immutable inventory identity when the row can be joined unambiguously. */
+  plane?: Plane;
+  serial?: string;
   port: string;
   desc: string;
   summary: string;
@@ -430,16 +434,39 @@ export interface SsidForm {
   name: string;
   vlan: string;
   security: SsidSecurity;
+  /** Legacy free-text target (CLI preview only — see the demo `ap-group`
+   *  template in shared/logic.ts ssidPreview). The direct Central apply path
+   *  NEVER reads this field; it targets `scopeIds` instead. Kept only so the
+   *  CLI-flavoured preview/blast-radius renderers stay byte-identical for
+   *  demo mode and existing tests. */
   group: string;
   bands: SsidBands;
   broadcast: boolean;
   isolate: boolean;
   noDfs: boolean;
   plane: string; // display label of the owning plane(s), drives preview meta
+  // -- direct New Central apply (immutable plane-native ids, never free text) --
+  /** Selected scope-map targets — SsidScopeOption.id values (a site, a site
+   *  collection, an AP device group, or one AP). Required, non-empty, before
+   *  a direct apply can run. */
+  scopeIds?: string[];
+  /** The role assigned on this WLAN (New Central `default-role`). Required by
+   *  every security mode per the editor's live dependency catalog. */
+  defaultRole?: string;
+  /** Authentication server-group id — required for WPA2/WPA3 Enterprise. */
+  authServerGroupId?: string;
+  /** Captive-portal profile id — required for psk-portal. */
+  captivePortalProfileId?: string;
+  /** PSK passphrase — required for wpa2-psk / psk-portal. Write-only: never
+   *  returned by a catalog/apply response, never logged, never audited. */
+  passphrase?: string;
 }
 
 export interface PortForm {
   device: string;
+  /** Exact device identity. Legacy name-only forms are accepted only uniquely. */
+  plane?: Plane;
+  serial?: string;
   id: string; // interface id, e.g. '1/1/14'
   desc: string;
   mode: 'access' | 'trunk';
@@ -464,6 +491,114 @@ export type ConfigForm = SsidForm | PortForm | VlanForm;
 export interface BlastRadiusRow {
   what: string;
   count: string;
+}
+
+// ---------------------------------------------------------------------------
+// SSID direct-write catalog & apply — New Central network-config v1alpha1.
+//
+// SSIDs no longer go through the ticketed write broker's queue/push: New
+// Central's real config surface is a named WLAN profile upsert
+// (/network-config/v1alpha1/wlan-ssids/{ssid}) plus separate configuration
+// assignments (/network-config/v1alpha1/config-assignments), reviewed and
+// applied directly. These
+// types are the editor's catalog (what CAN be picked, read live from Central,
+// never guessed) and the apply outcome (what happened, reported per step).
+// ---------------------------------------------------------------------------
+
+/** Category of an SSID assignment target — the New Central config scope
+ *  model's four selectable kinds. `id` is the immutable plane-native scope
+ *  id used in a config-assignment; a free-text group name is never one. */
+export type SsidScopeCategory = 'site' | 'site-collection' | 'ap-group' | 'ap';
+
+/** One selectable scope target. */
+export interface SsidScopeOption {
+  id: string;
+  label: string;
+  category: SsidScopeCategory;
+}
+
+/** One selectable security dependency (role, authentication server group,
+ *  captive-portal profile) — an immutable plane-native id, not a label. */
+export interface SsidDependencyOption {
+  id: string;
+  label: string;
+}
+
+/** The catalog sections the SSID editor needs and might not get. Naming
+ *  matches SsidCatalog's own field names so the screen can say precisely
+ *  what this tenant/gateway did not answer, instead of a generic
+ *  "catalog unavailable". */
+export type SsidCatalogSection =
+  | 'sites'
+  | 'site-collections'
+  | 'ap-groups'
+  | 'aps'
+  | 'roles'
+  | 'authServerGroups'
+  | 'captivePortalProfiles';
+
+/**
+ * Everything the SSID editor needs to render live scope/dependency pickers,
+ * read from New Central's own config APIs — never guessed. A section this
+ * tenant/gateway could not answer is named in `unavailable`, not silently
+ * emptied: an adapter that cannot read authentication server groups says so,
+ * rather than
+ * implying the tenant simply has none, and the screen disables Apply for a
+ * security mode that needs a section named here.
+ */
+export interface SsidCatalog {
+  scopes: SsidScopeOption[];
+  roles: SsidDependencyOption[];
+  authServerGroups: SsidDependencyOption[];
+  captivePortalProfiles: SsidDependencyOption[];
+  unavailable: SsidCatalogSection[];
+  source: string; // free-text provenance, e.g. 'Central /network-config/v1alpha1 · 6/7 sections'
+}
+
+/** What a security mode requires before Apply can be enabled — computed from
+ *  SsidSecurity alone (see shared/logic.ts ssidDependencyRequirementsFor). */
+export interface SsidDependencyRequirement {
+  role: boolean;
+  authServerGroup: boolean;
+  captivePortal: boolean;
+  passphrase: boolean;
+}
+
+/** One step of a direct SSID apply. `ok` is true ONLY on a confirmed 2xx/
+ *  verified outcome — never assumed. */
+export interface SsidApplyStep {
+  ok: boolean;
+  httpCode?: number;
+  message: string;
+}
+
+/** The profile half of a direct apply — GET/POST-or-PATCH/verify collapsed
+ *  into one reported action. */
+export interface SsidProfileStepResult extends SsidApplyStep {
+  action: 'created' | 'updated' | 'unchanged' | 'failed';
+  verified: boolean;
+}
+
+/** One configuration-assignment outcome. `skipped` means it was already on file
+ *  (idempotent no-op) — still ok:true, just not a new write. */
+export interface SsidScopeAssignmentResult extends SsidApplyStep {
+  scopeId: string;
+  label: string;
+  skipped?: boolean;
+}
+
+/**
+ * The full direct-apply outcome. `ok` is true only when the profile step AND
+ * every assignment succeeded; a profile success with any assignment failure
+ * is `partial`, never `ok` — a successfully created/updated profile is NEVER
+ * rolled back automatically just because a later assignment failed (see
+ * server/src/services/ssidDirectWrite.ts).
+ */
+export interface SsidApplyResult {
+  ok: boolean;
+  partial: boolean;
+  profile: SsidProfileStepResult;
+  assignments: SsidScopeAssignmentResult[];
 }
 
 // ---------------------------------------------------------------------------
@@ -709,6 +844,12 @@ export interface SiteDeviceRow {
   state: string;
   stateTone: Tone;
   uptime: string;
+  /** Identity hint carried straight from the reconciled row so the site
+   *  device table's "open" link can name the exact physical device — two
+   *  rows can share `name` after reconciliation (see DeviceIdentityHints in
+   *  services/reconcile.ts). Absent on the authored fixtures, which carry
+   *  none. */
+  serial?: string;
 }
 
 export interface SiteAlertRow {
@@ -1092,7 +1233,16 @@ export interface PermissionRow {
 }
 
 /** Connect-a-system type keys (NtSystems state.newType). */
-export type SystemTypeKey = 'central' | 'mist' | 'classic' | 'greenlake' | 'aos8' | 'local' | 'clearpass' | 'uxi';
+export type SystemTypeKey =
+  | 'central'
+  | 'mist'
+  | 'classic'
+  | 'greenlake'
+  | 'aos8'
+  | 'local'
+  | 'clearpass'
+  | 'uxi'
+  | 'sse';
 
 /** Type-dependent endpoint field for the connect form. */
 export interface EndpointVariant {
@@ -1167,6 +1317,7 @@ export const PLANE_DATASET_KEYS = [
   'subscriptions',
   'config',
   'assignments',
+  'sse',
 ] as const;
 export type PlaneDatasetKey = (typeof PLANE_DATASET_KEYS)[number];
 
@@ -1243,6 +1394,254 @@ export type WriteMode = 'brokered' | 'ssh' | 'read only';
 
 /** Granted scope on a plane — the same vocabulary as System.scope. */
 export type PlaneScope = 'read only' | 'read + broker' | 'read + ssh';
+
+// ---------------------------------------------------------------------------
+// HPE Aruba Networking SSE (formerly Axis Security / Atmos) — object
+// inventory, mutation and commit contracts.
+//
+// The SSE Admin API (verified against the official `pyhpesse` SDK source,
+// aruba/pyhpesse pyhpesse/adminapi.py) is a paged object-management API, not
+// a network-monitoring one: there are no devices/clients/alerts, only a
+// handful of writable resource collections that back its own console. The
+// portal manages nine of them; WebCategories, SslExclusions, ApplicationGroups
+// and SubLocations are read by nobody here and stay out of this union so a
+// route can never be asked to touch a resource this file does not name.
+// ---------------------------------------------------------------------------
+
+/** Object kinds the portal manages on the SSE plane. `applications` is the
+ *  NetworkRange application shape only (the SDK's other application types are
+ *  not selected). `locations`, `tunnels` and `applications` are documented by
+ *  the vendor as limited-release surfaces — a 404 on them is "not entitled
+ *  for this tenant", never "this tenant has none". */
+export const SSE_OBJECT_KINDS = [
+  'connectorZones',
+  'connectors',
+  'locations',
+  'tunnels',
+  'applications',
+  'users',
+  'groups',
+  'customIpCategories',
+  'ipFeedCategories',
+] as const;
+export type SseObjectKind = (typeof SSE_OBJECT_KINDS)[number];
+
+/** Display labels for the inventory browser's grouped/searchable list. */
+export const SSE_OBJECT_KIND_LABELS: Record<SseObjectKind, string> = {
+  connectorZones: 'Connector zones',
+  connectors: 'Connectors',
+  locations: 'Locations',
+  tunnels: 'Tunnels',
+  applications: 'Applications (network range)',
+  users: 'Users',
+  groups: 'Groups',
+  customIpCategories: 'Custom IP categories',
+  ipFeedCategories: 'IP-feed categories',
+};
+
+/** Limited-release kinds — a 404 reads as "not entitled on this tenant" in the
+ *  UI, not as an empty state (README honesty rule 1). */
+export const SSE_LIMITED_RELEASE_KINDS: readonly SseObjectKind[] = ['locations', 'tunnels', 'applications'];
+
+/**
+ * One row in an SSE object list — the fields common enough across all nine
+ * kinds to render one searchable grouped table without per-kind columns.
+ * `raw` carries the vendor object verbatim (never a secret: SSH private keys
+ * on a `users` row are stripped before this leaves the adapter) so the detail
+ * / edit drawer has the kind-specific fields the SDK body shapes need.
+ */
+export interface SseObjectSummary {
+  kind: SseObjectKind;
+  id: string;
+  name: string;
+  description?: string;
+  enabled?: boolean;
+  /** True when the vendor marks this row as built-in/system-defined. The UI
+   *  must not offer edit/delete for it even though the kind itself is
+   *  otherwise writable — never fabricate a control the plane cannot honour. */
+  builtIn?: boolean;
+  /** Free-text secondary fact for the list row (a connector's zone, a
+   *  tunnel's location, a user's email — whatever that kind's SDK body makes
+   *  the second most useful field). */
+  detail?: string;
+  /** The vendor object, secrets stripped. The edit drawer's initial values. */
+  raw: Record<string, unknown>;
+}
+
+/** One SSE object kind's slice of the inventory. */
+export interface SseObjectKindResult {
+  rows: SseObjectSummary[];
+  /** Total the API reports, when knowable; null when a full page could not
+   *  prove the repository size (mirrors ClearPass's extractTotal — a full
+   *  page whose only count describes itself proves nothing about the rest). */
+  total: number | null;
+  /** True when the per-kind row cap truncated the walk — a partial list, not
+   *  the entire repository, so the UI can say so instead of implying nine
+   *  kinds were read in full every poll. */
+  truncated: boolean;
+}
+
+/** Secret-free outcome of reading one SSE inventory kind. */
+export type SseKindReadFailureReason =
+  | 'denied'
+  | 'unsupported'
+  | 'service-error'
+  | 'unreachable'
+  | 'invalid-response'
+  | 'not-synced';
+
+export type SseKindReadStatus =
+  | { state: 'ok' }
+  | {
+      state: 'failed';
+      reason: SseKindReadFailureReason;
+      httpCode: number | null;
+      /** Operator-safe explanation only: never a response body, URL, or token. */
+      message: string;
+    };
+
+/** The SSE plane's whole object inventory — one PlanePull.sse per pull(). */
+export interface SseInventory {
+  /** Absent key = never attempted. Present key = attempted; see `unavailable`
+   *  for whether it actually answered. */
+  kinds: Partial<Record<SseObjectKind, SseObjectKindResult>>;
+  /** Kinds the token could not read (401/403 — scope denies it; 404 on a
+   *  limited-release kind — not entitled) — unavailable, never reported as an
+   *  authoritative empty list. */
+  unavailable: SseObjectKind[];
+  /** Per-kind read outcome. Optional only for compatibility with an older
+   * cached/first-sync-pending inventory; current pulls populate every kind. */
+  readStatus?: Partial<Record<SseObjectKind, SseKindReadStatus>>;
+  /** Free-text provenance for the honesty note, e.g.
+   *  'admin-api.axissecurity.com · 7 of 9 object kinds read'. */
+  source: string;
+}
+
+/** create/update/delete — the three SSE mutation actions the review dialog
+ *  and the allowlisted server routes support. */
+export type SseMutationAction = 'create' | 'update' | 'delete';
+
+/** A validated write against one SSE object — the server route's typed input
+ *  after allowlist + required-field validation. NEVER an arbitrary path: the
+ *  route resolves `kind` through the same SSE_OBJECT_KINDS-keyed lookup table
+ *  the adapter uses for reads. */
+export interface SseMutationRequest {
+  kind: SseObjectKind;
+  action: SseMutationAction;
+  id?: string; // required for update/delete
+  fields?: Record<string, unknown>; // required for create/update
+  /** The direct-write review gate (ssidDirectWrite.ts's pattern) — must be
+   *  exactly `true`, standing in for a ticket reference this plane has none of. */
+  reviewConfirmed?: boolean;
+}
+
+/** Explicit input for removing an ambiguous, non-commit-eligible journal
+ * after the operator has reconciled the tenant in the SSE admin console. */
+export interface SseManualCleanupRequest {
+  /** General reviewed-write gate; must be exactly true. */
+  reviewConfirmed?: boolean;
+  /** Separate attestation that manual tenant reconciliation is complete. */
+  manualReconciled?: boolean;
+}
+
+/** Outcome of the mutation call itself, BEFORE any commit is attempted. */
+export interface SseMutationOutcome {
+  ok: boolean;
+  httpCode: number | null;
+  id?: string;
+  message: string;
+  /** Whether the plane definitely accepted/rejected the request, or the
+   * transport failed after acceptance became unknowable. */
+  acceptance?: 'accepted' | 'rejected' | 'unknown';
+}
+
+/** Outcome of the mandatory POST /Commit that follows a successful mutation.
+ *  `attempted: false` means the mutation itself failed, so no commit was even
+ *  tried — replaying a commit for a change that never landed would be a lie. */
+export interface SseCommitOutcome {
+  attempted: boolean;
+  ok: boolean;
+  httpCode: number | null;
+  message: string;
+  /** A transport failure is `unknown`, never a definite rejection. */
+  acceptance?: 'accepted' | 'rejected' | 'unknown' | 'not-attempted';
+  /** Present whenever a commit was actually attempted — SSE's /Commit
+   *  endpoint is TENANT-WIDE: it applies every currently staged change on the
+   *  tenant, not only the one mutation that triggered this call. The UI must
+   *  surface this every time, not just imply "your change committed". */
+  warning?: string;
+}
+
+/**
+ * Whether the poller's cached inventory was actually refreshed after a
+ * mutation/commit-retry so the UI never silently keeps presenting the
+ * last-good (now stale) inventory as if it were current.
+ *   'refreshed' — poller.syncNowFor('sse') ran and returned 'ok'.
+ *   'stale'     — a refresh was attempted but did not complete (the poll
+ *                 returned 'error'/'skipped', or threw) — the cache may still
+ *                 reflect the pre-change state until the next scheduled sync.
+ *   'skipped'   — no refresh was attempted at all (nothing changed to refresh
+ *                 for, e.g. the mutation itself failed).
+ */
+export interface SseCacheRefreshOutcome {
+  attempted: boolean;
+  status: 'refreshed' | 'stale' | 'skipped';
+  message: string;
+}
+
+/**
+ * The full result an SSE mutation route returns. Mutation and commit are
+ * reported SEPARATELY. `staged: true` is reserved for the provable case where
+ * the mutation succeeded and Commit definitely rejected/non-2xx, which is
+ * the only state eligible for commit-only retry. Transport-unknown outcomes
+ * use `outcome: 'unknown'` with `staged: false` and require manual
+ * reconciliation. `cacheRefresh` reports whether the just-mutated state is
+ * actually visible in the cached inventory yet.
+ */
+export interface SseMutationResult {
+  mutation: SseMutationOutcome;
+  commit: SseCommitOutcome;
+  staged: boolean;
+  /** Explicit aggregate state; `unknown` means durable recovery is required. */
+  outcome?: 'applied' | 'unverified' | 'staged' | 'unknown' | 'rejected';
+  cacheRefresh: SseCacheRefreshOutcome;
+}
+
+/** Commit-only retry's result — never replays the original mutation, so
+ *  there is no `mutation` outcome to report, only the commit attempt and
+ *  whether the cache now reflects it. */
+export interface SseCommitRetryResult {
+  commit: SseCommitOutcome;
+  cacheRefresh: SseCacheRefreshOutcome;
+  /** Commit acceptance alone never proves the journaled object mutation. */
+  recovery?: SseRecoveryOutcome;
+}
+
+/** Machine-readable journal recovery result shared by retry and cleanup. */
+export interface SseRecoveryOutcome {
+  journalPhase: string;
+  /** Machine-readable route taken by reviewed recovery. */
+  action:
+    | 'commit-retry'
+    | 'refresh-and-cleanup'
+    | 'cleanup-only'
+    | 'manual-reconciliation'
+    | 'manual-cleanup';
+  /** Durable journal disposition when the recovery path reports one. */
+  status?: 'journal-removed' | 'journal-retained';
+  mutationVerified: boolean;
+  message: string;
+}
+
+/** Cleanup-only result for an operator-reconciled ambiguous journal. */
+export interface SseManualCleanupResult {
+  commit: SseCommitOutcome;
+  cacheRefresh: SseCacheRefreshOutcome;
+  recovery: SseRecoveryOutcome & {
+    action: 'manual-cleanup';
+    status: 'journal-removed' | 'journal-retained';
+  };
+}
 
 // ---------------------------------------------------------------------------
 // On-demand plane DETAIL reads (per-object). NOT poller datasets.
@@ -1707,4 +2106,132 @@ export interface SiteTopologyLive {
   isolatedDevicesCount?: number | null;
   isolatedHealth?: string | null;
   source: DetailSource<SiteTopologySection>;
+}
+
+// ---------------------------------------------------------------------------
+// Reviewed active diagnostics (New Central network-troubleshooting v1)
+// ---------------------------------------------------------------------------
+
+export type DiagnosticOperation = 'traceroute';
+export type DiagnosticDeviceClass = 'ap' | 'cx';
+export type DiagnosticJobState =
+  | 'starting'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'timed_out'
+  /** Operator-facing portal polling stopped; the upstream Central task was not cancelled. */
+  | 'cancelled';
+
+export interface DiagnosticEligibleDevice {
+  name: string;
+  serial: string | null;
+  plane: Plane;
+  type: DeviceType;
+  model: string;
+  deviceClass: DiagnosticDeviceClass | null;
+  eligible: boolean;
+  reason: string;
+}
+
+export interface DiagnosticEligibilityResponse {
+  devices: DiagnosticEligibleDevice[];
+  operation: DiagnosticOperation;
+  source: 'live-inventory';
+}
+
+export interface DiagnosticTracerouteOptions {
+  /** AP-only, documented by TracerouteApRequest. */
+  sourceInterface?: string;
+  /** CX-only, documented by TracerouteCxRequest. */
+  useIpv6?: boolean;
+  useManagementInterface?: boolean;
+  vrfName?: string;
+}
+
+export interface DiagnosticReviewRequest {
+  /** Exact live-inventory identity. Display names are not identifiers. */
+  plane: Plane;
+  serial: string;
+  operation: DiagnosticOperation;
+  target: string;
+  options?: DiagnosticTracerouteOptions;
+}
+
+export interface DiagnosticReview {
+  reviewId: string;
+  expiresAt: string;
+  device: string;
+  serial: string;
+  plane: Plane;
+  deviceClass: DiagnosticDeviceClass;
+  operation: DiagnosticOperation;
+  target: string;
+  options: DiagnosticTracerouteOptions;
+  startPath: string;
+  pollPathTemplate: string;
+  warning: string;
+}
+
+export interface DiagnosticStartRequest {
+  reviewId: string;
+  confirmed: true;
+  plane: Plane;
+  serial: string;
+}
+
+export interface DiagnosticProbe {
+  ipAddress: string | null;
+  reverseDnsResolution: string | null;
+  responseTimeMilliseconds: string | null;
+}
+
+export interface DiagnosticHop {
+  hop: string;
+  probes: DiagnosticProbe[];
+}
+
+export interface DiagnosticResult {
+  device: string;
+  serial: string;
+  plane: Plane;
+  destination: string | null;
+  resolvedIp: string | null;
+  hops: DiagnosticHop[];
+}
+
+export interface DiagnosticJob {
+  id: string;
+  device: string;
+  serial: string;
+  plane: Plane;
+  deviceClass: DiagnosticDeviceClass;
+  operation: DiagnosticOperation;
+  state: DiagnosticJobState;
+  taskId: string | null;
+  progressPercent: number;
+  startedAt: string;
+  finishedAt: string | null;
+  message: string;
+  result: DiagnosticResult | null;
+}
+
+export interface DiagnosticAuditEntry {
+  id: string;
+  at: string;
+  device: string;
+  serial: string;
+  plane: Plane;
+  operation: DiagnosticOperation;
+  state:
+    | DiagnosticJobState
+    | 'reviewed'
+    /** Initiation transport failed after dispatch, so Central acceptance is unknown. */
+    | 'initiation_unknown'
+    /** Central accepted initiation but supplied no usable task identifier for tracking. */
+    | 'accepted_untrackable'
+    /** An ambiguous/cancelled reservation was released at its original deadline. */
+    | 'reservation_expired';
+  target: '[redacted]';
+  httpCode?: number;
 }

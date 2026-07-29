@@ -206,9 +206,12 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
-  vi.clearAllMocks();
+  // Drain the mocked detail/topology promise chain before the next test
+  // installs fresh implementations.
+  await Promise.resolve();
+  vi.resetAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -363,24 +366,51 @@ describe('Clients drawer — plane field support', () => {
     expect(d.queryByText(/places clients by site/)).toBeNull();
   });
 
-  it('explains a wired session’s radio metrics instead of blaming the plane', async () => {
+  it('shows Ethernet session facts instead of wireless radio metrics for a wired client', async () => {
+    mockGetSiteTopology.mockResolvedValue(SITE_TOPOLOGY);
     mockGetClients.mockResolvedValue({
       stats: [],
-      clients: [{ ...SPARSE_LIVE_CLIENT, medium: 'wired', attach: 'CX6300-CORE', where: '1/1/17' }],
+      clients: [{
+        ...SPARSE_LIVE_CLIENT,
+        medium: 'wired',
+        attach: 'CX6300-CORE',
+        where: '1/1/17',
+        auth: '802.1X',
+      }],
       dataSource: 'live',
     });
     renderDrawer();
 
-    // A wired link has no radio: signal, SNR, retries and roams are not things
-    // Central failed to report, they are things the link cannot have.
-    await waitFor(() => expect(drawer().getByText('wired link')).toBeTruthy());
-    expect(metricNoteFor('Signal')).toBe('wired link');
-    expect(metricNoteFor('SNR')).toBe('not applicable to wired links');
-    expect(metricNoteFor('Retries')).toBe('not applicable to wired links');
-    expect(metricNoteFor('Roams')).toBe('not applicable to wired links');
-    // Throughput is a figure Central does model for a wired client, so its
-    // absence stays "not reported" — the distinction is the whole point.
+    await waitFor(() => expect(drawer().getByText('Switch port')).toBeTruthy());
+    const d = drawer();
+    expect(d.getByText('1/1/17')).toBeTruthy();
+    expect(d.getByText('VLAN')).toBeTruthy();
+    expect(d.getByText('200')).toBeTruthy();
+    expect(d.getByText('Session')).toBeTruthy();
+    expect(d.getByText('Authentication')).toBeTruthy();
+    expect(d.getByText('802.1X')).toBeTruthy();
+    expect(d.queryByText('Signal')).toBeNull();
+    expect(d.queryByText('SNR')).toBeNull();
+    expect(d.queryByText('Retries')).toBeNull();
+    expect(d.queryByText('Roams')).toBeNull();
+    expect(d.queryByText('Session timeline')).toBeNull();
     expect(metricNoteFor('Throughput')).toBe('not reported by CENTRAL');
+    // The site graph physically connects this switch to an Aruba gateway, but
+    // that does not prove this wired session routes through it. Preserve the
+    // separately known third-party physical wording instead of inventing an
+    // internet path through the nearest managed gateway.
+    // The switch name is already present as the Switch port note. Wait for the
+    // distinct topology control instead of racing getByText between one and
+    // two legitimate matches as the async site graph lands.
+    await waitFor(() =>
+      expect(d.getByRole('button', { name: 'CX6300-CORE' })).toBeTruthy(),
+    );
+    expect(d.getAllByText('CX6300-CORE')).toHaveLength(2);
+    expect(d.queryByText('SS_9004_Gateway')).toBeNull();
+    expect(
+      d.getByText(/does not infer that this session routes through a managed gateway/),
+    ).toBeTruthy();
+    expect(d.getByText(/9400 → 6300 → OPNsense/)).toBeTruthy();
   });
 
   it('renders an authored demo zone and group verbatim — demo parity is not provenance', async () => {
@@ -465,23 +495,22 @@ describe('Clients drawer — on-demand detail read', () => {
     ).toBeTruthy();
   });
 
-  it('draws the path to the internet from the plane’s own site graph', async () => {
+  it('renders plane topology as physical adjacency without claiming an internet path', async () => {
     mockGetSiteTopology.mockResolvedValue(SITE_TOPOLOGY);
     renderDrawer();
 
     await waitFor(() => expect(drawer().getByText('CX6300-CORE')).toBeTruthy());
     const d = drawer();
+    expect(d.getByText('Reported network topology')).toBeTruthy();
     expect(d.getByText('LR655')).toBeTruthy();
     expect(d.getByText('SS_9004_Gateway')).toBeTruthy();
-    expect(d.getByText('4 HOPS · ALL HEALTHY · CENTRAL TOPOLOGY')).toBeTruthy();
-    // Segment facts are the link's own ports and speed, not invented wiring.
-    expect(d.getByText(/eth0 → 1\/1\/16 · 5.0 Gbps/)).toBeTruthy();
-    expect(d.getByText(/1\/1\/20 → GE 0\/0\/1 · 1.0 Gbps/)).toBeTruthy();
-    // Central reports internet=false on every node, so the chain stops at the
-    // gateway and says so instead of drawing an internet hop nobody reported.
+    expect(d.getByText('4 NODES · ALL HEALTHY · CENTRAL TOPOLOGY')).toBeTruthy();
+    // Bidirectional connectors report physical adjacency, not traffic flow.
+    expect(d.getByText(/eth0 ↔ 1\/1\/16 · 5.0 Gbps/)).toBeTruthy();
+    expect(d.getByText(/1\/1\/20 ↔ GE 0\/0\/1 · 1.0 Gbps/)).toBeTruthy();
     expect(
       screen.getByText(
-        "CENTRAL's site graph ends at SS_9004_Gateway — it does not report the upstream internet path.",
+        'CENTRAL reports these managed-device links as physical adjacency, not traffic direction. The internet egress is not identified, and third-party routers may be absent.',
       ),
     ).toBeTruthy();
     expect(screen.queryByText('Internet')).toBeNull();

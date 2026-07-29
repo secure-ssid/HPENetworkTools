@@ -37,6 +37,7 @@ import type {
   SiteId,
   SiteTopology,
   SsidBands,
+  SsidDependencyRequirement,
   SsidForm,
   SsidObject,
   SsidSecurity,
@@ -256,6 +257,25 @@ const BANDS: Record<SsidBands, string> = {
 };
 
 /**
+ * What a security mode requires before a direct SSID apply can be enabled —
+ * derived from SsidSecurity alone so the editor and the server-side validator
+ * agree without duplicating the rule. A role is required by every mode (New
+ * Central assigns one on every WLAN); enterprise modes additionally need a
+ * live authentication server group, portal needs a live captive-portal
+ * profile, and
+ * PSK/portal modes need a passphrase. Open omits credentials but still needs
+ * the role.
+ */
+export function ssidDependencyRequirementsFor(security: SsidSecurity): SsidDependencyRequirement {
+  return {
+    role: true,
+    authServerGroup: security === 'wpa3-enterprise' || security === 'wpa2-enterprise',
+    captivePortal: security === 'psk-portal',
+    passphrase: security === 'wpa2-psk' || security === 'psk-portal',
+  };
+}
+
+/**
  * Deployment-specific parts of the SSID preview. Every field is optional and
  * every default reproduces the authored demo estate byte-for-byte, so demo
  * output (and the prototype-fidelity tests) are unchanged.
@@ -402,6 +422,8 @@ export function seedFormFromRow(
     const p = row as PortObject;
     return {
       device: p.device,
+      plane: p.plane,
+      serial: p.serial,
       id: p.port,
       desc: p.desc,
       vlan: (p.summary.split('vlan ')[1] || (opts.live ? '' : '812')).split(' ')[0],

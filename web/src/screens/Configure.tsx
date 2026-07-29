@@ -27,6 +27,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Code,
   Drawer,
   EmptyState,
@@ -40,11 +41,13 @@ import {
   useToast,
 } from '../nightdesk';
 import {
+  applySsidDirect,
   discardChange,
   dryRunConfig,
   getChangeHistory,
   getChangeQueue,
   getConfigure,
+  getSsidCatalog,
   isApiError,
   pushChange,
   queueChange,
@@ -60,7 +63,6 @@ import {
   PORT_DEVICE_OPTIONS,
   PORT_MODE_OPTIONS,
   SSID_BAND_OPTIONS,
-  SSID_GROUP_OPTIONS,
   SSID_SECURITY_OPTIONS,
   VLAN_SCOPE_OPTIONS,
   blastRadiusFor,
@@ -68,6 +70,7 @@ import {
   previewMetaFor,
   queuedChangeNote,
   seedFormFromRow,
+  ssidDependencyRequirementsFor,
 } from '../../../shared';
 import type {
   BrokerAuditEvent,
@@ -77,9 +80,13 @@ import type {
   PortForm,
   PortObject,
   QueuedChangeRow,
+  SsidApplyResult,
   SsidBands,
+  SsidCatalog,
   SsidForm,
   SsidObject,
+  SsidScopeCategory,
+  SsidScopeOption,
   SsidSecurity,
   VlanForm,
   VlanObject,
@@ -196,8 +203,51 @@ const LIVE_VLAN_SCOPE_OPTIONS = VLAN_SCOPE_OPTIONS.map((option) => ({
         : 'Core switches only',
 }));
 
+/** Scope-map category → the multi-select group heading (SsidCatalog.scopes). */
+const SSID_SCOPE_CATEGORY_LABEL: Record<SsidScopeCategory, string> = {
+  site: 'Sites',
+  'site-collection': 'Site collections',
+  'ap-group': 'AP device groups',
+  ap: 'Individual APs',
+};
+
+const SSID_SCOPE_CATEGORY_ORDER: SsidScopeCategory[] = ['site', 'site-collection', 'ap-group', 'ap'];
+
+/** SsidCatalogSection → the plain-English name used in "not reported" notes. */
+const SSID_CATALOG_SECTION_LABEL: Record<string, string> = {
+  sites: 'sites',
+  'site-collections': 'site collections',
+  'ap-groups': 'AP device groups',
+  aps: 'individual APs',
+  roles: 'roles',
+  authServerGroups: 'authentication server groups',
+  captivePortalProfiles: 'captive-portal profiles',
+};
+
+/** Group a flat scope list by category, in a fixed display order, dropping
+ *  categories with nothing to offer rather than heading an empty list. */
+function groupScopesByCategory(scopes: SsidScopeOption[]): { category: SsidScopeCategory; options: SsidScopeOption[] }[] {
+  return SSID_SCOPE_CATEGORY_ORDER.map((category) => ({
+    category,
+    options: scopes.filter((s) => s.category === category),
+  })).filter((group) => group.options.length > 0);
+}
+
+/** "Central did not report any <section> — Apply is disabled until this is
+ *  available." — the honest note under a dependency select the catalog could
+ *  not answer. */
+function ssidSectionUnavailableNote(section: string): string {
+  return `Central did not report any ${SSID_CATALOG_SECTION_LABEL[section] ?? section} — Apply is disabled until this is available.`;
+}
+
+/** Prepend a non-selectable placeholder so an unset dependency never LOOKS
+ *  chosen just because it renders as the first real option. */
+function withPlaceholder(options: { value: string; label: string }[], placeholder: string): { value: string; label: string }[] {
+  return [{ value: '', label: placeholder }, ...options];
+}
+
 const LIVE_CONFIG_DESCS: Record<ConfigKind, string> = {
-  ssid: 'Build a payload from operator-entered values. The dry run resolves the real Central target and reachability.',
+  ssid: 'Create or update a named New Central WLAN profile, verify it, then assign it to the reviewed Central scopes.',
   port: 'Build a switch payload for the named live device. The dry run resolves collector reachability and rollback evidence.',
   vlan: 'Build a VLAN payload for the selected broker scope. The dry run resolves actual reachable devices.',
 };
@@ -209,24 +259,53 @@ const LIVE_PUSH_NOTES: Record<ConfigKind, string> = {
 };
 
 function livePreview(kind: ConfigKind, form: ConfigForm, capabilities: CapabilityRow[]): string {
+  if (kind === 'ssid') {
+    const ssid = form as SsidForm;
+    const lines = [
+      `POST/PATCH /network-config/v1alpha1/wlan-ssids/${encodeURIComponent(ssid.name || '{ssid}')}`,
+      `ssid: ${ssid.name || '(not entered)'}`,
+      `essid.name: ${ssid.name || '(not entered)'}`,
+      `opmode: ${
+        ssid.security === 'wpa3-enterprise'
+          ? 'WPA3_ENTERPRISE_CCM_128'
+          : ssid.security === 'wpa2-enterprise'
+            ? 'WPA2_ENTERPRISE'
+            : ssid.security === 'open'
+              ? 'OPEN'
+              : 'WPA2_PERSONAL'
+      }`,
+      'forward-mode: FORWARD_MODE_BRIDGE',
+      `rf-band: ${ssid.bands === '5+6' ? '5GHZ_6GHZ' : ssid.bands === '5' ? '5GHZ' : 'BAND_ALL'}`,
+      `vlan-selector: VLAN_RANGES (${ssid.vlan || 'not entered'})`,
+      `default-role: ${ssid.defaultRole || 'not selected'}`,
+      `hide-ssid: ${ssid.broadcast ? 'false' : 'true'}`,
+      `client-isolation: ${ssid.isolate ? 'true' : 'false'}`,
+    ];
+    if (ssid.authServerGroupId) lines.push(`auth-server-group: ${ssid.authServerGroupId}`);
+    if (ssid.captivePortalProfileId) {
+      lines.push(`captive-portal: ${ssid.captivePortalProfileId}`, 'captive-portal-type: EXTERNAL_CP');
+    }
+    if (ssidDependencyRequirementsFor(ssid.security).passphrase) {
+      lines.push(`personal-security.wpa-passphrase: ${ssid.passphrase ? '[write-only value supplied]' : '[required]'}`);
+    }
+    lines.push(
+      `POST /network-config/v1alpha1/config-assignments (${ssid.scopeIds?.length ?? 0} scope${
+        (ssid.scopeIds?.length ?? 0) === 1 ? '' : 's'
+      })`,
+    );
+    return lines.join('\n');
+  }
   const rendered =
     kind === 'port'
       ? configPreviewFor('port', form as PortForm)
-      : kind === 'vlan'
-        ? configPreviewFor('vlan', form as VlanForm)
-        : configPreviewFor('ssid', form as SsidForm);
+      : configPreviewFor('vlan', form as VlanForm);
   const body = rendered
     .split('\n')
     .filter((line) => !line.startsWith('#'))
     .map((line) => (kind === 'port' ? line.replace(/,820,816$/, '') : line))
     .join('\n')
     .trimEnd();
-  const target =
-    kind === 'ssid'
-      ? (form as SsidForm).plane || 'CENTRAL'
-      : kind === 'port'
-        ? (form as PortForm).device || 'device not entered'
-        : (form as VlanForm).scope;
+  const target = kind === 'port' ? (form as PortForm).device || 'device not entered' : (form as VlanForm).scope;
   // The authored preview annotates the payload per plane ('# central → PUT
   // …', '# mist → read-only'). Those lines describe the fixture estate, so
   // live mode drops them rather than restating them for planes this
@@ -248,8 +327,8 @@ function livePreview(kind: ConfigKind, form: ConfigForm, capabilities: Capabilit
 function liveRadius(kind: ConfigKind, form: ConfigForm) {
   if (kind === 'ssid') {
     return [
-      { what: 'Access points that reload the profile', count: 'requires dry run' },
-      { what: 'Client sessions that will re-authenticate', count: 'requires dry run' },
+      { what: 'Configuration assignments requested', count: `${(form as SsidForm).scopeIds?.length ?? 0}` },
+      { what: 'Client sessions affected', count: 'not reported by this API' },
       { what: 'Target plane', count: (form as SsidForm).plane || 'CENTRAL' },
     ];
   }
@@ -312,6 +391,20 @@ function formForPreview(
   vlan: VlanForm,
 ): ConfigForm {
   return kind === 'port' ? port : kind === 'vlan' ? vlan : ssid;
+}
+
+/** Drop values that the selected security mode cannot use. Hidden inputs
+ *  must not survive a mode change and later ride along with a direct write. */
+function ssidFormForSecurity(form: SsidForm, security: SsidSecurity): SsidForm {
+  const { passphrase, authServerGroupId, captivePortalProfileId, ...base } = form;
+  const requirement = ssidDependencyRequirementsFor(security);
+  return {
+    ...base,
+    security,
+    ...(requirement.passphrase && passphrase !== undefined ? { passphrase } : {}),
+    ...(requirement.authServerGroup && authServerGroupId !== undefined ? { authServerGroupId } : {}),
+    ...(requirement.captivePortal && captivePortalProfileId !== undefined ? { captivePortalProfileId } : {}),
+  };
 }
 
 /** Server change → display row; the broker's state/what/where are authoritative. */
@@ -380,6 +473,13 @@ export default function Configure() {
   const [now, setNow] = useState(() => Date.now());
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<HistoryState>({ kind: 'loading' });
+  // -- SSID direct apply (no ticket/queue — see server/src/services/ssidDirectWrite.ts) --
+  const [ssidCatalog, setSsidCatalog] = useState<SsidCatalog | null>(null);
+  const [ssidCatalogLoading, setSsidCatalogLoading] = useState(false);
+  const [ssidCatalogError, setSsidCatalogError] = useState<string | null>(null);
+  const [ssidReviewed, setSsidReviewed] = useState(false);
+  const [ssidApplying, setSsidApplying] = useState(false);
+  const [ssidApplyResult, setSsidApplyResult] = useState<{ result?: SsidApplyResult; error?: string } | null>(null);
   // Blend mode swaps this screen's inventory to observed live rows while the
   // envelope still reads 'demo' (README §blendLive), so every live-flavoured
   // affordance follows the section, not the envelope's overall dataSource.
@@ -430,6 +530,13 @@ export default function Configure() {
     setQueued(false);
   }, [kind, ssid, port, vlan]);
 
+  // A stale review/apply result must not survive an edit to the form it
+  // described — the operator is reviewing a DIFFERENT payload now.
+  useEffect(() => {
+    setSsidReviewed(false);
+    setSsidApplyResult(null);
+  }, [ssid]);
+
   // -- live preview: recomputed on every keystroke and toggle ---------------
   const preview = useMemo(() => {
     if (liveMode)
@@ -455,6 +562,30 @@ export default function Configure() {
     return blastRadiusFor('ssid', ssid);
   }, [kind, liveMode, ssid, port, vlan]);
 
+  // -- SSID direct-apply derived state ---------------------------------------
+  const ssidRequirement = useMemo(() => ssidDependencyRequirementsFor(ssid.security), [ssid.security]);
+  const ssidScopeGroups = useMemo(() => groupScopesByCategory(ssidCatalog?.scopes ?? []), [ssidCatalog]);
+  const ssidMissingDependencies = useMemo(() => {
+    if (!ssidCatalog) return [];
+    const missing: string[] = [];
+    if (ssidRequirement.role && ssidCatalog.unavailable.includes('roles')) missing.push('roles');
+    if (ssidRequirement.authServerGroup && ssidCatalog.unavailable.includes('authServerGroups')) {
+      missing.push('authentication server groups');
+    }
+    if (ssidRequirement.captivePortal && ssidCatalog.unavailable.includes('captivePortalProfiles')) missing.push('captive-portal profiles');
+    return missing;
+  }, [ssidCatalog, ssidRequirement]);
+  const ssidFormComplete =
+    ssid.name.trim().length > 0 &&
+    ssid.vlan.trim().length > 0 &&
+    (ssid.scopeIds?.length ?? 0) > 0 &&
+    (!ssidRequirement.role || !!ssid.defaultRole) &&
+    (!ssidRequirement.authServerGroup || !!ssid.authServerGroupId) &&
+    (!ssidRequirement.captivePortal || !!ssid.captivePortalProfileId) &&
+    (!ssidRequirement.passphrase || !!ssid.passphrase);
+  const ssidApplyDisabled =
+    !ssidFormComplete || ssidMissingDependencies.length > 0 || !ssidReviewed || ssidApplying || ssidCatalogLoading || !ssidCatalog;
+
   if (!data || !queue) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
@@ -474,8 +605,18 @@ export default function Configure() {
         : liveMode
           ? {}
           : { name: 'MRDN-New', vlan: '830', security: 'wpa3-enterprise' as SsidSecurity }),
+      // Never invent scope/dependency selections for an edited row — the
+      // catalog read above is what the operator picks from, not a guess.
+      scopeIds: [],
+      defaultRole: undefined,
+      authServerGroupId: undefined,
+      captivePortalProfileId: undefined,
+      passphrase: undefined,
     });
     setKind('ssid');
+    setSsidReviewed(false);
+    setSsidApplyResult(null);
+    void loadSsidCatalog();
   };
   const openPort = (row?: PortObject) => {
     setPort({
@@ -494,6 +635,27 @@ export default function Configure() {
           : { id: '', name: '', helpers: '10.42.0.20, 10.44.0.20' }),
     });
     setKind('vlan');
+  };
+
+  /** Load the editor's live scope/dependency catalog — called every time the
+   *  SSID drawer opens, never cached across opens (a stale catalog could
+   *  offer a scope or profile id the plane no longer has). */
+  const loadSsidCatalog = async () => {
+    setSsidCatalogLoading(true);
+    setSsidCatalogError(null);
+    const r = await getSsidCatalog();
+    setSsidCatalogLoading(false);
+    if (isApiError(r)) {
+      setSsidCatalogError(r.error);
+      setSsidCatalog(null);
+      return;
+    }
+    if (r === null) {
+      setSsidCatalogError('The portal backend did not answer — reconnect it, then reopen this drawer.');
+      setSsidCatalog(null);
+      return;
+    }
+    setSsidCatalog(r);
   };
 
   // -- queue actions ----------------------------------------------------------
@@ -613,6 +775,37 @@ export default function Configure() {
       return;
     }
     setDryRun({ result: r });
+  };
+
+  /**
+   * Apply a reviewed SSID change directly (no ticket/queue). On success the
+   * underlying /api/configure inventory is refreshed so the list reflects
+   * the new/updated profile; on failure or partial success every entered
+   * value stays exactly as typed so the operator can fix and retry.
+   */
+  const applySsid = async () => {
+    if (!ssidReviewed || ssidApplying) return;
+    setSsidApplying(true);
+    const r = await applySsidDirect(ssidFormForSecurity(ssid, ssid.security), true);
+    setSsidApplying(false);
+    if (isApiError(r)) {
+      setSsidApplyResult({ error: r.error });
+      toast(r.error, { tone: 'danger' });
+      return;
+    }
+    setSsidApplyResult({ result: r });
+    if (r.ok) {
+      toast(`${ssid.name} applied`, { description: r.profile.message, tone: 'success' });
+      const refreshed = await getConfigure();
+      setData(refreshed);
+    } else if (r.partial) {
+      toast(`${ssid.name}: profile applied, one or more scope assignments failed`, {
+        description: 'Review the assignment results below and retry — the profile was not rolled back.',
+        tone: 'warning',
+      });
+    } else {
+      toast(`${ssid.name} was not applied`, { description: r.profile.message, tone: 'danger' });
+    }
   };
 
   return (
@@ -1078,38 +1271,18 @@ export default function Configure() {
                     />
                   </FormField>
                 </div>
-                <FormField
-                  label="Security"
-                  help={
-                    liveMode
-                      ? 'Select the security template expected by the target plane. Authentication dependencies are verified outside this inventory-only preview.'
-                      : 'Enterprise modes authenticate against ClearPass over RadSec; PSK and portal modes stay local to the plane.'
-                  }
-                >
-                  <Select
-                    options={SSID_SECURITY_OPTIONS}
-                    value={ssid.security}
-                    onValueChange={(v) => setSsid({ ...ssid, security: v as SsidSecurity })}
-                  />
-                </FormField>
                 <div
                   style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
                 >
-                  <FormField label="Target group">
-                    {liveMode ? (
-                      <Input
-                        mono
-                        placeholder="Enter Central group"
-                        value={ssid.group}
-                        onChange={(e) => setSsid({ ...ssid, group: e.target.value })}
-                      />
-                    ) : (
-                      <Select
-                        options={SSID_GROUP_OPTIONS}
-                        value={ssid.group}
-                        onValueChange={(v) => setSsid({ ...ssid, group: v })}
-                      />
-                    )}
+                  <FormField
+                    label="Security"
+                    help="Direct apply loads the live role/AAA/captive-portal dependencies this mode needs below."
+                  >
+                    <Select
+                      options={SSID_SECURITY_OPTIONS}
+                      value={ssid.security}
+                      onValueChange={(v) => setSsid(ssidFormForSecurity(ssid, v as SsidSecurity))}
+                    />
                   </FormField>
                   <FormField label="Bands">
                     <Select
@@ -1119,6 +1292,136 @@ export default function Configure() {
                     />
                   </FormField>
                 </div>
+
+                {/* -- live security dependencies (role / auth server / captive portal / passphrase) -- */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <SectionHeader label="Security dependencies" meta={ssidCatalogLoading ? 'loading…' : undefined} />
+                  {/* FormField only clones an id onto a SINGLE child element for the
+                      label's htmlFor — the "unavailable" note is a sibling below it,
+                      never a second child, or the select loses its accessible name. */}
+                  <FormField label="Default role">
+                    <Select
+                      options={withPlaceholder(
+                        (ssidCatalog?.roles ?? []).map((o) => ({ value: o.id, label: o.label })),
+                        'Select a role…',
+                      )}
+                      value={ssid.defaultRole ?? ''}
+                      onValueChange={(v) => setSsid({ ...ssid, defaultRole: v || undefined })}
+                      disabled={ssidCatalogLoading || (ssidCatalog?.roles.length ?? 0) === 0}
+                    />
+                  </FormField>
+                  {ssidCatalog?.unavailable.includes('roles') ? (
+                    <span style={{ fontSize: 11, color: 'var(--nd-warning-text, var(--nd-text-muted))' }}>
+                      {ssidSectionUnavailableNote('roles')}
+                    </span>
+                  ) : null}
+                  {ssidRequirement.authServerGroup ? (
+                    <>
+                      <FormField label="Authentication server group">
+                        <Select
+                          options={withPlaceholder(
+                            (ssidCatalog?.authServerGroups ?? []).map((o) => ({ value: o.id, label: o.label })),
+                            'Select an authentication server group…',
+                          )}
+                          value={ssid.authServerGroupId ?? ''}
+                          onValueChange={(v) => setSsid({ ...ssid, authServerGroupId: v || undefined })}
+                          disabled={ssidCatalogLoading || (ssidCatalog?.authServerGroups.length ?? 0) === 0}
+                        />
+                      </FormField>
+                      {ssidCatalog?.unavailable.includes('authServerGroups') ? (
+                        <span style={{ fontSize: 11, color: 'var(--nd-warning-text, var(--nd-text-muted))' }}>
+                          {ssidSectionUnavailableNote('authServerGroups')}
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {ssidRequirement.captivePortal ? (
+                    <>
+                      <FormField label="Captive-portal profile">
+                        <Select
+                          options={withPlaceholder(
+                            (ssidCatalog?.captivePortalProfiles ?? []).map((o) => ({ value: o.id, label: o.label })),
+                            'Select a captive-portal profile…',
+                          )}
+                          value={ssid.captivePortalProfileId ?? ''}
+                          onValueChange={(v) => setSsid({ ...ssid, captivePortalProfileId: v || undefined })}
+                          disabled={ssidCatalogLoading || (ssidCatalog?.captivePortalProfiles.length ?? 0) === 0}
+                        />
+                      </FormField>
+                      {ssidCatalog?.unavailable.includes('captivePortalProfiles') ? (
+                        <span style={{ fontSize: 11, color: 'var(--nd-warning-text, var(--nd-text-muted))' }}>
+                          {ssidSectionUnavailableNote('captivePortalProfiles')}
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {ssidRequirement.passphrase ? (
+                    <FormField label="Passphrase" help="Never displayed again after Apply — write-only.">
+                      <Input
+                        type="password"
+                        mono
+                        placeholder="Enter the PSK passphrase"
+                        value={ssid.passphrase ?? ''}
+                        onChange={(e) => setSsid({ ...ssid, passphrase: e.target.value })}
+                      />
+                    </FormField>
+                  ) : null}
+                </div>
+
+                {/* -- scope targets (immutable plane ids, grouped by category) -- */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <SectionHeader label="Scope" meta={`${ssid.scopeIds?.length ?? 0} selected`} />
+                  {ssidCatalogLoading ? (
+                    <div style={{ display: 'flex', justifyContent: 'center', padding: 16 }}>
+                      <Spinner size="sm" />
+                    </div>
+                  ) : ssidCatalogError ? (
+                    <Alert tone="danger" title="The scope catalog could not be read">
+                      <span style={{ fontSize: 13 }}>{ssidCatalogError}</span>
+                    </Alert>
+                  ) : ssidScopeGroups.length === 0 ? (
+                    <EmptyState
+                      title="No scope choices reported"
+                      description="This plane did not report any sites, site collections, AP device groups, or APs to target."
+                    />
+                  ) : (
+                    ssidScopeGroups.map((group) => (
+                      <div key={group.category} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <span
+                          style={{
+                            fontFamily: 'var(--nd-font-mono)',
+                            fontSize: 10,
+                            letterSpacing: '.06em',
+                            textTransform: 'uppercase',
+                            color: 'var(--nd-text-muted)',
+                          }}
+                        >
+                          {SSID_SCOPE_CATEGORY_LABEL[group.category]}
+                        </span>
+                        {group.options.map((option) => {
+                          const checked = (ssid.scopeIds ?? []).includes(option.id);
+                          return (
+                            <Checkbox
+                              key={option.id}
+                              label={option.label}
+                              checked={checked}
+                              onChange={(e) => {
+                                const current = ssid.scopeIds ?? [];
+                                setSsid({
+                                  ...ssid,
+                                  scopeIds: e.target.checked
+                                    ? [...current, option.id]
+                                    : current.filter((id) => id !== option.id),
+                                });
+                              }}
+                            />
+                          );
+                        })}
+                      </div>
+                    ))
+                  )}
+                </div>
+
                 <div
                   style={{
                     display: 'flex',
@@ -1139,11 +1442,13 @@ export default function Configure() {
                     checked={ssid.isolate}
                     onCheckedChange={(v) => setSsid({ ...ssid, isolate: v })}
                   />
-                  <Switch
-                    label="Exclude DFS channels (clinical floors)"
-                    checked={ssid.noDfs}
-                    onCheckedChange={(v) => setSsid({ ...ssid, noDfs: v })}
-                  />
+                  {!liveMode ? (
+                    <Switch
+                      label="Exclude DFS channels (clinical floors)"
+                      checked={ssid.noDfs}
+                      onCheckedChange={(v) => setSsid({ ...ssid, noDfs: v })}
+                    />
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -1159,13 +1464,23 @@ export default function Configure() {
                         mono
                         placeholder="Enter live device name"
                         value={port.device}
-                        onChange={(e) => setPort({ ...port, device: e.target.value })}
+                        onChange={(e) => setPort({
+                          ...port,
+                          device: e.target.value,
+                          plane: undefined,
+                          serial: undefined,
+                        })}
                       />
                     ) : (
                       <Select
                         options={PORT_DEVICE_OPTIONS}
                         value={port.device}
-                        onValueChange={(v) => setPort({ ...port, device: v })}
+                        onValueChange={(v) => setPort({
+                          ...port,
+                          device: v,
+                          plane: undefined,
+                          serial: undefined,
+                        })}
                       />
                     )}
                   </FormField>
@@ -1313,75 +1628,171 @@ export default function Configure() {
               ))}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <FormField label="Ticket reference (required for the write lease)">
-                <Input
-                  mono
-                  value={ticket}
-                  placeholder="NET-4166"
-                  onChange={(e) => setTicket(e.target.value)}
-                />
-              </FormField>
-              {queued ? (
-                <Alert tone="success" title="Queued for push">
-                  <span style={{ fontSize: 13 }}>{queuedChangeNote(ticket)}</span>
-                </Alert>
-              ) : null}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Button variant="primary" size="md" disabled={!ticket.trim()} onClick={() => void queueIt()}>
-                  Queue the change
-                </Button>
-                <Button variant="secondary" size="md" disabled={dryRunning} onClick={() => void doDryRun()}>
-                  Dry run
-                </Button>
-                <Button variant="ghost" size="md" onClick={() => setKind(null)}>
-                  Cancel
-                </Button>
-              </div>
-              {dryRun ? (
-                dryRun.error ? (
-                  <Alert tone="danger" title="Dry run rejected">
-                    <span style={{ fontSize: 13 }}>{dryRun.error}</span>
-                  </Alert>
-                ) : dryRun.result ? (
-                  <Alert
-                    tone={dryRun.result.ok ? (dryRun.result.snapshot ? 'success' : 'info') : 'warning'}
-                    title="Dry run"
-                  >
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                      <span style={{ fontSize: 13 }}>{dryRun.result.note}</span>
-                      <Code block>{dryRun.result.rendered}</Code>
-                      <span
+            {kind === 'ssid' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <SectionHeader label="Review — exact scope assignments" />
+                {(ssid.scopeIds ?? []).length === 0 ? (
+                  <span style={{ fontSize: 12.5, color: 'var(--nd-text-muted)' }}>
+                    No scope selected yet — pick at least one above before applying.
+                  </span>
+                ) : (
+                  (ssid.scopeIds ?? []).map((scopeId) => {
+                    const option = ssidCatalog?.scopes.find((s) => s.id === scopeId);
+                    return (
+                      <div
+                        key={scopeId}
                         style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 10.5,
-                          color: 'var(--nd-text-muted)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '6px 0',
+                          borderBottom: '1px solid var(--nd-border-subtle)',
                         }}
                       >
-                        {dryRun.result.snapshot
-                          ? `rollback snapshot stored — kept 24h${dryRun.result.httpCode ? ` · read-back HTTP ${dryRun.result.httpCode}` : ''}`
-                          : dryRun.result.httpCode
-                            ? `no snapshot stored · read-back HTTP ${dryRun.result.httpCode}`
-                            : 'no snapshot stored — no read-back attempted'}
-                      </span>
-                    </div>
+                        <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
+                          {option?.label ?? scopeId}
+                        </span>
+                        <Badge tone="neutral">{option ? SSID_SCOPE_CATEGORY_LABEL[option.category] : 'unknown'}</Badge>
+                      </div>
+                    );
+                  })
+                )}
+                <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' }}>
+                  device-function CAMPUS_AP · assigned via /network-config/v1alpha1/config-assignments — no secret value is ever shown here.
+                </span>
+
+                <Checkbox
+                  label="I have reviewed this profile and these scope assignments — apply directly, no ticket."
+                  checked={ssidReviewed}
+                  onChange={(e) => setSsidReviewed(e.target.checked)}
+                />
+                {ssidMissingDependencies.length > 0 ? (
+                  <Alert tone="warning" title="Apply is disabled — a required live dependency is unavailable">
+                    <span style={{ fontSize: 13 }}>
+                      This plane did not report: {ssidMissingDependencies.join(', ')}.
+                    </span>
                   </Alert>
-                ) : null
-              ) : null}
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10.5,
-                  color: 'var(--nd-text-muted)',
-                  lineHeight: 1.6,
-                }}
-              >
-                {liveMode ? LIVE_PUSH_NOTES[kind] : CONFIG_PUSH_NOTES[kind]}
-              </span>
-            </div>
+                ) : null}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <Button variant="primary" size="md" disabled={ssidApplyDisabled} onClick={() => void applySsid()}>
+                    {ssidApplying ? 'Applying…' : 'Apply directly'}
+                  </Button>
+                  <Button variant="ghost" size="md" onClick={() => setKind(null)}>
+                    Cancel
+                  </Button>
+                </div>
+                {ssidApplyResult ? (
+                  ssidApplyResult.error ? (
+                    <Alert tone="danger" title="Apply failed">
+                      <span style={{ fontSize: 13 }}>{ssidApplyResult.error}</span>
+                    </Alert>
+                  ) : ssidApplyResult.result ? (
+                    <Alert
+                      tone={ssidApplyResult.result.ok ? 'success' : ssidApplyResult.result.partial ? 'warning' : 'danger'}
+                      title={
+                        ssidApplyResult.result.ok
+                          ? 'Applied'
+                          : ssidApplyResult.result.partial
+                            ? 'Partial — profile applied, an assignment failed'
+                            : 'Not applied'
+                      }
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <span style={{ fontSize: 13 }}>
+                          Profile ({ssidApplyResult.result.profile.action}): {ssidApplyResult.result.profile.message}
+                        </span>
+                        {ssidApplyResult.result.assignments.map((a) => (
+                          <span key={a.scopeId} style={{ fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
+                            {a.ok ? '✓' : '✗'} {a.label} — {a.message}
+                          </span>
+                        ))}
+                      </div>
+                    </Alert>
+                  ) : null
+                ) : null}
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 10.5,
+                    color: 'var(--nd-text-muted)',
+                    lineHeight: 1.6,
+                  }}
+                >
+                  Direct apply — no ticket, no queue. An audit event is still recorded for every attempt.
+                </span>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <FormField label="Ticket reference (required for the write lease)">
+                  <Input
+                    mono
+                    value={ticket}
+                    placeholder="NET-4166"
+                    onChange={(e) => setTicket(e.target.value)}
+                  />
+                </FormField>
+                {queued ? (
+                  <Alert tone="success" title="Queued for push">
+                    <span style={{ fontSize: 13 }}>{queuedChangeNote(ticket)}</span>
+                  </Alert>
+                ) : null}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <Button variant="primary" size="md" disabled={!ticket.trim()} onClick={() => void queueIt()}>
+                    Queue the change
+                  </Button>
+                  <Button variant="secondary" size="md" disabled={dryRunning} onClick={() => void doDryRun()}>
+                    Dry run
+                  </Button>
+                  <Button variant="ghost" size="md" onClick={() => setKind(null)}>
+                    Cancel
+                  </Button>
+                </div>
+                {dryRun ? (
+                  dryRun.error ? (
+                    <Alert tone="danger" title="Dry run rejected">
+                      <span style={{ fontSize: 13 }}>{dryRun.error}</span>
+                    </Alert>
+                  ) : dryRun.result ? (
+                    <Alert
+                      tone={dryRun.result.ok ? (dryRun.result.snapshot ? 'success' : 'info') : 'warning'}
+                      title="Dry run"
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <span style={{ fontSize: 13 }}>{dryRun.result.note}</span>
+                        <Code block>{dryRun.result.rendered}</Code>
+                        <span
+                          style={{
+                            fontFamily: 'var(--nd-font-mono)',
+                            fontSize: 10.5,
+                            color: 'var(--nd-text-muted)',
+                          }}
+                        >
+                          {dryRun.result.snapshot
+                            ? `rollback snapshot stored — kept 24h${dryRun.result.httpCode ? ` · read-back HTTP ${dryRun.result.httpCode}` : ''}`
+                            : dryRun.result.httpCode
+                              ? `no snapshot stored · read-back HTTP ${dryRun.result.httpCode}`
+                              : 'no snapshot stored — no read-back attempted'}
+                        </span>
+                      </div>
+                    </Alert>
+                  ) : null
+                ) : null}
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 10.5,
+                    color: 'var(--nd-text-muted)',
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {liveMode ? LIVE_PUSH_NOTES[kind] : CONFIG_PUSH_NOTES[kind]}
+                </span>
+              </div>
+            )}
           </div>
         ) : null}
       </Drawer>
+
 
       {/* ---------------- change history (broker audit log) ----------------
           GET /api/configure/history, newest first. SECURITY: the row is
