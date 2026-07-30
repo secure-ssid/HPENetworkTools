@@ -803,11 +803,7 @@ export class SseObjectsService {
       // fails, the retained record remains provably ineligible for Commit.
       this.savePending(rejectedTerminal);
       this.recordMutation(kind, action, id, 'rejected', mutation.httpCode ?? undefined);
-      try {
-        this.clearPending();
-      } catch (err) {
-        throw err;
-      }
+      this.clearPending();
       return {
         mutation,
         commit: {

@@ -157,7 +157,7 @@ describe('RebootService push', () => {
 
   it('posts the troubleshooting path per device type and claims success only on 202', async () => {
     const seen: string[] = [];
-    for (const [type, tb] of [['ap', 'aps'], ['switch', 'cx'], ['gateway', 'gateways']] as const) {
+    for (const [type, _tb] of [['ap', 'aps'], ['switch', 'cx'], ['gateway', 'gateways']] as const) {
       const svc = new RebootService({
         dataDir: freshDataDir(),
         lookupDevice: lookup({ name: `d-${type}`, type, plane: 'CENTRAL', serial: 'SN1' }),

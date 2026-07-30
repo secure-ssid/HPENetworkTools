@@ -121,16 +121,25 @@ export default function Compliance() {
     // poller like any other live section, never through the demo stopwatch.
     if (sectionLive) {
       setScanning(true);
-      const result = await syncSystems();
-      if (!result.ok) {
+      try {
+        const result = await syncSystems();
+        if (!result.ok) {
+          toast('Live evidence refresh failed', { description: result.message, tone: 'warning' });
+          return;
+        }
+        const refreshed = await getCompliance();
+        setData(refreshed);
+        toast('Live evidence refreshed', { description: result.message, tone: 'success' });
+      } catch (err) {
+        // Without this the spinner would run forever and the operator would
+        // read "still scanning" when nothing is scanning.
+        toast('Live evidence refresh failed', {
+          description: err instanceof Error ? err.message : String(err),
+          tone: 'danger',
+        });
+      } finally {
         setScanning(false);
-        toast('Live evidence refresh failed', { description: result.message, tone: 'warning' });
-        return;
       }
-      const refreshed = await getCompliance();
-      setData(refreshed);
-      setScanning(false);
-      toast('Live evidence refreshed', { description: result.message, tone: 'success' });
       return;
     }
     setScanning(true);
@@ -188,7 +197,7 @@ export default function Compliance() {
             <Button variant="secondary" size="sm" onClick={() => setShowDrift((v) => !v)} disabled={!data.diff}>
               {data.evidenceMode === 'coverage' ? 'Evidence text' : 'Diff selected'}
             </Button>
-            <Button variant="primary" size="sm" onClick={runScan} disabled={scanning}>
+            <Button variant="primary" size="sm" onClick={() => void runScan()} disabled={scanning}>
               {scanning ? <Spinner size="sm" /> : 'Run scan now'}
             </Button>
           </>

@@ -23,7 +23,7 @@ let tmpDir: string;
 let dataDir: string;
 let mockSse: Server;
 let mockSseBase: string;
-let mockSseToken = 'sse-e2e-token';
+const mockSseToken = 'sse-e2e-token';
 let commitFails = false;
 let commitCalls = 0;
 let mutationCalls = 0;

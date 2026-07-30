@@ -457,7 +457,7 @@ function parseUrlBasic(value: string): { protocol: string; hostname: string } | 
   const m = value.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^/?#]+)/);
   if (!m) return null;
   const protocol = `${m[1].toLowerCase()}:`;
-  let authority = m[2];
+  const authority = m[2];
   if (authority.includes('@')) return null;
   let hostname: string;
   if (authority.startsWith('[')) {

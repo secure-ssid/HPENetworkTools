@@ -1,0 +1,54 @@
+# Every check this repo already has, run automatically.
+#
+# The suite (1,700+ tests) is the safety net for the plane adapters and the
+# write brokers, and it was previously only ever run by hand. Typecheck, tests
+# and build run as separate steps so a failure names which one broke rather
+# than collapsing into one red X.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` (not `install`) so the lockfile is authoritative and a drifted
+      # lockfile fails here rather than silently resolving to other versions.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Runs after typecheck because the type-aware rules
+      # (no-floating-promises, no-misused-promises) need a clean program to be
+      # meaningful. Warnings are allowed through; only errors fail the build.
+      - name: Lint
+        run: npm run lint
+
+      - name: Server tests
+        run: npm run test -w server
+
+      - name: Web tests
+        run: npm run test -w web
+
+      - name: Build web
+        run: npm run build -w web

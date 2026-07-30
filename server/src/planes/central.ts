@@ -2711,7 +2711,7 @@ export class CentralAdapter implements PlaneAdapter {
               : JSON.stringify(opts.body),
         signal: AbortSignal.timeout(opts.timeoutMs ?? OUTBOUND_TIMEOUT_MS),
       });
-    } catch (err) {
+    } catch {
       this.recordCall({ path: label, ms: Date.now() - started, code: 'network-error' });
       throw new CentralRequestError('transport', `${label} transport failed`);
     }

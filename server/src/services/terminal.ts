@@ -1105,6 +1105,60 @@ export class TerminalManager {
 }
 
 /**
+ * Is `origin` allowed to open a recorded SSH session against this server?
+ *
+ * WHY THIS EXISTS: WebSocket upgrades are NOT subject to the same-origin
+ * policy. Without this check any page the operator happens to visit can open
+ * `ws://localhost:<port>/api/terminal/<name>` and get a live shell on a
+ * production switch — the browser will happily perform the handshake and hand
+ * the script the socket. That is a real attack against a purely local install,
+ * which is why it is checked before anything else.
+ *
+ * WHAT THIS CANNOT DO: only browsers are obliged to send `Origin`. A native
+ * client can omit it or forge it freely, so this defends against
+ * browser-driven (cross-site) abuse and nothing else. A missing `Origin` is
+ * therefore ALLOWED — rejecting it would break non-browser tooling while
+ * adding no security, because an attacker in that position can set the header
+ * to whatever passes. Authentication, not origin, is what bounds non-browser
+ * callers.
+ *
+ * The rules, in order:
+ *   - no Origin            → allow (not a browser; see above)
+ *   - loopback origin      → allow. A page served from this machine already
+ *                            implies local code execution, and this keeps the
+ *                            optional Vite dev server (a different port, see
+ *                            web/vite.config.ts) working without configuration.
+ *   - same host as the request → allow (the normal single-port deployment)
+ *   - listed in HPE_ALLOWED_ORIGINS → allow (deliberate remote exposure)
+ *   - anything else        → reject
+ */
+export function isAllowedTerminalOrigin(
+  origin: string | undefined,
+  host: string | undefined,
+  allowList: string | undefined = process.env.HPE_ALLOWED_ORIGINS,
+): boolean {
+  if (origin === undefined || origin === '') return true;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false; // an unparseable Origin is never a legitimate browser
+  }
+
+  const configured = (allowList ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+  if (configured.includes(origin)) return true;
+
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+
+  return host !== undefined && parsed.host.toLowerCase() === host.toLowerCase();
+}
+
+/**
  * Attach the terminal WebSocket endpoint to the existing HTTP server.
  * Handles the upgrade itself so nothing but /api/terminal/:name is accepted.
  */
@@ -1117,6 +1171,16 @@ export function attachTerminalWs(server: HttpServer, manager: TerminalManager = 
     const url = new URL(req.url ?? '/', 'http://localhost');
     const m = /^\/api\/terminal\/([^/]+)$/.exec(url.pathname);
     if (!m) {
+      socket.destroy();
+      return;
+    }
+    // Refused before handleUpgrade, so a rejected page never reaches the SSH
+    // bridge at all. An explicit 403 beats a bare destroy: a legitimate client
+    // misconfigured behind a proxy gets a diagnosable answer instead of a
+    // connection that dies for no stated reason.
+    if (!isAllowedTerminalOrigin(req.headers.origin, req.headers.host)) {
+      console.error(`terminal upgrade refused: disallowed origin ${req.headers.origin}`);
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }

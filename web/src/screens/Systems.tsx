@@ -1152,15 +1152,24 @@ export default function Systems() {
   const syncAll = async () => {
     if (syncing) return;
     setSyncing(true);
-    const result = await syncSystems();
-    if (!result.ok) {
-      toast(result.message, { tone: 'danger' });
+    try {
+      const result = await syncSystems();
+      if (!result.ok) {
+        toast(result.message, { tone: 'danger' });
+        return;
+      }
+      await refresh();
+      toast('sync complete', { description: result.message, tone: 'success' });
+    } catch (err) {
+      // Without this the spinner would run forever and the operator would
+      // read "still syncing" when nothing is syncing.
+      toast('sync failed', {
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'danger',
+      });
+    } finally {
       setSyncing(false);
-      return;
     }
-    await refresh();
-    setSyncing(false);
-    toast('sync complete', { description: result.message, tone: 'success' });
   };
 
   const openConnect = (prefill?: {
@@ -1953,7 +1962,7 @@ export default function Systems() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <SectionHeader label="Actions" />
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <Button variant="secondary" size="sm" onClick={syncAll}>
+                    <Button variant="secondary" size="sm" onClick={() => void syncAll()}>
                       Sync now
                     </Button>
                     <Button

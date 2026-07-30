@@ -24,6 +24,8 @@ import {
   ShellScraper,
   TerminalManager,
   allowCommand,
+  attachTerminalWs,
+  isAllowedTerminalOrigin,
   looksLikePrompt,
   parseClientFrame,
   stripAnsi,
@@ -1194,5 +1196,105 @@ describe("the 'ready' frame attributes the session that is actually recorded", (
     // The frame is an attribution, never a credential channel.
     expect(JSON.stringify(ready)).not.toContain('lab-password');
     ws.emit('close');
+  });
+});
+
+/**
+ * The SSH bridge is the highest-value target in the portal: a successful
+ * upgrade is a live shell on a production switch. WebSocket handshakes ignore
+ * the same-origin policy, so without this gate any page the operator visits
+ * can open one. These tests pin the gate itself and the refusal path.
+ */
+describe('terminal WebSocket origin gate', () => {
+  it('refuses a cross-site origin', () => {
+    expect(isAllowedTerminalOrigin('https://evil.example', 'localhost:5173', '')).toBe(false);
+    // A lookalike must not pass on prefix/suffix similarity alone.
+    expect(isAllowedTerminalOrigin('https://localhost.evil.example', 'localhost:5173', '')).toBe(false);
+    expect(isAllowedTerminalOrigin('https://evil.example/localhost', 'localhost:5173', '')).toBe(false);
+  });
+
+  it('allows the page the portal itself served', () => {
+    expect(isAllowedTerminalOrigin('http://localhost:5173', 'localhost:5173', '')).toBe(true);
+    // Same host, reached by its address rather than its name.
+    expect(isAllowedTerminalOrigin('http://10.0.0.5:5173', '10.0.0.5:5173', '')).toBe(true);
+  });
+
+  // web/vite.config.ts serves an optional hot-reload UI on 5174 that proxies
+  // to this server, so a loopback origin on ANOTHER port is legitimate. It is
+  // also not a privilege gain: serving a page from this machine already
+  // implies local code execution.
+  it('allows a loopback origin on a different port so local dev keeps working', () => {
+    expect(isAllowedTerminalOrigin('http://localhost:5174', 'localhost:5173', '')).toBe(true);
+    expect(isAllowedTerminalOrigin('http://127.0.0.1:5174', 'localhost:5173', '')).toBe(true);
+  });
+
+  // Only browsers must send Origin. Rejecting its absence would break native
+  // tooling while adding nothing: an attacker who can omit it can also forge
+  // it. Non-browser callers are bounded by authentication, not by this gate.
+  it('allows a request with no origin, because that is not a browser', () => {
+    expect(isAllowedTerminalOrigin(undefined, 'localhost:5173', '')).toBe(true);
+    expect(isAllowedTerminalOrigin('', 'localhost:5173', '')).toBe(true);
+  });
+
+  it('honours a configured allow-list for deliberate remote exposure', () => {
+    const list = 'https://portal.example, https://ops.example';
+    expect(isAllowedTerminalOrigin('https://portal.example', 'localhost:5173', list)).toBe(true);
+    expect(isAllowedTerminalOrigin('https://ops.example', 'localhost:5173', list)).toBe(true);
+    expect(isAllowedTerminalOrigin('https://other.example', 'localhost:5173', list)).toBe(false);
+  });
+
+  it('refuses an unparseable origin rather than falling through', () => {
+    expect(isAllowedTerminalOrigin('not-a-url', 'localhost:5173', '')).toBe(false);
+  });
+
+  // End-to-end: the refusal must happen before handleUpgrade, so a rejected
+  // page never reaches the SSH bridge at all.
+  it('answers a disallowed upgrade with 403 and never opens a session', async () => {
+    const { createServer } = await import('node:http');
+    const { WebSocket } = await import('ws');
+    const server = createServer();
+    let opened = 0;
+    const manager = { handleConnection: () => { opened += 1; } } as unknown as TerminalManager;
+    attachTerminalWs(server, manager);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+
+    const failure = await new Promise<string>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/terminal/sw-core-a`, {
+        origin: 'https://evil.example',
+      });
+      ws.on('error', (err: Error) => resolve(err.message));
+      ws.on('open', () => resolve('OPENED'));
+    });
+
+    expect(failure).toContain('403');
+    expect(opened).toBe(0);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('still opens a session for an allowed origin', async () => {
+    const { createServer } = await import('node:http');
+    const { WebSocket } = await import('ws');
+    const server = createServer();
+    let opened = 0;
+    const manager = { handleConnection: () => { opened += 1; } } as unknown as TerminalManager;
+    attachTerminalWs(server, manager);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+
+    const result = await new Promise<string>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/terminal/sw-core-a`, {
+        origin: `http://127.0.0.1:${port}`,
+      });
+      ws.on('error', (err: Error) => resolve(err.message));
+      ws.on('open', () => {
+        ws.close();
+        resolve('OPENED');
+      });
+    });
+
+    expect(result).toBe('OPENED');
+    expect(opened).toBe(1);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 });

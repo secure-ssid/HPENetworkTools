@@ -252,7 +252,16 @@ class AtomicWebhookHandoffJournalStore implements WebhookHandoffJournalStore {
       try {
         fs.unlinkSync(tempPath);
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        // Cleanup is best-effort and must NEVER become the thrown error. A
+        // throw from `finally` replaces whatever exception is already
+        // propagating, so a failed temp-file unlink would mask the real reason
+        // the journal did not persist — and this journal is what makes a
+        // one-time HMAC handoff recoverable. A stale `.<pid>.tmp` is harmless
+        // (the next save overwrites it); losing the write error is not.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') {
+          console.error(`webhook journal: could not remove temp file ${tempPath} (${code})`);
+        }
       }
     }
   }

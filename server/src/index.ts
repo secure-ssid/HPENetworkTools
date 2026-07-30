@@ -22,6 +22,7 @@ import { diagnosticsRouter } from './routes/diagnostics';
 import { screensRouter } from './routes/screens';
 import { settingsRouter } from './routes/settings';
 import { sseRouter } from './routes/sse';
+import { greenlakeRouter } from './routes/greenlake';
 import { systemsRouter } from './routes/systems';
 import { inventoryRouter } from './routes/inventory';
 import { SsidDirectWriteError } from './services/ssidDirectWrite';
@@ -103,6 +104,7 @@ export function createApp(): express.Express {
   app.use('/api', systemsRouter);
   app.use('/api', inventoryRouter);
   app.use('/api', sseRouter);
+  app.use('/api', greenlakeRouter);
   app.use('/api', chatRouter);
   app.use('/api', configureRouter);
   app.use('/api', centralWebhooksRouter);
@@ -146,19 +148,43 @@ export function createApp(): express.Express {
   return app;
 }
 
-export function startServer(port: number = Number(process.env.PORT ?? 5173)) {
+/**
+ * Start the portal.
+ *
+ * The bind host defaults to loopback. This server brokers writes to production
+ * network infrastructure and bridges SSH to switches, and it currently has no
+ * authentication of its own — binding every interface would put that surface on
+ * the network for anyone who can route to the box. Exposing it deliberately is
+ * still possible (HPE_BIND_HOST=0.0.0.0) but it has to be a decision someone
+ * makes, not the default that ships.
+ */
+export function startServer(
+  port: number = Number(process.env.PORT ?? 5173),
+  host: string = process.env.HPE_BIND_HOST ?? '127.0.0.1',
+) {
   settings.load();
   poller.start();
   const app = createApp();
-  const server = app.listen(port, () => {
-    console.log(`server listening on http://localhost:${port} (demoMode: ${settings.get().demoMode})`);
+  const server = app.listen(port, host, () => {
+    console.log(`server listening on http://${host}:${port} (demoMode: ${settings.get().demoMode})`);
+    if (!isLoopbackHost(host)) {
+      console.warn(
+        `WARNING: bound to ${host}, which is reachable from the network, and the portal has no authentication. ` +
+          `Anyone who can reach this port can change production configuration and open switch shells.`,
+      );
+    }
   });
   // Recorded SSH shell bridge: /api/terminal/:name (see services/terminal.ts).
   attachTerminalWs(server);
   return server;
 }
 
-/* eslint-disable-next-line */
+/** Loopback spellings that keep the listener off the network. */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h.startsWith('127.');
+}
+
 if (typeof require !== 'undefined' && require.main === module) {
   startServer();
 }

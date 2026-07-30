@@ -114,6 +114,11 @@ function rowKey(a: AlertRow, i: number): string {
   return a.alertId ? `${a.plane}|${a.alertId}` : `${a.plane}|${a.title}|${a.device}|${i}`;
 }
 
+/** Toast-safe rendering of an unknown thrown value. */
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * The danger banner is a correlation over the queue (README §2 — "correlates the
  * two worst findings"), not prose: the worst open alert crossed with the worst
@@ -205,6 +210,40 @@ export default function Alerts() {
     setAckTickets(sorted);
     setAckTicket(prefer ?? sorted[0]?.id ?? '');
     setTicketsLoaded(true);
+  };
+
+  /**
+   * `raiseFor`/`reloadTickets` both reach the network, so a transport failure
+   * rejects rather than returning. Left unhandled that is an invisible
+   * failure — the click looks like it did nothing. Say so instead.
+   */
+  const raiseFromTopRow = async () => {
+    // Prefer an open row that names a device: site/tenant-class live
+    // alerts are honestly device-less, and the raise route wants the
+    // most specific evidence it can get.
+    const top =
+      rows.find((a) => a.state === 'open' && a.device.trim()) ??
+      rows.find((a) => a.state === 'open') ??
+      rows[0];
+    if (!top) {
+      toast('No alert in view to raise from', { tone: 'info' });
+      return;
+    }
+    try {
+      await raiseFor(top, true);
+    } catch (err) {
+      toast('Ticket raise failed', { description: describeError(err), tone: 'danger' });
+    }
+  };
+
+  const raiseFromAckTarget = async () => {
+    if (!ackTarget) return;
+    try {
+      const id = await raiseFor(ackTarget, false);
+      await reloadTickets(id);
+    } catch (err) {
+      toast('Ticket raise failed', { description: describeError(err), tone: 'danger' });
+    }
   };
 
   const confirmAck = async () => {
@@ -335,20 +374,7 @@ export default function Alerts() {
             <Button
               variant="secondary"
               size="sm"
-              onClick={async () => {
-                // Prefer an open row that names a device: site/tenant-class live
-                // alerts are honestly device-less, and the raise route wants the
-                // most specific evidence it can get.
-                const top =
-                  rows.find((a) => a.state === 'open' && a.device.trim()) ??
-                  rows.find((a) => a.state === 'open') ??
-                  rows[0];
-                if (!top) {
-                  toast('No alert in view to raise from', { tone: 'info' });
-                  return;
-                }
-                await raiseFor(top, true);
-              }}
+              onClick={() => void raiseFromTopRow()}
             >
               Raise ticket
             </Button>
@@ -411,10 +437,7 @@ export default function Alerts() {
             <Button
               variant="secondary"
               size="sm"
-              onClick={async () => {
-                const id = await raiseFor(ackTarget, false);
-                await reloadTickets(id);
-              }}
+              onClick={() => void raiseFromAckTarget()}
             >
               Raise ticket from this alert
             </Button>

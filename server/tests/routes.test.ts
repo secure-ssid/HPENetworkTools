@@ -3161,3 +3161,25 @@ describe('on-demand per-object detail reads', () => {
     }
   });
 });
+
+/**
+ * The listener must stay off the network by default. This portal brokers
+ * production configuration changes and bridges SSH to switches while having no
+ * authentication of its own, so a default of 0.0.0.0 would publish that
+ * surface to every host that can route to the box.
+ */
+describe('bind host safety', () => {
+  it('treats every loopback spelling as off-network', async () => {
+    const { isLoopbackHost } = await import('../src/index');
+    for (const host of ['127.0.0.1', 'localhost', 'LOCALHOST', '::1', '[::1]', '127.0.1.1']) {
+      expect(isLoopbackHost(host)).toBe(true);
+    }
+  });
+
+  it('treats a routable bind as on-network so it can be warned about', async () => {
+    const { isLoopbackHost } = await import('../src/index');
+    for (const host of ['0.0.0.0', '10.0.0.5', '192.168.1.20', '::']) {
+      expect(isLoopbackHost(host)).toBe(false);
+    }
+  });
+});
