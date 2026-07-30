@@ -21,7 +21,8 @@
  * subscription endpoints). The two are never collapsed.
  */
 
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router, type Response } from 'express';
+import { h } from './handler';
 import {
   GreenLakeObjectsError,
   GreenLakeObjectsService,
@@ -30,13 +31,6 @@ import {
 } from '../services/greenlakeObjects';
 
 export const greenlakeRouter = Router();
-
-/** Wrap async handlers so rejections reach the error middleware (Express 4). */
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    fn(req, res, next).catch(next);
-  };
-}
 
 /** GreenLakeObjectsError carries its own HTTP status; anything else is a real
  *  bug and goes to the shared error middleware rather than being swallowed. */

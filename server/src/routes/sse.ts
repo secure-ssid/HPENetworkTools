@@ -33,23 +33,17 @@
  * a real "object not found" answers 404.
  */
 
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router, type Response } from 'express';
+import { h } from './handler';
 import {
   SSE_OBJECT_KINDS,
   type SseInventory,
   type SseKindReadStatus,
   type SseObjectKind,
-} from '../../../shared';
+} from '@hpe/shared';
 import { SseObjectsError, sseObjects, sseObjectsErrorBody } from '../services/sseObjects';
 
 export const sseRouter = Router();
-
-/** Wrap async handlers so rejections reach the error middleware (Express 4). */
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    fn(req, res, next).catch(next);
-  };
-}
 
 function asKind(value: string): SseObjectKind | null {
   return (SSE_OBJECT_KINDS as readonly string[]).includes(value) ? (value as SseObjectKind) : null;

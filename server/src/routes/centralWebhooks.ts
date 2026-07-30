@@ -29,16 +29,10 @@
  * as {ok:false, action:'failed', ...} at 200, not a 4xx/5xx.
  */
 
-import { Router, type NextFunction, type Request, type Response } from 'express';
-import type { WebhookMutationResult, WebhookOneTimeSecretResult } from '../../../shared';
+import { Router, type Response } from 'express';
+import { h } from './handler';
+import type { WebhookMutationResult, WebhookOneTimeSecretResult } from '@hpe/shared';
 import { CentralWebhooksError, centralWebhooks, type CentralWebhooksService } from '../services/centralWebhooks';
-
-/** Wrap async handlers so rejections reach the error middleware (Express 4). */
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    fn(req, res, next).catch(next);
-  };
-}
 
 /** CentralWebhooksError carries its own HTTP status; anything else is a
  *  real bug and goes to the shared error middleware (index.ts). */

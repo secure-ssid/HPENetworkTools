@@ -26,7 +26,8 @@
  */
 
 import * as net from 'node:net';
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router } from 'express';
+import { h } from './handler';
 import { settings } from '../config/settings';
 import { CentralAdapter, GREENLAKE_CCS_TOKEN_URL, isNewCentralGateway } from '../planes/central';
 import {
@@ -47,13 +48,6 @@ import { CentralWebhooksError, centralWebhooks } from '../services/centralWebhoo
 import { PLANE_IDS, type PlaneId } from '../planes/types';
 
 export const systemsRouter = Router();
-
-/** Wrap async handlers so rejections reach the error middleware (Express 4). */
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    fn(req, res, next).catch(next);
-  };
-}
 
 function asPlaneId(value: string): PlaneId | null {
   return (PLANE_IDS as readonly string[]).includes(value) ? (value as PlaneId) : null;

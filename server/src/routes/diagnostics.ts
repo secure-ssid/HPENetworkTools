@@ -10,17 +10,12 @@
  */
 
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { h } from './handler';
 import {
   DiagnosticsError,
   DiagnosticsService,
   diagnosticsService,
 } from '../services/diagnostics';
-
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void> | void) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-}
 
 export function createDiagnosticsRouter(service: DiagnosticsService = diagnosticsService): Router {
   const router = Router();

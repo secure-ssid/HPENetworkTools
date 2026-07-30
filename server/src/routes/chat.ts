@@ -12,18 +12,12 @@
  *                          failure.
  */
 
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router } from 'express';
+import { h } from './handler';
 import { settings } from '../config/settings';
 import { chatLoop, chatMcpClient, type ChatMessage } from '../services/mcpChat';
 
 export const chatRouter = Router();
-
-/** Wrap async handlers so rejections reach the error middleware (Express 4). */
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    fn(req, res, next).catch(next);
-  };
-}
 
 chatRouter.get(
   '/chat/status',

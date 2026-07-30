@@ -11,18 +11,12 @@
  * a request error (same convention as the write broker's push).
  */
 
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router } from 'express';
+import { h } from './handler';
 import { DisconnectError, disconnectService } from '../services/disconnect';
 import { CoaError, coaService } from '../services/coa';
 
 export const clientsRouter = Router();
-
-/** Wrap async handlers so rejections reach the error middleware (Express 4). */
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    fn(req, res, next).catch(next);
-  };
-}
 
 clientsRouter.post(
   '/clients/:mac/disconnect',

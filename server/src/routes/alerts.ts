@@ -10,17 +10,11 @@
  * report, not a request error (same convention as reboot/disconnect).
  */
 
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router } from 'express';
+import { h } from './handler';
 import { AckAlertError, ackAlertService } from '../services/ackAlert';
 
 export const alertsRouter = Router();
-
-/** Wrap async handlers so rejections reach the error middleware (Express 4). */
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    fn(req, res, next).catch(next);
-  };
-}
 
 alertsRouter.post(
   '/alerts/ack',

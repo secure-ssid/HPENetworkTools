@@ -24,10 +24,11 @@
  * through the app's error middleware.
  */
 
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router } from 'express';
+import { h } from './handler';
 import { writeBroker, type WriteBroker } from '../services/writeBroker';
 import { ssidDirectWrite, type SsidDirectWriteService } from '../services/ssidDirectWrite';
-import type { BrokerAuditEvent } from '../../../shared';
+import type { BrokerAuditEvent } from '@hpe/shared';
 
 /** Audit-log page size: what the drawer asks for, clamped to what the log tail
  *  can sensibly answer. A missing/garbage `limit` is the default, never 0. */
@@ -38,13 +39,6 @@ function historyLimit(raw: unknown): number {
   const n = Number(Array.isArray(raw) ? raw[0] : raw);
   if (!Number.isFinite(n) || n < 1) return HISTORY_DEFAULT;
   return Math.min(HISTORY_MAX, Math.trunc(n));
-}
-
-/** Wrap async handlers so rejections reach the error middleware (Express 4). */
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    fn(req, res, next).catch(next);
-  };
 }
 
 export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirectWriteService = ssidDirectWrite): Router {

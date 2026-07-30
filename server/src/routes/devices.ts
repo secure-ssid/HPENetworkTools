@@ -10,15 +10,9 @@
  * a request error (same convention as the write broker's push).
  */
 
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router } from 'express';
+import { h } from './handler';
 import { RebootError, RebootService, rebootService } from '../services/reboot';
-
-/** Wrap async handlers so rejections reach the error middleware (Express 4). */
-function h(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    fn(req, res, next).catch(next);
-  };
-}
 
 export function createDevicesRouter(service: RebootService = rebootService): Router {
   const router = Router();
