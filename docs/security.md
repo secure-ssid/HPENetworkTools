@@ -40,6 +40,36 @@ OAuth2/OpenID Provider and an Application, then the issuer is
 `https://<host>/application/o/<application-slug>/` — including the trailing
 slash. Set the provider's redirect URI to exactly the `redirectUri` above.
 
+### Configuring it from the portal
+
+Systems → Identity provider reads, tests and saves the same configuration, so
+the first provider can be set up without hand-editing a file. Two distinctions
+there are deliberate and worth understanding:
+
+- **Configured is not active.** The guard is installed once, at startup. A
+  provider saved into a process that booted without one is recorded but not in
+  force, and the portal says so rather than showing a green badge over a server
+  that is still answering every route unauthenticated. Restart to apply it.
+- **A reachable provider is not a valid client.** *Test provider* fetches the
+  discovery document and then presents the client id and secret to the token
+  endpoint with a deliberately invalid authorization code. A provider that
+  rejects the client answers `invalid_client`; one that accepts it and rejects
+  only the code answers `invalid_grant`. The result reports which happened
+  instead of calling a reachable provider a working one.
+
+When `HPE_OIDC_*` is set, the environment owns the configuration: the screen
+shows it read-only and the API refuses to save over it, because accepting a
+write there would leave the portal reporting one provider while signing people
+in against another. For the same reason a settings write that disagrees with
+the environment overlay is rejected rather than merged, and the overlay is
+never persisted — an environment-supplied client secret stays out of
+`settings.json` even when something unrelated is saved afterwards.
+
+`GET`/`PUT`/`DELETE /api/auth/config` and `POST /api/auth/test` mount *behind*
+the auth guard, unlike the sign-in routes which necessarily precede it. An
+unauthenticated caller who could rewrite the issuer could point the portal at
+an identity provider of their own.
+
 ### What is guarded
 
 With an identity provider configured, every `/api` route requires a session

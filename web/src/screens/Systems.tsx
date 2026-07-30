@@ -78,6 +78,7 @@ import { ApiErrorState } from './ApiErrorState';
 import { SseInventoryPanel } from './SseInventoryPanel';
 import { CentralWebhooksPanel } from './CentralWebhooksPanel';
 import { AssistantSection } from './systems/AssistantSection';
+import { IdentityProviderSection } from './systems/IdentityProviderSection';
 import {
   NothingReported,
   PlaneRow,
@@ -684,6 +685,11 @@ export default function Systems() {
 
       {/* ---------------- portal (this app) ---------------- */}
       <PortalSection />
+
+      <Divider variant="flair" />
+
+      {/* ---------------- identity provider (who may use this) ---------------- */}
+      <IdentityProviderSection />
 
       <Divider variant="flair" />
 

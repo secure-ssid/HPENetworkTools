@@ -28,8 +28,8 @@ import { sseRouter } from './routes/sse';
 import { greenlakeRouter } from './routes/greenlake';
 import { systemsRouter } from './routes/systems';
 import { inventoryRouter } from './routes/inventory';
-import { authRouter } from './routes/auth';
-import { actorContext, authenticateUpgrade, requireAuth, requireSameOrigin, type AuthGuard } from './services/auth';
+import { authConfigRouter, authRouter } from './routes/auth';
+import { actorContext, authenticateUpgrade, requireAuth, requireSameOrigin, setAuthGuardInstalled, type AuthGuard } from './services/auth';
 import { SsidDirectWriteError } from './services/ssidDirectWrite';
 
 export interface AppOptions {
@@ -74,6 +74,14 @@ export function createApp(opts: AppOptions = {}): express.Express {
   // knows whether it is signed in.
   app.use('/api', authRouter);
   if (opts.auth) app.use('/api', opts.auth);
+  // Recorded so /api/auth/config can report whether the guard is genuinely in
+  // force in this process, rather than inferring it from settings that may
+  // have been written after boot.
+  setAuthGuardInstalled(Boolean(opts.auth));
+  // Deliberately after the guard: these read and replace the identity provider
+  // itself, so an unauthenticated caller reaching them would be able to swap
+  // in one of their own.
+  app.use('/api', authConfigRouter);
 
   // After the guard, so req.principal is populated. Every change-log line
   // written while handling this request is attributed to whoever it names.

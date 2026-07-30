@@ -105,7 +105,12 @@ export function effectiveSectionSource(
 }
 
 const SECRET_KEY = /secret|token|key|password|passphrase/i;
-const MASK = '••••••';
+export const MASK = '••••••';
+
+/** Is this value the placeholder a masked view round-trips, rather than a secret? */
+export function isMasked(value: string): boolean {
+  return value.trim() === MASK;
+}
 
 function defaultSettings(): Settings {
   const planes = {} as Record<PlaneId, PlaneCredentials | null>;
@@ -151,8 +156,47 @@ function sanitizeCreds(input: unknown): PlaneCredentials | null {
   return out;
 }
 
+/**
+ * Raised when a write would contradict configuration the environment owns.
+ * Distinct from a validation error: the value may be perfectly valid, it is
+ * the *source* that makes accepting it a lie.
+ */
+export class SettingsConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SettingsConflictError';
+  }
+}
+
+/** Do two identity-provider blocks say the same thing? */
+function sameAuth(a: AuthSettings | null, b: AuthSettings | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.issuer === b.issuer &&
+    a.clientId === b.clientId &&
+    a.clientSecret === b.clientSecret &&
+    a.redirectUri === b.redirectUri &&
+    (a.allowedGroups ?? []).join(',') === (b.allowedGroups ?? []).join(',')
+  );
+}
+
 export class SettingsStore {
   private current: Settings | null = null;
+
+  /**
+   * The identity-provider block the environment supplied, and the one that
+   * belongs on disk.
+   *
+   * These exist because `save()` serialises `current` wholesale, and
+   * `overlayEnvAuth` puts the environment's client secret *into* `current` so
+   * the running process can use it. Without somewhere to remember what the
+   * file actually said, the next unrelated write — saving plane credentials,
+   * toggling demo mode — would copy that secret into the file the operator
+   * deliberately kept it out of. Keeping the two apart is what makes rule 2
+   * on `overlayEnvAuth` true rather than merely stated.
+   */
+  private envAuth: AuthSettings | null = null;
+  private fileAuth: AuthSettings | null = null;
 
   constructor(private readonly filePath: string = defaultPath()) {}
 
@@ -186,6 +230,16 @@ export class SettingsStore {
   update(partial: unknown): Settings {
     const previous = this.get();
     const next = this.merged(previous, partial);
+    // The environment overlay is the source of truth for auth while it is in
+    // force. Silently accepting a change here would leave the API reporting
+    // one identity provider and the login flow using another, so refuse and
+    // say why instead.
+    if (this.envAuth && !sameAuth(next.auth ?? null, this.envAuth)) {
+      throw new SettingsConflictError(
+        'the identity provider is configured through the environment; ' +
+          'change HPE_OIDC_* and restart rather than saving it here',
+      );
+    }
     this.current = next;
     try {
       this.save();
@@ -238,8 +292,16 @@ export class SettingsStore {
       redirectUri: redirectUri!,
       ...(groups.length ? { allowedGroups: groups } : {}),
     };
+    this.fileAuth = this.get().auth ?? null;
+    this.envAuth = auth;
     this.current = { ...this.get(), auth };
     return auth;
+  }
+
+  /** Where the identity-provider configuration in force actually came from. */
+  authSource(): 'environment' | 'settings' | 'none' {
+    if (this.envAuth) return 'environment';
+    return this.get().auth ? 'settings' : 'none';
   }
 
   /** Settings as safe to send over the API — every secret masked. */
@@ -407,10 +469,14 @@ export class SettingsStore {
 
   /** Atomic write: tmp file + rename, mode 0600 throughout. */
   private save(): void {
+    // Never persist an identity provider the environment supplied. `current`
+    // holds it so the running process can serve logins; the file must keep
+    // saying whatever it said before the overlay was applied.
+    const persisted = this.envAuth ? { ...this.current, auth: this.fileAuth } : this.current;
     const dir = path.dirname(this.filePath);
     fs.mkdirSync(dir, { recursive: true });
     const tmp = `${this.filePath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.current, null, 2) + '\n', { mode: 0o600 });
+    fs.writeFileSync(tmp, JSON.stringify(persisted, null, 2) + '\n', { mode: 0o600 });
     fs.chmodSync(tmp, 0o600); // in case tmp already existed with looser mode
     fs.renameSync(tmp, this.filePath);
   }

@@ -674,6 +674,27 @@ export function isOpenPath(path: string): boolean {
 }
 
 /**
+ * Whether this process actually installed the guard.
+ *
+ * The guard is chosen once, in `createApp`, from whether an identity provider
+ * was configured at boot. Configuration written afterwards is therefore real
+ * but not yet *in force*, and the difference matters enormously to an
+ * operator: a portal that says "authentication enabled" while still serving
+ * every route unauthenticated is precisely the green-badge-over-a-failure this
+ * codebase refuses everywhere else. Recorded here so the config endpoint can
+ * report the running truth rather than the intended one.
+ */
+let guardInstalled = false;
+
+export function setAuthGuardInstalled(installed: boolean): void {
+  guardInstalled = installed;
+}
+
+export function isAuthGuardInstalled(): boolean {
+  return guardInstalled;
+}
+
+/**
  * Reject any API request without a live session.
  *
  * `/api/auth/me` is open on purpose: the web app calls it before it knows

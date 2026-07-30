@@ -46,6 +46,8 @@ let nonceForNextToken = '';
 let claimsForNextToken: Record<string, unknown> = {};
 /** When set, the mock signs with the unpublished key instead. */
 let signWithRogueKey = false;
+/** When set, the token endpoint answers with this OAuth error instead of a token. */
+let tokenErrorForNextRequest: string | null = null;
 /** Captured token-endpoint form bodies, for asserting PKCE and client auth. */
 let tokenRequests: { body: URLSearchParams; auth: string | undefined }[] = [];
 
@@ -107,6 +109,13 @@ beforeAll(async () => {
           body: new URLSearchParams(raw),
           auth: req.headers.authorization,
         });
+        if (tokenErrorForNextRequest) {
+          res.writeHead(tokenErrorForNextRequest === 'invalid_client' ? 401 : 400, {
+            'content-type': 'application/json',
+          });
+          res.end(JSON.stringify({ error: tokenErrorForNextRequest }));
+          return;
+        }
         void signIdToken().then((idToken) => {
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ access_token: 'at', token_type: 'Bearer', id_token: idToken }));
@@ -151,6 +160,7 @@ beforeEach(() => {
   nonceForNextToken = '';
   claimsForNextToken = {};
   signWithRogueKey = false;
+  tokenErrorForNextRequest = null;
   tokenRequests = [];
   auth.resetDiscoveryCache();
 });
@@ -743,5 +753,288 @@ describe('OIDC configuration from the environment', () => {
     const after = readFileSync(file, 'utf8');
     expect(after).toBe(before);
     expect(after).not.toContain('shh');
+  });
+
+  it('still keeps the secret off disk when something unrelated is saved later', () => {
+    // The overlay lives in `current` so the process can serve logins, and
+    // save() serialises `current`. Without care, the very next write of any
+    // kind — plane credentials, a demo-mode toggle — copies the environment's
+    // client secret into the file it was deliberately kept out of.
+    const { s, file } = store();
+    s.overlayEnvAuth({ ...base });
+    s.update({ demoMode: true });
+    const after = readFileSync(file, 'utf8');
+    expect(after).not.toContain('shh');
+    expect(after).not.toContain(base.HPE_OIDC_CLIENT_ID);
+    expect(JSON.parse(after).auth).toBeNull();
+    // …and the running process still has it.
+    expect(s.get().auth?.clientSecret).toBe('shh');
+    expect(s.get().demoMode).toBe(true);
+  });
+
+  it('preserves an identity provider the file already had', () => {
+    // The overlay wins in memory, but it must not erase the file's own block:
+    // unset the variables and restart, and the configured provider is back.
+    const { s, file } = store();
+    const fromFile = {
+      issuer: 'https://id.securessid.com/application/o/from-file/',
+      clientId: 'file-id',
+      clientSecret: 'file-secret',
+      redirectUri: 'https://portal.example.com/api/auth/callback',
+    };
+    s.update({ auth: fromFile });
+    s.overlayEnvAuth({ ...base });
+    s.update({ demoMode: true });
+    expect(JSON.parse(readFileSync(file, 'utf8')).auth).toMatchObject({ clientId: 'file-id' });
+    expect(s.get().auth?.clientId).toBe('abc');
+  });
+
+  it('refuses a settings write that would disagree with the environment', () => {
+    // Accepting it would leave the API reporting one provider and the login
+    // flow using another — the same dishonesty as a green badge over a failure.
+    const { s } = store();
+    s.overlayEnvAuth({ ...base });
+    expect(() =>
+      s.update({ auth: { ...base, issuer: 'https://elsewhere.example.com/application/o/x/' } }),
+    ).toThrow(/configured through the environment/);
+    expect(s.get().auth?.issuer).toBe(base.HPE_OIDC_ISSUER);
+  });
+
+  it('reports where the configuration in force came from', () => {
+    const { s } = store();
+    expect(s.authSource()).toBe('none');
+    s.update({
+      auth: {
+        issuer: base.HPE_OIDC_ISSUER,
+        clientId: 'x',
+        clientSecret: 'y',
+        redirectUri: base.HPE_OIDC_REDIRECT_URI,
+      },
+    });
+    expect(s.authSource()).toBe('settings');
+    s.overlayEnvAuth({ ...base });
+    expect(s.authSource()).toBe('environment');
+  });
+});
+
+
+describe('identity provider configuration over the API', () => {
+  /**
+   * Sign in *before* any test arms the token endpoint with an error: the
+   * sign-in flow uses that same endpoint, so arming it first would break the
+   * session rather than the probe under test.
+   */
+  async function session(): Promise<string> {
+    const { sessionId } = await signIn();
+    expect(sessionId).toBeTruthy();
+    return sessionId!;
+  }
+
+  async function call(
+    sid: string,
+    path: string,
+    init: RequestInit = {},
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const r = await fetch(`${portalBase}${path}`, {
+      ...init,
+      headers: {
+        ...(init.headers ?? {}),
+        'content-type': 'application/json',
+        cookie: `${auth.SESSION_COOKIE}=${encodeURIComponent(sid)}`,
+      },
+    });
+    return { status: r.status, body: (await r.json()) as Record<string, unknown> };
+  }
+
+  /** Put the shared provider config back after a test that changes it. */
+  function restoreProvider(): void {
+    settingsMod.settings.update({
+      auth: {
+        issuer,
+        clientId: CLIENT_ID,
+        clientSecret: CLIENT_SECRET,
+        redirectUri: 'http://127.0.0.1:5173/api/auth/callback',
+        allowedGroups: [],
+      },
+    });
+  }
+
+  it('cannot be read without a session', async () => {
+    // The whole point of the separate router: these routes read and replace
+    // the identity provider, so reaching them unauthenticated would be an
+    // authentication bypass rather than a settings leak.
+    expect((await fetch(`${portalBase}/api/auth/config`)).status).toBe(401);
+  });
+
+  it('cannot be changed without a session', async () => {
+    const r = await fetch(`${portalBase}/api/auth/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ issuer: 'https://attacker.example.com/application/o/x/' }),
+    });
+    expect(r.status).toBe(401);
+    expect(settingsMod.settings.get().auth?.issuer).toBe(issuer);
+  });
+
+  it('reports the configuration with the secret masked', async () => {
+    const { status, body } = await call(await session(), '/api/auth/config');
+    expect(status).toBe(200);
+    expect(body.configured).toBe(true);
+    expect(body.clientId).toBe(CLIENT_ID);
+    expect(body.issuer).toBe(issuer);
+    expect(body.clientSecret).not.toBe(CLIENT_SECRET);
+    expect(body.source).toBe('settings');
+    expect(body.editable).toBe(true);
+  });
+
+  it('separates a provider being recorded from one being enforced', async () => {
+    // Both are true here because this app was built with the guard. The pair
+    // exists for the window after saving a provider into a process that
+    // started without one, where `configured` is true and `active` is not.
+    const { body } = await call(await session(), '/api/auth/config');
+    expect(body.configured).toBe(true);
+    expect(body.active).toBe(true);
+  });
+
+  it('confirms a reachable provider and a client it accepts', async () => {
+    const sid = await session();
+    tokenErrorForNextRequest = 'invalid_grant';
+    const { status, body } = await call(sid, '/api/auth/test', {
+      method: 'POST',
+      body: JSON.stringify({ issuer, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }),
+    });
+    expect(status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(String(body.message)).toContain('accepted the client id and secret');
+    expect((body.endpoints as Record<string, string>).jwks).toBe(`${issuer}/jwks`);
+  });
+
+  it('reports a rejected client as a failure, not as a reachable provider', async () => {
+    // Discovery succeeding says nothing about the credentials. Calling this a
+    // pass would only move the discovery to the operator's first sign-in.
+    const sid = await session();
+    tokenErrorForNextRequest = 'invalid_client';
+    const { status, body } = await call(sid, '/api/auth/test', {
+      method: 'POST',
+      body: JSON.stringify({ issuer, clientId: CLIENT_ID, clientSecret: 'wrong' }),
+    });
+    expect(status).toBe(502);
+    expect(body.ok).toBe(false);
+    expect(String(body.message)).toContain('rejected the client id or secret');
+  });
+
+  it('probes with the stored secret when the masked value is sent back', async () => {
+    const sid = await session();
+    tokenErrorForNextRequest = 'invalid_grant';
+    tokenRequests = [];
+    await call(sid, '/api/auth/test', {
+      method: 'POST',
+      body: JSON.stringify({ issuer, clientId: CLIENT_ID, clientSecret: '••••••' }),
+    });
+    const probe = tokenRequests.at(-1)!;
+    const decoded = Buffer.from(probe.auth!.replace(/^Basic /, ''), 'base64').toString();
+    expect(decoded).toBe(`${CLIENT_ID}:${CLIENT_SECRET}`);
+  });
+
+  it('explains the Authentik issuer shape when discovery fails', async () => {
+    const { status, body } = await call(await session(), '/api/auth/test', {
+      method: 'POST',
+      body: JSON.stringify({ issuer: `${issuer}/nowhere` }),
+    });
+    expect(status).toBe(502);
+    expect(body.ok).toBe(false);
+    expect(String(body.hint)).toContain('/application/o/');
+  });
+
+  it('rejects an issuer that is not confidential transport', async () => {
+    const { status, body } = await call(await session(), '/api/auth/test', {
+      method: 'POST',
+      body: JSON.stringify({ issuer: 'http://id.example.com/application/o/x/' }),
+    });
+    expect(status).toBe(400);
+    expect(String(body.message)).toContain('HTTPS');
+  });
+
+  it('cautions about a redirect URI this server could never handle', async () => {
+    const sid = await session();
+    tokenErrorForNextRequest = 'invalid_grant';
+    const { body } = await call(sid, '/api/auth/test', {
+      method: 'POST',
+      body: JSON.stringify({ issuer, redirectUri: 'https://portal.example.com/oidc/done' }),
+    });
+    const cautions = (body.cautions as string[]).join(' ');
+    expect(cautions).toContain('/api/auth/callback');
+    expect(cautions).toContain('character for character');
+  });
+
+  it('saves a provider, masks it back, and says whether it is in force', async () => {
+    try {
+      const { status, body } = await call(await session(), '/api/auth/config', {
+        method: 'PUT',
+        body: JSON.stringify({
+          issuer,
+          clientId: CLIENT_ID,
+          clientSecret: CLIENT_SECRET,
+          redirectUri: 'http://127.0.0.1:5173/api/auth/callback',
+          allowedGroups: ['net-admins'],
+        }),
+      });
+      expect(status).toBe(200);
+      expect(body.saved).toBe(true);
+      expect(body.restartRequired).toBe(false);
+      expect(body.allowedGroups).toEqual(['net-admins']);
+      expect(body.clientSecret).not.toBe(CLIENT_SECRET);
+      expect(settingsMod.settings.get().auth?.allowedGroups).toEqual(['net-admins']);
+    } finally {
+      restoreProvider();
+    }
+  });
+
+  it('rejects a redirect URI that is not an absolute URL', async () => {
+    const { status, body } = await call(await session(), '/api/auth/config', {
+      method: 'PUT',
+      body: JSON.stringify({ redirectUri: '/api/auth/callback' }),
+    });
+    expect(status).toBe(400);
+    expect(String(body.error)).toContain('absolute URL');
+    expect(settingsMod.settings.get().auth?.redirectUri).toBe('http://127.0.0.1:5173/api/auth/callback');
+  });
+
+  it('rejects an issuer it would refuse to use', async () => {
+    const { status, body } = await call(await session(), '/api/auth/config', {
+      method: 'PUT',
+      body: JSON.stringify({ issuer: 'not-a-url' }),
+    });
+    expect(status).toBe(400);
+    expect(String(body.error)).toMatch(/valid absolute URL/);
+    expect(settingsMod.settings.get().auth?.issuer).toBe(issuer);
+  });
+
+  // Applies an environment overlay to the shared settings singleton, which
+  // cannot be undone — so it is deliberately the last test in the file.
+  it('refuses to save over a provider the environment owns', async () => {
+    const sid = await session();
+    settingsMod.settings.overlayEnvAuth({
+      HPE_OIDC_ISSUER: issuer,
+      HPE_OIDC_CLIENT_ID: CLIENT_ID,
+      HPE_OIDC_CLIENT_SECRET: CLIENT_SECRET,
+      HPE_OIDC_REDIRECT_URI: 'http://127.0.0.1:5173/api/auth/callback',
+    } as NodeJS.ProcessEnv);
+
+    const read = await call(sid, '/api/auth/config');
+    expect(read.body.source).toBe('environment');
+    expect(read.body.editable).toBe(false);
+
+    const { status, body } = await call(sid, '/api/auth/config', {
+      method: 'PUT',
+      body: JSON.stringify({ issuer: 'https://elsewhere.example.com/application/o/x/' }),
+    });
+    expect(status).toBe(409);
+    expect(String(body.error)).toContain('HPE_OIDC_');
+    expect(settingsMod.settings.get().auth?.issuer).toBe(issuer);
+
+    const removed = await call(sid, '/api/auth/config', { method: 'DELETE' });
+    expect(removed.status).toBe(409);
+    expect(settingsMod.settings.get().auth?.issuer).toBe(issuer);
   });
 });
