@@ -2577,6 +2577,82 @@ describe('CentralAdapter.applySsidProfile()', () => {
     expect(calls.some((c) => c.method === 'POST' && c.path === profilePath)).toBe(false);
   });
 
+  // The idempotency read is best-effort by design, but "best-effort" must not
+  // mean "invisible". These three tests pin the distinction between a read that
+  // said "nothing assigned" and a read that never happened.
+  it('says so in every assignment message when the existing-assignment check could not be read', async () => {
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const { adapter } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) return { body: buildWlanSsidPayload(BASE_SSID_FORM) };
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 500, body: {} }; // the check itself is unavailable
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    expect(result.assignments).toHaveLength(2);
+    for (const a of result.assignments) {
+      expect(a.ok).toBe(true);
+      expect(a.skipped).toBeFalsy();
+      expect(a.message).toContain('could not be read first');
+    }
+  });
+
+  it('does not let a duplicate conflict read as a plain failure when the check was unavailable', async () => {
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const { adapter } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) return { body: buildWlanSsidPayload(BASE_SSID_FORM) };
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 503, body: {} };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 409, body: { message: 'assignment already exists' } };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    // Still reported as not-ok — we genuinely do not know it landed — but the
+    // operator is told why 409 might mean "already correct" rather than "broken".
+    for (const a of result.assignments) {
+      expect(a.ok).toBe(false);
+      expect(a.httpCode).toBe(409);
+      expect(a.message).toContain('may duplicate one already in place');
+    }
+  });
+
+  it('adds no such caveat when the check was read and simply came back empty', async () => {
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const { adapter } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) return { body: buildWlanSsidPayload(BASE_SSID_FORM) };
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 200, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    for (const a of result.assignments) {
+      expect(a.message).toBe('assigned — HTTP 200');
+    }
+  });
+
   it('reports the profile step failed — and attempts no assignments — when the post-write verification read-back fails', async () => {
     const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
     const counter = scriptedCounter();

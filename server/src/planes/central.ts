@@ -1828,8 +1828,16 @@ export class CentralAdapter implements PlaneAdapter {
     const assignments: SsidScopeAssignmentResult[] = [];
     if (profileOk) {
       const existing = await this.existingScopeAssignments(name);
+      // A failed read does not change what we attempt, only what we can claim
+      // about it afterwards. Every message below carries the caveat so the
+      // operator can tell "assigned" from "re-assigned, possibly needlessly"
+      // and, more importantly, a real failure from a duplicate conflict.
+      const unchecked = existing === null;
+      const caveat = unchecked
+        ? '; the existing-assignment check could not be read first, so this may duplicate one already in place'
+        : '';
       for (const scopeId of scopeIds) {
-        if (existing.has(scopeId)) {
+        if (existing?.has(scopeId)) {
           assignments.push({ scopeId, label: scopeId, ok: true, skipped: true, message: 'already assigned — no write needed' });
           continue;
         }
@@ -1849,7 +1857,9 @@ export class CentralAdapter implements PlaneAdapter {
           label: scopeId,
           ok,
           httpCode: res.status,
-          message: ok ? `assigned — HTTP ${res.status}` : `assignment failed — HTTP ${res.status}`,
+          message: ok
+            ? `assigned — HTTP ${res.status}${caveat}`
+            : `assignment failed — HTTP ${res.status}${caveat}`,
         });
       }
     }
@@ -1882,15 +1892,21 @@ export class CentralAdapter implements PlaneAdapter {
 
   /**
    * Existing CAMPUS_AP configuration assignments for one profile — makes
-   * assignment idempotent (only POST what is missing). A read that fails or
-   * answers an unrecognised shape is NOT fatal: every requested scope simply
-   * gets (re-)attempted, which is never worse than assigning it, and Central
-   * answers its own outcome for an assignment that already exists.
+   * assignment idempotent (only POST what is missing).
+   *
+   * Answers null when the read could not be made, rather than an empty set.
+   * The two are opposite facts: an empty set means "nothing is assigned yet",
+   * a null means "we do not know what is assigned". Both lead to the same
+   * *action* — attempt every requested scope, which is never worse than
+   * assigning it — but they must not lead to the same *report*. A POST that
+   * then fails because the assignment already existed would otherwise reach
+   * the operator as a plain assignment failure, telling them a write did not
+   * land when the desired state was in fact already correct.
    */
-  private async existingScopeAssignments(resource: string): Promise<Set<string>> {
+  private async existingScopeAssignments(resource: string): Promise<Set<string> | null> {
     try {
       const res = await this.request('GET', '/network-config/v1alpha1/config-assignments');
-      if (res.status < 200 || res.status >= 300) return new Set();
+      if (res.status < 200 || res.status >= 300) return null;
       const out = new Set<string>();
       for (const raw of extractRows(res.body)) {
         if (!raw || typeof raw !== 'object') continue;
@@ -1907,7 +1923,7 @@ export class CentralAdapter implements PlaneAdapter {
       }
       return out;
     } catch {
-      return new Set();
+      return null;
     }
   }
 
