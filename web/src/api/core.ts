@@ -100,6 +100,7 @@ export async function fromApi<T>(path: string): Promise<T | null> {
   } finally {
     window.clearTimeout(timer);
   }
+  noteResponseStatus(response.status);
   if (!response.ok) throw new Error(await serverMessage(response, `HTTP ${response.status}`));
   try {
     return (await response.json()) as T;
@@ -119,6 +120,7 @@ export async function fromStrictOptionalApi<T>(path: string, notFoundIsNull = fa
   } finally {
     window.clearTimeout(timer);
   }
+  noteResponseStatus(response.status);
   if (notFoundIsNull && response.status === 404) return null;
   if (!response.ok) throw new Error(await serverMessage(response, `HTTP ${response.status}`));
   try {
@@ -135,6 +137,48 @@ export type ScreenFetch<T> =
 
 export const SCREEN_REQUEST_TIMEOUT_MS = 15_000;
 
+// ---------------------------------------------------------------------------
+// Session lapse
+// ---------------------------------------------------------------------------
+
+/**
+ * A 401 is not a data failure, and must not be reported as one.
+ *
+ * Sessions live in the server's memory, so every server restart signs every
+ * open tab out — this is a routine event, not an exotic one. Without a signal
+ * here, each screen independently renders "HTTP 401" through its own API-error
+ * path: the operator is told their devices could not be read, when the truth
+ * is that the portal no longer knows who they are, and nothing on the page
+ * offers a way back. That is the same class of mistake as showing demo data
+ * for a failed read — a wrong explanation is worse than a blunt one.
+ *
+ * This is deliberately a notification and not a verdict. A 403 may be the
+ * group restriction biting on one route rather than a lost session, so
+ * listeners are expected to re-ask the server who we are rather than assume
+ * the answer. Signing someone out because one route said no would be its own
+ * fabrication.
+ */
+const authLapseListeners = new Set<() => void>();
+
+export function onAuthLapse(listener: () => void): () => void {
+  authLapseListeners.add(listener);
+  return () => {
+    authLapseListeners.delete(listener);
+  };
+}
+
+/** Called for every answered request. Only 401/403 mean anything here. */
+export function noteResponseStatus(status: number): void {
+  if (status !== 401 && status !== 403) return;
+  for (const listener of [...authLapseListeners]) {
+    try {
+      listener();
+    } catch {
+      // A listener that throws must not take the request path down with it.
+    }
+  }
+}
+
 /**
  * Screen endpoints only use fixtures when no backend answered. An HTTP error
  * is an explicit live/API failure and must never turn into believable demo
@@ -145,6 +189,7 @@ export async function fetchScreen<T>(path: string): Promise<ScreenFetch<T>> {
   const timer = window.setTimeout(() => controller.abort(), SCREEN_REQUEST_TIMEOUT_MS);
   try {
     const r = await fetch(path, { signal: controller.signal });
+    noteResponseStatus(r.status);
     if (r.ok) {
       try {
         return { kind: 'ok', data: (await r.json()) as T };
@@ -188,6 +233,7 @@ export async function fetchDetail<T>(
   const timer = window.setTimeout(() => controller.abort(), SCREEN_REQUEST_TIMEOUT_MS);
   try {
     const r = await fetch(path, { signal: controller.signal });
+    noteResponseStatus(r.status);
     if (r.ok) {
       try {
         return { kind: 'ok', data: (await r.json()) as T };
@@ -306,6 +352,7 @@ export async function postForResult<T>(path: string, body: unknown): Promise<Api
       body: JSON.stringify(body),
     });
     if (r.ok) return (await r.json()) as T;
+    noteResponseStatus(r.status);
     return { error: await serverMessage(r, `request failed — HTTP ${r.status}`) };
   } catch (err) {
     return { error: `cannot reach the portal backend: ${(err as Error).message}`, offline: true };

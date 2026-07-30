@@ -21,6 +21,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { getAuthState, startLogin, type AuthState } from '../api/auth';
+import { onAuthLapse } from '../api/core';
 
 /**
  * The resolved sign-in state, published so the shell can name the signed-in
@@ -73,6 +74,7 @@ const button: React.CSSProperties = {
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'checking' });
+  const [lapsed, setLapsed] = useState(false);
 
   const check = useCallback(() => {
     setPhase({ kind: 'checking' });
@@ -82,6 +84,44 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(check, [check]);
+
+  /**
+   * Catch a session that ends while the portal is open.
+   *
+   * The check above runs once, at mount. But sessions live in the server's
+   * memory, so an ordinary server restart signs every open tab out mid-use.
+   * Without this the tab carries on, and each screen reports its 401 through
+   * its own data-error path — telling the operator their equipment could not
+   * be read when in fact the portal no longer knows who they are, and offering
+   * nothing to do about it.
+   *
+   * The 401 is a prompt to re-ask, never the answer itself. A 403 can be the
+   * group gate biting on a single route, and an unreachable server is not the
+   * same as a lost session — signing someone out on either would be a
+   * fabrication of exactly the kind this codebase refuses elsewhere. Only the
+   * server saying "you are not authenticated" closes the gate.
+   */
+  useEffect(() => {
+    let live = true;
+    let asking = false;
+    const stop = onAuthLapse(() => {
+      // Screens fail in a burst; one answer settles all of them.
+      if (asking) return;
+      asking = true;
+      void getAuthState().then((state) => {
+        asking = false;
+        if (!live || !state) return;
+        if (state.configured && !state.authenticated) {
+          setLapsed(true);
+          setPhase({ kind: 'ready', state });
+        }
+      });
+    });
+    return () => {
+      live = false;
+      stop();
+    };
+  }, []);
 
   if (phase.kind === 'checking') {
     return <div style={panel} aria-busy="true" />;
@@ -112,11 +152,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <div style={card}>
           <div style={eyebrow}>HPE Network Tools</div>
           <h1 style={{ margin: '10px 0 0', fontSize: 'var(--nd-text-18)', color: 'var(--nd-text-primary)' }}>
-            Sign in to continue
+            {lapsed ? 'Your session has ended' : 'Sign in to continue'}
           </h1>
           <p style={{ marginTop: 10, fontSize: 'var(--nd-text-13)', color: 'var(--nd-text-secondary)', lineHeight: 1.5 }}>
-            This portal brokers changes to production network equipment. Every change it makes is
-            recorded against the account you sign in with.
+            {lapsed
+              ? 'The portal was signed out while you were working — usually because the server restarted, ' +
+                'which clears every session. Nothing you had open was submitted by this. Sign in again to ' +
+                'return to the page you were on.'
+              : 'This portal brokers changes to production network equipment. Every change it makes is ' +
+                'recorded against the account you sign in with.'}
           </p>
           {state.groupGate ? (
             <p style={{ marginTop: 10, fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-secondary)' }}>

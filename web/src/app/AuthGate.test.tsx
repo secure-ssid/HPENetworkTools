@@ -11,6 +11,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthGate } from './AuthGate';
+import { noteResponseStatus } from '../api/core';
 
 const originalFetch = globalThis.fetch;
 
@@ -144,5 +145,79 @@ describe('AuthGate', () => {
     expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull();
     release({ ok: true, json: async () => ({ configured: false, authenticated: false }) });
     await waitFor(() => expect(screen.getByText('portal')).toBeTruthy());
+  });
+
+  // A session that ends mid-use is the common case, not the exotic one:
+  // sessions are held in the server's memory, so every restart ends all of
+  // them. These pin that the gate re-asserts itself, and — just as important —
+  // that it does not close over a 401 the server does not stand behind.
+  describe('when a session ends while the portal is open', () => {
+    it('shows the sign-in wall again, saying the session ended rather than repeating a first-visit prompt', async () => {
+      globalThis.fetch = answer({ configured: true, authenticated: true, principal: { sub: 'u' } }) as never;
+      render(
+        <AuthGate>
+          <div>portal</div>
+        </AuthGate>,
+      );
+      await screen.findByText('portal');
+
+      globalThis.fetch = answer({ configured: true, authenticated: false, principal: null }) as never;
+      noteResponseStatus(401);
+
+      expect(await screen.findByText('Your session has ended')).toBeTruthy();
+      expect(screen.queryByText('portal')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
+    });
+
+    it('keeps the portal open when the server still says we are signed in', async () => {
+      // A 403 from the group gate on one route is not a lost session. Closing
+      // the gate here would sign someone out over a permission they never had.
+      globalThis.fetch = answer({ configured: true, authenticated: true, principal: { sub: 'u' } }) as never;
+      render(
+        <AuthGate>
+          <div>portal</div>
+        </AuthGate>,
+      );
+      await screen.findByText('portal');
+
+      noteResponseStatus(403);
+      await waitFor(() => expect(screen.getByText('portal')).toBeTruthy());
+      expect(screen.queryByText('Your session has ended')).toBeNull();
+    });
+
+    it('keeps the portal open when the re-check cannot reach the server', async () => {
+      globalThis.fetch = answer({ configured: true, authenticated: true, principal: { sub: 'u' } }) as never;
+      render(
+        <AuthGate>
+          <div>portal</div>
+        </AuthGate>,
+      );
+      await screen.findByText('portal');
+
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error('offline')) as never;
+      noteResponseStatus(401);
+
+      await waitFor(() => expect(screen.getByText('portal')).toBeTruthy());
+      expect(screen.queryByText('Your session has ended')).toBeNull();
+    });
+
+    it('asks the server once for a burst of failing screens', async () => {
+      globalThis.fetch = answer({ configured: true, authenticated: true, principal: { sub: 'u' } }) as never;
+      render(
+        <AuthGate>
+          <div>portal</div>
+        </AuthGate>,
+      );
+      await screen.findByText('portal');
+
+      let release: (v: unknown) => void = () => {};
+      const slow = vi.fn().mockReturnValue(new Promise((r) => (release = r)));
+      globalThis.fetch = slow as never;
+      for (let i = 0; i < 12; i++) noteResponseStatus(401);
+      expect(slow).toHaveBeenCalledTimes(1);
+
+      release({ ok: true, json: async () => ({ configured: true, authenticated: false }) });
+      expect(await screen.findByText('Your session has ended')).toBeTruthy();
+    });
   });
 });
