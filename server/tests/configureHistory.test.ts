@@ -80,6 +80,7 @@ describe('GET /api/configure/history', () => {
     const events = await history();
     expect(events).toHaveLength(3);
     // Exactly the BrokerAuditEvent contract — no extra key smuggles a body in.
+    // `who` is a name, not a payload: it is what makes the row accountable.
     expect(Object.keys(events[0]).sort()).toEqual([
       'changeId',
       'event',
@@ -87,7 +88,11 @@ describe('GET /api/configure/history', () => {
       'result',
       'ticket',
       'ts',
+      'who',
     ]);
+    // No identity provider is configured in this test, so the row says so
+    // honestly rather than naming someone it cannot vouch for.
+    expect(events[0].who).toBe('operator');
     expect(events[0].event).toBe('queue');
     expect(events[0].kind).toBe('vlan');
     expect(events[0].ticket).toBe(TICKET);

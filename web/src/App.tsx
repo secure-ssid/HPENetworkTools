@@ -1,6 +1,7 @@
 import { Component } from 'react';
 import type { ReactNode } from 'react';
 import { SettingsProvider } from './app/SettingsContext';
+import { AuthGate } from './app/AuthGate';
 import { AppRoutes } from './app/routes';
 
 /**
@@ -97,10 +98,19 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 
 export default function App() {
   return (
-    <SettingsProvider>
-      <ErrorBoundary>
-        <AppRoutes />
-      </ErrorBoundary>
-    </SettingsProvider>
+    // ErrorBoundary outermost so a crash anywhere below it — including in the
+    // sign-in gate itself — still renders an honest panel.
+    //
+    // AuthGate wraps SettingsProvider rather than the other way round: the
+    // provider fetches /api/settings on mount, which is a guarded route. Asking
+    // for it before we know whether we are signed in produces a 401 the user
+    // never sees and a settings error that is really an auth error.
+    <ErrorBoundary>
+      <AuthGate>
+        <SettingsProvider>
+          <AppRoutes />
+        </SettingsProvider>
+      </AuthGate>
+    </ErrorBoundary>
   );
 }

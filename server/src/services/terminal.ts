@@ -106,6 +106,7 @@ import type { PlaneCapabilities } from '../planes/types';
 import { planeIdForLabel } from './reconcile';
 import { poller } from './poller';
 import { deviceIdentityKey, resolveDeviceIdentity, safeDeviceCandidates, type DeviceIdentity } from './deviceIdentity';
+import { ANONYMOUS_OPERATOR, isAllowedOrigin, withActor } from './auth';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -1116,47 +1117,15 @@ export class TerminalManager {
  *
  * WHAT THIS CANNOT DO: only browsers are obliged to send `Origin`. A native
  * client can omit it or forge it freely, so this defends against
- * browser-driven (cross-site) abuse and nothing else. A missing `Origin` is
- * therefore ALLOWED — rejecting it would break non-browser tooling while
- * adding no security, because an attacker in that position can set the header
- * to whatever passes. Authentication, not origin, is what bounds non-browser
- * callers.
+ * browser-driven (cross-site) abuse and nothing else. Authentication, not
+ * origin, is what bounds non-browser callers — see the session gate in
+ * attachTerminalWs below.
  *
- * The rules, in order:
- *   - no Origin            → allow (not a browser; see above)
- *   - loopback origin      → allow. A page served from this machine already
- *                            implies local code execution, and this keeps the
- *                            optional Vite dev server (a different port, see
- *                            web/vite.config.ts) working without configuration.
- *   - same host as the request → allow (the normal single-port deployment)
- *   - listed in HPE_ALLOWED_ORIGINS → allow (deliberate remote exposure)
- *   - anything else        → reject
+ * The rule itself is shared with the CSRF check on /api (services/auth.ts):
+ * the question "may this origin act on this server?" has exactly one right
+ * answer, and two copies of it would eventually disagree.
  */
-export function isAllowedTerminalOrigin(
-  origin: string | undefined,
-  host: string | undefined,
-  allowList: string | undefined = process.env.HPE_ALLOWED_ORIGINS,
-): boolean {
-  if (origin === undefined || origin === '') return true;
-
-  let parsed: URL;
-  try {
-    parsed = new URL(origin);
-  } catch {
-    return false; // an unparseable Origin is never a legitimate browser
-  }
-
-  const configured = (allowList ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s !== '');
-  if (configured.includes(origin)) return true;
-
-  const hostname = parsed.hostname.toLowerCase();
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
-
-  return host !== undefined && parsed.host.toLowerCase() === host.toLowerCase();
-}
+export const isAllowedTerminalOrigin = isAllowedOrigin;
 
 /**
  * Attach the terminal WebSocket endpoint to the existing HTTP server.
@@ -1165,7 +1134,22 @@ export function isAllowedTerminalOrigin(
 /** Process-wide manager — shared by the WS bridge and the sessions API. */
 export const terminalManager = new TerminalManager();
 
-export function attachTerminalWs(server: HttpServer, manager: TerminalManager = terminalManager): WebSocketServer {
+/**
+ * Decides whether an upgrade request carries a valid portal session.
+ *
+ * Structural, not imported from services/auth, so the terminal bridge keeps no
+ * dependency on the auth module (and stays trivially testable with a stub).
+ * `undefined` means the portal is running without an identity provider, in
+ * which case the origin check is the only gate — the same position the HTTP
+ * routes take.
+ */
+export type TerminalAuthenticator = (req: IncomingMessage) => { ok: true; who: string } | { ok: false };
+
+export function attachTerminalWs(
+  server: HttpServer,
+  manager: TerminalManager = terminalManager,
+  authenticate?: TerminalAuthenticator,
+): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -1178,17 +1162,38 @@ export function attachTerminalWs(server: HttpServer, manager: TerminalManager = 
     // bridge at all. An explicit 403 beats a bare destroy: a legitimate client
     // misconfigured behind a proxy gets a diagnosable answer instead of a
     // connection that dies for no stated reason.
+    let who = ANONYMOUS_OPERATOR;
     if (!isAllowedTerminalOrigin(req.headers.origin, req.headers.host)) {
       console.error(`terminal upgrade refused: disallowed origin ${req.headers.origin}`);
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }
+    // The origin check stops a *browser* on another site. It does nothing
+    // about a direct socket, which is trivial to open — so when the portal has
+    // an identity provider, this endpoint demands the same session every HTTP
+    // route does. Without it, guarding the API while leaving an unauthenticated
+    // SSH bridge open would be security theatre.
+    if (authenticate) {
+      const verdict = authenticate(req);
+      if (!verdict.ok) {
+        console.error('terminal upgrade refused: no valid session');
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      who = verdict.who;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const host = url.searchParams.get('host');
-      manager.handleConnection(ws, decodeURIComponent(m[1]), host, {
-        plane: url.searchParams.get('plane') ?? undefined,
-        serial: url.searchParams.get('serial') ?? undefined,
+      // The whole session runs inside the actor scope, so anything it appends
+      // to the change log names the person who opened the shell rather than
+      // an anonymous operator.
+      withActor(who, () => {
+        manager.handleConnection(ws, decodeURIComponent(m[1]), host, {
+          plane: url.searchParams.get('plane') ?? undefined,
+          serial: url.searchParams.get('serial') ?? undefined,
+        });
       });
     });
   });

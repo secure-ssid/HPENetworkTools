@@ -45,6 +45,7 @@ import {
   staleAfterSecFor,
   type PlaneStaleReason,
 } from '../../../shared';
+import { currentActor } from '../services/auth';
 import { settings, type PlaneCredentials, type SettingsStore } from '../config/settings';
 import { Aos8Adapter } from './aos8';
 import { CentralAdapter } from './central';
@@ -294,7 +295,7 @@ export class PlaneRegistry {
     this.runtime.set(id, rt);
     this.recordEvent(id, {
       what: rt.state.linked ? 'credentials saved — adapter rebuilt' : 'credentials cleared — plane unlinked',
-      who: 'operator',
+      who: currentActor(),
     });
     return this.snapshot(rt, Date.now());
   }

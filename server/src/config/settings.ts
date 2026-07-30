@@ -41,6 +41,27 @@ export interface LlmSettings {
   model: string;
 }
 
+/**
+ * OIDC single sign-on (Authentik, or any compliant provider).
+ *
+ * `issuer` is the provider's base URL — discovery appends
+ * /.well-known/openid-configuration. `redirectUri` must be registered with
+ * the provider verbatim; a mismatch is rejected at the provider, not here.
+ *
+ * `allowedGroups` is an optional additional gate: when non-empty, a verified
+ * identity must also carry one of these groups or it is refused. Empty or
+ * absent means any identity the provider vouches for may use the portal —
+ * which is the right default only when the provider's own application
+ * assignment is doing that job.
+ */
+export interface AuthSettings {
+  issuer: string;
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  allowedGroups?: string[];
+}
+
 export interface Settings {
   demoMode: boolean;
   /**
@@ -64,6 +85,8 @@ export interface Settings {
   planes: Record<PlaneId, PlaneCredentials | null>;
   mcp: McpSettings | null;
   llm: LlmSettings | null;
+  /** OIDC SSO configuration; null = no identity provider configured. */
+  auth: AuthSettings | null;
   chatWriteMode: boolean;
   /** UI shell preferences (optional — absent means the client uses its own defaults). */
   density?: 'comfortable' | 'compact';
@@ -94,6 +117,7 @@ function defaultSettings(): Settings {
     planes,
     mcp: null,
     llm: null,
+    auth: null,
     chatWriteMode: false,
   };
 }
@@ -172,6 +196,52 @@ export class SettingsStore {
     return next;
   }
 
+  /**
+   * Overlay identity-provider configuration supplied through the environment.
+   *
+   * settings.json is the primary home for this, but a deployment that keeps
+   * secrets out of files on disk needs somewhere else to put the client
+   * secret. The environment is the conventional answer, so it is supported —
+   * with two rules that keep a second source of truth from becoming a second
+   * *disagreement*:
+   *
+   *   1. It is all-or-nothing. A half-filled set (issuer but no client id) is
+   *      an error, not a partial overlay silently merged with the file. A
+   *      typo'd variable name must not quietly fall back to file config the
+   *      operator thought they had replaced.
+   *   2. It is in-memory only and never saved. Writing it back would copy the
+   *      secret into the file the operator was deliberately keeping it out of.
+   *
+   * Returns the overlay applied, or null when the environment says nothing.
+   */
+  overlayEnvAuth(env: NodeJS.ProcessEnv = process.env): AuthSettings | null {
+    const issuer = env.HPE_OIDC_ISSUER?.trim();
+    const clientId = env.HPE_OIDC_CLIENT_ID?.trim();
+    const clientSecret = env.HPE_OIDC_CLIENT_SECRET?.trim();
+    const redirectUri = env.HPE_OIDC_REDIRECT_URI?.trim();
+    const present = [issuer, clientId, clientSecret, redirectUri].filter(Boolean).length;
+    if (present === 0) return null;
+    if (present < 4) {
+      throw new Error(
+        'incomplete OIDC environment configuration: HPE_OIDC_ISSUER, HPE_OIDC_CLIENT_ID, ' +
+          'HPE_OIDC_CLIENT_SECRET and HPE_OIDC_REDIRECT_URI must all be set together, or none of them',
+      );
+    }
+    const groups = (env.HPE_OIDC_ALLOWED_GROUPS ?? '')
+      .split(',')
+      .map((g) => g.trim())
+      .filter(Boolean);
+    const auth: AuthSettings = {
+      issuer: issuer!,
+      clientId: clientId!,
+      clientSecret: clientSecret!,
+      redirectUri: redirectUri!,
+      ...(groups.length ? { allowedGroups: groups } : {}),
+    };
+    this.current = { ...this.get(), auth };
+    return auth;
+  }
+
   /** Settings as safe to send over the API — every secret masked. */
   maskedView(): Settings {
     const s = this.get();
@@ -187,6 +257,7 @@ export class SettingsStore {
         ? { ...s.mcp, bearerToken: s.mcp.bearerToken ? maskSecret() : null }
         : null,
       llm: s.llm ? { ...s.llm, apiKey: maskSecret() } : null,
+      auth: s.auth ? { ...s.auth, clientSecret: s.auth.clientSecret ? maskSecret() : '' } : null,
     };
   }
 
@@ -199,6 +270,7 @@ export class SettingsStore {
       planes: { ...base.planes },
       mcp: base.mcp ? { ...base.mcp } : null,
       llm: base.llm ? { ...base.llm } : null,
+      auth: base.auth ? { ...base.auth } : null,
     };
     if (input === null || typeof input !== 'object' || Array.isArray(input)) return out;
     const p = input as Record<string, unknown>;
@@ -300,6 +372,32 @@ export class SettingsStore {
             model,
             apiKey: key,
           };
+        }
+      }
+    }
+
+    if ('auth' in p) {
+      if (p.auth === null) {
+        out.auth = null;
+      } else if (typeof p.auth === 'object' && !Array.isArray(p.auth)) {
+        const a = p.auth as Record<string, unknown>;
+        const issuer = typeof a.issuer === 'string' ? a.issuer.trim() : out.auth?.issuer;
+        const clientId = typeof a.clientId === 'string' ? a.clientId.trim() : out.auth?.clientId;
+        const redirectUri =
+          typeof a.redirectUri === 'string' ? a.redirectUri.trim() : out.auth?.redirectUri;
+        // A masked write-back must keep the stored secret, exactly as plane
+        // credentials do — otherwise loading the settings screen and saving it
+        // would silently break login.
+        const incomingSecret = a.clientSecret;
+        const clientSecret =
+          typeof incomingSecret === 'string' && !incomingSecret.startsWith(MASK)
+            ? incomingSecret
+            : (out.auth?.clientSecret ?? '');
+        const groups = Array.isArray(a.allowedGroups)
+          ? a.allowedGroups.filter((g): g is string => typeof g === 'string' && g.trim().length > 0).map((g) => g.trim())
+          : out.auth?.allowedGroups;
+        if (issuer && clientId && redirectUri) {
+          out.auth = { issuer, clientId, clientSecret, redirectUri, ...(groups ? { allowedGroups: groups } : {}) };
         }
       }
     }

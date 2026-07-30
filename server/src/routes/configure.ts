@@ -77,9 +77,9 @@ export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirect
    * the real "Change history" the Configure header offers. Mirrors the queue
    * endpoint's envelope shape ({events} rather than {changes}).
    *
-   * SECURITY: BrokerAuditEvent is {ts, event, changeId, ticket, kind, result}
-   * — what happened to a change, never what was in it. Rendered payload
-   * bodies stay out of this response and must not be added.
+   * SECURITY: BrokerAuditEvent is {ts, event, changeId, ticket, kind, result,
+   * who} — what happened to a change and who did it, never what was in it.
+   * Rendered payload bodies stay out of this response and must not be added.
    *
    * A missing log is an empty list, not an error: nothing has been brokered
    * on this install yet, which the drawer states as its own empty state.

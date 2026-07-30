@@ -56,6 +56,7 @@ import { settings } from '../config/settings';
 import { knownTicketId } from './tickets';
 import { poller } from './poller';
 import { resolveDeviceIdentity, safeDeviceCandidates } from './deviceIdentity';
+import { currentActor } from './auth';
 
 export const LEASE_MS = 15 * 60 * 1000;
 export const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -444,6 +445,13 @@ export function brokerDataDir(): string {
 /** One audit-log line — no payload bodies, so no secrets. */
 export interface BrokerLogEntry {
   ts: string;
+  /**
+   * Who made the change. Filled in from the request's authenticated principal
+   * when it is omitted, which is every call site — see currentActor(). Reads
+   * `operator` when the portal is running without an identity provider, which
+   * is honest rather than absent.
+   */
+  who?: string;
   event: string;
   changeId: string;
   ticket: string;
@@ -465,7 +473,12 @@ export function appendBrokerLog(dataDir: string, entry: BrokerLogEntry): void {
   try {
     fs.mkdirSync(dataDir, { recursive: true });
     const file = path.join(dataDir, 'change-log.jsonl');
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n', { mode: 0o600 });
+    // Attribution is applied here, once, rather than at each of the ~18 call
+    // sites: a missed call site would write an anonymous line, and an audit
+    // trail with holes in it is worse than one with none because it looks
+    // complete.
+    const line: BrokerLogEntry = { ...entry, who: entry.who ?? currentActor() };
+    fs.appendFileSync(file, JSON.stringify(line) + '\n', { mode: 0o600 });
     fs.chmodSync(file, 0o600); // in case it pre-existed with a looser mode
   } catch (err) {
     console.error(`write broker: change-log write failed: ${(err as Error).message}`);

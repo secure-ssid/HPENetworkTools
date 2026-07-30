@@ -71,6 +71,7 @@ import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { SSE_KIND_SPEC, SseAdapter } from '../planes/sse';
 import { Poller, poller as defaultPoller } from './poller';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
+import { currentActor } from './auth';
 
 /** Durable, secret-free phase record — never a payload or token.
  *  Commit retry eligibility is deliberately represented by exactly one
@@ -465,7 +466,7 @@ export class SseObjectsService {
       const result = this.manualCleanupResult(pending, refreshed, 'journal-removed');
       this.registry.recordEvent('sse', {
         what: `operator attested manual reconciliation for ambiguous journaled ${pending.action} ${pending.kind}: cache refresh + durable cleanup only; tenant-wide Commit was not called`,
-        who: 'operator',
+        who: currentActor(),
       });
       try {
         this.clearPending();
@@ -497,7 +498,7 @@ export class SseObjectsService {
       this.log('sse-commit-retry', pending.kind, 'commit-accepted', commit.httpCode ?? undefined);
       this.registry.recordEvent('sse', {
         what: `tenant-wide commit accepted for journaled ${pending.action} ${pending.kind}; object verification is reported separately`,
-        who: 'operator',
+        who: currentActor(),
       });
       const acceptedTerminal = this.persistCommitAccepted(pending, commit.httpCode ?? undefined, 'sse-commit-retry');
       const refreshed = await this.refreshCache(acceptedTerminal);
@@ -521,7 +522,7 @@ export class SseObjectsService {
       this.log('sse-commit-retry', pending.kind, 'commit-rejected', commit.httpCode ?? undefined);
       this.registry.recordEvent('sse', {
         what: 'commit retry was definitely rejected — the proven staged change remains eligible for another explicitly reviewed retry',
-        who: 'operator',
+        who: currentActor(),
       });
       return {
         commit,
@@ -543,7 +544,7 @@ export class SseObjectsService {
     this.log('sse-commit-retry', pending.kind, 'commit-transport-unknown', commit.httpCode ?? undefined);
     this.registry.recordEvent('sse', {
       what: 'commit retry transport outcome is unknown — Commit is no longer retryable; manual tenant reconciliation is required',
-      who: 'operator',
+      who: currentActor(),
     });
     return {
       commit,
@@ -579,7 +580,7 @@ export class SseObjectsService {
   private recoverRejectedMutationJournal(pending: SsePendingCommit): SseCommitRetryResult {
     this.registry.recordEvent('sse', {
       what: `reviewed cleanup for definitely rejected journaled ${pending.action} ${pending.kind}: Commit was not called`,
-      who: 'operator',
+      who: currentActor(),
     });
     try {
       this.clearPending();
@@ -624,7 +625,7 @@ export class SseObjectsService {
     const refreshed = await this.refreshCache(pending);
     this.registry.recordEvent('sse', {
       what: `reviewed recovery for an already-committed journaled ${pending.action} ${pending.kind}: cache refresh + cleanup only, Commit was not called again`,
-      who: 'operator',
+      who: currentActor(),
     });
     try {
       this.clearPending();
@@ -960,7 +961,7 @@ export class SseObjectsService {
             ? ' (durable ambiguous blocker retained; manual reconciliation required and Commit retry is forbidden)'
           : ''
       }`,
-      who: 'operator',
+      who: currentActor(),
     });
   }
 

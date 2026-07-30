@@ -1,0 +1,148 @@
+/**
+ * web/src/app/AuthGate.test.tsx — the sign-in wall.
+ *
+ * The distinctions asserted here are the whole point of the component: an
+ * unreachable server, a configured-but-signed-out portal, and a portal with no
+ * identity provider all look identical to a naive implementation, and
+ * conflating any two of them either hides a login the operator needs or shows
+ * one that cannot possibly work.
+ */
+
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AuthGate } from './AuthGate';
+
+const originalFetch = globalThis.fetch;
+
+function answer(body: unknown, ok = true) {
+  return vi.fn().mockResolvedValue({
+    ok,
+    json: async () => body,
+  } as unknown as Response);
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  cleanup();
+  globalThis.fetch = originalFetch;
+});
+
+describe('AuthGate', () => {
+  it('renders the portal when no identity provider is configured', async () => {
+    globalThis.fetch = answer({ configured: false, authenticated: false, principal: null }) as never;
+    render(
+      <AuthGate>
+        <div>portal</div>
+      </AuthGate>,
+    );
+    expect(await screen.findByText('portal')).toBeTruthy();
+  });
+
+  it('renders the portal when signed in', async () => {
+    globalThis.fetch = answer({
+      configured: true,
+      authenticated: true,
+      principal: { sub: 'u', name: 'alice', email: 'alice@example.com', groups: [] },
+    }) as never;
+    render(
+      <AuthGate>
+        <div>portal</div>
+      </AuthGate>,
+    );
+    expect(await screen.findByText('portal')).toBeTruthy();
+  });
+
+  it('shows a sign-in wall, and no portal, when configured but signed out', async () => {
+    globalThis.fetch = answer({ configured: true, authenticated: false, principal: null }) as never;
+    render(
+      <AuthGate>
+        <div>portal</div>
+      </AuthGate>,
+    );
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeTruthy();
+    expect(screen.queryByText('portal')).toBeNull();
+  });
+
+  it('names the required groups when access is restricted', async () => {
+    globalThis.fetch = answer({
+      configured: true,
+      authenticated: false,
+      principal: null,
+      groupGate: ['net-admins', 'noc'],
+    }) as never;
+    render(
+      <AuthGate>
+        <div>portal</div>
+      </AuthGate>,
+    );
+    expect(await screen.findByText(/net-admins, noc/)).toBeTruthy();
+  });
+
+  it('says the server is unreachable rather than offering a sign-in that cannot work', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('boom')) as never;
+    render(
+      <AuthGate>
+        <div>portal</div>
+      </AuthGate>,
+    );
+    expect(await screen.findByText('Server unreachable')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull();
+    expect(screen.queryByText('portal')).toBeNull();
+  });
+
+  it('treats a malformed answer as unreachable, not as "no auth configured"', async () => {
+    // A truncated or proxied response must never be read as "the portal is
+    // open" — that would silently drop the sign-in wall.
+    globalThis.fetch = answer({ something: 'else' }) as never;
+    render(
+      <AuthGate>
+        <div>portal</div>
+      </AuthGate>,
+    );
+    expect(await screen.findByText('Server unreachable')).toBeTruthy();
+    expect(screen.queryByText('portal')).toBeNull();
+  });
+
+  it('treats a non-OK response as unreachable', async () => {
+    globalThis.fetch = answer({}, false) as never;
+    render(
+      <AuthGate>
+        <div>portal</div>
+      </AuthGate>,
+    );
+    expect(await screen.findByText('Server unreachable')).toBeTruthy();
+  });
+
+  it('retries on demand and renders the portal once the server answers', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ configured: false, authenticated: false }) } as unknown as Response);
+    globalThis.fetch = fetchMock as never;
+    render(
+      <AuthGate>
+        <div>portal</div>
+      </AuthGate>,
+    );
+    await screen.findByText('Server unreachable');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('portal')).toBeTruthy();
+  });
+
+  it('renders no portal content while it is still checking', async () => {
+    let release: (v: unknown) => void = () => {};
+    globalThis.fetch = vi.fn().mockReturnValue(new Promise((r) => (release = r))) as never;
+    render(
+      <AuthGate>
+        <div>portal</div>
+      </AuthGate>,
+    );
+    expect(screen.queryByText('portal')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull();
+    release({ ok: true, json: async () => ({ configured: false, authenticated: false }) });
+    await waitFor(() => expect(screen.getByText('portal')).toBeTruthy());
+  });
+});

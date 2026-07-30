@@ -28,6 +28,8 @@ import { SearchPanel } from './SearchPanel';
 import ChatPanel from '../screens/ChatPanel';
 import { pathForView, viewForPath } from './nav';
 import { NAV_ICONS } from './navIcons';
+import { useAuth } from './AuthGate';
+import { logout } from '../api/auth';
 
 const RAIL_KEY = 'hpe-nt.nav-rail';
 
@@ -51,6 +53,37 @@ function siteNameFor(siteId: string | undefined): string {
   return (SITE_IDS as readonly string[]).includes(siteId)
     ? siteDisplayName(siteId as SiteId)
     : siteId; // router params arrive decoded — decoding again throws on '%'
+}
+
+/**
+ * Who is signed in, and a way out.
+ *
+ * When no identity provider is configured this says so rather than rendering
+ * nothing: "anyone who can reach this port may use it" is a fact the operator
+ * should be able to see, not one they have to infer from the absence of a
+ * login screen.
+ */
+function SignedInAs() {
+  const auth = useAuth();
+  if (!auth) return null;
+  if (!auth.configured) {
+    return (
+      <span className="nt-shell-workspace__linked" title="No identity provider is configured, so the portal is open and changes are recorded as 'operator'.">
+        No sign-in required
+      </span>
+    );
+  }
+  if (!auth.principal) return null;
+  return (
+    <div className="nt-shell-workspace__row" style={{ marginTop: 6 }}>
+      <span className="nt-shell-workspace__linked" title={auth.principal.email ?? auth.principal.name}>
+        {auth.principal.name}
+      </span>
+      <Button variant="ghost" size="sm" onClick={() => void logout()}>
+        Sign out
+      </Button>
+    </div>
+  );
 }
 
 export function AppShellLayout() {
@@ -182,6 +215,7 @@ export function AppShellLayout() {
         <span className="nt-shell-workspace__linked">
           {linkedLabel ?? `${SYSTEMS.length} of ${SYSTEMS.length} systems linked`}
         </span>
+        <SignedInAs />
       </div>
     </>
   );

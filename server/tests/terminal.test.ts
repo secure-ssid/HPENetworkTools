@@ -1298,3 +1298,96 @@ describe('terminal WebSocket origin gate', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 });
+
+/**
+ * The origin check stops a browser on another site. It does nothing about a
+ * direct socket, which anything can open. When the portal has an identity
+ * provider, the SSH bridge has to demand the same session the API does —
+ * otherwise closing the API and leaving this open is security theatre.
+ */
+describe('terminal upgrade session gate', () => {
+  async function bridge(authenticate?: Parameters<typeof attachTerminalWs>[2]) {
+    const { createServer } = await import('node:http');
+    const server = createServer();
+    let opened = 0;
+    const manager = { handleConnection: () => { opened += 1; } } as unknown as TerminalManager;
+    attachTerminalWs(server, manager, authenticate);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+    return {
+      port,
+      opened: () => opened,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  async function connect(port: number, headers: Record<string, string> = {}) {
+    const { WebSocket } = await import('ws');
+    return new Promise<string>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/terminal/sw-core-a`, {
+        origin: `http://127.0.0.1:${port}`,
+        headers,
+      });
+      ws.on('error', (err: Error) => resolve(err.message));
+      ws.on('open', () => {
+        ws.close();
+        resolve('OPENED');
+      });
+    });
+  }
+
+  it('answers 401 and opens no session when the cookie is missing', async () => {
+    const b = await bridge((req) =>
+      /valid=yes/.test(req.headers.cookie ?? '') ? { ok: true, who: 'alice' } : { ok: false },
+    );
+    expect(await connect(b.port)).toContain('401');
+    expect(b.opened()).toBe(0);
+    await b.close();
+  });
+
+  it('answers 401 for a forged cookie', async () => {
+    const b = await bridge((req) =>
+      /valid=yes/.test(req.headers.cookie ?? '') ? { ok: true, who: 'alice' } : { ok: false },
+    );
+    expect(await connect(b.port, { cookie: 'hpe_sid=forged' })).toContain('401');
+    expect(b.opened()).toBe(0);
+    await b.close();
+  });
+
+  it('opens the session when the cookie is valid', async () => {
+    const b = await bridge((req) =>
+      /valid=yes/.test(req.headers.cookie ?? '') ? { ok: true, who: 'alice' } : { ok: false },
+    );
+    expect(await connect(b.port, { cookie: 'valid=yes' })).toBe('OPENED');
+    expect(b.opened()).toBe(1);
+    await b.close();
+  });
+
+  it('stays open when no authenticator is supplied, matching the API', async () => {
+    // No identity provider configured: the origin check is the only gate, and
+    // the bridge must not start refusing everyone.
+    const b = await bridge(undefined);
+    expect(await connect(b.port)).toBe('OPENED');
+    expect(b.opened()).toBe(1);
+    await b.close();
+  });
+
+  it('checks the origin before the session, so a hostile page cannot probe it', async () => {
+    const { WebSocket } = await import('ws');
+    let authCalls = 0;
+    const b = await bridge(() => {
+      authCalls += 1;
+      return { ok: false };
+    });
+    const failure = await new Promise<string>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${b.port}/api/terminal/sw-core-a`, {
+        origin: 'https://evil.example',
+      });
+      ws.on('error', (err: Error) => resolve(err.message));
+      ws.on('open', () => resolve('OPENED'));
+    });
+    expect(failure).toContain('403');
+    expect(authCalls).toBe(0);
+    await b.close();
+  });
+});

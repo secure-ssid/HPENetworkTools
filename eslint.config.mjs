@@ -50,13 +50,15 @@ export default tseslint.config(
     },
   },
 
-  // Terminal/webhook code parses ANSI escapes and rejects control characters
-  // in operator input, so matching control characters is the intent, not a
-  // typo. Scoped to the files that legitimately do it.
+  // Terminal/webhook/auth code parses ANSI escapes and rejects control
+  // characters in operator input and in URLs (header and redirect injection
+  // defence), so matching control characters is the intent, not a typo.
+  // Scoped to the files that legitimately do it.
   {
     files: [
       'server/src/services/terminal.ts',
       'server/src/services/centralWebhooks.ts',
+      'server/src/services/auth.ts',
       'shared/webhooks.ts',
     ],
     rules: { 'no-control-regex': 'off' },

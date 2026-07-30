@@ -771,6 +771,12 @@ export interface BrokerAuditEvent {
   ticket: string;
   kind: string; // ssid | port | vlan
   result: string; // the broker's own outcome word
+  /**
+   * Who made the change: the signed-in principal, or `operator` when the
+   * portal is running without an identity provider. A name is not a payload —
+   * it is the one thing this row previously could not say.
+   */
+  who?: string;
 }
 
 export type LaunchTarget = { type: 'view'; view: View } | { type: 'device'; device: string };

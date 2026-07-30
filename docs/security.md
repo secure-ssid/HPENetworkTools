@@ -1,5 +1,88 @@
 # Security and operational safeguards
 
+## Access control
+
+The portal brokers configuration writes to production network equipment and
+bridges SSH shells to switches. Who may reach it matters as much as any of the
+safeguards below.
+
+### Sign-in (OIDC)
+
+Authentication is an Authorization Code + PKCE flow against any OpenID Connect
+provider. Configure it either in `data/settings.json` under `auth`:
+
+```json
+"auth": {
+  "issuer": "https://id.example.com/application/o/hpe-network-tools/",
+  "clientId": "…",
+  "clientSecret": "…",
+  "redirectUri": "https://portal.example.com/api/auth/callback",
+  "allowedGroups": ["net-admins"]
+}
+```
+
+…or in the environment, which keeps the secret out of a file on disk:
+
+```
+HPE_OIDC_ISSUER, HPE_OIDC_CLIENT_ID, HPE_OIDC_CLIENT_SECRET,
+HPE_OIDC_REDIRECT_URI, HPE_OIDC_ALLOWED_GROUPS   (comma separated, optional)
+```
+
+The environment overlay is all-or-nothing and is never written back to the
+settings file. A partially-set group of variables is a startup error rather
+than a silent fall back to file configuration.
+
+`allowedGroups` is optional. Absent, any account the provider authenticates may
+use the portal; present, the `groups` claim must intersect it.
+
+**Authentik.** There is no server-wide discovery document. Create an
+OAuth2/OpenID Provider and an Application, then the issuer is
+`https://<host>/application/o/<application-slug>/` — including the trailing
+slash. Set the provider's redirect URI to exactly the `redirectUri` above.
+
+### What is guarded
+
+With an identity provider configured, every `/api` route requires a session
+except `/api/health` and the four `/api/auth/*` endpoints. The SSH WebSocket
+upgrade is authenticated separately, from the same session cookie, because an
+upgrade never passes through Express middleware — closing the API while leaving
+the shell bridge open would guard the lesser surface.
+
+Sessions are an httpOnly, SameSite=Lax cookie, `Secure` whenever the host is
+not loopback, held in memory only. A server restart signs everyone out; that is
+deliberate, since persisting sessions would mean another secret at rest.
+
+### Exposure
+
+`startServer` binds `127.0.0.1` by default. `HPE_BIND_HOST` overrides it.
+
+With no identity provider configured, binding a network-reachable address is
+**refused**, not warned about: an unauthenticated portal on a routable address
+is an open door to production switches. `HPE_ALLOW_NO_AUTH=1` overrides this
+for a deployment with its own perimeter (a private lab segment, a host
+firewall, an authenticating reverse proxy). Bound to loopback with no provider,
+the server starts and says so on every boot.
+
+### CSRF
+
+State-changing requests must carry a same-origin `Origin`/`Referer`, and this
+check runs whether or not authentication is configured — the unauthenticated
+case needs it most, since a hostile page can otherwise POST to a loopback port
+with no credential at all.
+
+A missing `Origin` header is allowed. Browsers always send one on
+state-changing requests and upgrades, so its absence means a non-browser
+client, and anything able to omit the header can equally forge it. Origin
+bounds browsers; sessions bound everything else.
+
+### `reviewConfirmed` is not an access control
+
+The review gates below require `reviewConfirmed: true` on mutating requests.
+This is **misclick protection for a human operator, not authorisation.** Anyone
+composing a request directly simply sets the field. Authentication and the
+origin check are what stop unauthorised callers; the review gate stops an
+operator changing production by accident.
+
 ## Credential storage
 
 - Connected-system credentials are stored in `data/settings.json` or the path
@@ -64,6 +147,12 @@ only when the portal reports a definite Commit rejection. Ambiguous states
 require manual reconciliation and cleanup.
 
 ## Audit data
+
+Every brokered change records a `who`. With an identity provider configured
+that is the signed-in principal's email, or their name when the provider
+publishes no email. With none configured it is the literal `operator` — an
+honest statement that the portal cannot say who acted, rather than a name it
+cannot support.
 
 Audits intentionally omit:
 
