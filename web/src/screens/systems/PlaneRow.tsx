@@ -1,0 +1,176 @@
+/** The per-plane row on the Systems screen, and the small pieces it renders. */
+
+import {
+  type LivePlaneState,
+  type LiveSyncEvent,
+} from '../../api/client';
+import { Badge } from '../../nightdesk';
+import {
+  PlaneView,
+  codeTone,
+  countFact,
+  factValue,
+  hhmm,
+  msFmt,
+  staleTitle,
+} from './facts';
+import {
+  type SyncHistoryRow,
+  type SystemRow,
+  type Tone,
+} from '@hpe/shared';
+
+/**
+ * A plane row in the dense table. One line per plane at a fixed row height so
+ * ten planes read as a table rather than ten stacked cards; anything that does
+ * not fit truncates with the full value kept in the cell's own title.
+ */
+export function PlaneRow({ view: v, onOpen }: { view: PlaneView; onOpen: (v: PlaneView) => void }) {
+  const count = countFact(v.facts);
+  const lastSync = factValue(v.facts, 'Last sync') ?? '—';
+  const calls = factValue(v.facts, 'Calls today') ?? '—';
+  const auth = factValue(v.facts, 'Token') ?? '—';
+  return (
+    <button
+      type="button"
+      role="row"
+      className="nt-plane-row nt-plane-row--link"
+      onClick={() => onOpen(v)}
+    >
+      <span role="cell" className="nt-plane-row__identity">
+        <strong title={v.row.name}>{v.row.name}</strong>
+        <small title={v.row.kind}>{v.row.kind}</small>
+      </span>
+      <span role="cell" className="nt-plane-row__status">
+        <Badge tone={v.stateTone} dot>
+          {v.stateLabel}
+        </Badge>
+        {/* The registry's own age-based flag, not a second opinion: a plane
+            that is behind is marked here so its counts opposite are read as
+            last-good, never as current. */}
+        {v.live?.stale ? (
+          <span title={staleTitle(v.live)}>
+            <Badge tone="warning">unverified</Badge>
+          </span>
+        ) : null}
+      </span>
+      {/* `display: contents` on wide screens, so these four sit in the table's
+          own columns; a wrapping labelled strip once the table collapses. */}
+      <span className="nt-plane-row__facts">
+        <span role="cell" className="nt-plane-row__cell" data-label="Last sync" title={lastSync}>
+          {lastSync}
+        </span>
+        <span role="cell" className="nt-plane-row__cell nt-plane-row--num" data-label="Inventory">
+          {count ? (
+            <>
+              {count.value}
+              <small>{count.unit}</small>
+            </>
+          ) : (
+            '—'
+          )}
+        </span>
+        <span role="cell" className="nt-plane-row__cell nt-plane-row--num" data-label="Calls" title={calls}>
+          {calls}
+        </span>
+        <span role="cell" className="nt-plane-row__cell" data-label="Auth" title={auth}>
+          {auth}
+        </span>
+      </span>
+      <span role="cell" className="nt-plane-row__scope">
+        <Badge tone={v.row.scopeTone}>{v.row.scope}</Badge>
+        <small title={v.row.scopeNote}>{v.row.scopeNote}</small>
+      </span>
+      <span role="cell" className="nt-plane-row__go" aria-hidden="true">
+        ▸
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The throttling banner (README §13) derived from the registry rather than
+ * authored: a linked plane whose recent-call ring buffer holds 429s really is
+ * being rate-limited, so name it and quote its own count. Everything else —
+ * including an unlinked Classic that the portal has never called — gets no
+ * banner at all.
+ */
+export interface ThrottleBanner {
+  title: string;
+  body: string;
+}
+
+export function throttleBanner(views: Array<{ row: SystemRow; live: LivePlaneState | null }>): ThrottleBanner | null {
+  for (const v of views) {
+    if (!v.live?.linked) continue;
+    const total = v.live.recentCalls.length;
+    const rate = v.live.recentCalls.filter((c) => c.code === '429').length;
+    if (rate === 0) continue;
+    return {
+      title: `${v.row.name} is throttling us`,
+      body: `${rate} of the last ${total} calls to this plane came back 429, so inventory from it falls behind.${v.live.note ? ` Registry note: ${v.live.note}.` : ''}`,
+    };
+  }
+  return null;
+}
+
+export interface CallRow {
+  time: string;
+  path: string;
+  ms: string;
+  code: string;
+  tone: Tone;
+}
+
+/** Activity-tab calls: the live registry log when the backend is up, else fixture. */
+export function callsFor(s: SystemRow, live: LivePlaneState | null): CallRow[] {
+  if (live) {
+    return live.recentCalls.map((c) => ({
+      time: hhmm(c.time),
+      path: c.path,
+      ms: msFmt(c.ms),
+      code: c.code,
+      tone: codeTone(c.code),
+    }));
+  }
+  return s.calls;
+}
+
+export interface HistoryRow {
+  time: string;
+  system: string;
+  what: string;
+  result: string;
+  tone: Tone;
+}
+
+/** A drawer section that clears to zero rows says so — README §Interactions:
+ *  zero results show an empty state, never a heading over nothing. */
+export function NothingReported({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        fontFamily: 'var(--nd-font-mono)',
+        fontSize: 10.5,
+        color: 'var(--nd-text-muted)',
+        padding: '8px 0',
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
+/** Sync history: the live poller log when present, else the fixture rows. */
+export function historyRows(live: LiveSyncEvent[] | null, fixture: SyncHistoryRow[]): HistoryRow[] {
+  if (live) {
+    return live.slice(0, 10).map((h) => ({
+      time: hhmm(h.time),
+      system: h.plane,
+      what: h.what,
+      result: h.result,
+      tone: h.result === 'ok' ? 'success' : 'danger',
+    }));
+  }
+  return fixture;
+}

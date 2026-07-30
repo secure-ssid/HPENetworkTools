@@ -22,7 +22,6 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import type { CSSProperties } from 'react';
 import {
   Alert,
   Badge,
@@ -52,7 +51,7 @@ import {
   pushChange,
   queueChange,
 } from '../api/client';
-import type { BrokeredChange, ConfigureData, DryRunResult } from '../api/client';
+import type { ConfigureData, DryRunResult } from '../api/client';
 import {
   CONFIG_EDIT_DESCS,
   CONFIG_EDIT_TITLES,
@@ -73,20 +72,15 @@ import {
   ssidDependencyRequirementsFor,
 } from '@hpe/shared';
 import type {
-  BrokerAuditEvent,
-  CapabilityRow,
   ConfigForm,
   ConfigKind,
   PortForm,
   PortObject,
-  QueuedChangeRow,
   SsidApplyResult,
   SsidBands,
   SsidCatalog,
   SsidForm,
   SsidObject,
-  SsidScopeCategory,
-  SsidScopeOption,
   SsidSecurity,
   VlanForm,
   VlanObject,
@@ -95,390 +89,70 @@ import type {
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
+import {
+  LIVE_CONFIG_DESCS,
+  LIVE_PORT_FORM,
+  LIVE_PUSH_NOTES,
+  LIVE_SSID_FORM,
+  LIVE_VLAN_FORM,
+  LIVE_VLAN_SCOPE_OPTIONS,
+  SSID_SCOPE_CATEGORY_LABEL,
+  formForPreview,
+  groupScopesByCategory,
+  ssidFormForSecurity,
+  ssidSectionUnavailableNote,
+  withPlaceholder,
+} from './configure/forms';
+import {
+  groupSwitchPorts,
+} from './configure/ports';
+import {
+  leaseNote,
+  livePreview,
+  liveRadius,
+  writeSurfaceNote,
+} from './configure/preview';
+import {
+  HistoryState,
+  MICRO_LINK,
+  QueueEntry,
+  ROW,
+  auditTone,
+  hhmm,
+  queuedEntryFor,
+  rowForChange,
+} from './configure/queue';
 import '../app/app.css';
 
-const MICRO_LINK: CSSProperties = {
-  background: 'none',
-  border: 'none',
-  padding: 0,
-  cursor: 'pointer',
-  fontFamily: 'var(--nd-font-mono)',
-  fontSize: 10,
-  letterSpacing: '.08em',
-  color: 'var(--nd-accent-text)',
-  textTransform: 'uppercase',
-};
 
-const ROW: CSSProperties = {
-  width: '100%',
-  textAlign: 'left',
-  background: 'none',
-  border: 'none',
-  borderBottom: '1px solid var(--nd-border-subtle)',
-  borderLeft: '2px solid transparent',
-  padding: '12px 10px',
-  cursor: 'pointer',
-};
 
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
 
-/**
- * The broker writes its own outcome word into every audit row ('applied',
- * 'rejected', 'lease-expired', 'render-only (read-only plane)', …). The badge
- * colours the ones whose meaning is unambiguous and leaves everything else
- * neutral — a word this screen does not recognise must not be painted green.
- */
-function auditTone(result: string): 'success' | 'warning' | 'danger' | 'neutral' {
-  const r = result.toLowerCase();
-  if (r.startsWith('applied')) return 'success';
-  if (r === 'rejected' || r.includes('error') || r.includes('failed')) return 'danger';
-  if (r === 'lease-expired' || r === 'unverified-path' || r.startsWith('render-only')) return 'warning';
-  return 'neutral';
-}
 
-/** What the "Change history" drawer is showing right now. */
-type HistoryState =
-  | { kind: 'loading' }
-  | { kind: 'ok'; events: BrokerAuditEvent[] }
-  | { kind: 'error'; message: string }
-  | { kind: 'offline' };
 
-/** A queue row: brokered server-side (id set) or local offline fallback (id null).
- *  `expiresAt` is the broker's 15-minute write lease — an entry whose lease has
- *  run out cannot be pushed (the broker answers 409), so the row has to say so. */
-type QueueEntry = QueuedChangeRow & { id: string | null; expiresAt?: string | null };
 
-interface SwitchPortGroup {
-  key: string;
-  device: string;
-  plane?: string;
-  serial?: string;
-  ports: PortObject[];
-  up: number;
-  down: number;
-  unverified: number;
-}
 
-function groupSwitchPorts(ports: PortObject[]): SwitchPortGroup[] {
-  const groups = new Map<string, PortObject[]>();
-  for (const port of ports) {
-    const key = `${port.plane ?? 'unknown'}:${port.serial ?? 'no-serial'}:${port.device}`;
-    groups.set(key, [...(groups.get(key) ?? []), port]);
-  }
-  return [...groups.entries()]
-    .map(([key, rows]) => ({
-      key,
-      device: rows[0]!.device,
-      plane: rows[0]!.plane,
-      serial: rows[0]!.serial,
-      ports: [...rows].sort((a, b) => a.port.localeCompare(b.port, undefined, { numeric: true })),
-      up: rows.filter((row) => /^(up|active|connected)$/i.test(row.state)).length,
-      down: rows.filter((row) => /^(down|disabled|failed)$/i.test(row.state)).length,
-      unverified: rows.filter((row) => row.origin === 'observed').length,
-    }))
-    .sort((a, b) => a.device.localeCompare(b.device));
-}
 
-const STATE_TONE: Record<QueuedChangeRow['state'], QueuedChangeRow['tone']> = {
-  ready: 'success',
-  applying: 'info',
-  'needs window': 'warning',
-  console: 'neutral',
-};
 
-const LIVE_SSID_FORM: SsidForm = {
-  name: '',
-  vlan: '',
-  security: 'wpa2-psk',
-  group: '',
-  bands: 'all',
-  broadcast: true,
-  isolate: false,
-  noDfs: false,
-  plane: 'CENTRAL',
-};
 
-const LIVE_PORT_FORM: PortForm = {
-  device: '',
-  id: '',
-  desc: '',
-  mode: 'access',
-  vlan: '',
-  poe: false,
-  dot1x: false,
-  mab: false,
-  up: true,
-};
 
-const LIVE_VLAN_FORM: VlanForm = {
-  id: '',
-  name: '',
-  helpers: '',
-  scope: 'core-only',
-};
 
-const LIVE_VLAN_SCOPE_OPTIONS = VLAN_SCOPE_OPTIONS.map((option) => ({
-  ...option,
-  label:
-    option.value === 'cx-campus-01'
-      ? 'Campus-01 CX switches'
-      : option.value === 'cx-all'
-        ? 'Every CX switch'
-        : 'Core switches only',
-}));
 
-/** Scope-map category → the multi-select group heading (SsidCatalog.scopes). */
-const SSID_SCOPE_CATEGORY_LABEL: Record<SsidScopeCategory, string> = {
-  site: 'Sites',
-  'site-collection': 'Site collections',
-  'ap-group': 'AP device groups',
-  ap: 'Individual APs',
-};
 
-const SSID_SCOPE_CATEGORY_ORDER: SsidScopeCategory[] = ['site', 'site-collection', 'ap-group', 'ap'];
 
-/** SsidCatalogSection → the plain-English name used in "not reported" notes. */
-const SSID_CATALOG_SECTION_LABEL: Record<string, string> = {
-  sites: 'sites',
-  'site-collections': 'site collections',
-  'ap-groups': 'AP device groups',
-  aps: 'individual APs',
-  roles: 'roles',
-  authServerGroups: 'authentication server groups',
-  captivePortalProfiles: 'captive-portal profiles',
-};
 
-/** Group a flat scope list by category, in a fixed display order, dropping
- *  categories with nothing to offer rather than heading an empty list. */
-function groupScopesByCategory(scopes: SsidScopeOption[]): { category: SsidScopeCategory; options: SsidScopeOption[] }[] {
-  return SSID_SCOPE_CATEGORY_ORDER.map((category) => ({
-    category,
-    options: scopes.filter((s) => s.category === category),
-  })).filter((group) => group.options.length > 0);
-}
 
-/** "Central did not report any <section> — Apply is disabled until this is
- *  available." — the honest note under a dependency select the catalog could
- *  not answer. */
-function ssidSectionUnavailableNote(section: string): string {
-  return `Central did not report any ${SSID_CATALOG_SECTION_LABEL[section] ?? section} — Apply is disabled until this is available.`;
-}
 
-/** Prepend a non-selectable placeholder so an unset dependency never LOOKS
- *  chosen just because it renders as the first real option. */
-function withPlaceholder(options: { value: string; label: string }[], placeholder: string): { value: string; label: string }[] {
-  return [{ value: '', label: placeholder }, ...options];
-}
 
-const LIVE_CONFIG_DESCS: Record<ConfigKind, string> = {
-  ssid: 'Create or update a named New Central WLAN profile, verify it, then assign it to the reviewed Central scopes.',
-  port: 'Build a switch payload for the named live device. The dry run resolves collector reachability and rollback evidence.',
-  vlan: 'Build a VLAN payload for the selected broker scope. The dry run resolves actual reachable devices.',
-};
 
-const LIVE_PUSH_NOTES: Record<ConfigKind, string> = {
-  ssid: 'The broker resolves the live target during dry run; no AP count, client count, Mist hand-off, or authentication trust is assumed.',
-  port: 'The broker verifies collector reachability and requests a rollback snapshot during dry run.',
-  vlan: 'The broker resolves reachable switches during dry run; no device, client, or compliance count is assumed.',
-};
 
-function livePreview(kind: ConfigKind, form: ConfigForm, capabilities: CapabilityRow[]): string {
-  if (kind === 'ssid') {
-    const ssid = form as SsidForm;
-    const lines = [
-      `POST/PATCH /network-config/v1alpha1/wlan-ssids/${encodeURIComponent(ssid.name || '{ssid}')}`,
-      `ssid: ${ssid.name || '(not entered)'}`,
-      `essid.name: ${ssid.name || '(not entered)'}`,
-      `opmode: ${
-        ssid.security === 'wpa3-enterprise'
-          ? 'WPA3_ENTERPRISE_CCM_128'
-          : ssid.security === 'wpa2-enterprise'
-            ? 'WPA2_ENTERPRISE'
-            : ssid.security === 'open'
-              ? 'OPEN'
-              : 'WPA2_PERSONAL'
-      }`,
-      'forward-mode: FORWARD_MODE_BRIDGE',
-      `rf-band: ${ssid.bands === '5+6' ? '5GHZ_6GHZ' : ssid.bands === '5' ? '5GHZ' : 'BAND_ALL'}`,
-      `vlan-selector: VLAN_RANGES (${ssid.vlan || 'not entered'})`,
-      `default-role: ${ssid.defaultRole || 'not selected'}`,
-      `hide-ssid: ${ssid.broadcast ? 'false' : 'true'}`,
-      `client-isolation: ${ssid.isolate ? 'true' : 'false'}`,
-    ];
-    if (ssid.authServerGroupId) lines.push(`auth-server-group: ${ssid.authServerGroupId}`);
-    if (ssid.captivePortalProfileId) {
-      lines.push(`captive-portal: ${ssid.captivePortalProfileId}`, 'captive-portal-type: EXTERNAL_CP');
-    }
-    if (ssidDependencyRequirementsFor(ssid.security).passphrase) {
-      lines.push(`personal-security.wpa-passphrase: ${ssid.passphrase ? '[write-only value supplied]' : '[required]'}`);
-    }
-    lines.push(
-      `POST /network-config/v1alpha1/config-assignments (${ssid.scopeIds?.length ?? 0} scope${
-        (ssid.scopeIds?.length ?? 0) === 1 ? '' : 's'
-      })`,
-    );
-    return lines.join('\n');
-  }
-  const rendered =
-    kind === 'port'
-      ? configPreviewFor('port', form as PortForm)
-      : configPreviewFor('vlan', form as VlanForm);
-  const body = rendered
-    .split('\n')
-    .filter((line) => !line.startsWith('#'))
-    .map((line) => (kind === 'port' ? line.replace(/,820,816$/, '') : line))
-    .join('\n')
-    .trimEnd();
-  const target = kind === 'port' ? (form as PortForm).device || 'device not entered' : (form as VlanForm).scope;
-  // The authored preview annotates the payload per plane ('# central → PUT
-  // …', '# mist → read-only'). Those lines describe the fixture estate, so
-  // live mode drops them rather than restating them for planes this
-  // deployment may not have linked; naming the real call per plane needs the
-  // broker's own pushPathFor (server-side) — see the handoff.
-  const writeTargets = capabilities.filter((c) => c.mode !== 'read only').map((c) => c.plane);
-  const writeLine =
-    writeTargets.length > 0
-      ? `# planes that can accept it → ${writeTargets.join(', ')}`
-      : '# no linked plane can accept this payload — it opens in the plane console';
-  return [
-    body,
-    `# target → ${target}`,
-    writeLine,
-    '# exact endpoint and impact are resolved by the broker dry run',
-  ].join('\n');
-}
 
-function liveRadius(kind: ConfigKind, form: ConfigForm) {
-  if (kind === 'ssid') {
-    return [
-      { what: 'Configuration assignments requested', count: `${(form as SsidForm).scopeIds?.length ?? 0}` },
-      { what: 'Client sessions affected', count: 'not reported by this API' },
-      { what: 'Target plane', count: (form as SsidForm).plane || 'CENTRAL' },
-    ];
-  }
-  if (kind === 'port') {
-    return [
-      { what: 'Interfaces changed', count: (form as PortForm).id ? '1 requested' : 'not entered' },
-      { what: 'Clients on this port right now', count: 'requires live read-back' },
-      { what: 'Rollback snapshot', count: 'requested during dry run' },
-    ];
-  }
-  return [
-    { what: 'Switches in scope', count: 'requires dry run' },
-    { what: 'Clients on this VLAN', count: 'not reported by config inventory' },
-    { what: 'Configuration drift resolved', count: 'not available' },
-  ];
-}
 
-/** "a, b and c" — a plane list read as a sentence. */
-function listOf(names: string[]): string {
-  if (names.length <= 1) return names[0] ?? '';
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-}
 
-/**
- * The brokered-write sentence, derived from the capability matrix the API
- * sends rather than asserted. In live/blend mode that matrix is THIS
- * deployment's linked planes (screens.ts liveCapabilityMatrix), so the
- * authored "Central, the local collector and AOS-8 accept pushes…" claim
- * would name planes this install has never been given credentials for.
- */
-function writeSurfaceNote(capabilities: CapabilityRow[]): string {
-  const lease = 'Every push needs a ticket reference and holds a fifteen-minute lease.';
-  if (capabilities.length === 0) {
-    return `${lease} No plane has reported a write capability, so nothing here can be pushed until one is linked on Connected systems.`;
-  }
-  const writable = capabilities.filter((c) => c.mode !== 'read only').map((c) => c.plane);
-  const readOnly = capabilities.filter((c) => c.mode === 'read only').map((c) => c.plane);
-  const accepts =
-    writable.length > 0
-      ? `${listOf(writable)} accept${writable.length === 1 ? 's' : ''} pushes from here`
-      : 'No linked plane accepts a push from here';
-  if (readOnly.length === 0) return `${lease} ${accepts}.`;
-  return `${lease} ${accepts}; ${listOf(readOnly)} ${readOnly.length === 1 ? 'is' : 'are'} read-only, so those changes open in their own console with the payload pre-filled.`;
-}
 
-/** Remaining write lease on a queued change, or null when it carries none. */
-function leaseNote(entry: QueueEntry, now: number): string | null {
-  if (!entry.expiresAt) return entry.id === null ? 'not on the broker — no lease' : null;
-  const msLeft = Date.parse(entry.expiresAt) - now;
-  if (!Number.isFinite(msLeft)) return null;
-  if (msLeft <= 0) return 'lease expired — re-queue before pushing';
-  const mins = Math.floor(msLeft / 60_000);
-  return mins >= 1 ? `lease ${mins}m left` : `lease ${Math.floor(msLeft / 1000)}s left`;
-}
 
-function formForPreview(
-  kind: ConfigKind | null,
-  ssid: SsidForm,
-  port: PortForm,
-  vlan: VlanForm,
-): ConfigForm {
-  return kind === 'port' ? port : kind === 'vlan' ? vlan : ssid;
-}
 
-/** Drop values that the selected security mode cannot use. Hidden inputs
- *  must not survive a mode change and later ride along with a direct write. */
-function ssidFormForSecurity(form: SsidForm, security: SsidSecurity): SsidForm {
-  const { passphrase, authServerGroupId, captivePortalProfileId, ...base } = form;
-  const requirement = ssidDependencyRequirementsFor(security);
-  return {
-    ...base,
-    security,
-    ...(requirement.passphrase && passphrase !== undefined ? { passphrase } : {}),
-    ...(requirement.authServerGroup && authServerGroupId !== undefined ? { authServerGroupId } : {}),
-    ...(requirement.captivePortal && captivePortalProfileId !== undefined ? { captivePortalProfileId } : {}),
-  };
-}
 
-/** Server change → display row; the broker's state/what/where are authoritative. */
-function rowForChange(change: BrokeredChange): QueueEntry {
-  return {
-    id: change.id,
-    state: change.state,
-    tone: STATE_TONE[change.state],
-    what: change.what,
-    where: change.where,
-    ticket: change.ticket,
-    expiresAt: change.expiresAt,
-  };
-}
 
-/** The "what / where" summary a freshly queued change gets in the list. */
-function queuedEntryFor(
-  kind: ConfigKind,
-  ssid: SsidForm,
-  port: PortForm,
-  vlan: VlanForm,
-  ticket: string,
-): QueueEntry {
-  const base = { id: null, state: 'ready' as const, tone: 'success' as const, ticket };
-  if (kind === 'ssid') {
-    return {
-      ...base,
-      what: `Update wireless SSID ${ssid.name || '(unnamed)'}`,
-      where: `${ssid.plane || 'CENTRAL'} · target group ${ssid.group}`,
-    };
-  }
-  if (kind === 'port') {
-    return {
-      ...base,
-      what: `Port ${port.id} on ${port.device} — ${port.desc || 'no description'}`,
-      where: `${port.device} · local collector, recorded session`,
-    };
-  }
-  const scopeLabel =
-    VLAN_SCOPE_OPTIONS.find((o) => o.value === vlan.scope)?.label ?? vlan.scope.toUpperCase();
-  return {
-    ...base,
-    what: `VLAN ${vlan.id}${vlan.name ? ` ${vlan.name}` : ''}`,
-    where: `${scopeLabel} · local collector`,
-  };
-}
 
 export default function Configure() {
   const { showPlatformTags } = useSettings();

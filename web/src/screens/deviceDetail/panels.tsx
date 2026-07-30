@@ -1,0 +1,239 @@
+/** Device detail panels: radios, WLANs, ports and compliance. */
+
+import {
+  Badge,
+  EmptyState,
+  SectionHeader,
+} from '../../nightdesk';
+import {
+  bandRank,
+  detailGapSentence,
+  healthTone,
+  joinFacts,
+  pctText,
+  portIsUp,
+  statusTone,
+} from './facts';
+import {
+  DetailRow,
+  LiveGapNote,
+  PortTable,
+} from './tables';
+import {
+  detailHasRows,
+  detailState,
+  type DeviceDetailLive,
+  type DeviceEvidence,
+  type DevicePort,
+  type DeviceRadio,
+  type DeviceWlan,
+} from '@hpe/shared';
+import { type ReactNode } from 'react';
+
+/** Radios on an AP (Central /aps/{serial}/radios). */
+export function RadiosPanel({ detail, plane }: { detail: DeviceDetailLive | null; plane: string }) {
+  const state = detailState(detail?.source, 'radios');
+  const radios: DeviceRadio[] = detailHasRows(detail?.source, 'radios', detail?.radios)
+    ? [...(detail?.radios ?? [])].sort(
+        (a, b) => bandRank(a.band) - bandRank(b.band) || a.number - b.number,
+      )
+    : [];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <SectionHeader
+        label="Radios"
+        meta={radios.length > 0 ? `${radios.length} ON AIR` : undefined}
+      />
+      {radios.length === 0 ? (
+        <LiveGapNote>
+          {detailGapSentence(state, {
+            notFetched: 'Per-radio state has not been read for this AP — the portal fetches radios on demand, for the one device being viewed.',
+            empty: `${plane} answered with no radios for this AP.`,
+            failed: `Per-radio state could not be read from ${plane}`,
+          }, detail?.source.note)}
+        </LiveGapNote>
+      ) : (
+        radios.map((r) => (
+          <DetailRow
+            key={`${r.number}-${r.band}`}
+            keyText={r.band || `radio ${r.number}`}
+            keyWidth={58}
+            title={joinFacts([
+              r.channel ? `ch ${r.channel}` : null,
+              r.bandwidth || null,
+              r.powerDbm == null ? null : `${r.powerDbm} dBm`,
+              r.mode || null,
+            ])}
+            facts={joinFacts([
+              r.clients == null ? null : `${r.clients} client${r.clients === 1 ? '' : 's'}`,
+              pctText(r.channelUtilPct, 'util'),
+              r.noiseFloorDbm == null ? null : `noise ${r.noiseFloorDbm} dBm`,
+              pctText(r.retries, 'retries'),
+              r.channelQuality == null ? null : `quality ${r.channelQuality}`,
+            ]) || 'No per-radio counters in this read.'}
+            badge={r.status || undefined}
+            badgeTone={statusTone(r.status)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+/** WLANs this AP is broadcasting (Central /aps/{serial}/wlans). */
+export function WlansPanel({ detail, plane }: { detail: DeviceDetailLive | null; plane: string }) {
+  const state = detailState(detail?.source, 'wlans');
+  const wlans: DeviceWlan[] = detailHasRows(detail?.source, 'wlans', detail?.wlans)
+    ? (detail?.wlans ?? [])
+    : [];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <SectionHeader
+        label="SSIDs broadcast"
+        meta={wlans.length > 0 ? `${wlans.length} WLAN${wlans.length === 1 ? '' : 'S'}` : undefined}
+      />
+      {wlans.length === 0 ? (
+        <LiveGapNote>
+          {detailGapSentence(state, {
+            notFetched: 'Broadcast SSIDs have not been read for this AP — the portal fetches them on demand, for the one device being viewed.',
+            empty: `${plane} reports no WLAN broadcast by this AP.`,
+            failed: `Broadcast SSIDs could not be read from ${plane}`,
+          }, detail?.source.note)}
+        </LiveGapNote>
+      ) : (
+        wlans.map((w) => (
+          <DetailRow
+            key={w.name}
+            keyText={w.name}
+            keyWidth={104}
+            facts={joinFacts([
+              w.security || w.securityLevel || null,
+              w.band || null,
+              w.vlan ? `VLAN ${w.vlan}` : null,
+            ]) || 'No WLAN attributes in this read.'}
+            trailing={
+              w.clients == null ? undefined : `${w.clients} client${w.clients === 1 ? '' : 's'}`
+            }
+            badge={w.status || undefined}
+            badgeTone={statusTone(w.status)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+/** Interfaces on a switch (Central /switches/{serial}/interfaces).
+ *
+ *  "Of interest" is not decoration: a 48-port switch with 8 cables in it should
+ *  not print 40 identical idle rows. Connected ports (and any port with a
+ *  neighbour) are listed, worst far-end health first — the physical link to a
+ *  gateway that is down is exactly what this screen has to surface. The header
+ *  names the total so the filter can never read as "the switch has 8 ports". */
+export function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null; plane: string }) {
+  const state = detailState(detail?.source, 'ports');
+  const all: DevicePort[] = detailHasRows(detail?.source, 'ports', detail?.ports)
+    ? (detail?.ports ?? [])
+    : [];
+  const interesting = all
+    .filter((p) => portIsUp(p) || Boolean(p.neighbour))
+    .sort((a, b) => {
+      // Only a real adverse verdict jumps the queue. Central also answers
+      // 'Unknown' on a link it has not scored, and an unscored port is not a
+      // problem report — sorting it next to a 'Poor' one would invent urgency.
+      const rank = (p: DevicePort) => {
+        const tone = healthTone(p.neighbourHealth);
+        if (tone === 'warning' || tone === 'danger') return 0;
+        return portIsUp(p) ? 1 : 2;
+      };
+      return rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <SectionHeader
+        label="Ports of interest"
+        meta={
+          all.length > 0 ? `${interesting.length} OF ${all.length} CONNECTED` : undefined
+        }
+      />
+      {all.length === 0 ? (
+        <LiveGapNote>
+          {detailGapSentence(state, {
+            notFetched: 'Per-port state has not been read for this device — the portal fetches interfaces on demand, for the one device being viewed.',
+            empty: `${plane} answered with no interfaces for this device.`,
+            failed: `Per-port state could not be read from ${plane}`,
+          }, detail?.source.note)}
+        </LiveGapNote>
+      ) : interesting.length === 0 ? (
+        <LiveGapNote>
+          {`None of the ${all.length} interfaces ${plane} reported is connected — every port is down with no neighbour discovered.`}
+        </LiveGapNote>
+      ) : (
+        /* A table, not a paragraph per port. Every port answers the same
+           questions, and most answer them identically — sixteen rows of
+           '5 Gb · full · Trunk 5 + 5,200 · PoE …' forced the eye to re-read
+           the same words to find the one that differed. In columns the
+           repetition collapses and the outlier is the only thing that moves. */
+        <PortTable rows={interesting} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The "Compliance" panel, rendered from the ONE evidence block the route
+ * serves in every mode (`data.evidence`; getDeviceDetail() normalizes a bare
+ * `checks` list into the same shape, so this is the only contract the screen
+ * reads). The block exists precisely so an EMPTY verdict list cannot be
+ * mistaken for a clean scorecard: `mode: 'unavailable'` — and an absent block,
+ * which says even less — renders a named empty state carrying the server's own
+ * reason, never a silent pass.
+ */
+export function CompliancePanel({
+  evidence,
+  gapNote,
+  children,
+}: {
+  evidence: DeviceEvidence | null;
+  /** What the verdicts do NOT cover, printed under a populated list only. */
+  gapNote?: ReactNode;
+  children?: ReactNode;
+}) {
+  const scored = evidence !== null && evidence.mode !== 'unavailable' && evidence.checks.length > 0;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <SectionHeader label="Compliance" />
+      {scored ? (
+        <>
+          {evidence.checks.map((c) => (
+            <div key={c.rule ?? c.label} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Badge tone={c.tone}>{c.mark}</Badge>
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: 'var(--nd-text-12)',
+                  color: 'var(--nd-text-secondary)',
+                }}
+              >
+                {c.label}
+              </span>
+            </div>
+          ))}
+          {gapNote ? <LiveGapNote>{gapNote}</LiveGapNote> : null}
+        </>
+      ) : (
+        <EmptyState
+          title="No evidence for this device"
+          description={
+            evidence?.note ??
+            (evidence
+              ? 'The evidence block came back with no verdicts in it. An empty list is not a pass — nothing here has been checked.'
+              : 'No plane supplied evidence alongside this device, so there is nothing to score. An empty list is not a pass.')
+          }
+        />
+      )}
+      {children}
+    </div>
+  );
+}
