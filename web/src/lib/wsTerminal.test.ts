@@ -381,3 +381,66 @@ describe('createWsTransport — closing lifecycle', () => {
     ]);
   });
 });
+
+// A rejected upgrade reaches script as a bare error/close — the browser
+// withholds the 401 on purpose. Left alone, an expired session is reported as
+// unreachable equipment, which sends an operator to debug a switch that is
+// perfectly fine.
+describe('createWsTransport — a handshake refused because the session ended', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function authAnswers(body: unknown) {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => body } as unknown as Response) as never;
+  }
+
+  it('says the session ended, rather than blaming the connection', async () => {
+    setup();
+    authAnswers({ configured: true, authenticated: false, principal: null });
+    const session = createWsTransport('sw1', { url: 'ws://test/terminal/sw1' });
+    const p = session.connect();
+    lastSocket().disconnect();
+    await expect(p).resolves.toBe(false);
+    await vi.waitFor(async () => {
+      const lines = await session.transport.respondAsync('show version');
+      expect(lines[0].text).toContain('your session ended');
+    });
+  });
+
+  it('leaves the original reason standing when the server says we are still signed in', async () => {
+    setup();
+    authAnswers({ configured: true, authenticated: true, principal: { sub: 'u' } });
+    const session = createWsTransport('sw1', { url: 'ws://test/terminal/sw1' });
+    const p = session.connect();
+    lastSocket().disconnect();
+    await expect(p).resolves.toBe(false);
+    const lines = await session.transport.respondAsync('show version');
+    expect(lines[0].text).toContain('connection closed');
+    expect(lines[0].text).not.toContain('session ended');
+  });
+
+  it('does not claim a lost session when the portal itself cannot be reached', async () => {
+    setup();
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('offline')) as never;
+    const session = createWsTransport('sw1', { url: 'ws://test/terminal/sw1' });
+    const p = session.connect();
+    lastSocket().disconnect();
+    await expect(p).resolves.toBe(false);
+    const lines = await session.transport.respondAsync('show version');
+    expect(lines[0].text).not.toContain('session ended');
+  });
+
+  it('does not re-explain a session that dropped after it was working', async () => {
+    setup();
+    authAnswers({ configured: true, authenticated: false, principal: null });
+    const session = await connectReady();
+    lastSocket().disconnect();
+    const lines = await session.transport.respondAsync('show version');
+    // A drop after the upgrade succeeded is a real disconnect: auth was
+    // already checked, so re-asking would misattribute a network fault.
+    expect(lines[0].text).toContain('connection closed');
+    expect(lines[0].text).not.toContain('session ended');
+  });
+});

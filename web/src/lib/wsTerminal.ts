@@ -31,6 +31,8 @@
 import type { TerminalLine } from '@hpe/shared';
 import type { TerminalTransport } from './TerminalPane';
 import type { DeviceDetailIdentity } from '../api/client';
+import { getAuthState } from '../api/auth';
+import { noteResponseStatus } from '../api/core';
 
 /** A transport that answers asynchronously — the pane prefers this when set. */
 export interface AsyncTerminalTransport extends TerminalTransport {
@@ -180,6 +182,31 @@ export function createWsTransport(
     }
   };
 
+  /**
+   * Ask why the handshake was refused, because the browser will not say.
+   *
+   * A rejected WebSocket upgrade reaches script as a bare "error" then
+   * "close" — the HTTP status is deliberately withheld, since exposing it
+   * would turn every page into a port scanner. So a session that expired while
+   * this pane was open looks exactly like a switch that stopped answering, and
+   * the pane was reporting unreachable equipment when the truth was that the
+   * portal no longer knew who was asking.
+   *
+   * Only the server saying "nobody" changes the answer: an unreachable server
+   * or a still-valid session leaves the original reason standing, since
+   * guessing "signed out" would send someone to re-authenticate over a genuine
+   * network fault. When it is a lost session, reporting it through
+   * noteResponseStatus lets the sign-in gate put the wall back up instead of
+   * leaving a dead terminal on screen.
+   */
+  const explainRefusedHandshake = (): void => {
+    void getAuthState().then((state) => {
+      if (!state || !state.configured || state.authenticated) return;
+      deadReason = 'your session ended — sign in again to reopen this session';
+      noteResponseStatus(401);
+    });
+  };
+
   const sendCommand = (cmd: string): Promise<TerminalLine[]> => {
     const sock = ws;
     if (!sock || dead || !ready) {
@@ -310,6 +337,7 @@ export function createWsTransport(
       };
       ws.onerror = () => {
         markDead('connection error');
+        if (!everReady) explainRefusedHandshake();
         try {
           ws?.close();
         } catch {
@@ -319,6 +347,7 @@ export function createWsTransport(
       };
       ws.onclose = () => {
         markDead('connection closed');
+        if (!everReady) explainRefusedHandshake();
         done(false);
       };
     });
