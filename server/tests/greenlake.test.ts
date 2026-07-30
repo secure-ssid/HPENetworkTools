@@ -282,7 +282,12 @@ describe('mapGreenLakeSubscription', () => {
 // -- pull() with an in-memory fake fetch (no network) ----------------------------
 
 type HandlerResult = { status?: number; body?: unknown; headers?: Record<string, string> };
-type Handler = (method: string, pathname: string, query: URLSearchParams) => HandlerResult | undefined;
+type Handler = (
+  method: string,
+  pathname: string,
+  query: URLSearchParams,
+  init?: RequestInit,
+) => HandlerResult | undefined;
 
 function fakeFetch(handler: Handler): { fn: FetchLike; calls: string[]; tokenInits: RequestInit[] } {
   const calls: string[] = [];
@@ -292,7 +297,7 @@ function fakeFetch(handler: Handler): { fn: FetchLike; calls: string[]; tokenIni
     const method = (init?.method as string | undefined) ?? 'GET';
     calls.push(`${method} ${u.pathname}${u.search}`);
     if (method === 'POST' && u.pathname.includes('token')) tokenInits.push(init ?? {});
-    const result = handler(method, u.pathname, u.searchParams);
+    const result = handler(method, u.pathname, u.searchParams, init);
     if (!result) {
       return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
     }
@@ -349,10 +354,47 @@ const DEVICE_UNASSIGNED = {
   subscription: null,
 };
 
+/**
+ * The platform directory as the live gateway carries it. Note the principal's
+ * uuid is UNDASHED while the user's id is DASHED — the join has to normalise
+ * both sides, so the fixture keeps the real mismatch rather than tidying it.
+ */
+const GL_USER = {
+  id: 'ea6ab863-dfe3-49af-9ea0-3ffbabbad458',
+  username: 'mgeorge@example.com',
+  firstName: 'Mathew',
+  lastName: 'George',
+  userStatus: 'VERIFIED',
+  lastLogin: '2026-07-30T14:11:13.719808',
+  createdAt: '2018-02-08T08:43:08',
+};
+const GL_LOCATION = {
+  id: 'loc-1',
+  name: 'Campus-01',
+  type: 'building',
+  addresses: [{ streetAddress: '1 Example Way', city: 'Houston', state: 'TX', postalCode: '77001', country: 'US' }],
+};
+const GL_ROLE_ASSIGNMENT = {
+  id: 'ra-1',
+  type: 'authorization/role-assignment',
+  principal: 'user:ea6ab863dfe349af9ea03ffbabbad458',
+  role: 'grn:glp/providers/authorization/roles/ccs.account-admin',
+  scope: ['grn:glp/workspaces/ws-1'],
+  source: 'LOCAL',
+  createdAt: '2026-02-11T16:17:07.00334Z',
+};
+
+const PLATFORM_ROUTES: Record<string, unknown> = {
+  'GET /identity/v1/users': { items: [GL_USER], count: 1, offset: 0, total: 1 },
+  'GET /locations/v1/locations': { items: [GL_LOCATION], count: 1, offset: 0, total: 1 },
+  'GET /authorization/v1beta1/role-assignments': { items: [GL_ROLE_ASSIGNMENT], count: 1, offset: 0, total: 1 },
+};
+
 const HAPPY_ROUTES: Record<string, unknown> = {
   [`POST ${TOKEN_PATH}`]: { access_token: 'gl-tok-1', expires_in: 7200 },
   'GET /subscriptions/v1/subscriptions': { subscriptions: [SUB_ACTIVE, SUB_EXPIRING, SUB_IDLE, SUB_RETIRING], total: 4 },
   'GET /devices/v1/devices': { items: [DEVICE_ASSIGNED, DEVICE_UNASSIGNED], count: 2, offset: 0, total: 2 },
+  ...PLATFORM_ROUTES,
 };
 
 function routeHandler(routes: Record<string, unknown>): Handler {
@@ -369,6 +411,8 @@ function pagingHandler(rows: unknown[]): Handler {
     if (method === 'GET' && pathname === '/devices/v1/devices') {
       return { body: { items: [DEVICE_ASSIGNED, DEVICE_UNASSIGNED], count: 2, offset: 0, total: 2 } };
     }
+    const platform = PLATFORM_ROUTES[`${method} ${pathname}`];
+    if (platform !== undefined) return { body: platform };
     if (method === 'GET' && pathname === '/subscriptions/v1/subscriptions') {
       const offset = Number(query.get('offset') ?? '0');
       const limit = Number(query.get('limit') ?? '100');
@@ -386,7 +430,7 @@ describe('GreenLakeAdapter.pull()', () => {
     expect(pull.subscriptions).toHaveLength(4);
     expect(pull.subscriptions![0].name).toBe('Foundation AP');
     expect(pull.subscriptions!.map((s) => s.status)).toEqual(['active', 'expiring', 'idle', 'retiring']);
-    expect(state.note).toBe('4 subscriptions · 1 expiring < 90d · 2 devices · 1 unlicensed');
+    expect(state.note).toBe('4 subscriptions · 1 expiring < 90d · 2 devices · 1 unlicensed · 1 users · 1 role grants');
     expect(state.health).toBe('healthy'); // promoted from 'warning' on first success
     // the workspace scoping query is on the wire
     expect(calls.some((c) => c.includes('workspace_id=ws-1'))).toBe(true);
@@ -510,7 +554,7 @@ describe('GreenLakeAdapter.pull()', () => {
     const { adapter, calls, state } = makeAdapter(pagingHandler(rows));
     const pull = await adapter.pull();
     expect(pull.subscriptions).toHaveLength(250); // page 1 alone would have been 100
-    expect(state.note).toBe('250 subscriptions · 0 expiring < 90d · 2 devices · 1 unlicensed');
+    expect(state.note).toBe('250 subscriptions · 0 expiring < 90d · 2 devices · 1 unlicensed · 1 users · 1 role grants');
     const subsCalls = calls.filter((c) => c.startsWith('GET /subscriptions/v1/subscriptions'));
     expect(subsCalls).toHaveLength(3);
     expect(subsCalls[0]).toContain('offset=0&limit=100');
@@ -532,7 +576,7 @@ describe('GreenLakeAdapter.pull()', () => {
     const { adapter, state } = makeAdapter(pagingHandler(rows));
     const pull = await adapter.pull();
     expect(pull.subscriptions).toHaveLength(2500); // 25 pages × 100
-    expect(state.note).toBe('2,500 subscriptions · 0 expiring < 90d · partial (page cap 25) · 2 devices · 1 unlicensed');
+    expect(state.note).toBe('2,500 subscriptions · 0 expiring < 90d · partial (page cap 25) · 2 devices · 1 unlicensed · 1 users · 1 role grants');
   });
 
   // The device→entitlement join: without it the Licences screen can only
@@ -576,6 +620,120 @@ describe('GreenLakeAdapter.pull()', () => {
     expect(pull.assignments).toBeUndefined();
     expect(pull.partial).toEqual(['assignments']);
     expect(state.note).toContain('assignments unavailable');
+  });
+
+  // -- platform directory (users, locations, role assignments) ---------------
+
+  it('reads the platform sections and joins role grants to their holder', async () => {
+    const { adapter } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    const pull = await adapter.pull();
+    expect(pull.greenlake!.unavailable).toEqual([]);
+    expect(pull.greenlake!.users).toHaveLength(1);
+    expect(pull.greenlake!.users[0]).toMatchObject({
+      username: 'mgeorge@example.com',
+      firstName: 'Mathew',
+      status: 'VERIFIED',
+    });
+    expect(pull.greenlake!.locations[0]).toMatchObject({
+      name: 'Campus-01',
+      address: '1 Example Way, Houston, TX, 77001',
+      country: 'US',
+    });
+    // The GLP principal is undashed and the user id is dashed; the join must
+    // still resolve, or every grant would read as an anonymous principal.
+    expect(pull.greenlake!.roleAssignments[0]).toMatchObject({
+      role: 'ccs.account-admin',
+      principalType: 'user',
+      principalName: 'mgeorge@example.com',
+    });
+    expect(pull.greenlake!.source).toContain('3 of 3 sections read');
+  });
+
+  // The whole point of the readStatus/unavailable pair: a denied section must
+  // never be indistinguishable from a workspace that genuinely has no users.
+  it('reports an unreadable platform section as unavailable, not as empty', async () => {
+    const routes = { ...HAPPY_ROUTES };
+    delete routes['GET /identity/v1/users'];
+    const { adapter, state } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    expect(pull.greenlake!.users).toEqual([]);
+    expect(pull.greenlake!.unavailable).toContain('users');
+    expect(pull.greenlake!.readStatus.users).toMatchObject({ state: 'failed', reason: 'missing' });
+    expect(pull.greenlake!.readStatus.locations).toEqual({ state: 'ok' });
+    // A half-read platform holds the plane at 'warning' via partial[].
+    expect(pull.partial).toContain('greenlake');
+    expect(state.note).toContain('users unavailable');
+  });
+
+  // A 404 on /authorization means the gateway would not route it at all, which
+  // on GLP means enhanced IAM is off — that is worth saying, not just '404'.
+  it('explains a missing role-assignments endpoint as an entitlement gap', async () => {
+    const routes = { ...HAPPY_ROUTES };
+    delete routes['GET /authorization/v1beta1/role-assignments'];
+    const { adapter } = makeAdapter(routeHandler(routes));
+    const pull = await adapter.pull();
+    const status = pull.greenlake!.readStatus.roleAssignments;
+    expect(status).toMatchObject({ state: 'failed', reason: 'missing' });
+    expect(status?.state === 'failed' && status.message).toContain('enhanced IAM');
+  });
+
+  it('reads a denied platform section as denied rather than missing', async () => {
+    const { adapter } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/identity/v1/users') return { status: 403, body: { error: 'nope' } };
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    const pull = await adapter.pull();
+    expect(pull.greenlake!.readStatus.users).toMatchObject({
+      state: 'failed',
+      reason: 'denied',
+      httpCode: 403,
+    });
+  });
+
+  it('does not re-read the platform sections on every poll', async () => {
+    const { adapter, calls } = makeAdapter(routeHandler(HAPPY_ROUTES));
+    await adapter.pull();
+    await adapter.pull();
+    expect(calls.filter((c) => c.startsWith('GET /identity/v1/users'))).toHaveLength(1);
+  });
+
+  // -- writes ----------------------------------------------------------------
+
+  it('assembles write bodies field by field and reports applied vs accepted', async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    const { fn } = fakeFetch((method, pathname, _q, init) => {
+      if (method === 'POST' && pathname === TOKEN_PATH) return { body: { access_token: 't', expires_in: 7200 } };
+      seen.push({ path: `${method} ${pathname}`, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (pathname === '/subscriptions/v1/subscriptions') {
+        return { status: 202, body: { code: 202, status: 'ACCEPTED', transactionId: 'txn-1' } };
+      }
+      return { body: { id: 'new-1' } };
+    });
+    const adapter = new GreenLakeAdapter({ ...CREDS, scopes: 'write:brokered' }, makeState(), () => {}, fn);
+
+    const invited = await adapter.write('inviteUser', { email: 'a@b.com' });
+    expect(invited).toMatchObject({ outcome: 'applied', id: 'new-1' });
+    expect(seen[0]).toEqual({ path: 'POST /identity/v1/users', body: { email: 'a@b.com', sendWelcomeEmail: true } });
+
+    // A 202 is 'accepted', never 'applied': the key is validated asynchronously.
+    const sub = await adapter.write('addSubscription', { key: 'K-1' });
+    expect(sub).toMatchObject({ outcome: 'accepted', transactionId: 'txn-1' });
+
+    // GLP rejects the device create unless all three arrays are present.
+    await adapter.write('addDevices', { serialNumber: 'S1', macAddress: 'M1' });
+    expect(seen.at(-1)!.body).toEqual({ network: [{ serialNumber: 'S1', macAddress: 'M1' }], storage: [], compute: [] });
+
+    // Role scope defaults to this workspace rather than being caller-supplied.
+    await adapter.write('assignRole', { principal: 'user:x', role: 'grn:glp/…/roles/ccs.operator' });
+    expect(seen.at(-1)!.body).toMatchObject({ scope: ['grn:glp/workspaces/ws-1'] });
+  });
+
+  it('refuses a write missing a required field before calling the workspace', async () => {
+    const { fn, calls } = fakeFetch(routeHandler(HAPPY_ROUTES));
+    const adapter = new GreenLakeAdapter({ ...CREDS, scopes: 'write:brokered' }, makeState(), () => {}, fn);
+    await expect(adapter.write('inviteUser', {})).rejects.toThrow(/'email' is required/);
+    expect(calls.filter((c) => c.includes('/identity/v1/users'))).toHaveLength(0);
   });
 
   // A workspace whose devices endpoint does not exist must not be probed once
@@ -648,7 +806,34 @@ describe('GreenLakeAdapter.pull()', () => {
 
   it('claims no shell, no brokered write and no config read', () => {
     const { adapter } = makeAdapter(routeHandler(HAPPY_ROUTES));
-    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: false, configRead: false });
+    // directWrite is false here because CREDS declares no scopes at all — the
+    // capability is grant-derived, never inferred from a successful read.
+    expect(adapter.capabilities()).toEqual({
+      localShell: false,
+      brokeredWrite: false,
+      configRead: false,
+      directWrite: false,
+    });
+  });
+
+  // Two independent notions of "can write" have burned this codebase before,
+  // so the derivation is pinned: the operator-declared scope string, nothing else.
+  it('claims directWrite only when the declared scopes include write', () => {
+    const { fn } = fakeFetch(routeHandler(HAPPY_ROUTES));
+    const writable = new GreenLakeAdapter(
+      { ...CREDS, scopes: 'read:inventory,write:brokered' },
+      makeState(),
+      () => {},
+      fn,
+    );
+    expect(writable.capabilities().directWrite).toBe(true);
+    const readOnly = new GreenLakeAdapter(
+      { ...CREDS, scopes: 'read:inventory,read:config-licences' },
+      makeState(),
+      () => {},
+      fn,
+    );
+    expect(readOnly.capabilities().directWrite).toBe(false);
   });
 
   it('retries once with a fresh token on 401', async () => {

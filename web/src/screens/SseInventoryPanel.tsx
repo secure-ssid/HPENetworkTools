@@ -123,7 +123,8 @@ function readFailure(
       case 'denied':
         return {
           title: `${label} access denied`,
-          description: "The SSE Admin API denied this read. Check the token's granted scope.",
+          description:
+            'The SSE Admin API refused this read. A token grant may be missing, or this tenant may not be entitled to the kind — a token that already carries the matching scope can still be refused.',
         };
       case 'unsupported':
         return {

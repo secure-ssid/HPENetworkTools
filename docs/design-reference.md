@@ -595,7 +595,7 @@ interface ChangeRequest {
 | AOS-8 mobility master | cluster, APs, clients, datapath | recorded SSH, **change window only** | via jump host |
 | Mist | inventory, clients, SLE, alarms, config mirror | **none** — hand off to console with payload | rate-limited 20k/day |
 | Central Classic | inventory, alerts (throttled) | none | 429s every third poll; retires 12 Aug |
-| GreenLake | subscriptions, assignments, identity | none | licence reconciliation source |
+| GreenLake | subscriptions, assignments, users, locations, role assignments | **direct** (gated: review confirm + `write` scope) | licence reconciliation source; platform directory in the GreenLake tab |
 | ClearPass | auth/accounting events, endpoints, policy | none | policy edited in ClearPass |
 | UXI | sensor test results | none | corroborating evidence |
 

@@ -9,7 +9,9 @@
  * first" (mono date, what, mono days coloured by urgency) and "Orphans & gaps"
  * (tag Badge + what + mono detail, ghost "Reclaim all" → honest hand-off
  * toast). Export CSV downloads the table client-side; Reconcile with
- * GreenLake is an honest hand-off toast (GreenLake is a read-only plane).
+ * GreenLake is an honest hand-off toast (reconcile/reclaim are not portal
+ * operations — the GreenLake tab writes individual objects, not bulk licence
+ * reassignment).
  * Data: getLicenses() — live /api/licenses when the server is up, fixtures otherwise.
  */
 
@@ -92,7 +94,7 @@ export default function Licenses() {
 
   const reconcile = () =>
     toast('Reconcile runs on GreenLake', {
-      description: 'Read-only plane — the portal hands off with the current assignment report.',
+      description: 'Bulk reassignment is not a portal operation — handing off with the current assignment report.',
     });
 
   const reclaimAll = () => toast('Reclaim runs on GreenLake — hand-off queued');
@@ -102,7 +104,7 @@ export default function Licenses() {
   // data pasted into this page and must not carry demo counts above it.
   const sectionLive = data.dataSource === 'live' || (data.blended?.includes('licenses') ?? false);
   const isDemo = !sectionLive;
-  // Provenance is part of the answer on a screen fed by one read-only plane:
+  // Provenance is part of the answer on a screen fed by a single plane:
   // fixtures, blended GreenLake rows and a fully live pull otherwise render
   // identically (README design rule 1).
   const stamp = sectionLive

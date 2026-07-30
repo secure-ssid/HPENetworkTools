@@ -164,10 +164,34 @@ interface PlaneRuntime {
  * is obtained and (once an adapter stamps it) when it expires, never the
  * secret or any fragment of one.
  */
+/**
+ * A stored bearer token's own `exp`, when the token is a JWT that carries one.
+ *
+ * This DECODES, it never verifies: the signature is the issuer's business and
+ * this value is only ever rendered as the Systems "Token" fact. But a token
+ * that states its own expiry must not be reported as "no expiry published" —
+ * an operator who cannot see the deadline finds out about it as a plane-wide
+ * 401 storm instead. Anything unparseable falls back to null, which reads as
+ * the honest "not published" rather than an invented date.
+ */
+function jwtExpiry(token: string): string | null {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const payload: unknown = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    const exp = (payload as { exp?: unknown } | null)?.exp;
+    if (typeof exp !== 'number' || !Number.isFinite(exp)) return null;
+    const ms = exp * 1000;
+    return Number.isFinite(new Date(ms).getTime()) ? new Date(ms).toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
 function tokenFor(creds: PlaneCredentials | null): PlaneTokenInfo | null {
   if (!creds) return null;
   if (creds.clientId && creds.clientSecret) return { expiresAt: null, source: 'oauth client_credentials' };
-  if (creds.token) return { expiresAt: null, source: 'static token' };
+  if (creds.token) return { expiresAt: jwtExpiry(creds.token), source: 'static token' };
   if (creds.privateKey) return { expiresAt: null, source: 'ssh private key' };
   if (creds.password) return { expiresAt: null, source: 'ssh password' };
   return null;

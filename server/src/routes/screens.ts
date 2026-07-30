@@ -45,7 +45,6 @@ import {
   OVERVIEW_STATS,
   PERMISSIONS,
   PLANE_MARK,
-  PLANE_WRITE_MODE,
   POLICY_SERVICES,
   QUEUED_CHANGES,
   RENEWALS,
@@ -1208,10 +1207,16 @@ function liveOverviewPlanes(): OverviewPlaneRow[] {
   const unlinked: OverviewPlaneRow[] = [];
   for (const id of PLANE_IDS) {
     const s = registry.state(id);
+    // SSE publishes managed objects, not network devices — the registry's
+    // shared count slot is the same field, so the NOUN has to be specialized
+    // here exactly as the Systems card specializes its 'Objects' fact.
+    // Calling 37 connector zones/users/groups "37 devices" on the Overview
+    // invents an estate the plane never reported.
+    const noun = id === 'sse' ? 'object' : 'device';
     const coverage =
       s.deviceCount === null
         ? null
-        : `${s.deviceCount.toLocaleString('en-US')} device${s.deviceCount === 1 ? '' : 's'} · ${s.callsToday} call${s.callsToday === 1 ? '' : 's'} today`;
+        : `${s.deviceCount.toLocaleString('en-US')} ${noun}${s.deviceCount === 1 ? '' : 's'} · ${s.callsToday} call${s.callsToday === 1 ? '' : 's'} today`;
     const row: OverviewPlaneRow = {
       name: PLANE_LABEL[id],
       scope: s.linked ? (coverage ?? s.note ?? `${s.callsToday} calls today`) : (s.note ?? 'no credentials configured'),
@@ -3267,11 +3272,12 @@ function effectiveScope(
   // which SSE never participates in), so scopeForPlane('sse', …) can never
   // itself answer 'read + broker'. Its real write capability is reported
   // through capabilities().directWrite instead (the Systems Configuration
-  // tab's object CRUD), which this helper is not asked to upgrade a scope
-  // for — there is nothing to downgrade here for a plane that was never
-  // granted 'read + broker' in the first place.
+  // tab's object CRUD); scopeForPlane turns that into 'read + direct' when
+  // the caller passes it, and since it only does so while directWrite is
+  // already true there is nothing for this helper to downgrade.
   if (granted === 'read + broker' && caps.brokeredWrite === false) return 'read only';
   if (granted === 'read + ssh' && caps.localShell === false) return 'read only';
+  if (granted === 'read + direct' && caps.directWrite === false) return 'read only';
   return granted;
 }
 
@@ -3454,6 +3460,7 @@ const SCOPE_TONE: Record<ReturnType<typeof scopeForPlane>, Tone> = {
   'read only': 'neutral',
   'read + broker': 'accent',
   'read + ssh': 'accent',
+  'read + direct': 'accent',
 };
 
 /** "Sites on this plane" — what THIS plane actually reported, never the merge. */
@@ -3598,8 +3605,19 @@ function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | undefined):
   const stored = settings.get().planes[id];
   const masked = settings.maskedView().planes[id];
   // The granted scope, crossed with what this plane's adapter says it can
-  // carry out — the same helper /api/configure's capability matrix reads.
-  const scope = effectiveScope(s, scopeForPlane(id as PlaneKey, { linked: s.linked, scopes: stored?.scopes ?? null }));
+  // carry out. The Configure capability matrix reads the SAME helper, with
+  // one deliberate difference: only this call passes `directWrite`, because
+  // "the portal can write objects here" (Systems) and "a port/SSID/VLAN
+  // change can be pushed here" (Configure) are different questions, and SSE
+  // answers yes to the first and no to the second.
+  const scope = effectiveScope(
+    s,
+    scopeForPlane(id as PlaneKey, {
+      linked: s.linked,
+      scopes: stored?.scopes ?? null,
+      directWrite: s.capabilities?.directWrite,
+    }),
+  );
   const consoleUrl = planeConsoleUrl(id);
   return {
     name: stored?.displayName ?? SYSTEM_DISPLAY[id]!,
@@ -3621,7 +3639,9 @@ function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | undefined):
         ? 'no write path from the portal to this plane'
         : scope === 'read + ssh'
           ? 'recorded shell, change window only'
-          : 'brokered writes, ticket required',
+          : scope === 'read + direct'
+            ? 'reviewed object writes, tenant-wide commit'
+            : 'brokered writes, ticket required',
     facts: [
       { k: 'Last sync', v: s.lastSync ? relSync(s.lastSync) : 'never' },
       { k: id === 'sse' ? 'Objects' : 'Devices', v: s.deviceCount === null ? '—' : String(s.deviceCount) },

@@ -195,7 +195,7 @@ describe('SseInventoryPanel — listing', () => {
   });
 
   it.each([
-    ['denied', 403, 'Connector zones access denied', /token's granted scope/i],
+    ['denied', 403, 'Connector zones access denied', /not be entitled/i],
     ['unsupported', 404, 'Connector zones unsupported', /limited-release/i],
     ['service-error', 503, 'Connector zones service error', /error or rate-limit response/i],
     ['unreachable', null, 'Connector zones unreachable', /failed or timed out/i],

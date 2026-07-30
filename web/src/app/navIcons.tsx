@@ -98,6 +98,14 @@ export const NAV_ICONS: Partial<Record<View, ReactNode>> = {
       <path d="M4.5 11h4" />
     </Svg>
   ),
+  greenlake: (
+    <Svg>
+      <path d="M8 1.8 14 5v6L8 14.2 2 11V5l6-3.2Z" />
+      <path d="M8 8.1 14 5" />
+      <path d="M8 8.1 2 5" />
+      <path d="M8 8.1v6.1" />
+    </Svg>
+  ),
   configure: (
     <Svg>
       <circle cx="8" cy="8" r="2.2" />

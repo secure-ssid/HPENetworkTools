@@ -56,6 +56,7 @@ export type View =
   | 'devices'
   | 'device'
   | 'licenses'
+  | 'greenlake'
   | 'configure'
   | 'compliance'
   | 'systems';
@@ -125,7 +126,7 @@ export interface System {
   name: string;
   kind: string; // "cloud · new central · us-west-4"
   state: 'healthy' | 'degraded' | 'warning';
-  scope: 'read only' | 'read + broker' | 'read + ssh';
+  scope: PlaneScope;
   scopeNote: string;
   facts: Fact[]; // last sync, devices, calls today, token
   sites: SystemSite[];
@@ -1227,6 +1228,135 @@ export interface SubscriptionAssignment {
   archived?: boolean;
 }
 
+// -- GreenLake platform sections (users, locations) --
+
+/** The GreenLake platform sections the portal reads beyond subscriptions and
+ *  assignments.
+ *
+ *  `roleAssignments` is the ONLY role surface available: GLP withdrew
+ *  `GET /authorization/v1beta1/roles` from the public API on 2026-02-10 (it
+ *  answers 405, the route is registered but listing is gone), so the portal
+ *  can enumerate who holds which role but cannot enumerate the role
+ *  catalogue. Note the version is `v1beta1` — v1/v2/v1alpha1/v2alpha1 all
+ *  404, and the whole /authorization surface is only routed for workspaces
+ *  with enhanced IAM (RBAC v2) enabled. */
+export const GREENLAKE_SECTION_KEYS = ['users', 'locations', 'roleAssignments'] as const;
+export type GreenLakeSectionKey = (typeof GREENLAKE_SECTION_KEYS)[number];
+
+/** Per-section read outcome — the SseKindReadStatus pattern. A failed section
+ *  is evidence of a failure, never an authoritative empty list. */
+export type GreenLakeSectionStatus =
+  | { state: 'ok' }
+  | {
+      state: 'failed';
+      /** 'denied' 401/403, 'missing' 404 on every candidate, 'error' anything
+       *  else (network, 5xx, unreadable payload). */
+      reason: 'denied' | 'missing' | 'error';
+      httpCode: number | null;
+      /** Operator-safe explanation only: never a response body or a token. */
+      message: string;
+    };
+
+/** A workspace member. `username` is the login (an email on GLP); the portal
+ *  never stores or displays anything that could authenticate as them. */
+export interface GreenLakeUser {
+  id: string;
+  username: string;
+  firstName?: string;
+  lastName?: string;
+  /** Raw GLP userStatus ('VERIFIED', 'UNVERIFIED', …) — displayed as given so
+   *  an unfamiliar status is never silently normalised into a friendly one. */
+  status?: string;
+  lastLogin?: string | null;
+  createdAt?: string | null;
+}
+
+/** A workspace location (GLP's site/address record). */
+export interface GreenLakeLocation {
+  id: string;
+  name: string;
+  type?: string;
+  /** Single-line postal summary assembled from the address record. */
+  address?: string;
+  country?: string;
+  deviceCount?: number | null;
+}
+
+/** One principal→role grant. GLP returns the principal as '{type}:{id}' with
+ *  an UNDASHED uuid, while /identity/v1/users returns a DASHED one — the
+ *  adapter normalises both sides before joining, so `principalName` is null
+ *  only when the principal genuinely is not a known workspace user (an
+ *  api-client, or a user the token cannot see). */
+export interface GreenLakeRoleAssignment {
+  id: string;
+  /** Verbatim GLP principal, e.g. 'user:6aec904ab3a14951b8dc607081928170'. */
+  principal: string;
+  /** 'user' | 'user-group' | 'api-client' — the principal's prefix. */
+  principalType: string;
+  /** Resolved login when the principal joins a known user; null when not. */
+  principalName: string | null;
+  /** Short role slug for display, e.g. 'ccs.account-admin'. */
+  role: string;
+  /** Full role GRN as granted. */
+  roleGrn: string;
+  /** GRN scopes the grant applies to (workspace, tenant group, scope group). */
+  scope: string[];
+  /** 'LOCAL' etc. — where the grant came from. */
+  source?: string;
+  createdAt?: string | null;
+}
+
+/** The GreenLake platform inventory beyond licences — one PlanePull.greenlake
+ *  per pull(), the same "structured object, not a row array" pattern as
+ *  `config` and `sse`. */
+export interface GreenLakeInventory {
+  users: GreenLakeUser[];
+  locations: GreenLakeLocation[];
+  roleAssignments: GreenLakeRoleAssignment[];
+  /** Sections that could not be read. A key listed here means the matching
+   *  array is NOT an inventory — it is empty because the read failed. */
+  unavailable: GreenLakeSectionKey[];
+  readStatus: Partial<Record<GreenLakeSectionKey, GreenLakeSectionStatus>>;
+  /** Free-text provenance, e.g. 'global.api.greenlake.hpe.com · 3 of 3 sections read'. */
+  source: string;
+}
+
+/** The reviewed GreenLake writes the portal supports. Deliberately a closed
+ *  allowlist, not a generic passthrough: no route here forwards a
+ *  caller-supplied path or method to the GLP API.
+ *
+ *  There is no `deleteDevice`: DELETE /devices/v1/devices/{id} answers 405 on
+ *  the GLP gateway, so device add is one-way and the portal must not offer a
+ *  removal it cannot perform. */
+export const GREENLAKE_WRITE_ACTIONS = [
+  'inviteUser',
+  'deleteUser',
+  'createLocation',
+  'deleteLocation',
+  'addDevices',
+  'addSubscription',
+  'assignRole',
+  'removeRoleAssignment',
+] as const;
+export type GreenLakeWriteAction = (typeof GREENLAKE_WRITE_ACTIONS)[number];
+
+/** Outcome of one reviewed GreenLake write.
+ *
+ *  `accepted` is NOT `applied`: the subscriptions endpoints answer 202 with a
+ *  transaction id and validate asynchronously, so a 202 means the workspace
+ *  took the request, not that it succeeded. Collapsing the two would tell an
+ *  operator a subscription was added when the key may still be rejected. */
+export interface GreenLakeWriteResult {
+  action: GreenLakeWriteAction;
+  outcome: 'applied' | 'accepted';
+  /** Operator-safe summary — never a token or a raw response body. */
+  detail: string;
+  /** Present only for async (202) actions; the workspace's handle for it. */
+  transactionId?: string | null;
+  /** Identifier of the object created, when the API returned one. */
+  id?: string | null;
+}
+
 // -- Configure (NtConfigure) --
 
 /** Queued-change list row — the display-level view of a ChangeRequest. */
@@ -1401,6 +1531,7 @@ export const PLANE_DATASET_KEYS = [
   'config',
   'assignments',
   'sse',
+  'greenlake',
 ] as const;
 export type PlaneDatasetKey = (typeof PLANE_DATASET_KEYS)[number];
 
@@ -1476,7 +1607,7 @@ export interface PlaneStaleness extends PlaneFreshness {
 export type WriteMode = 'brokered' | 'ssh' | 'read only';
 
 /** Granted scope on a plane — the same vocabulary as System.scope. */
-export type PlaneScope = 'read only' | 'read + broker' | 'read + ssh';
+export type PlaneScope = 'read only' | 'read + broker' | 'read + ssh' | 'read + direct';
 
 // ---------------------------------------------------------------------------
 // HPE Aruba Networking SSE (formerly Axis Security / Atmos) — object

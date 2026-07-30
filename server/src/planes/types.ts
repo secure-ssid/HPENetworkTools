@@ -25,6 +25,7 @@ import type {
   DeviceDetailKind,
   DeviceDetailLive,
   DeviceRow,
+  GreenLakeInventory,
   PlaneDatasetKey,
   PlaneScope,
   SiteRow,
@@ -162,6 +163,12 @@ export interface PlanePull {
    *  locations, tunnels, applications, users, groups, categories) — a
    *  structured object, not a row array, same pattern as `config`. */
   sse?: SseInventory;
+  /** GreenLake's platform inventory beyond licences (workspace users,
+   *  locations, role assignments) — a structured object, not a row array,
+   *  same pattern as `config` and `sse`. Subscriptions and assignments keep
+   *  their own dedicated fields: those feed the Licences screen, this does
+   *  not. */
+  greenlake?: GreenLakeInventory;
   /** Datasets this pull could NOT read (404, truncated page, no permission).
    *  The registry holds health at 'warning' for a pull that names any, so a
    *  half-read plane is never stamped as a complete sync; the poller must not

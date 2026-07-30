@@ -1,10 +1,12 @@
 /**
  * server/src/planes/greenlake.ts — HPE GreenLake platform adapter.
  *
- * The licence reconciliation source (README integration table: subscriptions,
- * assignments, identity; read-only). OAuth2 client-credentials against the
- * GLP platform API, subscriptions mapped into the shared SubscriptionRow so
- * the poller cache and /api/licenses can consume them.
+ * The licence reconciliation source AND the workspace platform directory
+ * (README integration table: subscriptions, assignments, users, locations,
+ * role assignments; direct write behind a review gate). OAuth2
+ * client-credentials against the GLP platform API, subscriptions mapped into
+ * the shared SubscriptionRow so the poller cache and /api/licenses can consume
+ * them.
  *
  * Auth (verified against developer.greenlake.hpe.com — the MSP token-exchange
  * doc and the new-central token guide): the documented endpoint is
@@ -25,6 +27,44 @@
  *                  /subscription-manager/v1/subscriptions
  *                  /devices/v1/subscriptions
  *   assignments    /devices/v1/devices                                offset/limit 100
+ *   users          /identity/v1/users                                 offset/limit 100
+ *   locations      /locations/v1/locations                            offset/limit 100
+ *   roleAssignments /authorization/v1beta1/role-assignments           offset/limit 100
+ *
+ * The three platform sections (users, locations, roleAssignments) back the
+ * GreenLake tab. They are read INDEPENDENTLY on the same 5-minute cadence as
+ * assignments: one section failing never suppresses the others, and a section
+ * that could not be read is recorded in `unavailable[]` + `readStatus{}` and
+ * NEVER rendered as an empty list — a denied users read and a workspace with
+ * no users must not look identical. Any unavailable section puts 'greenlake'
+ * in the pull's `partial[]`, so the plane reads 'half read' rather than green.
+ *
+ * The authorization surface is `v1beta1` and nothing else: v1, v2, v1alpha1
+ * and v2alpha1 all 404 at the gateway, and the whole /authorization tree only
+ * routes for workspaces with enhanced IAM (RBAC v2) enabled — so a 404 there
+ * means 'not entitled', not 'wrong path', and is reported that way. Role
+ * LISTING (`GET /authorization/v1beta1/roles`) was withdrawn from the public
+ * API on 2026-02-10 and now answers 405, so roles are named from the grants
+ * themselves rather than offered as a picker of everything that exists.
+ *
+ * Writes (GREENLAKE_WRITE_ACTIONS, a closed allowlist — no caller-supplied
+ * paths ever reach fetch): invite/remove a user, create/delete a location,
+ * add a device, add a subscription, assign/revoke a role. Two properties this
+ * plane must keep:
+ *   - 'applied' vs 'accepted' is load-bearing. The subscription and device
+ *     endpoints answer 202 + transactionId and validate ASYNCHRONOUSLY: the
+ *     workspace has taken the request, not granted it. Reporting a 202 as
+ *     'applied' would claim a change the workspace may still reject, so the
+ *     outcome is surfaced verbatim to the operator.
+ *   - a write is NEVER retried on 429 or on a network error, unlike a read.
+ *     A create that timed out may well have landed; retrying it risks a
+ *     duplicate device or a double-consumed subscription key. Only the 401
+ *     invalidate-and-retry-once survives, because that provably never reached
+ *     the handler.
+ * Unlike SSE there is no journal, mutex or Commit step here: GLP applies each
+ * call independently, so nothing this process does can be left half-applied.
+ * Required fields are checked BEFORE the call (GreenLakeWriteInputError) so a
+ * malformed request never becomes a vendor round-trip.
  *
  * The assignments feed is the device→subscription join the Licences screen
  * needs to count unlicensed devices and name orphans; a live probe returns
@@ -86,7 +126,22 @@
  * in the recorded call log (method + path + ms + status only).
  */
 
-import type { Subscription, SubscriptionAssignment, SubscriptionRow, Tone } from '../../../shared';
+import type {
+  GreenLakeInventory,
+  GreenLakeLocation,
+  GreenLakeRoleAssignment,
+  GreenLakeSectionKey,
+  GreenLakeSectionStatus,
+  GreenLakeUser,
+  GreenLakeWriteAction,
+  GreenLakeWriteResult,
+  PlaneDatasetKey,
+  Subscription,
+  SubscriptionAssignment,
+  SubscriptionRow,
+  Tone,
+} from '../../../shared';
+import { GREENLAKE_SECTION_KEYS } from '../../../shared';
 import type { PlaneCredentials } from '../config/settings';
 import {
   mintedTokenInfo,
@@ -118,6 +173,13 @@ const RATE_LIMIT_CAP_MS = 30_000;
 /** The device inventory is big and slow-moving — one read per 5 minutes. */
 const ASSIGNMENTS_REFRESH_MS = 5 * 60 * 1000;
 
+/**
+ * Platform sections (users, locations, role assignments) beyond the licence
+ * feeds. Slow-moving directory data, so it shares the assignments cadence
+ * rather than being re-read on every 60s poll.
+ */
+const PLATFORM_REFRESH_MS = 5 * 60 * 1000;
+
 const realSleep: SleepFn = (ms) =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -145,6 +207,24 @@ function obj(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
+/**
+ * A required write input, or a thrown 400-worthy error naming the field.
+ * Write bodies are assembled field by field through this, so a caller can
+ * never smuggle an unexpected key into a GLP request body.
+ */
+function requireField(input: Record<string, unknown>, key: string): string {
+  const v = str(input[key]);
+  if (v === null) throw new GreenLakeWriteInputError(`'${key}' is required`);
+  return v;
+}
+
+/** A write rejected before any call was made — bad/missing caller input. */
+export class GreenLakeWriteInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GreenLakeWriteInputError';
+  }
+}
 // ---------------------------------------------------------------------------
 // Metric hints — what the display row flattens away but the screen needs
 // ---------------------------------------------------------------------------
@@ -443,6 +523,128 @@ const MAX_PAGES = 25;
  */
 const ASSIGNMENT_CANDIDATES: SectionCandidate[] = [{ path: '/devices/v1/devices' }];
 
+/**
+ * Platform section paths, live-verified against a GLP workspace.
+ *
+ *   users            GET /identity/v1/users                      200
+ *   locations        GET /locations/v1/locations                 200
+ *   roleAssignments  GET /authorization/v1beta1/role-assignments 200
+ *
+ * The authorization version is `v1beta1` and nothing else: v1, v2, v1alpha1
+ * and v2alpha1 all 404. That whole surface is routed only for workspaces with
+ * enhanced IAM (RBAC v2) — a workspace without it is 404'd at the gateway
+ * before the service is reached, which is why a missing section is reported
+ * as 'not entitled' rather than as an empty directory.
+ *
+ * There is deliberately no role CATALOGUE read: GLP withdrew
+ * `GET /authorization/v1beta1/roles` from the public API on 2026-02-10 and it
+ * now answers 405 (route registered, listing gone). The portal can therefore
+ * show who holds which role, but cannot offer a pick-list of available roles.
+ */
+const PLATFORM_CANDIDATES: Record<GreenLakeSectionKey, SectionCandidate[]> = {
+  users: [{ path: '/identity/v1/users' }],
+  locations: [{ path: '/locations/v1/locations' }],
+  roleAssignments: [{ path: '/authorization/v1beta1/role-assignments' }],
+};
+
+/** GLP principals carry an UNDASHED uuid while /identity/v1/users returns a
+ *  DASHED one. Both sides are normalised through this before joining. */
+function bareId(v: string): string {
+  return v.replace(/-/g, '').toLowerCase();
+}
+
+function mapGreenLakeUser(raw: unknown): GreenLakeUser | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  // The login is the only field that makes a user row meaningful; a row
+  // without one is dropped rather than shown as a blank member.
+  const username = str(r.username) ?? str(r.email);
+  if (!id || !username) return null;
+  const first = str(r.firstName);
+  const last = str(r.lastName);
+  const status = str(r.userStatus) ?? str(r.status);
+  return {
+    id,
+    username,
+    ...(first ? { firstName: first } : {}),
+    ...(last ? { lastName: last } : {}),
+    ...(status ? { status } : {}),
+    lastLogin: str(r.lastLogin),
+    createdAt: str(r.createdAt),
+  };
+}
+
+/** Assemble the one-line postal summary from whichever address shape the
+ *  workspace returns — GLP nests addresses under `addresses[0]` on create but
+ *  some releases flatten them onto the record. */
+function locationAddress(r: Record<string, unknown>): string | null {
+  const rows = Array.isArray(r.addresses) ? r.addresses : [];
+  const a = rows.length > 0 ? obj(rows[0]) : r;
+  const parts = [
+    str(a.streetAddress) ?? str(a.address),
+    str(a.city),
+    str(a.state),
+    str(a.postalCode) ?? str(a.zip),
+  ].filter((p): p is string => p !== null);
+  return parts.length > 0 ? parts.join(', ') : null;
+}
+
+function mapGreenLakeLocation(raw: unknown): GreenLakeLocation | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  const name = str(r.name);
+  if (!id || !name) return null;
+  const type = str(r.type);
+  const address = locationAddress(r);
+  const rows = Array.isArray(r.addresses) ? r.addresses : [];
+  const country = str(obj(rows[0]).country) ?? str(r.country);
+  return {
+    id,
+    name,
+    ...(type ? { type } : {}),
+    ...(address ? { address } : {}),
+    ...(country ? { country } : {}),
+    deviceCount: num(r.deviceCount),
+  };
+}
+
+/**
+ * One principal→role grant. `usersById` resolves the principal to a login;
+ * an unresolved principal keeps `principalName: null` rather than echoing the
+ * raw uuid as if it were a name — an api-client grant is not a person.
+ */
+function mapGreenLakeRoleAssignment(
+  raw: unknown,
+  usersById: Map<string, string>,
+): GreenLakeRoleAssignment | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  const principal = str(r.principal);
+  const roleGrn = str(r.role);
+  if (!id || !principal || !roleGrn) return null;
+  const sep = principal.indexOf(':');
+  const principalType = sep > 0 ? principal.slice(0, sep) : 'unknown';
+  const principalId = sep > 0 ? principal.slice(sep + 1) : principal;
+  // The GRN's last segment is the operator-facing role slug
+  // ('grn:glp/providers/authorization/roles/ccs.account-admin').
+  const role = roleGrn.split('/').pop() ?? roleGrn;
+  const scope = Array.isArray(r.scope)
+    ? r.scope.filter((s): s is string => typeof s === 'string')
+    : [];
+  const source = str(r.source);
+  return {
+    id,
+    principal,
+    principalType,
+    principalName: usersById.get(bareId(principalId)) ?? null,
+    role,
+    roleGrn,
+    scope,
+    ...(source ? { source } : {}),
+    createdAt: str(r.createdAt),
+  };
+}
+
 function extractRows(body: unknown): unknown[] {
   if (Array.isArray(body)) return body;
   if (body && typeof body === 'object') {
@@ -481,6 +683,8 @@ export class GreenLakeAdapter implements PlaneAdapter {
 
   private readonly baseUrl: string;
   private readonly tokens: TokenManager;
+  /** Default scope GRN for a role assignment — this workspace. */
+  private readonly workspaceGrn: string;
   private readonly candidates: SectionCandidate[];
   private readonly tokenCandidates: string[];
   /** Candidate that worked (tried first next time). */
@@ -492,6 +696,11 @@ export class GreenLakeAdapter implements PlaneAdapter {
   private assignmentsAtMs = 0;
   /** Why the assignments feed is missing, when it is — named in the note. */
   private assignmentsError: string | null = null;
+  /** Last good platform read (users/locations/roleAssignments) and its age. */
+  private platform: GreenLakeInventory | null = null;
+  private platformAtMs = 0;
+  /** Operator-declared scopes, for the directWrite capability. */
+  private readonly declaredScopes: string;
 
   constructor(
     creds: PlaneCredentials,
@@ -505,7 +714,9 @@ export class GreenLakeAdapter implements PlaneAdapter {
       throw new Error('greenlake requires workspaceId, clientId and clientSecret');
     }
     this.baseUrl = withScheme(creds.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.declaredScopes = typeof creds.scopes === 'string' ? creds.scopes : '';
     const ws = encodeURIComponent(creds.workspaceId);
+    this.workspaceGrn = `grn:glp/workspaces/${creds.workspaceId}`;
     this.candidates = [
       // workspace_id is harmless where the token already scopes the workspace,
       // and required by the releases that read it — it rides after the paging
@@ -564,12 +775,22 @@ export class GreenLakeAdapter implements PlaneAdapter {
   }
 
   /**
-   * GreenLake is the licence source of record: it owns no device transport, so
-   * there is no shell and nothing for the write broker to push, and it
-   * publishes no network configuration.
+   * GreenLake owns no device transport, so there is no shell and nothing for
+   * the write broker to push, and it publishes no network configuration.
+   *
+   * It DOES accept reviewed direct writes against the platform itself —
+   * inviting/removing workspace users, creating/deleting locations, adding
+   * devices and subscriptions, and granting/revoking roles. Like SSE, that is
+   * gated on the operator-declared write scope: the portal never infers write
+   * authority from the fact that a read succeeded.
    */
   capabilities(): PlaneCapabilities {
-    return { localShell: false, brokeredWrite: false, configRead: false };
+    return {
+      localShell: false,
+      brokeredWrite: false,
+      configRead: false,
+      directWrite: this.declaredScopes.includes('write'),
+    };
   }
 
   async pull(): Promise<PlanePull> {
@@ -602,6 +823,8 @@ export class GreenLakeAdapter implements PlaneAdapter {
 
     // Secondary and slower: the device→entitlement join. Never fails the pull.
     const assignments = await this.refreshAssignments();
+    // Also secondary: the platform directory. Never fails the pull either.
+    const platform = await this.refreshPlatform();
 
     const expiring = subscriptions.filter((s) => s.status === 'expiring').length;
     const unlicensed = assignments?.filter((a) => a.assigned === false).length ?? null;
@@ -616,12 +839,25 @@ export class GreenLakeAdapter implements PlaneAdapter {
       (assignments !== null
         ? ` · ${assignments.length.toLocaleString('en-US')} devices` +
           (unlicensed !== null ? ` · ${unlicensed.toLocaleString('en-US')} unlicensed` : '')
-        : ` · assignments unavailable (${this.assignmentsError ?? 'not read'})`);
+        : ` · assignments unavailable (${this.assignmentsError ?? 'not read'})`) +
+      // A section we could not read is named, never folded into the counts.
+      (platform.unavailable.length > 0
+        ? ` · ${platform.unavailable.join('/')} unavailable`
+        : ` · ${platform.users.length} users · ${platform.roleAssignments.length} role grants`);
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
+
+    // A half-read platform is named in partial[] alongside assignments, so the
+    // registry holds the plane at 'warning' rather than stamping a clean sync.
+    const partial: PlaneDatasetKey[] = [
+      ...(assignments === null ? (['assignments'] as const) : []),
+      ...(platform.unavailable.length > 0 ? (['greenlake'] as const) : []),
+    ];
 
     return {
       subscriptions,
-      ...(assignments !== null ? { assignments } : { partial: ['assignments' as const] }),
+      ...(assignments !== null ? { assignments } : {}),
+      greenlake: platform,
+      ...(partial.length > 0 ? { partial } : {}),
     };
   }
 
@@ -679,6 +915,261 @@ export class GreenLakeAdapter implements PlaneAdapter {
       this.assignmentsError = (err as Error).message;
       return this.assignments;
     }
+  }
+
+  /**
+   * The platform directory (users, locations, role assignments), on the same
+   * 5-minute cadence as assignments. Never throws: subscriptions are this
+   * plane's required section and these are additive.
+   *
+   * Every section is read independently, and a section that fails is recorded
+   * in `unavailable` + `readStatus` rather than returned as an empty array —
+   * "no users" and "the users feed was denied" must never look alike. When a
+   * refresh is skipped by the cadence the last good inventory is returned
+   * unchanged.
+   */
+  private async refreshPlatform(): Promise<GreenLakeInventory> {
+    const now = Date.now();
+    if (this.platform !== null && now - this.platformAtMs < PLATFORM_REFRESH_MS) {
+      return this.platform;
+    }
+    this.platformAtMs = now;
+
+    const users: GreenLakeUser[] = [];
+    const locations: GreenLakeLocation[] = [];
+    const roleAssignments: GreenLakeRoleAssignment[] = [];
+    const unavailable: GreenLakeSectionKey[] = [];
+    const readStatus: Partial<Record<GreenLakeSectionKey, GreenLakeSectionStatus>> = {};
+
+    const read = async (key: GreenLakeSectionKey): Promise<unknown[] | null> => {
+      try {
+        const result = await this.pageCandidates(PLATFORM_CANDIDATES[key]);
+        if (result === null) {
+          unavailable.push(key);
+          readStatus[key] = {
+            state: 'failed',
+            reason: 'missing',
+            httpCode: 404,
+            // 404 here is the gateway declining to route, not an empty feed —
+            // on /authorization that means enhanced IAM (RBAC v2) is off.
+            message:
+              key === 'roleAssignments'
+                ? 'No role-assignments endpoint answered (404). The GreenLake authorization API is only routed for workspaces with enhanced IAM (RBAC v2) enabled.'
+                : `No ${key} endpoint answered (404) — this workspace may not be entitled to that API.`,
+          };
+          return null;
+        }
+        readStatus[key] = { state: 'ok' };
+        return result.rows;
+      } catch (err) {
+        const code = err instanceof HttpStatusError ? err.status : null;
+        unavailable.push(key);
+        readStatus[key] = {
+          state: 'failed',
+          reason: code === 401 || code === 403 ? 'denied' : 'error',
+          httpCode: code,
+          message:
+            code === 401 || code === 403
+              ? `The workspace credential is not permitted to read ${key} (HTTP ${code}).`
+              : `Reading ${key} failed${code !== null ? ` (HTTP ${code})` : ''}.`,
+        };
+        return null;
+      }
+    };
+
+    const userRows = await read('users');
+    if (userRows) {
+      users.push(...userRows.map(mapGreenLakeUser).filter((u): u is GreenLakeUser => u !== null));
+    }
+    const locationRows = await read('locations');
+    if (locationRows) {
+      locations.push(
+        ...locationRows.map(mapGreenLakeLocation).filter((l): l is GreenLakeLocation => l !== null),
+      );
+    }
+    // Built from the users just read so a grant can name its holder; an
+    // unreadable users section simply leaves principalName null.
+    const usersById = new Map(users.map((u) => [bareId(u.id), u.username]));
+    const roleRows = await read('roleAssignments');
+    if (roleRows) {
+      roleAssignments.push(
+        ...roleRows
+          .map((r) => mapGreenLakeRoleAssignment(r, usersById))
+          .filter((a): a is GreenLakeRoleAssignment => a !== null),
+      );
+    }
+
+    const total = GREENLAKE_SECTION_KEYS.length;
+    this.platform = {
+      users,
+      locations,
+      roleAssignments,
+      unavailable,
+      readStatus,
+      source: `${this.baseUrl.replace(/^https?:\/\//, '')} · ${total - unavailable.length} of ${total} sections read`,
+    };
+    return this.platform;
+  }
+
+  // -- writes ----------------------------------------------------------------
+
+  /**
+   * Perform one reviewed platform write. The action is a closed allowlist
+   * (GREENLAKE_WRITE_ACTIONS) resolved to a fixed method + path here — a
+   * caller can never supply a path, a method, or an arbitrary body shape.
+   *
+   * The review gate and the directWrite capability check live in the calling
+   * service, not here, so this method is only ever reached for an authorised,
+   * confirmed request.
+   *
+   * `applied` vs `accepted` is load-bearing: the subscription endpoints answer
+   * 202 with a transaction id and validate asynchronously, so reporting one as
+   * 'applied' would claim a success the workspace has not granted yet.
+   */
+  async write(action: GreenLakeWriteAction, input: Record<string, unknown>): Promise<GreenLakeWriteResult> {
+    switch (action) {
+      case 'inviteUser': {
+        const email = requireField(input, 'email');
+        const body = await this.mutate('POST', '/identity/v1/users', { email, sendWelcomeEmail: true });
+        return {
+          action,
+          outcome: 'applied',
+          detail: `Invited ${email} to the workspace`,
+          id: str(obj(body).id),
+        };
+      }
+      case 'deleteUser': {
+        const id = requireField(input, 'id');
+        await this.mutate('DELETE', `/identity/v1/users/${encodeURIComponent(id)}`);
+        return { action, outcome: 'applied', detail: `Removed workspace user ${id}`, id };
+      }
+      case 'createLocation': {
+        const name = requireField(input, 'name');
+        // Schema confirmed by probing the live workspace, because the GLP docs
+        // understate it: `country` is rejected as an ISO-2 code ('US' fails the
+        // ValidateCountry tag) and must be the full name ('United States'), and
+        // `contacts` is required with EXACTLY ONE entry of type 'primary'
+        // ('primary contact should be present or only one primary contact is
+        // allowed'). The caller supplies the parts and the adapter shapes them,
+        // so no caller-built body reaches the API.
+        const address = {
+          type: str(input.addressType) ?? 'shipping',
+          streetAddress: requireField(input, 'streetAddress'),
+          city: requireField(input, 'city'),
+          state: str(input.state) ?? '',
+          postalCode: requireField(input, 'postalCode'),
+          country: requireField(input, 'country'),
+        };
+        // `contactName` is NOT a display name: the location-manager service
+        // resolves it against the workspace user directory and answers 404
+        // '<name> not found for account' for anything it cannot match.
+        const contact = {
+          type: 'primary',
+          name: requireField(input, 'contactName'),
+          email: requireField(input, 'contactEmail'),
+          phoneNumber: requireField(input, 'contactPhone'),
+        };
+        const body = await this.mutate('POST', '/locations/v1/locations', {
+          name,
+          ...(str(input.description) ? { description: str(input.description) } : {}),
+          addresses: [address],
+          contacts: [contact],
+        });
+        return {
+          action,
+          outcome: 'applied',
+          detail: `Created location '${name}'`,
+          id: str(obj(body).id),
+        };
+      }
+      case 'deleteLocation': {
+        const id = requireField(input, 'id');
+        await this.mutate('DELETE', `/locations/v1/locations/${encodeURIComponent(id)}`);
+        return { action, outcome: 'applied', detail: `Deleted location ${id}`, id };
+      }
+      case 'addDevices': {
+        const serial = requireField(input, 'serialNumber');
+        const mac = requireField(input, 'macAddress');
+        // GLP rejects the request unless all three category arrays are present,
+        // so the two this portal does not manage are sent explicitly empty.
+        const body = await this.mutate('POST', '/devices/v1/devices', {
+          network: [{ serialNumber: serial, macAddress: mac }],
+          storage: [],
+          compute: [],
+        });
+        const txn = str(obj(body).transactionId);
+        return {
+          action,
+          outcome: txn !== null ? 'accepted' : 'applied',
+          detail: `Added network device ${serial} to the workspace`,
+          transactionId: txn,
+        };
+      }
+      case 'addSubscription': {
+        const key = requireField(input, 'key');
+        const body = await this.mutate('POST', '/subscriptions/v1/subscriptions', {
+          subscriptions: [{ key }],
+        });
+        return {
+          action,
+          // Always async: the workspace validates the key after accepting it,
+          // so this is 'submitted for validation', never 'added'.
+          outcome: 'accepted',
+          detail: `Submitted subscription key ${key} for validation`,
+          transactionId: str(obj(body).transactionId),
+        };
+      }
+      case 'assignRole': {
+        const principal = requireField(input, 'principal');
+        const roleGrn = requireField(input, 'role');
+        // Scope defaults to this workspace — the only scope the portal models.
+        const scope = Array.isArray(input.scope) && input.scope.length > 0
+          ? input.scope.filter((s): s is string => typeof s === 'string')
+          : [this.workspaceGrn];
+        const body = await this.mutate('POST', '/authorization/v1beta1/role-assignments', {
+          principal,
+          role: roleGrn,
+          scope,
+        });
+        return {
+          action,
+          outcome: 'applied',
+          detail: `Granted ${roleGrn.split('/').pop() ?? roleGrn} to ${principal}`,
+          id: str(obj(body).id),
+        };
+      }
+      case 'removeRoleAssignment': {
+        const id = requireField(input, 'id');
+        await this.mutate('DELETE', `/authorization/v1beta1/role-assignments/${encodeURIComponent(id)}`);
+        return { action, outcome: 'applied', detail: `Revoked role assignment ${id}`, id };
+      }
+      default: {
+        // Exhaustiveness: a new action must be handled here, not silently no-op.
+        const never: never = action;
+        throw new Error(`unsupported greenlake write action: ${String(never)}`);
+      }
+    }
+  }
+
+  /**
+   * Authenticated mutation with the same 401-invalidate-and-retry as reads.
+   * A non-2xx throws HttpStatusError so the caller can map the status onto an
+   * operator-facing reason; the response body is never surfaced verbatim.
+   *
+   * Deliberately NOT retried on 429: a blind retry of a create could double it.
+   */
+  private async mutate(
+    method: 'POST' | 'DELETE' | 'PATCH',
+    path: string,
+    body?: unknown,
+  ): Promise<unknown> {
+    let res = await this.http(method, path, { token: await this.tokens.get(), body });
+    if (res.status === 401) {
+      this.tokens.invalidate();
+      res = await this.http(method, path, { token: await this.tokens.get(), body });
+    }
+    if (res.status < 200 || res.status >= 300) throw new HttpStatusError(res.status, path);
+    return res.body;
   }
 
   /**
@@ -745,7 +1236,7 @@ export class GreenLakeAdapter implements PlaneAdapter {
    * form encoding per RFC 6749); `body` sends JSON.
    */
   private async http(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE' | 'PATCH',
     path: string,
     opts: { token?: string; body?: unknown; form?: Record<string, string> } = {},
   ): Promise<HttpResult> {

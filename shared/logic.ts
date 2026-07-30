@@ -776,14 +776,30 @@ export function applyDeviceRowToProfile(profile: DeviceProfile, row: DeviceRow |
 
 /**
  * The scope badge for a plane, derived from what the broker can actually do
- * (PLANE_WRITE_MODE) and what the operator granted. An unlinked plane, or a
- * brokered plane without a write scope, is honestly `read only`.
+ * (PLANE_WRITE_MODE), what the operator granted, and — for a plane whose only
+ * write path is a reviewed direct mutation — what the adapter itself claims.
+ * An unlinked plane, or a brokered plane without a write scope, is honestly
+ * `read only`.
  */
-export function scopeForPlane(plane: PlaneKey, opts: { linked: boolean; scopes?: string | null } = { linked: false }): PlaneScope {
+export function scopeForPlane(
+  plane: PlaneKey,
+  opts: { linked: boolean; scopes?: string | null; directWrite?: boolean } = { linked: false },
+): PlaneScope {
   if (!opts.linked) return 'read only';
   const mode = PLANE_WRITE_MODE[plane];
   if (mode === 'ssh') return 'read + ssh';
   if (mode === 'brokered' && (opts.scopes ?? '').includes('write')) return 'read + broker';
+  // A plane with no broker and no shell can still take a REVIEWED DIRECT
+  // write — SSE's object CRUD + tenant-wide Commit is the only one today.
+  // That path is claimed by the adapter through capabilities().directWrite,
+  // and the caller must pass it explicitly: the Configure screen's
+  // port/SSID/VLAN matrix deliberately does NOT, because SSE never
+  // participates in it, while the Systems badge does. Both the operator's
+  // grant and the adapter's claim are required, so this can never advertise
+  // a write path that was not granted.
+  if (mode === 'read only' && opts.directWrite === true && (opts.scopes ?? '').includes('write')) {
+    return 'read + direct';
+  }
   return 'read only';
 }
 

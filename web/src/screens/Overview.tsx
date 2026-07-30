@@ -231,7 +231,7 @@ export default function Overview() {
       >
         {/* ---------------- left column ---------------- */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <SectionHeader
               label="Needs you now"
               meta={sectionMeta(alertsLive, alertsLink, () => navigate('/alerts'))}
@@ -245,108 +245,108 @@ export default function Overview() {
                     : 'No open alerts across the linked planes.'
                 }
               />
-            ) : null}
-            {/* Titles repeat across devices in live data ('Config Out of Sync'),
-                so identity is the row, not its name. */}
-            {data.alerts.slice(0, 4).map((a, i) => {
-              const site = siteOf(a);
-              return (
-              <div
-                key={`${a.plane}|${a.device}|${a.title}|${i}`}
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 14,
-                  padding: '13px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <div style={{ width: 34, flex: '0 0 34px', paddingTop: 1 }}>
-                  <Badge tone={a.tone} dot>
-                    {a.sev}
-                  </Badge>
-                </div>
-                <div
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 4,
-                  }}
-                >
-                  <div
-                    style={{
-                      fontSize: 'var(--nd-text-14)',
-                      color: 'var(--nd-text-primary)',
-                      lineHeight: 1.35,
-                    }}
-                  >
-                    {a.title}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                    {/* The site as its own element when the row carries it —
-                        openable when it also carries the canonical id, plain
-                        text when the payload only named it. */}
-                    {site.name !== null ? (
-                      site.id !== null ? (
-                        <button
-                          type="button"
-                          onClick={() => navigate(`/sites/${encodeURIComponent(site.id as SiteId)}`)}
+            ) : (
+            /* Titles repeat across devices in live data ('Config Out of Sync'),
+               so identity is the row, not its name. */
+            <Table density={density}>
+              <Table.Head>
+                <Table.Row>
+                  <Table.HeaderCell>Sev</Table.HeaderCell>
+                  <Table.HeaderCell>Alert</Table.HeaderCell>
+                  <Table.HeaderCell>Where</Table.HeaderCell>
+                  {showPlatformTags ? <Table.HeaderCell>Plane</Table.HeaderCell> : null}
+                  <Table.HeaderCell numeric>Age</Table.HeaderCell>
+                  <Table.HeaderCell />
+                </Table.Row>
+              </Table.Head>
+              <Table.Body>
+                {data.alerts.slice(0, 4).map((a, i) => {
+                  const site = siteOf(a);
+                  return (
+                    <Table.Row key={`${a.plane}|${a.device}|${a.title}|${i}`}>
+                      <Table.Cell>
+                        <Badge tone={a.tone} dot>
+                          {a.sev}
+                        </Badge>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
+                          {a.title}
+                        </span>
+                      </Table.Cell>
+                      <Table.Cell>
+                        {/* The site as its own element when the row carries it —
+                            openable when it also carries the canonical id, plain
+                            text when the payload only named it. */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          {site.name !== null ? (
+                            site.id !== null ? (
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/sites/${encodeURIComponent(site.id as SiteId)}`)}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  padding: 0,
+                                  cursor: 'pointer',
+                                  fontFamily: 'var(--nd-font-body)',
+                                  fontSize: 'var(--nd-text-11)',
+                                  color: 'var(--nd-accent-text)',
+                                  textAlign: 'left',
+                                }}
+                              >
+                                {site.name}
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: 'var(--nd-text-11)', color: 'var(--nd-text-secondary)' }}>
+                                {site.name}
+                              </span>
+                            )
+                          ) : null}
+                          {site.meta ? (
+                            <span
+                              style={{
+                                fontFamily: 'var(--nd-font-mono)',
+                                fontSize: 'var(--nd-text-11)',
+                                color: 'var(--nd-text-muted)',
+                              }}
+                            >
+                              {site.meta}
+                            </span>
+                          ) : null}
+                        </div>
+                      </Table.Cell>
+                      {showPlatformTags ? (
+                        <Table.Cell>
+                          <Badge tone="neutral">{a.plane}</Badge>
+                        </Table.Cell>
+                      ) : null}
+                      <Table.Cell numeric>
+                        <span
                           style={{
-                            background: 'none',
-                            border: 'none',
-                            padding: 0,
-                            cursor: 'pointer',
-                            fontFamily: 'var(--nd-font-body)',
+                            fontFamily: 'var(--nd-font-mono)',
                             fontSize: 'var(--nd-text-11)',
-                            color: 'var(--nd-accent-text)',
-                            textAlign: 'left',
+                            color: 'var(--nd-text-muted)',
                           }}
                         >
-                          {site.name}
-                        </button>
-                      ) : (
-                        <span style={{ fontSize: 'var(--nd-text-11)', color: 'var(--nd-text-secondary)' }}>
-                          {site.name}
+                          {a.age}
                         </span>
-                      )
-                    ) : null}
-                    {site.meta ? (
-                      <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-11)',
-                          color: 'var(--nd-text-muted)',
-                        }}
-                      >
-                        {site.meta}
-                      </span>
-                    ) : null}
-                    {showPlatformTags ? <Badge tone="neutral">{a.plane}</Badge> : null}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-11)',
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
-                    {a.age}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => navigate(`/devices/${encodeURIComponent(a.device)}`)}
-                  >
-                    Inspect
-                  </Button>
-                </div>
-              </div>
-              );
-            })}
+                      </Table.Cell>
+                      <Table.Cell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => navigate(`/devices/${encodeURIComponent(a.device)}`)}
+                        >
+                          Inspect
+                        </Button>
+                      </Table.Cell>
+                    </Table.Row>
+                  );
+                })}
+              </Table.Body>
+            </Table>
+            )}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

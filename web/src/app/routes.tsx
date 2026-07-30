@@ -18,6 +18,7 @@ import SiteDetail from '../screens/SiteDetail';
 import Devices from '../screens/Devices';
 import DeviceDetail from '../screens/DeviceDetail';
 import Licenses from '../screens/Licenses';
+import GreenLake from '../screens/GreenLake';
 import Configure from '../screens/Configure';
 import Compliance from '../screens/Compliance';
 import Systems from '../screens/Systems';
@@ -39,6 +40,7 @@ export function AppRoutes() {
         <Route path="/devices" element={<Devices />} />
         <Route path="/devices/:name" element={<DeviceDetail />} />
         <Route path="/licenses" element={<Licenses />} />
+        <Route path="/greenlake" element={<GreenLake />} />
         <Route path="/configure" element={<Configure />} />
         <Route path="/compliance" element={<Compliance />} />
         <Route path="/systems" element={<Systems />} />

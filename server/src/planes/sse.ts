@@ -15,9 +15,12 @@
  *           own default; the connect drawer may override it)
  *   auth    Authorization: Bearer <api_token> on every call — a single static,
  *           scoped Admin API token (Settings → Admin API → New API Token in
- *           the SSE console). There is no token-mint step and no documented
- *           expiry, so PlaneTokenInfo.expiresAt stays null (registry.ts
- *           tokenFor()) unless a future tenant publishes one.
+ *           the SSE console). There is no token-mint step, but the console
+ *           DOES set an expiration at creation (observed: a 3-month default),
+ *           and the issued token is a JWT carrying that deadline in its own
+ *           `exp` claim — so PlaneTokenInfo.expiresAt is decoded from the
+ *           token itself (registry.ts jwtExpiry()) and falls back to null
+ *           only for an opaque or exp-less token.
  *   paths   /api/v1.0/ConnectorZones, /api/v1.0/Connectors, /api/v1.0/Locations,
  *           /api/v1.0/Tunnels, /api/v1.0/Applications, /api/v1.0/Users,
  *           /api/v1.0/Groups, /api/v1.0/IpCategories, /api/v1.0/IpCategoriesFeed,
@@ -450,7 +453,9 @@ export class SseAdapter implements PlaneAdapter {
         return failedKindRead(
           'denied',
           res.status,
-          `The SSE Admin API denied this kind (HTTP ${res.status}); check the token's granted scope.`,
+          res.status === 401
+            ? 'The SSE Admin API rejected the token for this kind (HTTP 401); it may be expired or revoked.'
+            : 'The SSE Admin API refused this kind (HTTP 403). A 403 does not distinguish a grant the token is missing from a feature this tenant is not entitled to, so check both — a token that already carries the matching scope can still be refused here.',
         );
       }
       if (res.status === 404) {

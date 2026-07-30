@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { InventoryTreeNode, SseObjectKind } from '../../../shared';
 import { Badge, Button, EmptyState, Input, SectionHeader, Spinner } from '../nightdesk';
 import { InventoryTree } from '../components/InventoryTree';
-import { getInventoryNode, searchInventory } from '../api/client';
+import { getInventoryNode, getSystemsState, searchInventory } from '../api/client';
 import { ScreenHeader } from './ScreenHeader';
 import { SseInventoryPanel } from './SseInventoryPanel';
 
@@ -20,6 +20,22 @@ export default function Inventory() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [searchTotal, setSearchTotal] = useState<number | null>(null);
   const activeSearchRef = useRef('');
+  // The SSE write grant lives ENTIRELY in the registry's capability claim
+  // (PLANE_WRITE_MODE.sse can never carry it), so this screen reads the same
+  // signal the Systems Configuration tab does instead of hard-coding a
+  // read-only panel: an operator who granted the write scope must not get a
+  // silently weaker view of the same objects here.
+  const [sseCanWrite, setSseCanWrite] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    void getSystemsState().then((state) => {
+      if (live) setSseCanWrite(state?.planes?.sse?.capabilities?.directWrite === true);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedId) {
@@ -194,7 +210,7 @@ export default function Inventory() {
               {selected?.identity?.plane === 'sse' ? (
                 <SseInventoryPanel
                   key={selected.id}
-                  canWrite={false}
+                  canWrite={sseCanWrite}
                   initialKind={selected.identity.sseKind as SseObjectKind | undefined}
                   initialObjectId={selected.identity.objectId}
                 />
