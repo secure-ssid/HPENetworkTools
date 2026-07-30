@@ -106,7 +106,7 @@ import type { PlaneCapabilities } from '../planes/types';
 import { planeIdForLabel } from './reconcile';
 import { poller } from './poller';
 import { deviceIdentityKey, resolveDeviceIdentity, safeDeviceCandidates, type DeviceIdentity } from './deviceIdentity';
-import { ANONYMOUS_OPERATOR, isAllowedOrigin, withActor } from './auth';
+import { ANONYMOUS_OPERATOR, currentActor, isAllowedOrigin, withActor } from './auth';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -258,8 +258,13 @@ export interface SessionRecordEvent {
 export interface SessionInfo {
   file: string;
   device: string;
+  /** The SSH account on the device — NOT the portal operator, which is `by`. */
   user: string;
   target: string;
+  /** The portal operator who opened the shell. Undefined on a recording made
+   *  before sessions were attributed; never defaulted, because "we do not know
+   *  who opened this" and "the portal was unauthenticated" are different facts. */
+  by?: string;
   openedAt: string;
   /** Plane+serial the recording was opened against, when the caller supplied
    *  a complete identity pair at connect time — undefined for a recording
@@ -331,6 +336,13 @@ class SessionRecorder {
     private readonly user: string,
     private readonly target: string,
     private readonly jumpHost: string | null,
+    /** The PORTAL operator who opened this shell — not `user`, which is the
+     *  SSH account on the device. Without it a transcript records exactly what
+     *  was typed at a production switch and nothing about who typed it, which
+     *  is half an audit trail. Whitespace is collapsed because the open line is
+     *  a space-delimited key=value record and a display name can contain
+     *  spaces. */
+    private readonly by: string = ANONYMOUS_OPERATOR,
     /** Plane+serial this session was actually opened against, when the
      *  caller supplied a complete pair — persisted so a later listing binds
      *  to the exact device instead of guessing from `device` (a display name
@@ -374,7 +386,7 @@ class SessionRecorder {
     this.event({
       type: 'open',
       at: now.toISOString(),
-      text: `device=${device} user=${user} target=${target}${identityText}${jumpHost ? ` via=${jumpHost}` : ''}${note ? ` note=${note}` : ''}`,
+      text: `device=${device} user=${user} target=${target} by=${by.replace(/\s+/g, '_')}${identityText}${jumpHost ? ` via=${jumpHost}` : ''}${note ? ` note=${note}` : ''}`,
     });
   }
 
@@ -641,11 +653,16 @@ export class TerminalManager {
           // without a complete identity. Never guessed back from `device`.
           const plane = /(?:^| )plane=(\S+)/.exec(text)?.[1];
           const serial = /(?:^| )serial=(\S+)/.exec(text)?.[1];
+          // Absent on a recording written before shells were attributed. Left
+          // undefined rather than defaulted to 'operator', which would claim
+          // the portal knew something it did not.
+          const by = /(?:^| )by=(\S+)/.exec(text)?.[1];
           out.push({
             file,
             device: m[1],
             user: m[2],
             target: m[3],
+            by,
             openedAt: e.at,
             plane,
             serial,
@@ -903,11 +920,25 @@ export class TerminalManager {
 
   // -- one WebSocket = one session -------------------------------------------
 
+  /**
+   * @param who The portal operator who opened this shell.
+   *
+   * Passed explicitly rather than read from the ambient actor scope, because
+   * the ambient scope does not reach here in any useful way. AsyncLocalStorage
+   * does not follow an EventEmitter: a listener registered inside a scope runs
+   * in the context of whoever calls emit(), and this socket's events are
+   * emitted from a TCP read that predates the scope entirely. Wrapping this
+   * call in withActor() therefore only ever covered its synchronous setup —
+   * everything the operator went on to type ran outside it, and would have
+   * been attributed to nobody, on the one path in this portal where a human
+   * types privileged commands straight at a switch.
+   */
   handleConnection(
     ws: WebSocket,
     deviceName: string,
     hostOverride: string | null,
     identity: DeviceIdentity = {},
+    who: string = currentActor(),
   ): void {
     const send = (frame: Record<string, unknown>): void => {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
@@ -1170,6 +1201,7 @@ export class TerminalManager {
           creds.username,
           target,
           creds.jumpHost,
+          who,
           identity,
           pathNote,
           new Date(),
@@ -1237,7 +1269,7 @@ export class TerminalManager {
       if (state === 'await-open') fail("protocol violation — expected {type:'open'}");
     }, OPEN_FRAME_WAIT_MS);
 
-    ws.on('message', (data: Buffer) => {
+    ws.on('message', (data: Buffer) => withActor(who, () => {
       bumpIdle();
       const frame = parseClientFrame(data.toString('utf8'));
       if (!frame) {
@@ -1287,7 +1319,7 @@ export class TerminalManager {
       echoPending = cmd;
       state = 'cmd';
       shell.write(cmd + '\n');
-    });
+    }));
 
     ws.on('close', () => teardown('websocket closed'));
     ws.on('error', () => teardown('websocket error'));
@@ -1375,15 +1407,22 @@ export function attachTerminalWs(
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const host = url.searchParams.get('host');
-      // The whole session runs inside the actor scope, so anything it appends
-      // to the change log names the person who opened the shell rather than
-      // an anonymous operator.
-      withActor(who, () => {
-        manager.handleConnection(ws, decodeURIComponent(m[1]), host, {
+      // Handed over explicitly, not left to the ambient actor scope. A scope
+      // entered here would cover this call and nothing after it: the session's
+      // real work happens in socket events, which AsyncLocalStorage does not
+      // reach (a listener runs in the context of whoever calls emit, and these
+      // events come from a TCP read older than any scope we could open here).
+      // handleConnection re-enters the scope per frame instead.
+      manager.handleConnection(
+        ws,
+        decodeURIComponent(m[1]),
+        host,
+        {
           plane: url.searchParams.get('plane') ?? undefined,
           serial: url.searchParams.get('serial') ?? undefined,
-        });
-      });
+        },
+        who,
+      );
     });
   });
   return wss;

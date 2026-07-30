@@ -1565,3 +1565,89 @@ describe('transcript size cap — a shell must never run unrecorded', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+/**
+ * A transcript records exactly what was typed at a production switch. Until
+ * these, it recorded nothing about who typed it: `user` is the SSH account on
+ * the device, which is shared, and the portal operator appeared nowhere.
+ */
+describe('listSessions — the portal operator who opened the shell', () => {
+  it('parses by= off an attributed open line', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-by-'));
+    writeFileSync(
+      join(dir, 'sw-core-a-2026-07-25T09-00-00.jsonl'),
+      JSON.stringify({
+        type: 'open',
+        at: '2026-07-25T09:00:00.000Z',
+        text: 'device=sw-core-a user=r.okafor target=10.42.8.11 by=alice@example.com plane=LOCAL serial=SERIAL-A identity=LOCAL/SERIAL-A via=collector-01 note=x',
+      }) + '\n',
+    );
+    const mgr = new TerminalManager({ logDir: dir });
+    const [session] = mgr.listSessions();
+    // `user` is the device account, `by` is the person. Conflating them would
+    // attribute every session to whichever credential the plane holds.
+    expect(session.by).toBe('alice@example.com');
+    expect(session.user).toBe('r.okafor');
+    // Adding by= must not disturb the fields parsed either side of it.
+    expect(session).toMatchObject({
+      device: 'sw-core-a',
+      target: '10.42.8.11',
+      plane: 'LOCAL',
+      serial: 'SERIAL-A',
+      identityKey: 'LOCAL/SERIAL-A',
+    });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('leaves by undefined on a recording made before shells were attributed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-terminal-by-legacy-'));
+    writeFileSync(
+      join(dir, 'sw-core-a-2026-01-01T09-00-00.jsonl'),
+      JSON.stringify({
+        type: 'open',
+        at: '2026-01-01T09:00:00.000Z',
+        text: 'device=sw-core-a user=r.okafor target=10.42.8.11 via=collector-01 note=x',
+      }) + '\n',
+    );
+    const mgr = new TerminalManager({ logDir: dir });
+    const [session] = mgr.listSessions();
+    // Not defaulted to 'operator': "we do not know who opened this" and "the
+    // portal was running unauthenticated" are different claims.
+    expect(session.by).toBeUndefined();
+    expect(session.user).toBe('r.okafor');
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * The reason handleConnection takes `who` explicitly instead of reading the
+ * ambient actor.
+ *
+ * This is a property of AsyncLocalStorage, not of this codebase, and it is
+ * easy to "simplify" back into a bug that nothing else would catch: the audit
+ * lines would keep being written, they would just quietly name nobody.
+ */
+describe('why the shell actor is passed explicitly', () => {
+  it('confirms an actor scope does NOT survive into a socket event', async () => {
+    const { withActor, currentActor, ANONYMOUS_OPERATOR } = await import('../src/services/auth');
+    const socket = new EventEmitter(); // stands in for the upgraded ws
+    const seen: string[] = [];
+
+    // Exactly the shape the upgrade handler had: register inside the scope,
+    // emit later from the socket's own context.
+    withActor('alice@example.com', () => {
+      socket.on('message', () => seen.push(currentActor()));
+    });
+    await new Promise((r) => setImmediate(r));
+    socket.emit('message');
+
+    expect(seen).toEqual([ANONYMOUS_OPERATOR]);
+
+    // Re-entering the scope inside the listener is what actually works, and is
+    // what handleConnection now does for every frame.
+    const fixed: string[] = [];
+    socket.on('frame', () => withActor('alice@example.com', () => fixed.push(currentActor())));
+    socket.emit('frame');
+    expect(fixed).toEqual(['alice@example.com']);
+  });
+});
