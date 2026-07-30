@@ -72,10 +72,15 @@ import {
   type SseObjectKindResult,
   type SseObjectSummary,
 } from '@hpe/shared';
-import { parseRetryAfterMs, type FetchLike, type RecordCallFn, type SleepFn } from './central';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import {
+  parseRetryAfterMs,
+  type FetchLike,
+  type RecordCallFn,
+  type SleepFn,
+} from './transport';
 
-export type { FetchLike } from './central';
+export type { FetchLike } from './transport';
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
 export const SSE_DEFAULT_BASE_URL = 'https://admin-api.axissecurity.com';

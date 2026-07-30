@@ -15,7 +15,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { PlaneState } from '../src/planes/types';
-import type { FetchLike } from '../src/planes/central';
 import {
   ClearPassAdapter,
   MAX_AUTH_EVENTS,
@@ -24,6 +23,9 @@ import {
   mapClearPassAuthEvent,
   normalizeMac,
 } from '../src/planes/clearpass';
+import {
+  type FetchLike,
+} from '../src/planes/transport';
 
 // -- Recorded fixtures (Insight and legacy shapes, mixed on purpose) ------------
 

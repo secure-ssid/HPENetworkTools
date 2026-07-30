@@ -65,18 +65,20 @@
 import * as https from 'node:https';
 import type { ClientRow, ClientType, DeviceRow, DeviceType, Tone } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
+import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
   firmwareIsApproved,
   parseApprovedFirmware,
   siteIdForName,
   type ApprovedFirmwareMap,
+} from './format';
+import {
   type FetchLike,
   type RecordCallFn,
-} from './central';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+} from './transport';
 
 // Re-exported so tests can type an in-memory fake fetch against this adapter.
-export type { FetchLike } from './central';
+export type { FetchLike } from './transport';
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
 /** UIDARUBA sessions live ~15 min on the MM; renew a minute early. */

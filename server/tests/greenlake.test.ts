@@ -19,7 +19,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { PlaneState } from '../src/planes/types';
-import type { FetchLike } from '../src/planes/central';
 import {
   EXPIRING_SOON_DAYS,
   GreenLakeAdapter,
@@ -27,6 +26,9 @@ import {
   mapGreenLakeSubscription,
   subStatusFor,
 } from '../src/planes/greenlake';
+import {
+  type FetchLike,
+} from '../src/planes/transport';
 
 // -- Recorded fixtures (shapes as the GLP subscription APIs return them) ------
 

@@ -109,8 +109,6 @@
  */
 
 import {
-  siteDisplayName,
-  siteIdFor,
   type AlertRow,
   type ClientDetailLive,
   type ClientDetailSection,
@@ -141,7 +139,6 @@ import {
   type SsidScopeCategory,
   type SsidScopeOption,
   type SsidSecurity,
-  type SiteId,
   type SiteRow,
   type SiteTopologyLive,
   type SiteTopologySection,
@@ -153,7 +150,30 @@ import {
 } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState, PlaneTokenInfo } from './types';
+import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import {
+  ageString,
+  durationString,
+  firmwareIsApproved,
+  num,
+  parseApprovedFirmware,
+  parseTimestamp,
+  sevFor,
+  siteIdForName,
+  str,
+  type ApprovedFirmwareMap,
+} from './format';
+import {
+  TokenManager,
+  mintedTokenInfo,
+  parseRateLimitResetAtMs,
+  parseRetryAfterMs,
+  realSleep,
+  type FetchLike,
+  type RecordCallFn,
+  type SleepFn,
+} from './transport';
+
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
 /** High-volume sections (500-row client pages, 200-row inventory pages) need
@@ -189,144 +209,7 @@ const MOBILITY_WINDOW_SEC = 24 * 60 * 60;
  *  occurredAt DESC). Walking would spend calls to render rows nobody scrolls to. */
 const MOBILITY_PAGE_LIMIT = 100;
 
-export type RecordCallFn = (call: { path: string; ms: number; code: string }) => void;
-export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
-export type SleepFn = (ms: number) => Promise<void>;
-
-const realSleep: SleepFn = (ms) =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-
 export type CentralDeviceRow = DeviceRow & DeviceIdentityHints;
-
-// ---------------------------------------------------------------------------
-// Defensive field readers — unknown/extra fields ignored, missing → null
-// ---------------------------------------------------------------------------
-
-function str(v: unknown): string | null {
-  if (typeof v === 'string' && v.trim().length > 0) return v.trim();
-  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
-  return null;
-}
-
-function num(v: unknown): number | null {
-  if (typeof v === 'number' && Number.isFinite(v)) return v;
-  if (typeof v === 'string' && v.trim().length > 0 && !Number.isNaN(Number(v))) return Number(v);
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Site identity
-// ---------------------------------------------------------------------------
-
-/**
- * LOCAL GAP (do not fix in shared/): shared SiteId is a closed union over the
- * fixture sites, so it cannot name a site only a real plane knows about. We
- * mint 'ext-<slug>' ids locally and cast. Consumers must treat SiteId as an
- * opaque string; these ids never collide with the canonical ones.
- */
-export function externalSiteId(name: string): SiteId {
-  const slug = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48);
-  return `ext-${slug || 'unknown'}` as SiteId;
-}
-
-/**
- * Resolve a plane-reported site name to the canonical site join. Known
- * aliases get the canonical id + authored display name; unknown names keep
- * the plane's own display string under a generated 'ext-*' id; absent names
- * land on the 'multiple' pseudo-site (its documented purpose).
- */
-export function siteIdForName(name: string | null): { siteId: SiteId; siteName: string } {
-  if (name) {
-    const known = siteIdFor(name);
-    if (known) return { siteId: known, siteName: siteDisplayName(known) };
-    return { siteId: externalSiteId(name), siteName: name };
-  }
-  return { siteId: 'multiple', siteName: siteDisplayName('multiple') };
-}
-
-// ---------------------------------------------------------------------------
-// Approved firmware map ('cx=10.13,ap=10.6')
-// ---------------------------------------------------------------------------
-
-export type ApprovedFirmwareMap = [family: string, prefix: string][];
-
-export function parseApprovedFirmware(spec: string | undefined): ApprovedFirmwareMap {
-  if (!spec) return [];
-  const out: ApprovedFirmwareMap = [];
-  for (const part of spec.split(',')) {
-    const eq = part.indexOf('=');
-    if (eq <= 0) continue;
-    const family = part.slice(0, eq).trim().toLowerCase();
-    const prefix = part.slice(eq + 1).trim();
-    if (family && prefix) out.push([family, prefix]);
-  }
-  return out;
-}
-
-/**
- * Honest default true: without an operator-declared train we cannot know a
- * firmware is unapproved, and flagging everything would be noise.
- */
-export function firmwareIsApproved(
-  type: string,
-  model: string,
-  firmware: string,
-  approved: ApprovedFirmwareMap,
-): boolean {
-  if (approved.length === 0 || firmware === 'unknown') return true;
-  const haystack = `${type} ${model}`.toLowerCase();
-  const entry = approved.find(([family]) => haystack.includes(family));
-  if (!entry) return true;
-  return firmware.startsWith(entry[1]);
-}
-
-// ---------------------------------------------------------------------------
-// Time helpers
-// ---------------------------------------------------------------------------
-
-/** Relative age string in the fixtures' vocabulary: '45s', '12m', '6h', '2d'. */
-export function ageString(thenMs: number, nowMs: number = Date.now()): string {
-  const sec = Math.max(0, Math.round((nowMs - thenMs) / 1000));
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h`;
-  return `${Math.floor(hr / 24)}d`;
-}
-
-/** Session-length display: '4h 12m', '37m', '50s'. */
-export function durationString(totalSec: number): string {
-  const sec = Math.max(0, Math.round(totalSec));
-  const hr = Math.floor(sec / 3600);
-  const min = Math.floor((sec % 3600) / 60);
-  if (hr > 0) return `${hr}h ${min}m`;
-  if (min > 0) return `${min}m`;
-  return `${sec}s`;
-}
-
-/** Epoch seconds, epoch ms or ISO string → epoch ms; anything else → null. */
-export function parseTimestamp(v: unknown): number | null {
-  const n = num(v);
-  if (n !== null) {
-    if (n > 1e12) return n;
-    if (n > 1e9) return n * 1000;
-    return null;
-  }
-  const s = str(v);
-  if (s) {
-    const parsed = Date.parse(s);
-    if (!Number.isNaN(parsed)) return parsed;
-  }
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Row mapping (pure, exported for tests)
@@ -602,14 +485,6 @@ export function mapCentralClient(raw: unknown, nowMs: number = Date.now()): Clie
 }
 
 const SEV_TONE: Record<Sev, Tone> = { P1: 'danger', P2: 'warning', P3: 'info' };
-
-/** Central severity vocabulary → the design's P1/P2/P3. */
-export function sevFor(raw: string | null): Sev {
-  const s = (raw ?? '').toLowerCase();
-  if (/crit|emerg|major|alert|p1/.test(s)) return 'P1';
-  if (/warn|minor|p2/.test(s)) return 'P2';
-  return 'P3';
-}
 
 /**
  * v1alpha1 alert rows carry no device-name field, but the summary leads with
@@ -1250,67 +1125,6 @@ export function mapTopologyLink(raw: unknown): TopologyLink | null {
 // Token manager — in-memory, refresh at expiry−60s, single-flight
 // ---------------------------------------------------------------------------
 
-export interface TokenResponse {
-  accessToken: string;
-  expiresInSec: number;
-}
-
-export class TokenManager {
-  private token: string | null = null;
-  private validUntilMs = 0;
-  private inflight: Promise<string> | null = null;
-
-  constructor(
-    private readonly fetchToken: () => Promise<TokenResponse>,
-    private readonly nowMs: () => number = () => Date.now(),
-    private readonly refreshMarginSec = 60,
-  ) {}
-
-  /** Cached bearer token; refreshes at expiry − margin. Concurrent callers share one fetch. */
-  async get(): Promise<string> {
-    if (this.token !== null && this.nowMs() < this.validUntilMs) return this.token;
-    this.inflight ??= this.fetchToken()
-      .then(({ accessToken, expiresInSec }) => {
-        this.token = accessToken;
-        const ttlSec = Math.max(0, expiresInSec - this.refreshMarginSec);
-        this.validUntilMs = this.nowMs() + ttlSec * 1000;
-        return accessToken;
-      })
-      .finally(() => {
-        this.inflight = null;
-      });
-    return this.inflight;
-  }
-
-  /** Drop the cached token (after a 401) so the next get() re-authenticates. */
-  invalidate(): void {
-    this.token = null;
-    this.validUntilMs = 0;
-  }
-}
-
-/**
- * The credential-freshness fact for a token that was just minted: the REAL
- * expiry the plane published (not the manager's earlier refresh point, which is
- * an internal margin) plus a source label, so the Systems fact strip can read
- * 'rotates 12 Aug' instead of 'no expiry published'. The registry seeds
- * PlaneState.token with the source alone — only the adapter's token manager
- * ever learns when the credential dies, so only it can fill the expiry in.
- *
- * SECURITY: expiry + label ONLY. /api/systems/state serves PlaneState unmasked,
- * so the token itself (or any fragment of it) must never reach this struct.
- * A plane that publishes no `expires_in` keeps `expiresAt: null` rather than
- * having a lifetime invented for it.
- */
-export function mintedTokenInfo(
-  expiresInSec: number | null,
-  source = 'oauth client_credentials',
-  nowMs: number = Date.now(),
-): PlaneTokenInfo {
-  const ttl = expiresInSec !== null && Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec : null;
-  return { expiresAt: ttl === null ? null : new Date(nowMs + ttl * 1000).toISOString(), source };
-}
-
 // ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
@@ -1582,30 +1396,6 @@ function extractNextCursor(body: unknown): string | null {
   const raw =
     b.next ?? (nested && typeof nested === 'object' ? (nested as Record<string, unknown>).next : undefined);
   return str(raw);
-}
-
-/** Retry-After is delta-seconds or an HTTP-date; both → ms, anything else null. */
-export function parseRetryAfterMs(header: string | null, nowMs: number = Date.now()): number | null {
-  const raw = str(header);
-  if (!raw) return null;
-  const secs = num(raw);
-  if (secs !== null) return Math.max(0, secs * 1000);
-  const at = Date.parse(raw);
-  return Number.isNaN(at) ? null : Math.max(0, at - nowMs);
-}
-
-/** X-RateLimit-Reset is normally epoch seconds; tolerate epoch ms, delta
- * seconds, and an HTTP date without ever scheduling in the past. */
-export function parseRateLimitResetAtMs(header: string | null, nowMs: number = Date.now()): number | null {
-  const raw = str(header);
-  if (!raw) return null;
-  const value = num(raw);
-  if (value !== null) {
-    const at = value >= 1e12 ? value : value >= 1e9 ? value * 1000 : nowMs + value * 1000;
-    return Math.max(nowMs, at);
-  }
-  const at = Date.parse(raw);
-  return Number.isNaN(at) ? null : Math.max(nowMs, at);
 }
 
 /** Exported for display-only use by server/src/services/centralWebhooks.ts,

@@ -12,33 +12,22 @@
 
 import { describe, expect, it } from 'vitest';
 import type { PlaneState } from '../src/planes/types';
+import type { SsidForm } from '@hpe/shared';
 import {
   ALL_SSID_CATALOG_SECTIONS,
   CentralAdapter,
   GREENLAKE_CCS_TOKEN_URL,
-  buildWlanSsidPayload,
   buildWlanReplacementPayload,
+  buildWlanSsidPayload,
   isNewCentralGateway,
-  TokenManager,
-  ageString,
-  durationString,
-  externalSiteId,
-  firmwareIsApproved,
   mapCentralClient,
   mapCentralDevice,
+  mapCentralGatewayPort,
   mapCentralInventoryDevice,
   mapCentralNotification,
-  mapCentralSsid,
-  mapCentralSite,
-  parseApprovedFirmware,
-  parseRateLimitResetAtMs,
-  parseRetryAfterMs,
-  parseTimestamp,
-  parseUsageIntervalSec,
-  sevFor,
-  siteIdForName,
-  mapCentralGatewayPort,
   mapCentralRadio,
+  mapCentralSite,
+  mapCentralSsid,
   mapCentralSwitchPort,
   mapCentralWlan,
   mapMobilityEvent,
@@ -46,11 +35,13 @@ import {
   mapTopologyNode,
   mapUsageSamples,
   normalizeCentralMac,
+  parseUsageIntervalSec,
   staleManagedModeFields,
   wlanProfileChanged,
-  type FetchLike,
 } from '../src/planes/central';
-import type { SsidForm } from '@hpe/shared';
+import {
+  type FetchLike,
+} from '../src/planes/transport';
 
 // -- Recorded fixtures (shapes as the classic Central APIs return them) -------
 
@@ -105,148 +96,6 @@ const NOTIFICATION_ROW = {
   device_name: 'ap-riv-01',
 };
 
-// -- TokenManager --------------------------------------------------------------
-
-describe('TokenManager', () => {
-  function clock(start = 1_000_000): { now: () => number; advance: (ms: number) => void } {
-    let t = start;
-    return { now: () => t, advance: (ms) => (t += ms) };
-  }
-
-  it('caches the token until expiry minus the 60s margin', async () => {
-    const clk = clock();
-    let fetches = 0;
-    const tm = new TokenManager(async () => {
-      fetches += 1;
-      return { accessToken: `tok-${fetches}`, expiresInSec: 3600 };
-    }, clk.now);
-
-    expect(await tm.get()).toBe('tok-1');
-    clk.advance(3_539_000); // just inside the validity window
-    expect(await tm.get()).toBe('tok-1');
-    expect(fetches).toBe(1);
-
-    clk.advance(2_000); // now past expiry − 60s
-    expect(await tm.get()).toBe('tok-2');
-    expect(fetches).toBe(2);
-  });
-
-  it('single-flight: concurrent get() calls share one token fetch', async () => {
-    let fetches = 0;
-    let release!: (t: { accessToken: string; expiresInSec: number }) => void;
-    const tm = new TokenManager(
-      () =>
-        new Promise((resolve) => {
-          fetches += 1;
-          release = resolve;
-        }),
-      clock().now,
-    );
-    const a = tm.get();
-    const b = tm.get();
-    const c = tm.get();
-    release({ accessToken: 'shared', expiresInSec: 7200 });
-    expect(await Promise.all([a, b, c])).toEqual(['shared', 'shared', 'shared']);
-    expect(fetches).toBe(1);
-  });
-
-  it('a failed fetch does not poison the manager — the next get() retries', async () => {
-    let fetches = 0;
-    const tm = new TokenManager(async () => {
-      fetches += 1;
-      if (fetches === 1) throw new Error('gateway unreachable');
-      return { accessToken: 'recovered', expiresInSec: 3600 };
-    }, clock().now);
-    await expect(tm.get()).rejects.toThrow('gateway unreachable');
-    expect(await tm.get()).toBe('recovered');
-    expect(fetches).toBe(2);
-  });
-
-  it('invalidate() forces a re-authentication', async () => {
-    let fetches = 0;
-    const tm = new TokenManager(async () => ({ accessToken: `tok-${++fetches}`, expiresInSec: 3600 }), clock().now);
-    expect(await tm.get()).toBe('tok-1');
-    tm.invalidate();
-    expect(await tm.get()).toBe('tok-2');
-  });
-
-  it('never caches a token shorter than the refresh margin', async () => {
-    const clk = clock();
-    let fetches = 0;
-    const tm = new TokenManager(async () => ({ accessToken: `tok-${++fetches}`, expiresInSec: 30 }), clk.now);
-    await tm.get();
-    expect(await tm.get()).toBe('tok-2'); // 30s < 60s margin → no caching
-  });
-});
-
-// -- Pure helpers ----------------------------------------------------------------
-
-describe('pure helpers', () => {
-  it('parseApprovedFirmware parses the comma map and skips junk', () => {
-    expect(parseApprovedFirmware('cx=10.13,ap=10.6')).toEqual([
-      ['cx', '10.13'],
-      ['ap', '10.6'],
-    ]);
-    expect(parseApprovedFirmware('cx=10.13,,=bogus,noeq')).toEqual([['cx', '10.13']]);
-    expect(parseApprovedFirmware(undefined)).toEqual([]);
-  });
-
-  it('firmwareIsApproved is honestly true without a declared train', () => {
-    expect(firmwareIsApproved('switch', 'CX 6300M', '10.11.1030', [])).toBe(true);
-    expect(firmwareIsApproved('switch', 'CX 6300M', '10.13.1005', [['cx', '10.13']])).toBe(true);
-    expect(firmwareIsApproved('switch', 'CX 6300M', '10.11.1030', [['cx', '10.13']])).toBe(false);
-    expect(firmwareIsApproved('ap', 'AP-635', '10.6.0.2', [['cx', '10.13']])).toBe(true); // family not covered
-    expect(firmwareIsApproved('switch', 'CX 6300M', 'unknown', [['cx', '10.13']])).toBe(true);
-  });
-
-  it('externalSiteId slugs names outside the canonical union', () => {
-    expect(externalSiteId('Zebra Kiosk')).toBe('ext-zebra-kiosk');
-    expect(externalSiteId('HQ – East Wing!')).toBe('ext-hq-east-wing');
-    expect(externalSiteId('   ')).toBe('ext-unknown');
-  });
-
-  it('siteIdForName canonicalises known aliases and keeps unknown display strings', () => {
-    expect(siteIdForName('Campus-01 HQ')).toEqual({ siteId: 'campus-01', siteName: 'Campus-01 — Meridian HQ' });
-    expect(siteIdForName('Zebra Kiosk')).toEqual({ siteId: 'ext-zebra-kiosk', siteName: 'Zebra Kiosk' });
-    expect(siteIdForName(null)).toEqual({ siteId: 'multiple', siteName: 'Multiple' });
-  });
-
-  it('ageString / durationString / parseTimestamp / sevFor', () => {
-    const now = 1_753_000_000_000;
-    expect(ageString(now - 45_000, now)).toBe('45s');
-    expect(ageString(now - 12 * 60_000, now)).toBe('12m');
-    expect(ageString(now - 6 * 3_600_000, now)).toBe('6h');
-    expect(ageString(now - 2 * 86_400_000, now)).toBe('2d');
-    expect(durationString(14700)).toBe('4h 5m');
-    expect(durationString(50)).toBe('50s');
-    expect(parseTimestamp(1_753_000_000)).toBe(1_753_000_000_000); // epoch s → ms
-    expect(parseTimestamp(1_753_000_000_000)).toBe(1_753_000_000_000);
-    expect(parseTimestamp('2026-07-25T09:41:00Z')).toBe(Date.parse('2026-07-25T09:41:00Z'));
-    expect(parseTimestamp('junk')).toBeNull();
-    expect(sevFor('Critical')).toBe('P1');
-    expect(sevFor('Warning')).toBe('P2');
-    expect(sevFor('Informational')).toBe('P3');
-  });
-
-  it('parseRetryAfterMs reads both Retry-After forms and rejects junk', () => {
-    const now = 1_753_000_000_000;
-    expect(parseRetryAfterMs('30', now)).toBe(30_000); // delta-seconds
-    expect(parseRetryAfterMs('  5 ', now)).toBe(5_000);
-    expect(parseRetryAfterMs(new Date(now + 12_000).toUTCString(), now)).toBe(12_000); // HTTP-date
-    expect(parseRetryAfterMs(new Date(now - 12_000).toUTCString(), now)).toBe(0); // never negative
-    expect(parseRetryAfterMs('soon', now)).toBeNull();
-    expect(parseRetryAfterMs(null, now)).toBeNull();
-  });
-
-  it('parseRateLimitResetAtMs reads epoch, delta, and date forms', () => {
-    const now = 1_753_000_000_000;
-    expect(parseRateLimitResetAtMs(String((now + 12_000) / 1000), now)).toBe(now + 12_000);
-    expect(parseRateLimitResetAtMs(String(now + 8_000), now)).toBe(now + 8_000);
-    expect(parseRateLimitResetAtMs('5', now)).toBe(now + 5_000);
-    expect(parseRateLimitResetAtMs(new Date(now + 4_000).toUTCString(), now)).toBe(now + 4_000);
-    expect(parseRateLimitResetAtMs('soon', now)).toBeNull();
-  });
-});
 
 // -- Row mapping -------------------------------------------------------------------
 
