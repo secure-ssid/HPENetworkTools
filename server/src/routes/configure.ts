@@ -5,7 +5,7 @@
  *   POST /api/configure/dry-run  {kind, form, ticket}   → DryRunResult (400 without a ticket)
  *   POST /api/configure/queue    {kind, form, ticket}   → BrokeredChange (400 without a ticket)
  *   GET  /api/configure/queue                           → {changes: BrokeredChange[]}
- *   GET  /api/configure/history  ?limit=50              → {events: BrokerAuditEvent[]}
+ *   GET  /api/configure/history  ?limit=50              → {events: BrokerAuditEvent[], unreadable: string[]}
  *   POST /api/configure/push     {changeId}             → PushResult (404 unknown, 409 not-ready / lease expired)
  *   POST /api/configure/discard  {changeId}             → {ok, changeId} (404 unknown)
  *
@@ -77,10 +77,17 @@ export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirect
    *
    * A missing log is an empty list, not an error: nothing has been brokered
    * on this install yet, which the drawer states as its own empty state.
+   *
+   * A log that exists and cannot be read is NOT that. It also comes back as a
+   * short list — possibly empty — and would otherwise be indistinguishable
+   * from the quiet install above. `unreadable` names the generations that
+   * failed so the drawer can say the history it is showing is partial, rather
+   * than presenting a hole as a fact about what was never done.
    */
   router.get('/configure/history', (req, res) => {
-    const events: BrokerAuditEvent[] = broker.recentEvents(historyLimit(req.query.limit));
-    res.json({ events });
+    const read = broker.readRecentEvents(historyLimit(req.query.limit));
+    const events: BrokerAuditEvent[] = read.events;
+    res.json({ events, unreadable: read.unreadable });
   });
 
   router.post(

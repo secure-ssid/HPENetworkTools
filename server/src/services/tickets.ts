@@ -285,11 +285,20 @@ export class TicketStore {
       v !== null &&
       typeof (v as BrokerLogEntry).ts === 'string' &&
       typeof (v as BrokerLogEntry).changeId === 'string';
-    return readJsonlNewestFirst<BrokerLogEntry>(
+    const read = readJsonlNewestFirst<BrokerLogEntry>(
       path.join(this.dataDir, 'change-log.jsonl'),
       CHANGE_LOG_READ_LIMIT,
       isEntry,
-    ).reverse();
+    );
+    // This feeds a ticket's evidence trail. Evidence that is quietly missing a
+    // stretch is worse than evidence known to be partial, so say so loudly
+    // even though the returned shape has nowhere to put it.
+    if (read.unreadable.length > 0) {
+      console.error(
+        `ticket evidence is incomplete — unreadable change-log generations: ${read.unreadable.join(', ')}`,
+      );
+    }
+    return read.entries.reverse();
   }
 
   /**

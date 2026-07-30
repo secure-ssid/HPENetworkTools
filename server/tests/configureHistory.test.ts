@@ -115,3 +115,40 @@ describe('GET /api/configure/history', () => {
     expect(await history('?limit=-5')).toHaveLength(3);
   });
 });
+
+/**
+ * The envelope has to distinguish "nothing was brokered" from "part of the
+ * record is unreachable". Both come back as a short list of events; only
+ * `unreadable` tells them apart, and the drawer renders a warning on it.
+ */
+describe('GET /api/configure/history — partial reads', () => {
+  it('states that nothing was unreadable when the log opened cleanly', async () => {
+    const r = await fetch(`${base}/api/configure/history?limit=5`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { events: unknown[]; unreadable: string[] };
+    // Present and empty, not absent: the server is making the claim, so an
+    // older client that ignores the field is not silently reassured by it.
+    expect(Array.isArray(body.unreadable)).toBe(true);
+    expect(body.unreadable).toEqual([]);
+  });
+
+  it('names a rotated generation it could not open', async () => {
+    const { mkdirSync, rmSync: rm } = await import('node:fs');
+    // The broker resolves change-log.jsonl under the data dir; .1 is the first
+    // rotated generation. A directory there fails the read the way a bad
+    // permission or a bad sector would.
+    const gen = join(tmpDir, 'data', 'change-log.1.jsonl');
+    mkdirSync(gen, { recursive: true });
+    try {
+      const r = await fetch(`${base}/api/configure/history?limit=50`);
+      expect(r.status).toBe(200);
+      const body = (await r.json()) as { events: unknown[]; unreadable: string[] };
+      expect(body.unreadable).toEqual(['change-log.1.jsonl']);
+      // Still a 200 with the readable rows: a partial audit log is worth
+      // showing, it just must not claim to be the whole of it.
+      expect(Array.isArray(body.events)).toBe(true);
+    } finally {
+      rm(gen, { recursive: true, force: true });
+    }
+  });
+});

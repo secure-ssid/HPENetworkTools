@@ -584,7 +584,16 @@ export class DiagnosticsService {
       const file = path.join(this.dataDir, 'diagnostics-history.jsonl');
       // Newest first, across rotated generations: a rotation must not make the
       // Diagnostics history look as though the earlier runs never happened.
-      return readLinesNewestFirst(file, MAX_HISTORY)
+      const read = readLinesNewestFirst(file, MAX_HISTORY);
+      // A generation we could not read is a hole in this list that the list
+      // itself cannot show. Diagnostics history has no field to carry it, so
+      // the least it can do is not be silent about it.
+      if (read.unreadable.length > 0) {
+        console.error(
+          `diagnostics history is incomplete — unreadable generations: ${read.unreadable.join(', ')}`,
+        );
+      }
+      return read.entries
         .flatMap((line) => {
           try {
             const raw = JSON.parse(line) as Record<string, unknown>;

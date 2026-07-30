@@ -507,6 +507,17 @@ export interface WriteBrokerOptions {
 // The broker
 // ---------------------------------------------------------------------------
 
+/** One line of the brokered-write audit log: what happened to a change, never
+ *  what was in it. Rendered configuration bodies are deliberately absent. */
+export interface BrokerEventRow {
+  ts: string;
+  event: string;
+  changeId: string;
+  ticket: string;
+  kind: string;
+  result: string;
+}
+
 export class WriteBroker {
   private readonly registry: PlaneRegistry;
   private readonly transportOverride: BrokerTransport | null | undefined;
@@ -724,14 +735,28 @@ export class WriteBroker {
    * Tail of the brokered-write audit log, newest first — feeds the Overview
    * change log in live mode. Corrupt lines are skipped, never fatal.
    */
-  recentEvents(limit = 4): { ts: string; event: string; changeId: string; ticket: string; kind: string; result: string }[] {
+  recentEvents(limit = 4): BrokerEventRow[] {
+    return this.readRecentEvents(limit).events;
+  }
+
+  /**
+   * The same read, plus the generations it could not open.
+   *
+   * Callers that render the audit log to an operator must use this one. An
+   * unreadable generation makes the log come back short — and a short audit
+   * log is indistinguishable from a quiet one unless something says otherwise.
+   * "Nothing was brokered here" and "part of the record is unreachable" are
+   * opposite claims and the drawer must never substitute the first for the
+   * second.
+   */
+  readRecentEvents(limit = 4): { events: BrokerEventRow[]; unreadable: string[] } {
     // Reads across rotated generations. Without that, the first rotation would
     // make the Change history drawer look as though everything before it never
     // happened — the entries are still on disk.
-    type Event = { ts: string; event: string; changeId: string; ticket: string; kind: string; result: string };
-    const isEvent = (v: unknown): v is Event =>
+    const isEvent = (v: unknown): v is BrokerEventRow =>
       typeof v === 'object' && v !== null && typeof (v as { ts?: unknown }).ts === 'string';
-    return readJsonlNewestFirst<Event>(this.logFile, limit, isEvent);
+    const read = readJsonlNewestFirst<BrokerEventRow>(this.logFile, limit, isEvent);
+    return { events: read.entries, unreadable: read.unreadable };
   }
 
   // -- push -------------------------------------------------------------------

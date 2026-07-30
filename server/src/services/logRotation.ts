@@ -19,6 +19,11 @@
  *     live log. The gap is part of the record.
  *   - Readers read across generations (readJsonlNewestFirst), so history does
  *     not appear to shrink the moment a rotation happens.
+ *   - A generation that exists but cannot be read is *named* to the caller.
+ *     Skipping it silently would produce a short, plausible, continuous-looking
+ *     history with an invisible hole in it — the same failure as rendering an
+ *     unread section as empty, and worse here, because the caller is an audit
+ *     trail whose whole purpose is to be trusted when it says a thing happened.
  *
  * Rotation is checked on write rather than on a timer: no scheduler to own, no
  * behaviour that depends on the process having been up long enough.
@@ -145,27 +150,62 @@ export function rotateIfNeeded(
 }
 
 /**
+ * What a read across generations actually managed to see.
+ *
+ * `unreadable` names the generations that exist on disk and could not be read
+ * — a permission change, a bad sector, a restore that got the ownership wrong.
+ * It is deliberately not an error: the readable generations are still worth
+ * showing. But it must not be dropped either, because a caller that shows
+ * `entries` alone shows a shorter history that looks complete.
+ */
+export interface JsonlRead<T> {
+  entries: T[];
+  /** Basenames of generations that exist but could not be read. Empty is the good case. */
+  unreadable: string[];
+}
+
+/** Shared traversal for both readers. `take` returns false once it has enough. */
+function eachGeneration(
+  file: string,
+  keep: number,
+  take: (lines: string[]) => boolean,
+): string[] {
+  const unreadable: string[] = [];
+  for (const gen of generations(file, keep)) {
+    let lines: string[];
+    try {
+      lines = fs.readFileSync(gen, 'utf8').split('\n');
+    } catch {
+      // Existence was already checked, so this is a real read failure rather
+      // than an aged-out generation. Name it; do not let it pass for absence.
+      unreadable.push(path.basename(gen));
+      continue;
+    }
+    if (!take(lines)) break;
+  }
+  return unreadable;
+}
+
+/**
  * Up to `limit` non-blank lines, newest first, across rotated generations.
  *
  * The raw-line form exists for callers that do their own field-by-field
  * validation of each entry (diagnostics history redacts as it parses) and so
  * cannot hand a type guard to readJsonlNewestFirst.
  */
-export function readLinesNewestFirst(file: string, limit: number, keep = DEFAULT_POLICY.keep): string[] {
-  const out: string[] = [];
-  for (const gen of generations(file, keep)) {
-    let lines: string[];
-    try {
-      lines = fs.readFileSync(gen, 'utf8').split('\n');
-    } catch {
-      continue;
+export function readLinesNewestFirst(
+  file: string,
+  limit: number,
+  keep = DEFAULT_POLICY.keep,
+): JsonlRead<string> {
+  const entries: string[] = [];
+  const unreadable = eachGeneration(file, keep, (lines) => {
+    for (let i = lines.length - 1; i >= 0 && entries.length < limit; i -= 1) {
+      if (lines[i].trim()) entries.push(lines[i]);
     }
-    for (let i = lines.length - 1; i >= 0 && out.length < limit; i -= 1) {
-      if (lines[i].trim()) out.push(lines[i]);
-    }
-    if (out.length >= limit) break;
-  }
-  return out;
+    return entries.length < limit;
+  });
+  return { entries, unreadable };
 }
 
 /**
@@ -177,33 +217,29 @@ export function readLinesNewestFirst(file: string, limit: number, keep = DEFAULT
  * unread section as empty.
  *
  * Lines that do not parse are skipped rather than aborting the read: one
- * corrupt line (a torn write during a crash) must not hide the rest.
+ * corrupt line (a torn write during a crash) must not hide the rest. A whole
+ * generation that cannot be read is a different matter and is reported in
+ * `unreadable` — see JsonlRead.
  */
 export function readJsonlNewestFirst<T>(
   file: string,
   limit: number,
   accept: (value: unknown) => value is T,
   keep = DEFAULT_POLICY.keep,
-): T[] {
-  const out: T[] = [];
-  for (const gen of generations(file, keep)) {
-    let lines: string[];
-    try {
-      lines = fs.readFileSync(gen, 'utf8').split('\n');
-    } catch {
-      continue;
-    }
-    for (let i = lines.length - 1; i >= 0 && out.length < limit; i -= 1) {
+): JsonlRead<T> {
+  const entries: T[] = [];
+  const unreadable = eachGeneration(file, keep, (lines) => {
+    for (let i = lines.length - 1; i >= 0 && entries.length < limit; i -= 1) {
       const line = lines[i];
       if (!line.trim()) continue;
       try {
         const parsed: unknown = JSON.parse(line);
-        if (accept(parsed)) out.push(parsed);
+        if (accept(parsed)) entries.push(parsed);
       } catch {
         // torn or corrupt line — skip it, keep the rest
       }
     }
-    if (out.length >= limit) break;
-  }
-  return out;
+    return entries.length < limit;
+  });
+  return { entries, unreadable };
 }

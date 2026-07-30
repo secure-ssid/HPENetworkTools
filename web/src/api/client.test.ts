@@ -626,13 +626,36 @@ describe('screen API source handling', () => {
     });
     vi.stubGlobal('fetch', fetchSpy);
 
-    const events = await getChangeHistory();
+    const history = await getChangeHistory();
     expect(fetchSpy.mock.calls[0][0]).toBe('/api/configure/history?limit=50');
-    expect(Array.isArray(events) && events[0]).toMatchObject({
+    expect(history && 'events' in history && history.events[0]).toMatchObject({
       changeId: 'chg-7f21',
       ticket: 'NET-4166',
       result: 'applied',
     });
+    // A server that says nothing about unreadable generations is not making a
+    // claim of partiality, so the drawer must not invent one.
+    expect(history && 'unreadable' in history && history.unreadable).toEqual([]);
+  });
+
+  it('carries the generations the server could not read alongside the events', async () => {
+    // The events list comes back short. Without this field the drawer would
+    // show a plausible, continuous history and the missing stretch would read
+    // as "nothing was brokered then".
+    mockFetch({
+      ok: true,
+      body: { events: [{ ts: '2026-01-01T00:00:00Z', changeId: 'chg-1' }], unreadable: ['change-log.2.jsonl'] },
+    });
+
+    const history = await getChangeHistory();
+    expect(history && 'unreadable' in history && history.unreadable).toEqual(['change-log.2.jsonl']);
+  });
+
+  it('ignores a non-string entry in unreadable rather than rendering it', async () => {
+    mockFetch({ ok: true, body: { events: [], unreadable: ['change-log.2.jsonl', 7, null] } });
+
+    const history = await getChangeHistory();
+    expect(history && 'unreadable' in history && history.unreadable).toEqual(['change-log.2.jsonl']);
   });
 
   it('surfaces an HTTP failure on the audit log instead of an empty history', async () => {

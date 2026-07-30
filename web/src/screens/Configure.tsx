@@ -412,7 +412,7 @@ export default function Configure() {
     const r = await getChangeHistory();
     if (isApiError(r)) setHistory({ kind: 'error', message: r.error });
     else if (r === null) setHistory({ kind: 'offline' });
-    else setHistory({ kind: 'ok', events: r });
+    else setHistory({ kind: 'ok', events: r.events, unreadable: r.unreadable });
   };
 
   /** Re-read the broker's queue; false when the backend dropped out from under us. */
@@ -1564,7 +1564,15 @@ export default function Configure() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <SectionHeader
             label="Brokered changes"
-            meta={history.kind === 'ok' ? String(history.events.length) : undefined}
+            // A bare count reads as "this is how many there are". When a
+            // generation could not be read it is only how many we could see.
+            meta={
+              history.kind === 'ok'
+                ? history.unreadable.length > 0
+                  ? `${history.events.length} readable`
+                  : String(history.events.length)
+                : undefined
+            }
           />
           {history.kind === 'loading' ? (
             <div style={{ display: 'flex', justifyContent: 'center', padding: 32 }}>
@@ -1581,6 +1589,21 @@ export default function Configure() {
               title="The portal backend did not answer"
               description="The audit log lives on the server with the write broker; there is no local copy to show. Reconnect the backend and open this again."
             />
+          ) : null}
+          {/* The log came back short because part of it could not be read.
+              Without this the drawer would show a plausible, continuous list
+              and the operator would have no way to know a stretch of the audit
+              trail is missing — the absence would read as "nothing happened". */}
+          {history.kind === 'ok' && history.unreadable.length > 0 ? (
+            <Alert tone="warning" title="Part of the audit log could not be read">
+              <span style={{ fontSize: 13 }}>
+                {history.unreadable.length === 1
+                  ? `The rotated log ${history.unreadable[0]} exists on the server but could not be opened.`
+                  : `${history.unreadable.length} rotated logs (${history.unreadable.join(', ')}) exist on the server but could not be opened.`}{' '}
+                What is listed below is real, but it is not the whole record — check file permissions
+                and disk health in the portal's data directory before treating this list as complete.
+              </span>
+            </Alert>
           ) : null}
           {history.kind === 'ok'
             ? history.events.map((e, i) => (

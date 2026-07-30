@@ -95,8 +95,15 @@ export async function getChangeQueue(): Promise<BrokeredChange[] | ApiError | nu
  * shared/types.ts pins that rendered configuration bodies are NOT part of the
  * row. Nothing here may widen it.
  */
-export async function getChangeHistory(limit = 50): Promise<BrokerAuditEvent[] | ApiError | null> {
-  const result = await fetchScreen<{ events: BrokerAuditEvent[] }>(
+export interface ChangeHistory {
+  events: BrokerAuditEvent[];
+  /** Rotated log generations the server could not read. Non-empty means the
+   *  list above is missing a stretch of history that does exist on disk. */
+  unreadable: string[];
+}
+
+export async function getChangeHistory(limit = 50): Promise<ChangeHistory | ApiError | null> {
+  const result = await fetchScreen<{ events: BrokerAuditEvent[]; unreadable?: unknown }>(
     `/api/configure/history?limit=${encodeURIComponent(String(limit))}`,
   );
   if (result.kind === 'ok') {
@@ -105,7 +112,13 @@ export async function getChangeHistory(limit = 50): Promise<BrokerAuditEvent[] |
     if (!Array.isArray(result.data?.events)) {
       return { error: 'The portal API returned an unexpected change-history payload.' };
     }
-    return result.data.events;
+    // A server too old to report this cannot be assumed complete, but it also
+    // cannot be assumed broken. Absent means "not stated", which renders the
+    // same as the good case — the claim only travels when the server makes it.
+    const unreadable = Array.isArray(result.data.unreadable)
+      ? result.data.unreadable.filter((g): g is string => typeof g === 'string')
+      : [];
+    return { events: result.data.events, unreadable };
   }
   if (result.kind === 'http-error') return { error: result.message };
   return null;

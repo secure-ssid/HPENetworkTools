@@ -133,27 +133,27 @@ describe('readJsonlNewestFirst', () => {
   it('reads across generations so history does not appear to shrink', () => {
     write(generationPath(file, 1), [{ ts: 'a', n: 1 }, { ts: 'b', n: 2 }]);
     write(file, [{ ts: 'c', n: 3 }]);
-    expect(readJsonlNewestFirst<Row>(file, 10, isRow).map((r) => r.n)).toEqual([3, 2, 1]);
+    expect(readJsonlNewestFirst<Row>(file, 10, isRow).entries.map((r) => r.n)).toEqual([3, 2, 1]);
   });
 
   it('stops at the limit without reading generations it does not need', () => {
     write(generationPath(file, 1), [{ ts: 'a', n: 1 }]);
     write(file, [{ ts: 'b', n: 2 }, { ts: 'c', n: 3 }]);
-    expect(readJsonlNewestFirst<Row>(file, 2, isRow).map((r) => r.n)).toEqual([3, 2]);
+    expect(readJsonlNewestFirst<Row>(file, 2, isRow).entries.map((r) => r.n)).toEqual([3, 2]);
   });
 
   it('skips a torn line without hiding the rest of the file', () => {
     writeFileSync(file, `${JSON.stringify({ ts: 'a', n: 1 })}\n{"ts":"b"\n${JSON.stringify({ ts: 'c', n: 3 })}\n`);
-    expect(readJsonlNewestFirst<Row>(file, 10, isRow).map((r) => r.n)).toEqual([3, 1]);
+    expect(readJsonlNewestFirst<Row>(file, 10, isRow).entries.map((r) => r.n)).toEqual([3, 1]);
   });
 
   it('rejects entries that fail the caller’s guard', () => {
     writeFileSync(file, `${JSON.stringify({ nope: true })}\n${JSON.stringify({ ts: 'a', n: 1 })}\n`);
-    expect(readJsonlNewestFirst<Row>(file, 10, isRow)).toHaveLength(1);
+    expect(readJsonlNewestFirst<Row>(file, 10, isRow).entries).toHaveLength(1);
   });
 
   it('is an empty list, not an error, when nothing has been written', () => {
-    expect(readJsonlNewestFirst<Row>(join(dir, 'nope.jsonl'), 10, isRow)).toEqual([]);
+    expect(readJsonlNewestFirst<Row>(join(dir, 'nope.jsonl'), 10, isRow)).toEqual({ entries: [], unreadable: [] });
   });
 });
 
@@ -161,7 +161,7 @@ describe('readLinesNewestFirst', () => {
   it('returns raw lines newest-first across generations, skipping blanks', () => {
     writeFileSync(generationPath(file, 1), 'one\n\ntwo\n');
     writeFileSync(file, 'three\n');
-    expect(readLinesNewestFirst(file, 10)).toEqual(['three', 'two', 'one']);
+    expect(readLinesNewestFirst(file, 10).entries).toEqual(['three', 'two', 'one']);
   });
 });
 
@@ -174,7 +174,7 @@ describe('rotation end to end', () => {
       appendFileSync(file, JSON.stringify({ ts: `t${n}`, n }) + '\n');
       seen.push(n);
     }
-    const read = readJsonlNewestFirst<Row>(file, 100, isRow, policy.keep)
+    const read = readJsonlNewestFirst<Row>(file, 100, isRow, policy.keep).entries
       .filter((r) => typeof r.n === 'number')
       .map((r) => r.n);
     // Some of the oldest may have aged out — but every one still on disk must
@@ -186,5 +186,76 @@ describe('rotation end to end', () => {
     for (let i = 1; i < read.length; i += 1) expect(read[i]).toBe(read[i - 1] - 1);
     // And the live file stayed bounded.
     expect(statSync(file).size).toBeLessThan(policy.maxBytes * 2);
+  });
+});
+
+/**
+ * An unreadable generation.
+ *
+ * This module is careful about a generation it *deletes* — retention writes a
+ * tombstone first, so the gap is part of the record. It was silent about a
+ * generation it simply could not open. That is the worse of the two: the read
+ * comes back short, continuous, and plausible, and the caller has no way to
+ * tell a quiet period from an unreachable one.
+ *
+ * A directory in the generation's place is used rather than chmod, because
+ * chmod 000 does not stop a root-owned test runner from reading the file and
+ * the assertion has to hold everywhere.
+ */
+describe('a generation that exists but cannot be read', () => {
+  it('names it instead of passing it off as absent', () => {
+    write(file, [{ ts: 'c', n: 3 }]);
+    write(generationPath(file, 2), [{ ts: 'a', n: 1 }]);
+    mkdirSync(generationPath(file, 1)); // exists; readFileSync throws EISDIR
+
+    const read = readJsonlNewestFirst<Row>(file, 10, isRow);
+    // The readable generations still come back — a partial answer beats none.
+    expect(read.entries.map((r) => r.n)).toEqual([3, 1]);
+    // ...but the hole between them is stated, not swallowed.
+    expect(read.unreadable).toEqual(['change-log.1.jsonl']);
+  });
+
+  it('reports nothing unreadable when every generation opens', () => {
+    write(generationPath(file, 1), [{ ts: 'a', n: 1 }]);
+    write(file, [{ ts: 'b', n: 2 }]);
+
+    const read = readJsonlNewestFirst<Row>(file, 10, isRow);
+    expect(read.entries.map((r) => r.n)).toEqual([2, 1]);
+    // An aged-out generation is a genuine absence and must not be reported as
+    // a failure — generations() skips it by existence, which is correct.
+    expect(read.unreadable).toEqual([]);
+  });
+
+  it('distinguishes an unreadable log from one that was never written', () => {
+    // Nothing on disk at all: the caller's "nothing has been brokered here"
+    // empty state is the honest reading.
+    expect(readJsonlNewestFirst<Row>(file, 10, isRow)).toEqual({ entries: [], unreadable: [] });
+
+    // The live file exists and cannot be read: same empty list, opposite
+    // meaning. Only `unreadable` tells them apart.
+    mkdirSync(file);
+    const read = readJsonlNewestFirst<Row>(file, 10, isRow);
+    expect(read.entries).toEqual([]);
+    expect(read.unreadable).toEqual(['change-log.jsonl']);
+  });
+
+  it('reports it from the raw-line reader too, which diagnostics history uses', () => {
+    write(file, [{ ts: 'b', n: 2 }]);
+    mkdirSync(generationPath(file, 1));
+
+    const read = readLinesNewestFirst(file, 10);
+    expect(read.entries).toHaveLength(1);
+    expect(read.unreadable).toEqual(['change-log.1.jsonl']);
+  });
+
+  it('does not scan generations it never needed, so they are not falsely blamed', () => {
+    // The limit is met by the live file. A later generation being unreadable
+    // is not a hole in *this* answer, so claiming one would be its own lie.
+    write(file, [{ ts: 'b', n: 2 }, { ts: 'c', n: 3 }]);
+    mkdirSync(generationPath(file, 1));
+
+    const read = readJsonlNewestFirst<Row>(file, 2, isRow);
+    expect(read.entries.map((r) => r.n)).toEqual([3, 2]);
+    expect(read.unreadable).toEqual([]);
   });
 });

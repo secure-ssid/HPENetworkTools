@@ -55,10 +55,12 @@ export function auditTone(result: string): 'success' | 'warning' | 'danger' | 'n
   return 'neutral';
 }
 
-/** What the "Change history" drawer is showing right now. */
+/** What the "Change history" drawer is showing right now.
+ *  `unreadable` carries the rotated generations the server could not open, so
+ *  a partial log is never presented as the whole of what was brokered. */
 export type HistoryState =
   | { kind: 'loading' }
-  | { kind: 'ok'; events: BrokerAuditEvent[] }
+  | { kind: 'ok'; events: BrokerAuditEvent[]; unreadable: string[] }
   | { kind: 'error'; message: string }
   | { kind: 'offline' };
 

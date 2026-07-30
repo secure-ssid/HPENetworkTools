@@ -177,7 +177,7 @@ beforeEach(() => {
   });
   mockDiscardChange.mockResolvedValue({ ok: true, changeId: 'chg-server-1' });
   mockDryRunConfig.mockResolvedValue({ error: 'dry run not exercised here' });
-  mockGetChangeHistory.mockResolvedValue([]);
+  mockGetChangeHistory.mockResolvedValue({ events: [], unreadable: [] });
   mockGetSsidCatalog.mockResolvedValue(SSID_CATALOG);
   mockApplySsidDirect.mockResolvedValue(SSID_APPLIED);
 });
@@ -468,7 +468,7 @@ async function openHistoryDrawer() {
 
 describe('Configure — change history drawer', () => {
   it('renders the broker audit rows and never the rendered payload body', async () => {
-    mockGetChangeHistory.mockResolvedValue([
+    mockGetChangeHistory.mockResolvedValue({ events: [
       AUDIT_ROW,
       {
         ts: '2026-07-26T08:12:00.000Z',
@@ -478,7 +478,7 @@ describe('Configure — change history drawer', () => {
         kind: 'ssid',
         result: 'render-only (read-only plane)',
       },
-    ]);
+    ], unreadable: [] });
 
     await openHistoryDrawer();
 
@@ -502,7 +502,7 @@ describe('Configure — change history drawer', () => {
   });
 
   it('names the empty audit log rather than opening a blank panel', async () => {
-    mockGetChangeHistory.mockResolvedValue([]);
+    mockGetChangeHistory.mockResolvedValue({ events: [], unreadable: [] });
 
     await openHistoryDrawer();
 
@@ -533,7 +533,7 @@ describe('Configure — change history drawer', () => {
   });
 
   it('re-reads the log on every open so a second visit is not a stale claim', async () => {
-    mockGetChangeHistory.mockResolvedValue([AUDIT_ROW]);
+    mockGetChangeHistory.mockResolvedValue({ events: [AUDIT_ROW], unreadable: [] });
 
     await openHistoryDrawer();
     const first = within(await screen.findByRole('dialog'));
@@ -541,10 +541,10 @@ describe('Configure — change history drawer', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
-    mockGetChangeHistory.mockResolvedValue([
+    mockGetChangeHistory.mockResolvedValue({ events: [
       AUDIT_ROW,
       { ...AUDIT_ROW, ts: '2026-07-26T10:05:00.000Z', changeId: 'chg-9b02', result: 'rejected' },
-    ]);
+    ], unreadable: [] });
     fireEvent.click(screen.getByRole('button', { name: 'Change history' }));
 
     const second = within(await screen.findByRole('dialog'));
@@ -852,5 +852,63 @@ describe('Configure — SSID direct apply', () => {
 
     await waitFor(() => expect(screen.getByText('The scope catalog could not be read')).toBeTruthy());
     expect(screen.getByText('catalog unreadable')).toBeTruthy();
+  });
+});
+
+/**
+ * A partially-read audit log.
+ *
+ * The server can only return the generations it managed to open. Before this,
+ * a log missing a stretch came back as a shorter list that looked exactly like
+ * a quieter install — the drawer would render a continuous history with an
+ * invisible hole, which is the same failure as showing an unread section as
+ * empty, on the one screen where being trusted matters most.
+ */
+describe('Configure — change history that could not be fully read', () => {
+  it('says the log is partial and stops presenting the count as a total', async () => {
+    mockGetChangeHistory.mockResolvedValue({
+      events: [AUDIT_ROW],
+      unreadable: ['change-log.2.jsonl'],
+    });
+    await openHistoryDrawer();
+
+    await waitFor(() =>
+      expect(screen.getByText('Part of the audit log could not be read')).toBeTruthy(),
+    );
+    // The rows it did read are still shown — a partial answer beats none.
+    expect(screen.getByText('chg-7f21')).toBeTruthy();
+    // The generation is named so the operator can go and look at it.
+    expect(screen.getByText(/change-log\.2\.jsonl/)).toBeTruthy();
+    // "1" would assert there is one; "1 readable" asserts only what was seen.
+    expect(screen.getByText('1 readable')).toBeTruthy();
+  });
+
+  it('shows no such warning, and a plain count, when the whole log was read', async () => {
+    mockGetChangeHistory.mockResolvedValue({ events: [AUDIT_ROW], unreadable: [] });
+    await openHistoryDrawer();
+
+    await waitFor(() => expect(screen.getByText('chg-7f21')).toBeTruthy());
+    // A clean read must not carry a scary caveat — an alarm that is always on
+    // is one the operator learns to ignore on the day it matters.
+    expect(screen.queryByText('Part of the audit log could not be read')).toBeNull();
+    // Scoped to the drawer's own header: a bare "1" and other section metas
+    // exist elsewhere on the screen.
+    const header = screen.getByText('Brokered changes').closest('div');
+    expect(header?.querySelector('.nd-section-header__meta')?.textContent).toBe('1');
+  });
+
+  it('warns even when every generation holding events was unreadable', async () => {
+    // The dangerous case: an empty list that reads as "nothing was ever
+    // brokered here" while the record actually exists and is unreachable.
+    mockGetChangeHistory.mockResolvedValue({
+      events: [],
+      unreadable: ['change-log.1.jsonl', 'change-log.2.jsonl'],
+    });
+    await openHistoryDrawer();
+
+    await waitFor(() =>
+      expect(screen.getByText('Part of the audit log could not be read')).toBeTruthy(),
+    );
+    expect(screen.getByText(/2 rotated logs/)).toBeTruthy();
   });
 });
