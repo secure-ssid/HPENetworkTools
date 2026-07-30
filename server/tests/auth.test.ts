@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair, type JWK, type KeyLike } from 'jose';
 import { DEFAULT_VLAN_FORM } from '@hpe/shared';
 
@@ -576,6 +576,41 @@ describe('session store', () => {
     }
     expect(ids.size).toBe(200);
     expect([...ids][0].length).toBeGreaterThanOrEqual(43); // 32 bytes base64url
+  });
+
+  // /api/auth/login is open by necessity, so an unauthenticated caller can
+  // drive it. These pin that doing so costs bounded memory and cannot lock a
+  // real operator out.
+  it('bounds in-flight logins no matter how many are started', () => {
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a) => void errors.push(a));
+    try {
+      const store = new auth.SessionStore();
+      for (let i = 0; i < 5_000; i++) {
+        store.startLogin(`state-${i}`, { codeVerifier: 'v', nonce: 'n', returnTo: '/' });
+      }
+      const { pending, evictedLogins } = store.size();
+      expect(pending).toBeLessThanOrEqual(256);
+      expect(evictedLogins).toBe(5_000 - pending);
+      expect(errors.length).toBeGreaterThan(0); // the discard is reported, not silent
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('keeps the newest logins, so a login started under load still completes', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const store = new auth.SessionStore();
+      for (let i = 0; i < 1_000; i++) {
+        store.startLogin(`flood-${i}`, { codeVerifier: 'v', nonce: 'n', returnTo: '/' });
+      }
+      store.startLogin('mine', { codeVerifier: 'real', nonce: 'n', returnTo: '/dash' });
+      expect(store.takeLogin('mine')?.codeVerifier).toBe('real');
+      expect(store.takeLogin('flood-0')).toBeNull(); // long since evicted
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

@@ -45,6 +45,22 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
 /** How long a started-but-uncompleted login may sit before it is abandoned. */
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10m
 
+/**
+ * Ceiling on concurrent in-flight logins.
+ *
+ * `/api/auth/login` has to be open — you cannot require a session in order to
+ * get one — so it is the one route an unauthenticated caller can drive at
+ * will, and every call parks a PKCE verifier in memory for PENDING_TTL_MS.
+ * Sweeping on expiry alone does not help: within a single ten-minute window
+ * there was no limit at all, which makes the endpoint that guards everything
+ * else the easiest way to exhaust the process.
+ *
+ * 256 is far above real use of this portal — a person starts one login at a
+ * time, and an abandoned one clears itself in ten minutes — and far below any
+ * amount of memory worth caring about.
+ */
+const MAX_PENDING_LOGINS = 256;
+
 /** Outbound budget for provider calls (discovery, token, JWKS). */
 const OIDC_TIMEOUT_MS = 10_000;
 
@@ -167,12 +183,42 @@ export function needsSecureCookie(req: Request): boolean {
 export class SessionStore {
   private readonly sessions = new Map<string, Session>();
   private readonly pending = new Map<string, PendingLogin>();
+  private evictedLogins = 0;
+  private lastEvictionLogAt = 0;
 
   constructor(private readonly now: () => number = Date.now) {}
 
   startLogin(state: string, entry: Omit<PendingLogin, 'createdAt'>): void {
     this.sweep();
+    // At the ceiling, drop the oldest in-flight logins rather than refuse the
+    // new one. Refusing would let anyone who can reach the login route lock
+    // every operator out — trading a memory problem for a total lockout of the
+    // portal. Evicting only ever discards a login that has already been
+    // overtaken by MAX_PENDING_LOGINS others, and an evicted state fails closed
+    // at the callback with the same answer a genuinely expired one gets.
+    while (this.pending.size >= MAX_PENDING_LOGINS) {
+      const oldest = this.pending.keys().next();
+      if (oldest.done) break;
+      this.pending.delete(oldest.value);
+      this.evictedLogins += 1;
+      this.noteEviction();
+    }
     this.pending.set(state, { ...entry, createdAt: this.now() });
+  }
+
+  /**
+   * Eviction means either an attack or a misconfiguration, and in both cases
+   * some real person's sign-in may have been discarded. Say so — but at most
+   * once a minute, so the thing being reported cannot itself flood the log.
+   */
+  private noteEviction(): void {
+    const t = this.now();
+    if (t - this.lastEvictionLogAt < 60_000) return;
+    this.lastEvictionLogAt = t;
+    console.error(
+      `auth: ${MAX_PENDING_LOGINS} logins already in flight — discarding the oldest to admit new ones ` +
+        `(${this.evictedLogins} discarded so far). A sign-in in progress may have to be restarted.`,
+    );
   }
 
   /** Consume a pending login. Single-use: a replayed callback finds nothing. */
@@ -210,8 +256,8 @@ export class SessionStore {
   }
 
   /** Test/diagnostic view. Never exposed over the API. */
-  size(): { sessions: number; pending: number } {
-    return { sessions: this.sessions.size, pending: this.pending.size };
+  size(): { sessions: number; pending: number; evictedLogins: number } {
+    return { sessions: this.sessions.size, pending: this.pending.size, evictedLogins: this.evictedLogins };
   }
 
   private sweep(): void {

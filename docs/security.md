@@ -82,6 +82,16 @@ Sessions are an httpOnly, SameSite=Lax cookie, `Secure` whenever the host is
 not loopback, held in memory only. A server restart signs everyone out; that is
 deliberate, since persisting sessions would mean another secret at rest.
 
+`/api/auth/login` cannot itself require a session, so it is the one route an
+unauthenticated caller can drive at will, and each call parks a PKCE verifier
+in memory until the login completes or ages out after ten minutes. In-flight
+logins are therefore capped at 256. Past the cap the **oldest** are discarded
+rather than the newest refused: refusing would let anyone who can reach the
+login route lock every operator out, trading a memory problem for total denial
+of the portal. A discarded state fails closed at the callback exactly as an
+expired one does, and the discard is logged rather than passed over in silence,
+because it means either an attack or a misconfiguration.
+
 ### Exposure
 
 `startServer` binds `127.0.0.1` by default. `HPE_BIND_HOST` overrides it.
