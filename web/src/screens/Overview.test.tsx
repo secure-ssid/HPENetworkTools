@@ -23,7 +23,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import Overview from './Overview';
 import { SettingsProvider } from '../app/SettingsContext';
@@ -71,7 +71,7 @@ function liveData(over: Partial<OverviewData> = {}): OverviewData {
         alertTone: 'warning',
       },
     ],
-    planes: [{ name: 'Central', scope: 'GLOBAL', state: 'linked', tone: 'success', sync: '09:38' }],
+    planes: [{ name: 'Central', scope: 'GLOBAL', state: 'linked', tone: 'success', sync: '09:38', linked: true }],
     changes: [{ time: '09:32', text: 'SSID Corp-WiFi updated', who: 's.choate' }],
     launchpad: [{ label: 'Open alerts queue', hint: 'VIEW', target: { type: 'view', view: 'alerts' } }],
     syncedAt: null,
@@ -232,8 +232,8 @@ describe('Overview', () => {
         ],
         sites: siteRows(3),
         planes: [
-          { name: 'Central', scope: 'GLOBAL', state: 'linked', tone: 'success', sync: '09:38' },
-          { name: 'ClearPass', scope: 'GLOBAL', state: 'linked', tone: 'success', sync: '09:37' },
+          { name: 'Central', scope: 'GLOBAL', state: 'linked', tone: 'success', sync: '09:38', linked: true },
+          { name: 'ClearPass', scope: 'GLOBAL', state: 'linked', tone: 'success', sync: '09:37', linked: true },
         ],
       }),
     );
@@ -248,6 +248,31 @@ describe('Overview', () => {
     expect(screen.queryByText('All 7 alerts →')).toBeNull();
     expect(screen.queryByText('All 10 sites →')).toBeNull();
     expect(screen.queryByText(/Ten sites, six management planes/)).toBeNull();
+  });
+
+  it('(d2) planes with no credentials collapse to one line instead of filling the panel', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        planes: [
+          { name: 'Central', scope: '13 devices', state: 'healthy', tone: 'success', sync: '34s', linked: true },
+          { name: 'Mist', scope: 'no credentials configured', state: 'not linked', tone: 'neutral', sync: '—', linked: false },
+          { name: 'ClearPass', scope: 'no credentials configured', state: 'not linked', tone: 'neutral', sync: '—', linked: false },
+          { name: 'UXI', scope: 'no credentials configured', state: 'not linked', tone: 'neutral', sync: '—', linked: false },
+        ],
+      }),
+    );
+    renderOverview();
+
+    // The linked plane keeps its own row; the three dark ones become one line.
+    expect(await screen.findByText('Central')).toBeTruthy();
+    expect(screen.getByText('3 planes not linked')).toBeTruthy();
+    expect(screen.queryByText('Mist')).toBeNull();
+    expect(screen.queryByText('ClearPass')).toBeNull();
+    expect(screen.queryByText('UXI')).toBeNull();
+
+    // The line is the route to fixing it, not a dead label.
+    fireEvent.click(screen.getByText('3 planes not linked'));
+    expect(screen.getByTestId('path').textContent).toBe('/systems');
   });
 
   it('(e) a demo-sourced payload keeps the authored fixture prose', async () => {
@@ -353,6 +378,10 @@ describe('Overview', () => {
     mockGetOverview.mockResolvedValue(liveData({ workspace: 'Meridian Health' }));
     renderOverview();
 
-    expect(await screen.findByText('Meridian Health / Single pane')).toBeTruthy();
+    // The trail is carried as data, not painted: the sticky topbar already
+    // renders the same breadcrumbs above the screen header.
+    await waitFor(() =>
+      expect(document.querySelector('[data-path="Meridian Health / Single pane"]')).toBeTruthy(),
+    );
   });
 });

@@ -56,6 +56,20 @@
   --nd-text-34: 34px;
   --nd-text-44: 44px;
 
+  /* density — one place to retune how tightly the portal packs data.
+     Screens grow from three rows to thousands, so row height and the gaps
+     between blocks are tokens, not per-screen literals. */
+  --nd-row-h: 36px;
+  --nd-row-pad-y: 7px;
+  --nd-row-pad-x: 10px;
+  --nd-screen-gap: 16px;
+  --nd-block-gap: 10px;
+  --nd-panel-pad: 12px;
+  --nd-content-pad-x: 24px;
+  --nd-content-pad-y: 16px;
+  --nd-sidebar-w: 236px;
+  --nd-topbar-h: 48px;
+
   /* spacing */
   --nd-space-1: 4px;
   --nd-space-2: 8px;

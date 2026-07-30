@@ -135,6 +135,58 @@ describe('Systems demo/live merge', () => {
     expect(screen.getByText('Central Classic is throttling us')).toBeTruthy();
   });
 
+  it('collapses the planes that hold no credentials behind one expandable line', async () => {
+    const linkedRow: SystemRow = {
+      ...SYSTEMS[0]!,
+      name: 'SecureSSID-LAB-Central',
+      planeId: 'central',
+    };
+    const darkRow: SystemRow = { ...SYSTEMS[1]!, name: 'Mist', planeId: 'mist' };
+    mockGetSystems.mockResolvedValue({
+      systems: [linkedRow, darkRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: {
+        central: {
+          id: 'central',
+          linked: true,
+          health: 'healthy',
+          lastSync: new Date().toISOString(),
+          deviceCount: 13,
+          callsToday: 7,
+          note: null,
+          recentCalls: [],
+        },
+        mist: unlinked('mist'),
+      },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    // The plane that answers is listed; the one that was never configured is not.
+    await waitFor(() => expect(screen.getByText('SecureSSID-LAB-Central')).toBeTruthy());
+    expect(screen.queryByText('Mist')).toBeNull();
+
+    const toggle = screen.getByRole('button', { name: /1 system not linked/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Mist')).toBeTruthy();
+
+    // Collapsing puts it away again — the group is a real disclosure, not a filter.
+    fireEvent.click(toggle);
+    expect(screen.queryByText('Mist')).toBeNull();
+  });
+
   it('drops the authored throttling banner in live mode and derives it from real 429s', async () => {
     mockGetSystems.mockResolvedValue({
       systems: [
@@ -1148,9 +1200,10 @@ describe('Systems Configuration tab — SSE object inventory', () => {
     await waitFor(() => expect(screen.getByText('HPE Aruba Networking SSE')).toBeTruthy());
     const sseSystemRow = screen.getByText('HPE Aruba Networking SSE').closest('button');
     expect(sseSystemRow).not.toBeNull();
-    expect(within(sseSystemRow!).getByText('Objects')).toBeTruthy();
+    // The count carries its own noun: SSE indexes objects, never devices.
+    expect(within(sseSystemRow!).getByText('objects')).toBeTruthy();
     expect(within(sseSystemRow!).getByText('37')).toBeTruthy();
-    expect(within(sseSystemRow!).queryByText('Devices')).toBeNull();
+    expect(within(sseSystemRow!).queryByText('devices')).toBeNull();
 
     fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
     // SSE is object inventory, so selecting it opens Configuration directly.
@@ -1189,6 +1242,8 @@ describe('Systems Configuration tab — SSE object inventory', () => {
 
     renderSystems();
 
+    // A plane with no credentials sits behind the collapsed 'not linked' group.
+    fireEvent.click(await screen.findByRole('button', { name: /1 system not linked/ }));
     await waitFor(() => expect(screen.getByText('HPE Aruba Networking SSE')).toBeTruthy());
     fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Configuration' })).toBeTruthy());

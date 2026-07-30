@@ -578,9 +578,7 @@ export default function SiteDetail() {
           }
         />
 
-        <div
-          style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 18 }}
-        >
+        <div className="nt-stat-grid">
           <Stat label="Devices" value={String(site.devices)} delta="reported inventory rows" deltaTone="neutral" />
           <Stat label="Clients now" value={site.clients} delta={site.clients === '—' ? 'not reported' : 'current rows'} deltaTone="neutral" />
           <Stat
@@ -759,9 +757,7 @@ export default function SiteDetail() {
         </EmptyState>
       ) : (
         <>
-          <div
-            style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 18 }}
-          >
+          <div className="nt-stat-grid">
             <Stat
               label="Devices"
               value={profile.deviceCount}

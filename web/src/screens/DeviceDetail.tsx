@@ -1224,13 +1224,7 @@ export default function DeviceDetail() {
 
         {reconciliationAlert}
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
-            gap: 18,
-          }}
-        >
+        <div className="nt-stat-grid">
           {liveStats.map((s) => (
             <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} />
           ))}
@@ -1561,13 +1555,7 @@ export default function DeviceDetail() {
 
       {reconciliationAlert}
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
-          gap: 18,
-        }}
-      >
+      <div className="nt-stat-grid">
         {profile.stats.map((s) => (
           <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
         ))}

@@ -1,7 +1,11 @@
 /**
- * web/src/screens/ScreenHeader.tsx — the header block every screen opens with:
- * Heading level={1} with a mono overline ("Group / Screen"), one serif-italic
- * 15px subtitle line, and right-aligned actions.
+ * web/src/screens/ScreenHeader.tsx — the compact header band every screen opens
+ * with: title, one-line subtitle, right-aligned actions, hairline rule.
+ *
+ * The `overline` prop is kept because callers pass a "Group / Screen" path, but
+ * it is no longer painted: the sticky topbar already renders the same trail as
+ * breadcrumbs, and repeating it cost a whole row of vertical space on every
+ * screen. It is exposed as `data-path` for tests and deep-link tooling.
  */
 
 import type { ReactNode } from 'react';
@@ -19,38 +23,14 @@ export function ScreenHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div
-      className="nt-screen-header"
-      style={{
-        display: 'flex',
-        alignItems: 'flex-end',
-        justifyContent: 'space-between',
-        gap: 24,
-        flexWrap: 'wrap',
-      }}
-    >
+    <div className="nt-screen-header" data-path={overline}>
       <div className="nt-screen-header__copy">
-        <Heading level={1} overline={overline}>
+        <Heading level={1} className="nt-screen-header__title">
           {title}
         </Heading>
-        <div
-          style={{
-            maxWidth: 760,
-            fontFamily: 'var(--nd-font-body)',
-            fontSize: 14,
-            lineHeight: 1.5,
-            color: 'var(--nd-text-secondary)',
-            marginTop: 8,
-          }}
-        >
-          {subtitle}
-        </div>
+        <p className="nt-screen-header__subtitle">{subtitle}</p>
       </div>
-      {actions ? (
-        <div className="nt-screen-header__actions" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {actions}
-        </div>
-      ) : null}
+      {actions ? <div className="nt-screen-header__actions">{actions}</div> : null}
     </div>
   );
 }

@@ -1212,6 +1212,7 @@ function liveOverviewPlanes(): OverviewPlaneRow[] {
       state: s.linked ? s.health : 'not linked',
       tone: HEALTH_TONE[s.linked ? s.health : 'unlinked'],
       sync: relSync(s.lastSync),
+      linked: s.linked,
     };
     (s.linked ? rows : unlinked).push(row);
   }
@@ -3304,6 +3305,7 @@ function liveCapabilityMatrix(): CapabilityRow[] {
       note,
       mode,
       tone: mode === 'read only' ? 'neutral' : 'accent',
+      linked,
     };
   });
 }

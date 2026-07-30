@@ -365,9 +365,9 @@ describe('Configure — derived claims and empty states', () => {
     mockGetConfigure.mockResolvedValue({
       ...CONFIGURE_DATA,
       capabilities: [
-        { plane: 'Central', mode: 'brokered', note: 'ticketed write', tone: 'success' },
-        { plane: 'Local collector', mode: 'ssh', note: 'recorded session', tone: 'accent' },
-        { plane: 'Mist', mode: 'read only', note: 'no write path', tone: 'neutral' },
+        { plane: 'Central', mode: 'brokered', note: 'ticketed write', tone: 'success', linked: true },
+        { plane: 'Local collector', mode: 'ssh', note: 'recorded session', tone: 'accent', linked: true },
+        { plane: 'Mist', mode: 'read only', note: 'no write path', tone: 'neutral', linked: true },
       ],
     });
 

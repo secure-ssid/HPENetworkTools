@@ -8,15 +8,21 @@ The desktop navigation is grouped by task:
 - **Inventory:** Inventory Explorer, sites, devices, and licences.
 - **Govern:** configuration, compliance, and connected systems.
 
-Below the workflow links, **Browse inventory** expands one connected-system
-branch at a time. The same lazy, paged hierarchy is available on the full
-**Inventory Explorer** page.
+Browsing the estate itself happens on the **Inventory Explorer** page rather
+than in the sidebar, so the hierarchy gets the full width of the screen instead
+of a 236px column.
 
 At tablet and phone widths, use **Menu** to open the focus-managed navigation
 drawer. Escape, the close control, or selecting a destination closes it.
 
 Use the search field to jump to systems, sites, devices, SSE objects, clients,
 IP addresses, MAC addresses, or tickets.
+
+Lists that would otherwise repeat the same empty row many times collapse
+instead. Connected systems, the Inventory Explorer tree, the overview rail and
+Configure all group the planes that hold no credentials behind one line such as
+`8 systems not linked`. Select that line to expand the full set; nothing is
+hidden permanently, and nothing is filtered away.
 
 ![Operations overview](images/overview.png)
 

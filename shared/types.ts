@@ -737,6 +737,10 @@ export interface OverviewPlaneRow {
   state: string;
   tone: Tone;
   sync: string;
+  /** Whether the plane holds credentials and is actually polled. The Overview
+   *  panel collapses the ones that are not; deriving that from the `state`
+   *  string would break the moment the wording changes. */
+  linked: boolean;
 }
 
 export interface ChangeLogEntry {
@@ -1240,6 +1244,13 @@ export interface CapabilityRow {
   note: string;
   mode: 'brokered' | 'ssh' | 'read only';
   tone: Tone;
+  /**
+   * Whether the plane holds credentials at all. Configure collapses the
+   * planes that hold none behind one line, and it must not decide that by
+   * pattern-matching `note` — the prose is written for a human and is free to
+   * change wording without silently un-collapsing the list.
+   */
+  linked: boolean;
 }
 
 // -- Compliance (NtCompliance) --

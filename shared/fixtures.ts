@@ -245,13 +245,13 @@ export const OVERVIEW_SITES: OverviewSiteRow[] = [
 
 /** Management planes — NT_PLANES (7 rows). */
 export const OVERVIEW_PLANES: OverviewPlaneRow[] = [
-  { name: 'HPE Aruba Central', scope: 'new · 3 sites', state: 'healthy', tone: 'success', sync: '40s' },
-  { name: 'Mist', scope: 'cloud · 3 sites', state: 'healthy', tone: 'success', sync: '1m' },
-  { name: 'Central Classic', scope: 'legacy · 2 sites', state: 'degraded', tone: 'danger', sync: '6h' },
-  { name: 'GreenLake', scope: 'workspace · licences', state: 'healthy', tone: 'success', sync: '4m' },
-  { name: 'AOS-8 master', scope: 'mm-lake-1 · on-prem', state: 'warning', tone: 'warning', sync: '2m' },
-  { name: 'Local switch collector', scope: 'ssh · 96 switches', state: 'healthy', tone: 'success', sync: '30s' },
-  { name: 'ClearPass', scope: 'cppm-01 · policy', state: 'healthy', tone: 'success', sync: '55s' },
+  { name: 'HPE Aruba Central', scope: 'new · 3 sites', state: 'healthy', tone: 'success', sync: '40s', linked: true },
+  { name: 'Mist', scope: 'cloud · 3 sites', state: 'healthy', tone: 'success', sync: '1m', linked: true },
+  { name: 'Central Classic', scope: 'legacy · 2 sites', state: 'degraded', tone: 'danger', sync: '6h', linked: true },
+  { name: 'GreenLake', scope: 'workspace · licences', state: 'healthy', tone: 'success', sync: '4m', linked: true },
+  { name: 'AOS-8 master', scope: 'mm-lake-1 · on-prem', state: 'warning', tone: 'warning', sync: '2m', linked: true },
+  { name: 'Local switch collector', scope: 'ssh · 96 switches', state: 'healthy', tone: 'success', sync: '30s', linked: true },
+  { name: 'ClearPass', scope: 'cppm-01 · policy', state: 'healthy', tone: 'success', sync: '55s', linked: true },
 ];
 
 /** Change log — NT_CHANGES (4 rows). */
@@ -1230,12 +1230,12 @@ export const QUEUED_CHANGES: QueuedChangeRow[] = [
 
 /** "Where a change can go" capability matrix — the `capability` array (6 rows). */
 export const CAPABILITY_MATRIX: CapabilityRow[] = [
-  { plane: 'HPE Aruba Central', note: 'wlan, groups, templates', mode: 'brokered', tone: 'accent' },
-  { plane: 'Local switch collector', note: 'ports, vlans, aaa', mode: 'brokered', tone: 'accent' },
-  { plane: 'AOS-8 master', note: 'recorded shell, window only', mode: 'ssh', tone: 'accent' },
-  { plane: 'Mist', note: 'payload pre-filled in console', mode: 'read only', tone: 'neutral' },
-  { plane: 'Central Classic', note: 'retiring 12 Aug', mode: 'read only', tone: 'neutral' },
-  { plane: 'ClearPass', note: 'policy edited in ClearPass', mode: 'read only', tone: 'neutral' },
+  { plane: 'HPE Aruba Central', note: 'wlan, groups, templates', mode: 'brokered', tone: 'accent', linked: true },
+  { plane: 'Local switch collector', note: 'ports, vlans, aaa', mode: 'brokered', tone: 'accent', linked: true },
+  { plane: 'AOS-8 master', note: 'recorded shell, window only', mode: 'ssh', tone: 'accent', linked: true },
+  { plane: 'Mist', note: 'payload pre-filled in console', mode: 'read only', tone: 'neutral', linked: true },
+  { plane: 'Central Classic', note: 'retiring 12 Aug', mode: 'read only', tone: 'neutral', linked: true },
+  { plane: 'ClearPass', note: 'policy edited in ClearPass', mode: 'read only', tone: 'neutral', linked: true },
 ];
 
 /** What the write broker can actually do per plane — the single source the

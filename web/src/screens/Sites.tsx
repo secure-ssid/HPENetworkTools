@@ -26,7 +26,6 @@ import {
   Pagination,
   Select,
   Spinner,
-  Stat,
   Table,
   useToast,
 } from '../nightdesk';
@@ -36,6 +35,7 @@ import { useSettings } from '../app/SettingsContext';
 import type { SiteHealthTone, SiteRow } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
+import { StatRow } from './StatRow';
 
 const HEALTH_COLORS: Record<SiteHealthTone, string> = {
   ok: 'var(--nd-success)',
@@ -167,18 +167,7 @@ export default function Sites() {
       {/* The server computes this row in every mode; an older payload that
           ships none must not leave a zero-height grid behind. */}
       {data.stats.length > 0 ? (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-            gap: 18,
-            maxWidth: 820,
-          }}
-        >
-          {data.stats.map((s) => (
-            <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
-          ))}
-        </div>
+        <StatRow stats={data.stats} />
       ) : null}
 
       <Divider variant="flair" />

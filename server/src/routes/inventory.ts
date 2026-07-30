@@ -25,6 +25,11 @@ export const inventoryRouter = Router();
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 50;
 const SYSTEMS_ROOT = 'group:systems';
+/** Planes that were never given credentials collapse behind one node. Ten
+ *  planes ship today and every new adapter adds another; listing eight
+ *  "no credentials configured" rows ahead of the two that answer buries the
+ *  estate the operator actually has. */
+const DORMANT_ROOT = 'group:dormant';
 
 const SYSTEM_LABEL: Record<PlaneId, string> = {
   central: 'HPE Aruba Central',
@@ -161,7 +166,15 @@ function descendantState(
   return specific;
 }
 
+/** True when the plane holds credentials and is actually polled. */
+function planeLinked(id: PlaneId): boolean {
+  return settings.get().demoMode
+    ? SYSTEMS.some((system) => system.name === SYSTEM_LABEL[id])
+    : registry.state(id).linked;
+}
+
 function planeNode(id: PlaneId, pull: PlanePull | undefined): InventoryTreeNode {
+  const parentId = planeLinked(id) ? SYSTEMS_ROOT : DORMANT_ROOT;
   if (settings.get().demoMode) {
     const row = SYSTEMS.find((system) => system.name === SYSTEM_LABEL[id]);
     const childCount =
@@ -170,7 +183,7 @@ function planeNode(id: PlaneId, pull: PlanePull | undefined): InventoryTreeNode 
     if (!row) {
       return {
         id: nodeId('system', id),
-        parentId: SYSTEMS_ROOT,
+        parentId,
         kind: 'system',
         label: SYSTEM_LABEL[id],
         meta: 'not included in the demo fixture',
@@ -185,7 +198,7 @@ function planeNode(id: PlaneId, pull: PlanePull | undefined): InventoryTreeNode 
     const status: InventoryNodeReadState = row.state === 'healthy' ? 'current' : 'stale';
     return {
       id: nodeId('system', id),
-      parentId: SYSTEMS_ROOT,
+      parentId,
       kind: 'system',
       label: row.name,
       meta: row.kind,
@@ -213,7 +226,7 @@ function planeNode(id: PlaneId, pull: PlanePull | undefined): InventoryTreeNode 
         : 'current';
   return {
     id: nodeId('system', id),
-    parentId: SYSTEMS_ROOT,
+    parentId,
     kind: 'system',
     label: SYSTEM_LABEL[id],
     meta: state.note ?? undefined,
@@ -355,6 +368,22 @@ function sseObjectNodes(kind: SseObjectKind, pull: PlanePull, query = ''): Inven
   return result.rows.filter((row) => sseObjectMatches(row, query)).map((row) => sseObjectNode(kind, row));
 }
 
+function dormantNode(count: number): InventoryTreeNode {
+  return {
+    id: DORMANT_ROOT,
+    parentId: SYSTEMS_ROOT,
+    kind: 'group',
+    label: 'Not linked',
+    meta: 'no credentials stored — nothing is polled',
+    count,
+    status: 'unlinked',
+    tone: 'neutral',
+    hasChildren: count > 0,
+    childCount: count,
+    target: '/systems',
+  };
+}
+
 function childrenFor(parentId: string | null): InventoryTreeNode[] | null {
   const demoMode = settings.get().demoMode;
   const pulls = inventoryPulls();
@@ -378,7 +407,16 @@ function childrenFor(parentId: string | null): InventoryTreeNode[] | null {
       },
     ];
   }
-  if (parentId === SYSTEMS_ROOT) return PLANE_IDS.map((id) => planeNode(id, pulls.get(id)));
+  if (parentId === SYSTEMS_ROOT) {
+    const linked = PLANE_IDS.filter((id) => planeLinked(id));
+    const dormant = PLANE_IDS.filter((id) => !planeLinked(id));
+    const nodes = linked.map((id) => planeNode(id, pulls.get(id)));
+    if (dormant.length > 0) nodes.push(dormantNode(dormant.length));
+    return nodes;
+  }
+  if (parentId === DORMANT_ROOT) {
+    return PLANE_IDS.filter((id) => !planeLinked(id)).map((id) => planeNode(id, pulls.get(id)));
+  }
 
   const parts = nodeParts(parentId);
   if (!parts) return null;
@@ -522,6 +560,10 @@ function allSearchNodes(query = ''): InventoryTreeNode[] {
 
 function exactNode(id: string): InventoryTreeNode | null {
   if (id === SYSTEMS_ROOT) return childrenFor(null)?.[0] ?? null;
+  if (id === DORMANT_ROOT) {
+    const dormant = PLANE_IDS.filter((plane) => !planeLinked(plane)).length;
+    return dormant > 0 ? dormantNode(dormant) : null;
+  }
   const parts = nodeParts(id);
   if (!parts) return null;
   const [kind, first, second, third, ...extra] = parts;

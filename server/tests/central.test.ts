@@ -1020,7 +1020,7 @@ describe('CentralAdapter.pull()', () => {
     // mapCentralNotification's nowMs param — that zeroed every age.
     expect(pull.alerts![0].age).not.toBe('0s');
     expect(pull.alerts![0].age).toMatch(/^\d+[smhd]$/);
-    expect(state.note).toBe('2 devices · 1 sites · 1 clients');
+    expect(state.note).toBe('2 devices · 1 site · 1 client');
     expect(state.health).toBe('healthy'); // promoted from 'warning' on first success
     // secrets never appear in the recorded call log
     expect(JSON.stringify(recorded)).not.toContain('shh-secret');

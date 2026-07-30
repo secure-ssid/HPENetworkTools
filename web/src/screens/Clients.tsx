@@ -25,7 +25,6 @@ import {
   SectionHeader,
   Select,
   Spinner,
-  Stat,
   Switch,
   Table,
   useToast,
@@ -66,6 +65,7 @@ import type {
 } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
+import { StatRow } from './StatRow';
 
 const MEDIUM_OPTIONS = [
   { value: 'all', label: 'Wired + wireless' },
@@ -920,11 +920,7 @@ export default function Clients() {
         }
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 18 }}>
-        {data.stats.map((s) => (
-          <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
-        ))}
-      </div>
+      <StatRow stats={data.stats} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ width: 230 }}>
@@ -1018,17 +1014,22 @@ export default function Clients() {
           {rows.map((c) => (
             <Table.Row key={c.mac} interactive onClick={() => openClient(c.mac)}>
               <Table.Cell>
+                {/* An unnamed client is displayed by its MAC, so printing the
+                    MAC underneath would print the same string twice and cost a
+                    line on every such row. */}
                 <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{c.name}</span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
-                    {c.mac}
-                  </span>
+                  {c.name.trim().toLowerCase() === c.mac.trim().toLowerCase() ? null : (
+                    <span
+                      style={{
+                        fontFamily: 'var(--nd-font-mono)',
+                        fontSize: 'var(--nd-text-10)',
+                        color: 'var(--nd-text-muted)',
+                      }}
+                    >
+                      {c.mac}
+                    </span>
+                  )}
                 </span>
               </Table.Cell>
               <Table.Cell>

@@ -309,8 +309,7 @@ function staleTitle(live: LivePlaneState): string {
 
 /** Retry state for a plane the poller keeps failing on — served facts, not a
  *  guess: how many consecutive polls failed and when the next one is due. */
-function retryNote(live: LivePlaneState): string | null {
-  const fails = live.consecutiveFailures ?? 0;
+function retryNote(live: LivePlaneState): string | null {  const fails = live.consecutiveFailures ?? 0;
   if (fails <= 0) return null;
   const next = live.nextAttemptAt ? ` · next attempt ${hhmm(live.nextAttemptAt)}` : '';
   return `${fails} consecutive failed poll${fails === 1 ? '' : 's'}${next}`;
@@ -338,6 +337,96 @@ function mergedFacts(s: SystemRow, live: LivePlaneState | null): Fact[] {
     });
   }
   return facts;
+}
+
+/** One merged plane as the list renders it. */
+type PlaneView = {
+  row: SystemRow;
+  planeId: SystemTypeKey | null;
+  live: LivePlaneState | null;
+  stateLabel: string;
+  stateTone: Tone;
+  facts: Fact[];
+};
+
+function factValue(facts: Fact[], key: string): string | null {
+  return facts.find((f) => f.k === key)?.v ?? null;
+}
+
+/** The count fact, with its own noun so "37" is never read as devices when the
+ *  plane counts objects, subscriptions or endpoints. */
+function countFact(facts: Fact[]): { value: string; unit: string } | null {
+  const hit = facts.find((f) => COUNT_FACT_KEYS.includes(f.k));
+  if (!hit) return null;
+  return { value: hit.v, unit: hit.k.toLowerCase() };
+}
+
+/**
+ * A plane row in the dense table. One line per plane at a fixed row height so
+ * ten planes read as a table rather than ten stacked cards; anything that does
+ * not fit truncates with the full value kept in the cell's own title.
+ */
+function PlaneRow({ view: v, onOpen }: { view: PlaneView; onOpen: (v: PlaneView) => void }) {
+  const count = countFact(v.facts);
+  const lastSync = factValue(v.facts, 'Last sync') ?? '—';
+  const calls = factValue(v.facts, 'Calls today') ?? '—';
+  const auth = factValue(v.facts, 'Token') ?? '—';
+  return (
+    <button
+      type="button"
+      role="row"
+      className="nt-plane-row nt-plane-row--link"
+      onClick={() => onOpen(v)}
+    >
+      <span role="cell" className="nt-plane-row__identity">
+        <strong title={v.row.name}>{v.row.name}</strong>
+        <small title={v.row.kind}>{v.row.kind}</small>
+      </span>
+      <span role="cell" className="nt-plane-row__status">
+        <Badge tone={v.stateTone} dot>
+          {v.stateLabel}
+        </Badge>
+        {/* The registry's own age-based flag, not a second opinion: a plane
+            that is behind is marked here so its counts opposite are read as
+            last-good, never as current. */}
+        {v.live?.stale ? (
+          <span title={staleTitle(v.live)}>
+            <Badge tone="warning">unverified</Badge>
+          </span>
+        ) : null}
+      </span>
+      {/* `display: contents` on wide screens, so these four sit in the table's
+          own columns; a wrapping labelled strip once the table collapses. */}
+      <span className="nt-plane-row__facts">
+        <span role="cell" className="nt-plane-row__cell" data-label="Last sync" title={lastSync}>
+          {lastSync}
+        </span>
+        <span role="cell" className="nt-plane-row__cell nt-plane-row--num" data-label="Inventory">
+          {count ? (
+            <>
+              {count.value}
+              <small>{count.unit}</small>
+            </>
+          ) : (
+            '—'
+          )}
+        </span>
+        <span role="cell" className="nt-plane-row__cell nt-plane-row--num" data-label="Calls" title={calls}>
+          {calls}
+        </span>
+        <span role="cell" className="nt-plane-row__cell" data-label="Auth" title={auth}>
+          {auth}
+        </span>
+      </span>
+      <span role="cell" className="nt-plane-row__scope">
+        <Badge tone={v.row.scopeTone}>{v.row.scope}</Badge>
+        <small title={v.row.scopeNote}>{v.row.scopeNote}</small>
+      </span>
+      <span role="cell" className="nt-plane-row__go" aria-hidden="true">
+        ▸
+      </span>
+    </button>
+  );
 }
 
 /**
@@ -951,6 +1040,7 @@ export default function Systems() {
 
   const [detailName, setDetailName] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>('summary');
+  const [showDormant, setShowDormant] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
   const [newType, setNewType] = useState<SystemTypeKey>('central');
@@ -1025,7 +1115,7 @@ export default function Systems() {
   // on them stamps every row 'unlinked / never / 0' next to a fixture device
   // count on a stock demo install, which reads as a broken screen.
   const systemsLive = data.dataSource === 'live' || (data.blended?.includes('systems') ?? false);
-  const views = data.systems.map((row) => {
+  const views: PlaneView[] = data.systems.map((row) => {
     // Live rows carry the registry planeId — trust it over the name reverse-
     // lookup, which breaks the moment an operator renames a plane.
     const planeId = (row.planeId as SystemTypeKey | undefined) ?? PLANE_ID_BY_NAME[row.name] ?? null;
@@ -1040,6 +1130,10 @@ export default function Systems() {
     };
   });
   const linkedCount = views.filter((v) => v.live?.linked).length;
+  // A live section knows which planes were never configured; an authored one
+  // has no such thing, so every fixture row stays in the primary table.
+  const dormantViews = systemsLive && liveState ? views.filter((v) => v.live && !v.live.linked) : [];
+  const activeViews = views.filter((v) => !dormantViews.includes(v));
   const throttle = systemsLive ? throttleBanner(views) : null;
 
   const cur = data.systems.find((s) => s.name === detailName) ?? null;
@@ -1048,6 +1142,11 @@ export default function Systems() {
   // Same rule as the rows: the poller log belongs to a live section, the
   // authored log to a demo one — never the two spliced together.
   const history = historyRows(systemsLive ? (liveState?.history ?? null) : null, data.syncHistory);
+
+  const openPlane = (v: PlaneView) => {
+    setDetailName(v.row.name);
+    setTab(v.row.planeId === 'sse' ? 'config' : 'summary');
+  };
 
   // -- header / drawer actions --------------------------------------------------
   const syncAll = async () => {
@@ -1231,7 +1330,7 @@ export default function Systems() {
   const endpointVariant = CONNECT_ENDPOINTS[newType];
 
   return (
-    <div className="nt-systems" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-systems">
       <ScreenHeader
         overline="Govern / Connected systems"
         title="Connected systems"
@@ -1292,7 +1391,7 @@ export default function Systems() {
       ) : null}
 
       {/* ---------------- plane rows ---------------- */}
-      <div className="nt-system-list" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      <div className="nt-system-list">
         <SectionHeader
           label="Planes"
           meta={
@@ -1305,113 +1404,49 @@ export default function Systems() {
               : `${data.systems.length} LINKED · SELECT ONE FOR DETAIL`
           }
         />
-        {views.map((v) => (
-          <button
-            key={v.row.name}
-            type="button"
-            className="nt-rowlink nt-system-row"
-            onClick={() => {
-              setDetailName(v.row.name);
-              setTab(v.row.planeId === 'sse' ? 'config' : 'summary');
-            }}
-            style={{
-              width: '100%',
-              textAlign: 'left',
-              background: 'none',
-              border: 'none',
-              borderBottom: '1px solid var(--nd-border-subtle)',
-              borderLeft: '2px solid transparent',
-              padding: '15px 10px 15px 12px',
-              cursor: 'pointer',
-            }}
-          >
-            <div className="nt-system-row__identity">
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-display)',
-                  fontSize: 16,
-                  color: 'var(--nd-text-primary)',
-                }}
-              >
-                {v.row.name}
-              </span>
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10,
-                  letterSpacing: '.1em',
-                  textTransform: 'uppercase',
-                  color: 'var(--nd-text-muted)',
-                }}
-              >
-                {v.row.kind}
-              </span>
-            </div>
-            <div className="nt-system-row__status">
-              <Badge tone={v.stateTone} dot>
-                {v.stateLabel}
-              </Badge>
-              {/* The registry's own age-based flag, not a second opinion: a
-                  plane that is behind is marked here so its counts opposite
-                  are read as last-good, never as current. */}
-              {v.live?.stale ? (
-                <span title={staleTitle(v.live)}>
-                  <Badge tone="warning">unverified</Badge>
-                </span>
-              ) : null}
-            </div>
-            <div className="nt-system-row__facts">
-              {v.facts.map((f) => (
-                <div key={f.k} className="nt-system-row__fact">
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 9.5,
-                      letterSpacing: '.12em',
-                      textTransform: 'uppercase',
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
-                    {f.k}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 11.5,
-                      color: 'var(--nd-text-secondary)',
-                    }}
-                  >
-                    {f.v}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div className="nt-system-row__scope">
-              <Badge tone={v.row.scopeTone}>{v.row.scope}</Badge>
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10,
-                  color: 'var(--nd-text-muted)',
-                  textAlign: 'right',
-                }}
-              >
-                {v.row.scopeNote}
-              </span>
-            </div>
-            <span
-              className="nt-system-row__detail"
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 11,
-                color: 'var(--nd-accent-text)',
-                paddingTop: 3,
-              }}
-            >
-              Detail ▸
+        <div className="nt-plane-table" role="table" aria-label="Connected planes">
+          <div className="nt-plane-row nt-plane-row--head" role="row">
+            <span role="columnheader">System</span>
+            <span role="columnheader">Status</span>
+            <span role="columnheader">Last sync</span>
+            <span role="columnheader" className="nt-plane-row--num">
+              Inventory
             </span>
-          </button>
-        ))}
+            <span role="columnheader" className="nt-plane-row--num">
+              Calls
+            </span>
+            <span role="columnheader">Auth</span>
+            <span role="columnheader">Scope</span>
+            <span role="columnheader" aria-label="Open detail" />
+          </div>
+          {activeViews.map((v) => (
+            <PlaneRow key={v.row.name} view={v} onOpen={openPlane} />
+          ))}
+        </div>
+        {/* A plane that was never configured has nothing to report, and eight
+            of them repeating "never / — / no credentials stored" buried the two
+            that do. They collapse into one line that opens on demand. */}
+        {dormantViews.length > 0 ? (
+          <div className="nt-plane-dormant">
+            <button
+              type="button"
+              className="nt-plane-dormant__toggle"
+              aria-expanded={showDormant}
+              onClick={() => setShowDormant((v) => !v)}
+            >
+              <span aria-hidden="true">{showDormant ? '−' : '+'}</span>
+              {`${dormantViews.length} system${dormantViews.length === 1 ? '' : 's'} not linked`}
+              <small>no credentials stored — nothing is polled</small>
+            </button>
+            {showDormant ? (
+              <div className="nt-plane-table" role="table" aria-label="Systems that are not linked">
+                {dormantViews.map((v) => (
+                  <PlaneRow key={v.row.name} view={v} onOpen={openPlane} />
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <Divider variant="flair" />

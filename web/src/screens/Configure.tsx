@@ -493,6 +493,7 @@ export default function Configure() {
   const [vlan, setVlan] = useState<VlanForm>(DEFAULT_VLAN_FORM);
   const [ticket, setTicket] = useState('');
   const [queued, setQueued] = useState(false);
+  const [showDormantTargets, setShowDormantTargets] = useState(false);
   const [dryRun, setDryRun] = useState<{ result?: DryRunResult; error?: string } | null>(null);
   const [dryRunning, setDryRunning] = useState(false);
   const [pushing, setPushing] = useState(false);
@@ -651,6 +652,14 @@ export default function Configure() {
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
   const observedInventory = data.inventoryMode === 'observed';
+
+  /* A push target the portal can actually reach is worth a row of its own. The
+     planes that hold no credentials say the same thing as each other, so they
+     collapse behind one line rather than filling the rail. The split reads the
+     explicit `linked` flag — matching on the note's prose would quietly break
+     the moment that wording is reworded. */
+  const dormantTargets = data.capabilities.filter((c) => !c.linked);
+  const writableTargets = data.capabilities.filter((c) => c.linked);
 
   // -- drawer openers: seed the form over its current state ------------------
   const openSsid = (row?: SsidObject) => {
@@ -1267,34 +1276,42 @@ export default function Configure() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-            <SectionHeader label="Where a change can go" />
-            {data.capabilities.map((c) => (
-              <div
-                key={c.plane}
-                className="nt-configure-capability"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '9px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-primary)' }}>
-                  {c.plane}
-                </span>
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10,
-                    color: 'var(--nd-text-muted)',
-                  }}
-                >
-                  {c.note}
-                </span>
+            <SectionHeader
+              label="Where a change can go"
+              meta={dormantTargets.length > 0 ? `${writableTargets.length} REACHABLE` : undefined}
+            />
+            {writableTargets.map((c) => (
+              <div key={c.plane} className="nt-configure-capability">
+                <span className="nt-configure-capability__plane">{c.plane}</span>
+                <span className="nt-configure-capability__note">{c.note}</span>
                 <Badge tone={c.tone}>{c.mode}</Badge>
               </div>
             ))}
+            {/* Planes with no credentials all carry the same note. One line
+                says it once instead of nine times. */}
+            {dormantTargets.length > 0 ? (
+              <button
+                type="button"
+                className="nt-configure-capability nt-configure-capability--more"
+                aria-expanded={showDormantTargets}
+                onClick={() => setShowDormantTargets((v) => !v)}
+              >
+                <span className="nt-configure-capability__plane">
+                  <span aria-hidden="true">{showDormantTargets ? '−' : '+'}</span>{' '}
+                  {`${dormantTargets.length} plane${dormantTargets.length === 1 ? '' : 's'} not linked`}
+                </span>
+                <span className="nt-configure-capability__note">no credentials stored</span>
+              </button>
+            ) : null}
+            {showDormantTargets
+              ? dormantTargets.map((c) => (
+                  <div key={c.plane} className="nt-configure-capability">
+                    <span className="nt-configure-capability__plane">{c.plane}</span>
+                    <span className="nt-configure-capability__note">{c.note}</span>
+                    <Badge tone={c.tone}>{c.mode}</Badge>
+                  </div>
+                ))
+              : null}
           </div>
         </div>
       </div>

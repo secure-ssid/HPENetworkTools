@@ -13,14 +13,67 @@
   border-left-color: var(--nd-accent);
 }
 
-.nt-screen-header,
+.nt-screen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nd-space-4);
+  flex-wrap: wrap;
+  min-width: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--nd-border-subtle);
+}
+
 .nt-screen-header__copy {
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--nd-space-3);
+  flex: 1 1 320px;
+}
+
+/* The title is the one thing on the band that must never wrap or clip — a
+   two-line "Licences & / subscriptions" costs more height than the whole
+   density pass saved. The subtitle absorbs the squeeze instead. */
+.nt-screen-header__title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.nt-screen-header__subtitle {
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: var(--nd-text-12);
+  line-height: 1.4;
+  color: var(--nd-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nt-screen-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--nd-space-2);
   flex-wrap: wrap;
   max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .nt-screen-header__copy {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .nt-screen-header__subtitle {
+    white-space: normal;
+  }
+
+  .nt-screen-header__title {
+    white-space: normal;
+  }
 }
 
 .nt-global-search {
@@ -180,40 +233,79 @@
   display: none;
 }
 
+/* Inventory explorer. Two panes that share the viewport height and scroll
+   independently, so a site with four hundred devices scrolls its own branch
+   instead of pushing the whole page down, and a site with two does not leave a
+   fixed-height panel three-quarters empty. */
 .nt-inventory {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--nd-block-gap);
 }
 
 .nt-inventory__search {
-  max-width: 720px;
+  max-width: 640px;
 }
 
 .nt-inventory__layout {
   display: grid;
-  grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
-  gap: 28px;
-  align-items: start;
+  grid-template-columns: minmax(280px, 32%) minmax(0, 1fr);
+  gap: 0;
+  align-items: stretch;
+  /* Content-driven, capped by the viewport: a plane with four hundred devices
+     scrolls inside its own pane, a plane with two does not leave a fixed
+     panel three-quarters empty. */
+  max-height: calc(100vh - var(--nd-topbar-h) - 150px);
+  min-height: 260px;
+  border: 1px solid var(--nd-border-subtle);
+  border-radius: var(--nd-radius-md);
+  overflow: hidden;
 }
 
 .nt-inventory__tree-panel,
 .nt-inventory__detail {
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.nt-inventory__detail {
-  position: sticky;
-  top: 82px;
+.nt-inventory__tree-panel {
+  border-right: 1px solid var(--nd-border-subtle);
+  background: var(--nd-bg-surface);
+}
+
+/* No node picked yet: there is no detail to put beside the tree, so the tree
+   gets the whole width rather than a third of it next to an empty panel. */
+.nt-inventory__layout--browse {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+}
+
+.nt-inventory__layout--browse .nt-inventory__tree-panel {
+  border-right: 0;
+}
+
+.nt-inventory__panel-head {
+  flex: 0 0 auto;
+  padding: var(--nd-space-2) var(--nd-space-3) 0;
+}
+
+.nt-inventory__panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--nd-space-1) var(--nd-space-3) var(--nd-space-3);
 }
 
 .nt-inventory__selection {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 12px;
-  padding: 20px 0;
+  gap: var(--nd-space-2);
+  padding: var(--nd-space-3) 0;
 }
 
 .nt-inventory__selection h2,
@@ -222,11 +314,43 @@
 }
 
 .nt-inventory__selection h2 {
-  font-size: var(--nd-text-22);
+  font-size: var(--nd-text-18);
 }
 
 .nt-inventory__selection p {
   color: var(--nd-text-secondary);
+  font-size: var(--nd-text-12);
+}
+
+/* Nothing selected is a routine state, not an error page: the pane keeps the
+   estate summary in view instead of one centred sentence in a void. */
+.nt-inventory__hint {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--nd-space-2);
+  margin: 0;
+  padding: var(--nd-space-2) var(--nd-space-3);
+  border-top: 1px solid var(--nd-border-subtle);
+  background: var(--nd-bg-canvas);
+}
+
+.nt-inventory__hint > li {
+  list-style: none;
+  padding: 0;
+  font-size: var(--nd-text-11);
+  line-height: 1.45;
+  color: var(--nd-text-muted);
+}
+
+.nt-inventory__hint strong {
+  display: block;
+  color: var(--nd-text-secondary);
+  font-size: var(--nd-text-10);
+  font-family: var(--nd-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
 }
 
 .nt-inventory-results {
@@ -281,87 +405,298 @@
 
 .nt-systems {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nd-screen-gap);
 }
 
-.nt-system-row {
+.nt-system-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Dense plane table. Ten planes have to read as a table, not ten cards, so a
+   row is one line at a fixed height and every column label is written once in
+   the head row rather than repeated inside every row. */
+.nt-plane-table {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nt-plane-row {
   display: grid;
   grid-template-columns:
-    minmax(190px, 230px)
-    minmax(96px, 110px)
-    minmax(280px, 1fr)
-    minmax(150px, 180px)
-    auto;
-  grid-template-areas: "identity status facts scope detail";
-  align-items: start;
-  gap: 20px;
+    minmax(150px, 1.6fr)
+    minmax(88px, auto)
+    minmax(64px, 0.6fr)
+    minmax(76px, 0.6fr)
+    minmax(56px, 0.5fr)
+    minmax(120px, 1.2fr)
+    minmax(112px, 1fr)
+    14px;
+  align-items: center;
+  gap: var(--nd-space-4);
+  width: 100%;
+  min-width: 0;
+  padding: var(--nd-row-pad-y) var(--nd-space-2);
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--nd-border-subtle);
+  box-shadow: inset 2px 0 0 transparent;
+  background: none;
+  color: var(--nd-text-secondary);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+}
+
+.nt-plane-row--head {
+  padding-top: 4px;
+  padding-bottom: 5px;
+  border-bottom-color: var(--nd-border-default);
+  color: var(--nd-text-muted);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.nt-plane-row--link {
+  cursor: pointer;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    box-shadow var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-plane-row--link:hover,
+.nt-plane-row--link:focus-visible {
+  outline: none;
+  background: var(--nd-bg-surface);
+  box-shadow: inset 2px 0 0 var(--nd-accent);
+}
+
+.nt-plane-row > span {
   min-width: 0;
 }
 
-.nt-system-row__identity {
-  grid-area: identity;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  overflow-wrap: anywhere;
+.nt-plane-row__facts {
+  display: contents;
 }
 
-.nt-system-row__identity > span:first-child {
-  font-weight: 600;
-  letter-spacing: -0.015em;
-}
-
-.nt-system-row__status {
-  grid-area: status;
-  padding-top: 2px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: flex-start;
-}
-
-.nt-system-row__facts {
-  grid-area: facts;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-  gap: 12px 24px;
-  padding-top: 1px;
-}
-
-.nt-system-row__fact {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.nt-system-row__fact > span:last-child {
-  overflow-wrap: anywhere;
-}
-
-.nt-system-row__scope {
-  grid-area: scope;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  align-items: flex-end;
-}
-
-.nt-system-row__scope > span:last-child {
-  overflow-wrap: anywhere;
-}
-
-.nt-system-row__detail {
-  grid-area: detail;
+.nt-plane-row__cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.nt-plane-row--num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.nt-plane-row__cell.nt-plane-row--num > small {
+  margin-left: 4px;
+  color: var(--nd-text-muted);
+  font-size: var(--nd-text-10);
+}
+
+.nt-plane-row__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.nt-plane-row__identity > strong {
+  font-family: var(--nd-font-display);
+  font-size: var(--nd-text-14);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--nd-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nt-plane-row__identity > small,
+.nt-plane-row__scope > small {
+  width: 100%;
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nt-plane-row__status {
+  display: flex;
+  align-items: center;
+  gap: var(--nd-space-1);
+  flex-wrap: wrap;
+}
+
+.nt-plane-row__scope,
+.nt-plane-row--head > span:nth-last-child(2) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  text-align: right;
+}
+
+.nt-plane-row__go {
+  color: var(--nd-accent-text);
+  text-align: right;
+}
+
+/* Planes that were never configured collapse behind one line — eight rows of
+   "never / — / no credentials stored" told the operator nothing. */
+.nt-plane-dormant {
+  display: flex;
+  flex-direction: column;
+}
+
+.nt-plane-dormant__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--nd-space-2);
+  width: 100%;
+  padding: var(--nd-row-pad-y) var(--nd-space-2);
+  border: 0;
+  border-bottom: 1px solid var(--nd-border-subtle);
+  background: none;
+  color: var(--nd-text-secondary);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  text-align: left;
+  cursor: pointer;
+}
+
+.nt-plane-dormant__toggle:hover {
+  background: var(--nd-bg-surface);
+  color: var(--nd-text-primary);
+}
+
+.nt-plane-dormant__toggle > small {
+  color: var(--nd-text-muted);
+  font-size: var(--nd-text-10);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Below the table breakpoint a plane becomes a two-line card: identity and
+   status on top, the facts wrapping underneath with their own labels. */
+@media (max-width: 1080px) {
+  .nt-plane-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--nd-space-1) var(--nd-space-3);
+    padding: var(--nd-space-2);
+  }
+
+  .nt-plane-row--head {
+    display: none;
+  }
+
+  .nt-plane-row__identity {
+    grid-column: 1;
+  }
+
+  .nt-plane-row__status {
+    grid-column: 2;
+    justify-content: flex-end;
+  }
+
+  .nt-plane-row__facts,
+  .nt-plane-row__scope {
+    grid-column: 1 / -1;
+  }
+
+  /* The head row is gone at this width, so each value carries its own label
+     rather than becoming an unlabelled number. */
+  .nt-plane-row__facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px var(--nd-space-4);
+    min-width: 0;
+  }
+
+  .nt-plane-row__cell {
+    text-align: left;
+  }
+
+  .nt-plane-row__cell::before {
+    content: attr(data-label) " ";
+    color: var(--nd-text-muted);
+    font-size: var(--nd-text-10);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-right: 4px;
+  }
+
+  .nt-plane-row__scope {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .nt-plane-row__go {
+    display: none;
+  }
+}
+
+/* Metric strip. Auto-fit rather than a hard four-up so a screen with three   numbers does not leave a quarter of the row empty, and one with six does not
+   need a new breakpoint. */
+/* A stat is a label and a short number. Stretched across a 1150px content
+   column, four of them become four numbers separated by 250px of nothing, so
+   the tracks are capped and the row packs from the left; the leftover width
+   stays leftover instead of being padded into the cells. */
 .nt-stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: var(--nd-space-3) var(--nd-space-5);
+  padding: var(--nd-space-3) 0;
+  /* The tracks share the row so four or five stats stay on one line, but the
+     row itself stops well short of the content edge: stretched the full
+     1150px these become five short numbers separated by 200px of nothing.
+     The cap holds up to six stats before anything wraps. */
+  max-width: 1080px;
+}
+
+/* Screens that follow the row with a <Divider> already have their rule; the
+   ones that do not close the band here. */
+.nt-stat-grid:not(:has(+ .nd-divider)),
+.nt-stat-band:not(:has(+ .nd-divider)) {
+  border-bottom: 1px solid var(--nd-border-subtle);
+}
+
+.nt-stat-band > .nt-stat-grid {
+  border-bottom: 0;
+}
+
+.nt-stat-band {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Said once for the whole row, not repeated under every figure. */
+.nt-stat-band__note {
+  margin: 0;
+  padding: 0 0 var(--nd-space-3);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-muted);
+}
+
+.nt-stat-grid .nd-stat__delta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .nt-configure {
@@ -561,37 +896,12 @@
     justify-content: flex-start;
   }
 
-  .nt-stat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .nt-configure__layout {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .nt-system-row {
-    grid-template-columns: minmax(190px, 1fr) auto auto;
-    grid-template-areas:
-      "identity status detail"
-      "facts facts scope";
-    gap: 14px 20px;
-    padding-block: 18px !important;
-  }
-
-  .nt-system-row__facts {
-    grid-template-columns: repeat(3, minmax(96px, 1fr));
-  }
-
-  .nt-system-row__scope {
-    max-width: 220px;
-  }
-
   .nt-systems__lower-grid {
     grid-template-columns: minmax(0, 1fr) !important;
-  }
-
-  .nt-inventory__layout {
-    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   }
 
   .nt-switch-tree__toolbar {
@@ -644,62 +954,7 @@
   }
 
   .nt-screen-header .nd-heading--1 {
-    font-size: 36px;
-  }
-
-  .nt-system-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "identity identity"
-      "status status"
-      "facts facts"
-      "scope detail";
-    gap: 12px 16px;
-    margin-top: 10px;
-    padding: 16px !important;
-    border: 1px solid var(--nd-border-subtle) !important;
-    border-radius: var(--nd-radius-md);
-  }
-
-  .nt-system-row__facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px 16px;
-    padding: 12px 0;
-    border-top: 1px solid var(--nd-border-subtle);
-    border-bottom: 1px solid var(--nd-border-subtle);
-  }
-
-  .nt-system-row__scope {
-    min-width: 0;
-    max-width: none;
-    align-items: flex-start;
-    justify-self: stretch;
-  }
-
-  .nt-system-row__status .nd-badge {
-    max-width: 100%;
-  }
-
-  .nt-system-row__identity {
-    padding-right: 4px;
-  }
-
-  .nt-system-row__status {
-    max-width: 100%;
-    justify-self: start;
-  }
-
-  .nt-system-row__scope > span:last-child {
-    text-align: left !important;
-  }
-
-  .nt-system-row__detail {
-    min-height: 38px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    align-self: end;
-    padding-top: 0 !important;
+    font-size: var(--nd-text-22);
   }
 
   .nt-configure-row {
@@ -762,6 +1017,18 @@
 }
 
 @media (max-width: 600px) {
+  /* The dormant summary carries two independent phrases. Side by side at this
+     width each one is squeezed to an ellipsis, so they stack instead. */
+  .nt-plane-dormant__toggle {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .nt-plane-dormant__toggle > small {
+    flex-basis: 100%;
+    white-space: normal;
+  }
+
   .nd-shell__topbar {
     padding-inline: 12px;
   }
@@ -788,12 +1055,103 @@
   .nt-screen-header__actions .nd-btn {
     flex: 1 1 auto;
   }
+}
 
-  .nt-stat-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
+/* Overview management-plane rows — one dense line each, matching the plane
+   table on Connected systems so the two screens do not describe the same
+   objects at two different densities. */
+.nt-plane-mini {
+  display: flex;
+  align-items: center;
+  gap: var(--nd-space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--nd-row-pad-y) 0;
+  border: 0;
+  border-bottom: 1px solid var(--nd-border-subtle);
+  background: none;
+  text-align: left;
+}
 
-  .nt-system-row__facts {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.nt-plane-mini__id {
+  flex: 1;
+  min-width: 0;
+}
+
+.nt-plane-mini__id > span {
+  display: block;
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nt-plane-mini__id > small {
+  display: block;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nt-plane-mini__sync {
+  flex: 0 0 auto;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  color: var(--nd-text-secondary);
+  text-align: right;
+}
+
+.nt-plane-mini--more {
+  cursor: pointer;
+}
+
+.nt-plane-mini--more:hover {
+  background: var(--nd-bg-surface);
+}
+
+.nt-plane-mini--more .nt-plane-mini__sync {
+  color: var(--nd-accent-text);
+}
+
+/* Configure: "where a change can go" rows. */
+.nt-configure-capability {
+  display: flex;
+  align-items: center;
+  gap: var(--nd-space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--nd-row-pad-y) 0;
+  border: 0;
+  border-bottom: 1px solid var(--nd-border-subtle);
+  background: none;
+  text-align: left;
+}
+
+.nt-configure-capability__plane {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-primary);
+}
+
+.nt-configure-capability__note {
+  min-width: 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-muted);
+  text-align: right;
+}
+
+.nt-configure-capability--more {
+  cursor: pointer;
+}
+
+.nt-configure-capability--more:hover {
+  background: var(--nd-bg-surface);
 }

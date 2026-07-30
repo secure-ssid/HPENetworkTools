@@ -22,7 +22,6 @@ import {
   SectionHeader,
   Select,
   Spinner,
-  Stat,
   Table,
   useToast,
 } from '../nightdesk';
@@ -33,6 +32,7 @@ import { planeFilterForParam } from '../app/nav';
 import type { AuthEventRow } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
+import { StatRow } from './StatRow';
 
 const RESULT_OPTIONS = [
   { value: 'all', label: 'All results' },
@@ -154,11 +154,7 @@ export default function AuthEvents() {
         }
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 18 }}>
-        {data.stats.map((s) => (
-          <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
-        ))}
-      </div>
+      <StatRow stats={data.stats} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ width: 250 }}>

@@ -2214,10 +2214,12 @@ export class CentralAdapter implements PlaneAdapter {
 
     // A count is an assertion of fact, so only sections we actually read get
     // one — "0 clients" for a section that 404'd would be a lie.
-    const summary = [`${devices.length.toLocaleString('en-US')} devices`];
-    if (!missing.includes('sites')) summary.push(`${sites.length.toLocaleString('en-US')} sites`);
-    if (!missing.includes('clients')) summary.push(`${clients.length.toLocaleString('en-US')} clients`);
-    if (config) summary.push(`${ssids.length.toLocaleString('en-US')} SSIDs`);
+    const counted = (n: number, one: string, many = `${one}s`) =>
+      `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
+    const summary = [counted(devices.length, 'device')];
+    if (!missing.includes('sites')) summary.push(counted(sites.length, 'site'));
+    if (!missing.includes('clients')) summary.push(counted(clients.length, 'client'));
+    if (config) summary.push(counted(ssids.length, 'SSID'));
     if (missing.length > 0) summary.push(`not available: ${missing.join(', ')}`);
     if (truncated.length > 0) summary.push(`truncated: ${truncated.join(', ')}`);
     this.stateRef.note = summary.join(' · ');

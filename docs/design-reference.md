@@ -2,9 +2,16 @@
 
 > Current implementation note: the historical prototype used Newsreader serif
 > display type. Operator feedback replaced that face with a unified Inter sans
-> hierarchy. The current shell also uses a 260px inventory-aware desktop
-> sidebar, an off-canvas mobile drawer, and lazy paged hierarchy rather than the
-> prototype's fixed flat navigation.
+> hierarchy. The current shell also uses a 236px desktop sidebar, an off-canvas
+> mobile drawer, and lazy paged hierarchy rather than the prototype's fixed flat
+> navigation.
+>
+> A later density pass replaced the prototype's generous card spacing
+> throughout. The prototype was drawn against a small demo estate; at real
+> scale its per-row padding, 44px page titles and repeated inline labels pushed
+> a ten-plane list past 800px of scroll. See
+> [Density and scale](#density-and-scale) for the rules that supersede the
+> spacing figures quoted in the sections below.
 
 ## Overview
 
@@ -104,8 +111,9 @@ Dark, editorial, technical. Structure comes from whitespace and hairline rules �
 
 Fixed two-part frame, `min-height: 100vh`, `background: var(--nd-bg-canvas)`.
 
-**Sidebar** — 260px desktop / 220px compact desktop, `background: var(--nd-bg-surface)`, right border
-`1px solid var(--nd-border-subtle)`, `padding: 20px 12px 16px`, sticky full height, own scroll.
+**Sidebar** — 236px desktop / 208px below 1320px (`--nd-sidebar-w`),
+`background: var(--nd-bg-surface)`, right border
+`1px solid var(--nd-border-subtle)`, `padding: 14px 10px 12px`, sticky full height, own scroll.
 Contents top to bottom:
 - Wordmark: mono 10px copper `HPE` kicker, then semibold sans `Network Tools`.
   (Original design — deliberately not HPE's real mark. Swap in the real brand asset if licensed.)
@@ -115,10 +123,14 @@ Contents top to bottom:
   - **OPERATE** — Overview, Alerts, Tickets, Clients, Auth events
   - **INVENTORY** — Inventory explorer, Sites, Devices, Licences
   - **GOVERN** — Configure, Compliance, Connected systems
-- Lazy **Browse inventory** tree: connected systems expand into sites/devices or SSE object
-  kinds and objects without loading every descendant.
 - Footer block (top border, `margin-top: auto`): micro-label `WORKSPACE`, workspace name +
-  mono `GLK`, then mono `6 of 7 systems linked`.
+  mono `GLK`, then mono `2 of 10 systems linked`.
+
+  The sidebar deliberately carries **no** inventory tree. An earlier build put a
+  lazy `Browse inventory` tree here as well as on `/inventory`, which meant the
+  same hierarchy rendered twice on one screen and cost ~340px of sidebar height
+  for a duplicate of the page the user was already looking at. `/inventory` is
+  now the single browse surface; the sidebar links to it.
 
 **Topbar** — sticky, `padding: 10px 24px`, bottom border `--nd-border-subtle`, `z-index: 20`:
 - `Breadcrumbs` — always `[workspace, group, screen]`; drill-downs append the site/device name.
@@ -126,8 +138,10 @@ Contents top to bottom:
   "Jump to a site, device, MAC, IP or ticket…", two `Kbd` chips (⌘, K) pinned right.
 - Identity: name 12.5px over mono 10px uppercase role, then `Avatar size="sm"`.
 
-**Content** — `flex: 1; padding: 26px 28px 72px; max-width: 1620px`. Target viewports: 1440
-(primary) and 1920 (NOC wall). Layouts are fluid two-column grids; nothing is fixed-width.
+**Content** — `flex: 1; padding: var(--nd-content-pad-y) var(--nd-content-pad-x) 40px`
+(16px/24px, dropping to `14px 16px 40px` below 820px); `max-width: 1620px`.
+Target viewports: 1440 (primary) and 1920 (NOC wall). Layouts are fluid
+two-column grids; nothing is fixed-width.
 
 At 820px and below the sidebar is replaced by a left off-canvas drawer with
 focus trapping and focus return. At 390px, page actions, fact grids, and system
@@ -139,6 +153,81 @@ sites, devices, SSE objects, MACs, IPs, tickets, clients and config objects; Ent
 opens the first hit; each result row is `[mono uppercase kind | label | mono meta]` and
 navigates to the right screen (with the right entity selected). Clicking anywhere in the
 content area closes the panel.
+
+## Density and scale
+
+The prototype was drawn against a demo estate of six or seven healthy planes
+and a handful of sites. Real deployments are lopsided: one site carries 400
+devices and a thousand ports while the next carries two, and most of the ten
+supported planes are never credentialed at all. Laid out at prototype spacing
+that estate produced screens that were simultaneously **too tall and too
+empty** — a ten-plane list ran past 800px, of which 80% was identical
+"not linked / never / — / 0" rows.
+
+These rules supersede the individual spacing figures quoted elsewhere in this
+document.
+
+**Density tokens.** All row and page rhythm comes from
+`web/src/nightdesk/tokens.css`, not from per-screen CSS. Retune here and the
+whole portal moves together:
+
+```
+--nd-row-h          36px   /* a table/list row, including padding */
+--nd-row-pad-y       7px
+--nd-row-pad-x      10px
+--nd-screen-gap     16px   /* between major blocks on a screen */
+--nd-block-gap      10px   /* within a block */
+--nd-panel-pad      12px
+--nd-content-pad-x  24px   /* content area gutters */
+--nd-content-pad-y  16px
+--nd-sidebar-w     236px
+--nd-topbar-h       48px
+```
+
+**Page headers are one band.** `ScreenHeader` renders title + subtitle +
+actions on a single row above a hairline. It does **not** paint an overline —
+the topbar breadcrumb already says where you are, and printing it twice cost a
+whole line on every screen. The path is still emitted as a `data-path`
+attribute for tests and for anything that needs the ancestry. `--nd-heading--1`
+is 26px, not the prototype's 44px display size. Below 900px the actions drop
+under the copy.
+
+**Repeated dead state collapses.** Where a list contains many rows that all say
+the same nothing — planes with no credentials, unsupported object kinds — the
+rows are partitioned into active and dormant, and the dormant set renders as a
+single expandable line (`8 systems not linked · no credentials stored`) with
+correct `aria-expanded`. This is a real disclosure, not a filter: expanding
+restores every row unchanged. Applied on Connected systems, the Inventory
+Explorer tree (server-side, as a `group:dormant` node), the Overview management
+rail, and Configure's "Where a change can go".
+
+The partition always reads an **explicit boolean** from the payload
+(`OverviewPlaneRow.linked`, `CapabilityRow.linked`), never a regex over
+human-facing prose. Copy is free to change wording; identity and state are not.
+
+**Lists are tables, not cards.** A repeated record gets one dense row with a
+shared column header, not a card that reprints `LAST SYNC / DEVICES / CALLS
+TODAY` as inline labels on every instance. Below 1080px the header is hidden
+and the same cells become a labelled wrapped strip — the labels come back via
+`data-label` + `::before`, so **no information is dropped at narrow widths**;
+it is re-flowed. (An earlier attempt simply hid the cells and lost data.)
+
+**Panels are content-driven, never fixed-height.** This is the specific lever
+that makes a two-device site and a four-hundred-device site both look right.
+Panes size to their content with a `max-height` cap (typically
+`calc(100vh - var(--nd-topbar-h) - 150px)`) and a small `min-height` floor, and
+scroll internally past the cap. A fixed `height` would leave the small estate
+staring at a void and the large one at a scrollbar inside a scrollbar.
+
+**Grids auto-fit.** Stat rails are `repeat(auto-fit, minmax(148px, 1fr))`
+rather than `repeat(4, 1fr)`, so three stats do not leave a quarter of the row
+blank and six do not overflow.
+
+**No horizontal scrolling** at 1440, 1280, 1024, 768 or 390 CSS pixels, on any
+route. Verify with an exact-width device-metrics override — note that
+`Emulation.setDeviceMetricsOverride` with `mobile: true` reports
+`innerWidth: 980` at a 390px device width and will hide real overflow; use
+`mobile: false`.
 
 ## Screens
 

@@ -22,7 +22,6 @@ import {
   EmptyState,
   SectionHeader,
   Spinner,
-  Stat,
   Table,
   useToast,
 } from '../nightdesk';
@@ -31,6 +30,7 @@ import type { LicensesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
+import { StatRow } from './StatRow';
 
 function hhmm(iso: string): string {
   const d = new Date(iso);
@@ -142,17 +142,7 @@ export default function Licenses() {
 
       {/* Five tiles on the authored path; a payload that carries fewer lays them
           out evenly rather than leaving a dead track in the grid. */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: `repeat(${data.stats.length || 5}, minmax(0, 1fr))`,
-          gap: 18,
-        }}
-      >
-        {data.stats.map((s) => (
-          <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
-        ))}
-      </div>
+      <StatRow stats={data.stats} />
 
       {isDemo ? (
         <Alert tone="warning" title="Two reconciliation gaps worth money">

@@ -25,7 +25,6 @@ import {
   SectionHeader,
   Select,
   Spinner,
-  Stat,
   Table,
   useToast,
 } from '../nightdesk';
@@ -36,6 +35,7 @@ import type { FindingRow, Tone } from '../../../shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { DiffCode } from '../lib/DiffCode';
+import { StatRow } from './StatRow';
 
 /**
  * Fix-class colour. Every finding carries a `fixColor` token computed by the
@@ -216,17 +216,7 @@ export default function Compliance() {
           skips the grid rather than laying out an empty five-track row. */}
       {data.stats.length > 0 ? (
         <>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: `repeat(${data.stats.length}, minmax(0, 1fr))`,
-              gap: 18,
-            }}
-          >
-            {data.stats.map((s) => (
-              <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
-            ))}
-          </div>
+          <StatRow stats={data.stats} />
 
           <Divider variant="flair" />
         </>

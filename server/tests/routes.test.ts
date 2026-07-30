@@ -660,25 +660,38 @@ describe('live-mode screen contracts', () => {
       hasChildren: true,
     });
 
-    const systems = await getJson('/api/inventory/tree?parent=group%3Asystems&limit=2');
+    // Planes that hold no credentials collapse behind one 'Not linked' node,
+    // so the systems branch lists what actually answers plus that one group.
+    const systems = await getJson('/api/inventory/tree?parent=group%3Asystems');
     expect(systems.status).toBe(200);
-    expect(systems.body.nodes).toHaveLength(2);
-    expect(systems.body.nextCursor).toBe('2');
-    expect(systems.body.nodes.every((node: any) => node.kind === 'system')).toBe(true);
+    const dormantGroup = systems.body.nodes.find((node: any) => node.id === 'group:dormant');
+    expect(dormantGroup).toMatchObject({ kind: 'group', label: 'Not linked', status: 'unlinked' });
+    expect(systems.body.nodes.filter((node: any) => node.kind === 'system').every((node: any) => node.status !== 'unlinked')).toBe(true);
 
-    const next = await getJson('/api/inventory/tree?parent=group%3Asystems&limit=2&cursor=2');
+    // The dormant branch itself is paged like every other branch.
+    const dormant = await getJson('/api/inventory/tree?parent=group%3Adormant&limit=2');
+    expect(dormant.status).toBe(200);
+    expect(dormant.body.nodes).toHaveLength(2);
+    expect(dormant.body.nextCursor).toBe('2');
+    expect(dormant.body.nodes.every((node: any) => node.kind === 'system')).toBe(true);
+    expect(dormant.body.nodes.every((node: any) => node.parentId === 'group:dormant')).toBe(true);
+
+    const next = await getJson('/api/inventory/tree?parent=group%3Adormant&limit=2&cursor=2');
     expect(next.status).toBe(200);
     expect(next.body.nodes).toHaveLength(2);
-    expect(next.body.nodes[0].id).not.toBe(systems.body.nodes[0].id);
+    expect(next.body.nodes[0].id).not.toBe(dormant.body.nodes[0].id);
 
-    const node = await getJson(`/api/inventory/node?id=${encodeURIComponent(systems.body.nodes[0].id)}`);
+    const node = await getJson(`/api/inventory/node?id=${encodeURIComponent(dormant.body.nodes[0].id)}`);
     expect(node.status).toBe(200);
-    expect(node.body.id).toBe(systems.body.nodes[0].id);
+    expect(node.body.id).toBe(dormant.body.nodes[0].id);
 
     const rootNode = await getJson('/api/inventory/node?id=group%3Asystems');
     expect(rootNode.status).toBe(200);
     expect(rootNode.body).toMatchObject({ id: 'group:systems', kind: 'group', label: 'Connected systems' });
 
+    const dormantNode = await getJson('/api/inventory/node?id=group%3Adormant');
+    expect(dormantNode.status).toBe(200);
+    expect(dormantNode.body).toMatchObject({ id: 'group:dormant', kind: 'group', label: 'Not linked' });
   });
 
   it("propagates a degraded plane's read state to its inventory descendants", async () => {

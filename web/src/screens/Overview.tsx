@@ -20,7 +20,6 @@ import {
   EmptyState,
   SectionHeader,
   Spinner,
-  Stat,
   Table,
 } from '../nightdesk';
 import { getOverview } from '../api/client';
@@ -31,6 +30,7 @@ import type { LaunchpadRow, OverviewAlert, SiteHealthTone, SiteId } from '../../
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import '../app/app.css';
+import { StatRow } from './StatRow';
 
 const HEALTH_COLORS: Record<SiteHealthTone, string> = {
   ok: 'var(--nd-success)',
@@ -132,6 +132,11 @@ export default function Overview() {
   const alertsLive = data.dataSource === 'live' || (data.blended?.includes('alerts') ?? false);
   const sitesLive = data.dataSource === 'live' || (data.blended?.includes('sites') ?? false);
   const planesLive = data.dataSource === 'live' || (data.blended?.includes('planes') ?? false);
+  /* The right-hand plane panel lists what actually answers. Planes with no
+     credentials all say the same nothing, so they collapse to one line that
+     leads to Connected systems rather than filling the column. */
+  const linkedPlanes = data.planes.filter((p) => p.linked);
+  const dormantPlanes = data.planes.filter((p) => !p.linked);
   /* A count-bearing link has to lead somewhere. A live section that reported
    * nothing gets no link at all — "All 0 alerts →" advertises a queue that is
    * not there, and the named empty state below already says what is true
@@ -212,17 +217,7 @@ export default function Overview() {
         }
       />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
-          gap: 18,
-        }}
-      >
-        {data.stats.map((s) => (
-          <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
-        ))}
-      </div>
+      <StatRow stats={data.stats} />
 
       <Divider variant="flair" />
 
@@ -481,47 +476,34 @@ export default function Overview() {
                 </Button>
               </EmptyState>
             ) : null}
-            {data.planes.map((p) => (
-              <div
-                key={p.name}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '10px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{p.name}</div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                      textTransform: 'uppercase',
-                      letterSpacing: '.08em',
-                    }}
-                  >
-                    {p.scope}
-                  </div>
+            {linkedPlanes.map((p) => (
+              <div key={p.name} className="nt-plane-mini">
+                <div className="nt-plane-mini__id">
+                  <span>{p.name}</span>
+                  <small>{p.scope}</small>
                 </div>
                 <Badge tone={p.tone} dot>
                   {p.state}
                 </Badge>
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-secondary)',
-                    width: 52,
-                    textAlign: 'right',
-                  }}
-                >
-                  {p.sync}
-                </span>
+                <span className="nt-plane-mini__sync">{p.sync}</span>
               </div>
             ))}
+            {/* The planes that were never given credentials say the same thing
+                as each other and nothing about the estate, so they collapse to
+                one line rather than filling the panel. */}
+            {dormantPlanes.length > 0 ? (
+              <button
+                type="button"
+                className="nt-plane-mini nt-plane-mini--more"
+                onClick={() => navigate('/systems')}
+              >
+                <div className="nt-plane-mini__id">
+                  <span>{`${dormantPlanes.length} plane${dormantPlanes.length === 1 ? '' : 's'} not linked`}</span>
+                  <small>no credentials configured</small>
+                </div>
+                <span className="nt-plane-mini__sync">Connect ▸</span>
+              </button>
+            ) : null}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

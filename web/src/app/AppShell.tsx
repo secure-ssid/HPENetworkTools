@@ -1,10 +1,19 @@
 /**
  * web/src/app/AppShell.tsx — the app-level shell (wraps nightdesk AppShell).
  *
- * Port of design/HpeNetworkTools.dc.html: 224px sidebar (wordmark, three nav
- * groups from the shared NAV_GROUPS fixtures, workspace footer), sticky topbar
- * (breadcrumbs [workspace, group, screen] + drill-down name, global search,
- * identity block), and the routed content area.
+ * Sidebar (wordmark, the three NAV_GROUPS workflow groups, workspace footer),
+ * sticky topbar (breadcrumbs [workspace, group, screen] + drill-down name,
+ * global search, identity block), and the routed content area.
+ *
+ * The sidebar carries workflow links only. It used to also mount a compact
+ * copy of the inventory tree, which on /inventory painted the same tree twice
+ * on one screen and, everywhere else, spent a third of the sidebar's height on
+ * a browser nobody navigated from. Browsing the estate lives on /inventory.
+ *
+ * Twelve links do not fill a full-height column, so the sidebar collapses to a
+ * 52px icon rail and gives the ~185px back to the content. The choice is a
+ * pure display preference with no estate data in it, so it is the one thing
+ * here that is allowed into localStorage.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -17,8 +26,18 @@ import { getSystemsState } from '../api/client';
 import { useSettings } from './SettingsContext';
 import { SearchPanel } from './SearchPanel';
 import ChatPanel from '../screens/ChatPanel';
-import { InventoryTree } from '../components/InventoryTree';
 import { pathForView, viewForPath } from './nav';
+import { NAV_ICONS } from './navIcons';
+
+const RAIL_KEY = 'hpe-nt.nav-rail';
+
+function readRailPref(): boolean {
+  try {
+    return window.localStorage.getItem(RAIL_KEY) === '1';
+  } catch {
+    return false; // private mode / disabled storage is not an error worth showing
+  }
+}
 
 /** Nav groups stay lit on the drill-down screens. */
 function navViewFor(view: View | null): View | null {
@@ -40,6 +59,19 @@ export function AppShellLayout() {
   const { workspaceName, settingsError } = useSettings();
   const [chatOpen, setChatOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  const [rail, setRail] = useState(readRailPref);
+
+  const toggleRail = () => {
+    setRail((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(RAIL_KEY, next ? '1' : '0');
+      } catch {
+        /* the preference simply will not survive a reload */
+      }
+      return next;
+    });
+  };
   // Live linked-plane count for the sidebar footer; fixture story when the
   // backend is offline (same rule the Connected-systems screen applies).
   const [linkedLabel, setLinkedLabel] = useState<string | null>(null);
@@ -101,43 +133,37 @@ export function AppShellLayout() {
     return base;
   }, [view, siteId, deviceName, workspaceName, navigate]);
 
-  const renderSidebar = (onNavigate?: () => void) => (
+  const renderSidebar = (onNavigate?: () => void, collapsible = true) => (
     <>
-      <div style={{ padding: '0 8px' }}>
-        <div
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            letterSpacing: '.18em',
-            color: 'var(--nd-accent-text)',
-            textTransform: 'uppercase',
-          }}
-        >
-          HPE
+      <div className="nt-shell-brand">
+        <div className="nt-shell-brand__copy">
+          <div className="nt-shell-brand__kicker">HPE</div>
+          <div className="nt-shell-brand__name">Network Tools</div>
         </div>
-        <div
-          style={{
-            fontFamily: 'var(--nd-font-display)',
-            fontWeight: 600,
-            fontSize: 17,
-            letterSpacing: '-.02em',
-            color: 'var(--nd-text-primary)',
-            lineHeight: 1.15,
-            marginTop: 2,
-          }}
+        {collapsible ? (
+        <button
+          type="button"
+          className="nt-shell-rail-toggle"
+          onClick={toggleRail}
+          title={rail ? 'Expand navigation' : 'Collapse navigation'}
+          aria-label={rail ? 'Expand navigation' : 'Collapse navigation'}
+          aria-pressed={rail}
         >
-          Network Tools
-        </div>
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" focusable="false">
+            <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" />
+            <path d="M6.25 2.75v10.5" />
+          </svg>
+        </button>
+        ) : null}
       </div>
       {NAV_GROUPS.map((group) => (
-        <div key={group.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div className="nd-micro-label" style={{ padding: '0 8px 4px' }}>
-            {group.label}
-          </div>
+        <div key={group.label} className="nt-shell-navgroup">
+          <div className="nd-micro-label nt-shell-navgroup__label">{group.label}</div>
           {group.items.map((item) => (
             <NightdeskAppShell.NavItem
               key={item.view}
               label={item.label}
+              icon={NAV_ICONS[item.view]}
               active={item.view === navView}
               onClick={() => {
                 navigate(pathForView(item.view));
@@ -147,57 +173,13 @@ export function AppShellLayout() {
           ))}
         </div>
       ))}
-      <div className="nt-shell-inventory">
-        <div className="nd-micro-label" style={{ padding: '0 8px 4px' }}>
-          Browse inventory
-        </div>
-        <InventoryTree
-          compact
-          onSelect={(node) => {
-            if (node.target) navigate(node.target);
-            onNavigate?.();
-          }}
-        />
-      </div>
-      <div
-        style={{
-          marginTop: 'auto',
-          padding: '12px 8px 0',
-          borderTop: '1px solid var(--nd-border-subtle)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 6,
-        }}
-      >
+      <div className="nt-shell-workspace">
         <span className="nd-micro-label">Workspace</span>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8,
-          }}
-        >
-          <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-secondary)' }}>
-            {workspaceName}
-          </span>
-          <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-            }}
-          >
-            GLK
-          </span>
+        <div className="nt-shell-workspace__row">
+          <span className="nt-shell-workspace__name">{workspaceName}</span>
+          <span className="nt-shell-workspace__tag">GLK</span>
         </div>
-        <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-text-muted)',
-          }}
-        >
+        <span className="nt-shell-workspace__linked">
           {linkedLabel ?? `${SYSTEMS.length} of ${SYSTEMS.length} systems linked`}
         </span>
       </div>
@@ -275,7 +257,7 @@ export function AppShellLayout() {
   );
 
   return (
-    <NightdeskAppShell sidebar={sidebar} topbar={topbar}>
+    <NightdeskAppShell sidebar={sidebar} topbar={topbar} className={rail ? 'nd-shell--rail' : undefined}>
       <Outlet />
       <ChatPanel open={chatOpen} onOpenChange={setChatOpen} />
       <Drawer
@@ -287,7 +269,7 @@ export function AppShellLayout() {
         description={workspaceName}
       >
         <nav className="nt-mobile-nav" aria-label="Primary navigation">
-          {renderSidebar(() => setNavOpen(false))}
+          {renderSidebar(() => setNavOpen(false), false)}
         </nav>
       </Drawer>
     </NightdeskAppShell>

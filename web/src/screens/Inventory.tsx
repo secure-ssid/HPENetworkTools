@@ -157,38 +157,62 @@ export default function Inventory() {
           ) : null}
         </div>
       ) : (
-        <div className="nt-inventory__layout">
-          <section className="nt-inventory__tree-panel">
-            <SectionHeader label="Hierarchy" meta="LAZY · PAGED" />
-            <InventoryTree compact={false} selectedId={selectedId} onSelect={choose} />
-          </section>
-          <section className="nt-inventory__detail">
-            <SectionHeader label="Selection" />
-            {selected?.identity?.plane === 'sse' ? (
-              <SseInventoryPanel
-                key={selected.id}
-                canWrite={false}
-                initialKind={selected.identity.sseKind as SseObjectKind | undefined}
-                initialObjectId={selected.identity.objectId}
-              />
-            ) : selected ? (
-              <div className="nt-inventory__selection">
-                <Badge tone={selected.tone}>{selected.status}</Badge>
-                <h2>{selected.label}</h2>
-                <p>{selected.meta ?? `${selected.childCount ?? 0} child resources`}</p>
-                {selected.target && selected.target !== `/inventory?node=${encodeURIComponent(selected.id)}` ? (
-                  <Button variant="secondary" onClick={() => navigate(selected.target!)}>
-                    Open specialist view
-                  </Button>
-                ) : null}
-              </div>
-            ) : (
-              <EmptyState
-                title="Select an inventory node"
-                description="Expand only the branch you need. Sites and devices open their existing specialist views."
-              />
+        <div className={selected ? 'nt-inventory__layout' : 'nt-inventory__layout nt-inventory__layout--browse'}>
+          <section className="nt-inventory__tree-panel" aria-label="Inventory hierarchy">
+            <div className="nt-inventory__panel-head">
+              <SectionHeader label="Hierarchy" meta="LAZY · PAGED" />
+            </div>
+            <div className="nt-inventory__panel-body">
+              <InventoryTree compact={false} selectedId={selectedId} onSelect={choose} />
+            </div>
+            {/* Before anything is picked there is no detail to show, so the
+                hierarchy takes the whole width instead of sitting in a third
+                of it beside an empty panel. The hints ride along as a strip. */}
+            {selected ? null : (
+              <ul className="nt-inventory__hint">
+                <li>
+                  <strong>Expand a system</strong>
+                  Children load one page at a time — the estate is never pulled in full.
+                </li>
+                <li>
+                  <strong>Search anything</strong>
+                  Names, serials, MACs and SSE object IDs, matched server-side.
+                </li>
+                <li>
+                  <strong>Sites and devices</strong>
+                  Open their existing specialist views; SSE objects open here.
+                </li>
+              </ul>
             )}
           </section>
+          {selected ? (
+          <section className="nt-inventory__detail" aria-label="Selected inventory node">
+            <div className="nt-inventory__panel-head">
+              <SectionHeader label={selected ? selected.label : 'Selection'} meta={selected ? selected.kind.toUpperCase() : undefined} />
+            </div>
+            <div className="nt-inventory__panel-body">
+              {selected?.identity?.plane === 'sse' ? (
+                <SseInventoryPanel
+                  key={selected.id}
+                  canWrite={false}
+                  initialKind={selected.identity.sseKind as SseObjectKind | undefined}
+                  initialObjectId={selected.identity.objectId}
+                />
+              ) : selected ? (
+                <div className="nt-inventory__selection">
+                  <Badge tone={selected.tone}>{selected.status}</Badge>
+                  <h2>{selected.label}</h2>
+                  <p>{selected.meta ?? `${selected.childCount ?? 0} child resources`}</p>
+                  {selected.target && selected.target !== `/inventory?node=${encodeURIComponent(selected.id)}` ? (
+                    <Button variant="secondary" onClick={() => navigate(selected.target!)}>
+                      Open specialist view
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </section>
+          ) : null}
         </div>
       )}
     </div>
