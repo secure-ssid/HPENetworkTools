@@ -108,7 +108,13 @@ export function createApp(opts: AppOptions = {}): express.Express {
     const planes = PLANE_IDS.map((id) => {
       const st = states[id];
       const signedIn = Boolean((req as Request & { principal?: unknown }).principal);
-      const detail = signedIn || !settings.get().auth ? { note: st.note } : {};
+      // The note can carry vendor error text, so a stranger does not get it
+      // while the portal is guarded. But a missing field and a withheld one
+      // must not read the same: dropping `note` silently is indistinguishable
+      // from "this plane has nothing to say", which would leave a monitor
+      // reporting all-clear on a plane that is explaining itself to someone
+      // else. Say that something was withheld.
+      const detail = signedIn || !settings.get().auth ? { note: st.note } : { noteWithheld: true as const };
       return {
         id,
         linked: st.linked,

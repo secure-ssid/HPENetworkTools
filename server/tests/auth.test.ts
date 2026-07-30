@@ -498,8 +498,41 @@ describe('the guard', () => {
     expect(res.status).toBe(200);
   });
 
+  interface HealthBody {
+    planes: { note?: string; noteWithheld?: boolean }[];
+  }
+
   it('leaves health open so a probe does not need credentials', async () => {
     const res = await fetch(`${portalBase}/api/health`);
+    expect(res.status).toBe(200);
+  });
+
+  // An open route may still be served to someone who is signed in. The guard
+  // used to return before looking at the cookie, so /api/health treated the
+  // operator who had just signed in as a stranger and withheld the notes it
+  // was written to show them.
+  it('tells a signed-in caller apart from a stranger on an open route', async () => {
+    const anonymous = (await (await fetch(`${portalBase}/api/health`)).json()) as HealthBody;
+    expect(anonymous.planes[0].note).toBeUndefined();
+    // A withheld note must not read as "this plane has nothing to say" —
+    // otherwise a monitor reports all-clear on a plane that is explaining
+    // itself to somebody else.
+    expect(anonymous.planes[0].noteWithheld).toBe(true);
+
+    const { sessionId } = await signIn();
+    const known = (await (
+      await fetch(`${portalBase}/api/health`, {
+        headers: { cookie: `${auth.SESSION_COOKIE}=${encodeURIComponent(sessionId!)}` },
+      })
+    ).json()) as HealthBody;
+    expect(known.planes[0].noteWithheld).toBeUndefined();
+    expect('note' in known.planes[0]).toBe(true);
+  });
+
+  it('still serves health to a stranger rather than demanding the cookie it just read', async () => {
+    const res = await fetch(`${portalBase}/api/health`, {
+      headers: { cookie: `${auth.SESSION_COOKIE}=not-a-real-session` },
+    });
     expect(res.status).toBe(200);
   });
 

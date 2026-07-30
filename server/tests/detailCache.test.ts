@@ -11,6 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DetailFetchState } from '@hpe/shared';
 import {
   DETAIL_FAILURE_TTL_MS,
   DETAIL_TTL_MS,
@@ -25,7 +26,7 @@ interface Payload {
   source: {
     plane: 'central';
     at: string;
-    sections: Record<string, string>;
+    sections: Partial<Record<string, DetailFetchState>>;
     note?: string;
     cached?: boolean;
   };

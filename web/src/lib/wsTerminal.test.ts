@@ -404,7 +404,7 @@ describe('createWsTransport — a handshake refused because the session ended', 
     lastSocket().disconnect();
     await expect(p).resolves.toBe(false);
     await vi.waitFor(async () => {
-      const lines = await session.transport.respondAsync('show version');
+      const lines = (await session.transport.respondAsync('show version'))!;
       expect(lines[0].text).toContain('your session ended');
     });
   });
@@ -416,7 +416,7 @@ describe('createWsTransport — a handshake refused because the session ended', 
     const p = session.connect();
     lastSocket().disconnect();
     await expect(p).resolves.toBe(false);
-    const lines = await session.transport.respondAsync('show version');
+    const lines = (await session.transport.respondAsync('show version'))!;
     expect(lines[0].text).toContain('connection closed');
     expect(lines[0].text).not.toContain('session ended');
   });
@@ -428,7 +428,7 @@ describe('createWsTransport — a handshake refused because the session ended', 
     const p = session.connect();
     lastSocket().disconnect();
     await expect(p).resolves.toBe(false);
-    const lines = await session.transport.respondAsync('show version');
+    const lines = (await session.transport.respondAsync('show version'))!;
     expect(lines[0].text).not.toContain('session ended');
   });
 
@@ -437,7 +437,7 @@ describe('createWsTransport — a handshake refused because the session ended', 
     authAnswers({ configured: true, authenticated: false, principal: null });
     const session = await connectReady();
     lastSocket().disconnect();
-    const lines = await session.transport.respondAsync('show version');
+    const lines = (await session.transport.respondAsync('show version'))!;
     // A drop after the upgrade succeeded is a real disconnect: auth was
     // already checked, so re-asking would misattribute a network fault.
     expect(lines[0].text).toContain('connection closed');

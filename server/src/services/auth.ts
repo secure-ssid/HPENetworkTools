@@ -750,7 +750,21 @@ export function isAuthGuardInstalled(): boolean {
  */
 export function requireAuth(store: SessionStore = sessionStore): AuthGuard {
   return (req, res, next) => {
-    if (isOpenPath(req.path)) return next();
+    if (isOpenPath(req.path)) {
+      // An open path does not REQUIRE a session, but it is often served to
+      // someone who has one, and a route that says more to a known caller
+      // needs to be able to tell the difference. Returning here without
+      // looking meant `req.principal` was never set on an open path at all, so
+      // /api/health treated every caller as a stranger — including the
+      // operator who had just signed in — and withheld its diagnostic notes
+      // from the very people it meant to show them to.
+      //
+      // Attaching what we already know grants nothing: the path was open
+      // before this line and is open after it.
+      const known = store.get(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
+      if (known) req.principal = known.principal;
+      return next();
+    }
     const cookies = parseCookies(req.headers.cookie);
     const session = store.get(cookies[SESSION_COOKIE]);
     if (!session) {
