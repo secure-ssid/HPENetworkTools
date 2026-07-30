@@ -54,7 +54,7 @@ import {
   type SseMutationResult,
   type SseObjectKind,
   type SseObjectSummary,
-} from '../../../shared';
+} from '@hpe/shared';
 
 const KIND_OPTIONS = SSE_OBJECT_KINDS.map((k) => ({ value: k, label: SSE_OBJECT_KIND_LABELS[k] }));
 const TENANT_WIDE_RECOVERY_WARNING =

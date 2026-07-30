@@ -49,7 +49,7 @@ import {
   type SsidForm,
   type VlanForm,
   type Plane,
-} from '../../../shared';
+} from '@hpe/shared';
 import { readJsonlNewestFirst, rotateIfNeeded } from './logRotation';
 import { CentralAdapter } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';

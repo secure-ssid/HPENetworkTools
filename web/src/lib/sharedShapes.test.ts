@@ -34,7 +34,7 @@ import {
   syncOutcomeFor,
   toSiteAlertRow,
   toSiteDeviceRow,
-} from '../../../shared';
+} from '@hpe/shared';
 import type {
   AlertCorrelation,
   AlertRow,
@@ -46,7 +46,7 @@ import type {
   QueuedChangeRow,
   SiteReachability,
   VlanObject,
-} from '../../../shared';
+} from '@hpe/shared';
 
 const NOW = Date.parse('2026-07-26T12:00:00.000Z');
 const ago = (ms: number): string => new Date(NOW - ms).toISOString();

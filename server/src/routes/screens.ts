@@ -133,7 +133,7 @@ import {
   type Tone,
   type PortObject,
   type VlanObject,
-} from '../../../shared';
+} from '@hpe/shared';
 import { effectiveSectionSource, settings } from '../config/settings';
 import { poller } from '../services/poller';
 import { ticketStore } from '../services/tickets';

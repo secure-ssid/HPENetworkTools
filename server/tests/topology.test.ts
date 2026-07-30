@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { AP_UPLINK, SITE_CHAIN, SITE_PROFILES, buildSiteTopology } from '../../shared';
+import { AP_UPLINK, SITE_CHAIN, SITE_PROFILES, buildSiteTopology } from '@hpe/shared';
 
 const campus01 = SITE_PROFILES['campus-01']!;
 const lakeshore = SITE_PROFILES.lakeshore!;

@@ -63,7 +63,7 @@ import {
   type SseMutationResult,
   type SseObjectKind,
   type SseObjectSummary,
-} from '../../../shared';
+} from '@hpe/shared';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';

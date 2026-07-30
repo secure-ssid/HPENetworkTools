@@ -22,8 +22,8 @@ import {
   terminalRespond,
   timelineFor,
   vlanPreview,
-} from '../../../shared';
-import type { ClientRow, PortForm, SsidForm, VlanForm } from '../../../shared';
+} from '@hpe/shared';
+import type { ClientRow, PortForm, SsidForm, VlanForm } from '@hpe/shared';
 
 // timelineFor only reads client.health — a minimal row is an honest input.
 const clientWith = (health: string): ClientRow => ({ health }) as ClientRow;

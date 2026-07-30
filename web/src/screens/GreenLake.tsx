@@ -38,7 +38,7 @@ import {
 } from '../nightdesk';
 import { getGreenLakeInventory, runGreenLakeAction } from '../api/client';
 import type { GreenLakeInventoryResponse } from '../api/client';
-import type { GreenLakeSectionKey, GreenLakeWriteAction } from '../../../shared';
+import type { GreenLakeSectionKey, GreenLakeWriteAction } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';

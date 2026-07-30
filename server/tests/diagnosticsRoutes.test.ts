@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { DeviceRow } from '../../shared';
+import type { DeviceRow } from '@hpe/shared';
 import { SettingsStore } from '../src/config/settings';
 import { PlaneRegistry } from '../src/planes/registry';
 import { createDiagnosticsRouter } from '../src/routes/diagnostics';

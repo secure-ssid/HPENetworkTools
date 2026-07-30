@@ -62,7 +62,7 @@ import type {
   PlaneDatasetKey,
   SiteRow,
   Tone,
-} from '../../../shared';
+} from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import {
   ageString,

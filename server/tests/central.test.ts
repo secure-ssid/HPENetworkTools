@@ -50,7 +50,7 @@ import {
   wlanProfileChanged,
   type FetchLike,
 } from '../src/planes/central';
-import type { SsidForm } from '../../shared';
+import type { SsidForm } from '@hpe/shared';
 
 // -- Recorded fixtures (shapes as the classic Central APIs return them) -------
 

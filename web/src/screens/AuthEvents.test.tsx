@@ -21,7 +21,7 @@ import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getAuthEvents } from '../api/client';
 import type { AuthEventsData } from '../api/client';
-import type { AuthEventRow } from '../../../shared';
+import type { AuthEventRow } from '@hpe/shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({

@@ -36,7 +36,7 @@ import {
   type GreenLakeInventory,
   type GreenLakeWriteAction,
   type GreenLakeWriteResult,
-} from '../../../shared';
+} from '@hpe/shared';
 import { GreenLakeAdapter, GreenLakeWriteInputError } from '../planes/greenlake';
 import { registry as defaultRegistry, type PlaneRegistry } from '../planes/registry';
 import { poller as defaultPoller, type Poller } from './poller';

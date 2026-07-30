@@ -6,7 +6,7 @@ import type {
   DiagnosticReview,
   DiagnosticTracerouteOptions,
   Plane,
-} from '../../../shared';
+} from '@hpe/shared';
 import {
   DiagnosticJobStatusError,
   cancelDiagnostic,

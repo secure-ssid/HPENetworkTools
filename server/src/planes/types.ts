@@ -33,7 +33,7 @@ import type {
   SseInventory,
   SubscriptionAssignment,
   SubscriptionRow,
-} from '../../../shared';
+} from '@hpe/shared';
 
 export const PLANE_IDS = [
   'central',

@@ -6,8 +6,8 @@
  * 'device' only exist as /sites/:siteId and /devices/:name.
  */
 
-import { siteIdFor } from '../../../shared';
-import type { Plane, SearchIndexEntry, View } from '../../../shared';
+import { siteIdFor } from '@hpe/shared';
+import type { Plane, SearchIndexEntry, View } from '@hpe/shared';
 
 /** Current shell view for a pathname (drill-downs → 'site' | 'device'). */
 export function viewForPath(pathname: string): View | null {

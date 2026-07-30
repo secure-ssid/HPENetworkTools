@@ -71,7 +71,7 @@ import {
   type SseObjectKind,
   type SseObjectKindResult,
   type SseObjectSummary,
-} from '../../../shared';
+} from '@hpe/shared';
 import { parseRetryAfterMs, type FetchLike, type RecordCallFn, type SleepFn } from './central';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 

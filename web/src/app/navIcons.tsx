@@ -8,7 +8,7 @@
  * lives on the button.
  */
 import type { ReactNode } from 'react';
-import type { View } from '../../../shared';
+import type { View } from '@hpe/shared';
 
 function Svg({ children }: { children: ReactNode }) {
   return (

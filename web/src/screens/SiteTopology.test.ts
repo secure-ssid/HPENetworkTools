@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { pathFor } from '../../../shared/logic';
-import { CLIENTS } from '../../../shared/fixtures';
-import type { ClientRow } from '../../../shared';
+import { pathFor } from '@hpe/shared/logic';
+import { CLIENTS } from '@hpe/shared/fixtures';
+import type { ClientRow } from '@hpe/shared';
 
 /**
  * Harness smoke + the pathFor gateway guard: an AOS-10 wireless client

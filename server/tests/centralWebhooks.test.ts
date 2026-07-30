@@ -9,7 +9,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { WebhookForm } from '../../shared';
+import type { WebhookForm } from '@hpe/shared';
 import type {
   CentralWebhooksError as CentralWebhooksErrorType,
   CentralWebhooksTransport,

@@ -25,7 +25,7 @@
  * Pure module: no I/O, no singletons — fully unit-testable.
  */
 
-import type { DeviceRow, Plane } from '../../../shared';
+import type { DeviceRow, Plane } from '@hpe/shared';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
 
 /** Extra identity fields adapters may attach; not in the shared types. */

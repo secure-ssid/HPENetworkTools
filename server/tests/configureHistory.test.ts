@@ -19,8 +19,8 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DEFAULT_VLAN_FORM } from '../../shared';
-import type { BrokerAuditEvent } from '../../shared';
+import { DEFAULT_VLAN_FORM } from '@hpe/shared';
+import type { BrokerAuditEvent } from '@hpe/shared';
 
 let server: Server;
 let base: string;

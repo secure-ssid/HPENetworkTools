@@ -26,8 +26,8 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DEFAULT_SSID_FORM } from '../../shared';
-import type { SsidApplyResult, SsidCatalog, SsidForm } from '../../shared';
+import { DEFAULT_SSID_FORM } from '@hpe/shared';
+import type { SsidApplyResult, SsidCatalog, SsidForm } from '@hpe/shared';
 import type { SsidDirectWriteError as SsidDirectWriteErrorType, SsidWritePlane } from '../src/services/ssidDirectWrite';
 
 let SsidDirectWriteService: typeof import('../src/services/ssidDirectWrite').SsidDirectWriteService;

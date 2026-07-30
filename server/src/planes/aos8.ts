@@ -63,7 +63,7 @@
  */
 
 import * as https from 'node:https';
-import type { ClientRow, ClientType, DeviceRow, DeviceType, Tone } from '../../../shared';
+import type { ClientRow, ClientType, DeviceRow, DeviceType, Tone } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import {
   firmwareIsApproved,

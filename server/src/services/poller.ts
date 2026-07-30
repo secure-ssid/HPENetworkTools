@@ -27,7 +27,7 @@
  *     requests), so the plane's in-flight lock is held until it really settles
  */
 
-import { PLANE_DATASET_KEYS, PLANE_ROW_DATASET_KEYS, type PlaneRowDatasetKey } from '../../../shared';
+import { PLANE_DATASET_KEYS, PLANE_ROW_DATASET_KEYS, type PlaneRowDatasetKey } from '@hpe/shared';
 import { settings, type SettingsStore } from '../config/settings';
 import { registry, StubAdapter, type PlaneRegistry } from '../planes/registry';
 import { PLANE_IDS, type PlaneId, type PlanePull } from '../planes/types';

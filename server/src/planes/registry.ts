@@ -44,7 +44,7 @@ import {
   planeStaleness,
   staleAfterSecFor,
   type PlaneStaleReason,
-} from '../../../shared';
+} from '@hpe/shared';
 import { currentActor } from '../services/auth';
 import { settings, type PlaneCredentials, type SettingsStore } from '../config/settings';
 import { Aos8Adapter } from './aos8';

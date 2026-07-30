@@ -27,7 +27,7 @@ import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getAlerts, getTickets } from '../api/client';
 import type { AlertsData } from '../api/client';
-import type { AlertRow } from '../../../shared';
+import type { AlertRow } from '@hpe/shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({

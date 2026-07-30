@@ -18,7 +18,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AckAlertTarget } from '../src/services/ackAlert';
-import type { AlertRow } from '../../shared';
+import type { AlertRow } from '@hpe/shared';
 
 let AckAlertService: typeof import('../src/services/ackAlert').AckAlertService;
 let createApp: typeof import('../src/index').createApp;

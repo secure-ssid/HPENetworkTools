@@ -29,7 +29,7 @@ import {
   rotateCentralWebhookHmacKey,
   updateCentralWebhook,
 } from '../api/client';
-import type { WebhookDetail, WebhookListEnvelope, WebhookSummary } from '../../../shared';
+import type { WebhookDetail, WebhookListEnvelope, WebhookSummary } from '@hpe/shared';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();

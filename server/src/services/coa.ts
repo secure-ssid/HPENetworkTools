@@ -27,7 +27,7 @@ import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
 import { knownTicketId } from './tickets';
 import { poller } from './poller';
-import { CLIENTS } from '../../../shared';
+import { CLIENTS } from '@hpe/shared';
 
 export interface CoaClient {
   mac: string;

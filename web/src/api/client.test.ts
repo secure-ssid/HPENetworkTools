@@ -43,8 +43,8 @@ import {
   deviceProfile,
   terminalBanner,
   terminalQuickCommands,
-} from '../../../shared';
-import type { WebhookForm } from '../../../shared';
+} from '@hpe/shared';
+import type { WebhookForm } from '@hpe/shared';
 
 afterEach(() => {
   vi.unstubAllGlobals();

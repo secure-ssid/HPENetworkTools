@@ -81,7 +81,7 @@ import {
 import { getDeviceDetail, getTerminalSession, getTerminalSessions, getTickets, rebootDevice } from '../api/client';
 import type { TerminalSession, TerminalSessionEvent } from '../api/client';
 import type { DeviceDetailData } from '../api/client';
-import { detailHasRows, detailState, deviceTerminalKind, terminalQuickCommands } from '../../../shared';
+import { detailHasRows, detailState, deviceTerminalKind, terminalQuickCommands } from '@hpe/shared';
 import type {
   CfgHistoryRow,
   DetailFetchState,
@@ -97,7 +97,7 @@ import type {
   Plane,
   TicketRow,
   Tone,
-} from '../../../shared';
+} from '@hpe/shared';
 import { partitionColumns, SharedFacts } from './dataColumns';
 import type { DataColumn } from './dataColumns';
 import { useSettings } from '../app/SettingsContext';

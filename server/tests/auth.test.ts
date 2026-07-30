@@ -24,7 +24,7 @@ import type { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair, type JWK, type KeyLike } from 'jose';
-import { DEFAULT_VLAN_FORM } from '../../shared';
+import { DEFAULT_VLAN_FORM } from '@hpe/shared';
 
 let tmpDir: string;
 let idp: Server;

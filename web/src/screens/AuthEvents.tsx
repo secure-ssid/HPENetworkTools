@@ -29,7 +29,7 @@ import { getAuthEvents } from '../api/client';
 import type { AuthEventsData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { planeFilterForParam } from '../app/nav';
-import type { AuthEventRow } from '../../../shared';
+import type { AuthEventRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';

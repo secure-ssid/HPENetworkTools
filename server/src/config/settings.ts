@@ -26,7 +26,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
-import { SCREEN_SECTIONS, type ScreenSection, type SectionMode } from '../../../shared';
+import { SCREEN_SECTIONS, type ScreenSection, type SectionMode } from '@hpe/shared';
 
 export type PlaneCredentials = Record<string, string>;
 

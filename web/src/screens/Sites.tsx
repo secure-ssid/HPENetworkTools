@@ -32,7 +32,7 @@ import {
 import { getSites } from '../api/client';
 import type { SitesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
-import type { SiteHealthTone, SiteRow } from '../../../shared';
+import type { SiteHealthTone, SiteRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';

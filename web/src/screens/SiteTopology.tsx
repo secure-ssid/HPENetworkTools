@@ -24,7 +24,7 @@ import type {
   TopologyLayerKey,
   TopologyLink,
   TopologyNode,
-} from '../../../shared';
+} from '@hpe/shared';
 
 const ROW_H = 96;
 const CARD_H = 56;

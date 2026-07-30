@@ -71,7 +71,7 @@ import {
   queuedChangeNote,
   seedFormFromRow,
   ssidDependencyRequirementsFor,
-} from '../../../shared';
+} from '@hpe/shared';
 import type {
   BrokerAuditEvent,
   CapabilityRow,
@@ -91,7 +91,7 @@ import type {
   VlanForm,
   VlanObject,
   VlanScope,
-} from '../../../shared';
+} from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';

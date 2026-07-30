@@ -83,7 +83,7 @@ import {
   type WebhookListEnvelope,
   type WebhookOneTimeSecretResult,
   type WebhookSummary,
-} from '../../../shared';
+} from '@hpe/shared';
 
 type DrawerMode = 'create' | 'edit' | 'delete' | 'rotate' | null;
 

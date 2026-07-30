@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { DeviceRow } from '../../shared';
+import type { DeviceRow } from '@hpe/shared';
 import type { PlaneId } from '../src/planes/types';
 import {
   identityKey,

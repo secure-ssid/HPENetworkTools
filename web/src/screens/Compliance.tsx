@@ -31,7 +31,7 @@ import {
 import { getCompliance, syncSystems } from '../api/client';
 import type { ComplianceData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
-import type { FindingRow, Tone } from '../../../shared';
+import type { FindingRow, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { DiffCode } from '../lib/DiffCode';

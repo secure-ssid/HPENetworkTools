@@ -5,8 +5,8 @@ import Devices from './Devices';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getDevices } from '../api/client';
-import { DEVICE_RECONCILIATION, DEVICES, LANE_META } from '../../../shared';
-import type { DeviceRow } from '../../../shared';
+import { DEVICE_RECONCILIATION, DEVICES, LANE_META } from '@hpe/shared';
+import type { DeviceRow } from '@hpe/shared';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();

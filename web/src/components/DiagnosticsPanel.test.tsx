@@ -10,7 +10,7 @@ import {
   reviewDiagnostic,
   startDiagnostic,
 } from '../api/client';
-import type { DiagnosticEligibleDevice, DiagnosticJob, DiagnosticReview } from '../../../shared';
+import type { DiagnosticEligibleDevice, DiagnosticJob, DiagnosticReview } from '@hpe/shared';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();

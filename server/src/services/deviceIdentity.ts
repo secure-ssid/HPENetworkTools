@@ -1,4 +1,4 @@
-import type { Plane } from '../../../shared';
+import type { Plane } from '@hpe/shared';
 
 export interface DeviceIdentity {
   plane?: string;

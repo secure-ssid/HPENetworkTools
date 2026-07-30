@@ -19,7 +19,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RebootDevice } from '../src/services/reboot';
-import type { AlertRow } from '../../shared';
+import type { AlertRow } from '@hpe/shared';
 
 let RebootService: typeof import('../src/services/reboot').RebootService;
 let createApp: typeof import('../src/index').createApp;

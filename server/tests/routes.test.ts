@@ -955,7 +955,7 @@ describe('live-mode screen contracts', () => {
   });
 
   it('live configure exposes the broker queue and computed stats; compliance stays honest', async () => {
-    const { DEFAULT_VLAN_FORM } = await import('../../shared');
+    const { DEFAULT_VLAN_FORM } = await import('@hpe/shared');
     contributions.clear();
     contributions.set('central', { devices: [DEVICE] });
     await setDemoMode(true);
@@ -1689,7 +1689,7 @@ describe('live-mode screen contracts', () => {
   });
 
   it('the live change log names what changed and where, in local time', async () => {
-    const { DEFAULT_VLAN_FORM } = await import('../../shared');
+    const { DEFAULT_VLAN_FORM } = await import('@hpe/shared');
     // A brokered write references a raised ticket; demo mode also accepts the
     // fixture queue, so the change is queued there and read back live.
     await setDemoMode(true);
@@ -1939,7 +1939,7 @@ describe('live-mode screen contracts', () => {
   });
 
   it('live renewals honour the window the panel header claims', async () => {
-    const { SUBSCRIPTIONS } = await import('../../shared');
+    const { SUBSCRIPTIONS } = await import('@hpe/shared');
     const day = 24 * 60 * 60 * 1000;
     contributions.clear();
     contributions.set('greenlake', {
@@ -2079,7 +2079,7 @@ describe('blend mode (demoMode + blendLive)', () => {
   });
 
   it('auth events and licences blend as whole live sections with honest metadata', async () => {
-    const { AUTH_EVENTS, SUBSCRIPTIONS } = await import('../../shared');
+    const { AUTH_EVENTS, SUBSCRIPTIONS } = await import('@hpe/shared');
     const authEvent = { ...AUTH_EVENTS[0], who: 'live-auth-user' };
     const subscription = {
       ...SUBSCRIPTIONS[0],
@@ -2443,7 +2443,7 @@ describe('hidden demo devices', () => {
 
 describe('demo Configure serves the authored queue, not an empty broker', () => {
   it('renders the design\'s three queued changes and keeps the fixture stat deltas', async () => {
-    const { QUEUED_CHANGES, CONFIGURE_STATS } = await import('../../shared');
+    const { QUEUED_CHANGES, CONFIGURE_STATS } = await import('@hpe/shared');
     const { status, body } = await getJson('/api/configure');
     expect(status).toBe(200);
     expect(body.dataSource).toBe('demo');

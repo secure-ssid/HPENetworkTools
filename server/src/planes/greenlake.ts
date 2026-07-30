@@ -140,8 +140,8 @@ import type {
   SubscriptionAssignment,
   SubscriptionRow,
   Tone,
-} from '../../../shared';
-import { GREENLAKE_SECTION_KEYS } from '../../../shared';
+} from '@hpe/shared';
+import { GREENLAKE_SECTION_KEYS } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import {
   mintedTokenInfo,

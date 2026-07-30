@@ -60,7 +60,7 @@ import {
   type WebhookPatchForm,
   type WebhookSummary,
   WEBHOOKS_DEMO,
-} from '../../../shared';
+} from '@hpe/shared';
 import type { PlaneCapabilities } from '../planes/types';
 import { CentralAdapter, withScheme, type CentralHttpBodyParse } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';

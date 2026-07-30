@@ -14,8 +14,8 @@ import {
   testSystem,
 } from '../api/client';
 import type { LivePlaneState, SystemsData, SystemsState } from '../api/client';
-import { PERMISSIONS, SYNC_HISTORY, SYSTEMS } from '../../../shared';
-import type { SystemRow } from '../../../shared';
+import { PERMISSIONS, SYNC_HISTORY, SYSTEMS } from '@hpe/shared';
+import type { SystemRow } from '@hpe/shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({

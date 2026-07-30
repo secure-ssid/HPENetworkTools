@@ -83,8 +83,8 @@ import {
   CONNECT_TYPE_OPTIONS,
   SCREEN_SECTIONS,
   type ScreenSection,
-} from '../../../shared';
-import type { Fact, SyncHistoryRow, SystemRow, SystemTypeKey, Tone } from '../../../shared';
+} from '@hpe/shared';
+import type { Fact, SyncHistoryRow, SystemRow, SystemTypeKey, Tone } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import type { Density } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';

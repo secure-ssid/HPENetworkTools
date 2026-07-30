@@ -59,7 +59,7 @@ import {
   pathFor,
   planeKeyOf,
   timelineFor,
-} from '../../../shared';
+} from '@hpe/shared';
 import type {
   ClientDetailLive,
   ClientDetailSection,
@@ -74,7 +74,7 @@ import type {
   Tone,
   TopologyDeviceNode,
   TopologyLink,
-} from '../../../shared';
+} from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';

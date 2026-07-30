@@ -27,7 +27,7 @@ import {
   queueChange,
 } from '../api/client';
 import type { BrokeredChange, ConfigureData } from '../api/client';
-import type { SsidApplyResult, SsidCatalog } from '../../../shared';
+import type { SsidApplyResult, SsidCatalog } from '@hpe/shared';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();

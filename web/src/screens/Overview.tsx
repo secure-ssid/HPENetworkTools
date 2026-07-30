@@ -26,7 +26,7 @@ import { getOverview } from '../api/client';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { pathForView } from '../app/nav';
-import type { LaunchpadRow, OverviewAlert, SiteHealthTone, SiteId } from '../../../shared';
+import type { LaunchpadRow, OverviewAlert, SiteHealthTone, SiteId } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import '../app/app.css';

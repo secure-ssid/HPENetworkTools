@@ -3,7 +3,7 @@ import type {
   DiagnosticEligibilityResponse,
   DiagnosticJob,
   DiagnosticReview,
-} from '../../../shared';
+} from '@hpe/shared';
 
 describe('shared diagnostic contracts', () => {
   it('carry the reviewed path, live eligibility source, and cancel-safe job states', () => {

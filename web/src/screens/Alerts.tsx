@@ -29,7 +29,7 @@ import {
 } from '../nightdesk';
 import { ackAlert, getAlerts, getTickets, raiseTicket } from '../api/client';
 import type { AlertsData } from '../api/client';
-import type { AlertCorrelation, AlertRow, TicketRow } from '../../../shared';
+import type { AlertCorrelation, AlertRow, TicketRow } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';

@@ -11,8 +11,8 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Input, Kbd } from '../nightdesk';
-import { SEARCH_INDEX } from '../../../shared';
-import type { InventoryTreeNode, SearchIndexEntry } from '../../../shared';
+import { SEARCH_INDEX } from '@hpe/shared';
+import type { InventoryTreeNode, SearchIndexEntry } from '@hpe/shared';
 import { getSearchIndex, searchInventory } from '../api/client';
 import { pathForSearchHit } from './nav';
 

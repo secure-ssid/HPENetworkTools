@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom';
 import { InventoryTree } from './InventoryTree';
 import { getInventoryTree } from '../api/client';
-import type { InventoryTreeNode, InventoryTreePage } from '../../../shared';
+import type { InventoryTreeNode, InventoryTreePage } from '@hpe/shared';
 
 vi.mock('../api/client', () => ({
   getInventoryTree: vi.fn(),

@@ -26,8 +26,8 @@ import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { appendBrokerLog, brokerDataDir, type BrokerTransport } from './writeBroker';
 import { knownTicketId } from './tickets';
 import { poller } from './poller';
-import { DEVICES } from '../../../shared';
-import type { Plane } from '../../../shared';
+import { DEVICES } from '@hpe/shared';
+import type { Plane } from '@hpe/shared';
 import {
   resolveDeviceIdentity,
   safeDeviceCandidates,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import type { InventoryTreeNode, SseObjectKind } from '../../../shared';
+import type { InventoryTreeNode, SseObjectKind } from '@hpe/shared';
 import { Badge, Button, EmptyState, Input, SectionHeader, Spinner } from '../nightdesk';
 import { InventoryTree } from '../components/InventoryTree';
 import { getInventoryNode, getSystemsState, searchInventory } from '../api/client';

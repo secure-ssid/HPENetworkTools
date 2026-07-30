@@ -6,8 +6,8 @@ import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getSettings, getSiteDetail } from '../api/client';
 import type { SiteDetailData } from '../api/client';
-import { SITE_PROFILES } from '../../../shared';
-import type { SiteRow, SiteTopologyLive, TopologyDeviceNode } from '../../../shared';
+import { SITE_PROFILES } from '@hpe/shared';
+import type { SiteRow, SiteTopologyLive, TopologyDeviceNode } from '@hpe/shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({

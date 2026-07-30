@@ -62,7 +62,7 @@ import {
   siteIdFor,
   terminalBanner,
   terminalQuickCommands,
-} from '../../../shared';
+} from '@hpe/shared';
 import type {
   AlertCorrelation,
   AlertRow,
@@ -145,7 +145,7 @@ import type {
   WebhookOneTimeSecretResult,
   WebhookPatchForm,
   WebhookUnknownOutcomeCode,
-} from '../../../shared';
+} from '@hpe/shared';
 
 // ---------------------------------------------------------------------------
 // Response envelopes (per-screen view models + dataSource)

@@ -28,7 +28,7 @@ import {
   type SsidCatalog,
   type SsidForm,
   type SsidSecurity,
-} from '../../../shared';
+} from '@hpe/shared';
 import { CentralAdapter } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';

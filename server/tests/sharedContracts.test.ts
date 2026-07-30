@@ -71,7 +71,7 @@ import {
   type SseObjectSummary,
   type SubscriptionAssignment,
   type TopologyLink,
-} from '../../shared';
+} from '@hpe/shared';
 import type { PlaneAdapter, PlanePull, PlaneState } from '../src/planes/types';
 
 const NOW = Date.parse('2026-07-26T12:00:00.000Z');

@@ -13,7 +13,7 @@
  */
 
 import { Stat } from '../nightdesk';
-import type { StatDef } from '../../../shared';
+import type { StatDef } from '@hpe/shared';
 
 export function StatRow({ stats, className }: { stats: StatDef[]; className?: string }) {
   if (stats.length === 0) return null;

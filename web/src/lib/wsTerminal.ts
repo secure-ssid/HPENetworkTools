@@ -28,7 +28,7 @@
  * null sentinel (pane resets to the banner), exactly like the canned path.
  */
 
-import type { TerminalLine } from '../../../shared';
+import type { TerminalLine } from '@hpe/shared';
 import type { TerminalTransport } from './TerminalPane';
 import type { DeviceDetailIdentity } from '../api/client';
 

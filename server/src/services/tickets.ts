@@ -24,7 +24,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { siteIdFor, TICKETS, type AlertRow, type DeviceRow, type SiteId, type TicketEvidence, type TicketNote, type TicketRow, type Tone } from '../../../shared';
+import { siteIdFor, TICKETS, type AlertRow, type DeviceRow, type SiteId, type TicketEvidence, type TicketNote, type TicketRow, type Tone } from '@hpe/shared';
 import { registry } from '../planes/registry';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
 import { poller } from './poller';

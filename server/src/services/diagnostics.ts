@@ -49,7 +49,7 @@ import type {
   DiagnosticReviewRequest,
   DiagnosticTracerouteOptions,
   Plane,
-} from '../../../shared';
+} from '@hpe/shared';
 import { readLinesNewestFirst, rotateIfNeeded } from './logRotation';
 import { CentralAdapter, CentralRequestError } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';

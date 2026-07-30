@@ -22,7 +22,7 @@ import {
   WEBHOOKS_API_PATH,
   type WebhookDetail,
   type WebhookForm,
-} from '../../shared';
+} from '@hpe/shared';
 
 describe('isWebhookId', () => {
   it('accepts a uuid', () => {

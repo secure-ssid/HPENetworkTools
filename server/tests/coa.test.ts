@@ -17,7 +17,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CoaClient } from '../src/services/coa';
 import type { PlaneState } from '../src/planes/types';
-import type { AlertRow } from '../../shared';
+import type { AlertRow } from '@hpe/shared';
 
 let CoaService: typeof import('../src/services/coa').CoaService;
 let ClearPassAdapter: typeof import('../src/planes/clearpass').ClearPassAdapter;

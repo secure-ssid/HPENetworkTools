@@ -97,7 +97,7 @@
  * records method + path + ms + status, never headers and never a body.
  */
 
-import type { AuthEvent, AuthEventRow, Tone } from '../../../shared';
+import type { AuthEvent, AuthEventRow, Tone } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import {
   mintedTokenInfo,

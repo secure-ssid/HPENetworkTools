@@ -21,8 +21,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Alert, Badge, Button, EmptyState, Heading, SectionHeader, Spinner, Textarea, useToast } from '../nightdesk';
 import { addTicketNote, getTickets, resolveTicket } from '../api/client';
 import type { TicketsData } from '../api/client';
-import { relativeAge, slaCountdown } from '../../../shared';
-import type { TicketRow } from '../../../shared';
+import { relativeAge, slaCountdown } from '@hpe/shared';
+import type { TicketRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 

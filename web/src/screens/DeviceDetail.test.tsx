@@ -69,14 +69,14 @@ import {
   deviceTerminalKind,
   terminalBanner,
   terminalQuickCommands,
-} from '../../../shared';
+} from '@hpe/shared';
 import type {
   DeviceDetailLive,
   DeviceEvidence,
   DevicePort,
   DeviceRadio,
   DeviceWlan,
-} from '../../../shared';
+} from '@hpe/shared';
 
 // ---------------------------------------------------------------------------
 // jsdom shims (kept local to this file)

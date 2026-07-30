@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { InventoryTreeNode } from '../../../shared';
+import type { InventoryTreeNode } from '@hpe/shared';
 import { Badge, Spinner } from '../nightdesk';
 import { getInventoryTree } from '../api/client';
 

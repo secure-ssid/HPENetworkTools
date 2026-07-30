@@ -14,7 +14,7 @@ import {
   type SseKindReadStatus,
   type SseObjectKind,
   type Tone,
-} from '../../../shared';
+} from '@hpe/shared';
 import { registry } from '../planes/registry';
 import { PLANE_IDS, type PlaneId, type PlanePull } from '../planes/types';
 import { poller } from '../services/poller';

@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { DeviceRow, DiagnosticReview } from '../../shared';
+import type { DeviceRow, DiagnosticReview } from '@hpe/shared';
 import { SettingsStore } from '../src/config/settings';
 import { CentralRequestError } from '../src/planes/central';
 import { PlaneRegistry } from '../src/planes/registry';

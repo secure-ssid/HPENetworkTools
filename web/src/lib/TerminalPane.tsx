@@ -17,8 +17,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert } from '../nightdesk';
-import { terminalBanner, terminalRespond } from '../../../shared';
-import type { DeviceProfile, TerminalLine } from '../../../shared';
+import { terminalBanner, terminalRespond } from '@hpe/shared';
+import type { DeviceProfile, TerminalLine } from '@hpe/shared';
 
 /** The seam between the pane and whatever serves the shell session. */
 export interface TerminalTransport {

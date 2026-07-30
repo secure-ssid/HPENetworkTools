@@ -45,13 +45,13 @@ import { getSiteDetail, type SiteDetailData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { Density } from '../app/SettingsContext';
 import { deviceDetailPath } from '../app/nav';
-import { SITE_CHAIN, buildSiteTopology, detailState } from '../../../shared';
+import { SITE_CHAIN, buildSiteTopology, detailState } from '@hpe/shared';
 import type {
   SiteAlertRow,
   SiteDeviceRow,
   SiteReachability,
   SiteTopologyLive,
-} from '../../../shared';
+} from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import {

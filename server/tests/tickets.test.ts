@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { TicketStore } from '../src/services/tickets';
-import type { AlertRow } from '../../shared';
+import type { AlertRow } from '@hpe/shared';
 
 const ALERT: AlertRow = {
   sev: 'P1',

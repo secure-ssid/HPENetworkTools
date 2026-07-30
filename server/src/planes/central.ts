@@ -150,7 +150,7 @@ import {
   type TopologyLink,
   type TopologyLinkPort,
   type UsageSample,
-} from '../../../shared';
+} from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState, PlaneTokenInfo } from './types';

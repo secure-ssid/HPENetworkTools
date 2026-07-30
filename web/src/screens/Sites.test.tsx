@@ -5,7 +5,7 @@ import Sites from './Sites';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getSites } from '../api/client';
-import type { SiteRow } from '../../../shared';
+import type { SiteRow } from '@hpe/shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({

@@ -27,7 +27,7 @@ import {
   configPreviewFor,
   previewMetaFor,
   type AlertRow,
-} from '../../shared';
+} from '@hpe/shared';
 import type { BrokerTransport } from '../src/services/writeBroker';
 
 let WriteBroker: typeof import('../src/services/writeBroker').WriteBroker;

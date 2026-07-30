@@ -5,7 +5,7 @@ import Clients from './Clients';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getClientDetail, getClients, getSettings, getSiteTopology, getTickets } from '../api/client';
-import type { ClientDetailLive, ClientRow, SiteTopologyLive } from '../../../shared';
+import type { ClientDetailLive, ClientRow, SiteTopologyLive } from '@hpe/shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({

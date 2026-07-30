@@ -52,7 +52,7 @@
  * never in a URL; the call log records method + path + ms + status only.
  */
 
-import type { AlertRow, DeviceRow, Sev, SiteId, Tone } from '../../../shared';
+import type { AlertRow, DeviceRow, Sev, SiteId, Tone } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
 import {
