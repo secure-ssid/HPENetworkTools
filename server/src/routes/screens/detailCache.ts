@@ -55,7 +55,36 @@ export const DETAIL_TIMEOUT_MS = 10_000;
 /** Bounded so a long-lived server cannot accumulate one entry per MAC seen. */
 export const DETAIL_CACHE_MAX = 256;
 
-export const detailCache = new Map<string, { at: number; value: unknown }>();
+export const detailCache = new Map<string, { at: number; value: unknown; failed: boolean }>();
+
+/**
+ * How long a FAILED read stays cached. Much shorter than the success TTL, and
+ * deliberately not zero.
+ *
+ * attemptDetail turns a throw or a timeout into a resolved "failed" payload,
+ * which is the honest thing to hand a screen. Caching that payload for the
+ * full success TTL is not: it takes something that was true for one instant
+ * and keeps asserting it for the next ninety seconds — five minutes for
+ * topology. The operator sees the failure, hits refresh, and is served the
+ * same failure straight back out of memory with nothing retried, long after
+ * the plane recovered. A momentary truth becomes a lasting falsehood, which is
+ * the one thing this cache must not manufacture.
+ *
+ * Zero would be worse. A plane that is genuinely down would then take a fresh
+ * call for every request, which is the stampede the cache exists to stop. Ten
+ * seconds prevents that and still lets a refresh mean something.
+ *
+ * A cached `null` keeps the long TTL: it means no plane can answer this at
+ * all, which is a structural fact rather than a transient fault.
+ */
+export const DETAIL_FAILURE_TTL_MS = 10_000;
+
+/** A payload with any section marked 'failed' is a fault, not data. */
+export function isFailedRead(value: unknown): boolean {
+  const sections = (value as { source?: { sections?: Record<string, unknown> } } | null)?.source?.sections;
+  if (!sections || typeof sections !== 'object') return false;
+  return Object.values(sections).some((state) => state === 'failed');
+}
 
 export const detailInflight = new Map<string, Promise<unknown>>();
 
@@ -92,12 +121,14 @@ export function cachedDetail<T extends { source: DetailSource<string> }>(
   run: () => Promise<T | null>,
 ): Promise<T | null> {
   const hit = detailCache.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return Promise.resolve(asCached(hit.value as T | null));
+  if (hit && Date.now() - hit.at < (hit.failed ? Math.min(DETAIL_FAILURE_TTL_MS, ttlMs) : ttlMs)) {
+    return Promise.resolve(asCached(hit.value as T | null));
+  }
   const flying = detailInflight.get(key) as Promise<T | null> | undefined;
   if (flying) return flying;
   const call = run()
     .then((value) => {
-      detailCache.set(key, { at: Date.now(), value });
+      detailCache.set(key, { at: Date.now(), value, failed: isFailedRead(value) });
       trimDetailCache();
       return value;
     })
