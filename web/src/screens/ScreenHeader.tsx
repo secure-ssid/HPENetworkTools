@@ -35,11 +35,12 @@ export function ScreenHeader({
         </Heading>
         <div
           style={{
-            fontFamily: 'var(--nd-font-display)',
-            fontStyle: 'italic',
-            fontSize: 15,
+            maxWidth: 760,
+            fontFamily: 'var(--nd-font-body)',
+            fontSize: 14,
+            lineHeight: 1.5,
             color: 'var(--nd-text-secondary)',
-            marginTop: 6,
+            marginTop: 8,
           }}
         >
           {subtitle}

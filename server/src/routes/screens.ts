@@ -3616,7 +3616,7 @@ function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | undefined):
           : 'brokered writes, ticket required',
     facts: [
       { k: 'Last sync', v: s.lastSync ? relSync(s.lastSync) : 'never' },
-      { k: 'Devices', v: s.deviceCount === null ? '—' : String(s.deviceCount) },
+      { k: id === 'sse' ? 'Objects' : 'Devices', v: s.deviceCount === null ? '—' : String(s.deviceCount) },
       // The budget is the denominator that makes "Calls today" mean anything
       // (Mist allows 20k/day); a plane whose tier the portal does not know
       // renders the bare count rather than inventing a limit.
@@ -3639,7 +3639,7 @@ function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | undefined):
       `linked: ${s.linked}`,
       `health: ${s.health}`,
       `last_sync: ${s.lastSync ?? 'never'}`,
-      s.deviceCount === null ? null : `devices: ${s.deviceCount}`,
+      s.deviceCount === null ? null : `${id === 'sse' ? 'objects' : 'devices'}: ${s.deviceCount}`,
       `calls_today: ${s.callsToday}`,
       // The denominator behind the "Calls today" fact, when the portal knows
       // the plane's tier — an absent budget prints no line rather than a

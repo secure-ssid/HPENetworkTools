@@ -12,9 +12,11 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Input, Kbd } from '../nightdesk';
 import { SEARCH_INDEX } from '../../../shared';
-import type { SearchIndexEntry } from '../../../shared';
-import { getSearchIndex } from '../api/client';
+import type { InventoryTreeNode, SearchIndexEntry } from '../../../shared';
+import { getSearchIndex, searchInventory } from '../api/client';
 import { pathForSearchHit } from './nav';
+
+type SearchResult = SearchIndexEntry & { path?: string };
 
 export function SearchPanel() {
   const navigate = useNavigate();
@@ -22,6 +24,7 @@ export function SearchPanel() {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const [index, setIndex] = useState<SearchIndexEntry[]>(SEARCH_INDEX);
+  const [inventoryResults, setInventoryResults] = useState<InventoryTreeNode[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
   const listboxId = useId();
   // nightdesk Input does not forward refs — reach the field through the wrapper.
@@ -36,6 +39,26 @@ export function SearchPanel() {
       live = false;
     };
   }, []);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setInventoryResults([]);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void searchInventory(q, { limit: 20, signal: controller.signal })
+        .then((page) => setInventoryResults(page.nodes))
+        .catch((cause) => {
+          if ((cause as Error).name !== 'AbortError') setInventoryResults([]);
+        });
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
 
   // ⌘K / Ctrl+K opens and focuses; Escape closes (also while field unfocused).
   useEffect(() => {
@@ -62,14 +85,30 @@ export function SearchPanel() {
   }, [open]);
 
   const q = query.trim().toLowerCase();
-  const matches = q
+  const localMatches: SearchResult[] = q
     ? index.filter((r) => (r.label + ' ' + r.meta + ' ' + r.kind).toLowerCase().includes(q))
     : index.slice(0, 6);
+  const remoteMatches: SearchResult[] = inventoryResults
+    .filter((node) => node.target)
+    .map((node) => ({
+      kind: node.kind,
+      label: node.label,
+      meta: node.meta ?? node.status,
+      view: 'inventory',
+      arg: null,
+      path: node.target,
+    }));
+  const resultKey = (result: SearchResult) =>
+    `${result.kind === 'switch' ? 'device' : result.kind}:${result.label.trim().toLowerCase()}`;
+  const matches = [...remoteMatches, ...localMatches].filter(
+    (result, index, rows) =>
+      rows.findIndex((candidate) => resultKey(candidate) === resultKey(result)) === index,
+  ).slice(0, 30);
 
-  const openHit = (r: SearchIndexEntry) => {
+  const openHit = (r: SearchResult) => {
     setOpen(false);
     setQuery('');
-    navigate(pathForSearchHit(r));
+    navigate(r.path ?? pathForSearchHit(r));
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {

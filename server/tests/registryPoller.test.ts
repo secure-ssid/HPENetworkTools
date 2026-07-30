@@ -39,6 +39,7 @@ async function withRegistry(
 }
 
 const MIST = { apiHost: 'api.mist.com', orgId: 'org-1', token: 'tok' };
+const SSE = { token: 'sse-token' };
 
 afterEach(() => {
   vi.useRealTimers();
@@ -54,6 +55,18 @@ describe('registry — a partial pull is a sync, but not a complete one', () => 
       // …but a dataset that was never read must not render behind a verified
       // badge, so consumers get the stale flag with the reason.
       expect(st).toMatchObject({ stale: true, reason: 'partial' });
+    });
+  });
+
+  it('keeps fresh SSE readable kinds current while per-kind status carries partial coverage', async () => {
+    await withRegistry({ sse: SSE }, (reg) => {
+      reg.markSyncResult('sse', true, { deviceCount: 37, partial: ['sse'] });
+      expect(reg.state('sse')).toMatchObject({
+        health: 'warning',
+        stale: false,
+        reason: null,
+        deviceCount: 37,
+      });
     });
   });
 });

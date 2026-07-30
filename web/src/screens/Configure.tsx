@@ -152,6 +152,37 @@ type HistoryState =
  *  run out cannot be pushed (the broker answers 409), so the row has to say so. */
 type QueueEntry = QueuedChangeRow & { id: string | null; expiresAt?: string | null };
 
+interface SwitchPortGroup {
+  key: string;
+  device: string;
+  plane?: string;
+  serial?: string;
+  ports: PortObject[];
+  up: number;
+  down: number;
+  unverified: number;
+}
+
+function groupSwitchPorts(ports: PortObject[]): SwitchPortGroup[] {
+  const groups = new Map<string, PortObject[]>();
+  for (const port of ports) {
+    const key = `${port.plane ?? 'unknown'}:${port.serial ?? 'no-serial'}:${port.device}`;
+    groups.set(key, [...(groups.get(key) ?? []), port]);
+  }
+  return [...groups.entries()]
+    .map(([key, rows]) => ({
+      key,
+      device: rows[0]!.device,
+      plane: rows[0]!.plane,
+      serial: rows[0]!.serial,
+      ports: [...rows].sort((a, b) => a.port.localeCompare(b.port, undefined, { numeric: true })),
+      up: rows.filter((row) => /^(up|active|connected)$/i.test(row.state)).length,
+      down: rows.filter((row) => /^(down|disabled|failed)$/i.test(row.state)).length,
+      unverified: rows.filter((row) => row.origin === 'observed').length,
+    }))
+    .sort((a, b) => a.device.localeCompare(b.device));
+}
+
 const STATE_TONE: Record<QueuedChangeRow['state'], QueuedChangeRow['tone']> = {
   ready: 'success',
   applying: 'info',
@@ -470,6 +501,9 @@ export default function Configure() {
   const [now, setNow] = useState(() => Date.now());
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<HistoryState>({ kind: 'loading' });
+  const [portQuery, setPortQuery] = useState('');
+  const [expandedSwitches, setExpandedSwitches] = useState<Set<string>>(new Set());
+  const [visiblePorts, setVisiblePorts] = useState<Record<string, number>>({});
   // -- SSID direct apply (no ticket/queue — see server/src/services/ssidDirectWrite.ts) --
   const [ssidCatalog, setSsidCatalog] = useState<SsidCatalog | null>(null);
   const [ssidCatalogLoading, setSsidCatalogLoading] = useState(false);
@@ -582,6 +616,31 @@ export default function Configure() {
     (!ssidRequirement.passphrase || !!ssid.passphrase);
   const ssidApplyDisabled =
     !ssidFormComplete || ssidMissingDependencies.length > 0 || !ssidReviewed || ssidApplying || ssidCatalogLoading || !ssidCatalog;
+
+  const switchGroups = useMemo(() => groupSwitchPorts(data?.ports ?? []), [data?.ports]);
+  const filteredSwitchGroups = useMemo(() => {
+    const query = portQuery.trim().toLowerCase();
+    if (!query) return switchGroups;
+    return switchGroups
+      .map((group) => ({
+        ...group,
+        ports: group.ports.filter((port) =>
+          `${port.device} ${port.port} ${port.desc} ${port.summary} ${port.state} ${port.plane ?? ''} ${port.serial ?? ''}`
+            .toLowerCase()
+            .includes(query),
+        ),
+      }))
+      .filter((group) => group.device.toLowerCase().includes(query) || group.ports.length > 0);
+  }, [portQuery, switchGroups]);
+
+  const toggleSwitch = (key: string) => {
+    setExpandedSwitches((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   if (!data || !queue) {
     return (
@@ -950,72 +1009,102 @@ export default function Configure() {
                 </button>
               }
             />
-            {data.ports.map((p) => (
-              <button
-                key={`${p.device}-${p.port}`}
-                type="button"
-                className="nt-rowlink nt-configure-row"
-                style={ROW}
-                onClick={() => openPort(p)}
-              >
-                <div
-                  className="nt-configure-row__name"
-                  style={{
-                    width: 150,
-                    flex: '0 0 150px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 3,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 12.5,
-                      color: 'var(--nd-text-primary)',
-                    }}
+            {data.ports.length > 0 ? (
+              <div className="nt-switch-tree__toolbar">
+                <Input
+                  mono
+                  value={portQuery}
+                  onChange={(event) => setPortQuery(event.target.value)}
+                  placeholder="Filter switch, port, description, VLAN, role, or state…"
+                  aria-label="Filter switch ports"
+                />
+                <div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setExpandedSwitches(new Set(filteredSwitchGroups.map((group) => group.key)))}
                   >
-                    {p.device}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10,
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
-                    port {p.port}
-                  </span>
+                    Expand shown
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setExpandedSwitches(new Set())}>
+                    Collapse all
+                  </Button>
                 </div>
-                <span
-                  className="nt-configure-row__secondary"
-                  style={{ width: 160, flex: '0 0 160px', fontSize: 12, color: 'var(--nd-text-secondary)' }}
-                >
-                  {p.desc}
-                </span>
-                <span
-                  className="nt-configure-row__summary"
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                  }}
-                >
-                  {p.summary}
-                </span>
-                <span className="nt-configure-row__actions">
-                  <Badge tone={p.tone} dot>
-                    {p.state}
-                  </Badge>
-                  {p.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
-                  <span className="nt-configure-row__action">
-                    {p.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
-                  </span>
-                </span>
-              </button>
-            ))}
+              </div>
+            ) : null}
+            <div className="nt-switch-tree">
+              {filteredSwitchGroups.map((group) => {
+                const open = expandedSwitches.has(group.key) || portQuery.trim().length > 0;
+                const pageSize = visiblePorts[group.key] ?? 25;
+                const shownPorts = open ? group.ports.slice(0, pageSize) : [];
+                return (
+                  <div key={group.key} className="nt-switch-tree__group">
+                    <button
+                      type="button"
+                      className="nt-switch-tree__switch"
+                      aria-expanded={open}
+                      onClick={() => toggleSwitch(group.key)}
+                    >
+                      <span className="nt-switch-tree__chevron">{open ? '−' : '+'}</span>
+                      <span className="nt-switch-tree__identity">
+                        <strong>{group.device}</strong>
+                        <small>
+                          {[group.plane, group.serial].filter(Boolean).join(' · ') || 'inventory identity unavailable'}
+                        </small>
+                      </span>
+                      <span className="nt-switch-tree__counts">
+                        <Badge tone="neutral">{group.ports.length} ports</Badge>
+                        {group.up > 0 ? <Badge tone="success">{group.up} up</Badge> : null}
+                        {group.down > 0 ? <Badge tone="danger">{group.down} down</Badge> : null}
+                        {group.unverified > 0 ? <Badge tone="info">{group.unverified} observed</Badge> : null}
+                      </span>
+                    </button>
+                    {shownPorts.map((p) => (
+                      <button
+                        key={`${group.key}-${p.port}`}
+                        type="button"
+                        className="nt-rowlink nt-configure-row nt-switch-tree__port"
+                        style={ROW}
+                        onClick={() => openPort(p)}
+                      >
+                        <div className="nt-configure-row__name">
+                          <span>{p.port}</span>
+                          <span>{p.device}</span>
+                        </div>
+                        <span className="nt-configure-row__secondary">{p.desc}</span>
+                        <span className="nt-configure-row__summary">{p.summary}</span>
+                        <span className="nt-configure-row__actions">
+                          <Badge tone={p.tone} dot>
+                            {p.state}
+                          </Badge>
+                          {p.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
+                          <span className="nt-configure-row__action">
+                            {p.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                    {open && group.ports.length > shownPorts.length ? (
+                      <button
+                        type="button"
+                        className="nt-switch-tree__more"
+                        onClick={() =>
+                          setVisiblePorts((current) => ({
+                            ...current,
+                            [group.key]: pageSize + 25,
+                          }))
+                        }
+                      >
+                        Load 25 more ports
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            {data.ports.length > 0 && filteredSwitchGroups.length === 0 ? (
+              <EmptyState title="No switches match" description="Clear the port filter or search another identity." />
+            ) : null}
             {data.ports.length === 0 ? (
               <EmptyState
                 title="No switch ports reported"

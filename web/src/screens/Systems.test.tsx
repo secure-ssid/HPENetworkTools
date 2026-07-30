@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 import Systems from './Systems';
 import { SettingsProvider } from '../app/SettingsContext';
@@ -82,13 +82,14 @@ const DEMO_PAYLOAD: SystemsData = {
   dataSource: 'demo',
 };
 
-function renderSystems() {
+function renderSystems(initialEntry = '/') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <ToastProvider>
         <SettingsProvider>
           <Routes>
             <Route path="/" element={<Systems />} />
+            <Route path="/systems" element={<Systems />} />
             <Route path="/sites/:siteId" element={<SiteStub />} />
           </Routes>
         </SettingsProvider>
@@ -1058,6 +1059,50 @@ describe('Systems connect drawer — credential hygiene', () => {
 });
 
 describe('Systems Configuration tab — SSE object inventory', () => {
+  it('opens the exact plane requested by an inventory deep link', async () => {
+    const sseRow: SystemRow = {
+      name: 'HPE Aruba Networking SSE',
+      planeId: 'sse',
+      kind: 'live plane registry',
+      state: 'healthy',
+      tone: 'success',
+      scope: 'read only',
+      scopeTone: 'neutral',
+      scopeNote: 'read only',
+      facts: [{ k: 'Last sync', v: '5s ago' }],
+      sites: [],
+      live: [],
+      calls: [],
+      events: [],
+      pulls: [],
+      configText: 'plane: sse',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [sseRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: {
+        sse: unlinked('sse', {
+          linked: true,
+          health: 'healthy',
+          capabilities: { directWrite: false },
+        }),
+      },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems('/systems?plane=sse');
+
+    expect(await screen.findByText('Object inventory')).toBeTruthy();
+  });
+
   it('renders the SSE inventory panel for a linked plane with a declared write scope', async () => {
     const sseRow: SystemRow = {
       name: 'HPE Aruba Networking SSE',
@@ -1088,6 +1133,7 @@ describe('Systems Configuration tab — SSE object inventory', () => {
         sse: unlinked('sse', {
           linked: true,
           health: 'healthy',
+          deviceCount: 37,
           capabilities: { localShell: false, brokeredWrite: false, configRead: false, directWrite: true },
         }),
       },
@@ -1100,10 +1146,14 @@ describe('Systems Configuration tab — SSE object inventory', () => {
     renderSystems();
 
     await waitFor(() => expect(screen.getByText('HPE Aruba Networking SSE')).toBeTruthy());
-    fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Configuration' })).toBeTruthy());
-    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    const sseSystemRow = screen.getByText('HPE Aruba Networking SSE').closest('button');
+    expect(sseSystemRow).not.toBeNull();
+    expect(within(sseSystemRow!).getByText('Objects')).toBeTruthy();
+    expect(within(sseSystemRow!).getByText('37')).toBeTruthy();
+    expect(within(sseSystemRow!).queryByText('Devices')).toBeNull();
 
+    fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
+    // SSE is object inventory, so selecting it opens Configuration directly.
     await waitFor(() => expect(screen.getByText('Object inventory')).toBeTruthy());
     // A write-capable token gets the auto-commit badge, not the read-only one.
     expect(screen.getByText('reviewed writes · auto-commit')).toBeTruthy();

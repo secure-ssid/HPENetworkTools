@@ -228,7 +228,7 @@ describe('SseAdapter.isComplete / capabilities', () => {
 
 describe('SseAdapter.pull()', () => {
   it('reads all nine kinds, pages with pagenumber/pagesize, and Bearer-authenticates every call', async () => {
-    const { adapter, calls, authHeaders, redirectModes } = makeAdapter(everyKindOk(3));
+    const { adapter, state, calls, authHeaders, redirectModes } = makeAdapter(everyKindOk(3));
     const pull = await adapter.pull();
     expect(pull.sse?.unavailable).toEqual([]);
     expect(Object.keys(pull.sse!.kinds)).toHaveLength(9);
@@ -237,7 +237,22 @@ describe('SseAdapter.pull()', () => {
     expect(calls.some((c) => c.includes('pagenumber=1') && c.includes('pagesize='))).toBe(true);
     expect(authHeaders.every((h) => h === `Bearer ${CREDS.token}`)).toBe(true);
     expect(pull.partial).toBeUndefined();
+    expect(state.deviceCount).toBe(27);
     expect(redirectModes.every((mode) => mode === 'manual')).toBe(true);
+  });
+
+  it('uses provider totals for the object count when the cached rows are page-capped', async () => {
+    const handler: Handler = (method, pathname) => {
+      if (method !== 'GET') return undefined;
+      const kind = Object.entries(SSE_KIND_SPEC).find(([, spec]) => spec.path === pathname)?.[0];
+      if (!kind) return undefined;
+      return { body: { data: [{ id: `${kind}-1`, name: `${kind} one` }], totalRecords: 100 } };
+    };
+    const { adapter, state } = makeAdapter(handler);
+
+    await adapter.pull();
+
+    expect(state.deviceCount).toBe(900);
   });
 
   it('a 401 on one kind marks it unavailable without failing the rest (partial, not empty)', async () => {
@@ -252,7 +267,8 @@ describe('SseAdapter.pull()', () => {
     expect(pull.sse?.kinds.users).toBeUndefined();
     expect(pull.sse?.kinds.connectors?.rows.length).toBeGreaterThan(0);
     expect(pull.partial).toEqual(['sse']);
-    expect(state.note).toContain('failed');
+    expect(state.note).toContain('unavailable');
+    expect(state.deviceCount).toBe(16);
   });
 
   it('a 404 on a limited-release kind (locations) is unavailable, never an empty list', async () => {
@@ -267,12 +283,14 @@ describe('SseAdapter.pull()', () => {
   });
 
   it('every denied kind is preserved as failure evidence instead of a permission-shaped empty inventory', async () => {
-    const { adapter } = makeAdapter(() => ({ status: 403, body: {} }));
+    const { adapter, state } = makeAdapter(() => ({ status: 403, body: {} }));
+    state.deviceCount = 99;
     const pull = await adapter.pull();
     expect(Object.keys(pull.sse?.kinds ?? {})).toHaveLength(0);
     expect(pull.sse?.unavailable).toHaveLength(9);
     expect(Object.values(pull.sse?.readStatus ?? {}).every((status) => status?.state === 'failed' && status.reason === 'denied')).toBe(true);
     expect(pull.partial).toEqual(['sse']);
+    expect(state.deviceCount).toBe(99);
   });
 
   it('transport failures remain unreachable per kind and never become permission failures', async () => {

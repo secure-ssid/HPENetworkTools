@@ -143,6 +143,17 @@ describe('Drawer width', () => {
     expect((screen.getByRole('dialog') as HTMLElement).style.width).toBe(expected);
   });
 
+  describe('Drawer side', () => {
+    it('can open from the left for navigation drawers', () => {
+      render(
+        <Drawer open onOpenChange={() => {}} side="left" title="Navigation">
+          {BODY}
+        </Drawer>,
+      );
+      expect(screen.getByRole('dialog').classList.contains('nd-drawer--left')).toBe(true);
+    });
+  });
+
   it('accepts an explicit pixel width', () => {
     render(
       <Drawer open onOpenChange={() => {}} width={720} title="T">

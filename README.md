@@ -10,6 +10,9 @@ UXI, local switches, and HPE Aruba Networking SSE in one interface.
 ## Highlights
 
 - Unified devices, sites, clients, alerts, licences, and topology.
+- Lazy Inventory Explorer for systems, sites, devices, and SSE objects.
+- Responsive desktop navigation and a focus-managed mobile drawer.
+- Collapsed switch groups that keep large port inventories out of the initial DOM.
 - Exact device targeting by management plane and serial number.
 - Reviewed New Central SSID creation, editing, and scope assignment.
 - AP and AOS-CX traceroute diagnostics with bounded background polling.
@@ -32,14 +35,18 @@ npm run dev
 Open [http://localhost:5173](http://localhost:5173). The default configuration
 uses demo data and does not require network-system credentials.
 
-For a single-port production build:
+The normal development command also uses one HTTP listener: Vite rebuilds
+assets in watch mode without opening a second web port, and Express serves the
+UI, API, and terminal WebSocket together on `5173`.
+
+For a production build:
 
 ```bash
 npm run build
 npm start --workspace server
 ```
 
-Open [http://localhost:8177](http://localhost:8177).
+Open [http://localhost:5173](http://localhost:5173).
 
 ## Documentation
 
@@ -64,6 +71,10 @@ Open [http://localhost:8177](http://localhost:8177).
 ### Device inventory
 
 ![Device inventory](docs/images/devices.png)
+
+### Inventory explorer
+
+![Inventory explorer](docs/images/inventory.png)
 
 ## Project layout
 

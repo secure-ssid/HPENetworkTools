@@ -4,3 +4,5 @@ data/
 *.local
 .playwright-mcp
 *.png
+!docs/images/
+!docs/images/*.png

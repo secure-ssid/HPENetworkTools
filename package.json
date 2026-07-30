@@ -7,7 +7,8 @@
     "server"
   ],
   "scripts": {
-    "dev": "concurrently -n web,server -c blue,magenta \"npm run dev -w web\" \"npm run dev -w server\"",
+    "dev": "npm run build -w web && concurrently -n web-build,server -c blue,magenta \"npm run build -w web -- --watch\" \"npm run dev -w server\"",
+    "start": "npm start -w server",
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"

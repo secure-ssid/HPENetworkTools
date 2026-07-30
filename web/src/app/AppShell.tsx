@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
-import { AppShell as NightdeskAppShell, Avatar, Breadcrumbs, Button } from '../nightdesk';
+import { AppShell as NightdeskAppShell, Avatar, Breadcrumbs, Button, Drawer } from '../nightdesk';
 import type { Crumb } from '../nightdesk';
 import { CRUMBS, NAV_GROUPS, SITE_IDS, SYSTEMS, siteDisplayName } from '../../../shared';
 import type { SiteId, View } from '../../../shared';
@@ -17,6 +17,7 @@ import { getSystemsState } from '../api/client';
 import { useSettings } from './SettingsContext';
 import { SearchPanel } from './SearchPanel';
 import ChatPanel from '../screens/ChatPanel';
+import { InventoryTree } from '../components/InventoryTree';
 import { pathForView, viewForPath } from './nav';
 
 /** Nav groups stay lit on the drill-down screens. */
@@ -38,6 +39,7 @@ export function AppShellLayout() {
   const location = useLocation();
   const { workspaceName, settingsError } = useSettings();
   const [chatOpen, setChatOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   // Live linked-plane count for the sidebar footer; fixture story when the
   // backend is offline (same rule the Connected-systems screen applies).
   const [linkedLabel, setLinkedLabel] = useState<string | null>(null);
@@ -48,6 +50,10 @@ export function AppShellLayout() {
       if (!live || !s) return;
       if (s.apiError) {
         setLinkedLabel('systems state unavailable');
+        return;
+      }
+      if (s.demoMode) {
+        setLinkedLabel(`${SYSTEMS.length} demo systems`);
         return;
       }
       const planes = Object.values(s.planes);
@@ -95,7 +101,7 @@ export function AppShellLayout() {
     return base;
   }, [view, siteId, deviceName, workspaceName, navigate]);
 
-  const sidebar = (
+  const renderSidebar = (onNavigate?: () => void) => (
     <>
       <div style={{ padding: '0 8px' }}>
         <div
@@ -112,8 +118,9 @@ export function AppShellLayout() {
         <div
           style={{
             fontFamily: 'var(--nd-font-display)',
-            fontStyle: 'italic',
-            fontSize: 19,
+            fontWeight: 600,
+            fontSize: 17,
+            letterSpacing: '-.02em',
             color: 'var(--nd-text-primary)',
             lineHeight: 1.15,
             marginTop: 2,
@@ -132,11 +139,26 @@ export function AppShellLayout() {
               key={item.view}
               label={item.label}
               active={item.view === navView}
-              onClick={() => navigate(pathForView(item.view))}
+              onClick={() => {
+                navigate(pathForView(item.view));
+                onNavigate?.();
+              }}
             />
           ))}
         </div>
       ))}
+      <div className="nt-shell-inventory">
+        <div className="nd-micro-label" style={{ padding: '0 8px 4px' }}>
+          Browse inventory
+        </div>
+        <InventoryTree
+          compact
+          onSelect={(node) => {
+            if (node.target) navigate(node.target);
+            onNavigate?.();
+          }}
+        />
+      </div>
       <div
         style={{
           marginTop: 'auto',
@@ -181,9 +203,19 @@ export function AppShellLayout() {
       </div>
     </>
   );
+  const sidebar = renderSidebar();
 
   const topbar = (
     <>
+      <Button
+        className="nt-shell-menu"
+        variant="ghost"
+        size="sm"
+        onClick={() => setNavOpen(true)}
+        aria-label="Open navigation"
+      >
+        ☰ Menu
+      </Button>
       <Breadcrumbs items={crumbs} />
       <SearchPanel />
       {settingsError ? (
@@ -207,7 +239,9 @@ export function AppShellLayout() {
         onClick={() => setChatOpen((v) => !v)}
         aria-label="Open the assistant"
       >
-        Assistant ⌘J
+        <span className="nt-shell-assistant__label">Assistant</span>
+        <span className="nt-shell-assistant__shortcut">⌘J</span>
+        <span className="nt-shell-assistant__compact" aria-hidden="true">AI</span>
       </Button>
       <div
         className="nt-shell-identity"
@@ -244,6 +278,18 @@ export function AppShellLayout() {
     <NightdeskAppShell sidebar={sidebar} topbar={topbar}>
       <Outlet />
       <ChatPanel open={chatOpen} onOpenChange={setChatOpen} />
+      <Drawer
+        open={navOpen}
+        onOpenChange={setNavOpen}
+        width={320}
+        side="left"
+        title="Navigation"
+        description={workspaceName}
+      >
+        <nav className="nt-mobile-nav" aria-label="Primary navigation">
+          {renderSidebar(() => setNavOpen(false))}
+        </nav>
+      </Drawer>
     </NightdeskAppShell>
   );
 }

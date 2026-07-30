@@ -26,13 +26,10 @@ npm install
 npm run dev
 ```
 
-This starts:
-
-- React/Vite on `http://localhost:5173`
-- Express API on `http://localhost:8177`
-
-The Vite server proxies `/api` requests to the Express server. Press `Ctrl+C`
-in the terminal that started the command to stop both processes.
+This builds the React application in watch mode and starts one Express
+listener at `http://localhost:5173`. The same listener serves the UI, `/api`,
+and terminal WebSockets. Press `Ctrl+C` in the terminal that started the
+command to stop the build watcher and server.
 
 On macOS, `start-dev.command` provides the same development startup flow.
 
@@ -50,13 +47,13 @@ Start the API and static web server:
 npm start --workspace server
 ```
 
-Open `http://localhost:8177`.
+Open `http://localhost:5173`.
 
 ## Runtime environment variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PORT` | `8177` | Production HTTP port |
+| `PORT` | `5173` | UI, API, and terminal WebSocket port |
 | `HPE_SETTINGS_PATH` | `data/settings.json` | Settings and connected-system credentials |
 | `HPE_DATA_DIR` | `data/` | Audits, journals, terminal recordings, and runtime state |
 
@@ -102,7 +99,7 @@ production smoke run.
 Start production on another port:
 
 ```bash
-PORT=8178 npm start --workspace server
+PORT=5174 npm start --workspace server
 ```
 
 ### Portal page does not load
@@ -110,7 +107,7 @@ PORT=8178 npm start --workspace server
 Check the API:
 
 ```bash
-curl http://localhost:8177/api/health
+curl http://localhost:5173/api/health
 ```
 
 An `{"ok":true}` response confirms the production server is listening.

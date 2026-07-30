@@ -1,6 +1,6 @@
 #!/bin/bash
-# Double-clickable dev launcher (macOS): starts the API (:8177) and the Vite
-# dev server (:5173) together, then opens the app in the default browser.
+# Double-clickable dev launcher (macOS): builds/watches the web application and
+# starts one Express server for the UI, API and terminal bridge on port 5173.
 # Stop with Ctrl+C in the Terminal window this opens.
 cd "$(dirname "$0")"
 
@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 (
   for _ in $(seq 1 30); do
     sleep 1
-    if curl -s -o /dev/null http://localhost:8177/api/health; then
+    if curl -s -o /dev/null http://localhost:5173/api/health; then
       open http://localhost:5173
       exit 0
     fi

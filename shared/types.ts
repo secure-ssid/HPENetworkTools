@@ -50,6 +50,7 @@ export type View =
   | 'tickets'
   | 'clients'
   | 'auth'
+  | 'inventory'
   | 'sites'
   | 'site'
   | 'devices'
@@ -613,6 +614,67 @@ export interface SearchIndexEntry {
   meta: string;
   view: View;
   arg: string | null; // site/device name for drill-downs
+}
+
+// ---------------------------------------------------------------------------
+// Scalable inventory navigation
+// ---------------------------------------------------------------------------
+
+export type InventoryNodeKind =
+  | 'group'
+  | 'system'
+  | 'site'
+  | 'device-group'
+  | 'device'
+  | 'sse-kind'
+  | 'sse-object'
+  | 'switch'
+  | 'port';
+
+export type InventoryNodeReadState =
+  | 'current'
+  | 'empty'
+  | 'denied'
+  | 'unsupported'
+  | 'failed'
+  | 'stale'
+  | 'unlinked';
+
+/** One bounded, secret-free node in the shared shell/full-page inventory tree. */
+export interface InventoryTreeNode {
+  id: string;
+  parentId: string | null;
+  kind: InventoryNodeKind;
+  label: string;
+  meta?: string;
+  count?: number;
+  status: InventoryNodeReadState;
+  tone: Tone;
+  hasChildren: boolean;
+  childCount?: number;
+  target?: string;
+  identity?: {
+    plane?: string;
+    serial?: string;
+    siteId?: string;
+    sseKind?: SseObjectKind;
+    objectId?: string;
+  };
+}
+
+export interface InventoryTreePage {
+  parentId: string | null;
+  nodes: InventoryTreeNode[];
+  total: number;
+  nextCursor: string | null;
+  query: string;
+}
+
+export interface InventorySearchPage {
+  nodes: InventoryTreeNode[];
+  total: number;
+  nextCursor: string | null;
+  query: string;
 }
 
 export interface Crumb {

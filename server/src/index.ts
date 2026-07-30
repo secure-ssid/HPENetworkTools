@@ -23,6 +23,7 @@ import { screensRouter } from './routes/screens';
 import { settingsRouter } from './routes/settings';
 import { sseRouter } from './routes/sse';
 import { systemsRouter } from './routes/systems';
+import { inventoryRouter } from './routes/inventory';
 import { SsidDirectWriteError } from './services/ssidDirectWrite';
 
 export function createApp(): express.Express {
@@ -100,6 +101,7 @@ export function createApp(): express.Express {
   app.use('/api', screensRouter);
   app.use('/api', settingsRouter);
   app.use('/api', systemsRouter);
+  app.use('/api', inventoryRouter);
   app.use('/api', sseRouter);
   app.use('/api', chatRouter);
   app.use('/api', configureRouter);
@@ -144,7 +146,7 @@ export function createApp(): express.Express {
   return app;
 }
 
-export function startServer(port: number = Number(process.env.PORT ?? 8177)) {
+export function startServer(port: number = Number(process.env.PORT ?? 5173)) {
   settings.load();
   poller.start();
   const app = createApp();

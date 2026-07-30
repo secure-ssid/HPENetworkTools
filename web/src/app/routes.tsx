@@ -12,6 +12,7 @@ import Alerts from '../screens/Alerts';
 import Tickets from '../screens/Tickets';
 import Clients from '../screens/Clients';
 import AuthEvents from '../screens/AuthEvents';
+import Inventory from '../screens/Inventory';
 import Sites from '../screens/Sites';
 import SiteDetail from '../screens/SiteDetail';
 import Devices from '../screens/Devices';
@@ -32,6 +33,7 @@ export function AppRoutes() {
         <Route path="/tickets" element={<Tickets />} />
         <Route path="/clients" element={<Clients />} />
         <Route path="/auth-events" element={<AuthEvents />} />
+        <Route path="/inventory" element={<Inventory />} />
         <Route path="/sites" element={<Sites />} />
         <Route path="/sites/:siteId" element={<SiteDetail />} />
         <Route path="/devices" element={<Devices />} />

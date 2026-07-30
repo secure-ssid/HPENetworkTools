@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # scripts/smoke.sh — hit every API route and the SPA shell; fail on any non-200.
-# Usage: bash scripts/smoke.sh [base-url]   (default http://localhost:8177)
+# Usage: bash scripts/smoke.sh [base-url]   (default http://localhost:5173)
 set -u
-BASE="${1:-http://localhost:8177}"
+BASE="${1:-http://localhost:5173}"
 fail=0
 
 check() { # method path [expected]
@@ -21,7 +21,8 @@ echo "== API =="
 check GET /api/health
 for r in overview alerts tickets clients auth-events sites devices \
          licenses configure compliance systems systems/state \
-         search-index settings chat/status configure/queue configure/history; do
+         search-index settings chat/status configure/queue configure/history \
+         inventory/tree; do
   check GET "/api/$r"
 done
 # Device detail: drill into the FIRST device the inventory actually serves —
@@ -47,7 +48,7 @@ check GET /api/does-not-exist 404
 echo "== SPA =="
 for r in / /overview /alerts /tickets /clients /auth-events /sites \
          /sites/campus-01 /devices /devices/sw-core-a /licenses \
-         /configure /compliance /systems /ds; do
+         /inventory /configure /compliance /systems /ds; do
   check GET "$r"
 done
 

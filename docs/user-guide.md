@@ -2,18 +2,35 @@
 
 ## Navigation
 
-The left navigation is grouped by task:
+The desktop navigation is grouped by task:
 
 - **Operate:** overview, alerts, tickets, clients, and authentication events.
-- **Inventory:** sites, devices, and licences.
+- **Inventory:** Inventory Explorer, sites, devices, and licences.
 - **Govern:** configuration, compliance, and connected systems.
 
-Use the search field to jump to a site, device, client, IP address, MAC address,
-or ticket.
+Below the workflow links, **Browse inventory** expands one connected-system
+branch at a time. The same lazy, paged hierarchy is available on the full
+**Inventory Explorer** page.
+
+At tablet and phone widths, use **Menu** to open the focus-managed navigation
+drawer. Escape, the close control, or selecting a destination closes it.
+
+Use the search field to jump to systems, sites, devices, SSE objects, clients,
+IP addresses, MAC addresses, or tickets.
 
 ![Operations overview](images/overview.png)
 
 ## Inventory and topology
+
+![Inventory explorer](images/inventory.png)
+
+Inventory Explorer follows:
+
+`connected system → site or object kind → device or object`
+
+Branches load only when expanded. Statuses distinguish current, stale, denied,
+unsupported, failed, empty, and unlinked data. Device links retain their
+management plane and serial identity.
 
 The device inventory reconciles devices from multiple management planes.
 Device actions use the management plane and serial number, not only the display
@@ -35,6 +52,12 @@ use Ethernet statistics and are not assigned wireless signal values.
 7. Apply and wait for profile and assignment verification.
 
 ![Configuration](images/configure.png)
+
+Switch ports are grouped by exact switch identity and start collapsed. Use the
+filter for switch, port, description, VLAN, role, or state; expand only the
+switch being changed. Large groups show 25 ports at a time.
+
+![Collapsed switch-port hierarchy](images/configure-ports.png)
 
 Supported security workflows include WPA2-PSK, WPA3/WPA2 Enterprise, open
 networks, and captive-portal profiles when the required Central dependencies
@@ -89,7 +112,13 @@ Local, private, loopback, link-local, and reserved destinations are rejected.
 
 ## Manage HPE Aruba Networking SSE
 
-Open **Connected systems**, select SSE, then open **Configuration**.
+Open **Connected systems** and select SSE. Its object inventory opens directly.
+SSE kinds and objects are also available in Inventory Explorer and global
+search.
+
+The Systems row reports **Objects**, not devices. Fresh readable kinds remain
+current even when another kind is denied; denied and unsupported states stay
+attached to the affected kind.
 
 The panel groups supported connector zones, connectors, locations, tunnels,
 network-range applications, users, groups, and writable category resources.

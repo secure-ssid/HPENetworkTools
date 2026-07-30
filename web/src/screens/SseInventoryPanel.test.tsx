@@ -130,10 +130,17 @@ function unknownMutationResult(step: 'mutation' | 'commit') {
   };
 }
 
-function renderPanel(canWrite: boolean) {
+function renderPanel(
+  canWrite: boolean,
+  initial?: { kind: 'connectorZones' | 'users'; objectId?: string },
+) {
   return render(
     <ToastProvider>
-      <SseInventoryPanel canWrite={canWrite} />
+      <SseInventoryPanel
+        canWrite={canWrite}
+        initialKind={initial?.kind}
+        initialObjectId={initial?.objectId}
+      />
     </ToastProvider>,
   );
 }
@@ -144,6 +151,21 @@ afterEach(() => {
 });
 
 describe('SseInventoryPanel — listing', () => {
+  it('opens the exact kind and object selected in Inventory Explorer', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue(listing('users', 'user-7', 'Selected user'));
+    mockGetSseObject.mockResolvedValue({
+      ok: true,
+      object: { id: 'user-7', userName: 'selected.user', description: 'Opened from inventory' },
+    });
+
+    renderPanel(false, { kind: 'users', objectId: 'user-7' });
+
+    await waitFor(() => expect(mockGetSseKind).toHaveBeenCalledWith('users', undefined));
+    await waitFor(() => expect(mockGetSseObject).toHaveBeenCalledWith('users', 'user-7'));
+    expect(await screen.findByDisplayValue('selected.user')).toBeTruthy();
+  });
+
   it('renders the cached rows for the default kind (connector zones)', async () => {
     mockGetSseInventory.mockResolvedValue(null);
     mockGetSseKind.mockResolvedValue({

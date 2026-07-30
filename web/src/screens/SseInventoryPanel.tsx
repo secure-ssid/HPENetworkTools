@@ -169,12 +169,22 @@ function readFailure(
   return null;
 }
 
-export function SseInventoryPanel({ canWrite }: { canWrite: boolean }) {
+interface SseInventoryPanelProps {
+  canWrite: boolean;
+  initialKind?: SseObjectKind;
+  initialObjectId?: string;
+}
+
+export function SseInventoryPanel({
+  canWrite,
+  initialKind = 'connectorZones',
+  initialObjectId,
+}: SseInventoryPanelProps) {
   const { toast } = useToast();
-  const [kind, setKind] = useState<SseObjectKind>('connectorZones');
+  const [kind, setKind] = useState<SseObjectKind>(initialKind);
   const [q, setQ] = useState('');
   const [listingState, setListingState] = useState<ListingState>({
-    kind: 'connectorZones',
+    kind: initialKind,
     query: '',
     listing: null,
     loading: true,
@@ -282,26 +292,44 @@ export function SseInventoryPanel({ canWrite }: { canWrite: boolean }) {
     setApplying(false);
   };
 
-  const openEdit = async (row: SseObjectSummary, rowKind: SseObjectKind, query: string) => {
+  const openEditById = async (
+    id: string,
+    name: string,
+    builtIn: boolean,
+    rowKind: SseObjectKind,
+    query: string,
+  ) => {
     const request = ++drawerRequestRef.current;
     setDrawerMode('edit');
     setDrawerKind(rowKind);
     setDrawerQuery(query);
-    setDrawerId(row.id);
-    setDrawerBuiltIn(row.builtIn === true);
+    setDrawerId(id);
+    setDrawerBuiltIn(builtIn);
     setReviewed(false);
     setApplying(false);
     setDrawerLoading(true);
-    const res = await getSseObject(rowKind, row.id);
+    const res = await getSseObject(rowKind, id);
     if (!mountedRef.current || request !== drawerRequestRef.current) return;
     setDrawerLoading(false);
     if (!res.ok || !res.object) {
-      toast(res.message ?? `could not read ${row.name}`, { tone: 'danger' });
+      toast(res.message ?? `could not read ${name}`, { tone: 'danger' });
       closeDrawer();
       return;
     }
     setForm(formFromRaw(rowKind, res.object));
   };
+
+  const openEdit = async (row: SseObjectSummary, rowKind: SseObjectKind, query: string) => {
+    await openEditById(row.id, row.name, row.builtIn === true, rowKind, query);
+  };
+
+  useEffect(() => {
+    if (initialObjectId) {
+      void openEditById(initialObjectId, initialObjectId, false, initialKind, '');
+    }
+    // The Inventory Explorer remounts the panel for each stable selected node.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const remove = async (row: SseObjectSummary, rowKind: SseObjectKind, query: string) => {
     const ok = window.confirm(

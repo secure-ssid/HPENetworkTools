@@ -143,6 +143,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Inventory',
     items: [
+      { label: 'Inventory explorer', view: 'inventory' },
       { label: 'Sites', view: 'sites' },
       { label: 'Devices', view: 'devices' },
       { label: 'Licences', view: 'licenses' },
@@ -187,6 +188,7 @@ export const CRUMBS: CrumbMap = {
   tickets: [{ label: 'Operate' }, { label: 'Tickets' }],
   clients: [{ label: 'Operate' }, { label: 'Clients' }],
   auth: [{ label: 'Operate' }, { label: 'Auth & policy events' }],
+  inventory: [{ label: 'Inventory' }, { label: 'Explorer' }],
   sites: [{ label: 'Inventory' }, { label: 'Sites' }],
   devices: [{ label: 'Inventory' }, { label: 'Devices' }],
   licenses: [{ label: 'Inventory' }, { label: 'Licences' }],

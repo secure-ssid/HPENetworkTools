@@ -96,6 +96,18 @@ describe('routes', () => {
     expect(Array.isArray(body.permissions)).toBe(true);
   });
 
+  it('demo inventory descendants inherit a degraded fixture plane state', async () => {
+    const groups = await getJson('/api/inventory/tree?parent=system%3Aclassic');
+    expect(groups.status).toBe(200);
+    expect(groups.body.nodes.length).toBeGreaterThan(0);
+    expect(groups.body.nodes.every((node: any) => node.status === 'stale' && node.tone === 'warning')).toBe(true);
+
+    const sites = await getJson('/api/inventory/tree?parent=system-sites%3Aclassic');
+    expect(sites.status).toBe(200);
+    expect(sites.body.nodes.length).toBeGreaterThan(0);
+    expect(sites.body.nodes.every((node: any) => node.status === 'stale' && node.tone === 'warning')).toBe(true);
+  });
+
   it('GET /api/settings masks secrets; PUT never echoes them', async () => {
     const initial = await getJson('/api/settings');
     expect(initial.status).toBe(200);
@@ -627,11 +639,149 @@ describe('live-mode screen contracts', () => {
     // Four facts, per the design: the fourth is credential freshness.
     expect(central.facts.map((f: any) => f.k)).toEqual(['Last sync', 'Devices', 'Calls today', 'Token']);
     expect(central.facts[3].v).not.toBe(''); // never blank — 'not reported' at worst
+    const sse = (body.systems as any[]).find((s) => s.planeId === 'sse');
+    expect(sse.facts.map((f: any) => f.k)).toEqual(['Last sync', 'Objects', 'Calls today', 'Token']);
     expect(Array.isArray(central.pulls)).toBe(true);
     expect(typeof central.configText).toBe('string');
     expect(Array.isArray(body.syncHistory)).toBe(true);
     expect(body.history).toBeUndefined();
     expect(Array.isArray(body.permissions)).toBe(true);
+  });
+
+  it('serves a bounded lazy inventory root and paged system search', async () => {
+    const root = await getJson('/api/inventory/tree');
+    expect(root.status).toBe(200);
+    expect(root.body.parentId).toBeNull();
+    expect(root.body.nodes).toHaveLength(1);
+    expect(root.body.nodes[0]).toMatchObject({
+      id: 'group:systems',
+      kind: 'group',
+      label: 'Connected systems',
+      hasChildren: true,
+    });
+
+    const systems = await getJson('/api/inventory/tree?parent=group%3Asystems&limit=2');
+    expect(systems.status).toBe(200);
+    expect(systems.body.nodes).toHaveLength(2);
+    expect(systems.body.nextCursor).toBe('2');
+    expect(systems.body.nodes.every((node: any) => node.kind === 'system')).toBe(true);
+
+    const next = await getJson('/api/inventory/tree?parent=group%3Asystems&limit=2&cursor=2');
+    expect(next.status).toBe(200);
+    expect(next.body.nodes).toHaveLength(2);
+    expect(next.body.nodes[0].id).not.toBe(systems.body.nodes[0].id);
+
+    const node = await getJson(`/api/inventory/node?id=${encodeURIComponent(systems.body.nodes[0].id)}`);
+    expect(node.status).toBe(200);
+    expect(node.body.id).toBe(systems.body.nodes[0].id);
+
+    const rootNode = await getJson('/api/inventory/node?id=group%3Asystems');
+    expect(rootNode.status).toBe(200);
+    expect(rootNode.body).toMatchObject({ id: 'group:systems', kind: 'group', label: 'Connected systems' });
+
+  });
+
+  it("propagates a degraded plane's read state to its inventory descendants", async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mutableState = registry.get('central').state();
+    const previousState = { ...mutableState };
+    const inventoryDevice = { ...DEVICE, serial: 'SERIAL-XYZ-123', mac: 'AA:BB:CC:DD:EE:99' };
+    contributions.clear();
+    contributions.set('central', { sites: [SITE], devices: [inventoryDevice] });
+    Object.assign(mutableState, {
+      linked: true,
+      health: 'healthy',
+      lastSync: new Date().toISOString(),
+      note: null,
+      consecutiveFailures: 0,
+      nextAttemptAt: null,
+    });
+
+    const freshSites = await getJson('/api/inventory/tree?parent=system-sites%3Acentral');
+    const freshDevices = await getJson('/api/inventory/tree?parent=system-devices%3Acentral');
+    expect(freshSites.body.nodes[0].status).toBe('current');
+    expect(freshDevices.body.nodes[0].status).toBe('current');
+
+    const siteChildren = await getJson(
+      `/api/inventory/tree?parent=${encodeURIComponent(`site:central:${SITE.id}`)}`,
+    );
+    expect(siteChildren.body.nodes[0].id).not.toBe(freshDevices.body.nodes[0].id);
+
+    const serialSearch = await getJson('/api/inventory/search?q=SERIAL-XYZ-123&limit=10');
+    expect(serialSearch.status).toBe(200);
+    expect(serialSearch.body.nodes).toContainEqual(
+      expect.objectContaining({
+        label: inventoryDevice.name,
+        identity: expect.objectContaining({ serial: inventoryDevice.serial }),
+      }),
+    );
+    const serialNode = serialSearch.body.nodes.find((node: any) => node.identity?.serial === inventoryDevice.serial);
+    const exactSerialNode = await getJson(`/api/inventory/node?id=${encodeURIComponent(serialNode.id)}`);
+    expect(exactSerialNode.status).toBe(200);
+    expect(exactSerialNode.body.id).toBe(serialNode.id);
+
+    const macSearch = await getJson(`/api/inventory/search?q=${encodeURIComponent(inventoryDevice.mac)}&limit=10`);
+    expect(macSearch.body.nodes).toContainEqual(expect.objectContaining({ id: serialNode.id }));
+
+    mutableState.health = 'degraded';
+    mutableState.note = 'poll failed — showing last good data';
+    try {
+      const groups = await getJson('/api/inventory/tree?parent=system%3Acentral');
+      const staleSites = await getJson('/api/inventory/tree?parent=system-sites%3Acentral');
+      const staleDevices = await getJson('/api/inventory/tree?parent=system-devices%3Acentral');
+      expect(groups.body.nodes).toEqual([
+        expect.objectContaining({ label: 'Sites', status: 'failed', tone: 'danger' }),
+        expect.objectContaining({ label: 'Devices', status: 'failed', tone: 'danger' }),
+      ]);
+      expect(staleSites.body.nodes[0]).toMatchObject({ status: 'failed', tone: 'danger' });
+      expect(staleDevices.body.nodes[0]).toMatchObject({ status: 'failed', tone: 'danger' });
+    } finally {
+      Object.assign(mutableState, previousState);
+      contributions.clear();
+    }
+  });
+
+  it('keeps cached SSE descendants expandable when their parent plane is stale', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mutableState = registry.get('sse').state();
+    const previousState = { ...mutableState };
+    contributions.clear();
+    contributions.set('sse', {
+      sse: {
+        kinds: {
+          users: {
+            rows: [{ kind: 'users', id: 'user-1', name: 'Cached user', raw: {} }],
+            total: 1,
+            truncated: false,
+          },
+        },
+        unavailable: [],
+      },
+    });
+    Object.assign(mutableState, {
+      linked: true,
+      health: 'degraded',
+      lastSync: new Date().toISOString(),
+      note: 'poll failed — showing last good data',
+    });
+
+    try {
+      const kinds = await getJson('/api/inventory/tree?parent=system%3Asse');
+      const users = kinds.body.nodes.find((node: any) => node.identity?.sseKind === 'users');
+      expect(users).toMatchObject({ status: 'failed', hasChildren: true, childCount: 1 });
+
+      const objects = await getJson('/api/inventory/tree?parent=sse-kind%3Ausers');
+      expect(objects.body.nodes[0]).toMatchObject({ label: 'Cached user', status: 'failed' });
+    } finally {
+      Object.assign(mutableState, previousState);
+      contributions.clear();
+    }
+  });
+
+  it('rejects malformed inventory parents and cursors instead of returning an unbounded or failed response', async () => {
+    expect((await getJson('/api/inventory/tree?parent=site%3A%25')).status).toBe(400);
+    expect((await getJson('/api/inventory/tree?cursor=-1')).status).toBe(400);
+    expect((await getJson('/api/inventory/search?limit=0')).status).toBe(400);
   });
 
   it('live /api/overview rows carry the view-model fields (meta/siteId/plane)', async () => {

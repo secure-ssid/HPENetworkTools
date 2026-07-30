@@ -8,14 +8,16 @@ export default defineConfig({
     include: ['src/**/*.test.{ts,tsx}'],
   },
   server: {
-    port: 5173,
+    // Optional standalone hot-reload server. The normal `npm run dev` uses
+    // the single Express listener on 5173 and a non-listening Vite build watch.
+    port: 5174,
     proxy: {
       '/api/terminal': {
-        target: 'http://localhost:8177',
+        target: 'http://localhost:5173',
         ws: true,
       },
       '/api': {
-        target: 'http://localhost:8177',
+        target: 'http://localhost:5173',
         changeOrigin: true,
       },
     },

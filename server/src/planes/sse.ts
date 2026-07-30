@@ -403,13 +403,20 @@ export class SseAdapter implements PlaneAdapter {
       }
     }
     const readCount = Object.keys(kinds).length;
-    const totalRows = Object.values(kinds).reduce((sum, k) => sum + (k?.rows.length ?? 0), 0);
+    const totalRows = Object.values(kinds).reduce(
+      (sum, kind) => sum + (kind?.total ?? kind?.rows.length ?? 0),
+      0,
+    );
+    // SSE publishes managed objects rather than network devices. The shared
+    // registry count slot is the count fact rendered by Systems; its label is
+    // specialized to "Objects" for this plane.
+    if (readCount > 0) this.stateRef.deviceCount = totalRows;
     const source = `${new URL(this.baseUrl).hostname} · ${readCount} of ${SSE_OBJECT_KINDS.length} object kinds read`;
     this.stateRef.note =
       readCount === 0
         ? `SSE inventory read failed for all ${SSE_OBJECT_KINDS.length} object kinds`
         : `${totalRows.toLocaleString('en-US')} objects across ${readCount} kinds${
-            unavailable.length > 0 ? ` · ${unavailable.length} failed` : ''
+            unavailable.length > 0 ? ` · ${unavailable.length} unavailable` : ''
           }`;
     if (unavailable.length === 0 && this.stateRef.health === 'warning') this.stateRef.health = 'healthy';
     return {

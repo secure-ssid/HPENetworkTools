@@ -11,7 +11,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AppShellLayout } from './AppShell';
 import { SettingsProvider } from './SettingsContext';
@@ -40,6 +40,13 @@ vi.mock('../api/client', () => ({
   }),
   getSystemsState: vi.fn().mockResolvedValue(null), // backend absent → fixture label
   getSearchIndex: vi.fn().mockResolvedValue({ entries: [], dataSource: 'demo' }),
+  getInventoryTree: vi.fn().mockResolvedValue({
+    parentId: null,
+    nodes: [],
+    total: 0,
+    nextCursor: null,
+    query: '',
+  }),
   getChatStatus: vi.fn().mockResolvedValue(null),
   postChat: vi.fn(),
 }));
@@ -62,6 +69,15 @@ function renderShellAtSite(path: string) {
 }
 
 describe('AppShellLayout site-route breadcrumbs', () => {
+  it('opens the primary navigation in a focus-managed drawer', () => {
+    renderShellAtSite('/sites/campus-01');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+
+    expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeTruthy();
+    expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toBeTruthy();
+  });
+
   it('renders without throwing when the decoded site param contains a literal %', async () => {
     // react-router decodes '/sites/foo%25' to the param 'foo%'; the shell must
     // show that raw text, not re-decode it (decodeURIComponent('foo%') throws).

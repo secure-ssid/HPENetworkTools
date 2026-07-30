@@ -375,8 +375,15 @@ export class PlaneRegistry {
    */
   private snapshot(rt: PlaneRuntime, nowMs: number): PlaneStateView {
     this.roll(rt);
+    // SSE records partiality per object kind. A fresh read of seven kinds with
+    // two denied kinds is incomplete coverage, but it does not make the seven
+    // readable kinds stale. Their per-kind readStatus carries the warning.
+    const freshnessHealth =
+      rt.state.id === 'sse' && rt.state.health === 'warning' && rt.state.lastSync !== null
+        ? 'healthy'
+        : rt.state.health;
     const freshness = planeStaleness(
-      { linked: rt.state.linked, health: rt.state.health, lastSync: rt.state.lastSync },
+      { linked: rt.state.linked, health: freshnessHealth, lastSync: rt.state.lastSync },
       this.staleAfterSec(),
       nowMs,
     );

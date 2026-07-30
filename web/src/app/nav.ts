@@ -24,6 +24,8 @@ export function viewForPath(pathname: string): View | null {
       return 'clients';
     case 'auth-events':
       return 'auth';
+    case 'inventory':
+      return 'inventory';
     case 'sites':
       return seg[1] ? 'site' : 'sites';
     case 'devices':

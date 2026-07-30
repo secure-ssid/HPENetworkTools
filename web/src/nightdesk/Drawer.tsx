@@ -8,6 +8,7 @@ export function Drawer({
   open,
   onOpenChange,
   width = 'md',
+  side = 'right',
   title,
   description,
   children,
@@ -15,6 +16,7 @@ export function Drawer({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   width?: 'md' | 'lg' | number;
+  side?: 'left' | 'right';
   title?: ReactNode;
   description?: ReactNode;
   children: ReactNode;
@@ -84,7 +86,7 @@ export function Drawer({
       <div className="nd-drawer-overlay" onClick={() => onOpenChange(false)} />
       <div
         ref={drawerRef}
-        className="nd-drawer"
+        className={`nd-drawer nd-drawer--${side}`}
         style={{ width: w }}
         role="dialog"
         aria-modal="true"

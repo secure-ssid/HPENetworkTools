@@ -40,7 +40,7 @@
   --nd-overlay-scrim: rgba(5, 6, 9, 0.66);
 
   /* type families */
-  --nd-font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --nd-font-display: "Inter", -apple-system, system-ui, sans-serif;
   --nd-font-body: "Inter", -apple-system, system-ui, sans-serif;
   --nd-font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
 

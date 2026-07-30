@@ -35,7 +35,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Badge,
@@ -280,7 +280,7 @@ function codeTone(code: string): Tone {
 /** Fact keys that carry a plane's indexed-object count — GreenLake counts
  *  subscriptions and ClearPass endpoints, so keying the live override off
  *  'Devices' alone would never reach them. */
-const COUNT_FACT_KEYS = ['Devices', 'Subscriptions', 'Endpoints'];
+const COUNT_FACT_KEYS = ['Devices', 'Objects', 'Subscriptions', 'Endpoints'];
 
 /**
  * "Calls today" against the plane's own daily budget — the denominator the
@@ -331,7 +331,12 @@ function mergedFacts(s: SystemRow, live: LivePlaneState | null): Fact[] {
     return f;
   });
   // A plane whose row has no count fact at all still gets one appended.
-  if (!counted && live.deviceCount != null) facts.push({ k: 'Devices', v: String(live.deviceCount) });
+  if (!counted && live.deviceCount != null) {
+    facts.push({
+      k: s.planeId === 'sse' ? 'Objects' : 'Devices',
+      v: String(live.deviceCount),
+    });
+  }
   return facts;
 }
 
@@ -938,6 +943,7 @@ function AssistantSection() {
 
 export default function Systems() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
 
   const [data, setData] = useState<SystemsData | null>(null);
@@ -986,6 +992,22 @@ export default function Systems() {
       live = false;
     };
   }, []);
+
+  const requestedPlane = searchParams.get('plane');
+  useEffect(() => {
+    if (!data || !requestedPlane) return;
+    const row = data.systems.find(
+      (system) =>
+        system.planeId === requestedPlane ||
+        PLANE_ID_BY_NAME[system.name] === requestedPlane,
+    );
+    if (!row) return;
+    setDetailName(row.name);
+    setTab(requestedPlane === 'sse' ? 'config' : 'summary');
+    const next = new URLSearchParams(searchParams);
+    next.delete('plane');
+    setSearchParams(next, { replace: true });
+  }, [data, requestedPlane, searchParams, setSearchParams]);
 
   if (!data) {
     return (
@@ -1209,7 +1231,7 @@ export default function Systems() {
   const endpointVariant = CONNECT_ENDPOINTS[newType];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-systems" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <ScreenHeader
         overline="Govern / Connected systems"
         title="Connected systems"
@@ -1270,7 +1292,7 @@ export default function Systems() {
       ) : null}
 
       {/* ---------------- plane rows ---------------- */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      <div className="nt-system-list" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
         <SectionHeader
           label="Planes"
           meta={
@@ -1287,15 +1309,12 @@ export default function Systems() {
           <button
             key={v.row.name}
             type="button"
-            className="nt-rowlink"
+            className="nt-rowlink nt-system-row"
             onClick={() => {
               setDetailName(v.row.name);
-              setTab('summary');
+              setTab(v.row.planeId === 'sse' ? 'config' : 'summary');
             }}
             style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: 20,
               width: '100%',
               textAlign: 'left',
               background: 'none',
@@ -1306,9 +1325,7 @@ export default function Systems() {
               cursor: 'pointer',
             }}
           >
-            <div
-              style={{ width: 230, flex: '0 0 230px', display: 'flex', flexDirection: 'column', gap: 4 }}
-            >
+            <div className="nt-system-row__identity">
               <span
                 style={{
                   fontFamily: 'var(--nd-font-display)',
@@ -1330,17 +1347,7 @@ export default function Systems() {
                 {v.row.kind}
               </span>
             </div>
-            <div
-              style={{
-                width: 96,
-                flex: '0 0 96px',
-                paddingTop: 2,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-                alignItems: 'flex-start',
-              }}
-            >
+            <div className="nt-system-row__status">
               <Badge tone={v.stateTone} dot>
                 {v.stateLabel}
               </Badge>
@@ -1353,21 +1360,9 @@ export default function Systems() {
                 </span>
               ) : null}
             </div>
-            <div
-              style={{
-                flex: 1,
-                minWidth: 0,
-                display: 'flex',
-                gap: 26,
-                flexWrap: 'wrap',
-                paddingTop: 1,
-              }}
-            >
+            <div className="nt-system-row__facts">
               {v.facts.map((f) => (
-                <div
-                  key={f.k}
-                  style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 96 }}
-                >
+                <div key={f.k} className="nt-system-row__fact">
                   <span
                     style={{
                       fontFamily: 'var(--nd-font-mono)',
@@ -1391,16 +1386,7 @@ export default function Systems() {
                 </div>
               ))}
             </div>
-            <div
-              style={{
-                width: 180,
-                flex: '0 0 180px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 5,
-                alignItems: 'flex-end',
-              }}
-            >
+            <div className="nt-system-row__scope">
               <Badge tone={v.row.scopeTone}>{v.row.scope}</Badge>
               <span
                 style={{
@@ -1414,6 +1400,7 @@ export default function Systems() {
               </span>
             </div>
             <span
+              className="nt-system-row__detail"
               style={{
                 fontFamily: 'var(--nd-font-mono)',
                 fontSize: 11,
@@ -1431,6 +1418,7 @@ export default function Systems() {
 
       {/* ---------------- sync history + permissions ---------------- */}
       <div
+        className="nt-systems__lower-grid"
         style={{
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)',

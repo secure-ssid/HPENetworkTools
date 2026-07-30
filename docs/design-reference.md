@@ -1,5 +1,11 @@
 # Archived design reference
 
+> Current implementation note: the historical prototype used Newsreader serif
+> display type. Operator feedback replaced that face with a unified Inter sans
+> hierarchy. The current shell also uses a 260px inventory-aware desktop
+> sidebar, an off-canvas mobile drawer, and lazy paged hierarchy rather than the
+> prototype's fixed flat navigation.
+
 ## Overview
 
 A single operations portal for a network estate managed by **many different control planes at once**:
@@ -63,10 +69,10 @@ Two caveats:
 
 Dark, editorial, technical. Structure comes from whitespace and hairline rules — **not boxes**.
 
-1. **Three type voices, used strictly**
-   - Serif display (`--nd-font-display`, Newsreader): page titles, section headings, drawer
-     titles, and one italic subtitle line under each page title. Nothing else.
-   - Sans (`--nd-font-body`, Inter) 14px/12.5px: interface prose, table cell text, labels.
+1. **Current type voices**
+   - Sans display (`--nd-font-display`, Inter): page titles, section headings, drawer titles,
+     and system identities.
+   - Sans body (`--nd-font-body`, Inter) 14px/12.5px: interface prose, table cell text, labels.
    - Mono (`--nd-font-mono`, JetBrains Mono) 10–12.5px: all data — device names, MACs, IPs,
      counts, timestamps, firmware, CLI, and every uppercase micro-label.
 2. **Micro-label pattern** (used for every section header and field label):
@@ -98,17 +104,19 @@ Dark, editorial, technical. Structure comes from whitespace and hairline rules �
 
 Fixed two-part frame, `min-height: 100vh`, `background: var(--nd-bg-canvas)`.
 
-**Sidebar** — 224px fixed, `background: var(--nd-bg-surface)`, right border
+**Sidebar** — 260px desktop / 220px compact desktop, `background: var(--nd-bg-surface)`, right border
 `1px solid var(--nd-border-subtle)`, `padding: 20px 12px 16px`, sticky full height, own scroll.
 Contents top to bottom:
-- Wordmark: mono 10px copper `HPE` kicker, then serif italic 19px `Network Tools`.
+- Wordmark: mono 10px copper `HPE` kicker, then semibold sans `Network Tools`.
   (Original design — deliberately not HPE's real mark. Swap in the real brand asset if licensed.)
 - Three nav groups, each a micro-label followed by `AppShell.NavItem`s (12.5px, 500 weight,
   6px/8px padding, `--nd-radius-md`; active = `--nd-accent-text` on `--nd-accent-subtle`;
   hover = `--nd-text-primary` on `--nd-bg-raised`):
   - **OPERATE** — Overview, Alerts, Tickets, Clients, Auth events
-  - **INVENTORY** — Sites, Devices, Licences
+  - **INVENTORY** — Inventory explorer, Sites, Devices, Licences
   - **GOVERN** — Configure, Compliance, Connected systems
+- Lazy **Browse inventory** tree: connected systems expand into sites/devices or SSE object
+  kinds and objects without loading every descendant.
 - Footer block (top border, `margin-top: auto`): micro-label `WORKSPACE`, workspace name +
   mono `GLK`, then mono `6 of 7 systems linked`.
 
@@ -121,8 +129,13 @@ Contents top to bottom:
 **Content** — `flex: 1; padding: 26px 28px 72px; max-width: 1620px`. Target viewports: 1440
 (primary) and 1920 (NOC wall). Layouts are fluid two-column grids; nothing is fixed-width.
 
+At 820px and below the sidebar is replaced by a left off-canvas drawer with
+focus trapping and focus return. At 390px, page actions, fact grids, and system
+rows stack without horizontal scrolling.
+
 **Search behaviour** — ⌘K/Ctrl+K focuses the field and opens the panel; Escape closes; typing
-filters a flat index of sites, devices, MACs, IPs, tickets, clients and config objects; Enter
+combines the local index with bounded server inventory search for systems,
+sites, devices, SSE objects, MACs, IPs, tickets, clients and config objects; Enter
 opens the first hit; each result row is `[mono uppercase kind | label | mono meta]` and
 navigates to the right screen (with the right entity selected). Clicking anywhere in the
 content area closes the panel.
@@ -271,7 +284,7 @@ The write surface. Four `Stat`s (Queued changes, Pushed today, Config objects, D
 `info` `Alert` explaining the brokered-write model. Two columns (1.55fr / 1fr).
 - Left: three open lists, each with an inline `+ Add` link and `Edit ▸` rows —
   **Wireless SSIDs** (name + mono vlan, security, targets, plane `Badge`), **Switch ports**
-  (device + mono port, description, mono summary, state `Badge`), **VLANs & roles** (mono id,
+  (collapsed switch identities with counts/status; 25 port children at a time), **VLANs & roles** (mono id,
   name, mono detail, role).
 - Right: **Queued changes** — three entries with state `Badge` (ready / needs window / console),
   what, where, mono ticket, plus Push queue / Discard; **Where a change can go** — the
@@ -572,10 +585,10 @@ preview/terminal/topology logic shared by both).
 
 ```bash
 npm install          # installs all workspaces
-npm run dev          # web dev server (:5173, proxies /api) + API server (:8177)
+npm run dev          # web build watch + one UI/API/WebSocket server (:5173)
 # or single-port production mode:
 npm run build        # builds web → web/dist (server serves it with SPA fallback)
-npm start --workspace server   # http://localhost:8177
+npm start --workspace server   # http://localhost:5173
 ```
 
 On macOS you can also double-click `start-dev.command` in Finder — it runs
