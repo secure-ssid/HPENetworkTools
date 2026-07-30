@@ -775,17 +775,52 @@ describe('DeviceDetail — class-aware detail panels', () => {
     // for. An UNSCORED link ('Unknown') is not urgency and stays in port order.
     const portNames = screen.getAllByText(/^1\/1\/[0-9]$/).map((el) => el.textContent);
     expect(portNames).toEqual(['1/1/2', '1/1/3', '1/1/9']);
-    expect(screen.getByText('SS_9004_Gateway-LTE · Gateway')).toBeTruthy();
+    // Each fact is its own cell now, so they are asserted per column rather
+    // than as one sentence.
+    expect(screen.getByText('SS_9004_Gateway-LTE')).toBeTruthy();
     expect(screen.getByText('Poor')).toBeTruthy();
-    expect(screen.getByText('1 Gb · full · Access 200 · STP Designated/Forwarding')).toBeTruthy();
+    expect(screen.getByText('1 Gb · full')).toBeTruthy();
+    expect(screen.getByText('Access 200')).toBeTruthy();
 
     // The AP port: PoE++ on a trunk carrying VLANs 5 and 200.
-    expect(screen.getByText('Office-655 eth0 · Access Point')).toBeTruthy();
-    expect(
-      screen.getByText(
-        '5 Gb · full · Trunk 5 + 5,200 · PoE Drawing Watts · 802.3bt Type 3 (PoE++) · STP Designated/Forwarding',
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText('Office-655')).toBeTruthy();
+    expect(screen.getAllByText('Access Point').length).toBeGreaterThan(0);
+    expect(screen.getByText('5 Gb · full')).toBeTruthy();
+    expect(screen.getAllByText('Trunk 5 + 5,200').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Drawing Watts · 802.3bt Type 3 (PoE++)').length).toBeGreaterThan(0);
+
+    // 1/1/9 reports no spanning-tree role at all, so STP does NOT read the
+    // same on every port and keeps its column. A column is only collapsed
+    // when every row genuinely agrees — 'two of three agree' is not agreement.
+    expect(screen.queryAllByRole('columnheader').map((el) => el.textContent)).toContain('STP');
+    expect(screen.queryByText(/^Same on all/)).toBeNull();
+  });
+
+  it('states a fact every port shares once under the table instead of in a column', async () => {
+    // Same three ports, but now all of them report the same STP role/state.
+    const agreed = SWITCH_PORTS.map((port) => ({
+      ...port,
+      stpRole: 'Designated',
+      stpState: 'Forwarding',
+    }));
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(liveBase('sw-core-a'), {
+        serial: 'SG30LMR164',
+        kind: 'switch',
+        ports: agreed,
+        source: { plane: 'central', at: '2026-07-28T15:47:00.000Z', sections: { ports: 'ok' } },
+      }),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('Ports of interest')).toBeTruthy();
+    expect(screen.queryAllByRole('columnheader').map((el) => el.textContent)).not.toContain('STP');
+    expect(screen.getByText('Same on all 3 ports: STP Designated/Forwarding')).toBeTruthy();
+
+    // The columns that still differ are untouched.
+    expect(screen.queryAllByRole('columnheader').map((el) => el.textContent)).toContain('VLAN');
   });
 
   it('keeps the honest empty state when the detail read failed, and names the reason', async () => {
@@ -881,7 +916,8 @@ describe('DeviceDetail — class-aware detail panels', () => {
 
     expect(await screen.findByText('Ports of interest')).toBeTruthy();
     expect(screen.getByText('1 OF 1 CONNECTED')).toBeTruthy();
-    expect(screen.getByText('Office-655 eth0 · Access Point')).toBeTruthy();
+    expect(screen.getByText('Office-655')).toBeTruthy();
+    expect(screen.getByText('Access Point')).toBeTruthy();
   });
 
   it('reports a switch whose ports all came back down without calling it a failure', async () => {

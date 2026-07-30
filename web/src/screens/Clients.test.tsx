@@ -277,6 +277,61 @@ describe('Clients live sparse detail', () => {
     expect(screen.getByText('SYNCED 09:05')).toBeTruthy();
   });
 
+  it('states a fact every session shares once, and keeps the column as soon as one differs', async () => {
+    // Three sessions on one site, one plane, all connected: those three columns
+    // would be the same word thirty-nine times on a real workspace.
+    const base = { ...SPARSE_LIVE_CLIENT, siteName: 'SecureSSID', plane: 'CENTRAL' as const };
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...base, mac: 'aa:00:00:00:00:01', name: 'one' },
+        { ...base, mac: 'aa:00:00:00:00:02', name: 'two' },
+        { ...base, mac: 'aa:00:00:00:00:03', name: 'three' },
+      ],
+      dataSource: 'live',
+    });
+    const { unmount } = render(
+      <MemoryRouter initialEntries={['/clients']}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText('3 of 3 sampled')).toBeTruthy());
+    const heads = () => screen.queryAllByRole('columnheader').map((el) => el.textContent);
+    expect(heads()).not.toContain('Site');
+    expect(screen.getByText(/^Same on all 3 sessions:/)).toBeTruthy();
+    expect(screen.getByText(/Site SecureSSID/)).toBeTruthy();
+    unmount();
+
+    // Move one session to another site and the column earns its width back.
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...base, mac: 'aa:00:00:00:00:01', name: 'one' },
+        { ...base, mac: 'aa:00:00:00:00:02', name: 'two' },
+        { ...base, mac: 'aa:00:00:00:00:03', name: 'three', siteName: 'Riverside' },
+      ],
+      dataSource: 'live',
+    });
+    render(
+      <MemoryRouter initialEntries={['/clients']}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText('3 of 3 sampled')).toBeTruthy());
+    expect(screen.queryAllByRole('columnheader').map((el) => el.textContent)).toContain('Site');
+    expect(screen.queryByText(/Site SecureSSID ·/)).toBeNull();
+  });
+
   it('prints one VLAN label for a demo row that already carries the prefix', async () => {
     mockGetClients.mockResolvedValue({
       stats: [],

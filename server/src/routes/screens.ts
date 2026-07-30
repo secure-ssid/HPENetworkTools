@@ -515,6 +515,12 @@ function liveDeviceClients(deviceName: string): DeviceClientSet | null {
     .map((client) => ({
       name: client.name,
       detail: displayParts([client.model, client.mac, String(client.ip), client.where]),
+      // Also sent apart, so the screen can lay them out in columns rather than
+      // splitting the sentence above back into the fields it was built from.
+      model: reportedValue(client.model) ? client.model : null,
+      mac: reportedValue(client.mac) ? client.mac : null,
+      ip: reportedValue(String(client.ip)) ? String(client.ip) : null,
+      where: reportedValue(client.where) ? client.where : null,
       state: client.health,
       tone: client.healthTone,
     }));

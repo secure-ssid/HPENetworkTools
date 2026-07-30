@@ -2,8 +2,18 @@
  * web/src/screens/Clients.tsx — every session, wired and wireless.
  * High-fidelity port of design/NtClients.dc.html: 5-Stat row, local AND filter
  * row (search / medium / type / site / group / plane / "Problems only") with
- * the right-aligned mono count, the 10-column open table, and the width="lg"
+ * the right-aligned mono count, the open table, and the width="lg"
  * client drawer (state badges, Experience metrics + quality Progress,
+ *
+ * The table is one fact per column and one line per session. The prototype
+ * stacked pairs — type over model, role over VLAN, auth over authenticator —
+ * which made every row two lines tall and put values where they could not be
+ * compared down a column. Columns are built through
+ * ./dataColumns partitionColumns(), so any column every visible session
+ * answers identically (one site, one plane, all connected) is stated once
+ * under the table instead of repeated on all of them, and comes back the
+ * moment one session disagrees.
+ *
  * Where it is, the vertical path-to-the-internet hop chain computed with
  * shared pathFor(), the stitched session timeline via timelineFor(), and the
  * action row).
@@ -38,6 +48,8 @@ import {
   getTickets,
 } from '../api/client';
 import type { ClientsData } from '../api/client';
+import { partitionColumns, SharedFacts } from './dataColumns';
+import type { DataColumn } from './dataColumns';
 import { useSettings } from '../app/SettingsContext';
 import { planeFilterForParam } from '../app/nav';
 import {
@@ -90,6 +102,21 @@ function hhmm(iso: string): string {
  * 'unverified' (design rule 1 — an aged cache is not a current session), so the
  * screen must show that as a state, not as one more health word.
  */
+/**
+ * A plane's "nothing here" marker, read as absent.
+ *
+ * The rows arrive with '—' where a plane reported no value, so a column every
+ * session leaves blank is 39 identical dashes — which would otherwise collapse
+ * into the sentence "Group —", a fact about nothing. Treated as absent it
+ * simply drops.
+ */
+function reported(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed === '—' || trimmed === '–' || trimmed === '-') return null;
+  return trimmed;
+}
+
 function isUnverified(c: ClientRow): boolean {
   return c.health === 'unverified';
 }
@@ -512,6 +539,69 @@ export default function Clients() {
       (!problemsOnly || c.problem) &&
       (!ql || (c.name + c.model + c.mac + c.ip + c.attach + c.group).toLowerCase().includes(ql)),
   );
+
+  /* One column per fact, not two facts stacked in one cell. The stacked form
+     made every row two lines tall for values that are usually short, and it
+     put the type above the model and the role above the VLAN where neither
+     could be compared down its own column. Columns whose every session answers
+     the same — one site, one plane, everything connected — are stated once
+     under the table instead of repeated on all of them. */
+  const columns: Array<DataColumn<ClientRow>> = [
+    { key: 'Type', value: (c) => reported(c.type), mono: true, nowrap: true },
+    { key: 'Model', value: (c) => reported(c.model) },
+    { key: 'Site', value: (c) => reported(c.siteName) },
+    { key: 'Group', value: (c) => reported(c.group), mono: true },
+    {
+      key: 'Connected to',
+      value: (c) => reported(c.attach),
+      render: (c) => (
+        <button
+          type="button"
+          className="nt-clients-table__link"
+          onClick={(e) => {
+            e.stopPropagation();
+            navigate(`/devices/${encodeURIComponent(c.attach)}`);
+          }}
+        >
+          {c.attach}
+        </button>
+      ),
+    },
+    { key: 'Port / SSID', value: (c) => reported(c.where), mono: true },
+    ...(showPlatformTags
+      ? [
+          {
+            key: 'Plane',
+            value: (c: ClientRow) => reported(c.plane),
+            render: (c: ClientRow) => <Badge tone={c.planeTone}>{c.plane}</Badge>,
+          },
+        ]
+      : []),
+    { key: 'Auth', value: (c) => reported(c.auth), mono: true, nowrap: true },
+    { key: 'Auth by', value: (c) => reported(c.authBy), mono: true },
+    { key: 'Role', value: (c) => reported(c.role) },
+    { key: 'VLAN', value: (c) => reported(c.vlan), mono: true, nowrap: true },
+    {
+      key: 'Health',
+      /* 'unverified' is not a health word — it means the plane that owns this
+         session is behind and did not re-confirm it, so the row is last-good,
+         never current (design rule 1). It is part of the value so a stale row
+         can never collapse into a column of healthy ones. */
+      value: (c) => (isUnverified(c) ? `${c.health} · ${c.plane} behind` : reported(c.health)),
+      render: (c) => (
+        <>
+          <Badge tone={c.healthTone} dot>
+            {c.health}
+          </Badge>
+          {isUnverified(c) ? (
+            <span className="nt-cell-mono nt-cell-dim nt-clients-table__mac">{c.plane} behind</span>
+          ) : null}
+        </>
+      ),
+    },
+    { key: 'Session', value: (c) => reported(c.session), numeric: true, nowrap: true },
+  ];
+  const { shown, shared } = partitionColumns(rows, columns);
 
   const typeOptions = [{ value: 'all', label: 'All device types' }].concat(
     uniq(clients, 'type').map((v) => ({ value: v, label: v })),
@@ -995,19 +1085,15 @@ export default function Clients() {
         </span>
       </div>
 
-      <Table density={density}>
+      <Table density={density} className="nt-clients-table">
         <Table.Head>
           <Table.Row>
             <Table.HeaderCell>Client</Table.HeaderCell>
-            <Table.HeaderCell>Type</Table.HeaderCell>
-            <Table.HeaderCell>Site</Table.HeaderCell>
-            <Table.HeaderCell>Group</Table.HeaderCell>
-            <Table.HeaderCell>Connected to</Table.HeaderCell>
-            <Table.HeaderCell>Plane</Table.HeaderCell>
-            <Table.HeaderCell>Auth</Table.HeaderCell>
-            <Table.HeaderCell>Role / VLAN</Table.HeaderCell>
-            <Table.HeaderCell>Health</Table.HeaderCell>
-            <Table.HeaderCell numeric>Session</Table.HeaderCell>
+            {shown.map((column) => (
+              <Table.HeaderCell key={column.key} numeric={column.numeric}>
+                {column.key}
+              </Table.HeaderCell>
+            ))}
           </Table.Row>
         </Table.Head>
         <Table.Body>
@@ -1017,166 +1103,25 @@ export default function Clients() {
                 {/* An unnamed client is displayed by its MAC, so printing the
                     MAC underneath would print the same string twice and cost a
                     line on every such row. */}
-                <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{c.name}</span>
-                  {c.name.trim().toLowerCase() === c.mac.trim().toLowerCase() ? null : (
-                    <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-10)',
-                        color: 'var(--nd-text-muted)',
-                      }}
-                    >
-                      {c.mac}
-                    </span>
-                  )}
-                </span>
+                <span className="nt-clients-table__name">{c.name}</span>
+                {c.name.trim().toLowerCase() === c.mac.trim().toLowerCase() ? null : (
+                  <span className="nt-cell-mono nt-cell-dim nt-clients-table__mac">{c.mac}</span>
+                )}
               </Table.Cell>
-              <Table.Cell>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10.5,
-                      color: 'var(--nd-text-secondary)',
-                      textTransform: 'uppercase',
-                      letterSpacing: '.06em',
-                    }}
-                  >
-                    {c.type}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 'var(--nd-text-11)',
-                      color: 'var(--nd-text-muted)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {c.model}
-                  </span>
-                </div>
-              </Table.Cell>
-              <Table.Cell>{c.siteName}</Table.Cell>
-              <Table.Cell>
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-secondary)',
-                  }}
+              {shown.map((column) => (
+                <Table.Cell
+                  key={column.key}
+                  numeric={column.numeric}
+                  className={column.mono ? 'nt-cell-mono' : undefined}
                 >
-                  {c.group}
-                </span>
-              </Table.Cell>
-              <Table.Cell>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigate(`/devices/${encodeURIComponent(c.attach)}`);
-                  }}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 0,
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 2,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-11)',
-                      color: 'var(--nd-accent-text)',
-                    }}
-                  >
-                    {c.attach}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 'var(--nd-text-11)',
-                      color: 'var(--nd-text-muted)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {c.where}
-                  </span>
-                </button>
-              </Table.Cell>
-              <Table.Cell>
-                {showPlatformTags ? <Badge tone={c.planeTone}>{c.plane}</Badge> : null}
-              </Table.Cell>
-              <Table.Cell>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10.5,
-                      color: 'var(--nd-text-secondary)',
-                    }}
-                  >
-                    {c.auth}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
-                    {c.authBy}
-                  </span>
-                </div>
-              </Table.Cell>
-              <Table.Cell>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-secondary)' }}>
-                    {c.role}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
-                    {c.vlan}
-                  </span>
-                </div>
-              </Table.Cell>
-              <Table.Cell>
-                {/* 'unverified' is not a health word — it means the plane that
-                    owns this session is behind and did not re-confirm it, so
-                    the row is last-good, never current (design rule 1). */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <Badge tone={c.healthTone} dot>
-                    {c.health}
-                  </Badge>
-                  {isUnverified(c) ? (
-                    <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-10)',
-                        color: 'var(--nd-text-muted)',
-                      }}
-                    >
-                      {c.plane} behind
-                    </span>
-                  ) : null}
-                </div>
-              </Table.Cell>
-              <Table.Cell numeric>{c.session}</Table.Cell>
+                  {column.render ? column.render(c) : (column.value(c) ?? <span className="nt-cell-dim">—</span>)}
+                </Table.Cell>
+              ))}
             </Table.Row>
           ))}
         </Table.Body>
       </Table>
+      <SharedFacts facts={shared} count={rows.length} noun="sessions" />
 
       {/* No sessions at all and no sessions past the filter are different facts —
           blaming a filter the operator never set hides a missing plane. */}

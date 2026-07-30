@@ -75,6 +75,7 @@ import {
   Select,
   Spinner,
   Stat,
+  Table,
   useToast,
 } from '../nightdesk';
 import { getDeviceDetail, getTerminalSession, getTerminalSessions, getTickets, rebootDevice } from '../api/client';
@@ -84,6 +85,7 @@ import { detailHasRows, detailState, deviceTerminalKind, terminalQuickCommands }
 import type {
   CfgHistoryRow,
   DetailFetchState,
+  DeviceClientRow,
   DeviceDetailLive,
   DeviceDetailSection,
   DeviceEvidence,
@@ -96,6 +98,8 @@ import type {
   TicketRow,
   Tone,
 } from '../../../shared';
+import { partitionColumns, SharedFacts } from './dataColumns';
+import type { DataColumn } from './dataColumns';
 import { useSettings } from '../app/SettingsContext';
 import { TerminalPane, createCannedTransport } from '../lib/TerminalPane';
 import { createWsTransport } from '../lib/wsTerminal';
@@ -355,6 +359,185 @@ function DetailRow({
   );
 }
 
+/**
+ * The port list as a table.
+ *
+ * Attribute columns are dropped when every port answers them identically and
+ * stated once underneath instead. On a healthy access switch STP reads
+ * 'Designated/Forwarding' on all sixteen rows and PoE names the same class on
+ * all sixteen — as columns that is 280px of the panel spent repeating two
+ * facts, and it squeezed the health verdict, the one thing the list exists to
+ * show, off the right edge. The same collapse StatRow does for a caption every
+ * tile shares.
+ *
+ * A set of one or two ports is never collapsed: with that few rows "they all
+ * agree" is a coincidence, not a property of the switch.
+ */
+function PortTable({ rows }: { rows: DevicePort[] }) {
+  const columns: Array<DataColumn<DevicePort>> = [
+    { key: 'Type', value: (p: DevicePort) => p.neighbourType || null, nowrap: true },
+    {
+      key: 'Link',
+      value: (p: DevicePort) =>
+        joinFacts([
+          speedText(p.speedBps),
+          p.duplex && p.duplex !== '-' ? p.duplex.toLowerCase() : null,
+        ]) || null,
+      nowrap: true,
+    },
+    {
+      key: 'VLAN',
+      value: (p: DevicePort) =>
+        p.allowedVlanIds && p.allowedVlanIds.length > 0
+          ? `${p.vlanMode || 'vlan'} ${p.nativeVlan ?? '?'} + ${p.allowedVlanIds.join(',')}`
+          : p.nativeVlan != null
+            ? `${p.vlanMode || 'vlan'} ${p.nativeVlan}`
+            : p.vlanMode || null,
+      nowrap: false,
+    },
+    {
+      key: 'PoE',
+      value: (p: DevicePort) =>
+        p.poeStatus && !/^not used$/i.test(p.poeStatus)
+          ? joinFacts([p.poeStatus, p.poeClass || null]) || null
+          : null,
+      nowrap: false,
+    },
+    {
+      key: 'STP',
+      value: (p: DevicePort) => [p.stpRole, p.stpState].filter(Boolean).join('/') || null,
+      nowrap: false,
+    },
+  ];
+
+  const { shown, shared } = partitionColumns(rows, columns);
+
+  return (
+    <>
+      <Table density="compact" className="nt-port-table">
+        <Table.Head>
+          <Table.Row>
+            <Table.HeaderCell>Port</Table.HeaderCell>
+            <Table.HeaderCell>Neighbour</Table.HeaderCell>
+            {shown.map((c) => (
+              <Table.HeaderCell key={c.key}>{c.key}</Table.HeaderCell>
+            ))}
+            <Table.HeaderCell>Health</Table.HeaderCell>
+          </Table.Row>
+        </Table.Head>
+        <Table.Body>
+          {rows.map((p) => (
+            <Table.Row key={p.name}>
+              <Table.Cell className="nt-cell-mono nt-cell-nowrap">{p.name}</Table.Cell>
+              <Table.Cell>
+                {p.neighbour ? (
+                  <>
+                    {p.neighbour}
+                    {p.neighbourPort ? (
+                      <span className="nt-cell-mono nt-cell-dim"> {p.neighbourPort}</span>
+                    ) : null}
+                  </>
+                ) : (
+                  <span className="nt-cell-dim">{p.status || 'No neighbour discovered'}</span>
+                )}
+              </Table.Cell>
+              {shown.map((c) => (
+                <PortCell key={c.key} value={c.value(p)} nowrap={c.nowrap} />
+              ))}
+              <Table.Cell>
+                <Badge tone={p.neighbourHealth ? healthTone(p.neighbourHealth) : statusTone(p.status)}>
+                  {p.neighbourHealth || p.status || '—'}
+                </Badge>
+              </Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table>
+      <SharedFacts facts={shared} count={rows.length} noun="ports" />
+    </>
+  );
+}
+
+/** Is this display name just the MAC the row already carries? */
+function sameMac(name: string, mac?: string | null): boolean {
+  if (!mac) return false;
+  const strip = (v: string) => v.replace(/[^0-9a-f]/gi, '').toLowerCase();
+  return strip(name) === strip(mac) && strip(mac).length === 12;
+}
+
+/**
+ * "Clients on this device" as a table.
+ *
+ * The column set is chosen by what the rows actually carry. A live row is sent
+ * with model/mac/ip/where kept apart, so it gets a column each; an authored
+ * demo row carries only a sentence — and a different sentence per device class
+ * ('port 1/1/20 · MAB · vlan 820' on a switch, '5 GHz · −52 dBm' on an AP) —
+ * so those share one Details column rather than being split on '·' and hoped
+ * into the wrong headings.
+ */
+function ClientTable({ rows }: { rows: DeviceClientRow[] }) {
+  const columned = rows.some((r) => r.mac || r.ip || r.where || r.model);
+  return (
+    <Table density="compact" className="nt-client-table">
+      <Table.Head>
+        <Table.Row>
+          <Table.HeaderCell>Client</Table.HeaderCell>
+          {columned ? (
+            <>
+              <Table.HeaderCell>Model</Table.HeaderCell>
+              <Table.HeaderCell>MAC</Table.HeaderCell>
+              <Table.HeaderCell>IP</Table.HeaderCell>
+              <Table.HeaderCell>Where</Table.HeaderCell>
+            </>
+          ) : (
+            <Table.HeaderCell>Details</Table.HeaderCell>
+          )}
+          <Table.HeaderCell>State</Table.HeaderCell>
+        </Table.Row>
+      </Table.Head>
+      <Table.Body>
+        {rows.map((client) => (
+          <Table.Row key={`${client.name}-${client.detail}`}>
+            <Table.Cell>
+              {/* A client the plane could not name is listed under its MAC.
+                  With the MAC in a column of its own, printing it again here
+                  is the same value twice on one row. */}
+              {sameMac(client.name, client.mac) ? (
+                <span className="nt-cell-dim">Not reported</span>
+              ) : (
+                client.name
+              )}
+            </Table.Cell>
+            {columned ? (
+              <>
+                <PortCell value={client.model} />
+                <PortCell value={client.mac} nowrap />
+                <PortCell value={client.ip} nowrap />
+                <PortCell value={client.where} />
+              </>
+            ) : (
+              <Table.Cell className="nt-cell-mono nt-cell-dim">{client.detail}</Table.Cell>
+            )}
+            <Table.Cell>
+              <Badge tone={client.tone}>{client.state}</Badge>
+            </Table.Cell>
+          </Table.Row>
+        ))}
+      </Table.Body>
+    </Table>
+  );
+}
+
+/** One mono attribute cell. An em-dash means the plane reported nothing for
+ *  this port, which is not the same as reporting a zero or an empty string. */
+function PortCell({ value, nowrap }: { value?: string | null; nowrap?: boolean }) {
+  return (
+    <Table.Cell className={nowrap ? 'nt-cell-mono nt-cell-nowrap' : 'nt-cell-mono'}>
+      {value ? value : <span className="nt-cell-dim">—</span>}
+    </Table.Cell>
+  );
+}
+
 /** Radios on an AP (Central /aps/{serial}/radios). */
 function RadiosPanel({ detail, plane }: { detail: DeviceDetailLive | null; plane: string }) {
   const state = detailState(detail?.source, 'radios');
@@ -494,46 +677,12 @@ function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null; plane:
           {`None of the ${all.length} interfaces ${plane} reported is connected — every port is down with no neighbour discovered.`}
         </LiveGapNote>
       ) : (
-        interesting.map((p) => {
-          const vlans =
-            p.allowedVlanIds && p.allowedVlanIds.length > 0
-              ? `${p.vlanMode || 'vlan'} ${p.nativeVlan ?? '?'} + ${p.allowedVlanIds.join(',')}`
-              : p.nativeVlan != null
-                ? `${p.vlanMode || 'vlan'} ${p.nativeVlan}`
-                : p.vlanMode || null;
-          const poe =
-            p.poeStatus && !/^not used$/i.test(p.poeStatus)
-              ? joinFacts([`PoE ${p.poeStatus}`, p.poeClass || null])
-              : null;
-          const stp =
-            p.stpRole || p.stpState
-              ? `STP ${[p.stpRole, p.stpState].filter(Boolean).join('/')}`
-              : null;
-          return (
-            <DetailRow
-              key={p.name}
-              keyText={p.name}
-              keyWidth={58}
-              title={
-                p.neighbour
-                  ? joinFacts([
-                      p.neighbourPort ? `${p.neighbour} ${p.neighbourPort}` : p.neighbour,
-                      p.neighbourType || null,
-                    ])
-                  : p.status || 'No neighbour discovered'
-              }
-              facts={joinFacts([
-                speedText(p.speedBps),
-                p.duplex && p.duplex !== '-' ? p.duplex.toLowerCase() : null,
-                vlans,
-                poe,
-                stp,
-              ]) || 'No per-port attributes in this read.'}
-              badge={p.neighbourHealth || p.status || undefined}
-              badgeTone={p.neighbourHealth ? healthTone(p.neighbourHealth) : statusTone(p.status)}
-            />
-          );
-        })
+        /* A table, not a paragraph per port. Every port answers the same
+           questions, and most answer them identically — sixteen rows of
+           '5 Gb · full · Trunk 5 + 5,200 · PoE …' forced the eye to re-read
+           the same words to find the one that differed. In columns the
+           repetition collapses and the outlier is the only thing that moves. */
+        <PortTable rows={interesting} />
       )}
     </div>
   );
@@ -1272,33 +1421,7 @@ export default function DeviceDetail() {
               ) : clients.rows.length === 0 ? (
                 <LiveGapNote>No active client sessions were attached to this device in the current poller snapshot.</LiveGapNote>
               ) : (
-                clients.rows.map((client) => (
-                  <div
-                    key={`${client.name}-${client.detail}`}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 10,
-                      padding: '9px 0',
-                      borderBottom: '1px solid var(--nd-border-subtle)',
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>{client.name}</div>
-                      <div
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-10)',
-                          color: 'var(--nd-text-muted)',
-                          overflowWrap: 'anywhere',
-                        }}
-                      >
-                        {client.detail}
-                      </div>
-                    </div>
-                    <Badge tone={client.tone}>{client.state}</Badge>
-                  </div>
-                ))
+                <ClientTable rows={clients.rows} />
               )}
               <div style={{ paddingTop: 10 }}>
                 <Button variant="ghost" size="sm" onClick={() => navigate('/clients')}>
@@ -1575,84 +1698,31 @@ export default function DeviceDetail() {
         <div className="nt-device-layout__main">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <SectionHeader label={profile.listTitle} meta={profile.listMeta} />
-            {profile.ports.map((p) => (
-              <div
-                key={p.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '8px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-primary)',
-                    width: 74,
-                    flex: '0 0 74px',
-                  }}
-                >
-                  {p.id}
-                </span>
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontSize: 'var(--nd-text-12)',
-                    color: 'var(--nd-text-secondary)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {p.what}
-                </span>
-                <Badge tone={p.tone}>{p.state}</Badge>
-              </div>
-            ))}
+            <Table density="compact" className="nt-port-table">
+              <Table.Head>
+                <Table.Row>
+                  <Table.HeaderCell>Port</Table.HeaderCell>
+                  <Table.HeaderCell>What</Table.HeaderCell>
+                  <Table.HeaderCell>State</Table.HeaderCell>
+                </Table.Row>
+              </Table.Head>
+              <Table.Body>
+                {profile.ports.map((p) => (
+                  <Table.Row key={p.id}>
+                    <Table.Cell className="nt-cell-mono nt-cell-nowrap">{p.id}</Table.Cell>
+                    <Table.Cell>{p.what}</Table.Cell>
+                    <Table.Cell>
+                      <Badge tone={p.tone}>{p.state}</Badge>
+                    </Table.Cell>
+                  </Table.Row>
+                ))}
+              </Table.Body>
+            </Table>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <SectionHeader label="Clients on this device" meta={clients.meta} />
-            {clients.rows.map((c) => (
-              <div
-                key={c.name}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '9px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: 'var(--nd-text-12)',
-                      color: 'var(--nd-text-primary)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {c.name}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
-                    {c.detail}
-                  </div>
-                </div>
-                <Badge tone={c.tone}>{c.state}</Badge>
-              </div>
-            ))}
+            <ClientTable rows={clients.rows} />
             <div style={{ paddingTop: 10 }}>
               <Button variant="ghost" size="sm" onClick={() => navigate('/clients')}>
                 All clients →

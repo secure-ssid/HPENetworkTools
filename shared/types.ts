@@ -1158,7 +1158,17 @@ export interface DeviceCfg {
 
 export interface DeviceClientRow {
   name: string;
+  /** The prose form, kept for the authored demo rows whose facts differ per
+   *  device class ('port 1/1/20 · MAB · vlan 820' on a switch, '5 GHz · −52
+   *  dBm' on an AP) and so do not share a column set. */
   detail: string;
+  /** The same facts kept apart so the screen can column them instead of
+   *  re-splitting the sentence above. A live row carries these; an authored
+   *  one does not, and the table falls back to `detail` for the whole set. */
+  model?: string | null;
+  mac?: string | null;
+  ip?: string | null;
+  where?: string | null;
   state: string;
   tone: Tone;
 }

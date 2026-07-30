@@ -919,6 +919,92 @@
   gap: 22px;
 }
 
+/* Mono attribute cells in the port and client tables. The values are
+   identifiers, addresses and negotiated settings — things read character by
+   character and compared down the column, which proportional type makes
+   harder. They wrap: holding every one on a single line pushed the table past
+   the panel and clipped the health badge off the right edge, which is the one
+   column the list exists to show. */
+.nt-cell-mono {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  overflow-wrap: break-word;
+}
+
+/* Short identifiers that must not be broken mid-token — a port name or an
+   address split across two lines reads as two values. */
+.nt-cell-nowrap {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.nt-cell-dim {
+  color: var(--nd-text-muted);
+}
+
+/* What every port or client shares, stated once under the table instead of
+   repeated down a column of its own. */
+.nt-table-shared {
+  margin: 8px 0 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-muted);
+}
+
+.nt-port-table .nd-table__td,
+.nt-client-table .nd-table__td {
+  vertical-align: top;
+}
+
+.nt-port-table .nd-table__th,
+.nt-port-table .nd-table__td,
+.nt-client-table .nd-table__th,
+.nt-client-table .nd-table__td {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+/* Clients table: one line per session. The name and its MAC are the only
+   stacked pair left, because an unnamed client is listed under its MAC and
+   there is then nothing to stack. */
+.nt-clients-table__name {
+  display: block;
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-primary);
+}
+
+.nt-clients-table__mac {
+  display: block;
+  font-size: var(--nd-text-10);
+}
+
+/* Tighter gutters than the default table. With every fact in a column of its
+   own a rich multi-site estate fields fourteen of them, and at the standard
+   16px gutters that is 220px of padding alone — enough to push the session
+   length off the right edge. */
+.nt-clients-table .nd-table__td,
+.nt-clients-table .nd-table__th {
+  padding-left: 6px;
+  padding-right: 6px;
+  vertical-align: top;
+}
+
+.nt-clients-table .nd-table__th:first-child,
+.nt-clients-table .nd-table__td:first-child {
+  padding-left: 0;
+}
+
+.nt-clients-table__link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  color: var(--nd-accent-text);
+}
+
 @media (max-width: 1100px) {
   .nt-screen-header__actions {
     flex: 1 0 100%;

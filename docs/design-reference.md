@@ -212,6 +212,33 @@ and the same cells become a labelled wrapped strip — the labels come back via
 `data-label` + `::before`, so **no information is dropped at narrow widths**;
 it is re-flowed. (An earlier attempt simply hid the cells and lost data.)
 
+**Columns that say nothing collapse too.** The row-level rule above has a
+column-level twin, in `web/src/screens/dataColumns.tsx`. A column whose every
+row answers identically is dropped from the table and stated once underneath —
+`Same on all 39 sessions: Site SecureSSID · Plane CENTRAL · Health connected`.
+In a single-site workspace that is four columns of the Clients table spent
+repeating one word thirty-nine times; on a healthy access switch it is the
+spanning-tree role on all sixteen ports. Left as columns they pushed the health
+verdict, the one thing those lists exist to show, off the right edge.
+
+Rules the helper enforces:
+- The fact is never hidden, only **stated once** instead of *n* times.
+- A single disagreeing row brings the whole column back — that is precisely
+  when it starts earning its width.
+- Fewer than three rows is never collapsed: with two rows "they agree" is a
+  coincidence, not a property of the data.
+- A plane's "not reported" marker (`—`) counts as **absent**, so a column no
+  row answers drops silently rather than collapsing to the fact `Group —`.
+- Collapsing keys on the cell's **text value**, which is also what renders, so
+  the two can never drift apart.
+
+Used by the Clients table and the device-detail Ports table.
+
+**One fact per column.** Two values stacked in one cell (type over model, role
+over VLAN, auth over authenticator) make every row two lines tall and put
+values in a column where they cannot be compared. Give each its own column and
+let the collapse above remove the ones that turn out to be constant.
+
 **Panels are content-driven, never fixed-height.** This is the specific lever
 that makes a two-device site and a four-hundred-device site both look right.
 Panes size to their content with a `max-height` cap (typically
