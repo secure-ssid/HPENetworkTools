@@ -89,8 +89,9 @@ export function SearchPanel() {
 
   return (
     <div
+      className="nt-global-search"
       ref={rootRef}
-      style={{ marginLeft: 'auto', position: 'relative', width: 'min(420px, 100%)', minWidth: 220 }}
+      style={{ marginLeft: 'auto', position: 'relative', width: 'min(420px, 100%)' }}
     >
       <Input
         mono

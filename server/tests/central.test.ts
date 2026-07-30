@@ -2419,7 +2419,6 @@ describe('buildWlanSsidPayload — the write-side schema mapping', () => {
   it('carries the authoritative common WLAN fields on every mode', () => {
     const body = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'open', passphrase: undefined });
     expect(body).toMatchObject({
-      ssid: 'MRDN-Guest',
       essid: { name: 'MRDN-Guest', 'use-alias': false },
       enable: true,
       'hide-ssid': false,
@@ -2430,6 +2429,7 @@ describe('buildWlanSsidPayload — the write-side schema mapping', () => {
       'vlan-selector': 'VLAN_RANGES',
       'default-role': 'guest',
     });
+    expect(body).not.toHaveProperty('ssid');
     expect(body).not.toHaveProperty('name');
   });
 
@@ -2561,7 +2561,7 @@ describe('CentralAdapter.applySsidProfile()', () => {
         const n = counter.next(`GET ${profilePath}`);
         return n === 1 ? undefined : { body: buildWlanSsidPayload(BASE_SSID_FORM) }; // absent, then verified
       }
-      if (method === 'POST' && pathname === profilePath) return { status: 201, body: {} };
+      if (method === 'PUT' && pathname === profilePath) return { status: 201, body: {} };
       if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
         return { body: { 'config-assignment': [] } };
       }
@@ -2579,8 +2579,9 @@ describe('CentralAdapter.applySsidProfile()', () => {
     expect(result.ok).toBe(true);
     expect(result.partial).toBe(false);
 
-    const createCall = calls.find((c) => c.method === 'POST' && c.path === profilePath)!;
-    expect((createCall.body as Record<string, unknown>).ssid).toBe('MRDN-Guest');
+    const createCall = calls.find((c) => c.method === 'PUT' && c.path === profilePath)!;
+    expect(createCall.body).not.toHaveProperty('ssid');
+    expect(createCall.body).toHaveProperty('essid.name', 'MRDN-Guest');
     expect(
       (createCall.body as { 'personal-security': { 'wpa-passphrase': string } })['personal-security'][
         'wpa-passphrase'
@@ -2736,7 +2737,7 @@ describe('CentralAdapter.applySsidProfile()', () => {
         const n = counter.next(`GET ${profilePath}`);
         return n === 1 ? undefined : { status: 500, body: {} }; // absent, then verification fails
       }
-      if (method === 'POST' && pathname === profilePath) return { status: 201, body: {} };
+      if (method === 'PUT' && pathname === profilePath) return { status: 201, body: {} };
       return undefined;
     });
 
@@ -2771,7 +2772,7 @@ describe('CentralAdapter.applySsidProfile()', () => {
               },
             };
       }
-      if (method === 'POST' && pathname === profilePath) return { status: 201, body: {} };
+      if (method === 'PUT' && pathname === profilePath) return { status: 201, body: {} };
       return undefined;
     });
 
@@ -2869,11 +2870,19 @@ describe('staleManagedModeFields / buildWlanReplacementPayload — the mode-tran
   it('builds a replacement body that preserves unrelated current fields and drops the stale ones', () => {
     const current = {
       ...buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'psk-portal', captivePortalProfileId: 'guest-portal' }),
+      ssid: 'MRDN-Guest',
+      id: 'provider-id',
+      metadata: { revision: 4 },
+      scopeName: 'SecureSSID',
       description: 'kept because this form never manages it',
     };
     const desired = buildWlanSsidPayload({ ...BASE_SSID_FORM, security: 'open', passphrase: undefined });
     const replacement = buildWlanReplacementPayload(current, desired);
     expect(replacement.description).toBe('kept because this form never manages it');
+    expect(replacement).not.toHaveProperty('ssid');
+    expect(replacement).not.toHaveProperty('id');
+    expect(replacement).not.toHaveProperty('metadata');
+    expect(replacement).not.toHaveProperty('scopeName');
     expect(replacement.opmode).toBe('OPEN');
     expect(replacement).not.toHaveProperty('captive-portal');
     expect(replacement).not.toHaveProperty('captive-portal-type');
@@ -3174,9 +3183,13 @@ describe('CentralAdapter.ssidCatalog()', () => {
   it('reads every section into one catalog on New Central', async () => {
     const { adapter } = makeSsidAdapter((method, pathname) => {
       if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
-      if (pathname === '/network-config/v1alpha1/sites') return { body: { items: [{ id: 'site-1', name: 'Campus-01' }] } };
+      if (pathname === '/network-config/v1alpha1/sites') {
+        return { body: { items: [{ id: 'site-1', scopeId: 'site-1', scopeName: 'Campus-01' }] } };
+      }
       if (pathname === '/network-config/v1alpha1/site-collections') return { body: { items: [{ id: 'coll-1', name: 'All clinics' }] } };
-      if (pathname === '/network-config/v1alpha1/device-groups') return { body: { items: [{ id: 'grp-1', name: 'lakeshore-medical' }] } };
+      if (pathname === '/network-config/v1alpha1/device-groups') {
+        return { body: { items: [{ id: 'grp-1', scopeId: 'grp-1', scopeName: 'lakeshore-medical' }] } };
+      }
       if (pathname === '/cnxdevice/v1/debug/get_scope_data') {
         return {
           body: {

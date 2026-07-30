@@ -110,9 +110,6 @@ const MICRO_LINK: CSSProperties = {
 };
 
 const ROW: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 16,
   width: '100%',
   textAlign: 'left',
   background: 'none',
@@ -809,7 +806,7 @@ export default function Configure() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-configure" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <ScreenHeader
         overline="Configure / Changes"
         title="Configuration"
@@ -829,14 +826,7 @@ export default function Configure() {
         }
       />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-          gap: 18,
-          maxWidth: 860,
-        }}
-      >
+      <div className="nt-stat-grid nt-configure__stats">
         {data.stats.map((s) => (
           <Stat key={s.label} label={s.label} value={s.value} delta={s.delta} deltaTone={s.tone} />
         ))}
@@ -863,14 +853,7 @@ export default function Configure() {
         </Alert>
       ) : null}
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1.55fr) minmax(0, 1fr)',
-          gap: 34,
-          alignItems: 'start',
-        }}
-      >
+      <div className="nt-configure__layout">
         {/* ---------------- left: the three object lists ---------------- */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
@@ -886,11 +869,12 @@ export default function Configure() {
               <button
                 key={w.name}
                 type="button"
-                className="nt-rowlink"
+                className="nt-rowlink nt-configure-row"
                 style={ROW}
                 onClick={() => openSsid(w)}
               >
                 <div
+                  className="nt-configure-row__name"
                   style={{
                     width: 150,
                     flex: '0 0 150px',
@@ -918,10 +902,14 @@ export default function Configure() {
                     {w.vlan}
                   </span>
                 </div>
-                <span style={{ width: 160, flex: '0 0 160px', fontSize: 12, color: 'var(--nd-text-secondary)' }}>
+                <span
+                  className="nt-configure-row__secondary"
+                  style={{ width: 160, flex: '0 0 160px', fontSize: 12, color: 'var(--nd-text-secondary)' }}
+                >
                   {w.security}
                 </span>
                 <span
+                  className="nt-configure-row__summary"
                   style={{
                     flex: 1,
                     minWidth: 0,
@@ -932,18 +920,12 @@ export default function Configure() {
                 >
                   {w.targets}
                 </span>
-                {w.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
-                {showPlatformTags ? <Badge tone={w.tone}>{w.plane}</Badge> : null}
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 11,
-                    color: 'var(--nd-accent-text)',
-                    width: 44,
-                    textAlign: 'right',
-                  }}
-                >
-                  {w.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
+                <span className="nt-configure-row__actions">
+                  {w.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
+                  {showPlatformTags ? <Badge tone={w.tone}>{w.plane}</Badge> : null}
+                  <span className="nt-configure-row__action">
+                    {w.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
+                  </span>
                 </span>
               </button>
             ))}
@@ -972,11 +954,12 @@ export default function Configure() {
               <button
                 key={`${p.device}-${p.port}`}
                 type="button"
-                className="nt-rowlink"
+                className="nt-rowlink nt-configure-row"
                 style={ROW}
                 onClick={() => openPort(p)}
               >
                 <div
+                  className="nt-configure-row__name"
                   style={{
                     width: 150,
                     flex: '0 0 150px',
@@ -1004,10 +987,14 @@ export default function Configure() {
                     port {p.port}
                   </span>
                 </div>
-                <span style={{ width: 160, flex: '0 0 160px', fontSize: 12, color: 'var(--nd-text-secondary)' }}>
+                <span
+                  className="nt-configure-row__secondary"
+                  style={{ width: 160, flex: '0 0 160px', fontSize: 12, color: 'var(--nd-text-secondary)' }}
+                >
                   {p.desc}
                 </span>
                 <span
+                  className="nt-configure-row__summary"
                   style={{
                     flex: 1,
                     minWidth: 0,
@@ -1018,20 +1005,14 @@ export default function Configure() {
                 >
                   {p.summary}
                 </span>
-                <Badge tone={p.tone} dot>
-                  {p.state}
-                </Badge>
-                {p.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 11,
-                    color: 'var(--nd-accent-text)',
-                    width: 44,
-                    textAlign: 'right',
-                  }}
-                >
-                  {p.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
+                <span className="nt-configure-row__actions">
+                  <Badge tone={p.tone} dot>
+                    {p.state}
+                  </Badge>
+                  {p.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
+                  <span className="nt-configure-row__action">
+                    {p.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
+                  </span>
                 </span>
               </button>
             ))}
@@ -1060,11 +1041,12 @@ export default function Configure() {
               <button
                 key={v.id}
                 type="button"
-                className="nt-rowlink"
+                className="nt-rowlink nt-configure-row nt-configure-row--vlan"
                 style={ROW}
                 onClick={() => openVlan(v)}
               >
                 <span
+                  className="nt-configure-row__name"
                   style={{
                     width: 60,
                     flex: '0 0 60px',
@@ -1075,10 +1057,14 @@ export default function Configure() {
                 >
                   {v.id}
                 </span>
-                <span style={{ width: 150, flex: '0 0 150px', fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
+                <span
+                  className="nt-configure-row__secondary"
+                  style={{ width: 150, flex: '0 0 150px', fontSize: 12.5, color: 'var(--nd-text-secondary)' }}
+                >
                   {v.name}
                 </span>
                 <span
+                  className="nt-configure-row__summary"
                   style={{
                     flex: 1,
                     minWidth: 0,
@@ -1089,28 +1075,14 @@ export default function Configure() {
                 >
                   {v.detail}
                 </span>
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                    width: 90,
-                    textAlign: 'right',
-                  }}
-                >
-                  {v.role}
-                </span>
-                {v.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 11,
-                    color: 'var(--nd-accent-text)',
-                    width: 44,
-                    textAlign: 'right',
-                  }}
-                >
-                  {v.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
+                <span className="nt-configure-row__actions">
+                  <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' }}>
+                    {v.role}
+                  </span>
+                  {v.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
+                  <span className="nt-configure-row__action">
+                    {v.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
+                  </span>
                 </span>
               </button>
             ))}
@@ -1190,7 +1162,7 @@ export default function Configure() {
                 description="Edit an SSID, port or VLAN to render a payload and queue it against a ticket."
               />
             ) : null}
-            <div style={{ display: 'flex', gap: 8, paddingTop: 12 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12 }}>
               <Button
                 variant="secondary"
                 size="sm"
@@ -1210,6 +1182,7 @@ export default function Configure() {
             {data.capabilities.map((c) => (
               <div
                 key={c.plane}
+                className="nt-configure-capability"
                 style={{
                   display: 'flex',
                   alignItems: 'center',

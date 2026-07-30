@@ -26,7 +26,7 @@ export function Stack({
   className,
   children,
 }: StackProps) {
-  const s: CSSProperties = { display: 'flex', flexDirection: direction, ...style };
+  const s: CSSProperties = { display: 'flex', flexDirection: direction, minWidth: 0, ...style };
   if (gap !== undefined) s.gap = gap;
   if (align) s.alignItems = align;
   if (justify) s.justifyContent = justify;

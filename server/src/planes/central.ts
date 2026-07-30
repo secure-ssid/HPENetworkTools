@@ -721,8 +721,9 @@ const CENTRAL_SSID_RF_BAND: Record<SsidBands, string> = {
 
 /**
  * Build the New Central 26.04 WLAN body from the reviewed form. The unique
- * profile name belongs in the request path; `ssid` and `essid.name` are the
- * body fields. `personal-security.wpa-passphrase` is the only secret-bearing
+ * profile name belongs in the request path; the item-write schema accepts
+ * `essid.name` but not a redundant `ssid` body field.
+ * `personal-security.wpa-passphrase` is the only secret-bearing
  * field and callers must send this object directly without logging it.
  *
  * A form missing a required dependency (role, server group, captive portal,
@@ -733,7 +734,6 @@ const CENTRAL_SSID_RF_BAND: Record<SsidBands, string> = {
 export function buildWlanSsidPayload(form: SsidForm): Record<string, unknown> {
   const vlanId = form.vlan.trim();
   const body: Record<string, unknown> = {
-    ssid: form.name,
     essid: { name: form.name, 'use-alias': false },
     enable: true,
     'hide-ssid': !form.broadcast,
@@ -832,7 +832,16 @@ export function staleManagedModeFields(current: unknown, desired: Record<string,
  * remove it from the tenant. */
 export function buildWlanReplacementPayload(current: unknown, desired: Record<string, unknown>): Record<string, unknown> {
   const cur = current && typeof current === 'object' && !Array.isArray(current) ? (current as Record<string, unknown>) : {};
-  const merged: Record<string, unknown> = { ...cur, ...desired };
+  const {
+    ssid: _ssid,
+    id: _id,
+    metadata: _metadata,
+    ['scope-id']: _scopeId,
+    scopeId: _camelScopeId,
+    scopeName: _scopeName,
+    ...writableCurrent
+  } = cur;
+  const merged: Record<string, unknown> = { ...writableCurrent, ...desired };
   for (const field of MANAGED_MODE_FIELDS) {
     if (!(field in desired)) delete merged[field];
   }
@@ -879,7 +888,7 @@ function sectionScopeOptions(
     const r = raw as Record<string, unknown>;
     const id = str(r.id ?? r['scope-id'] ?? r.scopeId ?? r.name);
     if (!id) continue;
-    const label = str(r.name ?? r.label ?? r.description) ?? id;
+    const label = str(r.scopeName ?? r.name ?? r.label ?? r.description) ?? id;
     out.push({ id, label, category });
   }
   return out;
@@ -1950,11 +1959,14 @@ export class CentralAdapter implements PlaneAdapter {
     let httpCode: number | undefined = getRes.status;
     let message: string;
     if (getRes.status === 404) {
-      const postRes = await this.request('POST', path, desired);
-      httpCode = postRes.status;
-      profileOk = postRes.status >= 200 && postRes.status < 300;
+      // The item PUT operation is the documented create-or-replace path.
+      // Collection POST uses a different wrapped schema and must not be sent
+      // to this item URL.
+      const putRes = await this.request('PUT', path, desired);
+      httpCode = putRes.status;
+      profileOk = putRes.status >= 200 && putRes.status < 300;
       action = profileOk ? 'created' : 'failed';
-      message = profileOk ? `profile created — HTTP ${postRes.status}` : `profile create failed — HTTP ${postRes.status}`;
+      message = profileOk ? `profile created — HTTP ${putRes.status}` : `profile create failed — HTTP ${putRes.status}`;
     } else if (getRes.status >= 200 && getRes.status < 300) {
       const staleFields = staleManagedModeFields(getRes.body, desired);
       if (!requestedPassphrase && staleFields.length === 0 && !wlanProfileChanged(getRes.body, desired)) {

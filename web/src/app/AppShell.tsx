@@ -188,6 +188,7 @@ export function AppShellLayout() {
       <SearchPanel />
       {settingsError ? (
         <span
+          className="nt-shell-settings-error"
           role="status"
           style={{
             maxWidth: 260,
@@ -200,6 +201,7 @@ export function AppShellLayout() {
         </span>
       ) : null}
       <Button
+        className="nt-shell-assistant"
         variant="ghost"
         size="sm"
         onClick={() => setChatOpen((v) => !v)}
@@ -208,6 +210,7 @@ export function AppShellLayout() {
         Assistant ⌘J
       </Button>
       <div
+        className="nt-shell-identity"
         style={{
           display: 'flex',
           alignItems: 'center',

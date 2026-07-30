@@ -20,6 +20,7 @@ export function ScreenHeader({
 }) {
   return (
     <div
+      className="nt-screen-header"
       style={{
         display: 'flex',
         alignItems: 'flex-end',
@@ -28,7 +29,7 @@ export function ScreenHeader({
         flexWrap: 'wrap',
       }}
     >
-      <div>
+      <div className="nt-screen-header__copy">
         <Heading level={1} overline={overline}>
           {title}
         </Heading>
@@ -44,7 +45,11 @@ export function ScreenHeader({
           {subtitle}
         </div>
       </div>
-      {actions ? <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{actions}</div> : null}
+      {actions ? (
+        <div className="nt-screen-header__actions" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {actions}
+        </div>
+      ) : null}
     </div>
   );
 }
