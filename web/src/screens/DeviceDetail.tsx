@@ -3,12 +3,23 @@
  * compliance for one device. High-fidelity port of design/NtDeviceDetail.dc.html:
  * header (Heading = device name, state + plane Badges, mono model · site · IP,
  * actions ← Inventory / Open in <plane> / Save config / Reboot), five
- * class-specific Stats, then flair → two
- * columns (1.55fr / 1fr). Compliance renders the route's served per-device
- * evidence block in BOTH modes (the authored profile.checks are only the
- * fallback for a payload that carried none), and an `unavailable` or empty
- * block renders a named empty state rather than a clean scorecard.
- * Left: the Local terminal (web/src/lib/TerminalPane —
+ * class-specific Stats, then flair → a wide main column and a narrow
+ * identity rail (1fr / 260–320px). Compliance renders the route's served
+ * per-device evidence block in BOTH modes (the authored profile.checks are
+ * only the fallback for a payload that carried none), and an `unavailable` or
+ * empty block renders a named empty state rather than a clean scorecard.
+ *
+ * The telemetry — the class block, diagnostics and the client list — lives in
+ * the MAIN column and the identity key/values in the rail, not the other way
+ * round. Reversed, a switch put sixteen ports in a 434px column where every
+ * row wrapped to three lines and the page ran to 2,900px, while the wide
+ * column beside it held two one-sentence "not available" notes and 2,700px of
+ * nothing. The shell and running-config notes sit below the telemetry for the
+ * same reason: on a cloud-claimed device they are both empty, and an empty
+ * note is not what the page should open with.
+ *
+ * Main column: the class block, Active diagnostics, Clients on this device,
+ * then the Local terminal (web/src/lib/TerminalPane —
  * shell-capable devices first try the recorded-SSH WebSocket transport from
  * web/src/lib/wsTerminal.ts, falling back to the canned demo transport when
  * the bridge is unreachable; cloud-claimed devices get read-only telemetry,
@@ -20,10 +31,9 @@
  * and Configuration (SegmentedControl
  * Running | Drift vs. baseline | History; drift rendered via DiffCode with
  * danger/success line colouring; Snapshot stores a local history row, Download
- * saves the running config as a file). Right: Identity facts, the class block
- * (Ports of interest / Cluster members / Radios & SSIDs / Tunnels / Services),
- * Clients on this device, Compliance.
- * The right column's class block is chosen by the device CLASS, not hardcoded:
+ * saves the running config as a file). Rail: Identity facts and Compliance.
+ * The class block (Ports of interest / Cluster members / Radios & SSIDs /
+ * Tunnels / Services) is chosen by the device CLASS, not hardcoded:
  * an AP renders Radios + SSIDs broadcast (Central /aps/{serial}/radios and
  * /wlans), a switch renders Ports of interest (/switches/{serial}/interfaces),
  * and a class the route served no subresource for renders no panel at all
@@ -1232,129 +1242,9 @@ export default function DeviceDetail() {
 
         <Divider variant="flair" />
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1.55fr) minmax(0, 1fr)',
-            gap: 32,
-            alignItems: 'start',
-          }}
-        >
-          {/* ---------------- left column ---------------- */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
-            {liveSsh ? (
-              <TerminalPane
-                key={device.name}
-                transport={transport}
-                prompt={livePrompt ?? `${device.name}#`}
-                forName={device.name}
-                sectionTitle="Local terminal"
-                sectionMeta="SESSION RECORDED"
-                titlebar={
-                  attributed
-                    ? `ssh ${attributed.user}@${attributed.target} — ${attributedVia}`
-                    : `ssh ${device.name} — via collector`
-                }
-                titlebarRight="AES-256 · LIVE · recorded"
-                online
-                /* Chips come from the route when it sent them, else from the
-                   inventory row's device class — never the fixture name-prefix
-                   rules. Every one of them is inside the server's read-only
-                   allow-list. */
-                quickCommands={
-                  servedQuickCommands ?? terminalQuickCommands(deviceTerminalKind(device, device.name))
-                }
-              />
-            ) : (
-              <div>
-                <SectionHeader label="Local terminal" />
-                <LiveGapNote>
-                  {device.localShell && terminalState === 'connecting'
-                    ? 'Opening a recorded shell feed through the collector…'
-                    : device.localShell
-                      ? 'No recorded shell feed right now — the collector bridge is unreachable from this portal.'
-                    : 'Cloud-claimed device — no local shell; the owning plane serves read-only telemetry only.'}
-                </LiveGapNote>
-                {device.localShell && terminalState === 'disconnected' ? (
-                  <Button variant="ghost" size="sm" onClick={() => setTerminalAttempt((n) => n + 1)}>
-                    Reconnect terminal
-                  </Button>
-                ) : null}
-              </div>
-            )}
-
-            {/* Recorded transcripts are fetched for every device — a live
-                switch with sessions on file, or a failed load, must show. */}
-            {device.localShell || sessions.length > 0 || sessionsError ? (
-              <RecordedSessions
-                sessions={sessions}
-                sessionsError={sessionsError}
-                expanded={expanded}
-                toggleTranscript={toggleTranscript}
-              />
-            ) : null}
-
-            <div style={{ paddingTop: 14 }}>
-              <SectionHeader label="Configuration" />
-              <LiveGapNote>
-                Not available in live mode — no linked plane reports a running config for this device.
-              </LiveGapNote>
-            </div>
-          </div>
-
-          {/* ---------------- right column ---------------- */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {/* An 'unverified' row is only actionable next to the age of the
-                  cache it came from, so the envelope's stamp is rendered. */}
-              <SectionHeader
-                label="Identity"
-                meta={
-                  data.syncedAt
-                    ? `LIVE POLLER CACHE · ${hhmm(data.syncedAt)}`
-                    : 'LIVE POLLER CACHE · NO SYNC STAMP'
-                }
-              />
-              {liveFacts.map((f) => (
-                <div
-                  key={f.k}
-                  style={{
-                    display: 'flex',
-                    gap: 12,
-                    padding: '8px 0',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      letterSpacing: '.1em',
-                      textTransform: 'uppercase',
-                      color: 'var(--nd-text-muted)',
-                      width: 92,
-                      flex: '0 0 92px',
-                      paddingTop: 2,
-                    }}
-                  >
-                    {f.k}
-                  </span>
-                  <span
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 11.5,
-                      color: f.tone ?? 'var(--nd-text-secondary)',
-                      overflowWrap: 'anywhere',
-                    }}
-                  >
-                    {f.v}
-                  </span>
-                </div>
-              ))}
-            </div>
-
+        <div className="nt-device-layout">
+          {/* ---------------- main column ---------------- */}
+          <div className="nt-device-layout__main">
             {/* The class block, chosen by the device's CLASS rather than
                 hardcoded: an AP gets Radios + SSIDs, a switch gets Ports, and
                 a class Central serves no subresource for gets whatever the
@@ -1422,6 +1312,123 @@ export default function DeviceDetail() {
                 them rather than pointing at a screen that would recompute
                 them. A payload without them says so — it does not imply a
                 pass. */}
+
+            {/* The shell and the running config are the two things a
+                cloud-claimed device cannot offer, so they sit under the
+                telemetry rather than in front of it. */}
+            {liveSsh ? (
+              <TerminalPane
+                key={device.name}
+                transport={transport}
+                prompt={livePrompt ?? `${device.name}#`}
+                forName={device.name}
+                sectionTitle="Local terminal"
+                sectionMeta="SESSION RECORDED"
+                titlebar={
+                  attributed
+                    ? `ssh ${attributed.user}@${attributed.target} — ${attributedVia}`
+                    : `ssh ${device.name} — via collector`
+                }
+                titlebarRight="AES-256 · LIVE · recorded"
+                online
+                /* Chips come from the route when it sent them, else from the
+                   inventory row's device class — never the fixture name-prefix
+                   rules. Every one of them is inside the server's read-only
+                   allow-list. */
+                quickCommands={
+                  servedQuickCommands ?? terminalQuickCommands(deviceTerminalKind(device, device.name))
+                }
+              />
+            ) : (
+              <div>
+                <SectionHeader label="Local terminal" />
+                <LiveGapNote>
+                  {device.localShell && terminalState === 'connecting'
+                    ? 'Opening a recorded shell feed through the collector…'
+                    : device.localShell
+                      ? 'No recorded shell feed right now — the collector bridge is unreachable from this portal.'
+                    : 'Cloud-claimed device — no local shell; the owning plane serves read-only telemetry only.'}
+                </LiveGapNote>
+                {device.localShell && terminalState === 'disconnected' ? (
+                  <Button variant="ghost" size="sm" onClick={() => setTerminalAttempt((n) => n + 1)}>
+                    Reconnect terminal
+                  </Button>
+                ) : null}
+              </div>
+            )}
+
+            {/* Recorded transcripts are fetched for every device — a live
+                switch with sessions on file, or a failed load, must show. */}
+            {device.localShell || sessions.length > 0 || sessionsError ? (
+              <RecordedSessions
+                sessions={sessions}
+                sessionsError={sessionsError}
+                expanded={expanded}
+                toggleTranscript={toggleTranscript}
+              />
+            ) : null}
+
+            <div style={{ paddingTop: 14 }}>
+              <SectionHeader label="Configuration" />
+              <LiveGapNote>
+                Not available in live mode — no linked plane reports a running config for this device.
+              </LiveGapNote>
+            </div>
+          </div>
+
+          {/* ---------------- identity rail ---------------- */}
+          <div className="nt-device-layout__rail">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {/* An 'unverified' row is only actionable next to the age of the
+                  cache it came from, so the envelope's stamp is rendered. */}
+              <SectionHeader
+                label="Identity"
+                meta={
+                  data.syncedAt
+                    ? `LIVE POLLER CACHE · ${hhmm(data.syncedAt)}`
+                    : 'LIVE POLLER CACHE · NO SYNC STAMP'
+                }
+              />
+              {liveFacts.map((f) => (
+                <div
+                  key={f.k}
+                  style={{
+                    display: 'flex',
+                    gap: 12,
+                    padding: '8px 0',
+                    borderBottom: '1px solid var(--nd-border-subtle)',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 'var(--nd-text-10)',
+                      letterSpacing: '.1em',
+                      textTransform: 'uppercase',
+                      color: 'var(--nd-text-muted)',
+                      width: 92,
+                      flex: '0 0 92px',
+                      paddingTop: 2,
+                    }}
+                  >
+                    {f.k}
+                  </span>
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 11.5,
+                      color: f.tone ?? 'var(--nd-text-secondary)',
+                      overflowWrap: 'anywhere',
+                    }}
+                  >
+                    {f.v}
+                  </span>
+                </div>
+              ))}
+            </div>
+
             <CompliancePanel
               evidence={data.evidence ?? null}
               gapNote="Live inventory evidence only — running-configuration drift remains unavailable."
@@ -1563,16 +1570,96 @@ export default function DeviceDetail() {
 
       <Divider variant="flair" />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1.55fr) minmax(0, 1fr)',
-          gap: 32,
-          alignItems: 'start',
-        }}
-      >
-        {/* ---------------- left column ---------------- */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
+      <div className="nt-device-layout">
+        {/* ---------------- main column ---------------- */}
+        <div className="nt-device-layout__main">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <SectionHeader label={profile.listTitle} meta={profile.listMeta} />
+            {profile.ports.map((p) => (
+              <div
+                key={p.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '8px 0',
+                  borderBottom: '1px solid var(--nd-border-subtle)',
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-11)',
+                    color: 'var(--nd-text-primary)',
+                    width: 74,
+                    flex: '0 0 74px',
+                  }}
+                >
+                  {p.id}
+                </span>
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontSize: 'var(--nd-text-12)',
+                    color: 'var(--nd-text-secondary)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {p.what}
+                </span>
+                <Badge tone={p.tone}>{p.state}</Badge>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <SectionHeader label="Clients on this device" meta={clients.meta} />
+            {clients.rows.map((c) => (
+              <div
+                key={c.name}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '9px 0',
+                  borderBottom: '1px solid var(--nd-border-subtle)',
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 'var(--nd-text-12)',
+                      color: 'var(--nd-text-primary)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {c.name}
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 'var(--nd-text-10)',
+                      color: 'var(--nd-text-muted)',
+                    }}
+                  >
+                    {c.detail}
+                  </div>
+                </div>
+                <Badge tone={c.tone}>{c.state}</Badge>
+              </div>
+            ))}
+            <div style={{ paddingTop: 10 }}>
+              <Button variant="ghost" size="sm" onClick={() => navigate('/clients')}>
+                All clients →
+              </Button>
+            </div>
+          </div>
+
           <TerminalPane
             key={profile.name}
             transport={transport}
@@ -1695,8 +1782,8 @@ export default function DeviceDetail() {
           </div>
         </div>
 
-        {/* ---------------- right column ---------------- */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
+        {/* ---------------- identity rail ---------------- */}
+        <div className="nt-device-layout__rail">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <SectionHeader label="Identity" />
             {facts.map((f) => (
@@ -1739,92 +1826,6 @@ export default function DeviceDetail() {
             ))}
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <SectionHeader label={profile.listTitle} meta={profile.listMeta} />
-            {profile.ports.map((p) => (
-              <div
-                key={p.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '8px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-primary)',
-                    width: 74,
-                    flex: '0 0 74px',
-                  }}
-                >
-                  {p.id}
-                </span>
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontSize: 'var(--nd-text-12)',
-                    color: 'var(--nd-text-secondary)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {p.what}
-                </span>
-                <Badge tone={p.tone}>{p.state}</Badge>
-              </div>
-            ))}
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <SectionHeader label="Clients on this device" meta={clients.meta} />
-            {clients.rows.map((c) => (
-              <div
-                key={c.name}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '9px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: 'var(--nd-text-12)',
-                      color: 'var(--nd-text-primary)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {c.name}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
-                    {c.detail}
-                  </div>
-                </div>
-                <Badge tone={c.tone}>{c.state}</Badge>
-              </div>
-            ))}
-            <div style={{ paddingTop: 10 }}>
-              <Button variant="ghost" size="sm" onClick={() => navigate('/clients')}>
-                All clients →
-              </Button>
-            </div>
-          </div>
 
           {/* Same panel, same contract: the demo route sends the authored
               checks as `evidence` too, so the served block wins and the

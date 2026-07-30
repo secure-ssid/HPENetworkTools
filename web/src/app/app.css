@@ -79,6 +79,9 @@
 .nt-global-search {
   flex: 1 1 220px;
   min-width: min(220px, 100%);
+  /* Capped, not stretched: below ~1280 the search wraps onto its own row, and
+     an uncapped input took the whole 1009px of it to hold one placeholder. */
+  max-width: 620px;
 }
 
 .nt-shell-identity,
@@ -890,6 +893,32 @@
   text-align: left;
 }
 
+/* Device detail: a wide telemetry column plus a fixed-width identity rail.
+   The rail is capped rather than proportional so the ports/radios list keeps
+   every pixel the viewport can spare — a proportional rail took 434px on a
+   1440px screen and wrapped each port onto three lines. */
+.nt-device-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 24px;
+  align-items: start;
+}
+
+.nt-device-layout__main,
+.nt-device-layout__rail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nt-device-layout__main {
+  gap: 12px;
+}
+
+.nt-device-layout__rail {
+  gap: 22px;
+}
+
 @media (max-width: 1100px) {
   .nt-screen-header__actions {
     flex: 1 0 100%;
@@ -897,6 +926,12 @@
   }
 
   .nt-configure__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Below this the rail would squeeze the telemetry back into a column too
+     narrow to read, so it drops underneath instead of sitting beside. */
+  .nt-device-layout {
     grid-template-columns: minmax(0, 1fr);
   }
 

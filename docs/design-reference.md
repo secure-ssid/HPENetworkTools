@@ -341,8 +341,14 @@ reconciliation truth: 3 devices claimed by two inventories, 14 by none.
 ### 9. Device detail — `design/NtDeviceDetail.dc.html`
 Header: `Heading` = device name, mono meta line (state `Badge`, plane `Badge`, model · site ·
 IP), actions ← Inventory / Open in <plane> / Save config / Reboot (danger). Five `Stat`s vary by
-device class. `flair` → two columns (1.55fr / 1fr).
-- Left: **Local terminal** — a working canned shell on `--nd-bg-inset` with a titlebar (status
+device class. `flair` → a wide telemetry column and a fixed identity rail
+(`.nt-device-layout`, `minmax(0, 1fr) minmax(260px, 320px)`, stacking to one column at 1100px).
+The telemetry — class block, diagnostics, clients — leads the main column and the identity
+key/values sit in the rail; the prototype's proportional split gave the sixteen-port list 434px
+of a 1440px screen while the wide column held two "not available" notes.
+- Main column, in order: the class block (Ports of interest / Cluster members / Radios & SSIDs /
+  Tunnels / Services, chosen by device class), **Active diagnostics**, **Clients on this device**,
+  then **Local terminal** — a working canned shell on `--nd-bg-inset` with a titlebar (status
   dot, mono `ssh r.okafor@10.42.8.11 — via collector`, right `AES-256 · idle 14:52`), a 352px
   scroll region (mono 11.5px, line-height 1.65; input lines copper, output secondary, warnings
   amber), a live prompt input, quick-command chips and `clear`. Command sets differ per class:
@@ -356,10 +362,9 @@ device class. `flair` → two columns (1.55fr / 1fr).
   `← baseline` annotations); History is hairline rows (mono when, what, who + ticket, tag
   `Badge` push/shell/upgrade/baseline). Actions: Snapshot config now, Push baseline fix,
   Download config.
-- Right: **Identity** (serial, role, firmware vs. approved, mgmt IP, base MAC, managed-by,
-  location, last change, owner); **Ports of interest** / **Cluster members** / **Radios & SSIDs**
-  / **Services** depending on class; **Clients on this device**; **Compliance** — pass/fail
-  `Badge` rows + link to the full report.
+- Rail: **Identity** (serial, role, firmware vs. approved, mgmt IP, base MAC, managed-by,
+  location, last change, owner) and **Compliance** — pass/fail `Badge` rows + link to the full
+  report. Nothing that needs width belongs here.
 
 ### 10. Licences — `design/NtLicenses.dc.html`
 GreenLake subscriptions, controller perpetuals and Mist SUBs reconciled against what is racked.
