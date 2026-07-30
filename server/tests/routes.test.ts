@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { PLANE_IDS } from '../src/planes/types';
 
 let server: Server;
 let base: string;
@@ -63,10 +64,36 @@ async function getJson(path: string): Promise<{ status: number; body: any }> {
 }
 
 describe('routes', () => {
-  it('GET /api/health', async () => {
+  it('GET /api/health reports liveness and per-plane state', async () => {
     const { status, body } = await getJson('/api/health');
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
+    // Every plane is named, whether or not it is linked — a plane missing from
+    // the list would read as "fine" when it is really "not reported".
+    expect(body.planes.map((p: { id: string }) => p.id).sort()).toEqual([...PLANE_IDS].sort());
+    for (const plane of body.planes) {
+      expect(plane).toHaveProperty('linked');
+      expect(plane).toHaveProperty('health');
+      expect(plane).toHaveProperty('lastSync');
+      expect(plane).toHaveProperty('stale');
+      expect(plane).toHaveProperty('reason');
+    }
+  });
+
+  it('GET /api/health keeps ok=true while planes are degraded, and says so separately', async () => {
+    // A supervisor acts on `ok` by restarting, and restarting does not fix a
+    // vendor 429. Folding degradation into liveness causes restart loops.
+    const { body } = await getJson('/api/health');
+    expect(body.ok).toBe(true);
+    expect(['ok', 'degraded']).toContain(body.status);
+    expect(body.status === 'degraded').toBe(body.degradedPlanes.length > 0);
+    expect(body.degradedPlanes.every((id: string) => (PLANE_IDS as readonly string[]).includes(id))).toBe(true);
+  });
+
+  it('GET /api/health names an unlinked plane without calling it a fault', async () => {
+    const { body } = await getJson('/api/health');
+    const unlinked = body.planes.filter((p: { linked: boolean }) => !p.linked);
+    for (const p of unlinked) expect(body.degradedPlanes).not.toContain(p.id);
   });
 
   it('GET /api/overview returns the demo envelope and payload', async () => {

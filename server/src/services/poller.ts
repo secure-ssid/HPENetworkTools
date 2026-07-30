@@ -22,6 +22,9 @@
  *     a dataset that was never fetched
  *   - a failed plane is not re-polled until the registry's backoff window
  *     expires; syncNow(force) ignores the window
+ *   - a pull that does not return within HPE_POLL_TIMEOUT_MS is abandoned and
+ *     reported as a plane failure. It is not cancelled (adapters own their own
+ *     requests), so the plane's in-flight lock is held until it really settles
  */
 
 import { PLANE_DATASET_KEYS, PLANE_ROW_DATASET_KEYS, type PlaneRowDatasetKey } from '../../../shared';
@@ -61,6 +64,54 @@ export interface SyncNowResult {
 }
 
 const SYNC_LOG_LIMIT = 100;
+
+/**
+ * How long a single plane's pull may run before the poller stops waiting.
+ *
+ * Every adapter already sets AbortSignal.timeout on its own HTTP calls, so
+ * this is not about a hung socket — it is about a pull that makes many bounded
+ * calls (paged inventories, per-kind SSE reads) and adds up to something
+ * unbounded, or that retries inside its own loop. Two minutes is well beyond
+ * any healthy cycle and well inside the point where an operator would rather
+ * be told the plane is stuck.
+ */
+const DEFAULT_POLL_TIMEOUT_MS = 120_000;
+
+function pollTimeoutMs(): number {
+  const raw = Number(process.env.HPE_POLL_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_POLL_TIMEOUT_MS;
+}
+
+/** Distinguishable from a vendor error so the log line can say what happened. */
+class PollTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`no response after ${Math.round(ms / 1000)}s`);
+    this.name = 'PollTimeoutError';
+  }
+}
+
+/**
+ * Stop waiting after `ms`.
+ *
+ * This cannot cancel the pull — adapters own their own requests — so it does
+ * not pretend to. The caller keeps the plane's in-flight lock until the real
+ * promise settles, so an abandoned pull never runs alongside its successor.
+ */
+function withPollTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new PollTimeoutError(ms)), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err as Error);
+      },
+    );
+  });
+}
 type TickResult = 'ok' | 'error' | 'skipped';
 
 export class Poller {
@@ -223,6 +274,7 @@ export class Poller {
     // skip this tick if the plane's previous one hasn't settled yet.
     if (this.inFlight.has(id)) return 'skipped';
     this.inFlight.add(id);
+    let pending: Promise<PlanePull> | null = null;
     try {
       if (!force && !this.scheduledPollingEnabled()) return 'skipped';
       const adapter = this.reg.get(id);
@@ -241,13 +293,18 @@ export class Poller {
         if (Number.isFinite(due) && Date.now() < due) return 'skipped';
       }
       const generation = this.generations.get(id) ?? 0;
+      const timeoutMs = pollTimeoutMs();
       // No synthetic 'poll()' entry in the vendor call log: every adapter
       // records its own requests with the real path, latency and status (the
       // 429s the Activity list exists to evidence), so a cycle marker would
       // only over-count 'Calls today' and evict real traffic from the 50-deep
       // buffer. The cycle itself is recorded in the sync history below.
+      // Held past the timeout when a pull is abandoned, so the in-flight lock
+      // can outlive our willingness to wait for it (see the finally below).
+      pending = adapter.pull();
       try {
-        const pull = await adapter.pull();
+        const pull = await withPollTimeout(pending, timeoutMs);
+        pending = null;
         if ((this.generations.get(id) ?? 0) !== generation) return 'skipped';
         // A sync stamp means data arrived. A cycle that returned no dataset at
         // all (not even config/assignments/sse) proves the plane answered, not
@@ -287,8 +344,16 @@ export class Poller {
         );
         return 'ok';
       } catch (err) {
+        const timedOut = err instanceof PollTimeoutError;
+        if (!timedOut) pending = null;
         if ((this.generations.get(id) ?? 0) !== generation) return 'skipped';
-        this.reg.markSyncResult(id, false, { note: `poll failed: ${(err as Error).message}` });
+        // A timeout is reported as a plane failure, not as silent staleness.
+        // Before this, a pull that never returned stranded the plane on data
+        // the UI went on presenting as current until the process restarted.
+        const note = timedOut
+          ? `poll timed out: ${(err as Error).message}`
+          : `poll failed: ${(err as Error).message}`;
+        this.reg.markSyncResult(id, false, { note });
         // One history row per failure, naming the backoff the registry just
         // applied — the design's own row is 'Poll rejected — HTTP 429, backing
         // off 600s' (shared/fixtures.ts) rather than an identical failure a
@@ -296,11 +361,26 @@ export class Poller {
         const due = state.nextAttemptAt ? Date.parse(state.nextAttemptAt) : NaN;
         const waitSec = Number.isFinite(due) ? Math.max(0, Math.round((due - Date.now()) / 1000)) : null;
         const backoff = waitSec === null ? '' : ` — backing off ${waitSec}s`;
-        this.log(id, `poll failed — ${(err as Error).message}${backoff}`, 'error');
+        this.log(
+          id,
+          `${timedOut ? 'poll timed out' : 'poll failed'} — ${(err as Error).message}${backoff}`,
+          'error',
+        );
         return 'error';
       }
     } finally {
-      this.inFlight.delete(id);
+      if (pending) {
+        // We stopped waiting, but the vendor call has not stopped running.
+        // Hold the lock until it settles: releasing now would let the next
+        // tick start a second concurrent pull against a plane already
+        // struggling, and let a late reply overwrite a fresher one.
+        void pending.then(
+          () => this.inFlight.delete(id),
+          () => this.inFlight.delete(id),
+        );
+      } else {
+        this.inFlight.delete(id);
+      }
     }
   }
 }

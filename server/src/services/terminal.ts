@@ -301,11 +301,29 @@ export interface SessionTranscriptQueryResult {
 /** Safety bound on one transcript read (recordings are operator-driven, small). */
 export const MAX_TRANSCRIPT_EVENTS = 10_000;
 
+/**
+ * Safety bound on one transcript WRITE.
+ *
+ * A session that streams output — `show tech`, a runaway `monitor` — had no
+ * upper bound on the file it produced. Rotating a transcript is not an option:
+ * the one-file-per-session shape is what listSessions() and readSession() are
+ * built on. So the recorder stops at the cap and the session ends with it,
+ * because "recording is mandatory, no recording no session" is the rule
+ * everywhere else in this file. Continuing to shell while silently no longer
+ * recording would be the worst of the available options.
+ */
+export const MAX_TRANSCRIPT_BYTES = Number(process.env.HPE_TRANSCRIPT_MAX_BYTES) > 0
+  ? Number(process.env.HPE_TRANSCRIPT_MAX_BYTES)
+  : 32 * 1024 * 1024;
+
 /** Append-only JSONL recorder. Secrets never enter this class — callers only
  *  pass usernames, targets and transcript lines. */
 class SessionRecorder {
   private readonly filePath: string;
   private fd: number | null = null;
+  private written = 0;
+  private capped = false;
+  private readonly maxBytes: number;
 
   constructor(
     logDir: string,
@@ -324,7 +342,9 @@ class SessionRecorder {
      *  listing parses stays exactly where it was. */
     note: string | null = null,
     now: Date = new Date(),
+    maxBytes: number = MAX_TRANSCRIPT_BYTES,
   ) {
+    this.maxBytes = maxBytes;
     fs.mkdirSync(logDir, { recursive: true });
     const stamp = now.toISOString().replace(/[:.]/g, '-');
     const safeDevice = device.replace(/[^A-Za-z0-9_.-]/g, '_');
@@ -360,7 +380,31 @@ class SessionRecorder {
 
   event(e: SessionRecordEvent): void {
     if (this.fd === null) return;
-    fs.writeSync(this.fd, JSON.stringify(e) + '\n');
+    const line = JSON.stringify(e) + '\n';
+    if (this.written + line.length > this.maxBytes) {
+      // Say so in the transcript itself before closing it, so the recording
+      // ends with the reason rather than simply stopping mid-session.
+      if (!this.capped) {
+        this.capped = true;
+        const note =
+          JSON.stringify({
+            type: 'close',
+            at: new Date().toISOString(),
+            reason: `transcript size limit reached (${this.maxBytes} bytes) — session ended`,
+          }) + '\n';
+        fs.writeSync(this.fd, note);
+        fs.closeSync(this.fd);
+        this.fd = null;
+      }
+      return;
+    }
+    this.written += line.length;
+    fs.writeSync(this.fd, line);
+  }
+
+  /** True once the size cap ended the recording — the session must end too. */
+  get overflowed(): boolean {
+    return this.capped;
   }
 
   close(reason: string): void {
@@ -395,6 +439,38 @@ const OPEN_FRAME_WAIT_MS = 10_000; // client must send {type:'open'} promptly
 const SSH_READY_MS = 10_000;
 
 /**
+ * A ceiling on the whole dial, not just each SSH handshake.
+ *
+ * ssh2's readyTimeout bounds one hop's handshake. It does not bound
+ * forwardOut(), which is what a jump-host session waits on between the two
+ * handshakes and which can hang indefinitely — so a jump-host dial had no
+ * upper bound at all. Generous enough for two handshakes plus the tunnel on
+ * slow lab gear, finite enough that a stuck dial ends by itself.
+ */
+const CONNECT_MS = 45_000;
+
+/**
+ * A ceiling on opening the shell channel after the transport is up.
+ *
+ * conn.shell()'s callback may simply never fire — a switch at its session
+ * limit can accept the SSH transport and then never grant a channel. Without
+ * this the session sat in 'connecting' forever: the idle timer had not started
+ * (it starts on the first frame) and the operator saw a pane that never
+ * resolved and never said why.
+ */
+const SHELL_OPEN_MS = 20_000;
+
+/**
+ * How many recorded shells may run at once.
+ *
+ * Each session holds an SSH connection to production equipment, an open
+ * transcript file descriptor and a scraper buffer. Switches themselves cap
+ * concurrent VTY sessions, so an unbounded portal can exhaust a device's
+ * session table and lock out the operators who would fix it.
+ */
+const DEFAULT_MAX_SESSIONS = 10;
+
+/**
  * What the session needs from the live inventory: the device name, its
  * management IP when a plane reported one, and its type — the type decides
  * shell class (deviceTerminalKind), because the name-prefix rules in
@@ -425,6 +501,10 @@ export class TerminalManager {
       logDir?: string;
       idleMs?: number;
       sshReadyMs?: number;
+      connectMs?: number;
+      shellOpenMs?: number;
+      maxSessions?: number;
+      maxTranscriptBytes?: number;
       demoMode?: () => boolean; // default: settings store
       liveDevices?: () => LiveDeviceRef[]; // default: poller cache (live mode only)
       creds?: () => LocalCreds | null; // default: local-plane settings record
@@ -466,6 +546,56 @@ export class TerminalManager {
     if (deviceTerminalKind(row.type ? { type: row.type } : null, row.name) === 'none') return false;
     if (!row.ip || row.ip === 'pending') return false;
     return this.credsProvider() !== null;
+  }
+
+  /** Recorded shells currently open. Bounded by maxSessions. */
+  private liveSessions = 0;
+
+  /** How many recorded shells are open right now (health/diagnostics). */
+  openSessionCount(): number {
+    return this.liveSessions;
+  }
+
+  /**
+   * Bound the whole dial.
+   *
+   * Rejecting does not close the underlying SSH client — this promise does not
+   * own it — so the caller must assume nothing about it. In practice ssh2 tears
+   * the socket down when its own readyTimeout fires; what this adds is an end
+   * to the *waiting*, so the operator gets an answer instead of a pane that
+   * never resolves.
+   */
+  private withConnectTimeout(work: Promise<Client>): Promise<Client> {
+    const ms = this.opts.connectMs ?? CONNECT_MS;
+    return new Promise<Client>((resolve, reject) => {
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error(`no response after ${Math.round(ms / 1000)}s`));
+      }, ms);
+      work.then(
+        (client) => {
+          clearTimeout(timer);
+          // The dial landed after we stopped waiting. Nobody is going to use
+          // this connection, and leaving it open would leak a live SSH session
+          // to a production switch — and occupy one of that switch's VTY slots
+          // — for the life of the process.
+          if (timedOut) {
+            try {
+              client.end();
+            } catch {
+              /* already gone */
+            }
+            return;
+          }
+          resolve(client);
+        },
+        (err: unknown) => {
+          clearTimeout(timer);
+          if (!timedOut) reject(err as Error);
+        },
+      );
+    });
   }
 
   /**
@@ -783,6 +913,30 @@ export class TerminalManager {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
     };
 
+    // Refused before anything is allocated. Each session holds an SSH
+    // connection, an open transcript file and a scraper buffer, and the
+    // switches themselves cap concurrent VTY sessions — an unbounded portal
+    // can exhaust a device's session table and lock out the very operators who
+    // would fix it. Refusing with a stated reason beats a pane that opens and
+    // then fails somewhere inside the device.
+    const maxSessions = this.opts.maxSessions ?? DEFAULT_MAX_SESSIONS;
+    if (this.liveSessions >= maxSessions) {
+      send({
+        type: 'error',
+        message: `too many shell sessions open (${this.liveSessions} of ${maxSessions}) — close one and retry`,
+      });
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+      return;
+    }
+    this.liveSessions += 1;
+    let counted = true;
+    const release = (): void => {
+      if (!counted) return;
+      counted = false;
+      this.liveSessions -= 1;
+    };
+    ws.on('close', release);
+
     type State = 'await-open' | 'connecting' | 'banner' | 'ready' | 'cmd' | 'done';
     let state: State = 'await-open';
     let kind: TerminalKind = deviceProfile(deviceName).kind;
@@ -805,6 +959,7 @@ export class TerminalManager {
       if (closed) return;
       closed = true;
       state = 'done';
+      release();
       clearTimeout(idle);
       recorder?.close(reason);
       recorder = null;
@@ -840,6 +995,20 @@ export class TerminalManager {
 
     const recordOut = (text: string): void => {
       recorder?.event({ type: 'out', at: new Date().toISOString(), text });
+      endIfUnrecordable();
+    };
+
+    /**
+     * The transcript hit its size cap, so the recorder has closed itself. A
+     * shell that keeps running while nothing is recording it is exactly what
+     * "recording is mandatory" exists to prevent, so the session goes with it.
+     */
+    const endIfUnrecordable = (): void => {
+      if (recorder?.overflowed) {
+        send({ type: 'warn', text: '% transcript size limit reached — session closed' });
+        send({ type: 'closed', reason: 'transcript size limit reached' });
+        teardown('transcript size limit reached');
+      }
     };
 
     /** One scraped event from the shell stream, dispatched by session state. */
@@ -966,7 +1135,7 @@ export class TerminalManager {
 
       let conn: Client;
       try {
-        conn = await this.connect(target, creds);
+        conn = await this.withConnectTimeout(this.connect(target, creds));
       } catch (err) {
         if (closed) return;
         fail(`ssh to ${target}${creds.jumpHost ? ` via ${creds.jumpHost}` : ''} failed: ${(err as Error).message}`);
@@ -995,7 +1164,17 @@ export class TerminalManager {
       });
 
       try {
-        recorder = new SessionRecorder(this.logDir(), deviceName, creds.username, target, creds.jumpHost, identity, pathNote);
+        recorder = new SessionRecorder(
+          this.logDir(),
+          deviceName,
+          creds.username,
+          target,
+          creds.jumpHost,
+          identity,
+          pathNote,
+          new Date(),
+          this.opts.maxTranscriptBytes,
+        );
       } catch (err) {
         // Recording is mandatory — no recording, no session. Fail through the
         // normal path (error frame + teardown of the live connection); letting
@@ -1005,7 +1184,16 @@ export class TerminalManager {
         return;
       }
 
+      // The transport is up but the channel is not. A switch at its VTY limit
+      // can leave this callback pending forever, and nothing else is watching:
+      // the idle timer only starts once the session is interactive.
+      const shellWait = setTimeout(() => {
+        if (state === 'connecting') {
+          fail(`device accepted the connection but did not open a shell within ${Math.round(SHELL_OPEN_MS / 1000)}s`);
+        }
+      }, this.opts.shellOpenMs ?? SHELL_OPEN_MS);
       conn.shell({ term: 'vt100', cols: 200, rows: 50 }, (err, channel) => {
+        clearTimeout(shellWait);
         if (closed) {
           try {
             channel?.close();
@@ -1094,6 +1282,7 @@ export class TerminalManager {
         return;
       }
       recorder?.event({ type: 'in', at: new Date().toISOString(), text: cmd });
+      endIfUnrecordable();
       scraper.clearTail(); // drop the rendered prompt so it cannot glue to the echo
       echoPending = cmd;
       state = 'cmd';
@@ -1198,4 +1387,30 @@ export function attachTerminalWs(
     });
   });
   return wss;
+}
+
+/**
+ * Close every live shell, then the endpoint.
+ *
+ * Each socket is told *why* before it goes: a terminal that simply stops
+ * responding leaves the operator wondering whether the switch dropped them
+ * mid-command. The socket close handlers installed in handleConnection are
+ * what actually ends the SSH client and finalises the transcript, so this
+ * only has to make them run.
+ */
+export async function closeTerminalWs(wss: WebSocketServer): Promise<void> {
+  for (const ws of wss.clients) {
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'closed', reason: 'server shutting down' }));
+      }
+      ws.close(1001, 'server shutting down');
+    } catch {
+      // A socket that cannot be told is still a socket to terminate.
+    }
+    // 1001 is a request; terminate is the guarantee. A peer that never
+    // acknowledges must not hold shutdown open.
+    ws.terminate();
+  }
+  await new Promise<void>((resolve) => wss.close(() => resolve()));
 }

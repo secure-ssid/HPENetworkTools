@@ -50,6 +50,7 @@ import {
   type VlanForm,
   type Plane,
 } from '../../../shared';
+import { readJsonlNewestFirst, rotateIfNeeded } from './logRotation';
 import { CentralAdapter } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { settings } from '../config/settings';
@@ -473,6 +474,9 @@ export function appendBrokerLog(dataDir: string, entry: BrokerLogEntry): void {
   try {
     fs.mkdirSync(dataDir, { recursive: true });
     const file = path.join(dataDir, 'change-log.jsonl');
+    // Checked on write rather than on a timer: no scheduler to own, and no
+    // behaviour that depends on the process having been up long enough.
+    rotateIfNeeded(file);
     // Attribution is applied here, once, rather than at each of the ~18 call
     // sites: a missed call site would write an anonymous line, and an audit
     // trail with holes in it is worse than one with none because it looks
@@ -721,21 +725,13 @@ export class WriteBroker {
    * change log in live mode. Corrupt lines are skipped, never fatal.
    */
   recentEvents(limit = 4): { ts: string; event: string; changeId: string; ticket: string; kind: string; result: string }[] {
-    try {
-      const lines = fs.readFileSync(this.logFile, 'utf8').trim().split('\n').filter(Boolean);
-      const out: { ts: string; event: string; changeId: string; ticket: string; kind: string; result: string }[] = [];
-      for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
-        try {
-          const e = JSON.parse(lines[i]) as { ts: string; event: string; changeId: string; ticket: string; kind: string; result: string };
-          out.push(e);
-        } catch {
-          /* skip corrupt line */
-        }
-      }
-      return out;
-    } catch {
-      return []; // no log yet
-    }
+    // Reads across rotated generations. Without that, the first rotation would
+    // make the Change history drawer look as though everything before it never
+    // happened — the entries are still on disk.
+    type Event = { ts: string; event: string; changeId: string; ticket: string; kind: string; result: string };
+    const isEvent = (v: unknown): v is Event =>
+      typeof v === 'object' && v !== null && typeof (v as { ts?: unknown }).ts === 'string';
+    return readJsonlNewestFirst<Event>(this.logFile, limit, isEvent);
   }
 
   // -- push -------------------------------------------------------------------

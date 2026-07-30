@@ -1391,3 +1391,177 @@ describe('terminal upgrade session gate', () => {
     await b.close();
   });
 });
+
+describe('session bounds — nothing may run without an end in sight', () => {
+  const boundedManager = (opts: Partial<ConstructorParameters<typeof TerminalManager>[0]> = {}) =>
+    new TerminalManager({
+      logDir: tmpDir,
+      demoMode: () => true,
+      creds: () => FAKE_CREDS,
+      ...opts,
+    });
+
+  it('refuses a session past the cap, saying why, without allocating anything', () => {
+    // Switches cap concurrent VTY sessions themselves; an unbounded portal can
+    // exhaust a device's session table and lock out the operators who would
+    // fix it.
+    let dials = 0;
+    const mgr = boundedManager({
+      maxSessions: 2,
+      connect: async () => {
+        dials += 1;
+        return new LiveShellClient() as unknown as Client;
+      },
+    });
+
+    const a = openSession(mgr, 'sw-core-a');
+    const b = openSession(mgr, 'sw-core-a');
+    const c = openSession(mgr, 'sw-core-a');
+
+    expect(c.errorFrame()).toContain('too many shell sessions open (2 of 2)');
+    expect(c.closed).toBe(true);
+    expect(a.errorFrame()).toBeNull();
+    expect(b.errorFrame()).toBeNull();
+    expect(mgr.openSessionCount()).toBe(2);
+    expect(dials).toBeLessThanOrEqual(2); // the refused one never dialled
+  });
+
+  it('frees a slot when a session ends, so the cap is a ceiling and not a lifetime quota', async () => {
+    const mgr = boundedManager({
+      maxSessions: 1,
+      connect: async () => new LiveShellClient() as unknown as Client,
+    });
+    const first = openSession(mgr, 'sw-core-a');
+    await flush();
+    expect(mgr.openSessionCount()).toBe(1);
+
+    first.emit('message', Buffer.from(JSON.stringify({ type: 'close' })));
+    expect(mgr.openSessionCount()).toBe(0);
+
+    const second = openSession(mgr, 'sw-core-a');
+    expect(second.errorFrame()).toBeNull();
+    expect(mgr.openSessionCount()).toBe(1);
+  });
+
+  it('frees a slot when the socket drops without a close frame', () => {
+    const mgr = boundedManager({
+      maxSessions: 1,
+      connect: async () => new LiveShellClient() as unknown as Client,
+    });
+    const ws = openSession(mgr, 'sw-core-a');
+    expect(mgr.openSessionCount()).toBe(1);
+    ws.emit('close');
+    expect(mgr.openSessionCount()).toBe(0);
+  });
+
+  it('gives up on a dial that never lands, instead of a pane that never resolves', async () => {
+    const mgr = boundedManager({
+      connectMs: 20,
+      connect: () => new Promise<Client>(() => {}), // never settles
+    });
+    const ws = openSession(mgr, 'sw-core-a');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(ws.errorFrame()).toContain('no response after');
+    expect(mgr.openSessionCount()).toBe(0);
+  });
+
+  it('closes a connection that lands after the portal stopped waiting', async () => {
+    // Otherwise it is a live SSH session to a production switch, holding one of
+    // that switch's VTY slots, belonging to nobody, for the life of the process.
+    let late: LiveShellClient | null = null;
+    let release: (c: Client) => void = () => {};
+    const mgr = boundedManager({
+      connectMs: 20,
+      connect: () => new Promise<Client>((r) => (release = r)),
+    });
+    const ws = openSession(mgr, 'sw-core-a');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(ws.errorFrame()).toContain('no response after');
+
+    late = new LiveShellClient();
+    release(late as unknown as Client);
+    await flush();
+    expect(late.ended).toBe(true);
+  });
+
+  it('gives up when the device accepts the connection but never opens a shell', async () => {
+    // A switch at its VTY limit can accept the transport and leave shell()
+    // pending forever. The idle timer does not cover this — it only starts once
+    // the session is interactive.
+    const deferred = new DeferredShellClient();
+    const mgr = boundedManager({
+      shellOpenMs: 20,
+      connect: async () => deferred as unknown as Client,
+    });
+    const ws = openSession(mgr, 'sw-core-a');
+    await flush();
+    expect(deferred.shellCallback).not.toBeNull(); // it really was asked
+    await new Promise((r) => setTimeout(r, 60));
+    expect(ws.errorFrame()).toContain('did not open a shell within');
+    expect(mgr.openSessionCount()).toBe(0);
+  });
+
+  it('does not fire the shell timeout for a session that opened normally', async () => {
+    const mgr = boundedManager({
+      shellOpenMs: 20,
+      connect: async () => new LiveShellClient() as unknown as Client,
+    });
+    const ws = openSession(mgr, 'sw-core-a');
+    await flush();
+    await new Promise((r) => setTimeout(r, 60));
+    expect(ws.errorFrame()).toBeNull();
+  });
+});
+
+describe('transcript size cap — a shell must never run unrecorded', () => {
+  it('ends the session when the transcript hits its cap, and says so in the transcript', async () => {
+    // Rotating a transcript is not an option: one-file-per-session is what
+    // listSessions/readSession are built on. So the recording stops at the cap
+    // and the session goes with it, rather than the shell continuing while
+    // nothing records it.
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-cap-'));
+    const live = new LiveShellClient();
+    const mgr = new TerminalManager({
+      logDir: dir,
+      demoMode: () => true,
+      creds: () => FAKE_CREDS,
+      maxTranscriptBytes: 400,
+      connect: async () => live as unknown as Client,
+    });
+    const ws = openSession(mgr, 'sw-core-a');
+    await flush();
+
+    for (let i = 0; i < 40 && !ws.closed; i += 1) {
+      live.channel.emit('data', Buffer.from(`${'x'.repeat(60)}\n`));
+    }
+
+    expect(ws.frames.some((f) => f.type === 'closed' && String(f.reason).includes('transcript size limit'))).toBe(true);
+    expect(mgr.openSessionCount()).toBe(0);
+
+    const file = mgr.listSessions()[0];
+    expect(file).toBeDefined();
+    const events = mgr.readSession(file.file)!.events;
+    const last = events[events.length - 1];
+    expect(last.type).toBe('close');
+    expect(String(last.reason)).toContain('transcript size limit reached');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('leaves an ordinary session well under the cap completely alone', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-cap-'));
+    const live = new LiveShellClient();
+    const mgr = new TerminalManager({
+      logDir: dir,
+      demoMode: () => true,
+      creds: () => FAKE_CREDS,
+      maxTranscriptBytes: 1024 * 1024,
+      connect: async () => live as unknown as Client,
+    });
+    const ws = openSession(mgr, 'sw-core-a');
+    await flush();
+    live.channel.emit('data', Buffer.from('sw-core-a# \n'));
+    expect(ws.frames.some((f) => f.type === 'closed')).toBe(false);
+    expect(mgr.openSessionCount()).toBe(1);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

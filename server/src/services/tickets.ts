@@ -31,6 +31,14 @@ import { poller } from './poller';
 import { reconcileDevices, type ReconciledDeviceRow } from './reconcile';
 import { terminalManager, type SessionInfo } from './terminal';
 import type { BrokerLogEntry } from './writeBroker';
+import { readJsonlNewestFirst } from './logRotation';
+
+/**
+ * How far back ticket evidence looks. Bounded because the log now spans
+ * rotated generations and could otherwise be tens of megabytes of JSON parsed
+ * on every ticket read.
+ */
+const CHANGE_LOG_READ_LIMIT = 20_000;
 
 const SEV_TONE: Record<string, Tone> = { P1: 'danger', P2: 'warning', P3: 'info' };
 
@@ -269,23 +277,19 @@ export class TicketStore {
 
   /** The append-only broker log, parsed defensively; missing file = no writes. */
   private readChangeLog(): BrokerLogEntry[] {
-    let raw: string;
-    try {
-      raw = fs.readFileSync(path.join(this.dataDir, 'change-log.jsonl'), 'utf8');
-    } catch {
-      return [];
-    }
-    const out: BrokerLogEntry[] = [];
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        const e = JSON.parse(line) as BrokerLogEntry;
-        if (typeof e.ts === 'string' && typeof e.changeId === 'string') out.push(e);
-      } catch {
-        // corrupt line — skip it
-      }
-    }
-    return out;
+    // Across rotated generations, and back in chronological order: a ticket's
+    // evidence must not lose the earlier half of its own history the first
+    // time the log rotates.
+    const isEntry = (v: unknown): v is BrokerLogEntry =>
+      typeof v === 'object' &&
+      v !== null &&
+      typeof (v as BrokerLogEntry).ts === 'string' &&
+      typeof (v as BrokerLogEntry).changeId === 'string';
+    return readJsonlNewestFirst<BrokerLogEntry>(
+      path.join(this.dataDir, 'change-log.jsonl'),
+      CHANGE_LOG_READ_LIMIT,
+      isEntry,
+    ).reverse();
   }
 
   /**

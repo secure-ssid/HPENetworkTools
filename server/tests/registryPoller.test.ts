@@ -337,3 +337,88 @@ describe('poller — a cycle only claims what happened', () => {
     expect(pulls).toBe(2);
   });
 });
+
+describe('poller — a pull that never returns is a failure, not silent staleness', () => {
+  afterEach(() => {
+    delete process.env.HPE_POLL_TIMEOUT_MS;
+  });
+
+  it('stops waiting and degrades the plane, naming the timeout', async () => {
+    process.env.HPE_POLL_TIMEOUT_MS = '20';
+    const { Poller } = await import('../src/services/poller');
+    const adapter = {
+      state: () => ({ linked: true, deviceCount: 3 }),
+      pull: () => new Promise(() => {}), // never settles
+    };
+    const marks: MarkCall[] = [];
+    const p = new Poller(fakeRegistry(adapter, marks, []), liveStore);
+
+    expect(await (p as unknown as Tickable).tick('mist')).toBe('error');
+    expect(marks[0].ok).toBe(false);
+    expect(marks[0].info.note).toContain('timed out');
+    expect(p.history()[0].result).toBe('error');
+    expect(p.history()[0].what).toContain('poll timed out');
+  });
+
+  it('holds the in-flight lock while an abandoned pull is still running', async () => {
+    // Releasing the lock at the timeout would start a second concurrent pull
+    // against a plane that is already struggling, and let a late reply
+    // overwrite a fresher one.
+    process.env.HPE_POLL_TIMEOUT_MS = '20';
+    const { Poller } = await import('../src/services/poller');
+    let release: (v: unknown) => void = () => {};
+    let pulls = 0;
+    const adapter = {
+      state: () => ({ linked: true, deviceCount: 3 }),
+      pull: () => {
+        pulls += 1;
+        if (pulls > 1) return Promise.resolve({ devices: [] });
+        return new Promise((r) => (release = r));
+      },
+    };
+    const p = new Poller(fakeRegistry(adapter, [], []), liveStore);
+
+    expect(await (p as unknown as Tickable).tick('mist')).toBe('error');
+    expect(await (p as unknown as Tickable).tick('mist')).toBe('skipped');
+    expect(pulls).toBe(1);
+
+    release({ devices: [] });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await (p as unknown as Tickable).tick('mist')).toBe('ok');
+    expect(pulls).toBe(2);
+  });
+
+  it('leaves a pull that finishes in time completely alone', async () => {
+    process.env.HPE_POLL_TIMEOUT_MS = '2000';
+    const { Poller } = await import('../src/services/poller');
+    const adapter = {
+      state: () => ({ linked: true, deviceCount: 1 }),
+      pull: async () => ({ devices: [{ name: 'sw-1' }] }),
+    };
+    const marks: MarkCall[] = [];
+    const p = new Poller(fakeRegistry(adapter, marks, []), liveStore);
+
+    expect(await (p as unknown as Tickable).tick('mist')).toBe('ok');
+    expect(marks[0].ok).toBe(true);
+    // A second tick must be free to run — the lock released normally.
+    expect(await (p as unknown as Tickable).tick('mist')).toBe('ok');
+  });
+
+  it('still says "poll failed" for an ordinary vendor error', async () => {
+    const { Poller } = await import('../src/services/poller');
+    const adapter = {
+      state: () => ({ linked: true, deviceCount: 1 }),
+      pull: async () => {
+        throw new Error('HTTP 429');
+      },
+    };
+    const marks: MarkCall[] = [];
+    const p = new Poller(fakeRegistry(adapter, marks, []), liveStore);
+
+    expect(await (p as unknown as Tickable).tick('mist')).toBe('error');
+    expect(marks[0].info.note).toBe('poll failed: HTTP 429');
+    expect(p.history()[0].what).toContain('poll failed — HTTP 429');
+    // And the lock must be released, since nothing is still running.
+    expect(await (p as unknown as Tickable).tick('mist')).toBe('error');
+  });
+});

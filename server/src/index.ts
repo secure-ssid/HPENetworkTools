@@ -11,7 +11,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { settings } from './config/settings';
 import { poller } from './services/poller';
-import { attachTerminalWs, terminalManager } from './services/terminal';
+import { registry } from './planes/registry';
+import { PLANE_IDS } from './planes/types';
+import { attachTerminalWs, closeTerminalWs, terminalManager } from './services/terminal';
+import { installLifecycle } from './services/lifecycle';
 import { chatRouter } from './routes/chat';
 import { alertsRouter } from './routes/alerts';
 import { clientsRouter } from './routes/clients';
@@ -56,10 +59,6 @@ export function createApp(opts: AppOptions = {}): express.Express {
     next();
   });
 
-  app.get('/api/health', (_req, res) => {
-    res.json({ ok: true });
-  });
-
   // Cross-site write protection, ahead of everything including login.
   //
   // This is not conditional on auth being configured, because the
@@ -79,6 +78,53 @@ export function createApp(opts: AppOptions = {}): express.Express {
   // After the guard, so req.principal is populated. Every change-log line
   // written while handling this request is attributed to whoever it names.
   app.use('/api', actorContext());
+
+  // Liveness AND per-plane truth, so an operator can diagnose a stale screen
+  // without tailing stdout.
+  //
+  // Two deliberate choices:
+  //
+  // `ok` stays true while planes are degraded, and `status` carries the
+  // degradation separately. `ok` answers "is this process alive and serving?",
+  // which is the question a supervisor acts on by restarting — and restarting
+  // will not fix a vendor 429. Folding the two together would either hide the
+  // degradation or cause restart loops that make it worse.
+  //
+  // This route is reachable without a session, so it publishes only the fixed
+  // enums (health, reason) and timings. `note` is free text lifted from vendor
+  // errors and can carry org ids and hostnames, so it is included only for a
+  // caller who has actually signed in. Saying "degraded" to everyone is fine;
+  // saying why to anyone who can open a socket is not.
+  app.get('/api/health', (req, res) => {
+    const states = registry.states();
+    const planes = PLANE_IDS.map((id) => {
+      const st = states[id];
+      const signedIn = Boolean((req as Request & { principal?: unknown }).principal);
+      const detail = signedIn || !settings.get().auth ? { note: st.note } : {};
+      return {
+        id,
+        linked: st.linked,
+        health: st.health,
+        lastSync: st.lastSync,
+        ageSec: st.ageSec,
+        stale: st.stale,
+        reason: st.reason,
+        ...detail,
+      };
+    });
+    // Only a LINKED plane can be degraded: an unlinked one contributes nothing
+    // and is not a fault to report.
+    const degraded = planes.filter((p) => p.linked && (p.health !== 'healthy' || p.stale));
+    res.json({
+      ok: true,
+      status: degraded.length > 0 ? 'degraded' : 'ok',
+      uptimeSec: Math.round(process.uptime()),
+      auth: settings.get().auth ? 'oidc' : 'none',
+      demoMode: settings.get().demoMode,
+      degradedPlanes: degraded.map((p) => p.id),
+      planes,
+    });
+  });
 
   // Recorded shell sessions (data/shell-logs) — optional ?device=<name> filter,
   // itself narrowed by ?plane=&serial= to one physical device when the name
@@ -249,7 +295,21 @@ export function startServer(
   // The upgrade never passes through Express middleware, so the guard has to
   // be handed to it explicitly or the SSH bridge would stay open while the
   // API was closed.
-  attachTerminalWs(server, terminalManager, authConfigured ? authenticateUpgrade() : undefined);
+  const wss = attachTerminalWs(server, terminalManager, authConfigured ? authenticateUpgrade() : undefined);
+
+  // Order matters. Stop the poller first so nothing new starts; close the
+  // shells before the HTTP server, because server.close() waits for open
+  // connections and an upgraded WebSocket is one — closing them in the other
+  // order would hang until the shutdown timeout every time.
+  installLifecycle({
+    steps: [
+      { name: 'poller', run: () => poller.stop() },
+      { name: 'terminal sessions', run: () => closeTerminalWs(wss) },
+      { name: 'http server', run: () => new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      }) },
+    ],
+  });
   return server;
 }
 

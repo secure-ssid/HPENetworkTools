@@ -50,6 +50,7 @@ import type {
   DiagnosticTracerouteOptions,
   Plane,
 } from '../../../shared';
+import { readLinesNewestFirst, rotateIfNeeded } from './logRotation';
 import { CentralAdapter, CentralRequestError } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { poller } from './poller';
@@ -581,12 +582,9 @@ export class DiagnosticsService {
   history(): DiagnosticAuditEntry[] {
     try {
       const file = path.join(this.dataDir, 'diagnostics-history.jsonl');
-      return fs.readFileSync(file, 'utf8')
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .slice(-MAX_HISTORY)
-        .reverse()
+      // Newest first, across rotated generations: a rotation must not make the
+      // Diagnostics history look as though the earlier runs never happened.
+      return readLinesNewestFirst(file, MAX_HISTORY)
         .flatMap((line) => {
           try {
             const raw = JSON.parse(line) as Record<string, unknown>;
@@ -967,6 +965,7 @@ export class DiagnosticsService {
     try {
       fs.mkdirSync(this.dataDir, { recursive: true });
       const file = path.join(this.dataDir, 'diagnostics-history.jsonl');
+      rotateIfNeeded(file);
       fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
       fs.chmodSync(file, 0o600);
     } catch {

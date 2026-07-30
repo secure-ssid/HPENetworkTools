@@ -146,6 +146,36 @@ SSE object mutation and tenant-wide Commit are separate states. Retry Commit
 only when the portal reports a definite Commit rejection. Ambiguous states
 require manual reconciliation and cleanup.
 
+## Retention and bounds
+
+Nothing the portal writes or runs is unbounded.
+
+- **Audit and diagnostics logs rotate.** `change-log.jsonl` and
+  `diagnostics-history.jsonl` rotate at `HPE_LOG_MAX_BYTES` (16 MB) keeping
+  `HPE_LOG_KEEP` (9) generations. Rotation renames, never truncates. Readers
+  read across generations, so history does not appear to shrink at a rotation
+  boundary. When retention finally discards the oldest generation, a
+  `log-retention` tombstone naming that file and the time span it covered is
+  appended to the live log first — the gap is part of the record.
+- **SSH transcripts are capped** at `HPE_TRANSCRIPT_MAX_BYTES` (32 MB). Reaching
+  the cap ends the session, because a shell that keeps running while nothing
+  records it is precisely what mandatory recording exists to prevent.
+- **Concurrent shells are capped** (10). A refused session says so; switches cap
+  their own VTY sessions and an unbounded portal could exhaust one.
+- **Terminal dials are bounded** end to end (45 s), as is the wait for the shell
+  channel after the transport comes up (20 s). A connection that lands after the
+  portal stopped waiting is closed rather than left holding a VTY slot.
+- **Plane polls are bounded** at `HPE_POLL_TIMEOUT_MS` (120 s). A pull that does
+  not return is reported as a plane failure rather than left as silent
+  staleness; the plane's in-flight lock is held until the abandoned call really
+  settles, so a second pull never runs alongside it.
+- **Shutdown is graceful.** SIGTERM/SIGINT stop the poller, close live shells,
+  then close the HTTP server. An uncaught exception or unhandled rejection is
+  treated as fatal — the process says what happened, tears down, and exits
+  non-zero rather than continuing to broker production writes from an unknown
+  state. Shutdown names any step it could not complete instead of reporting a
+  clean exit.
+
 ## Audit data
 
 Every brokered change records a `who`. With an identity provider configured
