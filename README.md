@@ -3,23 +3,45 @@
 HPE Network Tools is a multi-plane network operations portal for inventory,
 clients, topology, configuration, diagnostics, and connected-system management.
 It combines HPE Aruba Networking Central, Central Classic, GreenLake, ClearPass,
-UXI, local switches, and HPE Aruba Networking SSE in one interface.
+UXI, Mist, HPE Aruba EdgeConnect SD-WAN, HPE OpsRamp, local switches, and
+HPE Aruba Networking SSE in one interface.
 
 ![Operations overview](docs/images/overview.png)
 
 ## Highlights
 
-- Unified devices, sites, clients, alerts, licences, and topology.
+- Unified devices, sites, clients, alerts, licences, and topology across 12 planes.
 - Lazy Inventory Explorer for systems, sites, devices, and SSE objects.
 - Responsive desktop navigation and a focus-managed mobile drawer.
 - Collapsed switch groups that keep large port inventories out of the initial DOM.
 - Exact device targeting by management plane and serial number.
-- Reviewed New Central SSID creation, editing, and scope assignment.
+- SSID creation, editing, and scope assignment (Central and AOS-8 config drift).
+- Mist SLE scores surfaced per-site alongside device and client counts.
+- ClearPass endpoint repository with auth-events feed.
+- UXI sensor fleet with inline issue detail.
 - AP and AOS-CX traceroute diagnostics with bounded background polling.
 - HPE Aruba Networking SSE inventory and reviewed CRUD with Commit handling.
 - Central webhook management with one-time HMAC-key handoff.
 - Recorded, allow-listed SSH terminal sessions for locally managed devices.
+- SSO via OpenID Connect (Authentik or any OIDC provider).
 - Demo, live, blended, and per-screen data-source controls.
+
+## Connected systems
+
+| Plane | What is pulled |
+|---|---|
+| HPE Aruba Central | Devices, sites, clients, alerts, config, licences |
+| Central Classic | Devices, sites, clients via Classic gateway |
+| HPE GreenLake | Subscriptions and workspace inventory |
+| HPE Aruba Mist | Devices, clients, alarms, SLE scores, WLAN templates |
+| HPE ClearPass | Auth events, endpoint repository |
+| HPE UXI | Sensor fleet and test results |
+| HPE Aruba AOS-8 | Devices, clients, SSID profiles |
+| HPE Aruba AOS-CX | Local switch inventory via REST |
+| HPE Aruba EdgeConnect | SD-WAN appliance inventory and alarms |
+| HPE OpsRamp | Resource inventory and alert feed |
+| HPE Aruba SSE | Connector and object inventory |
+| Local | Locally managed switch inventory |
 
 ## Quick start
 
