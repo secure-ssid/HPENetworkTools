@@ -49,6 +49,7 @@ import {
   type SsidForm,
   type VlanForm,
   type Plane,
+  vlanIdProblem,
 } from '@hpe/shared';
 import { readJsonlNewestFirst, rotateIfNeeded } from './logRotation';
 import { CentralAdapter } from '../planes/central';
@@ -187,10 +188,8 @@ const REQUIRED_STRINGS: Record<ConfigKind, string[]> = {
 };
 
 function requireVlanId(value: string): void {
-  const trimmed = value.trim();
-  if (!/^\d{1,4}$/.test(trimmed) || Number(trimmed) < 1 || Number(trimmed) > 4094) {
-    throw new BrokerError(400, 'VLAN id must be a number between 1 and 4094');
-  }
+  const problem = vlanIdProblem(value);
+  if (problem) throw new BrokerError(400, problem);
 }
 
 function asForm(kind: ConfigKind, value: unknown): ConfigForm {

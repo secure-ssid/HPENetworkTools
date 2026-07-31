@@ -28,6 +28,9 @@ import {
   type SsidCatalog,
   type SsidForm,
   type SsidSecurity,
+  ssidNameProblem,
+  vlanIdProblem,
+  wpaPassphraseProblem,
 } from '@hpe/shared';
 import { CentralAdapter } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
@@ -65,12 +68,12 @@ export interface SsidDirectWriteOptions {
 const SECURITY_VALUES = new Set(SSID_SECURITY_OPTIONS.map((o) => o.value));
 const BAND_VALUES = new Set(SSID_BAND_OPTIONS.map((o) => o.value));
 
-/** Same VLAN-id rule the ticketed broker enforces (writeBroker.ts requireVlanId). */
+/** Same VLAN-id rule the ticketed broker enforces — now literally the same
+ *  function, in @hpe/shared, which the editor screens it too. */
 function requireVlanId(value: unknown): string {
   const trimmed = typeof value === 'string' ? value.trim() : '';
-  if (!/^\d{1,4}$/.test(trimmed) || Number(trimmed) < 1 || Number(trimmed) > 4094) {
-    throw new SsidDirectWriteError(400, 'VLAN id must be a number between 1 and 4094');
-  }
+  const problem = vlanIdProblem(trimmed);
+  if (problem) throw new SsidDirectWriteError(400, problem);
   return trimmed;
 }
 
@@ -98,7 +101,8 @@ function asSsidForm(raw: unknown): SsidForm {
   }
   const rec = raw as Record<string, unknown>;
   const name = requireNonEmptyString(rec.name, 'SSID name');
-  if (name.length > 32) throw new SsidDirectWriteError(400, 'SSID name must be 32 characters or fewer');
+  const nameProblem = ssidNameProblem(name);
+  if (nameProblem) throw new SsidDirectWriteError(400, nameProblem);
   const vlan = requireVlanId(rec.vlan);
   const security = rec.security as SsidSecurity;
   if (!SECURITY_VALUES.has(security)) throw new SsidDirectWriteError(400, 'unsupported SSID security value');
@@ -133,15 +137,8 @@ function asSsidForm(raw: unknown): SsidForm {
   if (requirement.passphrase && !passphrase) {
     throw new SsidDirectWriteError(400, 'a passphrase is required for this security mode');
   }
-  if (
-    passphrase &&
-    !(
-      (passphrase.length >= 8 && passphrase.length <= 63) ||
-      (passphrase.length === 64 && /^[0-9a-f]+$/i.test(passphrase))
-    )
-  ) {
-    throw new SsidDirectWriteError(400, 'passphrase must be 8-63 characters, or exactly 64 hexadecimal characters');
-  }
+  const passphraseProblem = passphrase ? wpaPassphraseProblem(passphrase) : null;
+  if (passphraseProblem) throw new SsidDirectWriteError(400, passphraseProblem);
   return {
     name,
     vlan,

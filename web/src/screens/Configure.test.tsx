@@ -239,6 +239,32 @@ describe('Configure — per-entry-source queue semantics', () => {
     expect(screen.getByText(QUEUED_NOTE)).toBeTruthy();
   });
 
+  /* The offline fallback in queueIt() is the sharp edge. With the broker
+   * unreachable nothing validates the form at all, so a VLAN the broker was
+   * written to refuse was parked in the local queue and listed there as a
+   * change waiting to be pushed, alongside changes that could be. */
+  it('will not queue a VLAN the broker would refuse, offline or not', async () => {
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New VLAN' }));
+    fireEvent.change(screen.getByLabelText('ID'), { target: { value: '4095' } });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'live-test-vlan' } });
+    fireEvent.change(screen.getByPlaceholderText('NET-4166'), { target: { value: 'NET-9001' } });
+
+    await waitFor(() =>
+      expect(screen.getByText('Queueing is disabled — the broker would refuse this form')).toBeTruthy(),
+    );
+    expect(screen.getByText('VLAN id must be a number between 1 and 4094')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Queue the change' }) as HTMLButtonElement).disabled).toBe(true);
+    // Nor a dry run, which the broker validates through the same path.
+    expect((screen.getByRole('button', { name: 'Dry run' }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('ID'), { target: { value: '4094' } });
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Queue the change' }) as HTMLButtonElement).disabled).toBe(false),
+    );
+  });
+
   it('Discard with the broker down drops only the local (id null) entries and keeps the server entries listed', async () => {
     renderConfigure();
     await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
@@ -814,6 +840,61 @@ describe('Configure — SSID direct apply', () => {
     expect(screen.getByRole('checkbox', { name: 'Campus-01' })).toHaveProperty('checked', true);
     // No refresh on anything less than a full success.
     expect(mockGetConfigure).toHaveBeenCalledTimes(1);
+  });
+
+  /* The VLAN box is labelled "1-4094" and accepted 4095 anyway; the SSID name
+   * box accepted 40 characters. Both are rules the server has always enforced,
+   * so the operator filled the form, read the blast radius, ticked "I have
+   * reviewed this" and pressed Apply to be told the value was never legal. */
+  it('will not let a form Central would refuse be applied', async () => {
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await waitFor(() => expect(screen.getByText('Campus-01')).toBeTruthy());
+    await fillReadySsidForm();
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'I have reviewed this profile and these scope assignments — apply directly, no ticket.' }),
+    );
+    // Ready, until a VLAN outside the range the box itself advertises.
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Apply directly' }) as HTMLButtonElement).disabled).toBe(false),
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('1-4094'), { target: { value: '4095' } });
+
+    await waitFor(() =>
+      expect(screen.getByText('Apply is disabled — Central would refuse this form')).toBeTruthy(),
+    );
+    expect(screen.getByText('VLAN id must be a number between 1 and 4094')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Apply directly' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mockApplySsidDirect).not.toHaveBeenCalled();
+
+    // And the other two value rules, on the same form.
+    fireEvent.change(screen.getByPlaceholderText('1-4094'), { target: { value: '830' } });
+    fireEvent.change(screen.getByPlaceholderText('Enter SSID name'), {
+      target: { value: 'MRDN-Guest-Wireless-Network-For-Visitors' },
+    });
+    await waitFor(() => expect(screen.getByText('SSID name must be 32 characters or fewer')).toBeTruthy());
+
+    fireEvent.change(screen.getByPlaceholderText('Enter SSID name'), { target: { value: 'MRDN-Guest' } });
+    fireEvent.change(screen.getByPlaceholderText('Enter the PSK passphrase'), { target: { value: 'short' } });
+    await waitFor(() =>
+      expect(
+        screen.getByText('passphrase must be 8-63 characters, or exactly 64 hexadecimal characters'),
+      ).toBeTruthy(),
+    );
+    expect((screen.getByRole('button', { name: 'Apply directly' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // An untouched field is incomplete, not wrong. Apply is already off for it.
+  it('does not accuse an operator of a bad value before they have typed one', async () => {
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await waitFor(() => expect(screen.getByText('Campus-01')).toBeTruthy());
+
+    expect(screen.queryByText('Apply is disabled — Central would refuse this form')).toBeNull();
+    expect(screen.queryByText('VLAN id must be a number between 1 and 4094')).toBeNull();
   });
 
   /* The profile half of the same distinction. Central answered the PUT with a

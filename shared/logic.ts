@@ -276,6 +276,57 @@ export function ssidDependencyRequirementsFor(security: SsidSecurity): SsidDepen
 }
 
 /**
+ * The value rules Central will enforce on a config form, in one place.
+ *
+ * These are the companions to ssidDependencyRequirementsFor above, and they
+ * exist for the reason its comment gives: so the editor and the server-side
+ * validator agree without duplicating the rule. They had drifted the other
+ * way — the VLAN range was open-coded identically in writeBroker.ts and
+ * ssidDirectWrite.ts (the second carrying a comment promising it matched the
+ * first), and the editor enforced neither. A form the broker was written to
+ * refuse could be filled in, reviewed, ticked as reviewed and submitted, and
+ * when the broker was unreachable it could be parked in the local queue and
+ * listed there as a change waiting to be pushed.
+ *
+ * Each returns the operator-facing sentence, or null when the value is fine.
+ * The sentences are the ones the server already returned, so a rule caught
+ * early and a rule caught late read the same.
+ */
+
+/** Central's usable VLAN ids. 0 is the untagged pseudo-id and 4095 is
+ *  reserved, so neither is a VLAN anyone can be assigned to. */
+export function vlanIdProblem(value: string): string | null {
+  const trimmed = (value ?? '').trim();
+  if (!/^\d{1,4}$/.test(trimmed) || Number(trimmed) < 1 || Number(trimmed) > 4094) {
+    return 'VLAN id must be a number between 1 and 4094';
+  }
+  return null;
+}
+
+/** 802.11 caps an SSID at 32 octets. Central rejects longer, it does not
+ *  truncate — so this is a refusal to predict, not a silent edit. */
+export const SSID_NAME_MAX_LENGTH = 32;
+
+export function ssidNameProblem(value: string): string | null {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) return 'SSID name is required';
+  if (trimmed.length > SSID_NAME_MAX_LENGTH) {
+    return `SSID name must be ${SSID_NAME_MAX_LENGTH} characters or fewer`;
+  }
+  return null;
+}
+
+/** WPA-PSK: 8-63 printable characters, or the 256-bit key written out as 64
+ *  hex digits. A 64-character non-hex string is a passphrase, not a key, and
+ *  is inside the first rule — which is why the hex test only applies at
+ *  exactly 64 and does not reject the rest. */
+export function wpaPassphraseProblem(value: string): string | null {
+  const v = value ?? '';
+  if ((v.length >= 8 && v.length <= 63) || (v.length === 64 && /^[0-9a-f]+$/i.test(v))) return null;
+  return 'passphrase must be 8-63 characters, or exactly 64 hexadecimal characters';
+}
+
+/**
  * Deployment-specific parts of the SSID preview. Every field is optional and
  * every default reproduces the authored demo estate byte-for-byte, so demo
  * output (and the prototype-fidelity tests) are unchanged.

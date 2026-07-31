@@ -70,6 +70,9 @@ import {
   queuedChangeNote,
   seedFormFromRow,
   ssidDependencyRequirementsFor,
+  ssidNameProblem,
+  vlanIdProblem,
+  wpaPassphraseProblem,
 } from '@hpe/shared';
 import type {
   ConfigForm,
@@ -356,6 +359,32 @@ export default function Configure() {
     if (ssidRequirement.captivePortal && ssidCatalog.unavailable.includes('captivePortalProfiles')) missing.push('captive-portal profiles');
     return missing;
   }, [ssidCatalog, ssidRequirement]);
+  /* The value rules the broker and the direct-apply validator have always
+     enforced, applied where the value is typed instead of one round trip
+     later. A VLAN of 4095 or a 40-character SSID could be filled in, reviewed,
+     ticked as reviewed and submitted before anything said no — and when the
+     broker was unreachable, `queueIt`'s offline fallback parked it in the
+     local queue, where it sat listed as a change waiting to be pushed
+     alongside changes that could actually be pushed.
+
+     Only values the operator has actually entered are judged. An untouched
+     field is incomplete, not wrong, and `formComplete` below already covers
+     it; reporting "SSID name is required" on a form nobody has typed into
+     teaches people to ignore the box. */
+  const valueProblems = useMemo(() => {
+    const problems: Array<string | null> = [];
+    if (kind === 'ssid') {
+      if (ssid.name.trim()) problems.push(ssidNameProblem(ssid.name));
+      if (ssid.vlan.trim()) problems.push(vlanIdProblem(ssid.vlan));
+      if (ssid.passphrase) problems.push(wpaPassphraseProblem(ssid.passphrase));
+    } else if (kind === 'port') {
+      if (port.vlan.trim()) problems.push(vlanIdProblem(port.vlan));
+    } else if (kind === 'vlan') {
+      if (vlan.id.trim()) problems.push(vlanIdProblem(vlan.id));
+    }
+    return problems.filter((p): p is string => p !== null);
+  }, [kind, ssid, port, vlan]);
+
   const ssidFormComplete =
     ssid.name.trim().length > 0 &&
     ssid.vlan.trim().length > 0 &&
@@ -365,7 +394,13 @@ export default function Configure() {
     (!ssidRequirement.captivePortal || !!ssid.captivePortalProfileId) &&
     (!ssidRequirement.passphrase || !!ssid.passphrase);
   const ssidApplyDisabled =
-    !ssidFormComplete || ssidMissingDependencies.length > 0 || !ssidReviewed || ssidApplying || ssidCatalogLoading || !ssidCatalog;
+    !ssidFormComplete ||
+    valueProblems.length > 0 ||
+    ssidMissingDependencies.length > 0 ||
+    !ssidReviewed ||
+    ssidApplying ||
+    ssidCatalogLoading ||
+    !ssidCatalog;
 
   const switchGroups = useMemo(() => groupSwitchPorts(data?.ports ?? []), [data?.ports]);
   const filteredSwitchGroups = useMemo(() => {
@@ -1531,6 +1566,15 @@ export default function Configure() {
                   checked={ssidReviewed}
                   onChange={(e) => setSsidReviewed(e.target.checked)}
                 />
+                {valueProblems.length > 0 ? (
+                  <Alert tone="warning" title="Apply is disabled — Central would refuse this form">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                      {valueProblems.map((problem) => (
+                        <span key={problem}>{problem}</span>
+                      ))}
+                    </div>
+                  </Alert>
+                ) : null}
                 {ssidMissingDependencies.length > 0 ? (
                   <Alert tone="warning" title="Apply is disabled — a required live dependency is unavailable">
                     <span style={{ fontSize: 13 }}>
@@ -1624,11 +1668,30 @@ export default function Configure() {
                     <span style={{ fontSize: 13 }}>{queuedChangeNote(ticket)}</span>
                   </Alert>
                 ) : null}
+                {valueProblems.length > 0 ? (
+                  <Alert tone="warning" title="Queueing is disabled — the broker would refuse this form">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                      {valueProblems.map((problem) => (
+                        <span key={problem}>{problem}</span>
+                      ))}
+                    </div>
+                  </Alert>
+                ) : null}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <Button variant="primary" size="md" disabled={!ticket.trim()} onClick={() => void queueIt()}>
+                  <Button
+                    variant="primary"
+                    size="md"
+                    disabled={!ticket.trim() || valueProblems.length > 0}
+                    onClick={() => void queueIt()}
+                  >
                     Queue the change
                   </Button>
-                  <Button variant="secondary" size="md" disabled={dryRunning} onClick={() => void doDryRun()}>
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    disabled={dryRunning || valueProblems.length > 0}
+                    onClick={() => void doDryRun()}
+                  >
                     Dry run
                   </Button>
                   <Button variant="ghost" size="md" onClick={() => setKind(null)}>
