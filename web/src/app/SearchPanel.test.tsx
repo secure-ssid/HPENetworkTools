@@ -79,3 +79,63 @@ describe('SearchPanel exact inventory priority', () => {
     );
   });
 });
+
+/* ⌘K is where an operator asks "does this thing exist?" — and the panel's
+ * answer used to be a flat "Nothing matches that" whether the estate had been
+ * searched or not. A plane whose read has not come back is never looked in. */
+describe('SearchPanel search completeness', () => {
+  const renderPanel = () =>
+    render(
+      <MemoryRouter>
+        <SearchPanel />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+  it('will not call an unsearched estate a clean miss', async () => {
+    mockGetSearchIndex.mockResolvedValue({ dataSource: 'live', entries: [] });
+    mockSearchInventory.mockResolvedValue({
+      nodes: [],
+      total: 0,
+      nextCursor: null,
+      query: 'sw-riv',
+      unsearchedPlanes: ['HPE Aruba Central'],
+    });
+    renderPanel();
+    fireEvent.change(screen.getByLabelText('Global search'), { target: { value: 'sw-riv' } });
+
+    expect(
+      await screen.findByText(
+        'Nothing matched in the planes that answered. HPE Aruba Central could not be searched.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Try a hostname, MAC prefix or site/)).toBeNull();
+  });
+
+  it('keeps the plain miss wording when the whole estate was searched', async () => {
+    mockGetSearchIndex.mockResolvedValue({ dataSource: 'live', entries: [] });
+    mockSearchInventory.mockResolvedValue({
+      nodes: [],
+      total: 0,
+      nextCursor: null,
+      query: 'nope',
+      unsearchedPlanes: [],
+    });
+    renderPanel();
+    fireEvent.change(screen.getByLabelText('Global search'), { target: { value: 'nope' } });
+
+    expect(await screen.findByText('Nothing matches that. Try a hostname, MAC prefix or site.')).toBeTruthy();
+  });
+
+  it('blames nobody when the search request itself failed', async () => {
+    // A rejected search read nothing anywhere. Naming planes would pin a
+    // total failure on whichever ones the previous response happened to list.
+    mockGetSearchIndex.mockResolvedValue({ dataSource: 'live', entries: [] });
+    mockSearchInventory.mockRejectedValue(new Error('offline'));
+    renderPanel();
+    fireEvent.change(screen.getByLabelText('Global search'), { target: { value: 'nope' } });
+
+    expect(await screen.findByText('Nothing matches that. Try a hostname, MAC prefix or site.')).toBeTruthy();
+    expect(screen.queryByText(/could not be searched/)).toBeNull();
+  });
+});

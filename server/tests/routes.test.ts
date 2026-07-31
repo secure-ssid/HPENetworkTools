@@ -961,6 +961,44 @@ describe('live-mode screen contracts', () => {
     }
   });
 
+  /* allSearchNodes() walks whatever the poller currently holds. A linked plane
+   * whose read has not come back is not in that map, so its devices are never
+   * searched — and the route reported total: 0 exactly as if they had been
+   * searched and found nothing. An operator typing a serial to ask "is this in
+   * the estate?" reads that as no. */
+  it('says which linked planes the search could not look inside', async () => {
+    contributions.clear();
+    // central is linked in this describe but contributed no inventory.
+    const { body } = await getJson('/api/inventory/search?q=sw-');
+    expect(body.unsearchedPlanes).toContain('HPE Aruba Central');
+    expect(body.total).toBe(0);
+  });
+
+  it('does not call a plane that answered with an empty inventory unsearched', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [], sites: [] });
+    const { body } = await getJson('/api/inventory/search?q=zzzz-no-such-device');
+    // It answered. The miss is a real miss for that plane.
+    expect(body.unsearchedPlanes).toEqual([]);
+    expect(body.total).toBe(0);
+  });
+
+  it('reports nothing unsearched once the plane has contributed its inventory', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE], sites: [SITE] });
+    const { body } = await getJson('/api/inventory/search?q=' + encodeURIComponent(DEVICE.name));
+    expect(body.unsearchedPlanes).toEqual([]);
+    expect(body.total).toBeGreaterThan(0);
+  });
+
+  it('never names an unlinked plane as unsearched', async () => {
+    // mist holds no credentials here. Naming it would tell the operator to go
+    // fix a plane they deliberately never connected.
+    contributions.clear();
+    const { body } = await getJson('/api/inventory/search?q=sw-');
+    expect(body.unsearchedPlanes).not.toContain('Mist');
+  });
+
   it('rejects malformed inventory parents and cursors instead of returning an unbounded or failed response', async () => {
     expect((await getJson('/api/inventory/tree?parent=site%3A%25')).status).toBe(400);
     expect((await getJson('/api/inventory/tree?cursor=-1')).status).toBe(400);

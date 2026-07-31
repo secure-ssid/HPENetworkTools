@@ -690,6 +690,12 @@ export interface InventorySearchPage {
   total: number;
   nextCursor: string | null;
   query: string;
+  /** Linked planes that contributed no searchable rows, by display name. The
+   *  search walked what the poller holds, so a plane whose read has not come
+   *  back was never searched at all — and "no matches" over an unsearched
+   *  plane is a false negative, not an answer. Absent means the route did not
+   *  say; an empty array means every linked plane was searchable. */
+  unsearchedPlanes?: string[];
 }
 
 export interface Crumb {

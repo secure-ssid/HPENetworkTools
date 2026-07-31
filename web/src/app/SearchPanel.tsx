@@ -25,6 +25,9 @@ export function SearchPanel() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [index, setIndex] = useState<SearchIndexEntry[]>(SEARCH_INDEX);
   const [inventoryResults, setInventoryResults] = useState<InventoryTreeNode[]>([]);
+  /* Linked planes the server could not search. Kept apart from the results so
+   * an empty panel can say WHY it is empty rather than implying a clean miss. */
+  const [unsearched, setUnsearched] = useState<string[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
   const listboxId = useId();
   // nightdesk Input does not forward refs — reach the field through the wrapper.
@@ -44,14 +47,24 @@ export function SearchPanel() {
     const q = query.trim();
     if (q.length < 2) {
       setInventoryResults([]);
+      setUnsearched([]);
       return;
     }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void searchInventory(q, { limit: 20, signal: controller.signal })
-        .then((page) => setInventoryResults(page.nodes))
+        .then((page) => {
+          setInventoryResults(page.nodes);
+          setUnsearched(page.unsearchedPlanes ?? []);
+        })
         .catch((cause) => {
-          if ((cause as Error).name !== 'AbortError') setInventoryResults([]);
+          if ((cause as Error).name !== 'AbortError') {
+            setInventoryResults([]);
+            // The search itself failed, so nothing was searched. Clearing the
+            // list without clearing this would attribute the whole miss to
+            // the named planes.
+            setUnsearched([]);
+          }
         });
     }, 180);
     return () => {
@@ -258,7 +271,23 @@ export function SearchPanel() {
                 fontStyle: 'italic',
               }}
             >
-              Nothing matches that. Try a hostname, MAC prefix or site.
+              {unsearched.length > 0
+                ? `Nothing matched in the planes that answered. ${unsearched.join(', ')} could not be searched.`
+                : 'Nothing matches that. Try a hostname, MAC prefix or site.'}
+            </div>
+          ) : null}
+          {/* Shown alongside results too: a hit in one plane says nothing
+              about what an unread plane would have matched. */}
+          {unsearched.length > 0 && matches.length > 0 ? (
+            <div
+              style={{
+                padding: '8px',
+                fontSize: 'var(--nd-text-11)',
+                color: 'var(--nd-warning, var(--nd-text-muted))',
+                fontFamily: 'var(--nd-font-display)',
+              }}
+            >
+              {`Not searched: ${unsearched.join(', ')} — these results are incomplete.`}
             </div>
           ) : null}
         </div>

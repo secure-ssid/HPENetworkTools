@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { InventoryTreeNode, SseObjectKind } from '@hpe/shared';
-import { Badge, Button, EmptyState, Input, SectionHeader, Spinner } from '../nightdesk';
+import { Alert, Badge, Button, EmptyState, Input, SectionHeader, Spinner } from '../nightdesk';
 import { InventoryTree } from '../components/InventoryTree';
 import { getInventoryNode, getSystemsState, searchInventory } from '../api/client';
 import { ScreenHeader } from './ScreenHeader';
@@ -19,6 +19,10 @@ export default function Inventory() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [searchTotal, setSearchTotal] = useState<number | null>(null);
+  /* Linked planes the search could not look inside. A miss over an unsearched
+   * plane is a false negative, and "No inventory matches" is exactly how an
+   * operator asking "is this serial in the estate?" reads a no. */
+  const [unsearched, setUnsearched] = useState<string[]>([]);
   const activeSearchRef = useRef('');
   // The SSE write grant lives ENTIRELY in the registry's capability claim
   // (PLANE_WRITE_MODE.sse can never carry it), so this screen reads the same
@@ -61,6 +65,7 @@ export default function Inventory() {
       setSearchError(null);
       setNextCursor(null);
       setSearchTotal(null);
+      setUnsearched([]);
       return;
     }
     activeSearchRef.current = q;
@@ -71,12 +76,14 @@ export default function Inventory() {
       setSearchError(null);
       setNextCursor(null);
       setSearchTotal(null);
+      setUnsearched([]);
       void searchInventory(q, { limit: 50, signal: controller.signal })
         .then((page) => {
           if (activeSearchRef.current !== q) return;
           setResults(page.nodes);
           setNextCursor(page.nextCursor);
           setSearchTotal(page.total);
+          setUnsearched(page.unsearchedPlanes ?? []);
         })
         .catch((cause) => {
           if ((cause as Error).name !== 'AbortError') setSearchError((cause as Error).message);
@@ -149,8 +156,24 @@ export default function Inventory() {
             </div>
           ) : null}
           {searchError ? <EmptyState title="Inventory search unavailable" description={searchError} /> : null}
+          {!searching && !searchError && unsearched.length > 0 ? (
+            <Alert tone="warning" title={`${unsearched.join(', ')} could not be searched`}>
+              <span style={{ fontSize: 13 }}>
+                Their read has not come back, so nothing they hold was looked at. A miss below does not mean the object
+                is absent from the estate.
+              </span>
+            </Alert>
+          ) : null}
           {!searching && !searchError && results.length === 0 ? (
-            <EmptyState title="No inventory matches" description="Try a system, site, device name, serial, or SSE object." />
+            <EmptyState
+              title={unsearched.length > 0 ? 'No matches in the planes that could be searched' : 'No inventory matches'}
+              description={
+                unsearched.length > 0
+                  ? // Not "no matches": the planes above were never asked.
+                    `Nothing matched in the planes that answered. ${unsearched.join(', ')} could not be searched, so this is not a complete answer.`
+                  : 'Try a system, site, device name, serial, or SSE object.'
+              }
+            />
           ) : null}
           <div className="nt-inventory-results">
             {results.map((node) => (

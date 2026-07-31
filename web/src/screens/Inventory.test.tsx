@@ -134,3 +134,89 @@ describe('Inventory Explorer search', () => {
     expect((screen.getByLabelText('Search inventory') as HTMLInputElement).value).toBe('');
   });
 });
+
+/* The search walks whatever the poller currently holds, so a linked plane
+ * whose read has not come back is never searched at all. "No inventory
+ * matches" over an unsearched plane is a false negative — and an operator
+ * typing a serial to ask "is this device in the estate?" reads it as no. */
+describe('Inventory search completeness', () => {
+  const renderInventory = () =>
+    render(
+      <MemoryRouter initialEntries={['/inventory']}>
+        <Routes>
+          <Route path="/inventory" element={<Inventory />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+  it('refuses to report a clean miss when a plane could not be searched', async () => {
+    mockGetInventoryNode.mockRejectedValue(new Error('not selected'));
+    mockSearchInventory.mockResolvedValue({
+      nodes: [],
+      total: 0,
+      nextCursor: null,
+      query: 'sw-riv',
+      unsearchedPlanes: ['HPE Aruba Central', 'Mist'],
+    });
+    renderInventory();
+    fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'sw-riv' } });
+
+    expect(await screen.findByText('HPE Aruba Central, Mist could not be searched')).toBeTruthy();
+    expect(screen.getByText('No matches in the planes that could be searched')).toBeTruthy();
+    expect(screen.queryByText('No inventory matches')).toBeNull();
+  });
+
+  it('warns beside real results too, because a hit elsewhere proves nothing', async () => {
+    mockGetInventoryNode.mockRejectedValue(new Error('not selected'));
+    mockSearchInventory.mockResolvedValue({
+      nodes: [
+        {
+          id: 'device:mist:one',
+          parentId: 'system-devices:mist',
+          kind: 'device',
+          label: 'Switch one',
+          status: 'current',
+          tone: 'success',
+          hasChildren: false,
+        },
+      ],
+      total: 1,
+      nextCursor: null,
+      query: 'switch',
+      unsearchedPlanes: ['HPE Aruba Central'],
+    });
+    renderInventory();
+    fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'switch' } });
+
+    expect(await screen.findByText('Switch one')).toBeTruthy();
+    expect(screen.getByText('HPE Aruba Central could not be searched')).toBeTruthy();
+  });
+
+  it('keeps the plain miss when every linked plane was searched', async () => {
+    mockGetInventoryNode.mockRejectedValue(new Error('not selected'));
+    mockSearchInventory.mockResolvedValue({
+      nodes: [],
+      total: 0,
+      nextCursor: null,
+      query: 'nope',
+      unsearchedPlanes: [],
+    });
+    renderInventory();
+    fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'nope' } });
+
+    expect(await screen.findByText('No inventory matches')).toBeTruthy();
+    expect(screen.queryByText(/could not be searched/)).toBeNull();
+  });
+
+  it('says nothing when the route never reported on searchability', async () => {
+    // Absent field, not an empty one — an older server that never looked must
+    // not render as one that looked and found every plane searchable.
+    mockGetInventoryNode.mockRejectedValue(new Error('not selected'));
+    mockSearchInventory.mockResolvedValue({ nodes: [], total: 0, nextCursor: null, query: 'nope' });
+    renderInventory();
+    fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'nope' } });
+
+    expect(await screen.findByText('No inventory matches')).toBeTruthy();
+    expect(screen.queryByText(/could not be searched/)).toBeNull();
+  });
+});

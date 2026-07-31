@@ -595,6 +595,32 @@ function allSearchNodes(query = ''): InventoryTreeNode[] {
   return nodes;
 }
 
+/** Linked planes the search could not actually look inside, by display name.
+ *
+ *  allSearchNodes() walks `inventoryPulls()`, which in live mode is whatever
+ *  the poller currently holds. A plane whose read has not come back is simply
+ *  not in that map, so its devices, sites and SSE objects are not searched —
+ *  and the route then reports `total: 0` exactly as if they had been searched
+ *  and found nothing. An operator typing a serial to ask "is this device in
+ *  the estate?" reads that as no. It is a false negative.
+ *
+ *  Demo mode is excluded because demoPulls() is authored and complete: every
+ *  plane in the fixture is searchable by construction.
+ *
+ *  A plane that reported `devices: []` IS searchable — it answered, and the
+ *  answer was nothing. Only an absent contribution counts here. */
+function unsearchedPlanes(): string[] {
+  if (settings.get().demoMode) return [];
+  const pulls = inventoryPulls();
+  return PLANE_IDS.filter((id) => {
+    if (!registry.state(id).linked) return false;
+    const pull = pulls.get(id);
+    if (!pull) return true;
+    // SSE holds objects rather than devices, so it is searchable on `sse`.
+    return id === 'sse' ? pull.sse === undefined : pull.devices === undefined && pull.sites === undefined;
+  }).map((id) => SYSTEM_LABEL[id]);
+}
+
 function exactNode(id: string): InventoryTreeNode | null {
   if (id === SYSTEMS_ROOT) return childrenFor(null)?.[0] ?? null;
   if (id === DORMANT_ROOT) {
@@ -675,7 +701,13 @@ inventoryRouter.get('/inventory/search', (req, res) => {
   }
   const rows = allSearchNodes(query);
   const { rows: nodes, nextCursor } = paginate(rows, cursor, limit);
-  const body: InventorySearchPage = { nodes, total: rows.length, nextCursor, query };
+  const body: InventorySearchPage = {
+    nodes,
+    total: rows.length,
+    nextCursor,
+    query,
+    unsearchedPlanes: unsearchedPlanes(),
+  };
   res.json(body);
 });
 
