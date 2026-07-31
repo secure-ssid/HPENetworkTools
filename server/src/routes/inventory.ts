@@ -329,16 +329,31 @@ function sseReadState(
   return 'failed';
 }
 
-function sseKindNodes(pull: PlanePull): InventoryTreeNode[] {
-  const inventory = pull.sse;
-  if (!inventory) return [];
+/**
+ * The object kinds under the SSE plane.
+ *
+ * `pull` is optional because a linked SSE tenant whose first pull has not
+ * landed has no contribution at all, and this used to return nothing for it.
+ * planeNode counts SSE's children as SSE_OBJECT_KINDS.length unconditionally,
+ * so that plane advertises seven children and is rendered expandable — the
+ * operator opened a node badged 'never-synced' and got an empty list back,
+ * with none of the seven kinds saying why.
+ *
+ * That also left the never-attempted branch below unreachable in the case it
+ * was written for: sseReadState learned to answer 'never-synced' for a kind
+ * with no result object, but a pull that does not exist never reached it.
+ * An absent inventory means every kind is unattempted, which is precisely
+ * what it already knows how to say.
+ */
+function sseKindNodes(pull: PlanePull | undefined): InventoryTreeNode[] {
+  const inventory = pull?.sse;
   return SSE_OBJECT_KINDS.map((kind) => {
-    const result = inventory.kinds[kind];
+    const result = inventory?.kinds[kind];
     // A kind the token could not read is denied even when no per-kind status
     // survived the pull — `unavailable` is the adapter's own record of it.
-    const status = inventory.unavailable.includes(kind)
+    const status = inventory?.unavailable.includes(kind)
       ? descendantState('sse', 'denied')
-      : descendantState('sse', sseReadState(inventory.readStatus?.[kind], result !== undefined));
+      : descendantState('sse', sseReadState(inventory?.readStatus?.[kind], result !== undefined));
     const count = result?.total ?? result?.rows.length;
     return {
       id: nodeId('sse-kind', kind),
@@ -352,7 +367,7 @@ function sseKindNodes(pull: PlanePull): InventoryTreeNode[] {
             ? // Deliberately not "0 objects": nobody has asked this tenant for
               // this kind yet, so the count is unknown rather than zero.
               'not read yet — count unknown'
-            : inventory.readStatus?.[kind]?.state === 'failed'
+            : inventory?.readStatus?.[kind]?.state === 'failed'
               ? inventory.readStatus[kind]!.message
               : undefined,
       count: count ?? undefined,
@@ -468,8 +483,10 @@ function childrenFor(parentId: string | null): InventoryTreeNode[] | null {
       : false;
     if (!plane || !linked) return [];
     const pull = pulls.get(plane);
-    if (!pull) return [];
+    // SSE first: its kinds are a fixed list that can describe itself with no
+    // pull behind it, and the plane is rendered expandable either way.
     if (plane === 'sse') return sseKindNodes(pull);
+    if (!pull) return [];
     const siteCount = siteNodes(plane, pull).length;
     const deviceCount = pull.devices?.length ?? 0;
     const status = descendantState(plane);

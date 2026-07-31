@@ -930,6 +930,100 @@ describe('live-mode screen contracts', () => {
     }
   });
 
+  /* The same fix, one level up. planeNode counts SSE's children as
+   * SSE_OBJECT_KINDS.length unconditionally, so a linked SSE tenant is
+   * rendered expandable whether or not anything has been pulled. childrenFor
+   * bailed with `if (!pull) return []` before SSE was consulted, so opening a
+   * plane badged 'never-synced' produced an empty list and no explanation —
+   * and the never-attempted branch above was unreachable in exactly the case
+   * it was written for. */
+  it('describes every SSE kind when the tenant has never been pulled at all', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mutableState = registry.get('sse').state();
+    const previousState = { ...mutableState };
+    contributions.clear(); // no contribution for sse at all
+    Object.assign(mutableState, {
+      linked: true,
+      health: 'warning',
+      lastSync: null,
+      stale: false,
+      reason: 'never-synced',
+    });
+
+    try {
+      const plane = await getJson('/api/inventory/tree?parent=group%3Asystems');
+      const sseNode = plane.body.nodes.find((n: any) => n.identity?.plane === 'sse');
+      // The plane says it has children, so it must produce them.
+      expect(sseNode).toMatchObject({ hasChildren: true, status: 'never-synced' });
+
+      const kinds = await getJson('/api/inventory/tree?parent=system%3Asse');
+      expect(kinds.status).toBe(200);
+      expect(kinds.body.nodes.length).toBe(sseNode.childCount);
+      expect(kinds.body.nodes.length).toBeGreaterThan(0);
+      for (const node of kinds.body.nodes) {
+        expect(node.status).toBe('never-synced');
+        expect(node.meta).toBe('not read yet — count unknown');
+        // 'unknown' must not be rendered as a count of zero.
+        expect(node.count).toBeUndefined();
+        expect(node.childCount).toBe(0);
+        expect(node.hasChildren).toBe(false);
+      }
+    } finally {
+      Object.assign(mutableState, previousState);
+      contributions.clear();
+    }
+  });
+
+  // An unlinked SSE tenant is a different story: nothing was promised, so
+  // nothing is owed. Naming kinds for a plane the operator never connected
+  // would be noise.
+  it('offers no SSE kinds when the tenant is not linked', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mutableState = registry.get('sse').state();
+    const previousState = { ...mutableState };
+    contributions.clear();
+    Object.assign(mutableState, { linked: false, health: 'unlinked', lastSync: null, stale: false });
+
+    try {
+      const kinds = await getJson('/api/inventory/tree?parent=system%3Asse');
+      expect(kinds.body.nodes).toEqual([]);
+    } finally {
+      Object.assign(mutableState, previousState);
+      contributions.clear();
+    }
+  });
+
+  // A tenant that HAS answered must keep reporting real counts — the fix
+  // must not flatten every kind to 'never read'.
+  it('still reports real SSE counts once the tenant has answered', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mutableState = registry.get('sse').state();
+    const previousState = { ...mutableState };
+    contributions.clear();
+    contributions.set('sse', {
+      sse: {
+        kinds: { users: { rows: [{ id: 'u-1', name: 'a' }], total: 1, truncated: false } },
+        unavailable: [],
+        readStatus: { users: { state: 'ok' } },
+      },
+    });
+    Object.assign(mutableState, {
+      linked: true,
+      health: 'healthy',
+      lastSync: new Date().toISOString(),
+      stale: false,
+    });
+
+    try {
+      const kinds = await getJson('/api/inventory/tree?parent=system%3Asse');
+      const users = kinds.body.nodes.find((n: any) => n.identity?.sseKind === 'users');
+      expect(users).toMatchObject({ status: 'current', meta: '1 object', count: 1 });
+    } finally {
+      Object.assign(mutableState, previousState);
+      contributions.clear();
+    }
+  });
+
   it('marks an SSE kind the token could not read as denied even with no per-kind status', async () => {
     const { registry } = await import('../src/planes/registry');
     const mutableState = registry.get('sse').state();
