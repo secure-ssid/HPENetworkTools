@@ -175,6 +175,42 @@ function descendantState(
   return specific;
 }
 
+/**
+ * What a pull actually says about one dataset the tree groups under a plane.
+ *
+ * Adapters do not empty a dataset they could not read — they omit it, and name
+ * it in `partial` when the section 404'd outright or its paged walk did not
+ * finish. central.ts says so in as many words: "Missing sections are OMITTED,
+ * not emptied ... must read them as unknown rather than as an authoritative
+ * zero with a fresh sync stamp."
+ *
+ * The tree read both through `?? 0` and stamped the result with the plane's
+ * own state, so a section that 404'd on every candidate endpoint and a section
+ * that genuinely holds nothing rendered identically: a group node counting 0,
+ * in green, with nothing under it.
+ *
+ * `count` is therefore left UNDEFINED when nothing was read — InventoryTreeNode
+ * makes it optional precisely so an unknown total can be absent rather than
+ * zero, and the tree suppresses the number when it is. A truncated read keeps
+ * its count, because those rows are real; it is the total that is a floor, and
+ * the note says which.
+ */
+function datasetFacts(
+  pull: PlanePull,
+  key: 'sites' | 'devices',
+  rows: number,
+  planeStatus: InventoryNodeReadState,
+): { status: InventoryNodeReadState; count?: number; meta?: string } {
+  const absent = pull[key] === undefined;
+  if (pull.partial?.includes(key)) {
+    return absent
+      ? { status: 'failed', meta: `${key} could not be read on the last pull — this is not an empty list` }
+      : { status: 'failed', count: rows, meta: `read stopped early — at least ${rows}, the total is unknown` };
+  }
+  if (absent) return { status: 'unsupported', meta: `${key} not contributed by this plane` };
+  return { status: planeStatus, count: rows };
+}
+
 /** True when the plane holds credentials and is actually polled. */
 function planeLinked(id: PlaneId): boolean {
   return settings.get().demoMode
@@ -489,16 +525,21 @@ function childrenFor(parentId: string | null): InventoryTreeNode[] | null {
     if (!pull) return [];
     const siteCount = siteNodes(plane, pull).length;
     const deviceCount = pull.devices?.length ?? 0;
-    const status = descendantState(plane);
+    const planeStatus = descendantState(plane);
+    const sites = datasetFacts(pull, 'sites', siteCount, planeStatus);
+    const devices = datasetFacts(pull, 'devices', deviceCount, planeStatus);
     return [
       {
         id: nodeId('system-sites', plane),
         parentId,
         kind: 'device-group',
         label: 'Sites',
-        count: siteCount,
-        status,
-        tone: stateTone(status),
+        ...sites,
+        tone: stateTone(sites.status),
+        // childCount stays: it describes the rows this node can actually show,
+        // which is a different question from how many the plane holds. Sites
+        // are reconstructed from device siteIds when the site list itself went
+        // unread, so there can be children under an unknown total.
         hasChildren: siteCount > 0,
         childCount: siteCount,
         target: '/sites',
@@ -508,9 +549,8 @@ function childrenFor(parentId: string | null): InventoryTreeNode[] | null {
         parentId,
         kind: 'device-group',
         label: 'Devices',
-        count: deviceCount,
-        status,
-        tone: stateTone(status),
+        ...devices,
+        tone: stateTone(devices.status),
         hasChildren: deviceCount > 0,
         childCount: deviceCount,
         target: `/devices?plane=${encodeURIComponent(plane)}`,
@@ -625,7 +665,16 @@ function allSearchNodes(query = ''): InventoryTreeNode[] {
  *  plane in the fixture is searchable by construction.
  *
  *  A plane that reported `devices: []` IS searchable — it answered, and the
- *  answer was nothing. Only an absent contribution counts here. */
+ *  answer was nothing. Only an absent contribution counts here.
+ *
+ *  A dataset named in `partial` counts too, and used not to. That list is the
+ *  adapter saying it could not read a section in full — an all-404 section, or
+ *  a paged walk that stopped early and shipped the rows it had. Either way the
+ *  search ran over a prefix of the estate, so the answer it gives is not the
+ *  answer to the question asked. The absent-contribution test also had to be
+ *  `devices AND sites both missing` before a plane counted; a `partial` entry
+ *  needs no such agreement, because it is an explicit admission about exactly
+ *  one dataset. */
 function unsearchedPlanes(): string[] {
   if (settings.get().demoMode) return [];
   const pulls = inventoryPulls();
@@ -634,7 +683,9 @@ function unsearchedPlanes(): string[] {
     const pull = pulls.get(id);
     if (!pull) return true;
     // SSE holds objects rather than devices, so it is searchable on `sse`.
-    return id === 'sse' ? pull.sse === undefined : pull.devices === undefined && pull.sites === undefined;
+    if (id === 'sse') return pull.sse === undefined || (pull.partial?.includes('sse') ?? false);
+    if (pull.partial?.includes('devices') || pull.partial?.includes('sites')) return true;
+    return pull.devices === undefined && pull.sites === undefined;
   }).map((id) => SYSTEM_LABEL[id]);
 }
 
