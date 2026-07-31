@@ -3,6 +3,7 @@ import type {
   DiagnosticAuditEntry,
   DiagnosticEligibleDevice,
   DiagnosticJob,
+  DiagnosticProbe,
   DiagnosticReview,
   DiagnosticTracerouteOptions,
   Plane,
@@ -28,6 +29,41 @@ import {
 } from '../nightdesk';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'timed_out', 'cancelled']);
+
+/**
+ * The distinct routers that answered a hop, in the order they first did.
+ *
+ * A hop is probed several times. Three replies from one router is one
+ * address, not the same string printed three times; two different addresses
+ * is a load-balanced path, which traceroute(8) also prints and which is worth
+ * seeing. Probes that did not reply contribute no address — their silence is
+ * carried by the time column, where it belongs.
+ */
+function hopAddresses(probes: DiagnosticProbe[]): string {
+  const seen: string[] = [];
+  for (const probe of probes) {
+    const name = probe.reverseDnsResolution;
+    const ip = probe.ipAddress;
+    if (name === null && ip === null) continue;
+    const text = name !== null && ip !== null ? `${name} (${ip})` : (name ?? ip ?? '');
+    if (!seen.includes(text)) seen.push(text);
+  }
+  return seen.join(', ') || '*';
+}
+
+/**
+ * One probe's round trip.
+ *
+ * `*` is no reply at all. `—` is a reply the plane put no time on, which is a
+ * different fact and must not be drawn as a timeout — the hop is reachable,
+ * we just were not told how far. The unit is appended only when the plane did
+ * not already word it, since this arrives as free text.
+ */
+function probeTime(probe: DiagnosticProbe): string {
+  const ms = probe.responseTimeMilliseconds;
+  if (ms !== null && ms.trim() !== '') return /[a-z]/i.test(ms) ? ms : `${ms} ms`;
+  return probe.ipAddress !== null || probe.reverseDnsResolution !== null ? '—' : '*';
+}
 
 // Job-status polling cadence. Once a job is running the panel polls at a
 // steady 1s cadence (matching the pre-existing behaviour); on a transient
@@ -446,10 +482,25 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
             </Badge>
             <span style={{ fontSize: 12 }}>{job.progressPercent}% · {job.message}</span>
           </div>
-          {job.result?.hops.map((hop) => (
-            <div key={hop.hop} style={{ display: 'flex', gap: 12, padding: '6px 0', fontFamily: 'var(--nd-font-mono)', fontSize: 11 }}>
+          {/* What the run was actually aimed at. `resolvedIp` is the answer to
+              "am I even tracing to the host I meant?" — a stale DNS record
+              sends a perfect-looking trace to the wrong address. */}
+          {job.result && (job.result.destination !== null || job.result.resolvedIp !== null) ? (
+            <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)', paddingTop: 8 }}>
+              to {job.result.destination ?? 'the requested target'}
+              {job.result.resolvedIp !== null ? ` (${job.result.resolvedIp})` : ''}
+            </div>
+          ) : null}
+          {/* Hops are keyed by position: an unresponsive hop normalises to '*'
+              server-side, and a firewall that drops TTL-exceeded produces a
+              run of them that would otherwise share one React key. */}
+          {job.result?.hops.map((hop, index) => (
+            <div key={`${index}-${hop.hop}`} style={{ display: 'flex', gap: 12, padding: '6px 0', fontFamily: 'var(--nd-font-mono)', fontSize: 11 }}>
               <span style={{ width: 24 }}>{hop.hop}</span>
-              <span>{hop.probes.map((probe) => probe.reverseDnsResolution ?? probe.ipAddress ?? '*').join(' · ') || '*'}</span>
+              <span style={{ flex: 1 }}>{hopAddresses(hop.probes)}</span>
+              <span style={{ color: 'var(--nd-text-muted)', whiteSpace: 'nowrap' }}>
+                {hop.probes.map(probeTime).join(' · ') || '*'}
+              </span>
             </div>
           ))}
           {!TERMINAL.has(job.state) ? (

@@ -203,6 +203,64 @@ describe('DiagnosticsPanel', () => {
     expect(screen.getAllByText('*').length).toBeGreaterThanOrEqual(2);
   });
 
+  /* A traceroute exists to answer "where does it get slow" and "where does it
+     stop". The plane sent per-probe times and the panel printed only names,
+     so the one question it was run to answer had no answer on screen. */
+  it('prints the round trip of every probe, and the address only once per router', async () => {
+    eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
+    history.mockResolvedValue(historyOf());
+    review.mockResolvedValue(apReview());
+    start.mockResolvedValue(apJob({
+      state: 'succeeded',
+      progressPercent: 100,
+      finishedAt: '2026-07-29T11:00:02Z',
+      message: 'Traceroute completed',
+      result: {
+        device: 'ap-1',
+        serial: 'AP-SERIAL',
+        plane: 'CENTRAL',
+        destination: 'files.example.net',
+        resolvedIp: '198.51.100.9',
+        hops: [
+          {
+            hop: '1',
+            probes: [
+              { ipAddress: '10.1.1.1', reverseDnsResolution: 'gw.example.net', responseTimeMilliseconds: '1.203' },
+              { ipAddress: '10.1.1.1', reverseDnsResolution: 'gw.example.net', responseTimeMilliseconds: '1.180' },
+              { ipAddress: null, reverseDnsResolution: null, responseTimeMilliseconds: null },
+            ],
+          },
+          {
+            hop: '2',
+            probes: [
+              // Answered, but the plane put no time on it — reachable, not a
+              // timeout, and it must not be drawn as one.
+              { ipAddress: '10.2.0.1', reverseDnsResolution: null, responseTimeMilliseconds: null },
+              // Already carries its own unit; appending another would read '9 ms ms'.
+              { ipAddress: '10.2.0.5', reverseDnsResolution: null, responseTimeMilliseconds: '9 msec' },
+            ],
+          },
+        ],
+      },
+    }));
+    render(<DiagnosticsPanel deviceName="ap-1" plane="CENTRAL" serial="AP-SERIAL" />);
+    fireEvent.change(await screen.findByLabelText('Traceroute target'), { target: { value: 'files.example.net' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Review traceroute' }));
+    await screen.findByText('Operator review');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and run traceroute' }));
+    await screen.findByText('succeeded');
+
+    // Where the run was actually aimed — a stale DNS record sends a perfect
+    // trace to the wrong host and the panel never said which host.
+    expect(screen.getByText('to files.example.net (198.51.100.9)')).toBeTruthy();
+    // Three probes, three outcomes, one address.
+    expect(screen.getByText('gw.example.net (10.1.1.1)')).toBeTruthy();
+    expect(screen.getByText('1.203 ms · 1.180 ms · *')).toBeTruthy();
+    // A load-balanced hop still shows both routers.
+    expect(screen.getByText('10.2.0.1, 10.2.0.5')).toBeTruthy();
+    expect(screen.getByText('— · 9 msec')).toBeTruthy();
+  });
+
   it('submits only documented CX options and renders an async failure', async () => {
     vi.useFakeTimers();
     eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [CX] });
