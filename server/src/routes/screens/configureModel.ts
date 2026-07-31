@@ -218,6 +218,46 @@ export function demoConfigureQueue(): QueuedChangeRow[] {
 }
 
 /**
+ * Today's pushes from the broker audit log, split by what actually became of
+ * them. The Configure tile used to count only `applied` and report nothing
+ * else, so a day on which every push was rejected read exactly like a day on
+ * which nobody pushed at all — "0 · from the broker audit log".
+ *
+ * The three buckets stay separate on purpose. `applied` is the only one that
+ * means the change is on the device. `accepted` is a 202: the plane took the
+ * request and has not confirmed it, which the broker records distinctly and
+ * this must not spend by rounding it into either neighbour. Everything else
+ * (rejected, network-error, lease-expired, unverified-path) is work the
+ * operator attempted and did not get.
+ *
+ * Read through readRecentEvents rather than recentEvents, per that method's
+ * own instruction: a rotated generation that cannot be opened makes the log
+ * come back short, and a count taken over a short log is a smaller number
+ * reported with full confidence. `unreadable` carries that out to the tile
+ * so it can decline to be certain.
+ */
+export function pushOutcomesToday(): {
+  applied: number;
+  accepted: number;
+  failed: number;
+  total: number;
+  unreadable: number;
+} {
+  const today = new Date().toISOString().slice(0, 10);
+  const read = writeBroker.readRecentEvents(1000);
+  const pushes = read.events.filter((event) => event.ts.startsWith(today) && event.event === 'push');
+  const applied = pushes.filter((event) => event.result.startsWith('applied')).length;
+  const accepted = pushes.filter((event) => event.result.startsWith('accepted')).length;
+  return {
+    applied,
+    accepted,
+    failed: pushes.length - applied - accepted,
+    total: pushes.length,
+    unreadable: read.unreadable.length,
+  };
+}
+
+/**
  * Demo stats: the authored strip, with the two tiles that describe the
  * PORTAL's own state (the queue, and what the broker really pushed today)
  * computed. Config objects and Drift open keep the fixture's values and
@@ -226,8 +266,12 @@ export function demoConfigureQueue(): QueuedChangeRow[] {
  */
 export function demoConfigureStats(queue: QueuedChangeRow[]): StatDef[] {
   const computed = liveConfigureStats(queue, null, '', null);
-  const pushedToday = Number(computed[1]!.value);
-  return [computed[0]!, pushedToday > 0 ? computed[1]! : CONFIGURE_STATS[1]!, CONFIGURE_STATS[2]!, CONFIGURE_STATS[3]!];
+  // Any real push today displaces the authored tile, not just a successful
+  // one. Gating on the applied count alone meant a day of nothing but
+  // rejections fell back to the fixture's cheerful number, which is the one
+  // case where the operator most needs the real one.
+  const pushed = pushOutcomesToday().total > 0;
+  return [computed[0]!, pushed ? computed[1]! : CONFIGURE_STATS[1]!, CONFIGURE_STATS[2]!, CONFIGURE_STATS[3]!];
 }
 
 export function liveConfigureStats(
@@ -240,10 +284,22 @@ export function liveConfigureStats(
   const applying = queue.filter((change) => change.state === 'applying').length;
   const needsWindow = queue.filter((change) => change.state === 'needs window').length;
   const consoleOnly = queue.filter((change) => change.state === 'console').length;
-  const today = new Date().toISOString().slice(0, 10);
-  const pushedToday = writeBroker
-    .recentEvents(1000)
-    .filter((event) => event.ts.startsWith(today) && event.event === 'push' && event.result.startsWith('applied')).length;
+  const {
+    applied: pushedToday,
+    accepted: acceptedToday,
+    failed: failedToday,
+    unreadable: unreadableLogs,
+  } = pushOutcomesToday();
+  const pushDetail =
+    [
+      failedToday > 0 ? `▲ ${failedToday} failed` : null,
+      acceptedToday > 0 ? `${acceptedToday} accepted, unconfirmed` : null,
+      unreadableLogs > 0
+        ? `${unreadableLogs} log generation${unreadableLogs === 1 ? '' : 's'} unreadable — count may be short`
+        : null,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(' · ') || 'from the broker audit log';
   const queueDetail = [
     `${ready} ready`,
     applying > 0 ? `${applying} applying` : null,
@@ -254,7 +310,24 @@ export function liveConfigureStats(
     .join(' · ');
   return [
     { label: 'Queued changes', value: String(queue.length), delta: queueDetail, tone: 'neutral' },
-    { label: 'Pushed today', value: String(pushedToday), delta: 'from the broker audit log', tone: pushedToday > 0 ? 'positive' : 'neutral' },
+    {
+      label: 'Pushed today',
+      // The headline stays the count of changes that genuinely landed. It is
+      // not inflated with attempts, and green is withheld the moment one of
+      // them failed — a push that worked does not cancel out one that didn't.
+      value: String(pushedToday),
+      delta: pushDetail,
+      // Green is a claim that today's pushes all landed. A failure withdraws
+      // it outright; an acceptance nobody has confirmed withdraws it too,
+      // because the change may not be on the device; and a hole in the record
+      // withdraws the confidence to make the claim at all.
+      tone:
+        failedToday > 0
+          ? 'negative'
+          : pushedToday > 0 && acceptedToday === 0 && unreadableLogs === 0
+            ? 'positive'
+            : 'neutral',
+    },
     {
       label: 'Config objects',
       value: configObjects === null ? '—' : String(configObjects),
