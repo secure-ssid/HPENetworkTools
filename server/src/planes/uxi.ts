@@ -52,7 +52,7 @@
  * never in a URL; the call log records method + path + ms + status only.
  */
 
-import type { AlertRow, DeviceRow, Sev, SiteId, Tone } from '@hpe/shared';
+import type { AlertRow, DeviceRow, PlaneDatasetKey, Sev, SiteId, Tone } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
@@ -409,7 +409,19 @@ export class UxiAdapter implements PlaneAdapter {
       this.stateRef.health = 'healthy'; // first sync done
     }
 
-    return truncated ? { devices, alerts, partial: ['devices'] } : { devices, alerts };
+    /* Issues arrive from the per-sensor status call, so a sensor whose status
+       was never read contributes no issues — and there is nothing in the
+       alerts array to show for it. Both gaps do that: the status loop stops at
+       MAX_SENSOR_STATUSES, and any sensor that answered non-2xx is skipped.
+       "4 ongoing issues" then describes the sensors that were asked, not the
+       estate, and until the pull says so the plane reports it green with a
+       fresh stamp behind it. The note already carried the numbers; partial[]
+       is what stops them being read as the whole picture. */
+    const partial: PlaneDatasetKey[] = [
+      ...(truncated ? (['devices'] as const) : []),
+      ...(named.length > MAX_SENSOR_STATUSES || statusFailures > 0 ? (['alerts'] as const) : []),
+    ];
+    return partial.length > 0 ? { devices, alerts, partial } : { devices, alerts };
   }
 
   // -- internals -------------------------------------------------------------

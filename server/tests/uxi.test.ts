@@ -321,6 +321,8 @@ describe('UxiAdapter.pull', () => {
     expect(pull.devices?.[1]).toMatchObject({ name: 'uxi-cam02-1', state: 'unknown' });
     expect(st.note).toContain('2 status reads failed');
     expect(st.health).toBe('degraded');
+    // Issues come from the status call, so no status read means no issue read.
+    expect(pull.partial).toEqual(['alerts']);
   });
 
   it('stays healthy when one status read fails but another proves live state', async () => {
@@ -336,6 +338,18 @@ describe('UxiAdapter.pull', () => {
     expect(pull.devices?.[1]).toMatchObject({ name: 'uxi-cam02-1', state: 'up' });
     expect(st.note).toContain('1 status reads failed');
     expect(st.health).toBe('healthy');
+    /* Not degraded — one sensor did prove live state — but not a whole read
+       either. The issues of the sensor that would not answer are missing from
+       `alerts`, so the count describes the sensors that replied and the plane
+       must not be stamped as a complete sync behind it. */
+    expect(pull.partial).toEqual(['alerts']);
+  });
+
+  it('declares nothing partial when every sensor answered', async () => {
+    const { adapter } = makeAdapter(fakeFetch({}));
+    const pull = await adapter.pull();
+    expect(pull.devices?.length).toBeGreaterThan(0);
+    expect(pull.partial).toBeUndefined();
   });
 
   // The spec's maximum page size is 100 (default 50): asking for it halves the

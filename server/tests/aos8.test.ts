@@ -396,6 +396,20 @@ describe('Aos8Adapter.pull', () => {
     expect(pull.clients).toBeUndefined();
     expect(st.note).toContain('client table unavailable');
     expect(st.note).toContain("section 'show global-user-table list' failed");
+    /* And declared, not just described. partial[] is the contract that holds
+       the plane at 'warning' in markSyncResult and keeps the dataset out of
+       lastSyncFor; the note is prose on one screen. Without this a controller
+       whose client table had been refusing for hours wore a green badge —
+       every other plane here declares its unread datasets this way (see
+       mist.test.ts's markSyncResult('mist', true, { partial: ['clients'] })). */
+    expect(pull.partial).toEqual(['clients']);
+  });
+
+  it('declares nothing partial when every section answered', async () => {
+    const { adapter } = makeAdapter(fakeFetch({}));
+    const pull = await adapter.pull();
+    expect(pull.clients).toHaveLength(2);
+    expect(pull.partial).toBeUndefined();
   });
 
   // AOS-8 requires every MD to run the master's train, so the master's own

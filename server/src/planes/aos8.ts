@@ -526,8 +526,14 @@ export class Aos8Adapter implements PlaneAdapter {
       );
     }
 
-    // Clients are additive (README: cluster, APs, clients): a failing client
-    // table must not lose the inventory, but the gap is named in the note.
+    /* Clients are additive (README: cluster, APs, clients): a failing client
+       table must not lose the inventory, but the gap is named in the note —
+       AND in the pull's partial[], which is what actually holds the plane off
+       'healthy'. The note is prose on one screen; partial[] is the contract
+       every other plane uses to say 'half read', and without it a controller
+       whose client table has been refusing for hours carried a green badge
+       and a fresh sync stamp. greenlake.ts puts it plainly at the top of the
+       file: the plane reads 'half read' rather than green. */
     let clients: ClientRow[] | null = null;
     let clientsError: string | null = null;
     try {
@@ -547,7 +553,7 @@ export class Aos8Adapter implements PlaneAdapter {
         : ` · client table unavailable (${clientsError})`);
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 
-    return clients !== null ? { devices, clients } : { devices };
+    return clients !== null ? { devices, clients } : { devices, partial: ['clients'] };
   }
 
   // -- internals -------------------------------------------------------------
