@@ -1885,7 +1885,17 @@ export const CONNECT_FIELDS: Record<SystemTypeKey, ConnectField[]> = {
     { key: 'baseUrl', label: 'Base URL', help: 'Leave blank for app.opsramp.net.', optional: true },
   ],
   edgeconnect: [
-    { key: 'username', label: 'Username', help: 'Read-only management account on the Orchestrator.' },
+    {
+      key: 'apiKey',
+      label: 'API Key',
+      help: 'Preferred for automation — generate from Orchestrator Settings › API Keys. If set, username/password are not required.',
+      secret: true,
+    },
+    {
+      key: 'username',
+      label: 'Username',
+      help: 'Read-only management account on the Orchestrator (required if no API key).',
+    },
     { key: 'password', label: 'Password', help: 'Stored with the plane credentials.', secret: true },
   ],
 };

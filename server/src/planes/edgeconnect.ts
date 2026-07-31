@@ -202,6 +202,8 @@ export function mapEdgeConnectAlarm(raw: unknown, nowMs: number = Date.now()): A
 
 export class EdgeConnectAdapter implements PlaneAdapter {
   private readonly baseUrl: string;
+  /** Static API key (preferred — no session lifecycle). Null when using username/password. */
+  private readonly apiKey: string | null;
   private readonly username: string;
   private readonly password: string;
   private token: string | null = null;
@@ -214,18 +216,25 @@ export class EdgeConnectAdapter implements PlaneAdapter {
     private readonly fetchImpl: FetchLike = httpsFetch(creds.verifyTls === 'true'),
   ) {
     if (!EdgeConnectAdapter.isComplete(creds)) {
-      throw new Error('edgeconnect requires baseUrl plus username/password');
+      throw new Error('edgeconnect requires baseUrl plus either an apiKey or username/password');
     }
-    this.baseUrl = httpsBase(creds.baseUrl, 'the login carries the password').replace(/\/+$/, '');
-    this.username = creds.username.trim();
-    this.password = creds.password;
+    this.baseUrl = httpsBase(creds.baseUrl, 'the api key or login password rides every call').replace(/\/+$/, '');
+    // API key path (preferred for automation — no session to manage)
+    const key = typeof creds.apiKey === 'string' ? creds.apiKey.trim() : '';
+    this.apiKey = key || null;
+    this.username = this.apiKey ? '' : creds.username.trim();
+    this.password = this.apiKey ? '' : creds.password;
   }
 
   static isComplete(creds: PlaneCredentials | null): boolean {
     if (!creds) return false;
-    return [creds.baseUrl, creds.username, creds.password].every(
-      (v) => typeof v === 'string' && v.trim().length > 0,
-    );
+    const hasUrl = typeof creds.baseUrl === 'string' && creds.baseUrl.trim().length > 0;
+    if (!hasUrl) return false;
+    // API key OR username+password
+    const hasApiKey = typeof creds.apiKey === 'string' && creds.apiKey.trim().length > 0;
+    const hasUserPass =
+      [creds.username, creds.password].every((v) => typeof v === 'string' && v.trim().length > 0);
+    return hasApiKey || hasUserPass;
   }
 
   state(): PlaneState {
@@ -248,6 +257,7 @@ export class EdgeConnectAdapter implements PlaneAdapter {
    * unreachable.
    */
   async dispose(): Promise<void> {
+    if (this.apiKey) return; // API key sessions have no server-side logout
     const token = this.token;
     this.token = null;
     if (token) await this.logout(token);
@@ -286,12 +296,20 @@ export class EdgeConnectAdapter implements PlaneAdapter {
   // -- internals -------------------------------------------------------------
 
   /**
-   * One GET through the REST API. A 401 means the token died (Orchestrator
-   * restart, session cleared by an admin) — drop the cached token, re-login
-   * once, retry once. A body that is not a JSON array is a failure, never an
-   * empty table.
+   * One GET through the REST API.
+   * - API key mode: send `X-AUTH-TOKEN` on every call, no session lifecycle.
+   * - Session mode: a 401 means the token died (Orchestrator restart, session
+   *   cleared by an admin) — drop the cached token, re-login once, retry once.
+   * A body that is not a JSON array is a failure, never an empty table.
    */
   private async getArray(path: string, logPath: string): Promise<unknown[]> {
+    if (this.apiKey) {
+      const res = await this.get(path, logPath, this.apiKey);
+      if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status} from ${logPath}`);
+      if (res.parseError) throw new Error(`non-JSON body from ${logPath} (HTTP ${res.status}, ${res.parseError})`);
+      if (!Array.isArray(res.body)) throw new Error(`unexpected (non-array) body from ${logPath}`);
+      return res.body;
+    }
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const token = await this.login();
       const res = await this.get(path, logPath, token);
