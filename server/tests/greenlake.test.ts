@@ -731,6 +731,74 @@ describe('GreenLakeAdapter.pull()', () => {
     expect(seen.at(-1)!.body).toMatchObject({ scope: ['grn:glp/workspaces/ws-1'] });
   });
 
+  /**
+   * A 202 on any action, not just the two that were known to be async.
+   *
+   * The adapter used to hardcode outcome:'applied' for six of the eight
+   * actions and throw the response status away in mutate(), so a workspace
+   * answering "I have taken this and will validate it later" was reported as
+   * a completed change. GLP answers 202 on more endpoints than its docs admit,
+   * and the two worst to get wrong are the role grant and the revoke: an
+   * operator who reads "Revoked" stops checking whether access actually went.
+   */
+  it('reports a 202 on any action as accepted, never as applied', async () => {
+    for (const [action, input] of [
+      ['inviteUser', { email: 'a@b.com' }],
+      ['deleteUser', { id: 'u-1' }],
+      ['createLocation', {
+        name: 'HQ', streetAddress: '1 St', city: 'Austin', postalCode: '78701',
+        country: 'United States', contactName: 'A B', contactEmail: 'a@b.com', contactPhone: '+1',
+      }],
+      ['deleteLocation', { id: 'loc-1' }],
+      ['assignRole', { principal: 'user:x', role: 'grn:glp/…/roles/ccs.operator' }],
+      ['removeRoleAssignment', { id: 'ra-1' }],
+    ] as const) {
+      const { fn } = fakeFetch((method, pathname) => {
+        if (method === 'POST' && pathname === TOKEN_PATH) {
+          return { body: { access_token: 't', expires_in: 7200 } };
+        }
+        return { status: 202, body: { transactionId: 'txn-9' } };
+      });
+      const adapter = new GreenLakeAdapter({ ...CREDS, scopes: 'write:brokered' }, makeState(), () => {}, fn);
+      const r = await adapter.write(action, input);
+      expect(r.outcome, `${action} on a 202`).toBe('accepted');
+      // The handle the operator needs to chase it up must survive.
+      expect(r.transactionId, `${action} transactionId`).toBe('txn-9');
+      // The sentence has to agree with the field beside it — "Granted" next to
+      // outcome:'accepted' is the same lie told twice.
+      expect(r.detail, `${action} detail`).toMatch(/Submitted|not confirmed/);
+    }
+  });
+
+  it('treats a transactionId on a 200 as accepted too', async () => {
+    // GLP sometimes hands back a handle for out-of-band work alongside a plain
+    // 200. Either signal alone means the change has not landed.
+    const { fn } = fakeFetch((method, pathname) => {
+      if (method === 'POST' && pathname === TOKEN_PATH) {
+        return { body: { access_token: 't', expires_in: 7200 } };
+      }
+      return { status: 200, body: { id: 'ra-2', transactionId: 'txn-3' } };
+    });
+    const adapter = new GreenLakeAdapter({ ...CREDS, scopes: 'write:brokered' }, makeState(), () => {}, fn);
+    const r = await adapter.write('assignRole', { principal: 'user:x', role: 'grn:glp/…/roles/ccs.operator' });
+    expect(r).toMatchObject({ outcome: 'accepted', transactionId: 'txn-3' });
+  });
+
+  it('still says applied for a plain synchronous 200 with no transaction handle', async () => {
+    // The other half of the rule: a real, completed change must not be
+    // downgraded into a caveat nobody needs to act on.
+    const { fn } = fakeFetch((method, pathname) => {
+      if (method === 'POST' && pathname === TOKEN_PATH) {
+        return { body: { access_token: 't', expires_in: 7200 } };
+      }
+      return { status: 200, body: { id: 'ra-2' } };
+    });
+    const adapter = new GreenLakeAdapter({ ...CREDS, scopes: 'write:brokered' }, makeState(), () => {}, fn);
+    const r = await adapter.write('assignRole', { principal: 'user:x', role: 'grn:glp/…/roles/ccs.operator' });
+    expect(r).toMatchObject({ outcome: 'applied', transactionId: null });
+    expect(r.detail).toBe('Granted ccs.operator to user:x');
+  });
+
   it('refuses a write missing a required field before calling the workspace', async () => {
     const { fn, calls } = fakeFetch(routeHandler(HAPPY_ROUTES));
     const adapter = new GreenLakeAdapter({ ...CREDS, scopes: 'write:brokered' }, makeState(), () => {}, fn);

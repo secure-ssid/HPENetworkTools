@@ -1016,6 +1016,30 @@ export class GreenLakeAdapter implements PlaneAdapter {
   // -- writes ----------------------------------------------------------------
 
   /**
+   * Decide whether a mutation actually happened, from what the workspace said.
+   *
+   * Two independent signals, and either one alone means "not yet":
+   *
+   *  - **202 Accepted.** The API has taken the request and will validate it
+   *    afterwards. Reporting that as 'applied' claims an outcome the workspace
+   *    has not reached — and GLP answers 202 on more endpoints than its docs
+   *    admit, which is exactly the case a hardcoded 'applied' gets wrong.
+   *  - **A transactionId in the body.** GLP hands one back for work it intends
+   *    to complete out of band, sometimes alongside a 200.
+   *
+   * Only a synchronous status with no transaction handle is 'applied'.
+   */
+  private static settle(
+    res: { status: number; body: unknown },
+  ): { outcome: 'applied' | 'accepted'; transactionId: string | null } {
+    const transactionId = str(obj(res.body).transactionId);
+    return {
+      outcome: res.status === 202 || transactionId !== null ? 'accepted' : 'applied',
+      transactionId,
+    };
+  }
+
+  /**
    * Perform one reviewed platform write. The action is a closed allowlist
    * (GREENLAKE_WRITE_ACTIONS) resolved to a fixed method + path here — a
    * caller can never supply a path, a method, or an arbitrary body shape.
@@ -1032,18 +1056,33 @@ export class GreenLakeAdapter implements PlaneAdapter {
     switch (action) {
       case 'inviteUser': {
         const email = requireField(input, 'email');
-        const body = await this.mutate('POST', '/identity/v1/users', { email, sendWelcomeEmail: true });
+        const res = await this.mutate('POST', '/identity/v1/users', { email, sendWelcomeEmail: true });
+        const { outcome, transactionId } = GreenLakeAdapter.settle(res);
         return {
           action,
-          outcome: 'applied',
-          detail: `Invited ${email} to the workspace`,
-          id: str(obj(body).id),
+          outcome,
+          detail:
+            outcome === 'accepted'
+              ? `Submitted an invitation for ${email}; the workspace has not confirmed it yet`
+              : `Invited ${email} to the workspace`,
+          id: str(obj(res.body).id),
+          transactionId,
         };
       }
       case 'deleteUser': {
         const id = requireField(input, 'id');
-        await this.mutate('DELETE', `/identity/v1/users/${encodeURIComponent(id)}`);
-        return { action, outcome: 'applied', detail: `Removed workspace user ${id}`, id };
+        const res = await this.mutate('DELETE', `/identity/v1/users/${encodeURIComponent(id)}`);
+        const { outcome, transactionId } = GreenLakeAdapter.settle(res);
+        return {
+          action,
+          outcome,
+          detail:
+            outcome === 'accepted'
+              ? `Submitted removal of workspace user ${id}; the workspace has not confirmed it yet`
+              : `Removed workspace user ${id}`,
+          id,
+          transactionId,
+        };
       }
       case 'createLocation': {
         const name = requireField(input, 'name');
@@ -1071,54 +1110,76 @@ export class GreenLakeAdapter implements PlaneAdapter {
           email: requireField(input, 'contactEmail'),
           phoneNumber: requireField(input, 'contactPhone'),
         };
-        const body = await this.mutate('POST', '/locations/v1/locations', {
+        const res = await this.mutate('POST', '/locations/v1/locations', {
           name,
           ...(str(input.description) ? { description: str(input.description) } : {}),
           addresses: [address],
           contacts: [contact],
         });
+        const { outcome, transactionId } = GreenLakeAdapter.settle(res);
         return {
           action,
-          outcome: 'applied',
-          detail: `Created location '${name}'`,
-          id: str(obj(body).id),
+          outcome,
+          detail:
+            outcome === 'accepted'
+              ? `Submitted location '${name}'; the workspace has not confirmed it yet`
+              : `Created location '${name}'`,
+          id: str(obj(res.body).id),
+          transactionId,
         };
       }
       case 'deleteLocation': {
         const id = requireField(input, 'id');
-        await this.mutate('DELETE', `/locations/v1/locations/${encodeURIComponent(id)}`);
-        return { action, outcome: 'applied', detail: `Deleted location ${id}`, id };
+        const res = await this.mutate('DELETE', `/locations/v1/locations/${encodeURIComponent(id)}`);
+        const { outcome, transactionId } = GreenLakeAdapter.settle(res);
+        return {
+          action,
+          outcome,
+          detail:
+            outcome === 'accepted'
+              ? `Submitted deletion of location ${id}; the workspace has not confirmed it yet`
+              : `Deleted location ${id}`,
+          id,
+          transactionId,
+        };
       }
       case 'addDevices': {
         const serial = requireField(input, 'serialNumber');
         const mac = requireField(input, 'macAddress');
         // GLP rejects the request unless all three category arrays are present,
         // so the two this portal does not manage are sent explicitly empty.
-        const body = await this.mutate('POST', '/devices/v1/devices', {
+        const res = await this.mutate('POST', '/devices/v1/devices', {
           network: [{ serialNumber: serial, macAddress: mac }],
           storage: [],
           compute: [],
         });
-        const txn = str(obj(body).transactionId);
+        const { outcome, transactionId } = GreenLakeAdapter.settle(res);
         return {
           action,
-          outcome: txn !== null ? 'accepted' : 'applied',
-          detail: `Added network device ${serial} to the workspace`,
-          transactionId: txn,
+          outcome,
+          // The old wording said "Added" even when the outcome was 'accepted',
+          // so the sentence contradicted the field next to it.
+          detail:
+            outcome === 'accepted'
+              ? `Submitted network device ${serial} for onboarding; the workspace has not confirmed it yet`
+              : `Added network device ${serial} to the workspace`,
+          transactionId,
         };
       }
       case 'addSubscription': {
         const key = requireField(input, 'key');
-        const body = await this.mutate('POST', '/subscriptions/v1/subscriptions', {
+        const res = await this.mutate('POST', '/subscriptions/v1/subscriptions', {
           subscriptions: [{ key }],
         });
         return {
           action,
           // Always async: the workspace validates the key after accepting it,
-          // so this is 'submitted for validation', never 'added'.
+          // so this is 'submitted for validation', never 'added'. Pinned here
+          // rather than derived, because a 200 from this endpoint still does
+          // not mean the key was accepted.
           outcome: 'accepted',
           detail: `Submitted subscription key ${key} for validation`,
-          transactionId: str(obj(body).transactionId),
+          transactionId: str(obj(res.body).transactionId),
         };
       }
       case 'assignRole': {
@@ -1128,22 +1189,46 @@ export class GreenLakeAdapter implements PlaneAdapter {
         const scope = Array.isArray(input.scope) && input.scope.length > 0
           ? input.scope.filter((s): s is string => typeof s === 'string')
           : [this.workspaceGrn];
-        const body = await this.mutate('POST', '/authorization/v1beta1/role-assignments', {
+        const res = await this.mutate('POST', '/authorization/v1beta1/role-assignments', {
           principal,
           role: roleGrn,
           scope,
         });
+        const { outcome, transactionId } = GreenLakeAdapter.settle(res);
+        const roleName = roleGrn.split('/').pop() ?? roleGrn;
         return {
           action,
-          outcome: 'applied',
-          detail: `Granted ${roleGrn.split('/').pop() ?? roleGrn} to ${principal}`,
-          id: str(obj(body).id),
+          outcome,
+          // Of every action here this is the one where the difference bites:
+          // an operator who reads "Granted" stops watching, and a grant that
+          // was only accepted may never land.
+          detail:
+            outcome === 'accepted'
+              ? `Submitted a grant of ${roleName} to ${principal}; the workspace has not confirmed it yet`
+              : `Granted ${roleName} to ${principal}`,
+          id: str(obj(res.body).id),
+          transactionId,
         };
       }
       case 'removeRoleAssignment': {
         const id = requireField(input, 'id');
-        await this.mutate('DELETE', `/authorization/v1beta1/role-assignments/${encodeURIComponent(id)}`);
-        return { action, outcome: 'applied', detail: `Revoked role assignment ${id}`, id };
+        const res = await this.mutate(
+          'DELETE',
+          `/authorization/v1beta1/role-assignments/${encodeURIComponent(id)}`,
+        );
+        const { outcome, transactionId } = GreenLakeAdapter.settle(res);
+        return {
+          action,
+          outcome,
+          // A revoke reported as done while the grant is still live is the
+          // worst of these to get wrong — it says access is gone when it isn't.
+          detail:
+            outcome === 'accepted'
+              ? `Submitted revocation of role assignment ${id}; the workspace has not confirmed it yet`
+              : `Revoked role assignment ${id}`,
+          id,
+          transactionId,
+        };
       }
       default: {
         // Exhaustiveness: a new action must be handled here, not silently no-op.
@@ -1164,14 +1249,17 @@ export class GreenLakeAdapter implements PlaneAdapter {
     method: 'POST' | 'DELETE' | 'PATCH',
     path: string,
     body?: unknown,
-  ): Promise<unknown> {
+  ): Promise<{ status: number; body: unknown }> {
     let res = await this.http(method, path, { token: await this.tokens.get(), body });
     if (res.status === 401) {
       this.tokens.invalidate();
       res = await this.http(method, path, { token: await this.tokens.get(), body });
     }
     if (res.status < 200 || res.status >= 300) throw new HttpStatusError(res.status, path);
-    return res.body;
+    // The status is returned, not discarded: 202 is the workspace saying it has
+    // taken the request and will decide later, which is not the same claim as
+    // 200. See settle().
+    return { status: res.status, body: res.body };
   }
 
   /**
