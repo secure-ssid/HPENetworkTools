@@ -818,6 +818,70 @@ describe('live-mode screen contracts', () => {
     }
   });
 
+  /* The Overview's own comment promises "the same live evidence-coverage
+   * engine Configure and Compliance already run, so the three screens cannot
+   * disagree". They could. Compliance learned to declare a scan that skipped
+   * part of the estate incomplete; the two tiles fed by the same engine kept
+   * calling liveComplianceData with one argument and printed their finding
+   * count under an unqualified caption. A drift count is only as wide as the
+   * inventory behind it, and a plane that reported no devices was not
+   * scanned at all. */
+  it('says which planes a drift count did not cover, on every screen that shows one', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const central = registry.get('central').state();
+    const previousCentral = { ...central };
+    const mist = registry.get('mist').state();
+    const previousMist = { ...mist };
+    contributions.clear();
+    // mist is linked and answering with devices; central is linked and has
+    // not contributed an inventory at all.
+    Object.assign(central, { linked: true, health: 'healthy', stale: false });
+    Object.assign(mist, { linked: true, health: 'healthy', stale: false });
+    contributions.set('mist', { devices: [{ id: 'd-1', name: 'ap-1', plane: 'MIST' }] });
+    contributions.set('central', { alerts: [] });
+
+    try {
+      const overview = await getJson('/api/overview');
+      const driftTile = (overview.body.stats as any[]).find((t: any) => t.label === 'Config drift');
+      expect(driftTile.delta).toContain('CENTRAL');
+      expect(driftTile.delta).not.toBe('live evidence coverage findings');
+
+      const configure = await getJson('/api/configure');
+      const openTile = (configure.body.stats as any[]).find((t: any) => t.label === 'Drift open');
+      expect(openTile.delta).toContain('CENTRAL');
+
+      // The screen that already told the truth must still tell it, and the
+      // three must be describing the same shortfall.
+      const compliance = await getJson('/api/compliance');
+      expect(compliance.body.missingInventories).toContain('CENTRAL');
+    } finally {
+      Object.assign(central, previousCentral);
+      Object.assign(mist, previousMist);
+      contributions.clear();
+    }
+  });
+
+  // A whole estate that answered gets the plain caption back — the fix must
+  // not print a scope caveat over a complete scan.
+  it('leaves the drift caption alone when every linked plane was scanned', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const central = registry.get('central').state();
+    const previousCentral = { ...central };
+    contributions.clear();
+    Object.assign(central, { linked: true, health: 'healthy', stale: false });
+    contributions.set('central', { devices: [{ id: 'd-1', name: 'sw-1', plane: 'CENTRAL' }] });
+
+    try {
+      const overview = await getJson('/api/overview');
+      const driftTile = (overview.body.stats as any[]).find((t: any) => t.label === 'Config drift');
+      expect(driftTile.delta).toBe('live evidence coverage findings');
+      expect(driftTile.delta).not.toContain('not scanned');
+    } finally {
+      Object.assign(central, previousCentral);
+      contributions.clear();
+    }
+  });
+
   /* Alerts, Clients, Devices and Compliance all name the linked planes that
    * contributed nothing. Sites did not, and Sites is derived from the merged
    * device inventory — a plane that reported no devices reports no sites, so

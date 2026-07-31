@@ -1481,7 +1481,10 @@ screensRouter.get('/configure', (_req, res) => {
     const inventory = liveConfigureInventory();
     if (blendFor('configure') && inventory.mode !== 'unavailable') {
       const blendQueue = liveConfigureQueue();
-      const blendCompliance = datasetReported('devices') ? liveComplianceData(liveDeviceData().devices) : null;
+      const blendDriftMissing = planesMissingDevices();
+      const blendCompliance = datasetReported('devices')
+        ? liveComplianceData(liveDeviceData().devices, blendDriftMissing)
+        : null;
       res.json(
         withBlended(
           envelopeFor('configure', {
@@ -1490,6 +1493,7 @@ screensRouter.get('/configure', (_req, res) => {
               inventory.ssids.length + inventory.ports.length + inventory.vlans.length,
               inventory.detail,
               blendCompliance ? blendCompliance.findings.length : null,
+              blendDriftMissing,
             ),
             ssids: inventory.ssids,
             ports: inventory.ports,
@@ -1521,7 +1525,10 @@ screensRouter.get('/configure', (_req, res) => {
   const queued = liveConfigureQueue();
   const inventory = liveConfigureInventory();
   const configObjects = inventory.ssids.length + inventory.ports.length + inventory.vlans.length;
-  const compliance = datasetReported('devices') ? liveComplianceData(liveDeviceData().devices) : null;
+  const driftMissing = planesMissingDevices();
+  const compliance = datasetReported('devices')
+    ? liveComplianceData(liveDeviceData().devices, driftMissing)
+    : null;
   res.json(
     // The capability matrix describes the portal's own write model — in live
     // mode that means what THIS deployment's linked planes can accept, not
@@ -1532,6 +1539,7 @@ screensRouter.get('/configure', (_req, res) => {
         inventory.mode === 'unavailable' ? null : configObjects,
         inventory.detail,
         compliance ? compliance.findings.length : null,
+        driftMissing,
       ),
       ssids: inventory.ssids,
       ports: inventory.ports,

@@ -20,6 +20,7 @@ import {
   LiveSubscription,
   SEV_RANK,
   ageMinutes,
+  planesMissingDevices,
 } from './liveCore';
 import {
   PLANE_MARK,
@@ -170,7 +171,17 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
   // Config drift: the same live evidence-coverage engine Configure and
   // Compliance already run, so the three screens cannot disagree. '—' only
   // when no inventory has been reported at all.
-  const drift = live.devices.length > 0 ? liveComplianceData(live.devices).findings.length : null;
+  // The scan is only as wide as the inventory behind it. A linked plane that
+  // contributed no device list is not scanned at all, so a finding count of
+  // zero over it means "nothing wrong with the part we read", not "nothing
+  // wrong". The Compliance screen already says this; this tile and the
+  // Configure one did not, which is precisely the disagreement the shared
+  // derivation exists to prevent.
+  const driftMissing = planesMissingDevices();
+  const drift =
+    live.devices.length > 0
+      ? liveComplianceData(live.devices, driftMissing).findings.length
+      : null;
   return [
     {
       label: 'Devices reachable',
@@ -194,7 +205,12 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
     {
       label: 'Config drift',
       value: drift === null ? '—' : String(drift),
-      delta: drift === null ? 'no live inventory evidence' : 'live evidence coverage findings',
+      delta:
+        drift === null
+          ? 'no live inventory evidence'
+          : driftMissing.length > 0
+            ? `${driftMissing.join(', ')} not scanned`
+            : 'live evidence coverage findings',
       tone: drift !== null && drift > 0 ? 'negative' : 'neutral',
     },
     {

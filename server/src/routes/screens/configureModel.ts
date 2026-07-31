@@ -279,6 +279,7 @@ export function liveConfigureStats(
   configObjects: number | null,
   configDetail: string,
   driftOpen: number | null,
+  driftMissing: readonly string[] = [],
 ): StatDef[] {
   const ready = queue.filter((change) => change.state === 'ready').length;
   const applying = queue.filter((change) => change.state === 'applying').length;
@@ -337,7 +338,15 @@ export function liveConfigureStats(
     {
       label: 'Drift open',
       value: driftOpen === null ? '—' : String(driftOpen),
-      delta: driftOpen === null ? 'no live inventory evidence' : 'live evidence coverage findings',
+      // Same shortfall the Overview tile names, in the same words: a plane
+      // that reported no inventory was never scanned, so a zero here is zero
+      // findings over part of the estate.
+      delta:
+        driftOpen === null
+          ? 'no live inventory evidence'
+          : driftMissing.length > 0
+            ? `${driftMissing.join(', ')} not scanned`
+            : 'live evidence coverage findings',
       tone: driftOpen !== null && driftOpen > 0 ? 'negative' : 'neutral',
     },
   ];
