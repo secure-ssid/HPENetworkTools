@@ -1653,6 +1653,7 @@ export class CentralAdapter implements PlaneAdapter {
       configRead: newCentral,
       directWrite: newCentral,
       activeDiagnostics: newCentral,
+      alertFeed: true,
     };
   }
 

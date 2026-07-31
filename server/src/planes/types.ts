@@ -84,6 +84,9 @@ export interface PlaneCapabilities {
    *  diagnostics. This is an action/write, but not a configuration mutation.
    *  Classic Central and every non-Central plane leave it false/absent. */
   activeDiagnostics?: boolean;
+  /** This plane's pull() can populate PlanePull.alerts. When false/absent the
+   *  plane is excluded from the missing-alert-source banner. */
+  alertFeed?: boolean;
 }
 
 /**

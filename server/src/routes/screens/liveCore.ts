@@ -96,7 +96,11 @@ export function planesMissingDataset(key: 'devices' | 'alerts' | 'clients'): Pla
   const contributions = poller.contributionsByPlane();
   const out: Plane[] = [];
   for (const id of PLANE_IDS) {
-    if (!registry.state(id).linked) continue;
+    const state = registry.state(id);
+    if (!state.linked) continue;
+    // Only flag a plane for a missing alert feed if its adapter declares it
+    // can produce one — GreenLake and SSE are linked but never emit alerts.
+    if (key === 'alerts' && !state.capabilities?.alertFeed) continue;
     if (contributions.get(id)?.[key] === undefined) out.push(PLANE_LABEL[id]);
   }
   return out;

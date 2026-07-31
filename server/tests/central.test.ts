@@ -1288,6 +1288,7 @@ describe('CentralAdapter.pull()', () => {
       configRead: false,
       directWrite: false,
       activeDiagnostics: false,
+      alertFeed: true,
     });
     expect(state.capabilities).toEqual({
       localShell: false,
@@ -1295,6 +1296,7 @@ describe('CentralAdapter.pull()', () => {
       configRead: false,
       directWrite: false,
       activeDiagnostics: false,
+      alertFeed: true,
     });
   });
 
