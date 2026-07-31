@@ -2155,6 +2155,10 @@ export interface ClientWiring {
   /** 'Good' | 'Unknown' | null, as the plane words it — the plane's verdict on
    *  the link, not ours. */
   linkHealth?: string | null;
+  /** Why the plane reached that verdict, in its own words, when it said. A
+   *  verdict without its reason sends the operator to look for a fault the
+   *  plane had already named. */
+  linkHealthReason?: string | null;
 }
 
 /**

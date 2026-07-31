@@ -680,6 +680,7 @@ function wiringForAp(
       port: port!,
       speedBps: link.speedBps,
       linkHealth: link.health,
+      linkHealthReason: link.healthReason,
     };
   }
   return null;

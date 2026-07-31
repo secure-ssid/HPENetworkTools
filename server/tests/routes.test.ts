@@ -3346,6 +3346,7 @@ describe('on-demand per-object detail reads', () => {
         toPorts: [{ name: '1/1/12' }],
         speedBps: 5000000000,
         health: 'Good',
+        healthReason: null as string | null,
       },
     ],
     source: source({ nodes: 'ok', links: 'ok' }),
@@ -3605,6 +3606,31 @@ describe('on-demand per-object detail reads', () => {
     expect(reported.body.detail.source.sections.rssi).toBe('ok');
   });
 
+  /**
+   * The point of naming the AP's uplink at all is that a port which negotiated
+   * down, or a link the plane has stopped calling healthy, explains every "the
+   * wifi is slow over here" complaint on that AP at once. The drawer cannot
+   * say so if the read drops the plane's own figures on the way past.
+   */
+  it('carries the plane speed, verdict and reason for the uplink into the wiring row', async () => {
+    contributions.set('central', { devices: [AP, SW], clients: [WIFI] });
+    const graph = GRAPH('campus-01');
+    graph.links[0].speedBps = 100_000_000;
+    graph.links[0].health = 'Poor';
+    graph.links[0].healthReason = 'PORT_SPEED_MISMATCH';
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, source: source({ rssi: 'empty' }) }),
+      deviceDetail: async (serial: string, kind: string) => ({ serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) }),
+      siteTopology: async () => graph,
+    });
+    const res = await wifiDrawer(WIFI.mac);
+    expect(res.body.detail.wiring).toMatchObject({
+      speedBps: 100_000_000,
+      linkHealth: 'Poor',
+      linkHealthReason: 'PORT_SPEED_MISMATCH',
+    });
+  });
+
   it('WIRING reads the SWITCH end of the AP uplink, whichever end of the link the AP is on', async () => {
     contributions.set('central', { devices: [AP, SW], clients: [WIFI] });
     const graph = GRAPH('campus-01');
@@ -3633,6 +3659,7 @@ describe('on-demand per-object detail reads', () => {
         toPorts: [{ name: 'eth0' }],
         speedBps: 2500000000,
         health: 'Good',
+        healthReason: null,
       },
     ];
     const switchFirst = await wifiDrawer(WIFI.mac);

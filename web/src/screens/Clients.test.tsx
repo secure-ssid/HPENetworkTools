@@ -690,6 +690,54 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
     expect(drawer().queryByText('CENTRAL reports signal only on a roam')).toBeNull();
   });
 
+  /**
+   * The switch and port say where the AP is patched; they say nothing about
+   * whether that patch is any good. Both figures were already on the wire and
+   * the drawer was dropping them, so the one screen an operator opens when a
+   * corner of the building is slow withheld the plane's answer to exactly
+   * that question.
+   */
+  it('renders the uplink speed and the plane’s verdict on the AP link', async () => {
+    mockGetClientDetail.mockResolvedValue(JOINED_DETAIL);
+    renderDrawer(KINDLE);
+
+    await waitFor(() => expect(drawer().getByText('CX6300-CORE · 1/1/8')).toBeTruthy());
+    expect(drawer().getByText('2.5 Gbps · Good')).toBeTruthy();
+  });
+
+  // A verdict without its reason sends the operator hunting for a fault the
+  // plane had already named.
+  it('names the plane’s own reason for a degraded uplink', async () => {
+    mockGetClientDetail.mockResolvedValue({
+      ...JOINED_DETAIL,
+      wiring: {
+        ...JOINED_DETAIL.wiring!,
+        speedBps: 100_000_000,
+        linkHealth: 'Poor',
+        linkHealthReason: 'PORT_SPEED_MISMATCH',
+      },
+    });
+    renderDrawer(KINDLE);
+
+    await waitFor(() =>
+      expect(drawer().getByText('100.0 Mbps · Poor (PORT_SPEED_MISMATCH)')).toBeTruthy(),
+    );
+  });
+
+  // Silence would read as "the link is fine". The plane said nothing, and the
+  // row says that instead of implying a verdict nobody gave.
+  it('says the plane reported no uplink figures rather than leaving the row blank', async () => {
+    mockGetClientDetail.mockResolvedValue({
+      ...JOINED_DETAIL,
+      wiring: { ...JOINED_DETAIL.wiring!, speedBps: null, linkHealth: null },
+    });
+    renderDrawer(KINDLE);
+
+    await waitFor(() =>
+      expect(drawer().getByText(/reported no speed or health for this link/)).toBeTruthy(),
+    );
+  });
+
   it('renders retries as the serving radio’s figure, never as the client’s', async () => {
     mockGetClientDetail.mockResolvedValue(JOINED_DETAIL);
     renderDrawer(KINDLE);

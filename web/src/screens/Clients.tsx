@@ -773,6 +773,33 @@ export default function Clients() {
             v: known(det.wiring.switchName, det.wiring.port),
             muted: false,
           });
+          /* The plane's own reading of that uplink. An AP whose port negotiated
+           * 100 Mb, or a link the plane no longer calls healthy, is the single
+           * likeliest explanation for "the wifi is slow in this corner" — and
+           * every client on that AP reports the same complaint. The topology
+           * read already carried both figures to the browser; the drawer threw
+           * them away one line before the operator could see them, while the
+           * physical-links panel on this same screen printed them (linkFact).
+           *
+           * Worded as the plane words it. This screen does not decide what a
+           * healthy AP uplink looks like, and a plane that said nothing is told
+           * apart from a plane that said the link is fine. */
+          const upSpeed =
+            typeof det.wiring.speedBps === 'number' && det.wiring.speedBps > 0
+              ? formatBps(det.wiring.speedBps)
+              : null;
+          const upHealth = det.wiring.linkHealth?.trim() || null;
+          const upWhy = det.wiring.linkHealthReason?.trim() || null;
+          const uplink = nonEmpty([upSpeed, upHealth && upWhy ? `${upHealth} (${upWhy})` : upHealth]);
+          place.push(
+            uplink.length
+              ? { k: 'Uplink', v: uplink.join(' · '), muted: false }
+              : {
+                  k: 'Uplink',
+                  v: `${cur.plane} reported no speed or health for this link`,
+                  muted: true,
+                },
+          );
         } else {
           addPlace('Wiring', 'closet', cur.closet);
         }
