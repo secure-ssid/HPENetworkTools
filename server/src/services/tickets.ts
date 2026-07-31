@@ -31,7 +31,7 @@ import { poller } from './poller';
 import { reconcileDevices, type ReconciledDeviceRow } from './reconcile';
 import { terminalManager, type SessionInfo } from './terminal';
 import type { BrokerLogEntry } from './writeBroker';
-import { readJsonlNewestFirst } from './logRotation';
+import { isRetentionTombstone, readJsonlNewestFirst, type RetentionTombstone } from './logRotation';
 
 /**
  * How far back ticket evidence looks. Bounded because the log now spans
@@ -46,8 +46,23 @@ const SEV_TONE: Record<string, Tone> = { P1: 'danger', P2: 'warning', P3: 'info'
 const SLA_HOURS: Record<string, number> = { P1: 4, P2: 8, P3: 24 };
 
 /** Evidence feeds — injectable for tests; defaults are the live singletons. */
+/**
+ * A read of the brokered-write log for evidence purposes, with the holes it
+ * knows about. The entries alone cannot say why they are few: a generation
+ * the retention policy deleted and one that will not open both leave the
+ * trail short, and a short trail is indistinguishable from a device nobody
+ * ever pushed a change to. For evidence attached to a ticket that distinction
+ * is the whole point, so both travel with the rows.
+ */
+export interface BrokerLogRead {
+  entries: BrokerLogEntry[];
+  /** Spans deleted by retention; bounds are null when they could not be read. */
+  discarded: { from: string | null; to: string | null }[];
+  unreadable: string[];
+}
+
 export interface EvidenceSources {
-  changeLog?: () => BrokerLogEntry[];
+  changeLog?: () => BrokerLogRead;
   sessions?: () => SessionInfo[];
   devices?: () => ReconciledDeviceRow[];
 }
@@ -248,11 +263,35 @@ export class TicketStore {
     }
 
     const want = device.toLowerCase();
-    const writes = this.sources
-      .changeLog()
+    const log = this.sources.changeLog();
+    const writes = log.entries
       .filter((e) => e.changeId.toLowerCase().includes(want))
       .slice(-3)
       .reverse(); // log is append-only (oldest first) — newest 3
+    // A hole in the log is not the same fact as a device nobody ever pushed
+    // to, and the difference matters most here: this list is filtered to one
+    // device, and a generation that was deleted or would not open cannot be
+    // searched for it. So the writes that would contradict "no portal writes
+    // for this device" are exactly the ones that are gone. Recorded as a row
+    // of its own, because evidence is snapshotted onto the ticket and the
+    // gap has to travel with it — a caveat left in the server log is not
+    // attached to the thing an auditor reads a year from now.
+    if (log.discarded.length > 0 || log.unreadable.length > 0) {
+      const spans = log.discarded
+        .filter((g) => g.from !== null && g.to !== null)
+        .map((g) => `${g.from}..${g.to}`);
+      out.push({
+        time: 'now',
+        plane: 'PORTAL',
+        finding:
+          `change-log history is incomplete — portal writes for this device before this point may not be listed`,
+        raw:
+          `source=change-log discarded=${log.discarded.length}` +
+          ` unreadable=${log.unreadable.length}` +
+          (spans.length > 0 ? ` covering=${spans.join(',')}` : ''),
+        device,
+      });
+    }
     for (const e of writes) {
       out.push({
         time: hhmmOf(e.ts),
@@ -276,7 +315,7 @@ export class TicketStore {
   }
 
   /** The append-only broker log, parsed defensively; missing file = no writes. */
-  private readChangeLog(): BrokerLogEntry[] {
+  private readChangeLog(): BrokerLogRead {
     // Across rotated generations, and back in chronological order: a ticket's
     // evidence must not lose the earlier half of its own history the first
     // time the log rotates.
@@ -285,20 +324,32 @@ export class TicketStore {
       v !== null &&
       typeof (v as BrokerLogEntry).ts === 'string' &&
       typeof (v as BrokerLogEntry).changeId === 'string';
-    const read = readJsonlNewestFirst<BrokerLogEntry>(
+    // The tombstone rotation leaves behind fails isEntry — it has no changeId,
+    // because no change happened — and dropping it would send the deleted
+    // generation back to looking like a stretch in which nothing was pushed.
+    // Widen the guard, then separate the two afterwards.
+    const read = readJsonlNewestFirst<BrokerLogEntry | RetentionTombstone>(
       path.join(this.dataDir, 'change-log.jsonl'),
       CHANGE_LOG_READ_LIMIT,
-      isEntry,
+      (v): v is BrokerLogEntry | RetentionTombstone => isEntry(v) || isRetentionTombstone(v),
     );
     // This feeds a ticket's evidence trail. Evidence that is quietly missing a
-    // stretch is worse than evidence known to be partial, so say so loudly
-    // even though the returned shape has nowhere to put it.
+    // stretch is worse than evidence known to be partial, so say so loudly —
+    // to the console for the operator of the host, and, now that the shape has
+    // somewhere to put it, in the evidence itself for whoever reads the
+    // ticket. They are not the same person and only one of them is looking.
     if (read.unreadable.length > 0) {
       console.error(
         `ticket evidence is incomplete — unreadable change-log generations: ${read.unreadable.join(', ')}`,
       );
     }
-    return read.entries.reverse();
+    const entries: BrokerLogEntry[] = [];
+    const discarded: BrokerLogRead['discarded'] = [];
+    for (const row of read.entries) {
+      if (isRetentionTombstone(row)) discarded.push({ from: row.coveringFrom ?? null, to: row.coveringTo ?? null });
+      else entries.push(row);
+    }
+    return { entries: entries.reverse(), discarded, unreadable: read.unreadable };
   }
 
   /**

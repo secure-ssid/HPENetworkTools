@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { TicketStore } from '../src/services/tickets';
+import { TicketStore, type BrokerLogRead } from '../src/services/tickets';
+import type { BrokerLogEntry } from '../src/services/writeBroker';
 import type { AlertRow } from '@hpe/shared';
 
 const ALERT: AlertRow = {
@@ -17,6 +18,13 @@ const ALERT: AlertRow = {
   age: '12m',
   device: 'sw-riv-1',
 };
+
+/** A change-log read with no known holes: what every fixture here means. */
+const logOf = (entries: BrokerLogEntry[] = []): BrokerLogRead => ({
+  entries,
+  discarded: [],
+  unreadable: [],
+});
 
 describe('TicketStore', () => {
   let dir: string;
@@ -173,11 +181,11 @@ describe('TicketStore evidence collection', () => {
   it('gathers cache state, matching change-log writes and shell sessions', () => {
     const store = new TicketStore(dir, {
       devices: () => [LIVE_DEVICE],
-      changeLog: () => [
+      changeLog: () => logOf([
         { ts: '2026-07-26T09:00:00Z', event: 'reboot', changeId: 'reboot-sw-core-a', ticket: 'NET-4100', kind: 'reboot', result: 'applied', httpCode: 202 },
         { ts: '2026-07-26T09:05:00Z', event: 'reboot', changeId: 'reboot-sw-riv-1', ticket: 'NET-4101', kind: 'reboot', result: 'rejected', httpCode: 404 },
         { ts: '2026-07-26T09:10:00Z', event: 'alert-ack', changeId: 'alert-ack-sw-riv-1 wan down', ticket: 'NET-4102', kind: 'alert', result: 'acknowledged', httpCode: 202 },
-      ],
+      ]),
       sessions: () => [
         { file: 'sw-riv-1-2026-07-26T08-00-00.jsonl', device: 'sw-riv-1', user: 'r.okafor', target: '10.42.8.11', openedAt: '2026-07-26T08:00:00Z' },
         { file: 'sw-core-a-2026-07-26T07-00-00.jsonl', device: 'sw-core-a', user: 'r.okafor', target: '10.42.0.14', openedAt: '2026-07-26T07:00:00Z' },
@@ -196,6 +204,85 @@ describe('TicketStore evidence collection', () => {
     expect(t.evidence[4].raw).toBe('recording=sw-riv-1-2026-07-26T08-00-00.jsonl');
     // nothing from other devices leaked in
     expect(t.evidence.every((e) => e.device === 'sw-riv-1')).toBe(true);
+    // A whole log claims no holes. A caveat printed over intact evidence is
+    // one an auditor learns to discount everywhere else.
+    expect(t.evidence.some((e) => e.finding.includes('incomplete'))).toBe(false);
+  });
+
+  /* The writes list is filtered to a single device, which is exactly why a
+   * hole in the log has to be stated. A generation retention deleted, or one
+   * that will not open, cannot be searched for this serial — so the writes
+   * that would contradict "no portal writes for this device" are precisely
+   * the ones that are gone. Evidence is snapshotted onto the ticket, so the
+   * caveat has to be snapshotted with it: a line in the server console is not
+   * attached to what an auditor reads a year later. */
+  it('records a discarded stretch of change-log history as evidence in its own right', () => {
+    const store = new TicketStore(dir, {
+      devices: () => [],
+      sessions: () => [],
+      changeLog: () => ({
+        entries: [],
+        discarded: [{ from: '2026-01-05T12:00:00Z', to: '2026-02-11T12:00:00Z' }],
+        unreadable: [],
+      }),
+    });
+
+    const t = store.raiseFromAlert(ALERT);
+    const gap = t.evidence.find((e) => e.finding.includes('incomplete'));
+    expect(gap).toBeTruthy();
+    expect(gap?.finding).toContain('may not be listed');
+    expect(gap?.raw).toContain('discarded=1');
+    expect(gap?.raw).toContain('covering=2026-01-05T12:00:00Z..2026-02-11T12:00:00Z');
+    expect(gap?.device).toBe('sw-riv-1');
+  });
+
+  it('records a generation that would not open, which is a different failure from a deleted one', () => {
+    const store = new TicketStore(dir, {
+      devices: () => [],
+      sessions: () => [],
+      changeLog: () => ({ entries: [], discarded: [], unreadable: ['change-log.2.jsonl'] }),
+    });
+
+    const t = store.raiseFromAlert(ALERT);
+    const gap = t.evidence.find((e) => e.finding.includes('incomplete'));
+    expect(gap?.raw).toContain('unreadable=1');
+    expect(gap?.raw).toContain('discarded=0');
+    // No span to quote, and none must be invented.
+    expect(gap?.raw).not.toContain('covering=');
+  });
+
+  // timeSpan returns null when the deleted generation's own lines would not
+  // parse. The gap is still a fact; only its width is unknown.
+  it('states a discarded stretch whose span is unknown without inventing one', () => {
+    const store = new TicketStore(dir, {
+      devices: () => [],
+      sessions: () => [],
+      changeLog: () => ({ entries: [], discarded: [{ from: null, to: null }], unreadable: [] }),
+    });
+
+    const t = store.raiseFromAlert(ALERT);
+    const gap = t.evidence.find((e) => e.finding.includes('incomplete'));
+    expect(gap?.raw).toContain('discarded=1');
+    expect(gap?.raw).not.toContain('covering=');
+  });
+
+  // The disclosure must not displace the evidence it qualifies.
+  it('keeps the matching writes alongside the gap it discloses', () => {
+    const store = new TicketStore(dir, {
+      devices: () => [],
+      sessions: () => [],
+      changeLog: () => ({
+        entries: [
+          { ts: '2026-07-26T09:05:00Z', event: 'reboot', changeId: 'reboot-sw-riv-1', ticket: 'NET-4101', kind: 'reboot', result: 'rejected', httpCode: 404 },
+        ],
+        discarded: [{ from: '2026-01-05T12:00:00Z', to: '2026-02-11T12:00:00Z' }],
+        unreadable: [],
+      }),
+    });
+
+    const t = store.raiseFromAlert(ALERT);
+    expect(t.evidence.some((e) => e.finding === 'portal write: reboot — rejected')).toBe(true);
+    expect(t.evidence.some((e) => e.finding.includes('incomplete'))).toBe(true);
   });
 
   it('quotes a stale plane\'s device as unverified and flags a double claim', () => {
@@ -212,7 +299,7 @@ describe('TicketStore evidence collection', () => {
           serial: 'CN12AB34CD',
         },
       ],
-      changeLog: () => [],
+      changeLog: () => logOf(),
       sessions: () => [],
     });
 
@@ -227,7 +314,7 @@ describe('TicketStore evidence collection', () => {
   it('flags a device no management plane claims', () => {
     const store = new TicketStore(dir, {
       devices: () => [{ ...LIVE_DEVICE, plane: 'LOCAL' as const, reconciliationIssue: true, claimedBy: ['LOCAL' as const] }],
-      changeLog: () => [],
+      changeLog: () => logOf(),
       sessions: () => [],
     });
     const t = store.raiseFromAlert(ALERT);
@@ -236,7 +323,7 @@ describe('TicketStore evidence collection', () => {
   });
 
   it('is just the alert row when the feeds are empty', () => {
-    const store = new TicketStore(dir, { devices: () => [], changeLog: () => [], sessions: () => [] });
+    const store = new TicketStore(dir, { devices: () => [], changeLog: () => logOf(), sessions: () => [] });
     const t = store.raiseFromAlert(ALERT);
     expect(t.evidence).toHaveLength(1);
   });
@@ -247,7 +334,7 @@ describe('TicketStore evidence collection', () => {
       devices: () => [],
       changeLog: () => {
         writes += 1;
-        return [];
+        return logOf();
       },
       sessions: () => [],
     });
@@ -265,7 +352,7 @@ describe('TicketStore age/SLA derivation', () => {
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpe-tickets-'));
-    store = new TicketStore(dir, { devices: () => [], changeLog: () => [], sessions: () => [] });
+    store = new TicketStore(dir, { devices: () => [], changeLog: () => logOf(), sessions: () => [] });
   });
 
   afterEach(() => {
@@ -283,7 +370,7 @@ describe('TicketStore age/SLA derivation', () => {
       row.slaDueAt = new Date(raised + slaHours * 3_600_000).toISOString();
     }
     fs.writeFileSync(file, JSON.stringify(rows, null, 2));
-    return new TicketStore(dir, { devices: () => [], changeLog: () => [], sessions: () => [] });
+    return new TicketStore(dir, { devices: () => [], changeLog: () => logOf(), sessions: () => [] });
   }
 
   it('stamps raisedAt and slaDueAt from the severity table', () => {
