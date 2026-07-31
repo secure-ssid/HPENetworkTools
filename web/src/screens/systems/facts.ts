@@ -13,6 +13,7 @@ import {
   type SystemCredentialPayload,
 } from '../../api/client';
 import {
+  CLOCK_SKEW_TOLERANCE_MS,
   CONNECT_ENDPOINT_KEY,
   type Fact,
   type ScreenSection,
@@ -179,17 +180,59 @@ export function hhmm(iso: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-export function relTime(iso: string | null): string {
-  if (!iso) return 'never';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '—';
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+/** A span of seconds in this screen's own vocabulary. */
+function agoText(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
   if (s < 60) return `${s}s ago`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ${m % 60}m ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+/**
+ * Age an ISO stamp against this browser's clock. Only for a stamp the server
+ * did not age for us — see syncAgeText.
+ *
+ * `now` is a parameter so this is testable at all; it used to read Date.now()
+ * from inside, which made every caller's output depend on the wall clock.
+ */
+export function relTime(iso: string | null, now: number = Date.now()): string {
+  if (!iso) return 'never';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '—';
+  const ms = now - t;
+  // Not clamped to zero. A stamp further ahead than two clocks can plausibly
+  // drift is not an age, and reporting it as '0s ago' would be an invented
+  // freshness — the same fabrication shared/logic.ts planeFreshness was
+  // carrying until it learned this bound.
+  if (ms < -CLOCK_SKEW_TOLERANCE_MS) return '—';
+  return agoText(ms / 1000);
+}
+
+/**
+ * How old the last good sync is — taken from the number the SERVER aged it
+ * to, not re-derived here.
+ *
+ * `ageSec` arrives beside `stale` and is the value that decision was made
+ * from (shared/logic.ts planeFreshness, against the same clock that wrote
+ * `lastSync`). Re-aging the ISO string in the browser measured one clock's
+ * stamp with another's, so the row could print '3s ago' beside a stale badge,
+ * or '45m ago' beside a fresh one — two answers to one question, on one line.
+ *
+ * The three states are kept apart. A plane that has never synced says so. A
+ * plane whose stamp cannot be aged — unparseable, or further ahead than drift
+ * explains — must NOT say 'never': it has synced, and only the age is
+ * unknown. It reports the stamp itself, which is the fact that survives.
+ * `ageSec` absent entirely means an older server that never sent one, and
+ * that is the only case left with nothing better than the browser's clock.
+ */
+export function syncAgeText(live: LivePlaneState, now: number = Date.now()): string {
+  if (live.ageSec === undefined) return relTime(live.lastSync, now);
+  if (live.ageSec !== null) return agoText(live.ageSec);
+  if (live.lastSync === null) return 'never';
+  return `synced ${hhmm(live.lastSync)} — age unreadable`;
 }
 
 export function msFmt(ms: number): string {
@@ -232,8 +275,12 @@ export function callsFactValue(live: LivePlaneState): string {
  * `stale` (shared/logic.ts planeStaleness), never re-derived here.
  */
 export function staleTitle(live: LivePlaneState): string {
-  const age = live.ageSec == null ? 'never' : relTime(live.lastSync);
-  return `last good sync ${age} — past the registry's staleness window, so this plane's rows are unverified, not current`;
+  // A never-synced plane is deliberately not reported as `stale` by the
+  // registry (planes/registry.ts — it reports that through `reason`), so this
+  // sentence is only ever said about a plane that HAS synced. Reading a null
+  // `ageSec` as 'never' put the one word that contradicts the rest of the
+  // sentence into it, for the stamp that could not be aged.
+  return `last good sync ${syncAgeText(live)} — past the registry's staleness window, so this plane's rows are unverified, not current`;
 }
 
 /** Retry state for a plane the poller keeps failing on — served facts, not a
@@ -250,7 +297,7 @@ export function mergedFacts(s: SystemRow, live: LivePlaneState | null): Fact[] {
   if (!live) return s.facts;
   let counted = false;
   const facts = s.facts.map((f) => {
-    if (f.k === 'Last sync') return { ...f, v: relTime(live.lastSync) };
+    if (f.k === 'Last sync') return { ...f, v: syncAgeText(live) };
     if (f.k === 'Calls today') return { ...f, v: callsFactValue(live) };
     if (COUNT_FACT_KEYS.includes(f.k) && live.deviceCount != null) {
       counted = true;
