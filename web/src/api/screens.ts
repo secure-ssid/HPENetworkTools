@@ -177,6 +177,11 @@ export interface DevicesData extends ScreenEnvelope {
   devices: DeviceRow[];
   lanes: Partial<Record<Plane, LaneMeta>>;
   reconciliation?: { doubleClaimed: number; unclaimed: number };
+  /** Linked planes with no device inventory in `devices` — the list is short
+   *  by however much they manage. Absent means the route did not say (an
+   *  older server, or demo fixtures); an empty array means it looked and every
+   *  linked plane reported. The two are deliberately distinguishable. */
+  missingInventories?: Plane[];
   /** Demo mode only: fixture names the operator hid, for the restore affordance. */
   hiddenDevices?: string[];
 }

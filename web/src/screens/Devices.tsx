@@ -229,11 +229,17 @@ export default function Devices() {
   // Header subtitle. The authored line states the demo estate's totals (418
   // devices are a 418-row estate the 28 fixtures sample); in live/blend mode
   // it is derived from what actually arrived, never asserted.
+  // Linked planes that contributed no inventory at all. The list below is
+  // short by whatever they manage, and nothing about a shorter list says so.
+  const missing = data.missingInventories ?? [];
+  const reporting = lanePlanes.length - missing.length;
+  const inventoryCount =
+    missing.length > 0
+      ? `${reporting} of ${lanePlanes.length} inventor${lanePlanes.length === 1 ? 'y' : 'ies'} reporting`
+      : `${lanePlanes.length} inventor${lanePlanes.length === 1 ? 'y' : 'ies'}`;
   const subtitle = isDemo
     ? '418 devices, six inventories, one reconciled list.'
-    : `${devices.length} device${devices.length === 1 ? '' : 's'}, ${lanePlanes.length} inventor${
-        lanePlanes.length === 1 ? 'y' : 'ies'
-      }, one reconciled list.`;
+    : `${devices.length} device${devices.length === 1 ? '' : 's'}, ${inventoryCount}, one reconciled list.`;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -322,6 +328,19 @@ export default function Devices() {
           {rows.length} of {devices.length} indexed{isDemo ? ' · 418 total incl. bulk APs' : ''}
         </span>
       </div>
+
+      {missing.length > 0 ? (
+        <Alert
+          tone="warning"
+          title={`${missing.length} linked inventor${missing.length === 1 ? 'y is' : 'ies are'} not represented below: ${missing.join(', ')}`}
+        >
+          <span style={{ fontSize: 13 }}>
+            These planes are linked but their device read has not come back, so whatever they manage is missing from
+            this list and from the reconciliation counts. This is not an empty inventory — it is an unread one. Check
+            them in Connected systems before treating this list as the estate.
+          </span>
+        </Alert>
+      ) : null}
 
       {doubleClaimed > 0 || unclaimed > 0 ? (
         <Alert

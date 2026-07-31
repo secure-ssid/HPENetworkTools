@@ -14,9 +14,10 @@ import {
 } from '../../planes/clearpass';
 import { type SubscriptionMetricHints } from '../../planes/greenlake';
 import { registry } from '../../planes/registry';
-import { type PlaneId } from '../../planes/types';
+import { PLANE_IDS, type PlaneId } from '../../planes/types';
 import { poller } from '../../services/poller';
 import {
+  PLANE_LABEL,
   planeIdForLabel,
   reconcileDevices,
   type ReconciledDeviceRow,
@@ -67,6 +68,31 @@ export function liveDeviceData(): { devices: ReconciledDeviceRow[]; doubleClaime
   }
   const { devices, doubleClaimed, unclaimed } = reconcileDevices(byPlane, stalePlanes());
   return { devices: devices.map(withLiveShellGate), doubleClaimed, unclaimed };
+}
+
+/**
+ * Linked planes whose device inventory is missing from the reconciled list.
+ *
+ * reconcileDevices() can only merge what it was handed, and liveDeviceData()
+ * only hands it a plane whose last pull actually carried a `devices` key. A
+ * linked plane that has never answered, or whose device read failed, therefore
+ * drops out of the merged inventory without leaving a mark on it — the list
+ * simply gets shorter. "Central is unreachable" and "Central manages nothing"
+ * produce the same screen.
+ *
+ * `devices: []` is NOT missing. A plane that answered and genuinely manages no
+ * devices reported a real, empty result, and calling that unread would be the
+ * same class of lie in the other direction — the omitted/zero distinction the
+ * rest of this file keeps.
+ */
+export function planesMissingDevices(): Plane[] {
+  const contributions = poller.contributionsByPlane();
+  const out: Plane[] = [];
+  for (const id of PLANE_IDS) {
+    if (!registry.state(id).linked) continue;
+    if (contributions.get(id)?.devices === undefined) out.push(PLANE_LABEL[id]);
+  }
+  return out;
 }
 
 /** Parse the fixtures'/adapters' age strings ('45s', '12m', '6h', '2d') → minutes. */

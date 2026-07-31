@@ -1438,6 +1438,36 @@ describe('live-mode screen contracts', () => {
     expect(body.lanes.MIST).toBeUndefined(); // not linked — no lane claims otherwise
   });
 
+  /* reconcileDevices() can only merge the planes that handed it a device list.
+   * A linked plane whose read never came back drops out of the reconciled
+   * inventory without leaving a mark on it — the list just gets shorter, and
+   * "Central is unreachable" renders identically to "Central manages nothing".
+   * missingInventories names the difference. */
+  it('live /api/devices names the linked planes whose inventory is missing from the list', async () => {
+    contributions.clear();
+    // Central is linked (the lane test above relies on it) but this pull
+    // carries no `devices` key at all — the read did not come back.
+    contributions.set('central', { alerts: [] });
+    const unread = await getJson('/api/devices');
+    expect(unread.body.missingInventories).toContain('CENTRAL');
+    expect(unread.body.devices).toEqual([]);
+  });
+
+  it('does not call a plane that reported zero devices a missing inventory', async () => {
+    // An answered, genuinely empty read is not an unread one. Collapsing the
+    // two would be the same lie in the other direction.
+    contributions.clear();
+    contributions.set('central', { devices: [] });
+    const empty = await getJson('/api/devices');
+    expect(empty.body.missingInventories).toEqual([]);
+    expect(empty.body.devices).toEqual([]);
+
+    contributions.set('central', { devices: [DEVICE] });
+    const populated = await getJson('/api/devices');
+    expect(populated.body.missingInventories).toEqual([]);
+    expect(populated.body.devices).toHaveLength(1);
+  });
+
   it('live licences emit all five Stat tiles the five-column grid needs', async () => {
     contributions.clear();
     contributions.set('central', { devices: [DEVICE] });

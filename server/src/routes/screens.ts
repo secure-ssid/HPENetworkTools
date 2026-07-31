@@ -156,6 +156,7 @@ import {
   liveClients,
   liveCorrelation,
   liveDeviceData,
+  planesMissingDevices,
   liveMerged,
   liveSiteStats,
   sortLiveAlerts,
@@ -1110,7 +1111,12 @@ screensRouter.get('/devices', (_req, res) => {
       if (devices.length > 0) {
         res.json(
           withBlended(
-            envelopeFor('devices', { devices, lanes: liveLaneMeta(), reconciliation: { doubleClaimed, unclaimed } }),
+            envelopeFor('devices', {
+              devices,
+              lanes: liveLaneMeta(),
+              reconciliation: { doubleClaimed, unclaimed },
+              missingInventories: planesMissingDevices(),
+            }),
             ['devices'],
             'devices',
           ),
@@ -1136,7 +1142,17 @@ screensRouter.get('/devices', (_req, res) => {
     return;
   }
   const { devices, doubleClaimed, unclaimed } = liveDeviceData();
-  res.json(envelopeFor('devices', { devices, lanes: liveLaneMeta(), reconciliation: { doubleClaimed, unclaimed } }));
+  res.json(
+    envelopeFor('devices', {
+      devices,
+      lanes: liveLaneMeta(),
+      reconciliation: { doubleClaimed, unclaimed },
+      // Which linked planes are NOT represented in the list above. Without
+      // this the reconciled inventory is shorter than the estate and says
+      // nothing about why (see liveCore.ts planesMissingDevices).
+      missingInventories: planesMissingDevices(),
+    }),
+  );
 });
 
 /**

@@ -123,6 +123,75 @@ describe('Devices sparse live inventory', () => {
   });
 });
 
+/* A linked plane whose device read never came back contributes nothing to the
+ * reconciled list. The list is short by whatever that plane manages, and a
+ * shorter list says nothing about why — so an unreachable Central renders
+ * exactly like a Central that manages nothing. The lanes view has always made
+ * this legible; the unified table, which is the default, did not. */
+describe('Devices missing inventories', () => {
+  const withMissing = (missingInventories: string[]) => ({
+    dataSource: 'live' as const,
+    devices: [liveRow({ name: 'sw-live-1', plane: 'CENTRAL' })],
+    lanes: {},
+    reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    missingInventories,
+  });
+
+  const renderDevices = () =>
+    render(
+      <MemoryRouter>
+        <SettingsProvider>
+          <ToastProvider>
+            <Devices />
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+
+  it('warns that the list is incomplete and names every plane missing from it', async () => {
+    mockGetDevices.mockResolvedValue(withMissing(['CENTRAL', 'MIST']) as never);
+    renderDevices();
+
+    expect(
+      await screen.findByText('2 linked inventories are not represented below: CENTRAL, MIST'),
+    ).toBeTruthy();
+    // The distinction that matters: unread, not empty.
+    expect(screen.getByText(/it is an unread one/)).toBeTruthy();
+  });
+
+  it('says how many inventories are reporting rather than implying they all are', async () => {
+    mockGetDevices.mockResolvedValue(withMissing(['MIST']) as never);
+    renderDevices();
+
+    // One lane comes from the row's own plane; MIST is missing, so the header
+    // must not present the estate as fully reported.
+    expect(await screen.findByText(/inventor(y|ies) reporting, one reconciled list\./)).toBeTruthy();
+  });
+
+  it('stays silent — and keeps the plain count — when every linked inventory reported', async () => {
+    mockGetDevices.mockResolvedValue(withMissing([]) as never);
+    renderDevices();
+
+    expect(await screen.findByText('1 device, 1 inventory, one reconciled list.')).toBeTruthy();
+    expect(screen.queryByText(/not represented below/)).toBeNull();
+  });
+
+  it('says nothing at all when the route did not report on missing inventories', async () => {
+    // Absent is not the same as an empty array: an older server that never
+    // looked must not be rendered as one that looked and found nothing wrong.
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [liveRow({ name: 'sw-live-1', plane: 'CENTRAL' })],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    } as never);
+    renderDevices();
+
+    expect(await screen.findByText('1 device, 1 inventory, one reconciled list.')).toBeTruthy();
+    expect(screen.queryByText(/not represented below/)).toBeNull();
+  });
+});
+
 describe('Devices reconciliation flags', () => {
   it('names every claiming plane and marks the row double-claimed', async () => {
     mockGetDevices.mockResolvedValue({
