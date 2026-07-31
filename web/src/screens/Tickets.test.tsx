@@ -238,9 +238,15 @@ describe('Tickets — the retention marker', () => {
     );
 
     // A retention marker rendered bare would read as an operator's own words.
-    await waitFor(() => expect(screen.getByText('RETAINED')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('DISCARDED')).toBeTruthy());
     expect(screen.getByText(/412 earlier entries discarded/)).toBeTruthy();
     // And it must not borrow the ACTION label, which asserts a person acted.
     expect(screen.queryByText('ACTION')).toBeNull();
+    // The label was RETAINED, sitting directly above prose saying the entries
+    // were discarded. A marker exists to admit a hole in the log; a badge
+    // asserting the opposite of the line it introduces undoes the admission,
+    // and this test asserted the label was present without asking whether it
+    // was true.
+    expect(screen.queryByText('RETAINED')).toBeNull();
   });
 });

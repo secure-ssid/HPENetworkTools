@@ -197,7 +197,7 @@ describe('TicketStore evidence collection', () => {
     // alert row + live state + 2 matching writes (newest first) + 1 session
     expect(t.evidence).toHaveLength(5);
     expect(t.evidence[0].raw).toContain('source=portal.alert');
-    expect(t.evidence[1]).toMatchObject({ time: 'now', plane: 'CLASSIC' });
+    expect(t.evidence[1]).toMatchObject({ plane: 'CLASSIC' });
     expect(t.evidence[1].finding).toContain('current state: Down');
     expect(t.evidence[2].finding).toBe('portal write: alert-ack — acknowledged');
     expect(t.evidence[3].finding).toBe('portal write: reboot — rejected');
@@ -208,6 +208,22 @@ describe('TicketStore evidence collection', () => {
     // unstated timezone is a worse fact than the instant it came from.
     expect(t.evidence[2].time).toBe('2026-07-26T09:10:00Z');
     expect(t.evidence[4].time).toBe('2026-07-26T08:00:00Z');
+    // …and that holds for the rows drawn from live state too. They record what
+    // the portal could see when the ticket was cut, so the raise instant is
+    // their instant. They used to say the literal 'now' — true while the
+    // ticket was being built, and still claiming the present a week later,
+    // because evidence is collected once and stored, never recomputed on read.
+    expect(t.evidence[0].time).toBe(t.raisedAt);
+    expect(t.evidence[1].time).toBe(t.raisedAt);
+    expect(t.evidence.some((e) => e.time === 'now')).toBe(false);
+    // Every row is an instant or the '—' of one that could not be parsed —
+    // never this host's rendering of a clock. An hh:mm the server wrote passes
+    // through hhmmLocal() untouched and lands in the same column as times the
+    // browser converted, identical in shape and silently in another zone.
+    expect(
+      t.evidence.every((e) => e.time === '—' || !Number.isNaN(Date.parse(e.time))),
+    ).toBe(true);
+    expect(t.evidence.every((e) => !/^\d{2}:\d{2}$/.test(e.time))).toBe(true);
     // nothing from other devices leaked in
     expect(t.evidence.every((e) => e.device === 'sw-riv-1')).toBe(true);
     // A whole log claims no holes. A caveat printed over intact evidence is

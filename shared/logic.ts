@@ -697,10 +697,16 @@ export const CLOCK_SKEW_TOLERANCE_MS = 120_000;
  *
  * Anything that is not an instant comes back unchanged. That is deliberate
  * and load-bearing: the authored fixtures carry times already written as
- * '09:15', the evidence trail uses the literal 'now' for a row it is
- * generating as you read it, and a server that could not parse a stamp sends
- * '—'. All three are already the right thing to display, and none of them is
- * an instant this can improve on.
+ * '09:15', and a server that could not parse a stamp sends '—'. Neither is an
+ * instant this can improve on.
+ *
+ * The pass-through is a fallback, not a licence. It cannot tell a fixture's
+ * '09:15' from an hh:mm some server rendered on its own wall clock, so it
+ * hands both to the reader unchanged and they arrive looking identical to the
+ * ones converted for them. The ticket evidence trail relied on that twice —
+ * a server-formatted hh:mm and a literal 'now' frozen into a stored snapshot —
+ * and both read as ordinary times. A producer that holds an instant must send
+ * the instant.
  */
 export function hhmmLocal(value: string): string {
   const d = new Date(value);

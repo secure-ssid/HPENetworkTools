@@ -253,7 +253,7 @@ export class TicketStore {
     const id = this.nextId();
     const siteId = siteIdFor(alert.siteName) ?? ('multiple' as SiteId);
     const now = new Date();
-    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const raisedAt = now.toISOString();
     const slaDueAt = new Date(now.getTime() + (SLA_HOURS[alert.sev] ?? 24) * 3_600_000);
     const ticket: TicketRow = {
       id,
@@ -270,7 +270,7 @@ export class TicketStore {
       owner: 'unassigned',
       planes: alert.plane,
       sla: formatSla(slaDueAt.getTime() - now.getTime()),
-      raisedAt: now.toISOString(),
+      raisedAt,
       slaDueAt: slaDueAt.toISOString(),
       inc: id.slice(4),
       causeTitle: 'Likely cause: see the alert detail below',
@@ -280,13 +280,13 @@ export class TicketStore {
       action3: 'Acknowledge the alert',
       evidence: [
         {
-          time: hhmm,
+          time: raisedAt,
           plane: alert.plane,
           finding: `${alert.title} — ${alert.detail}`,
           raw: `source=portal.alert age=${alert.age} state=${alert.state}`,
           device: alert.device,
         },
-        ...this.collectEvidence(alert),
+        ...this.collectEvidence(alert, raisedAt),
       ],
     };
     this.save([ticket, ...this.stored()]);
@@ -298,8 +298,18 @@ export class TicketStore {
    * state from the poller cache, the newest brokered writes naming it, and
    * its recorded shell sessions. Caps keep the evidence list a digest, not a
    * dump; absence of a feed is simply absence (never fabricated rows).
+   *
+   * `atIso` is the raise instant, and it is the honest stamp for every row
+   * drawn from live state: those rows record what the portal could see at the
+   * moment the ticket was cut, not an event with a time of its own. They used
+   * to carry the literal 'now', which is true for exactly as long as it takes
+   * to save the ticket. Evidence is collected once, here, and stored — nothing
+   * recomputes it on read — so 'now' was still claiming the present hours or
+   * days later, on a list this file's own header describes as "read later by
+   * someone who was not there". Rows that DO have an instant of their own (a
+   * change-log entry, a session's opening) keep it via timeOf().
    */
-  private collectEvidence(alert: AlertRow): TicketEvidence[] {
+  private collectEvidence(alert: AlertRow, atIso: string): TicketEvidence[] {
     const out: TicketEvidence[] = [];
     const device = alert.device;
 
@@ -307,7 +317,7 @@ export class TicketStore {
     if (live) {
       const claimedBy = live.claimedBy ?? [];
       out.push({
-        time: 'now',
+        time: atIso,
         plane: live.plane,
         finding: `current state: ${live.state} · ${live.model} · firmware ${live.firmware}`,
         raw: `source=poller.reconciled${live.serial ? ` serial=${live.serial}` : ''}${claimedBy.length ? ` claimed_by=${claimedBy.join(',')}` : ''}`,
@@ -317,7 +327,7 @@ export class TicketStore {
       // claims) is evidence in its own right, not something to quietly drop.
       if (live.reconciliationIssue) {
         out.push({
-          time: 'now',
+          time: atIso,
           plane: live.plane,
           finding:
             claimedBy.length > 1
@@ -348,7 +358,7 @@ export class TicketStore {
         .filter((g) => g.from !== null && g.to !== null)
         .map((g) => `${g.from}..${g.to}`);
       out.push({
-        time: 'now',
+        time: atIso,
         plane: 'PORTAL',
         finding:
           `change-log history is incomplete — portal writes for this device before this point may not be listed`,

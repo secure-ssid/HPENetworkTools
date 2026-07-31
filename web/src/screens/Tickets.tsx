@@ -470,6 +470,11 @@ export default function Tickets() {
                           lineHeight: 1.4,
                         }}
                       >
+                        {/* A retention marker records entries this ticket DROPPED.
+                            It was badged RETAINED, directly above prose reading
+                            "412 earlier entries discarded" — the label asserting
+                            the opposite of the line it introduced, in the one
+                            place the log admits to a hole in itself. */}
                         {n.kind === 'action' || n.kind === 'retention' ? (
                           <span
                             style={{
@@ -481,7 +486,7 @@ export default function Tickets() {
                               marginRight: 8,
                             }}
                           >
-                            {n.kind === 'retention' ? 'RETAINED' : 'ACTION'}
+                            {n.kind === 'retention' ? 'DISCARDED' : 'ACTION'}
                           </span>
                         ) : null}
                         {n.text}
