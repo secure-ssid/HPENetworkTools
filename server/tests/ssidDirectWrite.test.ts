@@ -99,6 +99,38 @@ function stubPlane(overrides: Partial<SsidWritePlane> = {}): SsidWritePlane {
   };
 }
 
+/** A fresh copy per test — apply() writes back into the result the plane
+ *  returned (assignment labels, and now the cache-refresh outcome), so the
+ *  shared APPLIED constant must never be handed to it directly. */
+function appliedResult(over: Partial<SsidApplyResult> = {}): SsidApplyResult {
+  return {
+    ...APPLIED,
+    profile: { ...APPLIED.profile },
+    assignments: APPLIED.assignments.map((a) => ({ ...a })),
+    ...over,
+  };
+}
+
+/** Structural stand-in for the poller: only the two methods the write path
+ *  uses. `ssids` undefined models a Central pull that omitted the section
+ *  because it could not read it — Central never sends it empty. */
+function fakePoller(opts: { tick?: string; ssids?: unknown[]; throws?: boolean } = {}): {
+  poller: import('../src/services/poller').Poller;
+  syncCalls: string[];
+} {
+  const syncCalls: string[] = [];
+  const poller = {
+    syncNowFor: async (plane: string) => {
+      syncCalls.push(plane);
+      if (opts.throws) throw new Error('https://central.example/token?secret=abc exploded');
+      return opts.tick ?? 'ok';
+    },
+    contributionsByPlane: () =>
+      new Map([['central', opts.ssids === undefined ? { config: {} } : { config: { ssids: opts.ssids } }]]),
+  } as unknown as import('../src/services/poller').Poller;
+  return { poller, syncCalls };
+}
+
 async function startInjectedRoute(
   service: InstanceType<typeof SsidDirectWriteService>,
 ): Promise<{ server: Server; base: string }> {
@@ -167,6 +199,94 @@ describe('SsidDirectWriteService — service level (every instance is given an e
     // screen marks it '?' and withholds the green, which would make demo mode
     // display a doubt it does not have.
     expect(result.assignments[0].verified).toBe(true);
+  });
+
+  /* The Configure list is served from the poll cache. Without a forced
+     re-read, the screen re-fetches it the instant an apply succeeds and gets
+     back the snapshot from before the write — the operator is told the SSID
+     was created and then shown a list without it in it. */
+  it('re-reads Central after a write so the list is not the pre-change one', async () => {
+    const { poller, syncCalls } = fakePoller({ ssids: [{ name: 'Corp-WiFi' }] });
+    const service = new SsidDirectWriteService({
+      dataDir: freshDataDir(),
+      demoMode: () => false,
+      pollerRef: poller,
+      plane: stubPlane({ applySsidProfile: async () => appliedResult() }),
+    });
+    const result = await service.apply(READY_FORM, true);
+    expect(syncCalls).toEqual(['central']);
+    expect(result.cacheRefresh).toEqual({ attempted: true, ok: true });
+  });
+
+  /* A pull that completed but brought back no SSID list leaves the cache
+     exactly as stale as a failed one. Calling that a refresh would be the same
+     lie by a quieter route. */
+  it('will not call a re-read that returned no SSID list a refresh', async () => {
+    for (const opts of [{ tick: 'error' }, { ssids: undefined }, { throws: true }]) {
+      const { poller } = fakePoller(opts);
+      const service = new SsidDirectWriteService({
+        dataDir: freshDataDir(),
+        demoMode: () => false,
+        pollerRef: poller,
+        plane: stubPlane({ applySsidProfile: async () => appliedResult() }),
+      });
+      const result = await service.apply(READY_FORM, true);
+      expect(result.cacheRefresh?.attempted).toBe(true);
+      expect(result.cacheRefresh?.ok).toBe(false);
+      // Operator-facing, and never the caught error — the poller's message can
+      // carry a URL or a token-bearing query string.
+      expect(result.cacheRefresh?.message).toMatch(/^Central /);
+      expect(result.cacheRefresh?.message).not.toMatch(/secret|https:/);
+    }
+  });
+
+  /* Not attempted and attempted-but-failed are different states and the screen
+     reads them differently: one is "nothing changed, so nothing is behind",
+     the other is "something changed and you cannot see it yet". */
+  it('attempts no refresh when the write changed nothing', async () => {
+    const unchanged: SsidApplyResult = {
+      ok: true,
+      partial: false,
+      profile: { ok: true, action: 'unchanged', verified: true, httpCode: 200, message: 'already matches' },
+      assignments: [
+        { scopeId: 'site-1', label: 'site-1', ok: true, skipped: true, httpCode: 200, message: 'already assigned' },
+      ],
+    };
+    const { poller, syncCalls } = fakePoller();
+    const service = new SsidDirectWriteService({
+      dataDir: freshDataDir(),
+      demoMode: () => false,
+      pollerRef: poller,
+      plane: stubPlane({ applySsidProfile: async () => unchanged }),
+    });
+    const result = await service.apply(READY_FORM, true);
+    expect(syncCalls).toEqual([]);
+    expect(result.cacheRefresh).toEqual({ attempted: false, ok: false });
+  });
+
+  /* A partial apply is explicitly not rolled back — the profile is on the
+     estate. That is the case where the operator is most likely to retry from
+     the list, so it is the last one that can afford to show a stale one. */
+  it('re-reads Central after a partial apply too, because the profile stands', async () => {
+    const { poller, syncCalls } = fakePoller({ ssids: [{ name: 'Corp-WiFi' }] });
+    const service = new SsidDirectWriteService({
+      dataDir: freshDataDir(),
+      demoMode: () => false,
+      pollerRef: poller,
+      plane: stubPlane({
+        applySsidProfile: async () =>
+          appliedResult({
+            ok: false,
+            partial: true,
+            assignments: [
+              { scopeId: 'site-1', label: 'site-1', ok: false, httpCode: 500, message: 'assignment failed' },
+            ],
+          }),
+      }),
+    });
+    const result = await service.apply(READY_FORM, true);
+    expect(syncCalls).toEqual(['central']);
+    expect(result.cacheRefresh).toEqual({ attempted: true, ok: true });
   });
 
   it('uses a live Configure override even when the portal is globally demo', async () => {

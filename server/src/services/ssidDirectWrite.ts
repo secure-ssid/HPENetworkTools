@@ -31,9 +31,11 @@ import {
   ssidNameProblem,
   vlanIdProblem,
   wpaPassphraseProblem,
+  type WriteCacheRefresh,
 } from '@hpe/shared';
 import { CentralAdapter } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
+import { poller as defaultPoller, type Poller } from './poller';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
 import { effectiveSectionSource, settings } from '../config/settings';
 
@@ -58,6 +60,7 @@ export interface SsidWritePlane {
 
 export interface SsidDirectWriteOptions {
   registry?: PlaneRegistry; // default: the process-wide singleton
+  pollerRef?: Poller; // default: the process-wide poller — re-read after a write
   plane?: SsidWritePlane | null; // test override — undefined resolves the CentralAdapter from the registry
   dataDir?: string; // default: HPE_DATA_DIR or <repo>/data
   nowMs?: () => number;
@@ -159,6 +162,7 @@ function asSsidForm(raw: unknown): SsidForm {
 
 export class SsidDirectWriteService {
   private readonly registry: PlaneRegistry;
+  private readonly pollerRef: Poller;
   private readonly planeOverride: SsidWritePlane | null | undefined;
   private readonly dataDir: string;
   private readonly nowMs: () => number;
@@ -166,6 +170,7 @@ export class SsidDirectWriteService {
 
   constructor(opts: SsidDirectWriteOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
+    this.pollerRef = opts.pollerRef ?? defaultPoller;
     this.planeOverride = opts.plane;
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
@@ -259,8 +264,58 @@ export class SsidDirectWriteService {
     for (const assignment of result.assignments) {
       assignment.label = labels.get(assignment.scopeId) ?? assignment.scopeId;
     }
+    result.cacheRefresh = await this.refreshCache(result);
     this.log(form.name, result);
     return result;
+  }
+
+  /**
+   * Force one fresh Central pull so the Configure inventory reflects the SSID
+   * that was just written.
+   *
+   * The list on that screen is served from the poll cache
+   * (routes/screens/configureModel.ts reads poller.contributionsByPlane()),
+   * and the screen re-fetches it the moment an apply succeeds. Without this,
+   * that re-fetch returns the pre-change snapshot: the operator is told the
+   * SSID was created and is then shown a list that does not contain it, for
+   * up to a full poll interval. The natural reading of that is that the write
+   * failed, and the natural response is to apply it again.
+   *
+   * A refresh failure never fails the write — the SSID is already on the
+   * estate. Only the operator's view of it is behind, and that is what gets
+   * reported rather than assumed.
+   */
+  private async refreshCache(result: SsidApplyResult): Promise<WriteCacheRefresh> {
+    const profileWritten = result.profile.action === 'created' || result.profile.action === 'updated';
+    const assignmentWritten = result.assignments.some(
+      (assignment) => assignment.ok && !assignment.skipped,
+    );
+    // 'unchanged' and 'failed' both leave Central exactly as the cache already
+    // has it, so there is nothing for a re-read to correct.
+    if (!profileWritten && !assignmentWritten) return { attempted: false, ok: false };
+    try {
+      const tick = await this.pollerRef.syncNowFor('central');
+      if (tick !== 'ok') {
+        return { attempted: true, ok: false, message: `Central could not be re-read (poll ${tick})` };
+      }
+      // A pull that completed but brought back no SSID list leaves the cache
+      // exactly as stale as a failed one. Central omits sections it could not
+      // read rather than sending them empty, so an absent `ssids` here is a
+      // section that was not read — not a Central with no SSIDs.
+      const pull = this.pollerRef.contributionsByPlane().get('central');
+      if (!pull?.config?.ssids) {
+        return {
+          attempted: true,
+          ok: false,
+          message: 'Central was re-read but returned no SSID list',
+        };
+      }
+      return { attempted: true, ok: true };
+    } catch (err) {
+      // Secret-free: the poller's error can carry a URL or vendor body.
+      console.error(`central cache refresh failed: ${(err as Error).message}`);
+      return { attempted: true, ok: false, message: 'Central could not be re-read' };
+    }
   }
 
   private validateCatalogSelection(form: SsidForm, catalog: SsidCatalog): void {

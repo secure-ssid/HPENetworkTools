@@ -610,6 +610,17 @@ export interface SsidApplyResult {
   partial: boolean;
   profile: SsidProfileStepResult;
   assignments: SsidScopeAssignmentResult[];
+  /**
+   * Set by the service layer, not the adapter. The Configure inventory is
+   * served from the poll cache, so without a forced re-read the SSID list the
+   * operator sees after a successful apply is the one from before it — which
+   * reads as a silent failure and invites a retry.
+   *
+   * Absent means no refresh was tried at all (demo mode, or an older server);
+   * that is NOT the same as a refresh that was tried and did not land, and the
+   * screen must not conflate them.
+   */
+  cacheRefresh?: WriteCacheRefresh;
 }
 
 // ---------------------------------------------------------------------------
@@ -1431,7 +1442,7 @@ export type GreenLakeWriteAction = (typeof GREENLAKE_WRITE_ACTIONS)[number];
  *
  * So the refresh is reported rather than assumed.
  */
-export interface GreenLakeCacheRefresh {
+export interface WriteCacheRefresh {
   /** False when no refresh was tried. That is the correct state for an
    *  `accepted` (202) write: nothing has been applied yet, so re-reading
    *  would only assert more confidently that nothing changed. */
@@ -1443,6 +1454,11 @@ export interface GreenLakeCacheRefresh {
    *  did not land. Never a vendor body. */
   message?: string;
 }
+
+/** The original name, kept because the shape is identical and GreenLake was
+ *  simply the first write path to need it. Nothing about it is workspace
+ *  specific — the Central SSID apply reports staleness the same way. */
+export type GreenLakeCacheRefresh = WriteCacheRefresh;
 
 export interface GreenLakeWriteResult {
   action: GreenLakeWriteAction;

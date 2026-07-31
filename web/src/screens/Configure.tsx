@@ -214,6 +214,23 @@ function profileWrittenButUnconfirmed(profile: SsidProfileStepResult): boolean {
   return !profile.ok && !profile.verified && profile.action !== 'failed';
 }
 
+/**
+ * The apply succeeded but the server could not re-read Central afterwards, so
+ * the SSID list below is still the pre-change one. Silence here is what makes
+ * a successful write look like a failed one: the operator is congratulated and
+ * then shown a list without their SSID in it, and applies it again.
+ *
+ * Returns null when a refresh was never attempted — that is the correct state
+ * for a write that changed nothing, and is not the same as one that failed.
+ */
+function cacheStaleNote(result: SsidApplyResult): string | null {
+  const refresh = result.cacheRefresh;
+  if (!refresh?.attempted || refresh.ok) return null;
+  return ` The SSID list below could not be re-read (${
+    refresh.message ?? 'reason not reported'
+  }), so it does not show this change yet — do not apply it again.`;
+}
+
 function assignmentPartialTitle(assignments: readonly SsidScopeAssignmentResult[]): string {
   const unconfirmed = assignments.some((a) => a.verified === false);
   const failed = assignments.some((a) => !a.ok && a.verified !== false);
@@ -636,10 +653,12 @@ export default function Configure() {
   };
 
   /**
-   * Apply a reviewed SSID change directly (no ticket/queue). On success the
-   * underlying /api/configure inventory is refreshed so the list reflects
-   * the new/updated profile; on failure or partial success every entered
-   * value stays exactly as typed so the operator can fix and retry.
+   * Apply a reviewed SSID change directly (no ticket/queue). Whenever the
+   * profile actually landed — clean, partial, or accepted-but-unconfirmed —
+   * the underlying /api/configure inventory is re-fetched so the list reflects
+   * it, and the toast says so outright when the server could not re-read
+   * Central and the list is therefore still the pre-change one. On failure
+   * every entered value stays exactly as typed so the operator can retry.
    */
   const applySsid = async () => {
     if (!ssidReviewed || ssidApplying) return;
@@ -659,10 +678,10 @@ export default function Configure() {
         unconfirmed > 0 ? `${ssid.name} applied — assignments not confirmed` : `${ssid.name} applied`,
         {
           description:
-            unconfirmed > 0
+            (unconfirmed > 0
               ? `Central answered the assignment ${unconfirmed === 1 ? 'write' : 'writes'} but its assignment list could not be read back. Check the scopes before treating this SSID as live at them.`
-              : r.profile.message,
-          tone: unconfirmed > 0 ? 'warning' : 'success',
+              : r.profile.message) + (cacheStaleNote(r) ?? ''),
+          tone: unconfirmed > 0 || cacheStaleNote(r) !== null ? 'warning' : 'success',
         },
       );
       const refreshed = await getConfigure();
@@ -674,15 +693,24 @@ export default function Configure() {
           ? `${ssid.name}: profile applied, scope assignments not confirmed`
           : `${ssid.name}: profile applied, one or more scope assignments failed`,
         {
-          description: unconfirmed
-            ? 'Central took the assignment but it is not in the list yet. Re-check before treating the SSID as live at those scopes — the profile was not rolled back.'
-            : 'Review the assignment results below and retry — the profile was not rolled back.',
+          description:
+            (unconfirmed
+              ? 'Central took the assignment but it is not in the list yet. Re-check before treating the SSID as live at those scopes — the profile was not rolled back.'
+              : 'Review the assignment results below and retry — the profile was not rolled back.') +
+            (cacheStaleNote(r) ?? ''),
           tone: 'warning',
         },
       );
+      // A partial apply still wrote the profile — it is explicitly not rolled
+      // back — so the list below is out of date for exactly the same reason it
+      // is after a clean apply, and the operator is about to retry from it.
+      const refreshedPartial = await getConfigure();
+      setData(refreshedPartial);
     } else if (profileWrittenButUnconfirmed(r.profile)) {
       toast(`${ssid.name}: profile ${r.profile.action}, not confirmed`, {
-        description: `${r.profile.message}. Central accepted the write — check the SSID in Central before applying it again.`,
+        description:
+          `${r.profile.message}. Central accepted the write — check the SSID in Central before applying it again.` +
+          (cacheStaleNote(r) ?? ''),
         tone: 'warning',
       });
       // The list below is the only other evidence available, and leaving it

@@ -816,7 +816,7 @@ describe('Configure — SSID direct apply', () => {
     await waitFor(() => expect(mockGetConfigure).toHaveBeenCalledTimes(2));
   });
 
-  it('a partial apply keeps every entered value and shows the warning breakdown without refreshing', async () => {
+  it('a partial apply keeps every entered value and shows the warning breakdown', async () => {
     mockApplySsidDirect.mockResolvedValue({
       ok: false,
       partial: true,
@@ -838,8 +838,11 @@ describe('Configure — SSID direct apply', () => {
     // The entered values are still there for a retry.
     expect(screen.getByPlaceholderText('Enter SSID name')).toHaveProperty('value', 'MRDN-Guest');
     expect(screen.getByRole('checkbox', { name: 'Campus-01' })).toHaveProperty('checked', true);
-    // No refresh on anything less than a full success.
-    expect(mockGetConfigure).toHaveBeenCalledTimes(1);
+    // The profile half succeeded and is explicitly not rolled back, so the
+    // list is out of date whatever the assignments did. This used to skip the
+    // refresh on the rule "nothing less than a full success", which left the
+    // operator retrying from a list that could not show what had just landed.
+    await waitFor(() => expect(mockGetConfigure).toHaveBeenCalledTimes(2));
   });
 
   /* The VLAN box is labelled "1-4094" and accepted 4095 anyway; the SSID name
@@ -1075,6 +1078,48 @@ describe('Configure — SSID direct apply', () => {
     await waitFor(() => expect(screen.getByText('Applied')).toBeTruthy());
     expect(screen.getByText(/✓ Campus-01/)).toBeTruthy();
     expect(screen.queryByText(/\? Campus-01/)).toBeNull();
+  });
+
+  /* The list on this screen is served from the poll cache. When the server
+     could not re-read Central after the write, re-fetching it returns the
+     pre-change snapshot — so a green "applied" toast sits above a list with no
+     such SSID in it, which reads as a failure and invites a second apply. */
+  it('says the list is behind when Central could not be re-read', async () => {
+    await applyWith({
+      ...SSID_APPLIED,
+      cacheRefresh: { attempted: true, ok: false, message: 'Central could not be re-read (poll error)' },
+    });
+
+    await waitFor(() => expect(screen.getByText('Applied')).toBeTruthy());
+    expect(
+      screen.getByText(/could not be re-read \(Central could not be re-read \(poll error\)\), so it does not show this change yet — do not apply it again/),
+    ).toBeTruthy();
+  });
+
+  // Must not over-apply: a refresh that landed says nothing at all.
+  it('stays quiet about the cache when the re-read worked', async () => {
+    await applyWith({ ...SSID_APPLIED, cacheRefresh: { attempted: true, ok: true } });
+
+    await waitFor(() => expect(screen.getByText('Applied')).toBeTruthy());
+    expect(screen.queryByText(/does not show this change yet/)).toBeNull();
+  });
+
+  /* A partial apply is explicitly not rolled back — the profile is on the
+     estate — and this branch never re-fetched the list at all, so the operator
+     was sent to retry from a list that could not show what had just landed. */
+  it('re-fetches the inventory after a partial apply, because the profile stands', async () => {
+    const before = mockGetConfigure.mock.calls.length;
+    await applyWith({
+      ok: false,
+      partial: true,
+      profile: { ok: true, action: 'created', verified: true, httpCode: 201, message: 'profile created — HTTP 201' },
+      assignments: [
+        { scopeId: 'site-1', label: 'Campus-01', ok: false, httpCode: 500, message: 'assignment failed — HTTP 500' },
+      ],
+      cacheRefresh: { attempted: true, ok: true },
+    });
+
+    await waitFor(() => expect(mockGetConfigure.mock.calls.length).toBeGreaterThan(before + 1));
   });
 
   // Must not over-apply, part two: a fully confirmed apply keeps its green.
