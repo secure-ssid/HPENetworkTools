@@ -81,6 +81,37 @@ const DOT: Partial<Record<Tone, string>> = {
   info: 'var(--nd-info, var(--nd-border-strong))',
 };
 
+/**
+ * Stack/cluster identity for one node.
+ *
+ * A cluster of eight switches is drawn as eight cards, which reads as eight
+ * independent devices in eight failure domains. It is one logical device: the
+ * conductor holds the running configuration, a change pushed to a member goes
+ * nowhere, and rebooting the conductor is not the same act as rebooting a
+ * member. Both facts arrive from the plane on adjacent lines of the adapter
+ * and neither was drawn.
+ *
+ * Only the exceptional case is worded — a standalone switch is the ordinary
+ * one and earns nothing.
+ */
+function clusterFacts(
+  node: TopologyDeviceNode,
+  nodeBySerial: Map<string, TopologyDeviceNode>,
+): string[] {
+  const conductor = (node.conductorSerial ?? '').trim();
+  const deployment = (node.deployment ?? '').trim();
+  if (conductor === '') {
+    return deployment !== '' && deployment.toLowerCase() !== 'standalone'
+      ? [deployment.toLowerCase()]
+      : [];
+  }
+  if (conductor === node.serial) return ['conductor'];
+  // Naming the conductor is the point; falling back to its serial keeps a
+  // conductor that is not on this diagram visible rather than dropping it,
+  // which is itself worth seeing.
+  return [`member of ${nodeBySerial.get(conductor)?.name ?? conductor}`];
+}
+
 function liveTone(node: TopologyDeviceNode): Tone {
   const status = node.status.toUpperCase();
   if (status === 'OFFLINE' || status === 'DOWN') return 'danger';
@@ -122,6 +153,10 @@ export function liveTopologyLinkFact(link: TopologyLink, forward = true): string
     // plane observed it. A diagram is read as what the plane can see, so an
     // asserted edge has to say that it is one.
     manual ? 'added manually' : null,
+    // Two members of one stack joined by their stacking cable. It looks like
+    // an uplink and is not one: it carries no user traffic, cannot be
+    // re-patched, and losing it splits a device rather than a path.
+    link.isSibling === true ? 'stack link' : null,
     link.health && link.health.toLowerCase() !== 'good'
       ? `link ${link.health.toLowerCase()}`
       : null,
@@ -171,6 +206,7 @@ export function buildLiveSiteTopology(
       node.model,
       node.deviceFunction && node.deviceFunction !== '-' ? node.deviceFunction.toLowerCase() : null,
       node.type.toLowerCase() === 'unmanaged' ? 'unmanaged neighbor' : null,
+      ...clusterFacts(node, nodeBySerial),
     ].filter((part): part is string => Boolean(part));
     return {
       id: `live:${node.serial}`,

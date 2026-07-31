@@ -161,6 +161,45 @@ describe('buildLiveSiteTopology — layout without inventing facts', () => {
     }
   });
 
+  /* Eight cluster members are drawn as eight cards, which reads as eight
+     independent devices. It is one logical device, and the conductor is the
+     one holding the running configuration — a change pushed at a member goes
+     nowhere. Central sends both facts on adjacent adapter lines. */
+  it('says which card is the conductor and which are its members', () => {
+    const diagram = buildLiveSiteTopology(
+      live({
+        nodes: [
+          { ...node('SW1', 'core-1', 'Switch'), deployment: 'Cluster', conductorSerial: 'SW1' },
+          { ...node('SW2', 'core-2', 'Switch'), deployment: 'Cluster', conductorSerial: 'SW1' },
+          // A conductor outside the drawn set stays visible as its serial
+          // rather than being dropped for not having a card.
+          { ...node('SW3', 'core-3', 'Switch'), deployment: 'Cluster', conductorSerial: 'SW9' },
+        ],
+      }),
+      [],
+    );
+    expect(diagram.nodes[0].sub).toContain('conductor');
+    expect(diagram.nodes[1].sub).toContain('member of core-1');
+    expect(diagram.nodes[2].sub).toContain('member of SW9');
+  });
+
+  it('words a cluster the plane named without naming a conductor, and says nothing for a standalone', () => {
+    const diagram = buildLiveSiteTopology(
+      live({
+        nodes: [
+          { ...node('SW1', 'core-1', 'Switch'), deployment: 'Cluster' },
+          { ...node('SW2', 'core-2', 'Switch'), deployment: 'Standalone' },
+          node('SW3', 'core-3', 'Switch'),
+        ],
+      }),
+      [],
+    );
+    expect(diagram.nodes[0].sub).toContain('cluster');
+    // The ordinary case earns no words, the same rule the link facts follow.
+    expect(diagram.nodes[1].sub).not.toContain('standalone');
+    expect(diagram.nodes[2].sub).not.toContain('cluster');
+  });
+
   it('leaves an unreported health neutral rather than reading it as good', () => {
     const diagram = buildLiveSiteTopology(
       live({ nodes: [{ ...node('SW', 'core-1', 'Switch'), health: null }] }),
@@ -194,6 +233,15 @@ describe('buildLiveSiteTopology — layout without inventing facts', () => {
       '1/1/1 ↔ eth0 · 1.0 Gbps · added manually',
     );
     expect(liveTopologyLinkFact(link('SW', 'AP1', { edgeType: 'System' }))).toBe('1/1/1 ↔ eth0 · 1.0 Gbps');
+  });
+
+  /* A stacking cable looks exactly like an uplink on a diagram and is not one:
+     it carries no user traffic, cannot be re-patched, and losing it splits a
+     device rather than a path. */
+  it('marks a stacking cable as one rather than drawing it as an uplink', () => {
+    expect(liveTopologyLinkFact(link('SW1', 'SW2', { isSibling: true }))).toContain('stack link');
+    expect(liveTopologyLinkFact(link('SW1', 'SW2', { isSibling: false }))).not.toContain('stack link');
+    expect(liveTopologyLinkFact(link('SW1', 'SW2'))).not.toContain('stack link');
   });
 
   it('keeps every exception when a link has more than one', () => {
