@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import Compliance from './Compliance';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -228,6 +228,78 @@ describe('Compliance with no live evidence', () => {
  * over one plane's devices while another linked plane's whole inventory went
  * unread rendered as an ordinary, complete coverage report. This is the screen
  * an operator would screenshot for an audit. */
+/* The demo scan reports 900 ms after it is asked for, and the operator can
+   have moved on by then. A stranded setState is quiet; a toast is app-level
+   chrome, so 'Scan complete' announced a run of a screen the operator was no
+   longer looking at, on whatever screen they had reached. */
+describe('Compliance scan finishing after the operator has left', () => {
+  function Away() {
+    const navigate = useNavigate();
+    return (
+      <button type="button" onClick={() => navigate('/elsewhere')}>
+        leave
+      </button>
+    );
+  }
+
+  /* ToastProvider stays mounted above the routes, exactly as the app shell
+     holds it — unmounting the provider too would hide the bug rather than
+     test it. */
+  function renderRoutable() {
+    return render(
+      <MemoryRouter initialEntries={['/compliance']}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Away />
+            <Routes>
+              <Route path="/compliance" element={<Compliance />} />
+              <Route path="/elsewhere" element={<div>somewhere else</div>} />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  const DEMO: ComplianceData = { ...LIVE_COVERAGE, dataSource: 'demo' };
+
+  it('does not announce the scan on the screen the operator moved to', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockGetCompliance.mockResolvedValue(DEMO);
+      renderRoutable();
+      fireEvent.click(await screen.findByText('Run scan now'));
+      fireEvent.click(screen.getByText('leave'));
+      expect(screen.getByText('somewhere else')).toBeTruthy();
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      expect(screen.queryByText(/Scan complete/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /* Guard: the announcement is the point of the button when the operator is
+     still there to read it. */
+  it('still announces the scan to an operator who stayed', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockGetCompliance.mockResolvedValue(DEMO);
+      renderRoutable();
+      fireEvent.click(await screen.findByText('Run scan now'));
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      expect(screen.getByText(/Scan complete/)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('Compliance scan scope', () => {
   it('says which planes the scan does not cover, above everything it claims', async () => {
     mockGetCompliance.mockResolvedValue({

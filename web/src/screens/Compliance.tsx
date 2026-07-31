@@ -13,7 +13,7 @@
  * Data: getCompliance() — live /api/compliance when the server is up, fixtures otherwise.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -75,6 +75,28 @@ export default function Compliance() {
   const [baseline, setBaseline] = useState('all');
   const [showDrift, setShowDrift] = useState(true);
   const [scanning, setScanning] = useState(false);
+  /* A scan finishes after the operator can have left. The load effect below
+     has always guarded its own late arrival; runScan had nothing, and its two
+     branches both act well after they were invoked — the live one across two
+     awaits, the demo one across a 900 ms timer that was never even captured,
+     so it could not be cancelled.
+     A stranded setState is quiet. The toast is not: it is app-level chrome, so
+     'Scan complete — 1,842 checks' surfaced on whichever screen the operator
+     had moved to, announcing a run of a screen they were no longer looking at.
+     Same guard CentralWebhooksPanel documents for the same reason. */
+  const mountedRef = useRef(true);
+  const scanTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (scanTimerRef.current !== null) {
+        window.clearTimeout(scanTimerRef.current);
+        scanTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -119,27 +141,32 @@ export default function Compliance() {
       setScanning(true);
       try {
         const result = await syncSystems();
+        if (!mountedRef.current) return;
         if (!result.ok) {
           toast('Live evidence refresh failed', { description: result.message, tone: 'warning' });
           return;
         }
         const refreshed = await getCompliance();
+        if (!mountedRef.current) return;
         setData(refreshed);
         toast('Live evidence refreshed', { description: result.message, tone: 'success' });
       } catch (err) {
         // Without this the spinner would run forever and the operator would
         // read "still scanning" when nothing is scanning.
+        if (!mountedRef.current) return;
         toast('Live evidence refresh failed', {
           description: err instanceof Error ? err.message : String(err),
           tone: 'danger',
         });
       } finally {
-        setScanning(false);
+        if (mountedRef.current) setScanning(false);
       }
       return;
     }
     setScanning(true);
-    window.setTimeout(() => {
+    scanTimerRef.current = window.setTimeout(() => {
+      scanTimerRef.current = null;
+      if (!mountedRef.current) return;
       setScanning(false);
       toast('Scan complete — 1,842 checks', {
         description: 'Demo run over the last snapshot — live scans land with the compliance backend.',
