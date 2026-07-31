@@ -87,6 +87,7 @@ import {
   callsFor,
   historyRows,
   throttleBanner,
+  pollFailureBanner,
 } from './systems/PlaneRow';
 import { PortalSection } from './systems/PortalSection';
 import {
@@ -255,6 +256,11 @@ export default function Systems() {
   const dormantViews = systemsLive && liveState ? views.filter((v) => v.live && !v.live.linked) : [];
   const activeViews = views.filter((v) => !dormantViews.includes(v));
   const throttle = systemsLive ? throttleBanner(views) : null;
+  /* Ahead of the throttle banner on purpose: being rate-limited means the
+     inventory is behind, while a failing poll may mean there is none. When
+     throttling is what is causing the failures, the registry's note says so
+     and rides along in this banner's body. */
+  const pollFailure = systemsLive ? pollFailureBanner(views) : null;
 
   const cur = data.systems.find((s) => s.name === detailName) ?? null;
   const curView = views.find((v) => v.row.name === detailName) ?? null;
@@ -500,6 +506,10 @@ export default function Systems() {
             429 and inventory falls behind. Re-key the portal client, or retire the legacy scripts
             still using it.
           </span>
+        </Alert>
+      ) : pollFailure ? (
+        <Alert tone="danger" title={pollFailure.title} dismissible>
+          <span style={{ fontSize: 13 }}>{pollFailure.body}</span>
         </Alert>
       ) : throttle ? (
         <Alert tone="danger" title={throttle.title} dismissible>

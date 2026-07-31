@@ -114,6 +114,57 @@ export function throttleBanner(views: Array<{ row: SystemRow; live: LivePlaneSta
   return null;
 }
 
+/**
+ * Planes whose polls are failing, named on the page instead of left in a
+ * drawer.
+ *
+ * The registry already records why — "auth: neither token endpoint accepted
+ * these credentials" and the like — but the only place that reason surfaced
+ * was the detail drawer, in the same muted grey as a healthy plane's
+ * "34 subscriptions · 14 devices". A plane that could not be polled at all
+ * showed as one word on one row, so the first sign of an outage was usually
+ * noticing that a number somewhere else had stopped moving.
+ *
+ * Keyed on consecutiveFailures, not health. 'degraded' also covers a poll that
+ * completed and returned less than all of it, which is a different claim with
+ * its own signals; this banner only ever means the last poll did not finish.
+ *
+ * Every failing plane is named rather than just the first, the registry's note
+ * is quoted as written, and its absence is said out loud instead of filled in.
+ * A plane that has never completed a poll is distinguished from one showing an
+ * older read, because that is the difference between stale numbers and none.
+ */
+export interface PollFailureBanner {
+  title: string;
+  body: string;
+}
+
+export function pollFailureBanner(
+  views: Array<{ row: SystemRow; live: LivePlaneState | null }>,
+): PollFailureBanner | null {
+  const failing = views.filter((v) => v.live?.linked && (v.live.consecutiveFailures ?? 0) > 0);
+  if (failing.length === 0) return null;
+  const body = failing
+    .map((v) => {
+      const live = v.live!;
+      const n = live.consecutiveFailures!;
+      const runs = `${n} consecutive failed poll${n === 1 ? '' : 's'}`;
+      const note = live.note?.trim();
+      const never = live.lastSync === null ? ' It has never completed one, so nothing here was read from it.' : '';
+      return note
+        ? `${v.row.name} — ${note} (${runs}).${never}`
+        : `${v.row.name} — ${runs}, and the registry recorded no reason.${never}`;
+    })
+    .join(' ');
+  return {
+    title:
+      failing.length === 1
+        ? `${failing[0]!.row.name} is not being polled successfully`
+        : `${failing.length} systems are not being polled successfully`,
+    body,
+  };
+}
+
 export interface CallRow {
   time: string;
   path: string;

@@ -135,6 +135,48 @@ describe('Systems demo/live merge', () => {
     expect(screen.getByText('Central Classic is throttling us')).toBeTruthy();
   });
 
+  /* An operator whose Central stopped answering had to open the drawer to
+     find out why — the reason the registry had already written sat there in
+     the same muted grey as a healthy plane's summary. It belongs on the page. */
+  it('names a failing plane and its reason on the page, above the throttle banner', async () => {
+    const centralRow: SystemRow = { ...SYSTEMS[0]!, name: 'Central', planeId: 'central' };
+    mockGetSystems.mockResolvedValue({
+      systems: [centralRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: {
+        central: {
+          id: 'central',
+          linked: true,
+          health: 'degraded',
+          lastSync: null,
+          deviceCount: null,
+          callsToday: 4,
+          note: 'poll failed: auth: neither token endpoint accepted these credentials',
+          // A 429 in the ring buffer too: the throttle banner would also fire,
+          // and the plane that is not being read at all is the bigger news.
+          recentCalls: [{ time: '11:00', path: '/monitoring/v2/aps', ms: 40, code: '429' }],
+          consecutiveFailures: 4,
+        },
+      },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Central is not being polled successfully')).toBeTruthy());
+    expect(screen.getByText(/neither token endpoint accepted these credentials/)).toBeTruthy();
+    expect(screen.getByText(/never completed one/)).toBeTruthy();
+    expect(screen.queryByText('Central is throttling us')).toBeNull();
+  });
+
   it('collapses the planes that hold no credentials behind one expandable line', async () => {
     const linkedRow: SystemRow = {
       ...SYSTEMS[0]!,
