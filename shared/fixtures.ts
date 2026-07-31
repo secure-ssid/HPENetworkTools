@@ -1755,9 +1755,38 @@ export const CONNECT_TYPE_OPTIONS: SelectOption[] = [
   { value: 'opsramp', label: 'HPE OpsRamp' },
 ];
 
+/**
+ * HPE Aruba Central regional API gateway hostnames.
+ * Source: aruba/pycentral v2 — pycentral/utils/constants.py CLUSTER_BASE_URLS
+ * Use the hostname as `gatewayBaseUrl` when connecting a Central plane.
+ */
+export const CENTRAL_CLUSTERS: SelectOption[] = [
+  { value: 'us1.api.central.arubanetworks.com', label: 'US-1 (us1)' },
+  { value: 'us2.api.central.arubanetworks.com', label: 'US-2 (us2)' },
+  { value: 'us4.api.central.arubanetworks.com', label: 'US-WEST-4 (us4)' },
+  { value: 'us5.api.central.arubanetworks.com', label: 'US-WEST-5 (us5)' },
+  { value: 'us6.api.central.arubanetworks.com', label: 'US-East1 (us6)' },
+  { value: 'ca1.api.central.arubanetworks.com', label: 'Canada-1 (ca1)' },
+  { value: 'de1.api.central.arubanetworks.com', label: 'EU-1 / Germany (de1)' },
+  { value: 'de2.api.central.arubanetworks.com', label: 'EU-Central2 (de2)' },
+  { value: 'de3.api.central.arubanetworks.com', label: 'EU-Central3 (de3)' },
+  { value: 'gb1.api.central.arubanetworks.com', label: 'UK (gb1)' },
+  { value: 'in1.api.central.arubanetworks.com', label: 'APAC-1 / India (in1)' },
+  { value: 'jp1.api.central.arubanetworks.com', label: 'APAC-EAST1 / Japan (jp1)' },
+  { value: 'au1.api.central.arubanetworks.com', label: 'APAC-SOUTH1 / Australia (au1)' },
+  { value: 'ae1.api.central.arubanetworks.com', label: 'UAE (ae1)' },
+  { value: 'cn1.api.central.arubanetworks.com.cn', label: 'China (cn1)' },
+  { value: 'internal.api.central.arubanetworks.com', label: 'Internal / Lab' },
+];
+
 /** Connect-a-system: type-dependent endpoint field — `endpoints` (7 variants). */
 export const CONNECT_ENDPOINTS: Record<SystemTypeKey, EndpointVariant> = {
-  central: { label: 'Central region / base URL', help: 'Shown under Central → API Gateway → REST API. Tokens are minted by HPE GreenLake SSO.', hint: 'us4.api.central.arubanetworks.com' },
+  central: {
+    label: 'Central region / base URL',
+    help: 'Pick a region or type a custom gateway hostname. Tokens are minted by HPE GreenLake SSO.',
+    hint: 'us4.api.central.arubanetworks.com',
+    options: CENTRAL_CLUSTERS,
+  },
   mist: { label: 'Mist API host + org ID', help: 'Global 01–06, plus the org UUID.', hint: 'api.mist.com · org 4f2a…' },
   classic: { label: 'Classic tenant URL', help: 'Legacy tenant; expect a low rate limit.', hint: 'eu-central.classic.arubanetworks.com' },
   greenlake: { label: 'GreenLake workspace ID', help: 'Platform workspace, not the application instance.', hint: 'wks-meridian-health' },

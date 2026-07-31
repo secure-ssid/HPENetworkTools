@@ -1671,6 +1671,8 @@ export interface EndpointVariant {
   label: string;
   help: string;
   hint: string;
+  /** Pre-defined options shown as a dropdown; user can still type a custom value. */
+  options?: SelectOption[];
 }
 
 /**

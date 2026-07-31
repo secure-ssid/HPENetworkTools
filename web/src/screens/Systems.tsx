@@ -167,6 +167,8 @@ export default function Systems() {
   const [newType, setNewType] = useState<SystemTypeKey>('central');
   const [displayName, setDisplayName] = useState('');
   const [endpoint, setEndpoint] = useState('');
+  /** True when the user has selected "Custom URL…" in a region-picker dropdown. */
+  const [endpointCustomMode, setEndpointCustomMode] = useState(false);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
   // The per-plane credential fields CONNECT_FIELDS declares, keyed by the
@@ -309,6 +311,7 @@ export default function Systems() {
     setNewType(prefill?.type ?? 'central');
     setDisplayName(prefill?.name ?? '');
     setEndpoint(prefill?.endpoint ?? '');
+    setEndpointCustomMode(false);
     setClientId('');
     setClientSecret('');
     setExtraCreds({});
@@ -1190,6 +1193,7 @@ export default function Systems() {
                 // type change resets to the safe connect-drawer defaults
                 // rather than carrying them across.
                 setEndpoint('');
+                setEndpointCustomMode(false);
                 setClientId('');
                 setClientSecret('');
                 setExtraCreds({});
@@ -1226,16 +1230,62 @@ export default function Systems() {
           )}
 
           <FormField label={endpointVariant.label} help={endpointVariant.help}>
-            <Input
-              mono
-              placeholder={endpointVariant.hint}
-              value={endpoint}
-              onChange={(e) => {
-                setEndpoint(e.target.value);
-                invalidate();
-              }}
-            />
+            {endpointVariant.options ? (
+              /* Region picker — pre-fills the URL so the operator never has to
+                 look it up. "Custom URL…" reveals a text field below. */
+              <Select
+                value={endpointCustomMode ? '__custom__' : (endpoint || '')}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === '__custom__') {
+                    setEndpointCustomMode(true);
+                    setEndpoint('');
+                  } else {
+                    setEndpointCustomMode(false);
+                    setEndpoint(v);
+                  }
+                  invalidate();
+                }}
+              >
+                <option value="">— select a region —</option>
+                {endpointVariant.options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+                <option value="__custom__">Custom URL…</option>
+              </Select>
+            ) : (
+              <Input
+                mono
+                placeholder={endpointVariant.hint}
+                value={endpoint}
+                onChange={(e) => {
+                  setEndpoint(e.target.value);
+                  invalidate();
+                }}
+              />
+            )}
           </FormField>
+
+          {/* Custom URL input — only shown when "Custom URL…" is selected in
+              a region-picker dropdown (e.g. for private/unlisted clusters). */}
+          {endpointVariant.options && endpointCustomMode && (
+            <FormField
+              label="Custom gateway URL"
+              help="Hostname or full URL for a private or unlisted cluster."
+            >
+              <Input
+                mono
+                placeholder={endpointVariant.hint}
+                value={endpoint}
+                onChange={(e) => {
+                  setEndpoint(e.target.value);
+                  invalidate();
+                }}
+              />
+            </FormField>
+          )}
 
           {/* Token-only planes (e.g. SSE) have no use for the shared Client
               ID/secret pair — hidden so a save can never write a value under
