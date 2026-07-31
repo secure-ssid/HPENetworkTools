@@ -29,7 +29,7 @@
 
 import { PLANE_DATASET_KEYS, PLANE_ROW_DATASET_KEYS, type PlaneRowDatasetKey } from '@hpe/shared';
 import { settings, type SettingsStore } from '../config/settings';
-import { registry, StubAdapter, type PlaneRegistry } from '../planes/registry';
+import { registry, StubAdapter, UnconfiguredAdapter, type PlaneRegistry } from '../planes/registry';
 import { PLANE_IDS, type PlaneId, type PlanePull } from '../planes/types';
 
 /** The row-array datasets this cache merges. NOT `keyof PlanePull`: a pull
@@ -392,6 +392,13 @@ export class Poller {
       // the registry already refuses the stamp and the call entry, and the
       // history row would be just as untrue.
       if (adapter instanceof StubAdapter) return skip('no-adapter');
+      // An adapter whose constructor threw (e.g. an http:// base URL refused
+      // by httpsBase) lands back as an UnconfiguredAdapter with linked: true.
+      // Its pull() returns {} and markSyncResult would call that a success,
+      // overwriting the real rejection note with 'reachable — the pull carried
+      // no dataset' and keeping consecutiveFailures at 0, so pollFailureBanner
+      // never fires. Skip it: the reason is already in state.note.
+      if (adapter instanceof UnconfiguredAdapter) return skip('no-adapter');
       // Failure backoff: a plane that just failed (429, dead token) waits out
       // the registry's window before a SCHEDULED poll retries. An operator's
       // syncNow(force) always gets to try.

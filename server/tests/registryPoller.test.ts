@@ -115,6 +115,27 @@ describe('registry — a credential the adapter refuses degrades one plane, not 
       },
     );
   });
+
+  it('does not overwrite the rejection note when the poller ticks over an error-degraded plane', async () => {
+    // Before the fix: UnconfiguredAdapter.pull() returned {}, tick() treated
+    // that as a successful empty sync and called markSyncResult(ok: true,
+    // note: 'reachable — the pull carried no dataset'), overwriting the real
+    // 'must use https' rejection message and keeping consecutiveFailures at 0
+    // so pollFailureBanner never fired.
+    await withRegistry(
+      { central: { gatewayBaseUrl: 'http://apigw.example.com', clientId: 'id', clientSecret: 'sec' } },
+      async (reg) => {
+        const { Poller } = await import('../src/services/poller');
+        const store = { get: () => ({ pollIntervalSec: 60, demoMode: false, blendLive: false }) } as never;
+        const p = new Poller(reg, store);
+        await p.syncNow();
+        const state = reg.state('central');
+        expect(state.health).toBe('degraded');
+        // The real reason must survive a poll cycle.
+        expect(state.note).toContain('must use https');
+      },
+    );
+  });
 });
 
 describe('registry — failure backoff', () => {
