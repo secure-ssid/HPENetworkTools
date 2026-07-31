@@ -818,6 +818,149 @@ describe('live-mode screen contracts', () => {
     }
   });
 
+  /* registry.state() reports 'never-synced' through `reason` and deliberately
+   * NOT through `stale`, because a plane serving no rows must not mark other
+   * planes' data unverified by association. The inventory tree's status ladder
+   * read only `stale`, so a plane whose credentials were saved but whose first
+   * pull had not landed fell through to 'current' — and the tree suppresses the
+   * badge entirely on 'current'. A plane that had never answered once rendered
+   * pixel-identical to a healthy one. */
+  it('does not paint a linked plane that has never synced as current', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mutableState = registry.get('central').state();
+    const previousState = { ...mutableState };
+    contributions.clear();
+    Object.assign(mutableState, {
+      linked: true,
+      health: 'warning',
+      lastSync: null,
+      note: 'credentials saved — first sync pending',
+    });
+
+    try {
+      const systems = await getJson('/api/inventory/tree?parent=group%3Asystems');
+      const central = systems.body.nodes.find((node: any) => node.identity?.plane === 'central');
+      expect(central).toMatchObject({ status: 'never-synced' });
+      // Neutral, not green: nothing failed, but nothing was read either.
+      expect(central.tone).toBe('neutral');
+      expect(central.tone).not.toBe('success');
+    } finally {
+      Object.assign(mutableState, previousState);
+      contributions.clear();
+    }
+  });
+
+  it('keeps never-synced distinct from unlinked and from stale', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mutableState = registry.get('central').state();
+    const previousState = { ...mutableState };
+    contributions.clear();
+
+    try {
+      Object.assign(mutableState, { linked: true, health: 'healthy', lastSync: null });
+      const never = await getJson('/api/inventory/tree?parent=group%3Asystems');
+      const neverNode = never.body.nodes.find((n: any) => n.identity?.plane === 'central');
+      // Never-synced is not unlinked — the operator DID supply credentials,
+      // and telling them the plane is unlinked would send them to re-enter
+      // credentials that are already correct.
+      expect(neverNode.status).toBe('never-synced');
+
+      // A plane that HAS answered once is current again; the fix must not
+      // turn every plane permanently grey.
+      Object.assign(mutableState, {
+        linked: true,
+        health: 'healthy',
+        lastSync: new Date().toISOString(),
+        stale: false,
+      });
+      const synced = await getJson('/api/inventory/tree?parent=group%3Asystems');
+      const syncedNode = synced.body.nodes.find((n: any) => n.identity?.plane === 'central');
+      expect(syncedNode.status).toBe('current');
+      expect(syncedNode.tone).toBe('success');
+    } finally {
+      Object.assign(mutableState, previousState);
+      contributions.clear();
+    }
+  });
+
+  /* SseInventory.kinds documents an absent key as "never attempted", and
+   * readStatus is optional on a first-sync-pending inventory. sseReadState()
+   * mapped an undefined status straight to 'current', so the meta line printed
+   * "0 objects" for a kind nobody had read — an authoritative empty list
+   * invented out of a missing key. */
+  it('does not report an SSE kind that was never attempted as zero objects', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mutableState = registry.get('sse').state();
+    const previousState = { ...mutableState };
+    contributions.clear();
+    contributions.set('sse', {
+      sse: {
+        // Only `users` was attempted. Every other kind has no key at all.
+        kinds: { users: { rows: [], total: 0, truncated: false } },
+        unavailable: [],
+        readStatus: { users: { state: 'ok' } },
+      },
+    });
+    Object.assign(mutableState, {
+      linked: true,
+      health: 'healthy',
+      lastSync: new Date().toISOString(),
+      stale: false,
+    });
+
+    try {
+      const kinds = await getJson('/api/inventory/tree?parent=system%3Asse');
+      const users = kinds.body.nodes.find((n: any) => n.identity?.sseKind === 'users');
+      // An answered, genuinely empty kind IS zero objects.
+      expect(users).toMatchObject({ status: 'current', meta: '0 objects' });
+
+      const unattempted = kinds.body.nodes.filter(
+        (n: any) => n.identity?.sseKind && n.identity.sseKind !== 'users',
+      );
+      expect(unattempted.length).toBeGreaterThan(0);
+      for (const node of unattempted) {
+        expect(node.status).toBe('never-synced');
+        expect(node.meta).toBe('not read yet — count unknown');
+        expect(node.meta).not.toMatch(/0 objects/);
+        expect(node.count).toBeUndefined();
+      }
+    } finally {
+      Object.assign(mutableState, previousState);
+      contributions.clear();
+    }
+  });
+
+  it('marks an SSE kind the token could not read as denied even with no per-kind status', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mutableState = registry.get('sse').state();
+    const previousState = { ...mutableState };
+    contributions.clear();
+    contributions.set('sse', {
+      sse: {
+        kinds: {},
+        // The adapter's own record that the scope denies these, carried even
+        // when readStatus did not survive the pull.
+        unavailable: ['users'],
+      },
+    });
+    Object.assign(mutableState, {
+      linked: true,
+      health: 'healthy',
+      lastSync: new Date().toISOString(),
+      stale: false,
+    });
+
+    try {
+      const kinds = await getJson('/api/inventory/tree?parent=system%3Asse');
+      const users = kinds.body.nodes.find((n: any) => n.identity?.sseKind === 'users');
+      expect(users.status).toBe('denied');
+      expect(users.tone).toBe('warning');
+    } finally {
+      Object.assign(mutableState, previousState);
+      contributions.clear();
+    }
+  });
+
   it('rejects malformed inventory parents and cursors instead of returning an unbounded or failed response', async () => {
     expect((await getJson('/api/inventory/tree?parent=site%3A%25')).status).toBe(400);
     expect((await getJson('/api/inventory/tree?cursor=-1')).status).toBe(400);

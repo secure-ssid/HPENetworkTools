@@ -144,6 +144,9 @@ function stateTone(state: InventoryNodeReadState): Tone {
   if (state === 'current') return 'success';
   if (state === 'failed') return 'danger';
   if (state === 'denied' || state === 'unsupported' || state === 'stale') return 'warning';
+  // 'never-synced' falls through to neutral on purpose. Nothing has failed —
+  // the operator may have linked the plane a second ago — but nothing has
+  // been read either, so it must not be green.
   return 'neutral';
 }
 
@@ -162,6 +165,12 @@ function descendantState(
   const state = registry.state(plane);
   if (!state.linked) return 'unlinked';
   if (state.health === 'degraded') return 'failed';
+  // registry.state() deliberately reports 'never-synced' through `reason` and
+  // NOT through `stale` (a plane serving no rows must not mark other planes'
+  // data unverified by association). Reading only `stale` therefore lets a
+  // plane that has never answered fall through to the caller's default of
+  // 'current' — see planeNode below for why that mattered.
+  if (state.reason === 'never-synced' || state.lastSync === null) return 'never-synced';
   if (state.stale) return 'stale';
   return specific;
 }
@@ -217,13 +226,21 @@ function planeNode(id: PlaneId, pull: PlanePull | undefined): InventoryTreeNode 
       ? SSE_OBJECT_KINDS.length
       : new Set([...(pull?.sites ?? []).map((site) => site.id), ...(pull?.devices ?? []).map((device) => device.siteId)]).size +
         (pull?.devices?.length ?? 0);
+  // The ladder below used to end `: 'current'`, and a plane whose credentials
+  // were saved but whose first pull had not landed reached it: linked, health
+  // 'warning', `stale` false by the rule above. It therefore claimed 'current'
+  // — and the tree suppresses the badge entirely on 'current', so a plane that
+  // had never answered once was pixel-identical to a fully healthy one, with
+  // no children under it to hint otherwise.
   const status: InventoryNodeReadState = !state.linked
     ? 'unlinked'
     : state.health === 'degraded'
       ? 'failed'
-      : state.stale
-        ? 'stale'
-        : 'current';
+      : state.reason === 'never-synced' || state.lastSync === null
+        ? 'never-synced'
+        : state.stale
+          ? 'stale'
+          : 'current';
   return {
     id: nodeId('system', id),
     parentId,
@@ -293,8 +310,20 @@ function deviceNode(device: DeviceRow, parentId: string, plane: PlaneId): Invent
   };
 }
 
-function sseReadState(status: SseKindReadStatus | undefined): InventoryNodeReadState {
-  if (!status || status.state === 'ok') return 'current';
+/** `attempted` is whether the pull produced a result object for this kind.
+ *  SseInventory.kinds documents an absent key as "never attempted", and
+ *  readStatus is optional on a first-sync-pending inventory — so an undefined
+ *  status alone cannot distinguish "read and fine" from "never asked". Without
+ *  the second argument this returned 'current' for both, and the caller's meta
+ *  line then printed "0 objects" for a kind nobody had read: an authoritative
+ *  empty list invented out of a missing key, which is exactly what
+ *  SseInventory.unavailable exists to prevent. */
+function sseReadState(
+  status: SseKindReadStatus | undefined,
+  attempted: boolean,
+): InventoryNodeReadState {
+  if (!status) return attempted ? 'current' : 'never-synced';
+  if (status.state === 'ok') return 'current';
   if (status.reason === 'denied') return 'denied';
   if (status.reason === 'unsupported') return 'unsupported';
   return 'failed';
@@ -305,7 +334,11 @@ function sseKindNodes(pull: PlanePull): InventoryTreeNode[] {
   if (!inventory) return [];
   return SSE_OBJECT_KINDS.map((kind) => {
     const result = inventory.kinds[kind];
-    const status = descendantState('sse', sseReadState(inventory.readStatus?.[kind]));
+    // A kind the token could not read is denied even when no per-kind status
+    // survived the pull — `unavailable` is the adapter's own record of it.
+    const status = inventory.unavailable.includes(kind)
+      ? descendantState('sse', 'denied')
+      : descendantState('sse', sseReadState(inventory.readStatus?.[kind], result !== undefined));
     const count = result?.total ?? result?.rows.length;
     return {
       id: nodeId('sse-kind', kind),
@@ -315,9 +348,13 @@ function sseKindNodes(pull: PlanePull): InventoryTreeNode[] {
       meta:
         status === 'current'
           ? `${count ?? 0} object${count === 1 ? '' : 's'}`
-          : inventory.readStatus?.[kind]?.state === 'failed'
-            ? inventory.readStatus[kind]!.message
-            : undefined,
+          : status === 'never-synced'
+            ? // Deliberately not "0 objects": nobody has asked this tenant for
+              // this kind yet, so the count is unknown rather than zero.
+              'not read yet — count unknown'
+            : inventory.readStatus?.[kind]?.state === 'failed'
+              ? inventory.readStatus[kind]!.message
+              : undefined,
       count: count ?? undefined,
       status,
       tone: stateTone(status),

@@ -644,6 +644,11 @@ export type InventoryNodeKind =
 export type InventoryNodeReadState =
   | 'current'
   | 'empty'
+  /** Linked, credentials accepted, but no successful pull has happened yet.
+   *  Distinct from 'empty' (read, and there was nothing) and from 'stale'
+   *  (read once, and that answer has aged out) — this node has never carried
+   *  an answer at all, so it must not render as either. */
+  | 'never-synced'
   | 'denied'
   | 'unsupported'
   | 'failed'
