@@ -177,6 +177,49 @@ describe('CoaService push', () => {
     expect(logLines(dataDir)[0]).toMatchObject({ result: 'rejected', httpCode: 404 });
   });
 
+  /* A 2xx from the session-action endpoint is ClearPass saying it issued the
+   * CoA to the NAD. It is not the NAD's answer — a Disconnect-NAK, an
+   * unreachable NAD or a shared-secret mismatch are all invisible in it. The
+   * success message used to read "<name>'s session is terminated at the NAD",
+   * which asserted the one fact the response cannot carry, and contradicted
+   * this module's own header promise that the portal never claims a block the
+   * NAD did not confirm. This is the control an operator reaches for when a
+   * client is compromised, so being wrong here is expensive. */
+  it('does not claim the NAD terminated the session — a 2xx only means the CoA was issued', async () => {
+    const svc = new CoaService({
+      dataDir: freshDataDir(),
+      lookupClient: lookup,
+      demoMode: () => false,
+      adapter: fakeAdapter(async () => ({ status: 200, body: {} })),
+    });
+    const res = await svc.block(WIRED.mac, 'NET-4201');
+    expect(res.applied).toBe(true);
+    expect(res.message).not.toContain('is terminated');
+    expect(res.message).toContain('issued to the NAD');
+    // And it must actively tell the operator the block is still unconfirmed,
+    // rather than merely omitting the overclaim.
+    expect(res.message).toMatch(/confirm the session has actually dropped/);
+  });
+
+  it('says the same unconfirmed thing on a 202 as on a 200 — neither carries the NAD reply', async () => {
+    // CPPM versions differ on 200 vs 202 here, so the wording must not imply
+    // that one of them is more final than the other.
+    const messages: string[] = [];
+    for (const status of [200, 202]) {
+      const svc = new CoaService({
+        dataDir: freshDataDir(),
+        lookupClient: lookup,
+        demoMode: () => false,
+        adapter: fakeAdapter(async () => ({ status, body: {} })),
+      });
+      const res = await svc.block(WIRED.mac, 'NET-4201');
+      expect(res.applied).toBe(true);
+      expect(res.httpCode).toBe(status);
+      messages.push(res.message.replace(`HTTP ${status}`, 'HTTP <code>'));
+    }
+    expect(messages[0]).toBe(messages[1]);
+  });
+
   it('reports a network failure as an honest failure, not a throw', async () => {
     const svc = new CoaService({
       dataDir: freshDataDir(),

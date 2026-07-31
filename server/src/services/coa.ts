@@ -19,6 +19,12 @@
  * Success = any 2xx from the session-action endpoint (CPPM versions differ on
  * 200 vs 202); the exact code is always reported. Demo mode validates and
  * audit-logs only — and says plainly that nothing left the portal.
+ *
+ * What a 2xx means, precisely: ClearPass accepted the request and issued the
+ * CoA to the NAD. It is NOT the NAD's answer — a Disconnect-NAK, an unreachable
+ * NAD, or a shared-secret mismatch are all invisible in that status. So the
+ * success message says the request was issued and tells the operator to
+ * confirm the session dropped, rather than asserting that it did.
  */
 
 import { ClearPassAdapter, normalizeMac } from '../planes/clearpass';
@@ -37,7 +43,14 @@ export interface CoaClient {
 
 export interface CoaResult {
   ok: boolean;
-  applied: boolean; // true ONLY on a 2xx from the session-action endpoint
+  /**
+   * ClearPass accepted the request and issued the CoA — true ONLY on a 2xx
+   * from the session-action endpoint.
+   *
+   * Deliberately not named `blocked`: whether the NAD acted on the CoA is not
+   * in that response and this portal cannot see it.
+   */
+  applied: boolean;
   mac: string;
   ticket: string;
   httpCode?: number;
@@ -148,12 +161,27 @@ export class CoaService {
 
     if (res.status >= 200 && res.status < 300) {
       this.log(client.mac, ticket, 'coa-sent', res.status);
+      // What this status establishes is that ClearPass took the request and
+      // issued a CoA Disconnect-Request to the NAD. What it does NOT contain
+      // is the NAD's answer: a Disconnect-NAK, a NAD that never received the
+      // packet, or one that dropped it for a shared-secret mismatch all look
+      // identical from here. The session ends at the NAD's discretion, and
+      // this module's own header promises the portal never claims a block the
+      // NAD did not confirm.
+      //
+      // The distinction is not academic. This is the control an operator
+      // reaches for when a client is compromised; being told the device is off
+      // the network when it is still on it is the most expensive way for this
+      // portal to be wrong.
       return {
         ...base,
         ok: true,
         applied: true,
         httpCode: res.status,
-        message: `CoA Disconnect-Request accepted by ClearPass (HTTP ${res.status}) — ${client.name}'s session is terminated at the NAD`,
+        message:
+          `CoA Disconnect-Request issued to the NAD by ClearPass (HTTP ${res.status}) for ${client.name}. ` +
+          `ClearPass does not report the NAD's response, so confirm the session has actually dropped before ` +
+          `treating this client as off the network.`,
       };
     }
     this.log(client.mac, ticket, 'rejected', res.status);
