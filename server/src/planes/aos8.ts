@@ -63,7 +63,7 @@
  */
 
 import * as https from 'node:https';
-import type { ClientRow, ClientType, DeviceRow, DeviceType, Tone } from '@hpe/shared';
+import type { ClientRow, ClientType, ConfigInventory, DeviceRow, DeviceType, SsidObject, Tone } from '@hpe/shared';
 import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
@@ -91,6 +91,8 @@ const CMD_SWITCHES = 'show switches';
 /** MM-wide client table; falls back to the per-controller form when the MM rejects it. */
 const CMD_USERS = 'show global-user-table list';
 const CMD_USERS_FALLBACK = 'show user-table';
+/** MM object-config read for WLAN SSID profiles (Configure screen inventory). */
+const OBJ_WLAN_SSID_PROF = 'wlan_ssid_prof';
 
 // ---------------------------------------------------------------------------
 // Default transport: node:https so per-connection TLS verification can be
@@ -353,6 +355,45 @@ export function mapAos8Client(raw: unknown): ClientRow | null {
   };
 }
 
+/** AOS-8 `wlan_ssid_prof.opmode` → the same display-label vocabulary Central's
+ *  mapCentralSsid uses, so Configure rows read consistently across planes. */
+function aos8SecurityLabel(opmode: string | null): string {
+  if (!opmode) return 'Not reported';
+  const s = opmode.toLowerCase();
+  if (s.includes('wpa3') && (s.includes('ent') || s.includes('dot1x') || s.includes('8021x'))) return 'WPA3-Enterprise';
+  if (s.includes('wpa2') && (s.includes('ent') || s.includes('dot1x') || s.includes('8021x'))) return 'WPA2-Enterprise';
+  if (s.includes('captive') || s.includes('portal')) return 'PSK-Portal';
+  if (s.includes('psk') || s.includes('personal') || s.includes('wpa2') || s.includes('wpa3')) return 'WPA2-PSK';
+  if (s.includes('open') || s === 'opensystem') return 'Open';
+  return opmode;
+}
+
+/**
+ * A configured MM `wlan_ssid_prof` row → SsidObject. The broadcast name is
+ * `essid` (the profile-name is only the config-object key), matching Central's
+ * mapCentralSsid, which also reports the broadcast SSID rather than the
+ * profile handle.
+ */
+export function mapAos8SsidProfile(raw: unknown): SsidObject | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.essid) ?? str(r['profile-name']) ?? str(r.profile_name);
+  if (!name) return null;
+  const vlan = str(r.vlan) ?? '—';
+  const broadcastFilter = r['broadcast-filter'];
+  const filterOn = broadcastFilter === true || broadcastFilter === 'enable' || broadcastFilter === 1;
+  return {
+    kind: 'ssid',
+    origin: 'configured',
+    name,
+    vlan,
+    security: aos8SecurityLabel(str(r.opmode)),
+    targets: filterOn ? 'Broadcast filter enabled' : 'Broadcast filter not reported',
+    plane: 'AOS-8',
+    tone: 'accent',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Response-shape helpers
 // ---------------------------------------------------------------------------
@@ -465,7 +506,7 @@ export class Aos8Adapter implements PlaneAdapter {
    * and this adapter reads no SSID/VLAN/port inventory.
    */
   capabilities(): PlaneCapabilities {
-    return { localShell: true, brokeredWrite: false, configRead: false };
+    return { localShell: true, brokeredWrite: false, configRead: true };
   }
 
   /**
@@ -534,6 +575,12 @@ export class Aos8Adapter implements PlaneAdapter {
       clientsError = (err as Error).message;
     }
 
+    // Config read is additive too, and non-fatal by construction: readConfig()
+    // never throws, it reports its own failure inside the ConfigInventory via
+    // `unavailable`, so a WLAN-profile read that fails cannot touch device or
+    // client inventory, health, or partial[].
+    const config = await this.readConfig();
+
     const down = devices.filter((d) => d.state === 'down').length;
     const offTrain = devices.filter((d) => !d.firmwareApproved).length;
     this.stateRef.note =
@@ -542,10 +589,11 @@ export class Aos8Adapter implements PlaneAdapter {
       (offTrain > 0 ? ` · ${formatCount(offTrain)} off the ${train ?? 'approved'} train` : '') +
       (clients !== null
         ? ` · ${formatCount(clients.length)} clients`
-        : ` · client table unavailable (${clientsError})`);
+        : ` · client table unavailable (${clientsError})`) +
+      (config.ssids ? ` · ${formatCount(config.ssids.length)} SSID profiles` : ' · SSID profiles unavailable');
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 
-    return clients !== null ? { devices, clients } : { devices, partial: ['clients'] };
+    return clients !== null ? { devices, clients, config } : { devices, config, partial: ['clients'] };
   }
 
   // -- internals -------------------------------------------------------------
@@ -565,6 +613,59 @@ export class Aos8Adapter implements PlaneAdapter {
         throw new Error(`section '${CMD_USERS}' failed — ${(err as Error).message}`);
       }
     }
+  }
+
+  /**
+   * WLAN SSID profiles off the MM's config-object API — the Configure
+   * screen's inventory for this plane. Non-fatal: a 404/permission failure
+   * here must not fail pull() or degrade the plane, it just says so via
+   * `unavailable` (same contract Central's mapCentralSsid path uses).
+   */
+  private async readConfig(): Promise<ConfigInventory> {
+    const source = `AOS-8 /v1/configuration/object/${OBJ_WLAN_SSID_PROF}`;
+    try {
+      const rows = await this.configObject(OBJ_WLAN_SSID_PROF);
+      const ssids = rows.map(mapAos8SsidProfile).filter((s): s is SsidObject => s !== null);
+      return { mode: 'configured', ssids, source };
+    } catch {
+      return { mode: 'configured', unavailable: ['ssids'], source };
+    }
+  }
+
+  /**
+   * One MM config-object read (`/v1/configuration/object/<name>`) — the same
+   * login/retry/session contract as showcommand() below, just against the
+   * object-config namespace instead of the CLI-shim one.
+   */
+  private async configObject(objectName: string): Promise<unknown[]> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const session = await this.login();
+      const path = `/v1/configuration/object/${objectName}?UIDARUBA=${encodeURIComponent(session.uid)}`;
+      const res = await this.get(
+        path,
+        `GET /v1/configuration/object/${objectName}?UIDARUBA=…`,
+        session.cookie,
+      );
+      if (res.status === 401 || res.status === 403) {
+        await this.dropSession(false);
+        if (attempt === 0) continue;
+        throw new Error(`HTTP ${res.status} from object '${objectName}' after re-login`);
+      }
+      if (res.status < 200 || res.status >= 300) {
+        throw new Error(`HTTP ${res.status} from object '${objectName}'`);
+      }
+      if (res.parseError) {
+        throw new Error(`non-JSON body from object '${objectName}' (HTTP ${res.status}, ${res.parseError})`);
+      }
+      const status = globalStatus(res.body);
+      if (status !== null && status !== '0') {
+        await this.dropSession(true);
+        if (attempt === 0) continue;
+        throw new Error(`MM answered status ${status} for object '${objectName}' after re-login`);
+      }
+      return extractTables(res.body);
+    }
+    throw new Error(`unreachable retry state for object '${objectName}'`);
   }
 
   /**

@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { PlaneState } from '../src/planes/types';
 import type { FetchLike } from '../src/planes/mist';
-import { MistAdapter, mapMistAlarm, mapMistClient, mapMistDevice, mapMistSite } from '../src/planes/mist';
+import { MistAdapter, mapMistAlarm, mapMistClient, mapMistDevice, mapMistSite, mapMistSle, mapMistWlan } from '../src/planes/mist';
 
 // -- Recorded fixtures (shapes as the Mist APIs return them) -------------------
 
@@ -106,6 +106,12 @@ interface FakeOpts {
   deviceHeaders?: Record<string, string>;
   /** Statuses answered in order by the devices section before the pages start. */
   deviceStatusSequence?: number[];
+  /** Org WLAN templates (/orgs/{id}/wlans) — defaults to an empty roster. */
+  wlans?: unknown[];
+  wlanStatus?: number;
+  /** Org insights/site rows (SLE) — defaults to an empty roster. */
+  sle?: unknown[];
+  sleStatus?: number;
   seenAuth?: { value: string | null };
   seenUrls?: string[];
 }
@@ -130,6 +136,16 @@ function fakeFetch(opts: FakeOpts): FetchLike {
       const status = opts.clientStatus ?? 200;
       if (status !== 200) return new Response('{}', { status });
       return new Response(JSON.stringify(clientsBySite[clientMatch[1]] ?? []), { status: 200 });
+    }
+    if (u.includes('/wlans')) {
+      const status = opts.wlanStatus ?? 200;
+      if (status !== 200) return new Response('{}', { status });
+      return new Response(JSON.stringify(opts.wlans ?? []), { status: 200 });
+    }
+    if (u.includes('/insights/site')) {
+      const status = opts.sleStatus ?? 200;
+      if (status !== 200) return new Response('{}', { status });
+      return new Response(JSON.stringify(opts.sle ?? []), { status: 200 });
     }
     if (u.includes('/alarms/search')) {
       const status = opts.alarmStatus ?? 200;
@@ -333,6 +349,71 @@ describe('mapMistAlarm', () => {
   });
 });
 
+describe('mapMistSle', () => {
+  const sitesMap = new Map([['site-uuid-a', 'Campus A']]);
+
+  it('averages the classifiers actually present and maps names case/separator-insensitively', () => {
+    const row = {
+      site_id: 'site-uuid-a',
+      results: [
+        { classifier: 'coverage', value: 0.9 },
+        { classifier: 'capacity', value: 0.8 },
+        { classifier: 'roaming', value: 0.7 },
+        { classifier: 'ap-health', value: 0.6 },
+      ],
+    };
+    const result = mapMistSle(row, sitesMap);
+    expect(result).toMatchObject({
+      siteName: 'Campus A',
+      coverage: 0.9,
+      capacity: 0.8,
+      roaming: 0.7,
+      apHealth: 0.6,
+      wan: null,
+    });
+    expect(result?.overall).toBeCloseTo(0.75, 10);
+  });
+
+  it('reports a classifier never returned as null, not as an assumed 0', () => {
+    const row = { site_id: 'site-uuid-a', results: [{ classifier: 'coverage', value: 1 }] };
+    expect(mapMistSle(row, sitesMap)).toMatchObject({ coverage: 1, capacity: null, overall: 1 });
+  });
+
+  it('returns null for a row with no usable shape', () => {
+    expect(mapMistSle(null, sitesMap)).toBeNull();
+    expect(mapMistSle('nope', sitesMap)).toBeNull();
+  });
+});
+
+describe('mapMistWlan', () => {
+  it('maps an org WLAN template to a configured SsidObject', () => {
+    const row = { ssid: 'MRDN-Clinical', vlan_id: 820, auth: { type: 'eap' }, enabled: true };
+    expect(mapMistWlan(row)).toMatchObject({
+      kind: 'ssid',
+      origin: 'configured',
+      name: 'MRDN-Clinical',
+      vlan: '820',
+      security: 'WPA2-Enterprise',
+      plane: 'MIST',
+      tone: 'accent',
+      targets: 'Enabled template',
+    });
+  });
+
+  it('maps psk/open auth types and an unreported enabled state', () => {
+    expect(mapMistWlan({ ssid: 'guest', auth: { type: 'psk' } })).toMatchObject({
+      security: 'WPA2-PSK',
+      targets: 'State not reported',
+    });
+    expect(mapMistWlan({ ssid: 'open-wifi', auth: { type: 'open' } })?.security).toBe('Open');
+  });
+
+  it('drops a row with no ssid', () => {
+    expect(mapMistWlan({ auth: { type: 'open' } })).toBeNull();
+    expect(mapMistWlan(null)).toBeNull();
+  });
+});
+
 // -- pull() end-to-end -----------------------------------------------------------
 
 describe('MistAdapter.pull', () => {
@@ -376,6 +457,26 @@ describe('MistAdapter.pull', () => {
     expect(pull.alerts?.[0]).toMatchObject({ plane: 'MIST', sev: 'P1', state: 'open', siteName: 'Campus A' });
     expect(pull.alerts?.[1]).toMatchObject({ state: 'acked' });
     expect(st.note).toContain('1 open alarms');
+  });
+
+  it('pulls org insights and reports each site\'s SLE score', async () => {
+    const { adapter, st } = makeAdapter(
+      fakeFetch({ sle: [{ site_id: 'site-uuid-a', results: [{ classifier: 'coverage', value: 0.95 }] }] }),
+    );
+    const pull = await adapter.pull();
+    expect(pull.mistSle).toHaveLength(1);
+    expect(pull.mistSle?.[0]).toMatchObject({ siteName: 'Campus A', coverage: 0.95, overall: 0.95 });
+    expect(st.note).toContain('1 SLE scores');
+    expect(st.health).toBe('healthy'); // a clean SLE read must not degrade the plane
+  });
+
+  it('omits the SLE section, non-fatally, when the org insights read fails', async () => {
+    const { adapter, st } = makeAdapter(fakeFetch({ sleStatus: 500 }));
+    const pull = await adapter.pull();
+    expect(pull.mistSle).toBeUndefined();
+    expect(pull.devices).toHaveLength(2); // the inventory still lands
+    expect(st.note).toContain('not available: sle');
+    expect(pull.partial).toEqual(expect.arrayContaining(['mistSle']));
   });
 
   it('omits an optional section it could not read instead of emptying it', async () => {
@@ -525,11 +626,27 @@ describe('MistAdapter.pull', () => {
     expect((await adapter.pull()).sites?.[0].sync).toBe('45s');
   });
 
-  it('claims no shell and no write: Mist is a read-only cloud plane', () => {
+  it('claims read-only inventory PLUS configRead: Mist reads WLAN templates back', () => {
     const { adapter, st } = makeAdapter(fakeFetch({}));
-    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: false, configRead: false });
+    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: false, configRead: true });
     // Published on the shared state too, so a consumer reading PlaneState sees it.
-    expect(st.capabilities).toEqual({ localShell: false, brokeredWrite: false, configRead: false });
+    expect(st.capabilities).toEqual({ localShell: false, brokeredWrite: false, configRead: true });
+  });
+
+  it('pull() reads org WLAN templates into config, non-fatally when the read 404s', async () => {
+    const { adapter: ok } = makeAdapter(fakeFetch({ wlans: [{ ssid: 'MRDN-Clinical', vlan_id: 820, auth: { type: 'eap' } }] }));
+    const okPull = await ok.pull();
+    expect(okPull.config).toMatchObject({ mode: 'configured', ssids: [{ name: 'MRDN-Clinical' }] });
+
+    const { adapter: bad } = makeAdapter(fakeFetch({ wlanStatus: 404 }));
+    const badPull = await bad.pull();
+    expect(badPull.config).toEqual({
+      mode: 'configured',
+      unavailable: ['ssids'],
+      source: 'Mist /api/v1/orgs/org-123/wlans',
+    });
+    // Non-fatal to the rest of the inventory.
+    expect(badPull.devices?.length).toBeGreaterThan(0);
   });
 
   it('isComplete requires apiHost, orgId and token', () => {

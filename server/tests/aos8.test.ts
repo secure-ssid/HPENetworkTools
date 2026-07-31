@@ -19,6 +19,7 @@ import {
   aos8MasterVersion,
   mapAos8Ap,
   mapAos8Client,
+  mapAos8SsidProfile,
   mapAos8Switch,
 } from '../src/planes/aos8';
 
@@ -88,17 +89,21 @@ function fakeFetch(opts: {
   userBodies?: Array<{ status: number; body: unknown }>;
   /** Answers to the older-image fallback command `show user-table`. */
   fallbackUserBodies?: Array<{ status: number; body: unknown }>;
+  /** Answers to the WLAN SSID profile config-object read. */
+  wlanBodies?: Array<{ status: number; body: unknown }>;
   seen?: Seen;
 }): FetchLike {
   const apBodies = opts.apBodies ?? [{ status: 200, body: apDatabaseBody([AP_UP, AP_DOWN]) }];
   const switchBodies = opts.switchBodies ?? [{ status: 200, body: switchesBody([SWITCH_ROW]) }];
   const userBodies = opts.userBodies ?? [{ status: 200, body: usersBody([USER_ROW, USER_ROW_WIRED]) }];
+  const wlanBodies = opts.wlanBodies ?? [{ status: 200, body: { _global_result: { status: '0' }, wlan_ssid_prof: [] } }];
   const loginBodies = opts.loginBodies ?? [LOGIN_OK];
   let loginIdx = 0;
   let apIdx = 0;
   let swIdx = 0;
   let userIdx = 0;
   let fbIdx = 0;
+  let wlanIdx = 0;
   return async (url, init) => {
     const u = String(url);
     const headers = (init?.headers ?? {}) as Record<string, string>;
@@ -139,6 +144,11 @@ function fakeFetch(opts: {
     if (opts.fallbackUserBodies && u.includes('showcommand') && u.includes(encodeURIComponent('show user-table'))) {
       const b = opts.fallbackUserBodies[Math.min(fbIdx, opts.fallbackUserBodies.length - 1)];
       fbIdx += 1;
+      return new Response(JSON.stringify(b.body), { status: b.status });
+    }
+    if (u.includes('/v1/configuration/object/wlan_ssid_prof')) {
+      const b = wlanBodies[Math.min(wlanIdx, wlanBodies.length - 1)];
+      wlanIdx += 1;
       return new Response(JSON.stringify(b.body), { status: b.status });
     }
     return new Response('{}', { status: 404 });
@@ -288,6 +298,35 @@ describe('mapAos8Client', () => {
   it('drops a row without a MAC', () => {
     expect(mapAos8Client({ IP: '10.44.0.9', Role: 'guest' })).toBeNull();
     expect(mapAos8Client(null)).toBeNull();
+  });
+});
+
+describe('mapAos8SsidProfile', () => {
+  it('maps a wlan_ssid_prof row to a configured SsidObject', () => {
+    const row = { 'profile-name': 'clinical-wlan', essid: 'MERIDIAN-CLIN', vlan: '820', opmode: 'wpa2-aes', 'broadcast-filter': 'enable' };
+    expect(mapAos8SsidProfile(row)).toMatchObject({
+      kind: 'ssid',
+      origin: 'configured',
+      name: 'MERIDIAN-CLIN',
+      vlan: '820',
+      security: 'WPA2-PSK',
+      plane: 'AOS-8',
+      tone: 'accent',
+      targets: 'Broadcast filter enabled',
+    });
+  });
+
+  it('falls back to the profile name when essid is absent, and reports Open for opensystem', () => {
+    expect(mapAos8SsidProfile({ 'profile-name': 'guest-open', opmode: 'opensystem' })).toMatchObject({
+      name: 'guest-open',
+      security: 'Open',
+      vlan: '—',
+    });
+  });
+
+  it('drops a row with no essid or profile name', () => {
+    expect(mapAos8SsidProfile({ opmode: 'wpa2-aes' })).toBeNull();
+    expect(mapAos8SsidProfile(null)).toBeNull();
   });
 });
 
@@ -563,9 +602,27 @@ describe('Aos8Adapter.pull', () => {
 
   // The one plane the portal can give a shell to (README: recorded SSH,
   // change window only) — configuration still stays on the MM.
-  it('claims a local shell, but no brokered write and no config read', () => {
+  it('claims a local shell and configRead, but no brokered write', () => {
     const { adapter } = makeAdapter(fakeFetch({}));
-    expect(adapter.capabilities()).toEqual({ localShell: true, brokeredWrite: false, configRead: false });
+    expect(adapter.capabilities()).toEqual({ localShell: true, brokeredWrite: false, configRead: true });
+  });
+
+  it('pull() reads WLAN SSID profiles into config, non-fatally when the read fails', async () => {
+    const { adapter: ok } = makeAdapter(
+      fakeFetch({ wlanBodies: [{ status: 200, body: { _global_result: { status: '0' }, wlan_ssid_prof: [{ essid: 'MERIDIAN-CLIN', vlan: '820', opmode: 'wpa2-aes' }] } }] }),
+    );
+    const okPull = await ok.pull();
+    expect(okPull.config).toMatchObject({ mode: 'configured', ssids: [{ name: 'MERIDIAN-CLIN' }] });
+
+    // A failing WLAN-profile read must not touch devices/clients or health.
+    const { adapter: bad } = makeAdapter(fakeFetch({ wlanBodies: [{ status: 500, body: {} }] }));
+    const badPull = await bad.pull();
+    expect(badPull.config).toEqual({
+      mode: 'configured',
+      unavailable: ['ssids'],
+      source: 'AOS-8 /v1/configuration/object/wlan_ssid_prof',
+    });
+    expect(badPull.devices?.length).toBeGreaterThan(0);
   });
 
   it('fails the pull naming the section when login is rejected', async () => {
