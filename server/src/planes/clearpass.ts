@@ -133,6 +133,22 @@ export const MAX_AUTH_EVENTS = 200;
 const AUTH_PAGE_LIMIT = 100;
 const AUTH_MAX_PAGES = 5;
 
+/**
+ * One read of the auth log, with whatever cut it short.
+ *
+ * The rows alone are not an answer. Three limits can stop this walk — the page
+ * cap, the row cap, and a build that rejects the paging query and can only
+ * ever serve page one — and a screen handed a short read with no note treats
+ * the newest hundred decisions as the whole window. Every other paginating
+ * plane here already declares this (see uxi.ts's `truncated`, mist.ts's and
+ * central.ts's `partialDatasets`); ClearPass was the one that did not.
+ */
+interface AuthEventRead {
+  rows: unknown[];
+  /** What stopped the walk, for the plane note. null = the window was read. */
+  truncated: string | null;
+}
+
 /** How far back the auth feed asks for — bounded, so the request stays cheap. */
 const AUTH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -488,9 +504,9 @@ export class ClearPassAdapter implements PlaneAdapter {
   }
 
   async pull(): Promise<PlanePull> {
-    let rows: unknown[];
+    let read: AuthEventRead;
     try {
-      rows = await this.fetchAuthEvents();
+      read = await this.fetchAuthEvents();
     } catch (err) {
       if (err instanceof SectionMissingError) {
         throw new Error(
@@ -505,11 +521,14 @@ export class ClearPassAdapter implements PlaneAdapter {
     // timeline, but it is still a real decision: keep it in arrival order
     // behind the dated rows rather than sorting it to the back of a 200-row
     // cap that then throws it away silently.
-    const mapped = rows.map(mapClearPassAuthEvent).filter((e): e is ClearPassAuthEventRow => e !== null);
+    const mapped = read.rows.map(mapClearPassAuthEvent).filter((e): e is ClearPassAuthEventRow => e !== null);
     const dated = mapped.filter((e) => e.tsMs !== undefined).sort((a, b) => (b.tsMs as number) - (a.tsMs as number));
     const undated = mapped.filter((e) => e.tsMs === undefined);
     const authEvents = [...dated, ...undated].slice(0, MAX_AUTH_EVENTS);
     const undatedShown = authEvents.filter((e) => e.tsMs === undefined).length;
+    // The slice above is a fourth way to come up short: rows that were read
+    // and then dropped are as absent from the screen as rows never fetched.
+    const truncated = read.truncated ?? (mapped.length > authEvents.length ? `row cap ${MAX_AUTH_EVENTS}` : null);
 
     // The endpoint repository is the plane's second dataset (README:465) and a
     // slower pull (design: every 5m); it never fails the auth feed.
@@ -523,11 +542,15 @@ export class ClearPassAdapter implements PlaneAdapter {
       // Undated rows are kept but cannot be ordered or counted per minute —
       // the gap belongs on the Systems row, not in silence.
       ...(undatedShown > 0 ? [`${undatedShown.toLocaleString('en-US')} without timestamps`] : []),
+      // Both counts above describe what was read. Left unqualified they
+      // describe the window, and '4 rejects' out of the newest 200 of an
+      // unknown number is a different fact from '4 rejects in the last hour'.
+      ...(truncated !== null ? [`window truncated (${truncated})`] : []),
     ];
     this.stateRef.note = parts.join(' · ');
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 
-    return { authEvents };
+    return truncated !== null ? { authEvents, partial: ['authEvents'] } : { authEvents };
   }
 
   /**
@@ -553,7 +576,7 @@ export class ClearPassAdapter implements PlaneAdapter {
    * a 400/422 by retrying the first page unparameterised. Remembers the path
    * AND the param style that worked.
    */
-  private async fetchAuthEvents(): Promise<unknown[]> {
+  private async fetchAuthEvents(): Promise<AuthEventRead> {
     const now = Date.now();
     const since = now - AUTH_WINDOW_MS;
     const resolved = this.resolvedAuth;
@@ -594,13 +617,30 @@ export class ClearPassAdapter implements PlaneAdapter {
         // Page 1 worked, so the path is valid: a failure here fails the section.
         if (res.status < 200 || res.status >= 300) throw new HttpStatusError(res.status, path);
         const pageRows = rowsOrThrow(res.body, path);
-        if (pageRows.length === 0) break;
+        // An empty page is the end of the feed, not a walk cut short — record
+        // it as such or the check below reads the previous full page and
+        // reports a complete read as truncated.
+        if (pageRows.length === 0) {
+          lastPageSize = 0;
+          break;
+        }
         rows.push(...pageRows);
         lastPageSize = pageRows.length;
         page += 1;
       }
       this.resolvedAuth = { candidate, paramStyle };
-      return rows;
+      /* A walk that ended while its last page was still full means the window
+         holds more decisions than were read — whichever of the three limits
+         stopped it. In 'bare' style the loop never runs at all: the build
+         rejected our paging vocabulary, so page one is everything the portal
+         can ever get from it, and a full page one is the only hint that more
+         exists. */
+      const truncated =
+        lastPageSize < AUTH_PAGE_LIMIT ? null
+        : paramStyle === 'bare' ? 'this build does not accept paging parameters'
+        : rows.length >= MAX_AUTH_EVENTS ? `row cap ${MAX_AUTH_EVENTS}`
+        : `page cap ${AUTH_MAX_PAGES}`;
+      return { rows, truncated };
     }
     throw new SectionMissingError();
   }

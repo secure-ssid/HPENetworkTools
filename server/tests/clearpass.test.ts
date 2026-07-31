@@ -359,16 +359,56 @@ describe('ClearPassAdapter.pull()', () => {
     const pages = calls.filter((c) => c.startsWith(`GET ${AUTH_PATH}`));
     expect(pages).toHaveLength(2);
     expect(pages[1]).toContain('offset=100');
+    /* And the cap is declared. Five decisions in that window were never read,
+       so '200 auth events · 0 rejects' describes the read and not the hour —
+       the same statement uxi.ts and mist.ts make when a page cap stops a walk
+       that still had rows behind it. */
+    expect(pull.partial).toEqual(['authEvents']);
+  });
+
+  it('names the cap that stopped the walk in the plane note', async () => {
+    const many = Array.from({ length: MAX_AUTH_EVENTS + 5 }, (_, i) => ({
+      ...ROW_ACCEPT,
+      username: `u${i}`,
+    }));
+    const { adapter, state } = makeAdapter((method, pathname, query) => {
+      if (method !== 'GET' || pathname !== AUTH_PATH) return undefined;
+      const offset = Number(query.get('offset') ?? '0');
+      const limit = Number(query.get('limit') ?? '25');
+      return { body: hal(many.slice(offset, offset + limit), { count: many.length }) };
+    });
+    await adapter.pull();
+    expect(state.note).toContain(`window truncated (row cap ${MAX_AUTH_EVENTS})`);
   });
 
   it('stops paging when a short page says the window is exhausted', async () => {
     const rows = Array.from({ length: 40 }, (_, i) => ({ ...ROW_ACCEPT, username: `u${i}` }));
-    const { adapter, calls } = makeAdapter((method, pathname) =>
+    const { adapter, calls, state } = makeAdapter((method, pathname) =>
       method === 'GET' && pathname === AUTH_PATH ? { body: hal(rows) } : undefined,
     );
     const pull = await adapter.pull();
     expect(pull.authEvents).toHaveLength(40);
     expect(calls.filter((c) => c.startsWith(`GET ${AUTH_PATH}`))).toHaveLength(1);
+    // A short page IS the end of the feed. Declaring that partial would put a
+    // plane that read everything it was asked for into permanent warning.
+    expect(pull.partial).toBeUndefined();
+    expect(state.note).not.toContain('truncated');
+  });
+
+  /* The worst of the three, because nothing about it looks like a cap. A build
+   * that rejects the paging query is served page one and asked no further, so
+   * the walk does not stop early — it never starts. One page was being handed
+   * to the screen as the whole window with nothing to say otherwise. */
+  it('declares a build that can only ever serve page one', async () => {
+    const rows = Array.from({ length: 120 }, (_, i) => ({ ...ROW_ACCEPT, username: `u${i}` }));
+    const { adapter, state } = makeAdapter((method, pathname, query) => {
+      if (method !== 'GET' || pathname !== AUTH_PATH) return undefined;
+      if (query.has('filter')) return { status: 400, body: { detail: 'unknown parameter filter' } };
+      return { body: hal(rows) };
+    });
+    const pull = await adapter.pull();
+    expect(pull.partial).toEqual(['authEvents']);
+    expect(state.note).toContain('window truncated (this build does not accept paging parameters)');
   });
 
   it('retries the first page bare when the build rejects the query vocabulary', async () => {
