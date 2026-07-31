@@ -1501,6 +1501,41 @@ describe('token endpoint selection (devhub new-central)', () => {
     expect(tokenCalls.map((c) => c.url)).toEqual([GREENLAKE_CCS_TOKEN_URL, `${NEW_CREDS.gatewayBaseUrl}/oauth2/token`]);
   });
 
+  // A 404 means "no such endpoint". A live token endpoint handed a client_id
+  // it does not know answers 401 — which is exactly the wrong-generation case
+  // the fallback exists for, and the only one it used to miss.
+  it('falls back across generations on a 401, the status a live token endpoint actually returns', async () => {
+    const { adapter, calls } = makeHostAdapter(NEW_CREDS, (method, host, pathname) => {
+      if (method === 'POST' && pathname === '/as/token.oauth2') return { status: 401, body: { error: 'unauthorized_request' } };
+      return happy(method, host, pathname);
+    });
+    await adapter.pull();
+    const tokenCalls = calls.filter((c) => c.method === 'POST' && (c.url.endsWith('/oauth2/token') || c.url.endsWith('/as/token.oauth2')));
+    expect(tokenCalls.map((c) => c.url)).toEqual([GREENLAKE_CCS_TOKEN_URL, `${NEW_CREDS.gatewayBaseUrl}/oauth2/token`]);
+  });
+
+  it('names both endpoints when neither accepts the credentials', async () => {
+    const { adapter } = makeHostAdapter(NEW_CREDS, (method, _host, pathname) => {
+      if (method === 'POST' && pathname === '/as/token.oauth2') return { status: 401, body: {} };
+      if (method === 'POST' && pathname === '/oauth2/token') return { status: 401, body: {} };
+      return undefined;
+    });
+    await expect(adapter.pull()).rejects.toThrow(
+      /neither token endpoint accepted these credentials — GreenLake SSO answered HTTP 401, then gateway \/oauth2\/token answered HTTP 401/,
+    );
+  });
+
+  // Over-application guard: a 5xx is the endpoint failing, not disowning the
+  // credentials, so probing the other one would only blame the wrong thing.
+  it('does not fall through on a 5xx — that is a service failure, not a wrong endpoint', async () => {
+    const { adapter, calls } = makeHostAdapter(NEW_CREDS, (method, _host, pathname) => {
+      if (method === 'POST' && pathname === '/as/token.oauth2') return { status: 503, body: {} };
+      return undefined;
+    });
+    await expect(adapter.pull()).rejects.toThrow(/GreenLake SSO answered HTTP 503 without an access_token/);
+    expect(calls.filter((c) => c.url.endsWith('/oauth2/token'))).toHaveLength(0);
+  });
+
   it('remembers the resolved token endpoint — no re-probe on the next auth', async () => {
     const { adapter, calls } = makeHostAdapter(NEW_CREDS, (method, host, pathname) => {
       if (method === 'POST' && pathname === '/as/token.oauth2') return { status: 404, body: {} };

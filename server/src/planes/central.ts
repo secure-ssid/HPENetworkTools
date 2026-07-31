@@ -1477,7 +1477,9 @@ export class CentralAdapter implements PlaneAdapter {
         ? [this.resolvedToken, ...candidates.filter((c) => c.url !== this.resolvedToken?.url)]
         : candidates;
       let lastMiss: string | null = null;
-      for (const ep of ordered) {
+      let firstReject: { status: number; label: string } | null = null;
+      for (let i = 0; i < ordered.length; i += 1) {
+        const ep = ordered[i]!;
         const { status, body } = await this.httpAbsolute('POST', ep.url, {
           body: { grant_type: 'client_credentials', client_id: creds.clientId, client_secret: creds.clientSecret },
           formEncoded: ep.formEncoded,
@@ -1489,11 +1491,34 @@ export class CentralAdapter implements PlaneAdapter {
         const record = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
         const token = str(record.access_token);
         if (status !== 200 || !token) {
+          const credentialReject = [400, 401, 403].includes(status);
+          // 401 ALSO falls through, and only 401. The header above says the
+          // docs drift both ways and that a miss falls through exactly once,
+          // but the fall-through only fired on 404 — and a token endpoint
+          // that EXISTS never answers 404 to a client_id it does not know: it
+          // answers 401. So for the wrong-generation case the fallback was
+          // written for, it could not fire. Host shape picks who goes first;
+          // it does not get to be the last word.
+          //
+          // 400 and 403 do NOT fall through: an OAuth 400 (`invalid_client`)
+          // is an endpoint that parsed the request and disowned the secrets,
+          // and 403 is an authorisation answer, not "unknown client". Neither
+          // is evidence that a different endpoint would do better, and there
+          // is no reason to hand the secret to a second host to find out.
+          if (status === 401 && i < ordered.length - 1) {
+            firstReject ??= { status, label: ep.label };
+            continue;
+          }
           // Credential statuses are authentication failures; malformed/5xx
           // token answers are service failures. Neither exposes the body.
+          const detail = firstReject
+            ? `${firstReject.label} answered HTTP ${firstReject.status}, then ${ep.label} answered HTTP ${status}`
+            : `${ep.label} answered HTTP ${status}`;
           throw new CentralRequestError(
-            [400, 401, 403].includes(status) ? 'authentication' : 'service',
-            `auth: ${ep.label} answered HTTP ${status} without an access_token`,
+            credentialReject ? 'authentication' : 'service',
+            firstReject && credentialReject
+              ? `auth: neither token endpoint accepted these credentials — ${detail}`
+              : `auth: ${detail} without an access_token`,
           );
         }
         this.resolvedToken = ep;
@@ -1504,6 +1529,15 @@ export class CentralAdapter implements PlaneAdapter {
         // lifetime the plane ever claimed.
         this.stateRef.token = mintedTokenInfo(published);
         return { accessToken: token, expiresInSec: published ?? 3600 };
+      }
+      if (firstReject) {
+        // Something answered and disowned the credentials; a 404 from the
+        // alternate only means it does not exist, which is the weaker story.
+        throw new CentralRequestError(
+          'authentication',
+          `auth: ${firstReject.label} answered HTTP ${firstReject.status} without an access_token` +
+            (lastMiss ? ` (${lastMiss})` : ''),
+        );
       }
       throw new CentralRequestError(
         'service',
