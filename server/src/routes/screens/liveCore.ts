@@ -71,28 +71,34 @@ export function liveDeviceData(): { devices: ReconciledDeviceRow[]; doubleClaime
 }
 
 /**
- * Linked planes whose device inventory is missing from the reconciled list.
+ * Linked planes whose contribution to one dataset is missing from it.
  *
- * reconcileDevices() can only merge what it was handed, and liveDeviceData()
- * only hands it a plane whose last pull actually carried a `devices` key. A
- * linked plane that has never answered, or whose device read failed, therefore
- * drops out of the merged inventory without leaving a mark on it — the list
- * simply gets shorter. "Central is unreachable" and "Central manages nothing"
- * produce the same screen.
+ * Every live list in this file is built by walking the poller's contributions
+ * and skipping a plane that did not carry the key — `if (!pull.alerts)
+ * continue`, and the same for clients and devices. A linked plane that has
+ * never answered, or whose read failed, therefore drops out of the merged list
+ * without leaving a mark on it: the list simply gets shorter. "Central is
+ * unreachable" and "Central has nothing to report" produce the same screen,
+ * which for the alert queue means an unknown estate rendering as a quiet
+ * one.
  *
  * `devices: []` is NOT missing. A plane that answered and genuinely manages no
  * devices reported a real, empty result, and calling that unread would be the
  * same class of lie in the other direction — the omitted/zero distinction the
  * rest of this file keeps.
  */
-export function planesMissingDevices(): Plane[] {
+export function planesMissingDataset(key: 'devices' | 'alerts' | 'clients'): Plane[] {
   const contributions = poller.contributionsByPlane();
   const out: Plane[] = [];
   for (const id of PLANE_IDS) {
     if (!registry.state(id).linked) continue;
-    if (contributions.get(id)?.devices === undefined) out.push(PLANE_LABEL[id]);
+    if (contributions.get(id)?.[key] === undefined) out.push(PLANE_LABEL[id]);
   }
   return out;
+}
+
+export function planesMissingDevices(): Plane[] {
+  return planesMissingDataset('devices');
 }
 
 /** Parse the fixtures'/adapters' age strings ('45s', '12m', '6h', '2d') → minutes. */

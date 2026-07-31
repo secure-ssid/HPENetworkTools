@@ -258,3 +258,49 @@ describe('Alerts', () => {
     spy.mockRestore();
   });
 });
+
+/* An empty device list looks odd. An empty alert queue looks like good news —
+ * it is the one empty state in the portal an operator is glad to see, which
+ * makes it the one that must never be reachable by accident. A linked plane
+ * whose alert read did not come back contributes no rows, so its P1s are
+ * simply absent from a queue that otherwise reads all-clear. */
+describe('Alerts missing sources', () => {
+  it('names every plane the queue is missing before the queue itself', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ missingSources: ['CENTRAL', 'MIST'] }));
+    renderAlerts();
+
+    expect(
+      await screen.findByText('This queue is missing 2 linked sources: CENTRAL, MIST'),
+    ).toBeTruthy();
+    expect(screen.getByText(/A short queue here is not a quiet estate/)).toBeTruthy();
+  });
+
+  it('refuses to call an empty queue an all-clear when a plane did not answer', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [], missingSources: ['SSE'] }));
+    renderAlerts();
+
+    expect(await screen.findByText('No alerts from the planes that answered')).toBeTruthy();
+    expect(screen.getByText(/SSE did not answer, so this is not an all-clear\./)).toBeTruthy();
+    // The old wording spoke for planes that never spoke.
+    expect(screen.queryByText(/Nothing is open across the linked planes/)).toBeNull();
+  });
+
+  it('keeps the plain all-clear when every linked plane did answer', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [], missingSources: [], syncedAt: '2024-05-01T09:41:00Z' }));
+    renderAlerts();
+
+    expect(await screen.findByText('No alerts in the queue')).toBeTruthy();
+    expect(screen.getByText('Nothing is open across the linked planes as of the last poll.')).toBeTruthy();
+    expect(screen.queryByText(/is missing/)).toBeNull();
+  });
+
+  it('says nothing when the route never reported on missing sources', async () => {
+    // Absent field, not an empty one: an older server that never looked must
+    // not be rendered as one that looked and found every plane reporting.
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [], syncedAt: '2024-05-01T09:41:00Z' }));
+    renderAlerts();
+
+    expect(await screen.findByText('No alerts in the queue')).toBeTruthy();
+    expect(screen.queryByText(/is missing/)).toBeNull();
+  });
+});

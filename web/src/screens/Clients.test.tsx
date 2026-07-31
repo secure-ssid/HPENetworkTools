@@ -732,3 +732,67 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
     expect(metricNoteFor('Retries')).toBe('not reported by CENTRAL');
   });
 });
+
+/* A roster short by a whole plane's estate is indistinguishable from a quiet
+ * one: `liveClients()` skips a plane whose pull carries no `clients` key, so
+ * the rows, the counts and the Stat tiles all silently describe a smaller
+ * network than the operator actually runs. */
+describe('Clients missing sources', () => {
+  const renderClients = () =>
+    render(
+      <MemoryRouter>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+  it('names the planes that contributed no sessions', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [SPARSE_LIVE_CLIENT],
+      dataSource: 'live',
+      missingSources: ['MIST', 'CLASSIC'],
+    });
+    renderClients();
+
+    await waitFor(() =>
+      expect(screen.getByText('2 linked planes contributed no sessions: MIST, CLASSIC')).toBeTruthy(),
+    );
+    // The counts above the table are derived from the short roster too.
+    expect(screen.getByText(/absent from the roster and from the counts above/)).toBeTruthy();
+  });
+
+  it('will not present an empty roster as an empty network', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [],
+      dataSource: 'live',
+      missingSources: ['CENTRAL'],
+    });
+    renderClients();
+
+    await waitFor(() => expect(screen.getByText('No sessions from the planes that answered')).toBeTruthy());
+    expect(screen.getByText(/CENTRAL did not answer, so sessions there are unknown rather than absent\./)).toBeTruthy();
+  });
+
+  it('stays quiet when every linked plane answered, empty or not', async () => {
+    mockGetClients.mockResolvedValue({ stats: [], clients: [], dataSource: 'live', missingSources: [] });
+    renderClients();
+
+    await waitFor(() => expect(screen.getByText('No sessions from any linked plane')).toBeTruthy());
+    expect(screen.queryByText(/contributed no sessions/)).toBeNull();
+  });
+
+  it('stays quiet when the route said nothing about missing sources at all', async () => {
+    // An older server that never looked is not a server that looked and found
+    // nothing missing; absent must not render as an empty array.
+    mockGetClients.mockResolvedValue({ stats: [], clients: [], dataSource: 'live' });
+    renderClients();
+
+    await waitFor(() => expect(screen.getByText('No sessions from any linked plane')).toBeTruthy());
+    expect(screen.queryByText(/contributed no sessions/)).toBeNull();
+  });
+});

@@ -119,6 +119,10 @@ export interface AlertsData extends ScreenEnvelope {
    *  stays the single source; `tone` absent inside it keeps the renderer's
    *  existing 'danger' default. */
   correlation?: AlertCorrelation | null;
+  /** Linked planes that contributed nothing to this dataset — the list above
+   *  is short by whatever they hold. Absent means the route did not say; an
+   *  empty array means it looked and every linked plane reported. */
+  missingSources?: Plane[];
 }
 
 export interface TicketsData extends ScreenEnvelope {
@@ -135,6 +139,10 @@ export interface ClientsData extends ScreenEnvelope {
   client?: ClientRow | null;
   detail?: ClientDetailLive | null;
   topology?: SiteTopologyLive | null;
+  /** Linked planes that contributed nothing to this dataset — the list above
+   *  is short by whatever they hold. Absent means the route did not say; an
+   *  empty array means it looked and every linked plane reported. */
+  missingSources?: Plane[];
 }
 
 export interface AuthEventsData extends ScreenEnvelope {

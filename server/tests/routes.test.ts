@@ -1468,6 +1468,49 @@ describe('live-mode screen contracts', () => {
     expect(populated.body.devices).toHaveLength(1);
   });
 
+  /* The same omission on the alert queue, where it is worse: an empty device
+   * list looks odd, but an empty alert queue looks like good news. A plane
+   * whose alert read never came back must not be able to render as quiet. */
+  it('live /api/alerts names the linked planes that contributed no alerts', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE] });
+    const { body } = await getJson('/api/alerts');
+    expect(body.missingSources).toContain('CENTRAL');
+    expect(body.alerts).toEqual([]);
+  });
+
+  it('does not call a plane that reported an empty alert queue a missing source', async () => {
+    contributions.clear();
+    contributions.set('central', { alerts: [] });
+    const { body } = await getJson('/api/alerts');
+    // A plane that answered "nothing open" IS an all-clear for that plane.
+    expect(body.missingSources).toEqual([]);
+    expect(body.alerts).toEqual([]);
+  });
+
+  it('live /api/clients names the linked planes that contributed no sessions', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE] });
+    const unread = await getJson('/api/clients');
+    expect(unread.body.missingSources).toContain('CENTRAL');
+    expect(unread.body.clients).toEqual([]);
+
+    contributions.set('central', { clients: [] });
+    const answered = await getJson('/api/clients');
+    expect(answered.body.missingSources).toEqual([]);
+  });
+
+  it('never names an unlinked plane as a missing source on either list', async () => {
+    // mist is not linked in this describe. Warning about a plane the operator
+    // never connected is noise that trains them to ignore the banner.
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE] });
+    const alerts = await getJson('/api/alerts');
+    const clients = await getJson('/api/clients');
+    expect(alerts.body.missingSources).not.toContain('MIST');
+    expect(clients.body.missingSources).not.toContain('MIST');
+  });
+
   it('live licences emit all five Stat tiles the five-column grid needs', async () => {
     contributions.clear();
     contributions.set('central', { devices: [DEVICE] });

@@ -25,6 +25,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
+  Alert,
   Badge,
   Button,
   Drawer,
@@ -528,6 +529,10 @@ export default function Clients() {
    * pulled, and how many of them the source plane could not re-confirm. */
   const stamp = sectionLive ? `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'}` : 'SYNCED 09:41';
   const unverifiedCount = clients.filter(isUnverified).length;
+  // Linked planes that returned no session list at all. `[]` from a plane is a
+  // real answer (nobody associated); no answer is not, and the two must not
+  // collapse into the same roster.
+  const missingSources = data.missingSources ?? [];
   const ql = q.trim().toLowerCase();
   const rows = clients.filter(
     (c) =>
@@ -1012,6 +1017,20 @@ export default function Clients() {
 
       <StatRow stats={data.stats} />
 
+      {missingSources.length > 0 ? (
+        <Alert
+          tone="warning"
+          title={`${missingSources.length} linked plane${
+            missingSources.length === 1 ? '' : 's'
+          } contributed no sessions: ${missingSources.join(', ')}`}
+        >
+          <span style={{ fontSize: 13 }}>
+            Their client read has not come back, so whoever is associated through them is absent from the roster and
+            from the counts above. Do not read this as the whole estate.
+          </span>
+        </Alert>
+      ) : null}
+
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ width: 230 }}>
           <Input
@@ -1128,10 +1147,16 @@ export default function Clients() {
       {rows.length === 0 ? (
         clients.length === 0 ? (
           <EmptyState
-            title="No sessions from any linked plane"
+            title={
+              missingSources.length > 0
+                ? 'No sessions from the planes that answered'
+                : 'No sessions from any linked plane'
+            }
             description={
               sectionLive
-                ? 'No plane reported a client on the last poll — check Connected systems.'
+                ? missingSources.length > 0
+                  ? `The planes that reported have nobody associated. ${missingSources.join(', ')} did not answer, so sessions there are unknown rather than absent.`
+                  : 'No plane reported a client on the last poll — check Connected systems.'
                 : 'Nothing is associated across the linked planes.'
             }
           >

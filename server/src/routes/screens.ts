@@ -156,6 +156,7 @@ import {
   liveClients,
   liveCorrelation,
   liveDeviceData,
+  planesMissingDataset,
   planesMissingDevices,
   liveMerged,
   liveSiteStats,
@@ -363,9 +364,17 @@ screensRouter.get('/alerts', (_req, res) => {
       // Only a swapped (real) queue gets a derived banner; the authored rows
       // keep the authored one the design wrote for them.
       const correlation = blended.includes('alerts') ? liveCorrelation(alerts) : undefined;
+      // Same gate as the correlation: the authored rows are complete by
+      // construction, so naming an unread plane against them would be a
+      // warning about a queue those planes were never asked to fill.
+      const swapped = blended.includes('alerts');
       res.json(
         withBlended(
-          envelopeFor('alerts', correlation === undefined ? { alerts } : { alerts, correlation }),
+          envelopeFor('alerts', {
+            alerts,
+            ...(correlation === undefined ? {} : { correlation }),
+            ...(swapped ? { missingSources: planesMissingDataset('alerts') } : {}),
+          }),
           blended,
           'alerts',
         ),
@@ -376,7 +385,16 @@ screensRouter.get('/alerts', (_req, res) => {
     return;
   }
   const alerts = sortLiveAlerts(liveAlerts());
-  res.json(envelopeFor('alerts', { alerts, correlation: liveCorrelation(alerts) }));
+  res.json(
+    envelopeFor('alerts', {
+      alerts,
+      correlation: liveCorrelation(alerts),
+      // A queue missing a plane's alerts is not a quiet estate. Without this
+      // an unread plane and a plane with nothing open look the same, and the
+      // empty state reads as all-clear (see liveCore.ts planesMissingDataset).
+      missingSources: planesMissingDataset('alerts'),
+    }),
+  );
 });
 
 screensRouter.get('/tickets', (_req, res) => {
@@ -739,6 +757,7 @@ async function serveClients(res: Response, macParam: string | null): Promise<voi
             envelopeFor('clients', {
               stats: liveClientStats(blendClients),
               clients: blendClients,
+              missingSources: planesMissingDataset('clients'),
               ...(await clientDetailKeys(pick(blendClients), wanted)),
             }),
             blended,
@@ -759,6 +778,9 @@ async function serveClients(res: Response, macParam: string | null): Promise<voi
     envelopeFor('clients', {
       stats: liveClientStats(clients),
       clients,
+      // Which linked planes contributed no session list. A roster short by a
+      // plane's whole estate must not read as "these are the sessions".
+      missingSources: planesMissingDataset('clients'),
       ...(await clientDetailKeys(pick(clients), wanted)),
     }),
   );

@@ -323,6 +323,10 @@ export default function Alerts() {
   const sectionLive = data.dataSource === 'live' || (data.blended?.includes('alerts') ?? false);
   const synced = sectionLive ? `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'}` : 'SYNCED 09:41';
   const banner = servedBanner(data) ?? (sectionLive ? correlate(data.alerts) : DEMO_BANNER);
+  // Linked planes whose alert read never came back. An empty queue is the
+  // most dangerous empty state in the portal — it reads as all-clear — so a
+  // queue that is merely unread must never be allowed to look like a quiet one.
+  const missingSources = data.missingSources ?? [];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -381,6 +385,21 @@ export default function Alerts() {
           </>
         }
       />
+
+      {missingSources.length > 0 ? (
+        <Alert
+          tone="warning"
+          title={`This queue is missing ${missingSources.length} linked source${
+            missingSources.length === 1 ? '' : 's'
+          }: ${missingSources.join(', ')}`}
+        >
+          <span style={{ fontSize: 13 }}>
+            These planes are linked but their alert read has not come back, so anything open on them is absent from the
+            queue below — including anything P1. A short queue here is not a quiet estate. Check them in Connected
+            systems.
+          </span>
+        </Alert>
+      ) : null}
 
       {banner ? (
         <Alert tone={banner.tone} title={banner.title}>
@@ -621,12 +640,17 @@ export default function Alerts() {
       {rows.length === 0 ? (
         data.alerts.length === 0 ? (
           <EmptyState
-            title="No alerts in the queue"
+            title={missingSources.length > 0 ? 'No alerts from the planes that answered' : 'No alerts in the queue'}
             description={
               sectionLive
-                ? data.syncedAt
-                  ? 'Nothing is open across the linked planes as of the last poll.'
-                  : 'No plane has reported yet — link one under Connected systems.'
+                ? missingSources.length > 0
+                  ? // "Nothing is open across the linked planes" would be a
+                    // claim about planes that never answered. The empty queue
+                    // is only evidence about the ones that did.
+                    `Nothing is open on the planes that reported. ${missingSources.join(', ')} did not answer, so this is not an all-clear.`
+                  : data.syncedAt
+                    ? 'Nothing is open across the linked planes as of the last poll.'
+                    : 'No plane has reported yet — link one under Connected systems.'
                 : 'Nothing is open across the linked planes.'
             }
           >
