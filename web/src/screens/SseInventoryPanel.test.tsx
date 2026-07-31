@@ -146,6 +146,36 @@ function appliedButJournalRetained() {
   };
 }
 
+/**
+ * The tenant took the Commit and then did not show the change when the service
+ * read the object back. `outcome: 'unverified'` is the state sseObjects works
+ * hardest to establish — refreshCache compares the returned id and the
+ * reviewed fields — and it is neither a staged change nor a failure.
+ *
+ * The `refreshed` status is the point: the READ succeeded. It is the change
+ * that was not in what came back, which is why the refresh's own status must
+ * not be what colours this green.
+ */
+function committedButUnverified() {
+  return {
+    ok: true,
+    message:
+      "committed, but the change could not be confirmed on the tenant: inventory cache refreshed for connectorZones; the mutation remains unverified because no returned object id was available",
+    result: {
+      mutation: { ok: true, httpCode: 200, acceptance: 'accepted' as const, message: 'accepted' },
+      commit: { attempted: true, ok: true, httpCode: 204, acceptance: 'accepted' as const, message: 'committed' },
+      staged: false,
+      outcome: 'unverified' as const,
+      cacheRefresh: {
+        attempted: true,
+        status: 'refreshed' as const,
+        message:
+          'inventory cache refreshed for connectorZones; the mutation remains unverified because no returned object id was available',
+      },
+    },
+  };
+}
+
 function renderPanel(
   canWrite: boolean,
   initial?: { kind: 'connectorZones' | 'users'; objectId?: string },
@@ -363,6 +393,27 @@ describe('SseInventoryPanel — reviewed create', () => {
 
     fireEvent.click(createButton);
     await waitFor(() => expect(mockCreateSseObject).toHaveBeenCalledWith('connectorZones', expect.objectContaining({ name: 'Branch zone' })));
+  });
+
+  /* Same state on the create path, which builds its own wording separately
+     from the delete path's and so can drift from it. */
+  it('does not report an unconfirmed create as created', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue({ rows: [], total: 0, truncated: false, unavailable: false } satisfies SseKindListing);
+    mockCreateSseObject.mockResolvedValue(committedButUnverified());
+
+    renderPanel(true);
+    await waitFor(() => expect(screen.getByRole('button', { name: /New Connector Zone/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /New Connector Zone/i }));
+    await waitFor(() => expect(screen.getByText('New Connector zones')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Branch zone' } });
+    fireEvent.click(screen.getByLabelText(/I have reviewed this create/i));
+    fireEvent.click(screen.getByRole('button', { name: /Create and commit/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText('Branch zone committed, but the creation is not confirmed on the tenant')).toBeTruthy(),
+    );
+    expect(screen.queryByText('Branch zone created and committed')).toBeNull();
   });
 
   it('a staged (commit-failed) mutation shows the retry-commit banner, and retry never replays the mutation', async () => {
@@ -767,6 +818,74 @@ describe('SseInventoryPanel — reviewed create', () => {
     expect(screen.getByText(/next SSE change will be refused until it is cleaned up/)).toBeTruthy();
     // ...and leaves up the control that clears it.
     expect(screen.getByRole('button', { name: 'Run recovery' })).toBeTruthy();
+    confirm.mockRestore();
+  });
+
+  /**
+   * The one case where every individual step reported success and the change
+   * still may not exist: mutation 2xx, Commit accepted, cache read clean, and
+   * the object not in what the read returned. A green "deleted and committed"
+   * closes the question with the wrong answer.
+   */
+  it('does not call a committed but unconfirmed change a plain success', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue(listing('connectorZones', 'cz-1', 'HQ zone'));
+    mockDeleteSseObject.mockResolvedValue(committedButUnverified());
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderPanel(true);
+    await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/is not confirmed on the tenant/)).toBeTruthy(),
+    );
+    expect(screen.queryByText('HQ zone deleted and committed')).toBeNull();
+    // Nothing to recover: the journal is in a terminal phase and no Commit may
+    // be replayed for it. The operator is told to go and look, not given a
+    // button that would do the wrong thing.
+    expect(screen.queryByRole('button', { name: 'Run recovery' })).toBeNull();
+    confirm.mockRestore();
+  });
+
+  /* The refresh block's border is keyed on the refresh's own status, which
+     was 'refreshed'. It describes the read, not the change. */
+  it('does not let a clean cache read colour an unconfirmed change as confirmed', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue(listing('connectorZones', 'cz-1', 'HQ zone'));
+    mockDeleteSseObject.mockResolvedValue(committedButUnverified());
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderPanel(true);
+    await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    const note = await screen.findByText(/it is the change that was not confirmed in what came back/);
+    const block = note.closest('div') as HTMLElement;
+    expect(block.style.border).toContain('--nd-warning');
+    expect(block.style.border).not.toContain('--nd-success');
+    // The reassurance that would otherwise sit here answers a question nobody
+    // asked, in the place the answer to theirs belongs.
+    expect(screen.queryByText(/was reloaded from the refreshed cache/)).toBeNull();
+    confirm.mockRestore();
+  });
+
+  it('still calls a confirmed change a success', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue(listing('connectorZones', 'cz-1', 'HQ zone'));
+    mockDeleteSseObject.mockResolvedValue({
+      ...committedButUnverified(),
+      message: 'applied and committed',
+      result: { ...committedButUnverified().result, outcome: 'applied' as const },
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderPanel(true);
+    await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(screen.getByText('HQ zone deleted and committed')).toBeTruthy());
+    expect(screen.queryByText(/is not confirmed on the tenant/)).toBeNull();
     confirm.mockRestore();
   });
 

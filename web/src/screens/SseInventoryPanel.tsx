@@ -204,6 +204,12 @@ export function SseInventoryPanel({
   const [stagedNotice, setStagedNotice] = useState<string | null>(null);
   const [commitWarning, setCommitWarning] = useState<string | null>(null);
   const [cacheRefresh, setCacheRefresh] = useState<SseCacheRefreshOutcome | null>(null);
+  /* Whether the LAST settled change was confirmed on the tenant. Kept apart
+     from cacheRefresh.status because the two can disagree: a refresh that
+     completed cleanly still leaves the mutation unverified when the plane
+     returned no object id to look for, and the refresh's own 'refreshed'
+     would then colour that green. */
+  const [mutationUnverified, setMutationUnverified] = useState(false);
   const [cacheListReloaded, setCacheListReloaded] = useState(false);
   const [retryReviewed, setRetryReviewed] = useState(false);
   const [manualReconciled, setManualReconciled] = useState(false);
@@ -352,7 +358,12 @@ export function SseInventoryPanel({
     if (!mountedRef.current) return;
     const needsRecovery = Boolean(result.result && (result.result.staged || result.result.outcome === 'unknown'));
     if (result.result) {
-      recordOutcome(result.result.commit, result.result.cacheRefresh, needsRecovery);
+      recordOutcome(
+        result.result.commit,
+        result.result.cacheRefresh,
+        needsRecovery,
+        result.result.outcome === 'unverified',
+      );
     }
     if (result.pendingCommit) {
       setCommitWarning(TENANT_WIDE_RECOVERY_WARNING);
@@ -380,6 +391,8 @@ export function SseInventoryPanel({
       setRetryReviewed(false);
       setManualReconciled(false);
       toast(`${row.name} deleted and committed — its journal was left behind`, { tone: 'warning' });
+    } else if (result.result?.outcome === 'unverified') {
+      toast(`${row.name} committed, but the deletion is not confirmed on the tenant`, { tone: 'warning' });
     } else {
       toast(`${row.name} deleted and committed`, { tone: 'success' });
     }
@@ -403,10 +416,12 @@ export function SseInventoryPanel({
     commit: SseCommitOutcome,
     refresh: SseCacheRefreshOutcome,
     forceTenantWideWarning = false,
+    unverified = false,
   ) => {
     const request = ++outcomeRequestRef.current;
     setCommitWarning(commit.warning ?? (forceTenantWideWarning ? TENANT_WIDE_RECOVERY_WARNING : null));
     setCacheRefresh(refresh);
+    setMutationUnverified(unverified);
     setCacheListReloaded(false);
     return request;
   };
@@ -450,7 +465,12 @@ export function SseInventoryPanel({
     let outcomeRequest: number | null = null;
     const needsRecovery = Boolean(result.result && (result.result.staged || result.result.outcome === 'unknown'));
     if (result.result) {
-      outcomeRequest = recordOutcome(result.result.commit, result.result.cacheRefresh, needsRecovery);
+      outcomeRequest = recordOutcome(
+        result.result.commit,
+        result.result.cacheRefresh,
+        needsRecovery,
+        result.result.outcome === 'unverified',
+      );
     }
     if (result.pendingCommit) {
       setCommitWarning(TENANT_WIDE_RECOVERY_WARNING);
@@ -481,6 +501,14 @@ export function SseInventoryPanel({
       setRetryReviewed(false);
       setManualReconciled(false);
       toast(`${actionName} ${verb} and committed — its journal was left behind`, { tone: 'warning' });
+    } else if (result.result?.outcome === 'unverified') {
+      /* Not a staged change and not a failure: the tenant took the Commit.
+         What it did not do is show the change back, so the operator is told
+         to check rather than told it is done. No recovery controls, because
+         the journal is in a terminal phase nothing may replay Commit for. */
+      toast(`${actionName} committed, but the ${verb === 'created' ? 'creation' : 'update'} is not confirmed on the tenant`, {
+        tone: 'warning',
+      });
     } else {
       toast(`${actionName} ${verb} and committed`, { tone: 'success' });
     }
@@ -593,7 +621,9 @@ export function SseInventoryPanel({
         <div
           style={{
             padding: '8px 10px',
-            border: `1px solid var(--nd-${cacheRefresh.status === 'refreshed' ? 'success' : 'warning'})`,
+            border: `1px solid var(--nd-${
+              cacheRefresh.status === 'refreshed' && !mutationUnverified ? 'success' : 'warning'
+            })`,
             borderRadius: 6,
             fontSize: 12,
           }}
@@ -604,9 +634,14 @@ export function SseInventoryPanel({
           {cacheRefresh.message}
           {cacheRefresh.status !== 'refreshed'
             ? ' The list below is not confirmed current and may not reflect the change.'
-            : cacheListReloaded
-              ? ' The list below was reloaded from the refreshed cache.'
-              : ' The list below is not confirmed current because its reload has not completed successfully.'}
+            : mutationUnverified
+              ? /* The read succeeded; the change was not in what came back.
+                   Saying the list was reloaded is true and beside the point,
+                   and in green it reads as confirmation of the wrong thing. */
+                ' The read itself succeeded — it is the change that was not confirmed in what came back. Check the object on the SSE tenant before treating it as applied.'
+              : cacheListReloaded
+                ? ' The list below was reloaded from the refreshed cache.'
+                : ' The list below is not confirmed current because its reload has not completed successfully.'}
         </div>
       ) : null}
 

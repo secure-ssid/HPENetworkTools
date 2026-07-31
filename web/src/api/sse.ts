@@ -191,11 +191,19 @@ export async function sseMutate(url: string, method: 'POST' | 'PUT' | 'DELETE', 
     const r = await apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (r.ok) {
       const result = (await r.json()) as SseMutationResult;
+      /* `outcome: 'unverified'` is the server saying the tenant accepted the
+         Commit and then did NOT show the change when it read the object back.
+         It is a distinct state the service works hard to establish — see
+         sseObjects.refreshCache, which compares the returned id and the
+         reviewed fields — and collapsing it into "applied and committed"
+         reports an unconfirmed change as a finished one. */
       const message = !result.mutation.ok
         ? result.mutation.message
         : result.staged
           ? `applied, but the commit failed — the change is staged: ${result.commit.message}`
-          : 'applied and committed';
+          : result.outcome === 'unverified'
+            ? `committed, but the change could not be confirmed on the tenant: ${result.cacheRefresh.message}`
+            : 'applied and committed';
       return { ok: result.mutation.ok, message, result };
     }
     const { message, code } = await sseErrorResponse(r, `request failed — HTTP ${r.status}`);
