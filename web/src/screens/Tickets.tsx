@@ -106,26 +106,31 @@ export default function Tickets() {
   const notes = notesByTicket[cur.id] ?? cur.notes ?? [];
   const firstDevice = cur.evidence.find((e) => e.device)?.device ?? null;
 
-  const logEntry = async (text: string, kind: 'note' | 'action', done: string) => {
+  /** Resolves true only when the store took the entry. */
+  const logEntry = async (text: string, kind: 'note' | 'action', done: string): Promise<boolean> => {
     setBusy(true);
     const res = await addTicketNote(cur.id, text, kind);
     setBusy(false);
     if ('ticket' in res) {
       setNotesByTicket((prev) => ({ ...prev, [cur.id]: res.ticket.notes ?? [] }));
       toast(done, { tone: 'success' });
-    } else {
-      toast(`not logged — ${res.error}`, { tone: 'danger' });
+      return true;
     }
+    toast(`not logged — ${res.error}`, { tone: 'danger' });
+    return false;
   };
 
   const queueAction = (label: string) =>
     void logEntry(label, 'action', `${label} — logged on ${cur.id}, pending execution`);
 
-  const addNote = () => {
+  const addNote = async () => {
     const text = note.trim();
     if (!text) return;
-    setNote('');
-    void logEntry(text, 'note', `Note saved to ${cur.id}`);
+    // The box empties only once the store has the note. Clearing it on submit
+    // meant a rejected POST destroyed what the operator had typed — an
+    // incident note is often the longest thing anyone writes in this portal,
+    // and the red toast that replaced it carried no way to get the text back.
+    if (await logEntry(text, 'note', `Note saved to ${cur.id}`)) setNote('');
   };
 
   const resolveCurrent = async () => {
@@ -371,15 +376,16 @@ export default function Tickets() {
               >
                 {cur.action1}
               </Button>
-              <Button variant="secondary" size="sm" onClick={() => queueAction(cur.action2)}>
+              <Button variant="secondary" size="sm" disabled={busy} onClick={() => queueAction(cur.action2)}>
                 {cur.action2}
               </Button>
-              <Button variant="secondary" size="sm" onClick={() => queueAction(cur.action3)}>
+              <Button variant="secondary" size="sm" disabled={busy} onClick={() => queueAction(cur.action3)}>
                 {cur.action3}
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
+                disabled={busy}
                 onClick={() => queueAction('Escalate to HPE support')}
               >
                 Escalate to HPE support
@@ -398,7 +404,7 @@ export default function Tickets() {
                 onChange={(e) => setNote(e.target.value)}
               />
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Button variant="secondary" size="sm" disabled={!note.trim() || busy} onClick={addNote}>
+                <Button variant="secondary" size="sm" disabled={!note.trim() || busy} onClick={() => void addNote()}>
                   Log note
                 </Button>
                 <span
