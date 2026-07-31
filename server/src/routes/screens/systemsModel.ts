@@ -26,6 +26,8 @@ import {
   type SystemRow,
   type SystemSiteRow,
   type Tone,
+  formatCount,
+  countOf,
 } from '@hpe/shared';
 
 /**
@@ -77,7 +79,7 @@ export function planeSites(pull: PlanePull | undefined): SystemSiteRow[] {
   return [...byId.entries()].map(([siteId, s]) => ({
     siteId,
     name: s.name,
-    detail: `${s.devices} device${s.devices === 1 ? '' : 's'} · ${s.clients} client${s.clients === 1 ? '' : 's'}`,
+    detail: `${countOf(s.devices, 'device')} · ${countOf(s.clients, 'client')}`,
   }));
 }
 
@@ -93,7 +95,10 @@ export function planeLiveStats(pull: PlanePull | undefined): LiveStat[] {
   if (pull.sse) {
     const kinds = Object.values(pull.sse.kinds);
     const totalObjects = kinds.reduce((sum, k) => sum + (k?.rows.length ?? 0), 0);
-    rows.push({ value: String(totalObjects), label: `SSE objects across ${kinds.length} kind${kinds.length === 1 ? '' : 's'}` });
+    rows.push({
+      value: formatCount(totalObjects),
+      label: `SSE objects across ${countOf(kinds.length, 'kind')}`,
+    });
     if (pull.sse.unavailable.length > 0) {
       rows.push({ value: String(pull.sse.unavailable.length), label: 'SSE kinds unavailable (scope or limited release)' });
     }
@@ -242,7 +247,7 @@ export function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | unde
             : 'brokered writes, ticket required',
     facts: [
       { k: 'Last sync', v: s.lastSync ? relSync(s.lastSync) : 'never' },
-      { k: id === 'sse' ? 'Objects' : 'Devices', v: s.deviceCount === null ? '—' : String(s.deviceCount) },
+      { k: id === 'sse' ? 'Objects' : 'Devices', v: s.deviceCount === null ? '—' : formatCount(s.deviceCount) },
       // The budget is the denominator that makes "Calls today" mean anything
       // (Mist allows 20k/day); a plane whose tier the portal does not know
       // renders the bare count rather than inventing a limit.
@@ -250,8 +255,8 @@ export function liveSystemRow(id: PlaneId, s: PlaneState, pull: PlanePull | unde
         k: 'Calls today',
         v:
           s.callBudget === undefined || s.callBudget === null
-            ? String(s.callsToday)
-            : `${s.callsToday.toLocaleString('en-US')} / ${s.callBudget.toLocaleString('en-US')}`,
+            ? formatCount(s.callsToday)
+            : `${formatCount(s.callsToday)} / ${formatCount(s.callBudget)}`,
       },
       { k: 'Token', v: tokenFact(s) },
     ],

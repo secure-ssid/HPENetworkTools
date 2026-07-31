@@ -63,6 +63,7 @@ import type {
   SiteRow,
   Tone,
 } from '@hpe/shared';
+import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
@@ -229,7 +230,7 @@ export function mapMistSite(
     planes: [{ name: 'MIST', tone: 'info' }],
     mix: '—', // the live merge derives the mix from reconciled devices
     devices: deviceCount,
-    clients: clientCount === null ? '—' : clientCount.toLocaleString('en-US'),
+    clients: clientCount === null ? '—' : formatCount(clientCount),
     health: null, // the sites endpoint reports no health score — cannot assert
     healthPct: '—',
     tone: 'stale',
@@ -619,17 +620,17 @@ export class MistAdapter implements PlaneAdapter {
     // one — "0 client sessions" for a section we never fetched would be a lie.
     const down = devices.filter((d) => d.state === 'down').length;
     const summary = [
-      `${devices.length.toLocaleString('en-US')} devices across ${sites.length.toLocaleString('en-US')} sites`,
+      `${formatCount(devices.length)} devices across ${formatCount(sites.length)} sites`,
     ];
-    if (down > 0) summary.push(`${down.toLocaleString('en-US')} down`);
-    if (clients !== null) summary.push(`${clients.length.toLocaleString('en-US')} client sessions`);
+    if (down > 0) summary.push(`${formatCount(down)} down`);
+    if (clients !== null) summary.push(`${formatCount(clients.length)} client sessions`);
     else if (reportedClientsSeen) {
       // Not a roster — the devices' own client totals. Said as such, because
       // the note is user-visible on Connected systems and in the drawer.
-      summary.push(`${reportedClientTotal.toLocaleString('en-US')} clients reported by devices`);
+      summary.push(`${formatCount(reportedClientTotal)} clients reported by devices`);
     }
     if (alerts !== null) {
-      summary.push(`${alerts.filter((a) => a.state === 'open').length.toLocaleString('en-US')} open alarms`);
+      summary.push(`${formatCount(alerts.filter((a) => a.state === 'open').length)} open alarms`);
     }
     if (missing.length > 0) summary.push(`not available: ${missing.join(', ')}`);
     if (truncated.length > 0) summary.push(`truncated: ${truncated.join(', ')}`);

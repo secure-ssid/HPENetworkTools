@@ -64,6 +64,7 @@
 
 import * as https from 'node:https';
 import type { ClientRow, ClientType, DeviceRow, DeviceType, Tone } from '@hpe/shared';
+import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
@@ -545,11 +546,11 @@ export class Aos8Adapter implements PlaneAdapter {
     const down = devices.filter((d) => d.state === 'down').length;
     const offTrain = devices.filter((d) => !d.firmwareApproved).length;
     this.stateRef.note =
-      `${aps.length.toLocaleString('en-US')} APs · ${switches.length.toLocaleString('en-US')} controllers via showcommand` +
-      (down > 0 ? ` · ${down.toLocaleString('en-US')} down` : '') +
-      (offTrain > 0 ? ` · ${offTrain.toLocaleString('en-US')} off the ${train ?? 'approved'} train` : '') +
+      `${formatCount(aps.length)} APs · ${formatCount(switches.length)} controllers via showcommand` +
+      (down > 0 ? ` · ${formatCount(down)} down` : '') +
+      (offTrain > 0 ? ` · ${formatCount(offTrain)} off the ${train ?? 'approved'} train` : '') +
       (clients !== null
-        ? ` · ${clients.length.toLocaleString('en-US')} clients`
+        ? ` · ${formatCount(clients.length)} clients`
         : ` · client table unavailable (${clientsError})`);
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 

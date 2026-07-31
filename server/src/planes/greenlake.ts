@@ -141,7 +141,7 @@ import type {
   SubscriptionRow,
   Tone,
 } from '@hpe/shared';
-import { GREENLAKE_SECTION_KEYS } from '@hpe/shared';
+import { GREENLAKE_SECTION_KEYS, formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
@@ -407,8 +407,8 @@ export function mapGreenLakeSubscription(raw: unknown, nowMs: number = Date.now(
     plane: 'GREENLAKE',
     planeTone: 'accent',
     term: termString(r),
-    qty: qty !== null ? qty.toLocaleString('en-US') : '—',
-    assigned: assigned !== null ? assigned.toLocaleString('en-US') : '—',
+    qty: qty !== null ? formatCount(qty) : '—',
+    assigned: assigned !== null ? formatCount(assigned) : '—',
     pct: qty !== null && qty > 0 && assigned !== null ? `${Math.round((assigned / qty) * 100)}%` : '—',
     expires: expiresAtMs !== null ? expiryDisplay(expiresAtMs) : '—',
     status,
@@ -818,7 +818,7 @@ export class GreenLakeAdapter implements PlaneAdapter {
     // the workspace owns nothing — a red plane is the honest answer.
     if (page.rows.length > 0 && subscriptions.length === 0) {
       throw new Error(
-        `greenlake pull: section 'subscriptions' failed — ${page.rows.length.toLocaleString('en-US')} rows returned but none could be mapped (payload shape not recognised)`,
+        `greenlake pull: section 'subscriptions' failed — ${formatCount(page.rows.length)} rows returned but none could be mapped (payload shape not recognised)`,
       );
     }
     const unmapped = page.rows.length - subscriptions.length;
@@ -836,17 +836,17 @@ export class GreenLakeAdapter implements PlaneAdapter {
     const unlicensed =
       assignments?.filter((a) => a.assigned === false && a.archived !== true).length ?? null;
     this.stateRef.note =
-      `${subscriptions.length.toLocaleString('en-US')} subscriptions · ` +
-      `${expiring.toLocaleString('en-US')} expiring < ${EXPIRING_SOON_DAYS}d` +
+      `${formatCount(subscriptions.length)} subscriptions · ` +
+      `${formatCount(expiring)} expiring < ${EXPIRING_SOON_DAYS}d` +
       // Rows we dropped are a gap in the licence picture, not a quiet workspace.
-      (unmapped > 0 ? ` · ${unmapped.toLocaleString('en-US')} rows unmapped` : '') +
+      (unmapped > 0 ? ` · ${formatCount(unmapped)} rows unmapped` : '') +
       // A page-capped read is a partial inventory — say so rather than let the
       // count read as the whole truth.
       (page.truncated ? ` · partial (page cap ${MAX_PAGES})` : '') +
       (assignments !== null
-        ? ` · ${assignments.length.toLocaleString('en-US')} devices` +
-          (unlicensed !== null ? ` · ${unlicensed.toLocaleString('en-US')} unlicensed` : '') +
-          (archivedCount > 0 ? ` · ${archivedCount.toLocaleString('en-US')} archived` : '')
+        ? ` · ${formatCount(assignments.length)} devices` +
+          (unlicensed !== null ? ` · ${formatCount(unlicensed)} unlicensed` : '') +
+          (archivedCount > 0 ? ` · ${formatCount(archivedCount)} archived` : '')
         : ` · assignments unavailable (${this.assignmentsError ?? 'not read'})`) +
       // A section we could not read is named, never folded into the counts.
       (platform.unavailable.length > 0
@@ -912,7 +912,7 @@ export class GreenLakeAdapter implements PlaneAdapter {
       if (result.rows.length > 0 && rows.length === 0) {
         // Same rule as the subscriptions section: a payload we could not read
         // is not an empty inventory.
-        this.assignmentsError = `${result.rows.length.toLocaleString('en-US')} device rows returned, none mappable`;
+        this.assignmentsError = `${formatCount(result.rows.length)} device rows returned, none mappable`;
         return this.assignments;
       }
       this.assignments = rows;

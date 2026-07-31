@@ -28,6 +28,7 @@ import {
   type DeviceClientSet,
   type DeviceEvidence,
   type TerminalLine,
+  countOf,
 } from '@hpe/shared';
 
 export function liveDeviceClients(deviceName: string): DeviceClientSet | null {
@@ -48,7 +49,7 @@ export function liveDeviceClients(deviceName: string): DeviceClientSet | null {
       tone: client.healthTone,
     }));
   return {
-    meta: clients.length === 0 ? 'No active sessions reported' : `${clients.length} active session${clients.length === 1 ? '' : 's'}`,
+    meta: clients.length === 0 ? 'No active sessions reported' : countOf(clients.length, 'active session'),
     rows: clients,
   };
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { InventoryTreeNode, SseObjectKind } from '@hpe/shared';
+import { countOf } from '@hpe/shared';
 import { Alert, Badge, Button, EmptyState, Input, SectionHeader, Spinner } from '../nightdesk';
 import { InventoryTree } from '../components/InventoryTree';
 import { getInventoryNode, getSystemsState, searchInventory } from '../api/client';
@@ -176,7 +177,7 @@ export default function Inventory() {
             <Alert tone="warning" title="The inventory changed while these results were being paged">
               <span style={{ fontSize: 13 }}>
                 The next page no longer exists — the estate shrank between reads, which is what happens when a plane
-                goes stale or unlinks mid-search. The {results.length} result{results.length === 1 ? '' : 's'} below
+                goes stale or unlinks mid-search. The {countOf(results.length, 'result')} below
                 came from the earlier read and may name objects that have since left the cache; anything added since is
                 not here. Search again for the current estate.
               </span>

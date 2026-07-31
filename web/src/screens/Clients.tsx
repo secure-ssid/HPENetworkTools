@@ -61,6 +61,7 @@ import {
   planeKeyOf,
   timelineFor,
   hhmmLocal as hhmm,
+  countOf,
 } from '@hpe/shared';
 import type {
   ClientDetailLive,
@@ -706,7 +707,7 @@ export default function Clients() {
     a.download = 'clients-sessions.csv';
     a.click();
     URL.revokeObjectURL(url);
-    toast(`Exported ${rows.length} session${rows.length === 1 ? '' : 's'}`, {
+    toast(`Exported ${countOf(rows.length, 'session')}`, {
       description: 'clients-sessions.csv — the rows currently in view.',
     });
   };
@@ -835,7 +836,7 @@ export default function Clients() {
           const lagText = w.lag?.trim() ? `lag ${w.lag.trim()}` : null;
           const moreText =
             typeof w.otherUplinks === 'number' && w.otherUplinks > 0
-              ? `+${w.otherUplinks} further uplink${w.otherUplinks === 1 ? '' : 's'} on the site graph`
+              ? `+${countOf(w.otherUplinks, 'further uplink')} on the site graph`
               : null;
           place.push({
             k: 'Wiring',

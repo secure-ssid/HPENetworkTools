@@ -15,6 +15,7 @@ import {
   type SseKindReadStatus,
   type SseObjectKind,
   type Tone,
+  countOf,
 } from '@hpe/shared';
 import { registry } from '../planes/registry';
 import { PLANE_IDS, type PlaneId, type PlanePull } from '../planes/types';
@@ -344,7 +345,7 @@ function siteNodes(plane: PlaneId, pull: PlanePull): InventoryTreeNode[] {
         parentId: nodeId('system-sites', plane),
         kind: 'site' as const,
         label: site.name,
-        meta: `${count} device${count === 1 ? '' : 's'}`,
+        meta: countOf(count, 'device'),
         count,
         status,
         tone: stateTone(status),
@@ -432,7 +433,7 @@ function sseKindNodes(pull: PlanePull | undefined): InventoryTreeNode[] {
       label: SSE_OBJECT_KIND_LABELS[kind],
       meta:
         status === 'current'
-          ? `${count ?? 0} object${count === 1 ? '' : 's'}`
+          ? countOf(count ?? 0, 'object')
           : status === 'never-synced'
             ? // Deliberately not "0 objects": nobody has asked this tenant for
               // this kind yet, so the count is unknown rather than zero.

@@ -98,6 +98,7 @@
  */
 
 import type { AuthEvent, AuthEventRow, Tone } from '@hpe/shared';
+import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
@@ -539,12 +540,12 @@ export class ClearPassAdapter implements PlaneAdapter {
 
     const rejects = authEvents.filter((e) => e.result === 'reject').length;
     const parts = [
-      ...(this.endpointCount !== null ? [`${this.endpointCount.toLocaleString('en-US')} endpoints`] : []),
-      `${authEvents.length.toLocaleString('en-US')} auth events`,
-      `${rejects.toLocaleString('en-US')} rejects`,
+      ...(this.endpointCount !== null ? [`${formatCount(this.endpointCount)} endpoints`] : []),
+      `${formatCount(authEvents.length)} auth events`,
+      `${formatCount(rejects)} rejects`,
       // Undated rows are kept but cannot be ordered or counted per minute —
       // the gap belongs on the Systems row, not in silence.
-      ...(undatedShown > 0 ? [`${undatedShown.toLocaleString('en-US')} without timestamps`] : []),
+      ...(undatedShown > 0 ? [`${formatCount(undatedShown)} without timestamps`] : []),
       // Both counts above describe what was read. Left unqualified they
       // describe the window, and '4 rejects' out of the newest 200 of an
       // unknown number is a different fact from '4 rejects in the last hour'.

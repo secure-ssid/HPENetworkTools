@@ -71,6 +71,7 @@ import {
   type SseObjectKind,
   type SseObjectKindResult,
   type SseObjectSummary,
+  formatCount,
 } from '@hpe/shared';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
@@ -423,7 +424,7 @@ export class SseAdapter implements PlaneAdapter {
     this.stateRef.note =
       readCount === 0
         ? `SSE inventory read failed for all ${SSE_OBJECT_KINDS.length} object kinds`
-        : `${totalRows.toLocaleString('en-US')} objects across ${readCount} kinds${
+        : `${formatCount(totalRows)} objects across ${readCount} kinds${
             unavailable.length > 0 ? ` · ${unavailable.length} unavailable` : ''
           }`;
     if (unavailable.length === 0 && this.stateRef.health === 'warning') this.stateRef.health = 'healthy';

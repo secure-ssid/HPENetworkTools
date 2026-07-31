@@ -74,6 +74,7 @@ import {
   vlanIdProblem,
   wpaPassphraseProblem,
   hhmmLocal as hhmm,
+  countOf,
 } from '@hpe/shared';
 import type {
   ConfigForm,
@@ -613,7 +614,7 @@ export default function Configure() {
       (q) => q.state === 'ready' && (queueSource !== 'server' || q.id === null),
     );
     if (local.length > 0) {
-      toast(`${local.length} local change${local.length === 1 ? '' : 's'} not pushed`, {
+      toast(`${countOf(local.length, 'local change')} not pushed`, {
         description: 'Reconnect the portal backend, then queue the change again so the broker can assign an id.',
         tone: 'warning',
       });
@@ -1166,7 +1167,7 @@ export default function Configure() {
               >
                 <span className="nt-configure-capability__plane">
                   <span aria-hidden="true">{showDormantTargets ? '−' : '+'}</span>{' '}
-                  {`${dormantTargets.length} plane${dormantTargets.length === 1 ? '' : 's'} not linked`}
+                  {`${countOf(dormantTargets.length, 'plane')} not linked`}
                 </span>
                 <span className="nt-configure-capability__note">no credentials stored</span>
               </button>

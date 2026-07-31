@@ -89,6 +89,8 @@ import {
   type SiteRow,
   type SiteTopologyLive,
   type StatDef,
+  formatCount,
+  countOf,
 } from '@hpe/shared';
 import { settings } from '../config/settings';
 import { poller } from '../services/poller';
@@ -868,9 +870,9 @@ function liveClientStats(clients: ClientRow[]): StatDef[] {
   ).length;
   const pct = clients.length > 0 ? Math.round((wireless / clients.length) * 100) : 0;
   return [
-    { label: 'Clients now', value: clients.length.toLocaleString('en-US'), delta: 'from live poll', tone: 'neutral' },
-    { label: 'Wireless', value: wireless.toLocaleString('en-US'), delta: `${pct}% of sessions`, tone: 'neutral' },
-    { label: 'Wired', value: wired.toLocaleString('en-US'), delta: 'from live poll', tone: 'neutral' },
+    { label: 'Clients now', value: formatCount(clients.length), delta: 'from live poll', tone: 'neutral' },
+    { label: 'Wireless', value: formatCount(wireless), delta: `${pct}% of sessions`, tone: 'neutral' },
+    { label: 'Wired', value: formatCount(wired), delta: 'from live poll', tone: 'neutral' },
     { label: 'Failing auth', value: String(failing), delta: failing > 0 ? 'needs attention' : 'none failing', tone: failing > 0 ? 'negative' : 'neutral' },
     { label: 'Poor experience', value: String(poor), delta: poor > 0 ? 'below quality target' : 'none below target', tone: poor > 0 ? 'negative' : 'neutral' },
   ];
@@ -1046,7 +1048,7 @@ function liveSiteReachability(devices: ReconciledDeviceRow[], site: SiteRow): Si
     collectorNote:
       reachValue === null
         ? `${label} collector is linked, but no device at this site is in the merged inventory yet · ${sync}`
-        : `${claimed.length} of ${siteDevices.length} device${siteDevices.length === 1 ? '' : 's'} at this site are claimed by the ${label} collector · ${sync}`,
+        : `${formatCount(claimed.length)} of ${countOf(siteDevices.length, 'device')} at this site are claimed by the ${label} collector · ${sync}`,
     // Only a device the collector both claims AND can shell into is offered as
     // a terminal target; pointing the button at a cloud-claimed row would open
     // a session the bridge refuses. Same three-fact gate the device page's own
@@ -1083,7 +1085,7 @@ function withoutHiddenDemoDevices(profile: SiteProfile | null): SiteProfile | nu
     devices,
     core: coreHidden ? '' : profile.core,
     deviceCount: Number.isFinite(total)
-      ? Math.max(0, total - removed).toLocaleString('en-US')
+      ? formatCount(Math.max(0, total - removed))
       : profile.deviceCount,
   };
 }

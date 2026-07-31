@@ -24,6 +24,7 @@ import {
   type Tone,
   type VlanObject,
   localDayKey,
+  countOf,
 } from '@hpe/shared';
 
 export interface ObservedConfigureInventory {
@@ -74,7 +75,7 @@ export function observedConfigureInventory(clients: ClientRow[]): ObservedConfig
       name: first.where,
       vlan: reportedValue(first.vlan) ? first.vlan : 'VLAN not reported',
       security: reportedValue(first.auth) ? `Auth observed: ${first.auth}` : 'Authentication not reported',
-      targets: `${rows.length} active client${rows.length === 1 ? '' : 's'} · ${sites} site${sites === 1 ? '' : 's'}`,
+      targets: `${countOf(rows.length, 'active client')} · ${countOf(sites, 'site')}`,
       plane: planes,
       tone: 'neutral',
     };
@@ -93,7 +94,7 @@ export function observedConfigureInventory(clients: ClientRow[]): ObservedConfig
       origin: 'observed',
       device: first.attach,
       port: first.where.replace(/^port\s+/i, ''),
-      desc: `${rows.length} active client${rows.length === 1 ? '' : 's'}`,
+      desc: countOf(rows.length, 'active client'),
       summary: displayParts([
         first.vlan,
         first.auth,
@@ -114,7 +115,7 @@ export function observedConfigureInventory(clients: ClientRow[]): ObservedConfig
       origin: 'observed',
       id: first.vlan.replace(/^vlan\s+/i, ''),
       name: 'Observed active VLAN',
-      detail: `${rows.length} active client${rows.length === 1 ? '' : 's'} · ${planes.join(' + ')}`,
+      detail: `${countOf(rows.length, 'active client')} · ${planes.join(' + ')}`,
       role: roles.length > 0 ? roles.join(', ') : 'Role not reported',
     };
   });
@@ -317,7 +318,7 @@ export function liveConfigureStats(
       failedToday > 0 ? `▲ ${failedToday} failed` : null,
       acceptedToday > 0 ? `${acceptedToday} accepted, unconfirmed` : null,
       unreadableLogs > 0
-        ? `${unreadableLogs} log generation${unreadableLogs === 1 ? '' : 's'} unreadable — count may be short`
+        ? `${countOf(unreadableLogs, 'log generation')} unreadable — count may be short`
         : null,
       // Said only when the other caveat is absent: both mean "at least this
       // many", and one sentence to that effect is the honest amount. Two is

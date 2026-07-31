@@ -80,7 +80,7 @@ import {
 import { getDeviceDetail, getTerminalSession, getTerminalSessions, getTickets, rebootDevice } from '../api/client';
 import type { TerminalSession, TerminalSessionEvent } from '../api/client';
 import type { DeviceDetailData } from '../api/client';
-import { deviceTerminalKind, hhmmLocal as hhmm, terminalQuickCommands } from '@hpe/shared';
+import { deviceTerminalKind, hhmmLocal as hhmm, terminalQuickCommands, countOf } from '@hpe/shared';
 import type {
   CfgHistoryRow,
   Fact,
@@ -574,7 +574,7 @@ export default function DeviceDetail() {
       },
       {
         label: 'Claimed by',
-        value: `${claimants.length} plane${claimants.length === 1 ? '' : 's'}`,
+        value: `${countOf(claimants.length, 'plane')}`,
         delta: claimants.join(' + '),
       },
       {

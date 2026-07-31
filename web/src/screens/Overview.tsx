@@ -27,7 +27,7 @@ import { getOverview } from '../api/client';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { pathForView } from '../app/nav';
-import { hhmmLocal as hhmm } from '@hpe/shared';
+import { hhmmLocal as hhmm, countOf } from '@hpe/shared';
 import type { LaunchpadRow, OverviewAlert, SiteHealthTone, SiteId } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -43,10 +43,6 @@ const HEALTH_COLORS: Record<SiteHealthTone, string> = {
 
 /** Rows of the Sites preview — the design lists six of the estate. */
 const SITES_PREVIEW = 6;
-
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? '' : 's'}`;
-}
 
 /**
  * Where an alert is, and what is left of its meta line once the site has been
@@ -139,15 +135,15 @@ export default function Overview() {
    * (README §honesty). Demo keeps the authored prose, which always counts. */
   const alertsLink =
     !alertsLive ? 'All 7 alerts →'
-    : data.alerts.length > 0 ? `All ${plural(data.alerts.length, 'alert')} →`
+    : data.alerts.length > 0 ? `All ${countOf(data.alerts.length, 'alert')} →`
     : null;
   const sitesLink =
     !sitesLive ? 'All 10 sites →'
-    : data.sites.length > 0 ? `All ${plural(data.sites.length, 'site')} →`
+    : data.sites.length > 0 ? `All ${countOf(data.sites.length, 'site')} →`
     : null;
   const subtitle =
     sitesLive || planesLive
-      ? `${plural(data.sites.length, 'site')}, ${plural(data.planes.length, 'management plane')} — one queue of things that actually need you.`
+      ? `${countOf(data.sites.length, 'site')}, ${countOf(data.planes.length, 'management plane')} — one queue of things that actually need you.`
       : 'Ten sites, six management planes — one queue of things that actually need you.';
 
   const changesLive = data.dataSource === 'live' || (data.blended?.includes('changes') ?? false);
@@ -494,7 +490,7 @@ export default function Overview() {
                 onClick={() => navigate('/systems')}
               >
                 <div className="nt-plane-mini__id">
-                  <span>{`${dormantPlanes.length} plane${dormantPlanes.length === 1 ? '' : 's'} not linked`}</span>
+                  <span>{`${countOf(dormantPlanes.length, 'plane')} not linked`}</span>
                   <small>no credentials configured</small>
                 </div>
                 <span className="nt-plane-mini__sync">Connect ▸</span>

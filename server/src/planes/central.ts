@@ -147,6 +147,7 @@ import {
   type TopologyLink,
   type TopologyLinkPort,
   type UsageSample,
+  countOf,
 } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
@@ -2063,12 +2064,10 @@ export class CentralAdapter implements PlaneAdapter {
 
     // A count is an assertion of fact, so only sections we actually read get
     // one — "0 clients" for a section that 404'd would be a lie.
-    const counted = (n: number, one: string, many = `${one}s`) =>
-      `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
-    const summary = [counted(devices.length, 'device')];
-    if (!missing.includes('sites')) summary.push(counted(sites.length, 'site'));
-    if (!missing.includes('clients')) summary.push(counted(clients.length, 'client'));
-    if (config) summary.push(counted(ssids.length, 'SSID'));
+    const summary = [countOf(devices.length, 'device')];
+    if (!missing.includes('sites')) summary.push(countOf(sites.length, 'site'));
+    if (!missing.includes('clients')) summary.push(countOf(clients.length, 'client'));
+    if (config) summary.push(countOf(ssids.length, 'SSID'));
     if (missing.length > 0) summary.push(`not available: ${missing.join(', ')}`);
     if (truncated.length > 0) summary.push(`truncated: ${truncated.join(', ')}`);
     this.stateRef.note = summary.join(' · ');

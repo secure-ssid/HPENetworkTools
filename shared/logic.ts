@@ -747,6 +747,80 @@ export function hhmmssLocal(value: string): string {
 }
 
 /**
+ * The locale every quantity in the portal is written in.
+ *
+ * A grouped number is the one piece of formatting the server genuinely cannot
+ * do for the reader: `1,234` is one thousand two hundred in en-US and one and
+ * a quarter in de-DE, from the same eight characters, with nothing on screen
+ * to say which was meant. Sending the number and formatting it in the browser
+ * — the rule cycle 70 applied to clock times — would be the honest fix, but
+ * these numbers travel inside prose the server writes (`142 devices · 3 calls
+ * today`, plane summary lines, audit text), so the string is the wire format
+ * and one locale has to be chosen.
+ *
+ * It is chosen ONCE, here, and named, so that the choice is visible and can be
+ * revisited in one place. What it replaced was worse than a wrong guess: 41
+ * independent `toLocaleString('en-US')` literals, an `en-GB` date formatter on
+ * the GreenLake screen, two browser call sites using the reader's locale, and
+ * — the part an operator actually sees — quantities that were grouped and
+ * ungrouped inside the SAME SENTENCE.
+ */
+export const DISPLAY_LOCALE = 'en-US';
+
+/**
+ * A quantity, written the one way the portal writes quantities.
+ *
+ * The Auth events screen used to show four tiles in a row where two were
+ * grouped and two were not, so `1,204 known endpoints` sat beside `1204 MAB
+ * fallbacks` and a reader had to decide whether the difference meant
+ * something. It did not. The Overview did it inside a single string —
+ * `1,234 devices · 5678 calls today` — which is the same defect with nowhere
+ * left to hide.
+ *
+ * A non-finite number is not written as a number. NaN reaching a tile is a
+ * bug upstream, and `'NaN'` in place of a count reads as a value the plane
+ * reported; `'—'` is the portal's word for "not known", which is the truth.
+ */
+export function formatCount(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  return n.toLocaleString(DISPLAY_LOCALE);
+}
+
+/**
+ * A quantity and the noun it counts, agreeing in number.
+ *
+ * `central.ts` had already invented this privately, as a local `counted()`
+ * closure, which is the clearest evidence the seam is real: every other plane
+ * and every screen model open-codes the same `${n} thing${n === 1 ? '' : 's'}`
+ * and roughly half of them forget to group the number while doing it.
+ *
+ * `many` defaults to `one + 's'` and is passed explicitly where English does
+ * not (`'entry'`/`'entries'`).
+ */
+export function countOf(n: number, one: string, many = `${one}s`): string {
+  return `${formatCount(n)} ${n === 1 ? one : many}`;
+}
+
+/**
+ * A calendar date in the READER's locale, in the fixed shape the tables use
+ * ('26 Jul 26' in en-GB, 'Jul 26, 26' in en-US). Non-instants and absent
+ * values render '—' rather than 'Invalid Date'.
+ *
+ * Unlike `formatCount`, a date CAN be formatted correctly for whoever is
+ * looking, because every use of it is in the browser — so it is, and
+ * DISPLAY_LOCALE deliberately does not apply here. The GreenLake workspace
+ * table used to hard-code `en-GB`, which was the portal's third locale
+ * convention after the server's en-US numbers and the reader's-locale
+ * timestamps two screens over, and the only one nobody had picked on purpose.
+ */
+export function shortDateLocal(value: string | null | undefined): string {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: '2-digit' });
+}
+
+/**
  * Compact relative age in the fixtures' own vocabulary ('40s', '12m', '6h',
  * '3d'), '—' when there is no timestamp to age from. Same shape the authored
  * rows use, so a live row and a demo row read identically.

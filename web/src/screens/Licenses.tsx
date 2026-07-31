@@ -29,7 +29,7 @@ import {
 } from '../nightdesk';
 import { getLicenses } from '../api/client';
 import type { LicensesData } from '../api/client';
-import { hhmmLocal as hhmm } from '@hpe/shared';
+import { hhmmLocal as hhmm, countOf } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -167,7 +167,7 @@ export default function Licenses() {
           {gaps.length > 0 ? (
             <Alert
               tone="warning"
-              title={`${gaps.length} reconciliation gap${gaps.length === 1 ? '' : 's'} worth money`}
+              title={`${countOf(gaps.length, 'reconciliation gap')} worth money`}
             >
               <span style={{ fontSize: 13 }}>
                 {gaps.map((g) => `${g.what} — ${g.detail}`).join('. ')}.

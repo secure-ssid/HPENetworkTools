@@ -10,6 +10,7 @@ import {
   type Plane,
   type StatDef,
   type Tone,
+  countOf,
 } from '@hpe/shared';
 
 /** Findings read in severity order, like the alert queue reads in P-order. */
@@ -166,7 +167,7 @@ export function liveComplianceData(
         detail: reconciliation
           ? 'Two planes claim this device identity'
           : freshness
-            ? `${rows.length} device${rows.length === 1 ? '' : 's'} cannot be verified while ${plane} is behind`
+            ? `${countOf(rows.length, 'device')} cannot be verified while ${plane} is behind`
             : 'The linked plane did not supply this field in its current inventory response',
         rule: check.rule,
         plane,
@@ -209,7 +210,7 @@ export function liveComplianceData(
       {
         label: 'Coverage findings',
         value: String(failedChecks),
-        delta: `${findings.length} grouped finding${findings.length === 1 ? '' : 's'}`,
+        delta: countOf(findings.length, 'grouped finding'),
         // Zero findings over a partial estate is not a clean result, so it
         // does not get the colour of one. Neutral rather than negative:
         // nothing has actually failed a check — the run is just incomplete.

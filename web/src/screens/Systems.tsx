@@ -72,6 +72,7 @@ import {
   CONNECT_HIDE_CLIENT_CREDENTIALS,
   CONNECT_TYPE_OPTIONS,
   hhmmLocal as hhmm,
+  countOf,
 } from '@hpe/shared';
 import type { SystemRow, SystemTypeKey } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
@@ -563,7 +564,7 @@ export default function Systems() {
               onClick={() => setShowDormant((v) => !v)}
             >
               <span aria-hidden="true">{showDormant ? '−' : '+'}</span>
-              {`${dormantViews.length} system${dormantViews.length === 1 ? '' : 's'} not linked`}
+              {`${countOf(dormantViews.length, 'system')} not linked`}
               <small>no credentials stored — nothing is polled</small>
             </button>
             {showDormant ? (

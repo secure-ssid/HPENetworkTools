@@ -21,6 +21,8 @@ import {
   type SystemRow,
   type SystemTypeKey,
   type Tone,
+  formatCount,
+  countOf,
 } from '@hpe/shared';
 
 /** Fixture system name → registry plane id (the seven connectable planes). */
@@ -258,8 +260,8 @@ export const COUNT_FACT_KEYS = ['Devices', 'Objects', 'Subscriptions', 'Endpoint
  */
 export function callsFactValue(live: LivePlaneState): string {
   const budget = live.callBudget;
-  if (budget === undefined || budget === null) return String(live.callsToday);
-  return `${live.callsToday.toLocaleString('en-US')} / ${budget.toLocaleString('en-US')}`;
+  if (budget === undefined || budget === null) return formatCount(live.callsToday);
+  return `${formatCount(live.callsToday)} / ${formatCount(budget)}`;
 }
 
 /**
@@ -280,10 +282,11 @@ export function staleTitle(live: LivePlaneState): string {
 
 /** Retry state for a plane the poller keeps failing on — served facts, not a
  *  guess: how many consecutive polls failed and when the next one is due. */
-export function retryNote(live: LivePlaneState): string | null {  const fails = live.consecutiveFailures ?? 0;
+export function retryNote(live: LivePlaneState): string | null {
+  const fails = live.consecutiveFailures ?? 0;
   if (fails <= 0) return null;
   const next = live.nextAttemptAt ? ` · next attempt ${hhmm(live.nextAttemptAt)}` : '';
-  return `${fails} consecutive failed poll${fails === 1 ? '' : 's'}${next}`;
+  return `${countOf(fails, 'consecutive failed poll')}${next}`;
 }
 
 /** Fact strip: live values override the matching facts when present. Only
@@ -296,7 +299,7 @@ export function mergedFacts(s: SystemRow, live: LivePlaneState | null): Fact[] {
     if (f.k === 'Calls today') return { ...f, v: callsFactValue(live) };
     if (COUNT_FACT_KEYS.includes(f.k) && live.deviceCount != null) {
       counted = true;
-      return { ...f, v: String(live.deviceCount) };
+      return { ...f, v: formatCount(live.deviceCount) };
     }
     return f;
   });
@@ -304,7 +307,7 @@ export function mergedFacts(s: SystemRow, live: LivePlaneState | null): Fact[] {
   if (!counted && live.deviceCount != null) {
     facts.push({
       k: s.planeId === 'sse' ? 'Objects' : 'Devices',
-      v: String(live.deviceCount),
+      v: formatCount(live.deviceCount),
     });
   }
   return facts;

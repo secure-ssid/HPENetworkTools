@@ -50,6 +50,7 @@ import {
   type SiteRow,
   type StatDef,
   type SubscriptionRow,
+  formatCount,
 } from '@hpe/shared';
 
 /**
@@ -363,7 +364,7 @@ export function mergeLiveSites(
       planes: [...badges.values()],
       mix: mixString(devs),
       devices: devs.length,
-      clients: clientsReported ? cls.length.toLocaleString('en-US') : '—',
+      clients: clientsReported ? formatCount(cls.length) : '—',
       health: healthPct === null ? null : `${healthPct}%`,
       healthPct: healthPct === null ? '—' : `${healthPct}%`,
       tone: healthPct === null ? 'stale' : healthPct >= 90 ? 'ok' : healthPct >= 70 ? 'warn' : 'bad',
@@ -418,7 +419,7 @@ export function liveSiteStats(
     },
     {
       label: 'Devices',
-      value: devices.length.toLocaleString('en-US'),
+      value: formatCount(devices.length),
       // Order matters: an unverified count is a fact about the devices that
       // were read, but naming it alone would still imply the read was whole.
       delta: short
@@ -430,7 +431,7 @@ export function liveSiteStats(
     },
     {
       label: 'Clients',
-      value: clientsReported ? clients.length.toLocaleString('en-US') : '—',
+      value: clientsReported ? formatCount(clients.length) : '—',
       delta: clientsReported ? 'active sessions reported' : 'no client roster reported',
       tone: 'neutral',
     },

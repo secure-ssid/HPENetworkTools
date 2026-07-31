@@ -29,6 +29,7 @@ import {
   type DevicePort,
   type DeviceRadio,
   type DeviceWlan,
+  countOf,
 } from '@hpe/shared';
 import { type ReactNode } from 'react';
 
@@ -79,7 +80,7 @@ export function RadiosPanel({ detail, plane }: { detail: DeviceDetailLive | null
                frames given up on rather than sent again — and `retries` was
                being rendered on its own. */
             facts={joinFacts([
-              r.clients == null ? null : `${r.clients} client${r.clients === 1 ? '' : 's'}`,
+              r.clients == null ? null : `${countOf(r.clients, 'client')}`,
               pctText(r.channelUtilPct, 'util'),
               pctText(r.nonWifiInterference, 'non-Wi-Fi'),
               airtimeText(r.rxUtilPct, r.txUtilPct),
@@ -129,7 +130,7 @@ export function WlansPanel({ detail, plane }: { detail: DeviceDetailLive | null;
               w.vlan ? `VLAN ${w.vlan}` : null,
             ]) || 'No WLAN attributes in this read.'}
             trailing={
-              w.clients == null ? undefined : `${w.clients} client${w.clients === 1 ? '' : 's'}`
+              w.clients == null ? undefined : `${countOf(w.clients, 'client')}`
             }
             badge={w.status || undefined}
             badgeTone={statusTone(w.status)}

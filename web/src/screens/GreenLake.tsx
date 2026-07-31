@@ -39,6 +39,7 @@ import {
 import { getGreenLakeInventory, runGreenLakeAction } from '../api/client';
 import type { GreenLakeInventoryResponse } from '../api/client';
 import type { GreenLakeSectionKey, GreenLakeWriteAction } from '@hpe/shared';
+import { countOf, shortDateLocal } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -49,13 +50,6 @@ const SECTION_LABEL: Record<GreenLakeSectionKey, string> = {
   locations: 'Locations',
   roleAssignments: 'Role grants',
 };
-
-function shortDate(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
-}
 
 /** A failed section states what happened and why — never an empty table. */
 function SectionFailure({
@@ -297,7 +291,7 @@ export default function GreenLake() {
                 </Table.Cell>
                 <Table.Cell numeric>
                   <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 12 }}>
-                    {shortDate(u.lastLogin)}
+                    {shortDateLocal(u.lastLogin)}
                   </span>
                 </Table.Cell>
                 {readOnly ? null : (
@@ -380,7 +374,7 @@ export default function GreenLake() {
                   <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
                     {a.scope.length === 1 && a.scope[0].includes('/workspaces/')
                       ? 'this workspace'
-                      : `${a.scope.length} scope${a.scope.length === 1 ? '' : 's'}`}
+                      : countOf(a.scope.length, 'scope')}
                   </span>
                 </Table.Cell>
                 {readOnly ? null : (

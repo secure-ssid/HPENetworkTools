@@ -39,6 +39,7 @@ import {
   type StatDef,
   type Tone,
   localDayKey,
+  countOf,
 } from '@hpe/shared';
 
 export const HEALTH_TONE: Record<PlaneHealth, Tone> = {
@@ -87,10 +88,12 @@ export function liveOverviewPlanes(): OverviewPlaneRow[] {
     const coverage =
       s.deviceCount === null
         ? null
-        : `${s.deviceCount.toLocaleString('en-US')} ${noun}${s.deviceCount === 1 ? '' : 's'} · ${s.callsToday} call${s.callsToday === 1 ? '' : 's'} today`;
+        : `${countOf(s.deviceCount, noun)} · ${countOf(s.callsToday, 'call')} today`;
     const row: OverviewPlaneRow = {
       name: PLANE_LABEL[id],
-      scope: s.linked ? (coverage ?? s.note ?? `${s.callsToday} calls today`) : (s.note ?? 'no credentials configured'),
+      scope: s.linked
+        ? (coverage ?? s.note ?? `${countOf(s.callsToday, 'call')} today`)
+        : (s.note ?? 'no credentials configured'),
       state: s.linked ? s.health : 'not linked',
       tone: HEALTH_TONE[s.linked ? s.health : 'unlinked'],
       sync: relSync(s.lastSync),

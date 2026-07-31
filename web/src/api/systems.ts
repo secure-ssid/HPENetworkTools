@@ -16,6 +16,7 @@ import {
   type PlaneScope,
   type SyncHistoryRow,
   type SystemRow,
+  countOf,
 } from '@hpe/shared';
 
 export type SystemCredentialPayload = Record<string, string | string[]>;
@@ -196,7 +197,7 @@ export async function syncSystems(): Promise<SystemMutationResult> {
       // was never the number that synchronized. Older servers do not send
       // `synced`; subtracting is then the only honest reading available.
       const synced = body.synced?.length ?? Math.max(0, (body.started?.length ?? 0) - failed);
-      const clauses = [`${synced} linked system${synced === 1 ? '' : 's'} synchronized`];
+      const clauses = [`${countOf(synced, 'linked system')} synchronized`];
       // The failure count used to REPLACE the success count, so a run that
       // refreshed four planes and lost one reported only the loss.
       if (failed > 0) clauses.push(`${failed} failed`);

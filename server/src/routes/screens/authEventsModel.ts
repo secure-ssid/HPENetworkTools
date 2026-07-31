@@ -5,6 +5,8 @@ import {
   type FailReasonRow,
   type PolicyServiceRow,
   type StatDef,
+  countOf,
+  formatCount,
 } from '@hpe/shared';
 
 /** Window covered by the event feed (0 when timestamps are absent/identical). */
@@ -44,29 +46,33 @@ export function liveAuthStats(events: LiveAuthEvent[]): StatDef[] {
   return [
     {
       label: 'Auths / min',
-      value: spanKnown ? String(Math.round(total / spanMin)) : '—',
-      delta: spanKnown ? `${total} events in a ${Math.round(spanMin)} min window` : `${total} events · feed carries no timestamps`,
+      value: spanKnown ? formatCount(Math.round(total / spanMin)) : '—',
+      delta: spanKnown
+        ? `${countOf(total, 'event')} in a ${formatCount(Math.round(spanMin))} min window`
+        : `${countOf(total, 'event')} · feed carries no timestamps`,
       tone: 'neutral',
     },
     {
       label: 'Accept rate',
       value: acceptRate === null ? '—' : `${acceptRate.toFixed(1)}%`,
-      delta: `${accepts} of ${total} accepted`,
+      delta: `${formatCount(accepts)} of ${formatCount(total)} accepted`,
       tone: acceptRate === null ? 'neutral' : acceptRate >= 95 ? 'positive' : acceptRate >= 85 ? 'neutral' : 'negative',
     },
     {
       label: 'Rejects / hour',
-      value: spanKnown ? String(Math.round(rejects / Math.max(spanMs / 3_600_000, 1 / 60))) : '—',
-      delta: spanKnown ? `${rejects} rejects in window` : `${rejects} rejects · feed carries no timestamps`,
+      value: spanKnown ? formatCount(Math.round(rejects / Math.max(spanMs / 3_600_000, 1 / 60))) : '—',
+      delta: spanKnown
+        ? `${countOf(rejects, 'reject')} in window`
+        : `${countOf(rejects, 'reject')} · feed carries no timestamps`,
       tone: rejects > 0 ? 'negative' : spanKnown ? 'positive' : 'neutral',
     },
     {
       label: 'MAB fallbacks',
-      value: String(mab),
+      value: formatCount(mab),
       delta: total > 0 ? `${Math.round((mab / total) * 100)}% of auths` : 'no events',
       tone: 'neutral',
     },
-    { label: 'Known endpoints', value: endpoints.toLocaleString('en-US'), delta: 'distinct MACs in window', tone: 'neutral' },
+    { label: 'Known endpoints', value: formatCount(endpoints), delta: 'distinct MACs in window', tone: 'neutral' },
   ];
 }
 
@@ -87,7 +93,7 @@ export function liveFailReasons(events: LiveAuthEvent[]): FailReasonRow[] {
     .map(([label, { count, macs }]) => ({
       label,
       value: count,
-      note: `${count} event${count === 1 ? '' : 's'} · ${macs.size} endpoint${macs.size === 1 ? '' : 's'}`,
+      note: `${countOf(count, 'event')} · ${countOf(macs.size, 'endpoint')}`,
     }));
 }
 
@@ -115,7 +121,7 @@ export function livePolicyServices(events: LiveAuthEvent[]): PolicyServiceRow[] 
       return {
         name,
         detail: [...methods].join(' · ') || '—',
-        rate: Math.round(count / spanHr).toLocaleString('en-US'),
+        rate: formatCount(Math.round(count / spanHr)),
         state: noisy ? 'noisy' : 'ok',
         tone: noisy ? ('warning' as const) : ('success' as const),
       };

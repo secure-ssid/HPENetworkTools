@@ -33,7 +33,7 @@ import {
 import { getSites } from '../api/client';
 import type { SitesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
-import { hhmmLocal as hhmm } from '@hpe/shared';
+import { hhmmLocal as hhmm, countOf } from '@hpe/shared';
 import type { SiteHealthTone, SiteRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -134,7 +134,7 @@ export default function Sites() {
         title="Sites"
         subtitle={
           sitesLive
-            ? `${sites.length} site${sites.length === 1 ? '' : 's'}${
+            ? `${countOf(sites.length, 'site')}${
                 missingSources.length > 0 ? ' so far' : ''
               }, and the plane each one actually answers to.`
             : 'Ten sites, and the plane each one actually answers to.'

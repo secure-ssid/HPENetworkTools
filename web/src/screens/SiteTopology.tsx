@@ -25,6 +25,7 @@ import type {
   TopologyLink,
   TopologyNode,
 } from '@hpe/shared';
+import { countOf } from '@hpe/shared';
 import { relativeAge } from '@hpe/shared';
 
 const ROW_H = 96;
@@ -259,7 +260,7 @@ export function buildLiveSiteTopology(
       ),
     ];
     omissions.push(
-      `${undrawable.length} reported link${undrawable.length === 1 ? '' : 's'} ${
+      `${countOf(undrawable.length, 'reported link')} ${
         undrawable.length === 1 ? 'is' : 'are'
       } not drawn — ${plane} named ${ends.length === 1 ? 'an endpoint' : 'endpoints'} it did not return as ` +
         `${ends.length === 1 ? 'a node' : 'nodes'} (${ends.join(', ')}). ${
@@ -275,7 +276,7 @@ export function buildLiveSiteTopology(
   if (typeof isolated === 'number' && isolated > 0) {
     const health = topology.isolatedHealth?.trim();
     omissions.push(
-      `${plane} could not place ${isolated} device${isolated === 1 ? '' : 's'} on this graph${
+      `${plane} could not place ${countOf(isolated, 'device')} on this graph${
         health ? ` (reported health ${health.toLowerCase()})` : ''
       }, so ${isolated === 1 ? 'it is' : 'they are'} absent from the diagram. This is not a site with ` +
         `no such devices — it is a graph that does not reach them.`,

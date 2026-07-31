@@ -39,7 +39,7 @@ import type { DevicesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { InventoryView } from '../app/SettingsContext';
 import { deviceDetailPath, planeFilterForParam } from '../app/nav';
-import { UNKNOWN_LANE_META } from '@hpe/shared';
+import { UNKNOWN_LANE_META, countOf } from '@hpe/shared';
 import type { DeviceRow, Plane, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -239,7 +239,7 @@ export default function Devices() {
       : `${lanePlanes.length} inventor${lanePlanes.length === 1 ? 'y' : 'ies'}`;
   const subtitle = isDemo
     ? '418 devices, six inventories, one reconciled list.'
-    : `${devices.length} device${devices.length === 1 ? '' : 's'}, ${inventoryCount}, one reconciled list.`;
+    : `${countOf(devices.length, 'device')}, ${inventoryCount}, one reconciled list.`;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -345,7 +345,7 @@ export default function Devices() {
       {doubleClaimed > 0 || unclaimed > 0 ? (
         <Alert
           tone="warning"
-          title={`Reconciliation: ${doubleClaimed} device${doubleClaimed === 1 ? '' : 's'} claimed by two inventories, ${unclaimed} by none`}
+          title={`Reconciliation: ${countOf(doubleClaimed, 'device')} claimed by two inventories, ${unclaimed} by none`}
         >
           <span style={{ fontSize: 13 }}>
             {isDemo

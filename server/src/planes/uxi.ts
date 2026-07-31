@@ -53,6 +53,7 @@
  */
 
 import type { AlertRow, DeviceRow, PlaneDatasetKey, Sev, SiteId, Tone } from '@hpe/shared';
+import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
@@ -392,12 +393,12 @@ export class UxiAdapter implements PlaneAdapter {
     const capped = named.length > MAX_SENSOR_STATUSES ? ` · status capped at ${MAX_SENSOR_STATUSES}` : '';
     const failed = statusFailures > 0 ? ` · ${statusFailures} status reads failed` : '';
     const throttleNote = this.throttled > 0 ? ` · ${this.throttled} throttled (429)` : '';
-    const idleNote = idle > 0 ? ` · ${idle.toLocaleString('en-US')} idle (online, not testing)` : '';
+    const idleNote = idle > 0 ? ` · ${formatCount(idle)} idle (online, not testing)` : '';
     // The page cap stopping a walk that still had a cursor is silent data loss
     // unless it is named: those sensors are not gone, they were never read.
-    const truncNote = truncated ? ` · inventory truncated at ${devices.length.toLocaleString('en-US')} (page cap ${MAX_PAGES})` : '';
+    const truncNote = truncated ? ` · inventory truncated at ${formatCount(devices.length)} (page cap ${MAX_PAGES})` : '';
     this.stateRef.note =
-      `${devices.length.toLocaleString('en-US')} sensors · ${alerts.length.toLocaleString('en-US')} ongoing issues${idleNote}${truncNote}${capped}${failed}${throttleNote}` +
+      `${formatCount(devices.length)} sensors · ${formatCount(alerts.length)} ongoing issues${idleNote}${truncNote}${capped}${failed}${throttleNote}` +
       ' · historical results are push-only (S3)';
 
     // A pull that read the inventory but proved NO live sensor state is not a

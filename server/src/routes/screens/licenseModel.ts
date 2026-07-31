@@ -14,6 +14,8 @@ import {
   type RenewalRow,
   type StatDef,
   type SubscriptionAssignment,
+  countOf,
+  formatCount,
 } from '@hpe/shared';
 
 /**
@@ -96,7 +98,7 @@ export function liveUnlicensedStat(
       return {
         label: 'Devices unlicensed',
         value: '—',
-        delta: `${assignments.length} assignment${assignments.length === 1 ? '' : 's'} · none states an assignment${archivedNote}`,
+        delta: `${countOf(assignments.length, 'assignment')} · none states an assignment${archivedNote}`,
         tone: 'neutral',
       };
     }
@@ -231,7 +233,7 @@ export function liveOrphans(
       rows.push({
         tag: 'unchecked',
         tone: 'neutral',
-        what: `${live.length} entitlement${live.length === 1 ? '' : 's'} not checked against the estate`,
+        what: `${countOf(live.length, 'entitlement')} not checked against the estate`,
         detail: `${missingDevicePlanes.join(' · ')} contributed no device list this cycle · an entitlement missing from a partial inventory is not evidence the hardware is gone`,
       });
     }
@@ -239,7 +241,7 @@ export function liveOrphans(
       rows.push({
         tag: 'orphan',
         tone: 'warning',
-        what: `${orphaned.length} entitlement${orphaned.length === 1 ? '' : 's'} on device${orphaned.length === 1 ? '' : 's'} no plane reports`,
+        what: `${countOf(orphaned.length, 'entitlement')} on device${orphaned.length === 1 ? '' : 's'} no plane reports`,
         detail: `${assignmentSample(orphaned)} · not in the merged inventory · reclaim before renewal`,
       });
     }
@@ -247,7 +249,7 @@ export function liveOrphans(
       rows.push({
         tag: 'gap',
         tone: 'info',
-        what: `${gaps.length} device${gaps.length === 1 ? '' : 's'} with no active subscription`,
+        what: `${countOf(gaps.length, 'device')} with no active subscription`,
         detail: `${assignmentSample(gaps)} · reported unassigned by the entitlement plane`,
       });
     }
@@ -255,7 +257,7 @@ export function liveOrphans(
       rows.push({
         tag: 'archived',
         tone: 'warning',
-        what: `${stillHolding.length} archived device${stillHolding.length === 1 ? '' : 's'} still holding a subscription`,
+        what: `${countOf(stillHolding.length, 'archived device')} still holding a subscription`,
         detail: `${assignmentSample(stillHolding)} · retired in GreenLake but the seat was never released · reclaim before renewal`,
       });
     }
@@ -296,17 +298,20 @@ export function liveLicenseStats(
   );
   const pct = totalQty > 0 ? Math.round((totalAssigned / totalQty) * 100) : null;
   return [
-    { label: 'Subscriptions', value: String(subs.length), delta: `${totalQty.toLocaleString('en-US')} seats`, tone: 'neutral' },
+    { label: 'Subscriptions', value: formatCount(subs.length), delta: countOf(totalQty, 'seat'), tone: 'neutral' },
     {
       label: 'Assigned',
-      value: totalAssigned.toLocaleString('en-US'),
+      value: formatCount(totalAssigned),
       delta: pct === null ? 'utilisation unknown' : `${pct}% utilised`,
       tone: pct !== null && pct >= 80 ? 'positive' : 'neutral',
     },
     {
       label: 'Unassigned',
-      value: unassigned.toLocaleString('en-US'),
-      delta: idle.length > 0 ? `${idle.length} subscription${idle.length === 1 ? '' : 's'} with none assigned` : 'all subscriptions in use',
+      value: formatCount(unassigned),
+      delta:
+        idle.length > 0
+          ? `${countOf(idle.length, 'subscription')} with none assigned`
+          : 'all subscriptions in use',
       tone: unassigned > 0 ? 'negative' : 'neutral',
     },
     {

@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { CLOCK_SKEW_TOLERANCE_MS } from '@hpe/shared';
-import { mergedFacts, relTime, staleTitle, syncAgeText } from './facts';
+import { callsFactValue, mergedFacts, relTime, retryNote, staleTitle, syncAgeText } from './facts';
 import type { LivePlaneState } from '../../api/client';
 import type { SystemRow } from '@hpe/shared';
 
@@ -95,5 +95,39 @@ describe('the Last sync fact and the stale tooltip agree with the badge', () => 
     expect(title).toContain('age unreadable');
     expect(title).toContain("past the registry's staleness window");
     expect(title).not.toContain('last good sync never');
+  });
+});
+
+describe('the fact strip writes all of its numbers the same way', () => {
+  // Three facts sit one line apart on this card, and only the middle one used
+  // to be grouped: a plane with 1,234 devices and 1,234 calls against a 5,000
+  // budget rendered `1234` above `1,234 / 5,000`. Same quantity, same card,
+  // two conventions — the server's copy of this rule did it too, and the two
+  // copies are why the rule now lives in shared/.
+  const row = { facts: [{ k: 'Devices', v: '—' }] } as SystemRow;
+
+  it('groups the device count, not just the call count beside it', () => {
+    const facts = mergedFacts(row, live({ deviceCount: 1234, callsToday: 1234, callBudget: 5000 }));
+    expect(facts.find((f) => f.k === 'Devices')?.v).toBe('1,234');
+  });
+
+  it('groups a count fact appended to a row that had none', () => {
+    const bare = { facts: [], planeId: 'central' } as unknown as SystemRow;
+    const facts = mergedFacts(bare, live({ deviceCount: 8042 }));
+    expect(facts.find((f) => f.k === 'Devices')?.v).toBe('8,042');
+  });
+
+  it('groups the call count whether or not the plane has a known budget', () => {
+    // The two branches of one function disagreed: with a budget the number
+    // was grouped, without one it was not, so the same plane changed the way
+    // it wrote its own count the moment the portal learned its tier.
+    expect(callsFactValue(live({ callsToday: 19_204, callBudget: 20_000 }))).toBe('19,204 / 20,000');
+    expect(callsFactValue(live({ callsToday: 19_204, callBudget: null }))).toBe('19,204');
+  });
+
+  it('agrees in number when the poller has failed exactly once', () => {
+    expect(retryNote(live({ consecutiveFailures: 1 }))).toBe('1 consecutive failed poll');
+    expect(retryNote(live({ consecutiveFailures: 3 }))).toBe('3 consecutive failed polls');
+    expect(retryNote(live({ consecutiveFailures: 0 }))).toBeNull();
   });
 });
