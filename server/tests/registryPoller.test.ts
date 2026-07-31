@@ -326,6 +326,31 @@ describe('poller — a cycle only claims what happened', () => {
     expect(p.lastSyncFor('clients')).toBeNull(); // the section was not read
   });
 
+  /* The other half of that rule, and the one it was breaking. A truncated
+     read is not an unread one: ClearPass caps the auth log at 200 rows and
+     names `authEvents` partial on any estate busier than that, every tick,
+     so the Auth-events header — whose stated job is to say when the rows on
+     screen were pulled — read 'SYNCED —' forever above rows read seconds
+     ago. `—` is what that screen renders for 'no successful poll yet'. */
+  it('stamps a dataset the plane read short, because short is not stale', async () => {
+    const { Poller } = await import('../src/services/poller');
+    const synced = '2026-03-01T12:00:00.000Z';
+    const { PLANE_IDS } = await import('../src/planes/types');
+    const reg = {
+      states: () =>
+        Object.fromEntries(
+          PLANE_IDS.map((id) => [id, { linked: id === 'clearpass', lastSync: id === 'clearpass' ? synced : null }]),
+        ),
+    } as unknown as PlaneRegistry;
+    const p = new Poller(reg, liveStore);
+    (p as unknown as { contributions: Map<string, unknown> }).contributions.set('clearpass', {
+      authEvents: [{ id: 'e-1' }, { id: 'e-2' }],
+      partial: ['authEvents'],
+    });
+    expect(p.lastSyncFor('authEvents')).toBe(synced);
+  });
+
+
   it('honours the registry backoff for scheduled ticks and ignores it when forced', async () => {
     const { Poller } = await import('../src/services/poller');
     let pulls = 0;

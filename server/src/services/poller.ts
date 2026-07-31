@@ -232,16 +232,39 @@ export class Poller {
   }
 
   /**
-   * Most recent successful sync from a plane that contributes a dataset. A
-   * dataset the plane listed in `partial` does NOT count: the pull could not
-   * read it, so its sync stamp is not evidence of that dataset's freshness.
+   * Most recent successful sync from a plane that contributes a dataset.
+   *
+   * A dataset the pull did not carry lends nothing. Neither does one it
+   * carried EMPTY while naming it in `partial` — that is a denied or 404 read
+   * published as a zero, and a zero the plane never saw must not arrive
+   * wearing a fresh stamp.
+   *
+   * A `partial` dataset that did deliver rows is the opposite fact, and the
+   * distinction is the whole of this method. The walk stopped short; what it
+   * returned was still read on this pull. ClearPass caps the auth log at
+   * MAX_AUTH_EVENTS and so declares `authEvents` partial on any estate busier
+   * than that — every tick, forever — and UXI does the same for a truncated
+   * inventory. Refusing them a stamp left the Auth-events header reading
+   * 'SYNCED —', which that screen's own contract defines as 'no successful
+   * poll yet', above two hundred events read seconds earlier. Those rows are
+   * short, not stale, and `partial` plus the plane's warning health already
+   * say short in the places built to say it.
+   *
+   * Row count is a safe test here only because DatasetKey is
+   * PlaneRowDatasetKey: every key this takes names an array. The structured
+   * datasets (`config`, `sse`, `greenlake`) are not addressable through it.
    */
   lastSyncFor(...keys: DatasetKey[]): string | null {
     const freshness = this.freshness();
     let latest: string | null = null;
     for (const [plane, pull] of this.contributions) {
       const unread = pull.partial ?? [];
-      if (!keys.some((key) => pull[key] !== undefined && !unread.includes(key))) continue;
+      const contributes = keys.some((key) => {
+        const rows = pull[key];
+        if (rows === undefined) return false;
+        return unread.includes(key) ? rows.length > 0 : true;
+      });
+      if (!contributes) continue;
       const ts = freshness[plane];
       if (ts && (latest === null || ts > latest)) latest = ts;
     }
