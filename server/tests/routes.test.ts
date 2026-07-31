@@ -818,6 +818,93 @@ describe('live-mode screen contracts', () => {
     }
   });
 
+  /* The two tiles at the top of the first screen anyone opens. Both are sums
+   * over the planes that answered, so a linked plane reporting nothing cannot
+   * make either number worse — it drops out and leaves a smaller, quieter
+   * estate. "12 / 12 · all verified" and "0 · none critical" are the two
+   * sentences that end a morning check, and both could be said over an estate
+   * the portal had only partly read. The Devices and Alerts screens each name
+   * the silent plane; these did not. */
+  it('does not let the Overview headline tiles claim an estate they only partly read', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const central = registry.get('central').state();
+    const previousCentral = { ...central };
+    const mist = registry.get('mist').state();
+    const previousMist = { ...mist };
+    contributions.clear();
+    Object.assign(central, { linked: true, health: 'healthy', stale: false });
+    Object.assign(mist, { linked: true, health: 'healthy', stale: false });
+    // mist answered both datasets; central answered neither.
+    contributions.set('mist', { devices: [{ id: 'd-1', name: 'ap-1', plane: 'MIST', state: 'up' }], alerts: [] });
+
+    try {
+      const { body } = await getJson('/api/overview');
+      const stats = body.stats as any[];
+
+      const devices = stats.find((t: any) => t.label === 'Devices reachable');
+      expect(devices.delta).toContain('CENTRAL');
+      expect(devices.delta).not.toBe('all verified');
+
+      const alerts = stats.find((t: any) => t.label === 'Open alerts');
+      expect(alerts.value).toBe('0');
+      expect(alerts.delta).toContain('CENTRAL');
+      expect(alerts.delta).not.toBe('none critical');
+    } finally {
+      Object.assign(central, previousCentral);
+      Object.assign(mist, previousMist);
+      contributions.clear();
+    }
+  });
+
+  // A plane that answered with an empty alert list HAS answered. Naming it
+  // would teach the operator to ignore the caveat.
+  it('still says "all verified" and "none critical" when every plane answered', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const central = registry.get('central').state();
+    const previousCentral = { ...central };
+    contributions.clear();
+    Object.assign(central, { linked: true, health: 'healthy', stale: false });
+    contributions.set('central', {
+      devices: [{ id: 'd-1', name: 'sw-1', plane: 'CENTRAL', state: 'up' }],
+      alerts: [],
+    });
+
+    try {
+      const { body } = await getJson('/api/overview');
+      const stats = body.stats as any[];
+      expect(stats.find((t: any) => t.label === 'Devices reachable').delta).toBe('all verified');
+      expect(stats.find((t: any) => t.label === 'Open alerts').delta).toBe('none critical');
+    } finally {
+      Object.assign(central, previousCentral);
+      contributions.clear();
+    }
+  });
+
+  // The caveat must survive alongside a real problem, not be replaced by it.
+  it('names an unread plane alongside a device that is down, not instead of it', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const central = registry.get('central').state();
+    const previousCentral = { ...central };
+    const mist = registry.get('mist').state();
+    const previousMist = { ...mist };
+    contributions.clear();
+    Object.assign(central, { linked: true, health: 'healthy', stale: false });
+    Object.assign(mist, { linked: true, health: 'healthy', stale: false });
+    contributions.set('mist', { devices: [{ id: 'd-1', name: 'ap-1', plane: 'MIST', state: 'down' }] });
+
+    try {
+      const { body } = await getJson('/api/overview');
+      const devices = (body.stats as any[]).find((t: any) => t.label === 'Devices reachable');
+      expect(devices.delta).toContain('1 down');
+      expect(devices.delta).toContain('CENTRAL');
+      expect(devices.tone).toBe('negative');
+    } finally {
+      Object.assign(central, previousCentral);
+      Object.assign(mist, previousMist);
+      contributions.clear();
+    }
+  });
+
   /* The Overview's own comment promises "the same live evidence-coverage
    * engine Configure and Compliance already run, so the three screens cannot
    * disagree". They could. Compliance learned to declare a scan that skipped

@@ -20,6 +20,7 @@ import {
   LiveSubscription,
   SEV_RANK,
   ageMinutes,
+  planesMissingDataset,
   planesMissingDevices,
 } from './liveCore';
 import {
@@ -156,6 +157,14 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
   const down = live.devices.filter((d) => d.state !== 'up' && d.state !== 'unverified').length;
   const open = live.alerts.filter((a) => a.state === 'open');
   const p1 = open.filter((a) => a.sev === 'P1').length;
+  // Both numerator and denominator of these two tiles are sums over the
+  // planes that answered. A linked plane that reported nothing contributes no
+  // devices and no alerts, so it cannot make either number worse — it drops
+  // out and leaves a smaller, calmer estate behind. The Devices and Alerts
+  // screens each name that plane; the two tiles the operator actually looks
+  // at first did not.
+  const missingDevices = planesMissingDataset('devices');
+  const missingAlerts = planesMissingDataset('alerts');
   const subs = poller.getCache().subscriptions as LiveSubscription[];
   // Same derivation as the Licences screen's tile — the two answer the same
   // question and must never disagree.
@@ -191,7 +200,13 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
       // was down — hiding the stale-plane signal exactly when the estate is
       // in trouble. Down still leads: it is the harder fact.
       delta:
-        [down > 0 ? `▼ ${down} down` : null, unverified > 0 ? `${unverified} unverified` : null]
+        [
+          down > 0 ? `▼ ${down} down` : null,
+          unverified > 0 ? `${unverified} unverified` : null,
+          // Last, but present in every branch: "3 down" over a fraction that
+          // is missing a plane is still an incomplete answer.
+          missingDevices.length > 0 ? `${missingDevices.join(', ')} not counted` : null,
+        ]
           .filter((part): part is string => part !== null)
           .join(' · ') || 'all verified',
       tone: down > 0 || unverified > 0 ? 'negative' : 'neutral',
@@ -199,7 +214,15 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
     {
       label: 'Open alerts',
       value: String(open.length),
-      delta: p1 > 0 ? `▲ ${p1} critical` : 'none critical',
+      // 'none critical' is the sentence that ends an operator's morning
+      // check. It may only be said about a queue every linked plane answered.
+      delta:
+        [
+          p1 > 0 ? `▲ ${p1} critical` : null,
+          missingAlerts.length > 0 ? `${missingAlerts.join(', ')} did not answer` : null,
+        ]
+          .filter((part): part is string => part !== null)
+          .join(' · ') || 'none critical',
       tone: open.length > 0 ? 'negative' : 'neutral',
     },
     {
