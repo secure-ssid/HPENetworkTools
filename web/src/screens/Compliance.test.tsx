@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Compliance from './Compliance';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -128,6 +128,77 @@ describe('Compliance findings table', () => {
       .map((badge) => badge?.className ?? '');
     expect(fixBadges[0]).toContain('nd-badge--neutral');
     expect(fixBadges[2]).toContain('nd-badge--warning');
+  });
+});
+
+/* The count is the link, and a finding is every device of one plane that
+   failed one check. It used to navigate to /devices/<f.device>, the first row
+   of the group — so a count of 4 opened one device, chosen by iteration
+   order, and nothing on the way said the other three had been dropped. */
+describe('Compliance finding count link', () => {
+  function Probe() {
+    const location = useLocation();
+    return <div data-testid="loc">{`${location.pathname}${location.search}`}</div>;
+  }
+
+  function renderWithRouting() {
+    return render(
+      <MemoryRouter initialEntries={['/compliance']}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/compliance" element={<Compliance />} />
+              <Route path="/devices" element={<Probe />} />
+              <Route path="/devices/:name" element={<Probe />} />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('opens every device the count counted, not just the first', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          count: '4',
+          device: 'ap-9',
+          devices: ['ap-9', 'ap-10', 'ap-11', 'ap-12'],
+        },
+      ],
+    });
+
+    renderWithRouting();
+    // By role: the 'Evidence checks' stat tile also renders a bare 4.
+    fireEvent.click(await screen.findByRole('button', { name: '4' }));
+
+    const loc = screen.getByTestId('loc').textContent ?? '';
+    expect(loc.startsWith('/devices?names=')).toBe(true);
+    const names = new URL(loc, 'http://x').searchParams.get('names');
+    expect(names?.split('\n')).toEqual(['ap-9', 'ap-10', 'ap-11', 'ap-12']);
+  });
+
+  /* Guard: one device is still one device, and the drill-down straight to it
+     is the more useful link. */
+  it('opens the device itself when the finding covers exactly one', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [{ ...LIVE_COVERAGE.findings[0], count: '1', device: 'ap-1', devices: ['ap-1'] }],
+    });
+
+    renderWithRouting();
+    fireEvent.click(await screen.findByRole('button', { name: '1' }));
+    expect(screen.getByTestId('loc').textContent).toBe('/devices/ap-1');
+  });
+
+  /* Demo fixtures predate the field and carry only `device`. */
+  it('falls back to the single device when a finding carries no set', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    renderWithRouting();
+    fireEvent.click(await screen.findByRole('button', { name: '1' }));
+    expect(screen.getByTestId('loc').textContent).toBe('/devices/ap-1');
   });
 });
 

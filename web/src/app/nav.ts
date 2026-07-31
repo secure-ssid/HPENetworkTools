@@ -115,6 +115,32 @@ export function deviceDetailPath(identity: DeviceLinkIdentity): string {
   return qs ? `${path}?${qs}` : path;
 }
 
+/**
+ * Where a Compliance finding's count links to.
+ *
+ * A finding is every device of one plane that failed one check, and the table
+ * renders its `count` as the link. Sending 12 to `/devices/:name` on the first
+ * of them is a link that discards eleven and gives no sign it did, so a set of
+ * more than one goes to the list, filtered to exactly that set.
+ *
+ * Newline-separated because a device name may plausibly contain a comma and
+ * may not contain a newline; it is percent-encoded either way.
+ */
+export function findingDevicesPath(names: readonly string[]): string {
+  if (names.length === 1) return deviceDetailPath({ name: names[0]! });
+  return `/devices?names=${encodeURIComponent(names.join('\n'))}`;
+}
+
+/** Device names carried by a `?names=` deep link; null when there is no filter. */
+export function namesFilterForParam(param: string | null): string[] | null {
+  if (param === null) return null;
+  const names = param
+    .split('\n')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  return names.length > 0 ? names : null;
+}
+
 /** Registry plane id (Systems drawer deep links) → inventory Plane label. */
 const PLANE_LABEL_BY_ID: Record<string, Plane> = {
   central: 'CENTRAL',

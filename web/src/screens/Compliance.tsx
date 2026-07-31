@@ -32,6 +32,7 @@ import { getCompliance, syncSystems } from '../api/client';
 import type { ComplianceData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { hhmmLocal as hhmm } from '@hpe/shared';
+import { findingDevicesPath } from '../app/nav';
 import type { FindingRow, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -311,7 +312,7 @@ export default function Compliance() {
                   <Table.Cell numeric>
                     <button
                       type="button"
-                      onClick={() => navigate(`/devices/${encodeURIComponent(f.device)}`)}
+                      onClick={() => navigate(findingDevicesPath(f.devices ?? [f.device]))}
                       style={{
                         background: 'none',
                         border: 'none',

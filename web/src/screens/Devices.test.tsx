@@ -76,6 +76,72 @@ function renderDevicesWithRouting() {
   );
 }
 
+/* A Compliance finding's count links here with the set it counted. Before
+   that link carried the set it went to /devices/<first name>, so clicking a
+   count of 12 opened one device and silently dropped eleven. */
+describe('Devices ?names= deep link', () => {
+  function renderAt(entry: string) {
+    return render(
+      <MemoryRouter initialEntries={[entry]}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/devices" element={<Devices />} />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  const THREE = {
+    dataSource: 'live' as const,
+    devices: [liveRow({ name: 'ap-1' }), liveRow({ name: 'ap-2' }), liveRow({ name: 'sw-3' })],
+    lanes: {},
+    reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+  };
+
+  it('narrows the inventory to exactly the named devices', async () => {
+    mockGetDevices.mockResolvedValue(THREE);
+    renderAt(`/devices?names=${encodeURIComponent('ap-1\nsw-3')}`);
+
+    expect(await screen.findByText('2 of 3 indexed')).toBeTruthy();
+    expect(screen.getByText('2 named devices — clear')).toBeTruthy();
+    expect(screen.queryByText('ap-2')).toBeNull();
+  });
+
+  /* The screen must never just show fewer rows than were asked for. A finding
+     names a set; by the time it is clicked the inventory may not hold all of
+     it, and "10 of 12" is the difference between a stale link and an estate
+     that shrank. */
+  it('says so when the inventory no longer holds every named device', async () => {
+    mockGetDevices.mockResolvedValue(THREE);
+    renderAt(`/devices?names=${encodeURIComponent('ap-1\ngone-1\ngone-2')}`);
+
+    expect(await screen.findByText('1 of 3 indexed')).toBeTruthy();
+    expect(screen.getByText('1 of 3 named devices — 2 not in this inventory — clear')).toBeTruthy();
+  });
+
+  it('clears back to the whole inventory', async () => {
+    mockGetDevices.mockResolvedValue(THREE);
+    renderAt(`/devices?names=${encodeURIComponent('ap-1')}`);
+
+    fireEvent.click(await screen.findByText('1 named devices — clear'));
+    expect(await screen.findByText('3 of 3 indexed')).toBeTruthy();
+    expect(screen.queryByText(/named devices/)).toBeNull();
+  });
+
+  /* An absent param is not a filter of zero names — that would empty the
+     screen and let the estate take the blame for it. */
+  it('ignores an empty names param instead of hiding everything', async () => {
+    mockGetDevices.mockResolvedValue(THREE);
+    renderAt('/devices?names=');
+
+    expect(await screen.findByText('3 of 3 indexed')).toBeTruthy();
+    expect(screen.queryByText(/named devices/)).toBeNull();
+  });
+});
+
 describe('Devices sparse live inventory', () => {
   it('uses live reconciliation metadata and never renders authored demo totals or examples', async () => {
     mockGetDevices.mockResolvedValue({

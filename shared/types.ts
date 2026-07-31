@@ -346,6 +346,13 @@ export interface Finding {
   count: string;
   fix: 'auto' | 'manual' | 'window' | 'ssh scan';
   device: string;
+  /**
+   * Every device the finding covers, when it covers more than the one `device`
+   * names. A finding is a whole plane's worth of devices failing one check, so
+   * `device` is merely the first of them and `count` is the only field that
+   * ever described the real scope.
+   */
+  devices?: string[];
   baseline: string; // fixture field "base"
 }
 

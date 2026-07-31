@@ -916,6 +916,46 @@ describe('live-mode screen contracts', () => {
     }
   });
 
+  /* A finding groups every device of one plane failing one check, and the
+     Compliance table turns its `count` into a link. `device` was the first of
+     the group and the only name that travelled, so the link could only ever
+     reach one of them — and picked by iteration order at that. The count and
+     the set it links to have to be the same set. */
+  it('carries every device a finding counted, not just the first of them', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mist = registry.get('mist').state();
+    const previousMist = { ...mist };
+    contributions.clear();
+    Object.assign(mist, { linked: true, health: 'healthy', stale: false });
+    contributions.set('mist', {
+      devices: [
+        { id: 'd-1', name: 'ap-1', plane: 'MIST' },
+        { id: 'd-2', name: 'ap-2', plane: 'MIST' },
+        { id: 'd-3', name: 'ap-3', plane: 'MIST' },
+      ],
+    });
+
+    try {
+      const compliance = await getJson('/api/compliance');
+      const findings = compliance.body.findings as any[];
+      expect(findings.length).toBeGreaterThan(0);
+      for (const finding of findings) {
+        expect(finding.devices).toBeDefined();
+        expect(finding.devices).toHaveLength(Number(finding.count));
+        expect(finding.devices[0]).toBe(finding.device);
+        // Names, and every one distinct — a count of 3 that links to the same
+        // device three times is the original bug wearing an array.
+        expect(new Set(finding.devices).size).toBe(finding.devices.length);
+      }
+      const firmware = findings.find((f) => f.rule === 'scan.coverage.firmware');
+      expect(firmware.count).toBe('3');
+      expect(firmware.devices).toEqual(['ap-1', 'ap-2', 'ap-3']);
+    } finally {
+      Object.assign(mist, previousMist);
+      contributions.clear();
+    }
+  });
+
   /* The Overview's own comment promises "the same live evidence-coverage
    * engine Configure and Compliance already run, so the three screens cannot
    * disagree". They could. Compliance learned to declare a scan that skipped

@@ -174,7 +174,13 @@ export function liveComplianceData(
         count: String(rows.length),
         fix: reconciliation ? 'manual' : 'ssh scan',
         fixColor: reconciliation || freshness ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
+        // `device` is the first of `rows`, and was for a long time the only
+        // one anything downstream could see — while `count` said 12. The
+        // Compliance table makes that count a link, so the whole set has to
+        // travel with it or the link quietly means "one of these, chosen by
+        // iteration order".
         device: rows[0]!.name,
+        devices: rows.map((row) => row.name),
         baseline: 'Live evidence coverage',
       });
     }

@@ -38,7 +38,7 @@ import { getDevices, savePortalSettings } from '../api/client';
 import type { DevicesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { InventoryView } from '../app/SettingsContext';
-import { deviceDetailPath, planeFilterForParam } from '../app/nav';
+import { deviceDetailPath, namesFilterForParam, planeFilterForParam } from '../app/nav';
 import { UNKNOWN_LANE_META, countOf } from '@hpe/shared';
 import type { DeviceRow, Plane, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
@@ -93,12 +93,17 @@ export default function Devices() {
   const { toast } = useToast();
   const { density, inventoryView, setInventoryView, showPlatformTags } = useSettings();
   const [data, setData] = useState<DevicesData | null>(null);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [q, setQ] = useState('');
   const [type, setType] = useState('all');
   const [plane, setPlane] = useState(() => planeFilterForParam(searchParams.get('plane')));
   const [site, setSite] = useState('all');
   const [issuesOnly, setIssuesOnly] = useState(false);
+  /* Deep link: /devices?names=a\nb\nc (a Compliance finding's count). Read
+     straight off the URL rather than mirrored into state — a filter that
+     narrows the estate this hard must not be able to drift from the address
+     that explains it, and clearing it is then just dropping the param. */
+  const nameFilter = namesFilterForParam(searchParams.get('names'));
 
   // Hide a fixture row from the demo inventory (persisted server-side);
   // optimistic local update, rollback on failure.
@@ -186,8 +191,14 @@ export default function Devices() {
       (plane === 'all' || d.plane === plane) &&
       (site === 'all' || d.siteId === site) &&
       (!issuesOnly || d.reconciliationIssue) &&
+      (nameFilter === null || nameFilter.includes(d.name)) &&
       matchesQuery(d),
   );
+
+  /* The finding named a set; this inventory may no longer hold all of it.
+     Showing 10 rows for a link that said 12 needs to say which happened. */
+  const namedPresent =
+    nameFilter === null ? 0 : nameFilter.filter((name) => devices.some((d) => d.name === name)).length;
 
   const uniq = <T,>(xs: T[]): T[] => xs.filter((v, i, a) => a.indexOf(v) === i);
   const typeOptions = [{ value: 'all', label: 'All types' }].concat(
@@ -300,6 +311,32 @@ export default function Devices() {
           checked={issuesOnly}
           onCheckedChange={setIssuesOnly}
         />
+        {nameFilter !== null ? (
+          <button
+            type="button"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete('names');
+              setSearchParams(next, { replace: true });
+            }}
+            title={nameFilter.join(', ')}
+            style={{
+              background: 'none',
+              border: '1px solid var(--nd-border)',
+              borderRadius: 4,
+              padding: '2px 8px',
+              cursor: 'pointer',
+              fontFamily: 'var(--nd-font-mono)',
+              fontSize: 'var(--nd-text-11)',
+              color: 'var(--nd-accent-text)',
+            }}
+          >
+            {namedPresent === nameFilter.length
+              ? `${nameFilter.length} named devices`
+              : `${namedPresent} of ${nameFilter.length} named devices — ${nameFilter.length - namedPresent} not in this inventory`}
+            {' — clear'}
+          </button>
+        ) : null}
         {isDemo && hiddenCount > 0 ? (
           <button
             type="button"
