@@ -3406,8 +3406,8 @@ describe('on-demand per-object detail reads', () => {
       {
         from: 'PHT5M520SZ',
         to: 'SG30LMR164',
-        fromPorts: [{ name: 'eth0' }],
-        toPorts: [{ name: '1/1/12' }],
+        fromPorts: [{ name: 'eth0' }] as { name: string; lag?: string }[],
+        toPorts: [{ name: '1/1/12' }] as { name: string; lag?: string }[],
         speedBps: 5000000000,
         health: 'Good',
         healthReason: null as string | null,
@@ -3729,6 +3729,96 @@ describe('on-demand per-object detail reads', () => {
     const switchFirst = await wifiDrawer(WIFI.mac);
     expect(switchFirst.body.detail.wiring.port).toBe('1/1/8');
     expect(switchFirst.body.detail.wiring.switchName).toBe('sw-detail-1');
+  });
+
+  /**
+   * TopologyLink's own type says "a LAG has several" of the ports at each end.
+   * The wiring row exists so somebody can walk to a switch and act on a port,
+   * and naming one member of a four-member bundle produces a change that drops
+   * nothing at all — the traffic stays up on the other three.
+   */
+  it('names every port of a bundled uplink, not the first one as if it were the cable', async () => {
+    contributions.set('central', { devices: [AP, SW], clients: [WIFI] });
+    const graph = GRAPH('campus-01');
+    graph.links = [
+      {
+        from: 'SG30LMR164',
+        to: 'PHT5M520SZ',
+        fromPorts: [
+          { name: '1/1/8', lag: 'lag24' },
+          { name: '1/1/9', lag: 'lag24' },
+        ],
+        toPorts: [{ name: 'eth0' }],
+        speedBps: 2500000000,
+        health: 'Good',
+        healthReason: null,
+      },
+    ];
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, source: source({ rssi: 'empty' }) }),
+      deviceDetail: async (serial: string, kind: string) => ({ serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) }),
+      siteTopology: async () => graph,
+    });
+
+    const res = await wifiDrawer(WIFI.mac);
+    expect(res.body.detail.wiring.ports).toEqual(['1/1/8', '1/1/9']);
+    expect(res.body.detail.wiring.lag).toBe('lag24');
+    // `port` keeps meaning what it always did, so nothing reading it breaks.
+    expect(res.body.detail.wiring.port).toBe('1/1/8');
+  });
+
+  /* "Shut the port and watch the AP drop" is the test this row is read for,
+     and a dual-homed AP passes traffic straight through it. */
+  it('counts a second uplink rather than answering with the first one it found', async () => {
+    contributions.set('central', { devices: [AP, SW], clients: [WIFI] });
+    const graph = GRAPH('campus-01');
+    graph.links = [
+      {
+        from: 'SG30LMR164',
+        to: 'PHT5M520SZ',
+        fromPorts: [{ name: '1/1/8' }],
+        toPorts: [{ name: 'eth0' }],
+        speedBps: 2500000000,
+        health: 'Good',
+        healthReason: null,
+      },
+      {
+        from: 'SG30LMR164',
+        to: 'PHT5M520SZ',
+        // The plane named no port at this end. It is still a cable, and
+        // leaving it out would make the count agree with the description by
+        // omitting what the description could not carry.
+        fromPorts: [],
+        toPorts: [{ name: 'eth1' }],
+        speedBps: 2500000000,
+        health: 'Good',
+        healthReason: null,
+      },
+    ];
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, source: source({ rssi: 'empty' }) }),
+      deviceDetail: async (serial: string, kind: string) => ({ serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) }),
+      siteTopology: async () => graph,
+    });
+
+    const res = await wifiDrawer(WIFI.mac);
+    expect(res.body.detail.wiring.port).toBe('1/1/8');
+    expect(res.body.detail.wiring.otherUplinks).toBe(1);
+  });
+
+  /* Only exceptions earn words: one cable into one port says nothing extra. */
+  it('adds no plural to an AP with a single uplink into a single port', async () => {
+    contributions.set('central', { devices: [AP, SW], clients: [WIFI] });
+    stub('central', {
+      clientDetail: async (mac: string) => ({ mac, source: source({ rssi: 'empty' }) }),
+      deviceDetail: async (serial: string, kind: string) => ({ serial, kind, radios: RADIOS, source: source({ radios: 'ok' }) }),
+      siteTopology: async (siteId: string) => GRAPH(siteId),
+    });
+
+    const res = await wifiDrawer(WIFI.mac);
+    expect(res.body.detail.wiring.port).toBe('1/1/12');
+    expect(res.body.detail.wiring.ports).toBeUndefined();
+    expect(res.body.detail.wiring.otherUplinks).toBeUndefined();
   });
 
   it('a wired session is asked for no radio at all and gets no wireless joins', async () => {

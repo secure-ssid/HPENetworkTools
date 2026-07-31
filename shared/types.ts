@@ -2175,8 +2175,22 @@ export interface ClientWiring {
   /** The switch at the far end of the AP's uplink. */
   switchName: string;
   switchSerial: string;
-  /** Switch port the AP is patched into, as the plane words it ('1/1/8'). */
+  /** Switch port the AP is patched into, as the plane words it ('1/1/8').
+   *  The FIRST of `ports` — never the only one when `ports` has more. */
   port: string;
+  /** Every port at the switch end, when the plane reported more than one.
+   *  Absent for a single cable. A bundled AP is not patched into one port and
+   *  telling an operator to shut '1/1/8' on a four-member LAG names a quarter
+   *  of the link — the traffic simply stays up on the rest. */
+  ports?: string[];
+  /** LAG name at the switch end when the plane named one; absent when it did
+   *  not, which is NOT the same as the ports not being bundled. */
+  lag?: string | null;
+  /** Further links the plane's site graph draws from this AP to a switch,
+   *  beyond the one described here. Absent/0 = this is the whole story.
+   *  A dual-homed AP whose second uplink is unmentioned turns "shut the port
+   *  and watch it drop" into a test that proves nothing. */
+  otherUplinks?: number;
   /** Link speed in BITS PER SECOND (Central reports 1000000000 for a 1 Gb
    *  link). null/absent = the plane reported no speed. */
   speedBps?: number | null;

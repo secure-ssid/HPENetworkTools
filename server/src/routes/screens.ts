@@ -656,6 +656,14 @@ async function liveServingRadio(
  * the AP's own 'eth0' into the WIRING row would name the wrong end of the
  * cable. A far end that is not a switch (or not on the graph at all) is not
  * reported as one.
+ *
+ * Every matching link is walked, not just the first, and every port at the
+ * switch end is carried, not just `[0]`. Both plurals are real: TopologyLink's
+ * own type says "a LAG has several", and an AP can be drawn with more than one
+ * uplink. This row exists so somebody can walk to a switch and act on a port,
+ * and both singular readings turn that action into a no-op — shutting one
+ * member of a bundle drops nothing, and shutting the only uplink you were told
+ * about drops nothing when there is a second.
  */
 function wiringForAp(
   topology: SiteTopologyLive | null,
@@ -665,25 +673,37 @@ function wiringForAp(
   if (!links || links.length === 0) return null;
   const serial = ap.serial!;
   const nodes = new Map((topology?.nodes ?? []).map((node) => [node.serial, node]));
+  let described: ClientWiring | null = null;
+  let uplinks = 0;
   for (const link of links) {
     const apIsFrom = link.from === serial;
     if (!apIsFrom && link.to !== serial) continue;
     const far = nodes.get(apIsFrom ? link.to : link.from);
     if (!far || !/switch/i.test(far.type)) continue;
-    const port = (apIsFrom ? link.toPorts : link.fromPorts)?.[0]?.name;
-    if (!reportedValue(port)) continue;
-    return {
+    // Counted before the port check: a link whose switch-end port the plane did
+    // not name is still a cable. Dropping it here would let the count agree
+    // with the description by leaving out what it cannot describe.
+    uplinks += 1;
+    if (described) continue;
+    const farPorts = (apIsFrom ? link.toPorts : link.fromPorts) ?? [];
+    const names = [...new Set(farPorts.map((p) => p.name).filter((n) => reportedValue(n)))];
+    if (names.length === 0) continue;
+    const lag = farPorts.find((p) => reportedValue(p.lag))?.lag;
+    described = {
       apName: ap.name,
       apSerial: serial,
       switchName: far.name,
       switchSerial: far.serial,
-      port: port!,
+      port: names[0]!,
+      ...(names.length > 1 ? { ports: names } : {}),
+      ...(reportedValue(lag) ? { lag } : {}),
       speedBps: link.speedBps,
       linkHealth: link.health,
       linkHealthReason: link.healthReason,
     };
   }
-  return null;
+  if (!described) return null;
+  return uplinks > 1 ? { ...described, otherUplinks: uplinks - 1 } : described;
 }
 
 /**

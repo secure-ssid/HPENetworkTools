@@ -805,6 +805,34 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
     await waitFor(() => expect(drawer().getByText('CX6300-CORE · 1/1/8')).toBeTruthy());
   });
 
+  /* One member of a four-member bundle is a quarter of the link. Shutting it
+     drops nothing, which reads as the diagnosis being wrong. */
+  it('names every member of a bundled uplink and the LAG it belongs to', async () => {
+    mockGetClientDetail.mockResolvedValue({
+      ...JOINED_DETAIL,
+      wiring: { ...JOINED_DETAIL.wiring!, ports: ['1/1/8', '1/1/9'], lag: 'lag24' },
+    });
+    renderDrawer(KINDLE);
+
+    await waitFor(() =>
+      expect(drawer().getByText('CX6300-CORE · 1/1/8, 1/1/9 · lag lag24')).toBeTruthy(),
+    );
+  });
+
+  it('says an AP has a second uplink rather than describing the first as the cable', async () => {
+    mockGetClientDetail.mockResolvedValue({
+      ...JOINED_DETAIL,
+      wiring: { ...JOINED_DETAIL.wiring!, otherUplinks: 1 },
+    });
+    renderDrawer(KINDLE);
+
+    await waitFor(() =>
+      expect(
+        drawer().getByText('CX6300-CORE · 1/1/8 · +1 further uplink on the site graph'),
+      ).toBeTruthy(),
+    );
+  });
+
   it('keeps the honest blank rows when the joins found nothing', async () => {
     // Same client, but no radio matched and no topology link for the AP.
     mockGetClientDetail.mockResolvedValue({

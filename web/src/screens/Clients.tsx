@@ -829,9 +829,22 @@ export default function Clients() {
          * switch and port it is patched into. Without that link the fixture
          * closet string is all there is, and it stays honestly blank. */
         if (det?.wiring) {
+          /* Both plurals are drawn, and only when they exist. A single cable
+             into a single port reads exactly as it always did; a bundle names
+             every member, because shutting one of four drops nothing; and a
+             second uplink is counted, because "shut the port and watch it go
+             down" is the test this row is read for and a dual-homed AP fails
+             it while working perfectly. */
+          const w = det.wiring;
+          const portText = w.ports && w.ports.length > 1 ? w.ports.join(', ') : w.port;
+          const lagText = w.lag?.trim() ? `lag ${w.lag.trim()}` : null;
+          const moreText =
+            typeof w.otherUplinks === 'number' && w.otherUplinks > 0
+              ? `+${w.otherUplinks} further uplink${w.otherUplinks === 1 ? '' : 's'} on the site graph`
+              : null;
           place.push({
             k: 'Wiring',
-            v: known(det.wiring.switchName, det.wiring.port),
+            v: known(w.switchName, portText, ...(lagText ? [lagText] : []), ...(moreText ? [moreText] : [])),
             muted: false,
           });
           /* The plane's own reading of that uplink. An AP whose port negotiated
