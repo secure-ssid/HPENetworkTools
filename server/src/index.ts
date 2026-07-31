@@ -215,10 +215,18 @@ export function createApp(opts: AppOptions = {}): express.Express {
 
   // Serve the built web app (single-port mode) with SPA fallback.
   const webDist = path.resolve(__dirname, '..', '..', 'web', 'dist');
-  if (fs.existsSync(path.join(webDist, 'index.html'))) {
+  const indexHtml = path.join(webDist, 'index.html');
+  if (fs.existsSync(indexHtml)) {
     app.use(express.static(webDist));
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(webDist, 'index.html'));
+      res.sendFile(indexHtml);
+    });
+  } else {
+    app.get('/', (_req, res) => {
+      res
+        .status(200)
+        .type('text/plain')
+        .send('HPE Network Tools server is running. Build the web app to serve the UI from this process.');
     });
   }
 
