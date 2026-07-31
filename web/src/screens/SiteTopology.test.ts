@@ -136,4 +136,33 @@ describe('buildLiveSiteTopology — layout without inventing facts', () => {
     expect(liveTopologyLinkFact(link('SW', 'AP1', { speedBps: null }))).toBe('1/1/1 ↔ eth0');
     expect(liveTopologyLinkFact(link('SW', 'AP1'), false)).toBe('eth0 ↔ 1/1/1 · 1.0 Gbps');
   });
+
+  /* A blocked link is up, Good, at full speed and carrying nothing. Without
+     this it is drawn as the identical twin of the link beside it that is
+     doing all the work — and it is usually the answer to why. */
+  it('says when STP has stopped a link carrying traffic', () => {
+    expect(liveTopologyLinkFact(link('SW', 'AP1', { stpState: 'Blocking' }))).toBe(
+      '1/1/1 ↔ eth0 · 1.0 Gbps · STP blocking',
+    );
+    // Forwarding is the ordinary case and earns no words.
+    expect(liveTopologyLinkFact(link('SW', 'AP1', { stpState: 'Forwarding' }))).toBe('1/1/1 ↔ eth0 · 1.0 Gbps');
+    // An unreported STP state is not a claim that the link forwards.
+    expect(liveTopologyLinkFact(link('SW', 'AP1', { stpState: null }))).toBe('1/1/1 ↔ eth0 · 1.0 Gbps');
+  });
+
+  /* The diagram is read as what the plane can see. An edge somebody typed is
+     an assertion, and a wrong one survives the recabling that would have
+     removed a discovered edge. */
+  it('marks an edge the plane was told about rather than found', () => {
+    expect(liveTopologyLinkFact(link('SW', 'AP1', { edgeType: 'Manual' }))).toBe(
+      '1/1/1 ↔ eth0 · 1.0 Gbps · added manually',
+    );
+    expect(liveTopologyLinkFact(link('SW', 'AP1', { edgeType: 'System' }))).toBe('1/1/1 ↔ eth0 · 1.0 Gbps');
+  });
+
+  it('keeps every exception when a link has more than one', () => {
+    expect(
+      liveTopologyLinkFact(link('SW', 'AP1', { stpState: 'Discarding', edgeType: 'Manual', health: 'Fair' })),
+    ).toBe('1/1/1 ↔ eth0 · 1.0 Gbps · STP discarding · added manually · link fair');
+  });
 });

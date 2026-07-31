@@ -67,13 +67,29 @@ function formatBps(bps: number | null): string | null {
   return `${Math.round(bps)} bps`;
 }
 
-/** Port-to-port wording for an undirected physical link. */
+/**
+ * Port-to-port wording for an undirected physical link.
+ *
+ * Only the exceptions are worded. A forwarding, plane-discovered, healthy
+ * link is the ordinary case and says nothing beyond its ports and speed;
+ * every phrase added here is one an operator has to act on.
+ */
 export function liveTopologyLinkFact(link: TopologyLink, forward = true): string {
   const near = (forward ? link.fromPorts : link.toPorts).map((p) => p.name).filter(Boolean);
   const far = (forward ? link.toPorts : link.fromPorts).map((p) => p.name).filter(Boolean);
+  const stp = (link.stpState ?? '').trim();
+  const manual = (link.edgeType ?? '').trim().toLowerCase() === 'manual';
   return [
     near.length || far.length ? `${near.join('+') || '?'} ↔ ${far.join('+') || '?'}` : null,
     formatBps(link.speedBps),
+    // A link STP has blocked is up, healthy, at full speed and carrying
+    // nothing. Drawn without this it is the twin of the link beside it that
+    // is doing all the work, and it is usually the answer to why.
+    stp !== '' && stp.toLowerCase() !== 'forwarding' ? `STP ${stp.toLowerCase()}` : null,
+    // 'Manual' means somebody asserted this adjacency; 'System' means the
+    // plane observed it. A diagram is read as what the plane can see, so an
+    // asserted edge has to say that it is one.
+    manual ? 'added manually' : null,
     link.health && link.health.toLowerCase() !== 'good'
       ? `link ${link.health.toLowerCase()}`
       : null,
