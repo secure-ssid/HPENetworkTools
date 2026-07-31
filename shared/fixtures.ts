@@ -1756,6 +1756,24 @@ export const CONNECT_TYPE_OPTIONS: SelectOption[] = [
 ];
 
 /**
+ * Juniper Mist regional API hostnames.
+ * Source: tmunzer/mistapi_python README — "Available cloud regions"
+ */
+export const MIST_REGIONS: SelectOption[] = [
+  { value: 'api.mist.com', label: 'Global (US) — api.mist.com' },
+  { value: 'api.eu.mist.com', label: 'Europe — api.eu.mist.com' },
+  { value: 'api.gc1.mist.com', label: 'Global 01 — api.gc1.mist.com' },
+  { value: 'api.gc2.mist.com', label: 'Global 02 — api.gc2.mist.com' },
+  { value: 'api.gc3.mist.com', label: 'Global 03 — api.gc3.mist.com' },
+  { value: 'api.gc4.mist.com', label: 'Global 04 — api.gc4.mist.com' },
+  { value: 'api.gc5.mist.com', label: 'Global 05 — api.gc5.mist.com' },
+  { value: 'api.gc7.mist.com', label: 'Global 07 — api.gc7.mist.com' },
+  { value: 'api.ac2.mist.com', label: 'APAC 02 — api.ac2.mist.com' },
+  { value: 'api.ac5.mist.com', label: 'APAC 05 — api.ac5.mist.com' },
+  { value: 'api.ac6.mist.com', label: 'APAC 06 — api.ac6.mist.com' },
+];
+
+/**
  * HPE Aruba Central regional API gateway hostnames.
  * Source: aruba/pycentral v2 — pycentral/utils/constants.py CLUSTER_BASE_URLS
  * Use the hostname as `gatewayBaseUrl` when connecting a Central plane.
@@ -1787,7 +1805,12 @@ export const CONNECT_ENDPOINTS: Record<SystemTypeKey, EndpointVariant> = {
     hint: 'us4.api.central.arubanetworks.com',
     options: CENTRAL_CLUSTERS,
   },
-  mist: { label: 'Mist API host + org ID', help: 'Global 01–06, plus the org UUID.', hint: 'api.mist.com · org 4f2a…' },
+  mist: {
+    label: 'Mist cloud region',
+    help: 'Pick the cloud your Mist org is on, or enter a custom host.',
+    hint: 'api.mist.com',
+    options: MIST_REGIONS,
+  },
   classic: { label: 'Classic tenant URL', help: 'Legacy tenant; expect a low rate limit.', hint: 'eu-central.classic.arubanetworks.com' },
   greenlake: { label: 'GreenLake workspace ID', help: 'Platform workspace, not the application instance.', hint: 'wks-meridian-health' },
   aos8: { label: 'Mobility master address', help: 'Portal reaches it through a jump host.', hint: '10.48.0.10:4343' },

@@ -10,3 +10,6 @@ data/
 # Agent temporary workspaces
 .agent-tmp/
 dev-server.log
+
+# Auto-generated vendor API types (regenerate with openapi-typescript)
+shared/vendor/
