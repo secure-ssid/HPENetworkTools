@@ -269,12 +269,25 @@ export default function Alerts() {
       toast(res.message, { tone: 'danger' });
       return;
     }
-    toast(res.applied ? `Acknowledge accepted — ${ackTarget.title.slice(0, 48)}` : 'Acknowledge logged, not sent', {
-      description: res.message,
-      tone: res.applied ? 'success' : 'warning',
-    });
-    if (res.applied) {
-      // The plane accepted — reflect it now instead of waiting for the next poll.
+    // `cleared` is the server's re-read of the plane, and it is the only
+    // thing that licenses the word "acknowledged". A 202 means Central agreed
+    // to consider the request; showing the row as acked on the strength of
+    // that is the same substitution the write broker is built to prevent,
+    // except here the operator is looking straight at the row.
+    const verified = res.applied && res.cleared === 'cleared';
+    toast(
+      !res.applied
+        ? 'Acknowledge logged, not sent'
+        : verified
+          ? `Acknowledged — ${ackTarget.title.slice(0, 48)}`
+          : `Accepted, not yet cleared — ${ackTarget.title.slice(0, 48)}`,
+      { description: res.message, tone: verified ? 'success' : 'warning' },
+    );
+    if (verified) {
+      // Central re-read confirms it — reflect it now rather than waiting for
+      // the next poll. Anything less than confirmation leaves the row alone:
+      // an alert still open is the accurate picture, and the poller will
+      // correct it the moment it genuinely clears.
       const target = ackTarget;
       setData((d) => (d ? { ...d, alerts: d.alerts.map((a) => (a === target ? { ...a, state: 'acked' } : a)) } : d));
     }

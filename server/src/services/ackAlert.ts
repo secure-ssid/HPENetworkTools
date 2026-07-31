@@ -27,6 +27,8 @@ import { settings } from '../config/settings';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { appendBrokerLog, brokerDataDir, type BrokerTransport } from './writeBroker';
 import { knownTicketId } from './tickets';
+import { poller, type TickResult } from './poller';
+import type { PlaneId, PlanePull } from '../planes/types';
 
 export interface AckAlertTarget {
   plane: string; // display label, e.g. 'CENTRAL'
@@ -35,6 +37,22 @@ export interface AckAlertTarget {
   device?: string;
 }
 
+/**
+ * Did the alert actually clear?
+ *
+ * 202 Accepted is Central's documented answer here, and it is an answer about
+ * the REQUEST, not about the alert. The only way to learn whether the alert
+ * cleared is to read the plane again, so that is what `cleared` reports:
+ *
+ *   'cleared'    — re-read succeeded and the alert is gone from Central.
+ *   'still-open' — re-read succeeded and the alert is still there. The
+ *                  acknowledge was accepted and has not taken effect.
+ *   'unknown'    — the re-read did not complete, or Central answered without
+ *                  its alerts. Distinct from 'still-open': one is a fact
+ *                  about the alert, the other is the absence of one.
+ */
+export type AckVerification = 'cleared' | 'still-open' | 'unknown';
+
 export interface AckAlertResult {
   ok: boolean;
   applied: boolean; // true ONLY on a 202 from the notifications API
@@ -42,6 +60,8 @@ export interface AckAlertResult {
   ticket: string;
   httpCode?: number;
   message: string;
+  /** Absent when nothing was pushed (demo mode, hand-off, rejection). */
+  cleared?: AckVerification;
 }
 
 /** Errors that map straight onto HTTP statuses in the routes layer. */
@@ -62,6 +82,9 @@ export interface AckAlertServiceOptions {
   knownTicket?: (id: string) => boolean; // default: the ticket store (+ fixture ids in demo mode)
   dataDir?: string; // default: HPE_DATA_DIR or <repo>/data
   nowMs?: () => number; // injected clock for tests
+  /** Cache-forward seam: force one pull of a plane, ignoring the backoff. */
+  syncNow?: (id: PlaneId) => Promise<TickResult>;
+  contributions?: () => ReadonlyMap<PlaneId, PlanePull>;
 }
 
 function requireTicket(raw: unknown): string {
@@ -92,6 +115,8 @@ export class AckAlertService {
   private readonly knownTicket: (id: string) => boolean;
   private readonly dataDir: string;
   private readonly nowMs: () => number;
+  private readonly syncNow: (id: PlaneId) => Promise<TickResult>;
+  private readonly contributions: () => ReadonlyMap<PlaneId, PlanePull>;
 
   constructor(opts: AckAlertServiceOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
@@ -100,6 +125,12 @@ export class AckAlertService {
     this.knownTicket = opts.knownTicket ?? ((id) => knownTicketId(id, this.demoMode()));
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
+    // Resolved lazily through the module singleton rather than captured at
+    // construction: ackAlert is itself a singleton created at import time,
+    // and reaching for the poller then would fix the import order of two
+    // modules that do not otherwise depend on each other.
+    this.syncNow = opts.syncNow ?? ((id) => poller.syncNowFor(id));
+    this.contributions = opts.contributions ?? (() => poller.contributionsByPlane());
   }
 
   /**
@@ -160,13 +191,34 @@ export class AckAlertService {
     }
 
     if (res.status === 202) {
-      this.log(target, ticket, 'acknowledged', res.status);
+      // Accepted, not done. Read the plane back before saying anything about
+      // the alert itself — a toast that reports a completed acknowledge over
+      // an alert still sitting open on the same screen is the exact
+      // substitution the broker rules forbid, and here the operator can see
+      // both at once.
+      const cleared = await this.verifyCleared(target);
+      this.log(
+        target,
+        ticket,
+        cleared === 'cleared'
+          ? 'acknowledged (cleared on re-read)'
+          : cleared === 'still-open'
+            ? 'accepted (unconfirmed — alert still open on re-read)'
+            : 'accepted (unconfirmed — re-read did not complete)',
+        res.status,
+      );
       return {
         ...base,
         ok: true,
         applied: true,
         httpCode: res.status,
-        message: `acknowledge accepted by Central (HTTP 202) — ${label}`,
+        cleared,
+        message:
+          cleared === 'cleared'
+            ? `acknowledged — Central accepted it (HTTP 202) and the alert has cleared — ${label}`
+            : cleared === 'still-open'
+              ? `acknowledge accepted by Central (HTTP 202) but ${label} is still open — it has not taken effect yet`
+              : `acknowledge accepted by Central (HTTP 202) — could not re-read Central to confirm ${label} cleared`,
       };
     }
     this.log(target, ticket, 'rejected', res.status);
@@ -184,6 +236,39 @@ export class AckAlertService {
     if (this.transportOverride !== undefined) return this.transportOverride;
     const adapter = this.registry.get('central');
     return adapter instanceof CentralAdapter ? adapter : null;
+  }
+
+  /**
+   * Force one immediate Central pull and look for the alert again.
+   *
+   * The alerts list on screen is served from the poller cache, so without
+   * this the operator is shown a pre-acknowledge snapshot next to a message
+   * saying the acknowledge succeeded — and the natural reading of that is
+   * that the portal's write did not work. The refresh is also the only
+   * evidence available: 202 is Central agreeing to consider the request.
+   *
+   * Every failure to establish the fact returns 'unknown' rather than
+   * anything more definite. A missed poll is not evidence the alert is still
+   * open, and an alerts field Central did not send is not an empty list of
+   * alerts.
+   */
+  private async verifyCleared(target: AckAlertTarget): Promise<AckVerification> {
+    const key = target.alertId;
+    if (!key) return 'unknown';
+    try {
+      if (await this.syncNow('central') !== 'ok') return 'unknown';
+      const pull = this.contributions().get('central');
+      // An absent alerts field is Central declining to say, which is not the
+      // same claim as Central reporting no alerts. Only the latter clears.
+      if (!pull || pull.alerts === undefined) return 'unknown';
+      // `partial` names the DATASETS that came back short. An alerts list
+      // Central truncated cannot be searched for an absence: not finding the
+      // key in it is not the same as the key not being there.
+      if (pull.partial?.includes('alerts')) return 'unknown';
+      return pull.alerts.some((a) => a.alertId === key) ? 'still-open' : 'cleared';
+    } catch {
+      return 'unknown';
+    }
   }
 
   private log(target: AckAlertTarget, ticket: string, result: string, httpCode?: number): void {

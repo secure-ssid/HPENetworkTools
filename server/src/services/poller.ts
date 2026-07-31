@@ -112,7 +112,7 @@ function withPollTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
     );
   });
 }
-type TickResult = 'ok' | 'error' | 'skipped';
+export type TickResult = 'ok' | 'error' | 'skipped';
 
 export class Poller {
   private timers = new Map<PlaneId, NodeJS.Timeout>();

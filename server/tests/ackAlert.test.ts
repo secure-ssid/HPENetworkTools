@@ -152,6 +152,10 @@ describe('AckAlertService push', () => {
           return { status: 202, body: {} };
         },
       },
+      // The re-read is stubbed out here; this test is about the request that
+      // goes out. Left unstubbed it would reach the process-wide poller.
+      syncNow: async () => 'skipped',
+      contributions: () => new Map(),
     });
     const res = await svc.acknowledge(ALERT, 'NET-4201');
     expect(res.applied).toBe(true);
@@ -215,5 +219,95 @@ describe('POST /api/alerts/ack (demo-mode app)', () => {
       body: JSON.stringify({ ticket: 'NET-4201' }),
     });
     expect(noTarget.status).toBe(400);
+  });
+});
+
+/* 202 Accepted is Central agreeing to consider the request, and the alerts
+ * list on screen is served from the poller cache — so without a re-read the
+ * operator is told the acknowledge succeeded while looking at the very alert
+ * it was supposed to clear, still open. Worse, the screen used to rewrite the
+ * row to 'acked' on the strength of the 202 alone, which is an acceptance
+ * presented as a completed change. */
+describe('AckAlertService clear verification', () => {
+  const accepting = (
+    over: Partial<ConstructorParameters<typeof AckAlertService>[0]> = {},
+  ): InstanceType<typeof AckAlertService> =>
+    new AckAlertService({
+      dataDir: freshDataDir(),
+      demoMode: () => false,
+      transport: { request: async () => ({ status: 202, body: {} }) },
+      syncNow: async () => 'ok',
+      contributions: () => new Map(),
+      ...over,
+    });
+
+  const pullWith = (alerts: unknown[] | undefined, partial?: string[]) =>
+    () => new Map([['central', { ...(alerts === undefined ? {} : { alerts }), ...(partial ? { partial } : {}) }]]) as never;
+
+  it('reports the alert cleared when the re-read no longer lists it', async () => {
+    const res = await accepting({ contributions: pullWith([{ alertId: 'OTHER' }]) })
+      .acknowledge(ALERT, 'NET-4201');
+
+    expect(res.cleared).toBe('cleared');
+    expect(res.message).toContain('has cleared');
+  });
+
+  // The case the whole re-read exists for: accepted, and demonstrably not done.
+  it('says the acknowledge has not taken effect when the alert is still listed', async () => {
+    const res = await accepting({ contributions: pullWith([{ alertId: 'K1' }]) })
+      .acknowledge(ALERT, 'NET-4201');
+
+    expect(res.cleared).toBe('still-open');
+    expect(res.message).toContain('still open');
+    // Still an accepted push — the acknowledge was not rejected.
+    expect(res.applied).toBe(true);
+  });
+
+  it('does not treat a poll that never completed as evidence either way', async () => {
+    const res = await accepting({ syncNow: async () => 'error', contributions: pullWith([]) })
+      .acknowledge(ALERT, 'NET-4201');
+
+    expect(res.cleared).toBe('unknown');
+  });
+
+  // An absent alerts field is Central declining to say. Reading it as an
+  // empty list would turn "we did not ask" into "there are none left".
+  it('does not read an unreported alerts field as an empty alerts list', async () => {
+    const res = await accepting({ contributions: pullWith(undefined) }).acknowledge(ALERT, 'NET-4201');
+
+    expect(res.cleared).toBe('unknown');
+  });
+
+  // A truncated list cannot be searched for an absence.
+  it('declines to conclude anything from a partial alerts dataset', async () => {
+    const res = await accepting({ contributions: pullWith([], ['alerts']) }).acknowledge(ALERT, 'NET-4201');
+
+    expect(res.cleared).toBe('unknown');
+  });
+
+  it('records the unconfirmed outcome in the audit log rather than a plain acknowledged', async () => {
+    const dataDir = freshDataDir();
+    await accepting({ dataDir, contributions: pullWith([{ alertId: 'K1' }]) }).acknowledge(ALERT, 'NET-4201');
+
+    const log = readFileSync(join(dataDir, 'change-log.jsonl'), 'utf8');
+    expect(log).toContain('accepted (unconfirmed — alert still open on re-read)');
+  });
+
+  it('records a confirmed clear as acknowledged', async () => {
+    const dataDir = freshDataDir();
+    await accepting({ dataDir, contributions: pullWith([]) }).acknowledge(ALERT, 'NET-4201');
+
+    const log = readFileSync(join(dataDir, 'change-log.jsonl'), 'utf8');
+    expect(log).toContain('acknowledged (cleared on re-read)');
+  });
+
+  // Must not over-apply: a rejected push never claims to have re-read anything.
+  it('leaves the verification absent when Central refused the acknowledge', async () => {
+    const res = await accepting({
+      transport: { request: async () => ({ status: 403, body: {} }) },
+    }).acknowledge(ALERT, 'NET-4201');
+
+    expect(res.cleared).toBeUndefined();
+    expect(res.applied).toBe(false);
   });
 });

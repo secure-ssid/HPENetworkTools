@@ -211,6 +211,15 @@ export async function blockClient(
 // Alert actions — ticket-gated acknowledge through Central's notifications API
 // ---------------------------------------------------------------------------
 
+/**
+ * What the server's re-read of Central found after the acknowledge.
+ *
+ * 'unknown' is not a milder 'still-open'. A poll that did not complete tells
+ * us nothing about the alert, and the screen must not round that down to
+ * either outcome.
+ */
+export type AckVerification = 'cleared' | 'still-open' | 'unknown';
+
 export interface AckAlertResult {
   ok: boolean;
   applied: boolean; // true ONLY on a 202 from the notifications API
@@ -218,6 +227,10 @@ export interface AckAlertResult {
   ticket: string;
   httpCode?: number;
   message: string;
+  /** Absent when nothing was pushed, and absent on a server that predates
+   *  the re-read — which is why the screen requires 'cleared' explicitly
+   *  rather than treating anything that is not 'still-open' as success. */
+  cleared?: AckVerification;
 }
 
 /** POST /api/alerts/ack — surfaces the server's message verbatim on failure. */

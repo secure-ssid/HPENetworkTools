@@ -20,12 +20,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import Alerts from './Alerts';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
-import { getAlerts, getTickets } from '../api/client';
+import { ackAlert, getAlerts, getTickets } from '../api/client';
 import type { AlertsData } from '../api/client';
 import type { AlertRow } from '@hpe/shared';
 
@@ -302,5 +302,60 @@ describe('Alerts missing sources', () => {
 
     expect(await screen.findByText('No alerts in the queue')).toBeTruthy();
     expect(screen.queryByText(/is missing/)).toBeNull();
+  });
+});
+
+/* A 202 from Central is Central agreeing to consider the clear request. The
+ * screen used to rewrite the row to 'acked' on the strength of that alone and
+ * raise a success toast, so an acknowledge that Central accepted and never
+ * acted on looked identical to one that worked — while the alert it named sat
+ * open in the same table. `cleared` is the server's re-read, and it is the
+ * only thing that licenses saying the alert was acknowledged. */
+describe('Alerts acknowledge verification', () => {
+  const OPEN_CENTRAL: AlertRow = { ...WORST, alertId: 'K1' };
+
+  async function ackWith(result: Record<string, unknown>) {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [OPEN_CENTRAL] }));
+    mockGetTickets.mockResolvedValue({
+      tickets: [{ id: 'NET-1', title: 'wan down', state: 'open' } as never],
+      dataSource: 'live',
+    });
+    vi.mocked(ackAlert).mockResolvedValue(result as never);
+
+    renderAlerts();
+    fireEvent.click(await screen.findByRole('button', { name: 'Acknowledge' }));
+    await act(async () => Promise.resolve());
+    // The toolbar button and the dialog's confirm share a label; the dialog
+    // opens below it, so the confirm is the last one rendered.
+    const buttons = screen.getAllByRole('button', { name: 'Acknowledge' });
+    fireEvent.click(buttons[buttons.length - 1]);
+    await act(async () => Promise.resolve());
+  }
+
+  it('marks the row acknowledged only when the re-read confirms it cleared', async () => {
+    await ackWith({ ok: true, applied: true, cleared: 'cleared', message: 'the alert has cleared', alert: 'a', ticket: 'NET-1' });
+
+    expect(screen.getByText(/Acknowledged —/)).toBeTruthy();
+  });
+
+  it('does not present an accepted-but-uncleared acknowledge as done', async () => {
+    await ackWith({ ok: true, applied: true, cleared: 'still-open', message: 'still open', alert: 'a', ticket: 'NET-1' });
+
+    expect(screen.getByText(/Accepted, not yet cleared/)).toBeTruthy();
+    expect(screen.queryByText(/^Acknowledged —/)).toBeNull();
+  });
+
+  // A poll that did not complete is not evidence the clear worked.
+  it('does not claim success when the re-read could not be completed', async () => {
+    await ackWith({ ok: true, applied: true, cleared: 'unknown', message: 'could not re-read', alert: 'a', ticket: 'NET-1' });
+
+    expect(screen.getByText(/Accepted, not yet cleared/)).toBeTruthy();
+  });
+
+  // An older server sends no `cleared` at all, and absent is not confirmation.
+  it('treats a server that reports no verification as unconfirmed', async () => {
+    await ackWith({ ok: true, applied: true, message: 'accepted', alert: 'a', ticket: 'NET-1' });
+
+    expect(screen.getByText(/Accepted, not yet cleared/)).toBeTruthy();
   });
 });
