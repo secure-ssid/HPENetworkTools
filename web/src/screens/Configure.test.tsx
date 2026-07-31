@@ -856,6 +856,95 @@ describe('Configure — SSID direct apply', () => {
     expect(screen.queryByText('Partial — profile applied, an assignment failed')).toBeNull();
   });
 
+  /* The third state. When Central answers the assignment POST but will not
+   * hand back its assignment list, the adapter leaves `verified` undefined
+   * and keeps ok:true — the write happened, and there is no evidence it took
+   * effect. The screen used to return '✓' on ok alone, before it ever looked
+   * at verified, so an apply nobody could confirm was a green "Applied" panel
+   * with a tick against every scope. The caveat was in the message text the
+   * whole time, underneath a badge saying it had worked. */
+  async function applyWith(result: SsidApplyResult): Promise<void> {
+    mockApplySsidDirect.mockResolvedValue(result);
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await waitFor(() => expect(screen.getByText('Campus-01')).toBeTruthy());
+    await fillReadySsidForm();
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'I have reviewed this profile and these scope assignments — apply directly, no ticket.' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Apply directly' }));
+  }
+
+  const UNREAD_ASSIGNMENT = {
+    scopeId: 'site-1',
+    label: 'Campus-01',
+    ok: true,
+    httpCode: 200,
+    message: 'assignment accepted — HTTP 200; could not re-read the assignment list to confirm it landed',
+  };
+
+  it('does not tick a scope assignment it was never able to read back', async () => {
+    await applyWith({
+      ok: true,
+      partial: false,
+      profile: { ok: true, action: 'created', verified: true, httpCode: 201, message: 'profile created — HTTP 201' },
+      assignments: [UNREAD_ASSIGNMENT],
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText('Applied — no scope assignment could be confirmed')).toBeTruthy(),
+    );
+    expect(screen.getByText(/\? Campus-01/)).toBeTruthy();
+    expect(screen.queryByText(/✓ Campus-01/)).toBeNull();
+    // Not a failure and not in flight — those send the operator elsewhere.
+    expect(screen.queryByText(/✗ Campus-01/)).toBeNull();
+    expect(screen.queryByText(/⧗ Campus-01/)).toBeNull();
+  });
+
+  it('counts the unconfirmed scopes when only some of them were read back', async () => {
+    await applyWith({
+      ok: true,
+      partial: false,
+      profile: { ok: true, action: 'created', verified: true, httpCode: 201, message: 'profile created — HTTP 201' },
+      assignments: [
+        { scopeId: 'site-2', label: 'Branch-02', ok: true, verified: true, httpCode: 200, message: 'confirmed present on re-read' },
+        UNREAD_ASSIGNMENT,
+      ],
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText('Applied — 1 scope assignment was not confirmed')).toBeTruthy(),
+    );
+    expect(screen.getByText(/✓ Branch-02/)).toBeTruthy();
+    expect(screen.getByText(/\? Campus-01/)).toBeTruthy();
+  });
+
+  // Must not over-apply, part one: a skipped assignment was found already on
+  // file, which IS a successful read of the list in question.
+  it('still ticks an assignment that was skipped because it was already on file', async () => {
+    await applyWith({
+      ok: true,
+      partial: false,
+      profile: { ok: true, action: 'unchanged', verified: true, httpCode: 200, message: 'profile unchanged' },
+      assignments: [
+        { scopeId: 'site-1', label: 'Campus-01', ok: true, skipped: true, httpCode: 200, message: 'already assigned' },
+      ],
+    });
+
+    await waitFor(() => expect(screen.getByText('Applied')).toBeTruthy());
+    expect(screen.getByText(/✓ Campus-01/)).toBeTruthy();
+    expect(screen.queryByText(/\? Campus-01/)).toBeNull();
+  });
+
+  // Must not over-apply, part two: a fully confirmed apply keeps its green.
+  it('leaves a confirmed apply reading as plainly applied', async () => {
+    await applyWith(SSID_APPLIED);
+
+    await waitFor(() => expect(screen.getByText('Applied')).toBeTruthy());
+    expect(screen.getByText(/✓ Campus-01/)).toBeTruthy();
+  });
+
   it('still calls a genuinely rejected assignment a failure', async () => {
     mockApplySsidDirect.mockResolvedValue({
       ok: false,

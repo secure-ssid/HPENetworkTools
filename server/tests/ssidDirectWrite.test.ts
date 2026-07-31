@@ -161,6 +161,12 @@ describe('SsidDirectWriteService — service level (every instance is given an e
     expect(result.profile.action).toBe('created');
     expect(result.assignments).toHaveLength(1);
     expect(result.assignments[0].scopeId).toBe('site-1');
+    // A canned success has to assert the read-back too. Undefined here means
+    // "written, never confirmed" — a real state for a tenant that will not
+    // open its assignment list, and a meaningless one for a fixture. The
+    // screen marks it '?' and withholds the green, which would make demo mode
+    // display a doubt it does not have.
+    expect(result.assignments[0].verified).toBe(true);
   });
 
   it('uses a live Configure override even when the portal is globally demo', async () => {

@@ -322,6 +322,11 @@ export class SsidDirectWriteService {
         scopeId,
         label: scopeId,
         ok: true,
+        // Demo asserts the write landed, so it must also assert the read-back
+        // that proves it. Leaving this undefined would mean "written, never
+        // confirmed" — an honest state for a live tenant that would not open
+        // its assignment list, and a meaningless one for a canned outcome.
+        verified: true,
         httpCode: 200,
         message: 'assigned (demo)',
       })),

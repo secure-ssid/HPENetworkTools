@@ -166,8 +166,31 @@ import '../app/app.css';
  * an SSID is live at a site where it may not be broadcasting at all.
  */
 function assignmentMark(a: SsidScopeAssignmentResult): string {
-  if (a.ok) return '✓';
+  if (a.ok) return isUnconfirmed(a) ? '?' : '✓';
   return a.verified === false ? '⧗' : '✗';
+}
+
+/**
+ * Written, and never confirmed.
+ *
+ * `verified === undefined` on an assignment we actually wrote means the
+ * confirming read did not come back — Central was asked for its assignment
+ * list and would not give it. The write is still ok:true, because the POST
+ * was answered; what is missing is any evidence it took effect. That is a
+ * third state, and the shared type keeps it undefined rather than false for
+ * exactly this reason: a list we could not fetch is not an empty one.
+ *
+ * `skipped` is excluded deliberately. A skipped assignment was found already
+ * on file, which is a successful read of the very list in question — it is
+ * confirmed by the same evidence that made it a no-op, and marking it
+ * unconfirmed would train the operator to ignore the mark.
+ */
+function isUnconfirmed(a: SsidScopeAssignmentResult): boolean {
+  return a.ok === true && a.skipped !== true && a.verified === undefined;
+}
+
+function unconfirmedCount(assignments: readonly SsidScopeAssignmentResult[]): number {
+  return assignments.filter(isUnconfirmed).length;
 }
 
 function assignmentPartialTitle(assignments: readonly SsidScopeAssignmentResult[]): string {
@@ -176,6 +199,16 @@ function assignmentPartialTitle(assignments: readonly SsidScopeAssignmentResult[
   if (unconfirmed && !failed) return 'Partial — profile applied, scope assignments not confirmed';
   if (unconfirmed) return 'Partial — profile applied, an assignment failed and another is unconfirmed';
   return 'Partial — profile applied, an assignment failed';
+}
+
+/** The headline for a result with no failures in it, which is not the same
+ *  thing as a result we can vouch for. */
+function assignmentAppliedTitle(assignments: readonly SsidScopeAssignmentResult[]): string {
+  const n = unconfirmedCount(assignments);
+  if (n === 0) return 'Applied';
+  return n === assignments.length
+    ? 'Applied — no scope assignment could be confirmed'
+    : `Applied — ${n} scope ${n === 1 ? 'assignment was' : 'assignments were'} not confirmed`;
 }
 
 export default function Configure() {
@@ -567,7 +600,18 @@ export default function Configure() {
     }
     setSsidApplyResult({ result: r });
     if (r.ok) {
-      toast(`${ssid.name} applied`, { description: r.profile.message, tone: 'success' });
+      // Same rule as the panel: no failures is not the same as confirmed.
+      const unconfirmed = unconfirmedCount(r.assignments);
+      toast(
+        unconfirmed > 0 ? `${ssid.name} applied — assignments not confirmed` : `${ssid.name} applied`,
+        {
+          description:
+            unconfirmed > 0
+              ? `Central answered the assignment ${unconfirmed === 1 ? 'write' : 'writes'} but its assignment list could not be read back. Check the scopes before treating this SSID as live at them.`
+              : r.profile.message,
+          tone: unconfirmed > 0 ? 'warning' : 'success',
+        },
+      );
       const refreshed = await getConfigure();
       setData(refreshed);
     } else if (r.partial) {
@@ -1482,10 +1526,21 @@ export default function Configure() {
                     </Alert>
                   ) : ssidApplyResult.result ? (
                     <Alert
-                      tone={ssidApplyResult.result.ok ? 'success' : ssidApplyResult.result.partial ? 'warning' : 'danger'}
+                      // Green is a claim. An apply whose assignments were
+                      // written and never read back has nothing behind that
+                      // claim except an answered POST, so it does not get one.
+                      tone={
+                        ssidApplyResult.result.ok
+                          ? unconfirmedCount(ssidApplyResult.result.assignments) > 0
+                            ? 'warning'
+                            : 'success'
+                          : ssidApplyResult.result.partial
+                            ? 'warning'
+                            : 'danger'
+                      }
                       title={
                         ssidApplyResult.result.ok
-                          ? 'Applied'
+                          ? assignmentAppliedTitle(ssidApplyResult.result.assignments)
                           : ssidApplyResult.result.partial
                             ? assignmentPartialTitle(ssidApplyResult.result.assignments)
                             : 'Not applied'
@@ -1500,7 +1555,10 @@ export default function Configure() {
                             key={a.scopeId}
                             style={{
                               fontSize: 12.5,
-                              color: a.verified === false ? 'var(--nd-warning)' : 'var(--nd-text-secondary)',
+                              color:
+                                a.verified === false || isUnconfirmed(a)
+                                  ? 'var(--nd-warning)'
+                                  : 'var(--nd-text-secondary)',
                             }}
                           >
                             {assignmentMark(a)} {a.label} — {a.message}
