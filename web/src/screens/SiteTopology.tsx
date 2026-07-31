@@ -25,9 +25,41 @@ import type {
   TopologyLink,
   TopologyNode,
 } from '@hpe/shared';
+import { relativeAge } from '@hpe/shared';
 
 const ROW_H = 96;
 const CARD_H = 56;
+
+/**
+ * States that need no words. Everything else — down, offline, degraded,
+ * unknown, 'no heartbeat' — is drawn as text on the card, because the diagram
+ * otherwise says it in red and nothing else, and a red dot is not something
+ * every operator looking at the screen can read.
+ */
+const QUIET_STATES = new Set(['up', 'ok', 'online']);
+
+function stateWorthDrawing(state: string): string | null {
+  const text = state.trim();
+  return text === '' || QUIET_STATES.has(text.toLowerCase()) ? null : text;
+}
+
+/**
+ * How long a node has been gone.
+ *
+ * 'offline' is the same word for a switch that dropped four minutes ago and
+ * one that was unracked in March, and those are an incident and a tidying
+ * job. The stamp answers it, and TopologyDeviceNode.lastSeen already carries
+ * the warning that goes with it: zero and null both mean the plane sent no
+ * stamp, and neither may become 1970. A device last seen fifty-six years ago
+ * answers the question with a fabrication, so an absent stamp says nothing.
+ */
+function lastSeenPhrase(lastSeen: number | null | undefined, now: number): string | null {
+  if (typeof lastSeen !== 'number' || !Number.isFinite(lastSeen) || lastSeen <= 0) return null;
+  const at = new Date(lastSeen);
+  if (Number.isNaN(at.getTime())) return null;
+  const age = relativeAge(at.toISOString(), now);
+  return age === '—' ? null : `last seen ${age} ago`;
+}
 
 const LAYER_ORDER: TopologyLayerKey[] = ['wan', 'gateway', 'core', 'access', 'edge'];
 
@@ -106,6 +138,7 @@ export function liveTopologyLinkFact(link: TopologyLink, forward = true): string
 export function buildLiveSiteTopology(
   topology: SiteTopologyLive,
   devices: SiteDeviceRow[] = [],
+  now: number = Date.now(),
 ): SiteTopology {
   const rawNodes = topology.nodes ?? [];
   const managedNames = new Set(devices.map((device) => device.name));
@@ -144,7 +177,14 @@ export function buildLiveSiteTopology(
       layer: layerFor(node),
       label: node.name,
       sub: details.join(' · ') || node.type.toLowerCase(),
-      state: node.status.toLowerCase(),
+      state: [
+        node.status.toLowerCase(),
+        // Only where it answers something: a device the plane still sees was
+        // last seen a moment ago, which is a fact about the poll, not the AP.
+        stateWorthDrawing(node.status) === null ? null : lastSeenPhrase(node.lastSeen, now),
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(' · '),
       tone: liveTone(node),
       device: managedNames.has(node.name) ? node.name : null,
       members: null,
@@ -237,6 +277,7 @@ function Card({
   const { node, xPct, layerIdx } = placed;
   const isGroup = node.members !== null;
   const clickable = node.device !== null || isGroup;
+  const shownState = stateWorthDrawing(node.state);
   const inner = (
     <>
       <span
@@ -275,6 +316,25 @@ function Card({
         >
           {isGroup ? `${node.sub} · expand` : node.sub}
         </span>
+        {/* The dot is aria-hidden and the border is a colour. Without this
+            line the only thing the diagram says about a device is one it says
+            in red — unreadable to a screen reader, and to the roughly one
+            operator in twelve who cannot tell it from the green beside it. */}
+        {shownState !== null ? (
+          <span
+            style={{
+              fontFamily: 'var(--nd-font-mono)',
+              fontSize: 9.5,
+              letterSpacing: '.06em',
+              color: node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-warning)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {shownState}
+          </span>
+        ) : null}
       </span>
     </>
   );
@@ -307,9 +367,8 @@ function Card({
       type="button"
       className="nt-rowlink"
       aria-label={
-        node.device
-          ? `Open device ${node.device}`
-          : `Expand ${node.label} ${node.sub}`
+        (node.device ? `Open device ${node.device}` : `Expand ${node.label} ${node.sub}`) +
+        (shownState !== null ? `, ${shownState}` : '')
       }
       onClick={() => (node.device ? onDevice?.(node.device) : onToggleGroup?.(node.id))}
       style={{ ...style, font: 'inherit' }}

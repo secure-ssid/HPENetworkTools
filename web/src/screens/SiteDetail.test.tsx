@@ -186,6 +186,48 @@ describe('SiteDetail live summary', () => {
     expect(screen.queryByText('EMPTY')).toBeNull();
   });
 
+  /* Everything the diagram said about a device it said in red: the status dot
+     is aria-hidden and the card border is a colour. A screen reader got
+     nothing, and neither did anyone who cannot tell that red from the green
+     on the card beside it. */
+  it('gives a down device words, not only a colour', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      topology: {
+        ...LIVE_TOPOLOGY,
+        nodes: [
+          { ...topologyNode('SW', 'CX6300-CORE', 'Switch', 'Access Switch'), status: 'OFFLINE', health: 'Poor' },
+          topologyNode('AP0', 'AP-1', 'Access Point', 'Campus Access Point'),
+        ],
+        links: [],
+      },
+      devices: [
+        {
+          name: 'CX6300-CORE',
+          model: 'CX-6300M',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access switch',
+          state: 'down',
+          stateTone: 'danger',
+          uptime: '—',
+        },
+      ],
+    } as unknown as SiteDetailData);
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getAllByText('CX6300-CORE').length).toBeGreaterThan(0));
+    // On the card, beside the dot that was carrying this alone.
+    expect(screen.getAllByText('offline').length).toBeGreaterThan(0);
+    // And in the name the button gives a screen reader.
+    expect(screen.getAllByLabelText('Open device CX6300-CORE, offline').length).toBeGreaterThan(0);
+    // An ONLINE device is the ordinary case and still says nothing.
+    expect(screen.queryByText('online')).toBeNull();
+  });
+
   /* A drawn graph is read as "this is the site". Central volunteers
    * `isolatedDevicesCount` — devices it holds for the site and could not place
    * — and the adapter has always parsed it; nothing rendered it, so a site

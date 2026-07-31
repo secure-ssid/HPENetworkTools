@@ -125,6 +125,42 @@ describe('buildLiveSiteTopology — layout without inventing facts', () => {
     expect(byLabel['ap-1'].device).toBeNull();
   });
 
+  /* 'offline' is the same word for a switch that dropped four minutes ago and
+     one unracked in March — an incident and a tidying job. Central sent the
+     stamp that tells them apart and the diagram threw it away. */
+  it('says how long a device the plane cannot see has been gone', () => {
+    const now = Date.parse('2026-03-01T12:00:00.000Z');
+    const diagram = buildLiveSiteTopology(
+      live({
+        nodes: [
+          { ...node('SW', 'core-1', 'Switch'), status: 'OFFLINE', lastSeen: now - 4 * 3600_000 },
+          { ...node('AP1', 'ap-1', 'Access Point'), status: 'UP', lastSeen: now - 4 * 3600_000 },
+        ],
+      }),
+      [],
+      now,
+    );
+    expect(diagram.nodes[0].state).toBe('offline · last seen 4h ago');
+    // A device the plane still sees was last seen a moment ago — that is a
+    // fact about the poll, not about the AP, and it earns no words.
+    expect(diagram.nodes[1].state).toBe('up');
+  });
+
+  /* TopologyDeviceNode.lastSeen carries the warning in its own doc comment:
+     zero and null both mean the plane sent no stamp, and neither may become
+     1970. An invented 56-year outage is worse than no answer. */
+  it('refuses to date an outage the plane put no stamp on', () => {
+    const now = Date.parse('2026-03-01T12:00:00.000Z');
+    for (const lastSeen of [0, null, undefined, Number.NaN, 8.64e15 * 2, now + 60_000]) {
+      const diagram = buildLiveSiteTopology(
+        live({ nodes: [{ ...node('SW', 'core-1', 'Switch'), status: 'DOWN', lastSeen }] }),
+        [],
+        now,
+      );
+      expect(diagram.nodes[0].state).toBe('down');
+    }
+  });
+
   it('leaves an unreported health neutral rather than reading it as good', () => {
     const diagram = buildLiveSiteTopology(
       live({ nodes: [{ ...node('SW', 'core-1', 'Switch'), health: null }] }),
