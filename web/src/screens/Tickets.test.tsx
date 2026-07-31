@@ -5,7 +5,7 @@ import Tickets from './Tickets';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { addTicketNote, getTickets, resolveTicket } from '../api/client';
-import { TICKETS } from '@hpe/shared';
+import { MAX_NOTE_CHARS, TICKETS } from '@hpe/shared';
 import type { TicketRow } from '@hpe/shared';
 
 vi.mock('../api/client', async (importOriginal) => {
@@ -163,5 +163,84 @@ describe('Tickets — resolve', () => {
     // No optimistic close: the button is still there because the ticket is.
     expect(screen.getByRole('button', { name: 'Resolve ticket' })).toBeTruthy();
     expect(mockGetTickets).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Tickets — the note length bound', () => {
+  it('refuses an over-length note without sending it or emptying the box', async () => {
+    renderTickets();
+    const tooLong = 'x'.repeat(MAX_NOTE_CHARS + 1);
+    await typeNote(tooLong);
+
+    // The button is gone before the operator can spend a round trip on it.
+    expect(logButton().disabled).toBe(true);
+    fireEvent.click(logButton());
+    await waitFor(() => expect(screen.getByText(/too long to log/i)).toBeTruthy());
+    expect(mockAddTicketNote).not.toHaveBeenCalled();
+    // And the text is still there. Refusing a note the operator can no longer
+    // read is the same loss as accepting a truncated one.
+    expect(noteBox().value).toBe(tooLong);
+  });
+
+  it('names the count against the limit rather than just saying too long', async () => {
+    renderTickets();
+    await typeNote('x'.repeat(MAX_NOTE_CHARS + 25));
+    await waitFor(() =>
+      expect(screen.getByText(new RegExp(`${MAX_NOTE_CHARS + 25} / ${MAX_NOTE_CHARS}`))).toBeTruthy(),
+    );
+  });
+
+  it('accepts a note of exactly the limit — the bound is not off by one', async () => {
+    mockAddTicketNote.mockResolvedValue({ ticket: { ...FIRST, notes: [] } });
+    renderTickets();
+    await typeNote('x'.repeat(MAX_NOTE_CHARS));
+    expect(logButton().disabled).toBe(false);
+    fireEvent.click(logButton());
+    await waitFor(() => expect(mockAddTicketNote).toHaveBeenCalledTimes(1));
+  });
+
+  it('says nothing about length while the note is within the limit', async () => {
+    renderTickets();
+    await typeNote('Traced to the uplink on sw-core-a.');
+    expect(screen.queryByText(/too long to log/i)).toBeNull();
+    expect(logButton().disabled).toBe(false);
+  });
+});
+
+describe('Tickets — the retention marker', () => {
+  it('marks a dropped-entry notice as retention, not as something an operator did', async () => {
+    mockGetTickets.mockResolvedValue({
+      tickets: [
+        {
+          ...FIRST,
+          notes: [
+            {
+              ts: '2024-01-01T00:00:00.000Z',
+              kind: 'retention',
+              text: '412 earlier entries discarded — this ticket keeps the most recent 199.',
+              discarded: 412,
+            },
+            { ts: '2024-01-02T00:00:00.000Z', kind: 'note', text: 'still watching' },
+          ],
+        },
+        ...TICKETS.slice(1),
+      ],
+      dataSource: 'demo',
+    });
+    render(
+      <MemoryRouter>
+        <SettingsProvider>
+          <ToastProvider>
+            <Tickets />
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+
+    // A retention marker rendered bare would read as an operator's own words.
+    await waitFor(() => expect(screen.getByText('RETAINED')).toBeTruthy());
+    expect(screen.getByText(/412 earlier entries discarded/)).toBeTruthy();
+    // And it must not borrow the ACTION label, which asserts a person acted.
+    expect(screen.queryByText('ACTION')).toBeNull();
   });
 });

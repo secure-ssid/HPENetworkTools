@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { TicketStore, type BrokerLogRead } from '../src/services/tickets';
+import { MAX_NOTES_PER_TICKET, TicketStore, capNotes, type BrokerLogRead } from '../src/services/tickets';
 import type { BrokerLogEntry } from '../src/services/writeBroker';
-import type { AlertRow } from '@hpe/shared';
+import type { AlertRow, TicketNote } from '@hpe/shared';
 
 const ALERT: AlertRow = {
   sev: 'P1',
@@ -414,5 +414,76 @@ describe('TicketStore age/SLA derivation', () => {
     expect(promoted?.age).toBe('2h');
     expect(promoted?.sla).toBe('SLA breach in 1h 12m');
     expect(store.list()[0].age).toBe('2h');
+  });
+
+  // The whole array is re-serialised on every append and this store also
+  // gates every write in the portal, so an unbounded log is not a cosmetic
+  // problem. What it must not become is a SILENT bound.
+  describe('note retention', () => {
+    const notesOf = (count: number, kind: 'note' | 'action' = 'note'): TicketNote[] =>
+      Array.from({ length: count }, (_, i) => ({
+        ts: new Date(Date.UTC(2024, 0, 1, 0, i)).toISOString(),
+        kind,
+        text: `entry ${i}`,
+      }));
+
+    it('keeps a short log exactly as written', () => {
+      const notes = notesOf(5);
+      expect(capNotes(notes)).toEqual(notes);
+    });
+
+    it('leaves the log alone at exactly the cap', () => {
+      const notes = notesOf(MAX_NOTES_PER_TICKET);
+      expect(capNotes(notes)).toEqual(notes);
+    });
+
+    it('bounds the log and says so where the dropped entries were', () => {
+      const capped = capNotes(notesOf(MAX_NOTES_PER_TICKET + 10));
+      expect(capped.length).toBe(MAX_NOTES_PER_TICKET);
+      const marker = capped[0];
+      expect(marker.kind).toBe('retention');
+      expect(marker.discarded).toBe(11);
+      expect(marker.text).toContain('11 earlier entries discarded');
+      // The newest entry survives; the oldest is the one that went.
+      expect(capped[capped.length - 1].text).toBe(`entry ${MAX_NOTES_PER_TICKET + 9}`);
+      expect(capped.some((n) => n.text === 'entry 0')).toBe(false);
+    });
+
+    it('names the span the marker stands in for', () => {
+      const capped = capNotes(notesOf(MAX_NOTES_PER_TICKET + 2));
+      expect(capped[0].coveringFrom).toBe('2024-01-01T00:00:00.000Z');
+      expect(capped[0].coveringTo).toBe('2024-01-01T00:02:00.000Z');
+    });
+
+    it('rolls a previous marker forward instead of restarting the count', () => {
+      const once = capNotes(notesOf(MAX_NOTES_PER_TICKET + 10));
+      const twice = capNotes([...once, ...notesOf(20)]);
+      // 11 from the first rotation plus the 20 entries the second one dropped
+      // to make room. A marker that counted only what IT dropped would say 20
+      // here, and the log would understate its own gap on every rotation.
+      expect(twice[0].kind).toBe('retention');
+      expect(twice[0].discarded).toBe(31);
+      expect(twice[0].coveringFrom).toBe('2024-01-01T00:00:00.000Z');
+    });
+
+    it('bounds a real ticket log through addNote', () => {
+      let ticket = store.addNote('NET-4188', 'first');
+      for (let i = 0; i < MAX_NOTES_PER_TICKET + 4; i += 1) {
+        ticket = store.addNote('NET-4188', `note ${i}`);
+      }
+      expect(ticket?.notes?.length).toBe(MAX_NOTES_PER_TICKET);
+      expect(ticket?.notes?.[0].kind).toBe('retention');
+      expect(ticket?.notes?.[0].text).toContain('discarded');
+      // And it survives the round trip through disk, not just memory.
+      const reread = new TicketStore(dir).list().find((t) => t.id === 'NET-4188');
+      expect(reread?.notes?.length).toBe(MAX_NOTES_PER_TICKET);
+    });
+
+    it('bounds the resolve note too, so closing a ticket cannot exceed the cap', () => {
+      for (let i = 0; i < MAX_NOTES_PER_TICKET; i += 1) store.addNote('NET-4188', `note ${i}`);
+      const resolved = store.resolve('NET-4188');
+      expect(resolved?.notes?.length).toBe(MAX_NOTES_PER_TICKET);
+      expect(resolved?.notes?.[resolved.notes.length - 1].text).toBe('Ticket resolved');
+    });
   });
 });

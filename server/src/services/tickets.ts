@@ -40,6 +40,59 @@ import { isRetentionTombstone, readJsonlNewestFirst, type RetentionTombstone } f
  */
 const CHANGE_LOG_READ_LIMIT = 20_000;
 
+/**
+ * `MAX_NOTE_CHARS` (in @hpe/shared, so the browser warns against the same
+ * number) is why the whole ticket array is not at the mercy of one paste: it
+ * is re-serialised and rewritten on every append, and this same store is the
+ * write-authorisation gate (`knownTicketId`) — so a ticket file that grows
+ * without limit does not merely slow the queue down, it takes every gated
+ * write in the portal with it when the write finally fails. Express caps a
+ * request body at 1mb, which bounds one note but not a hundred of them.
+ *
+ * Over-length text is REFUSED, never truncated. Half an incident note filed
+ * as though it were whole is the same failure as a green badge over an unread
+ * section: the record looks complete and is not.
+ *
+ * This cap bounds the other axis: the most entries one ticket may hold. Older
+ * ones are dropped, but a marker takes their place — the rule the rotating
+ * logs already follow: a deletion must not read as an absence of events.
+ */
+export const MAX_NOTES_PER_TICKET = 200;
+
+/**
+ * Trim a ticket's log to `MAX_NOTES_PER_TICKET`, leaving a retention marker
+ * where the dropped entries were.
+ *
+ * The marker occupies one of the kept slots rather than sitting outside the
+ * cap, so the bound is a real bound. Its count rolls a previously dropped
+ * marker's own total forward: on the second rotation the answer must be
+ * "412 entries discarded", not "199", or the log understates its own gap a
+ * little more every time it rotates.
+ */
+export function capNotes(notes: TicketNote[]): TicketNote[] {
+  if (notes.length <= MAX_NOTES_PER_TICKET) return notes;
+  const kept = notes.slice(notes.length - (MAX_NOTES_PER_TICKET - 1));
+  const dropped = notes.slice(0, notes.length - kept.length);
+  const discarded = dropped.reduce(
+    (sum, n) => sum + (n.kind === 'retention' ? (n.discarded ?? 0) : 1),
+    0,
+  );
+  const from = dropped.find((n) => n.kind === 'retention' && n.coveringFrom)?.coveringFrom ?? dropped[0]?.ts;
+  const to = dropped[dropped.length - 1]?.ts;
+  const span = from && to ? ` covering ${from} to ${to}` : '';
+  const marker: TicketNote = {
+    ts: new Date().toISOString(),
+    kind: 'retention',
+    text:
+      `${discarded} earlier ${discarded === 1 ? 'entry' : 'entries'} discarded${span} — this ticket keeps ` +
+      `the most recent ${MAX_NOTES_PER_TICKET - 1}. Those entries are no longer available here.`,
+    discarded,
+    ...(from ? { coveringFrom: from } : {}),
+    ...(to ? { coveringTo: to } : {}),
+  };
+  return [marker, ...kept];
+}
+
 const SEV_TONE: Record<string, Tone> = { P1: 'danger', P2: 'warning', P3: 'info' };
 
 /** Hours until SLA breach per severity — the deadline stamped at raise time. */
@@ -357,6 +410,12 @@ export class TicketStore {
    * Fixture tickets are promoted into the store on their first note so the
    * log persists — the route layer dedupes the promoted id out of the
    * fixture queue. Returns the updated ticket, or null for an unknown id.
+   *
+   * `text` is NOT length-checked here. null already means "no such ticket",
+   * and a second meaning on the same value would leave the route guessing
+   * which one it got — so the route refuses over-length text against
+   * `MAX_NOTE_CHARS` and answers 400, before this is reached. The count cap
+   * is a store invariant and is applied here, where every caller gets it.
    */
   addNote(id: string, text: string, kind: TicketNote['kind'] = 'note'): TicketRow | null {
     const tickets = this.stored();
@@ -370,7 +429,7 @@ export class TicketStore {
     const cur = tickets[idx];
     if (!cur) return null;
     const note: TicketNote = { ts: new Date().toISOString(), kind, text };
-    const updated: TicketRow = { ...cur, notes: [...(cur.notes ?? []), note] };
+    const updated: TicketRow = { ...cur, notes: capNotes([...(cur.notes ?? []), note]) };
     tickets[idx] = updated;
     this.save(tickets);
     return withDerivedTiming(updated);
@@ -395,7 +454,7 @@ export class TicketStore {
     if (!cur) return null;
     if (cur.state === 'resolved') return withDerivedTiming(cur);
     const note: TicketNote = { ts: new Date().toISOString(), kind: 'action', text: 'Ticket resolved' };
-    const updated: TicketRow = { ...cur, state: 'resolved', notes: [...(cur.notes ?? []), note] };
+    const updated: TicketRow = { ...cur, state: 'resolved', notes: capNotes([...(cur.notes ?? []), note]) };
     tickets[idx] = updated;
     this.save(tickets);
     return withDerivedTiming(updated);

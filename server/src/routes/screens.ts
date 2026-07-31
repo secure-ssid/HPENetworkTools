@@ -35,6 +35,7 @@ import {
   FINDINGS,
   LANE_META,
   LICENSE_STATS,
+  MAX_NOTE_CHARS,
   OVERVIEW_ALERTS,
   OVERVIEW_CHANGES,
   OVERVIEW_LAUNCHPAD,
@@ -454,6 +455,15 @@ screensRouter.post('/tickets/:id/notes', (req, res) => {
   const text = typeof body.text === 'string' ? body.text.trim() : '';
   if (!text) {
     res.status(400).json({ error: 'text required — an empty note is not logged' });
+    return;
+  }
+  if (text.length > MAX_NOTE_CHARS) {
+    res.status(400).json({
+      error:
+        `note is ${text.length} characters — the limit is ${MAX_NOTE_CHARS}. ` +
+        'Nothing was logged; shorten it and send again, or attach the detail to the change record. ' +
+        'The portal refuses an over-length note rather than filing a truncated one.',
+    });
     return;
   }
   if (body.kind !== undefined && body.kind !== 'note' && body.kind !== 'action') {

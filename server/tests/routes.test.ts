@@ -14,6 +14,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { PLANE_IDS } from '../src/planes/types';
+import { MAX_NOTE_CHARS } from '@hpe/shared';
 
 let server: Server;
 let base: string;
@@ -420,22 +421,32 @@ describe('routes', () => {
     expect((await post('NET-4188', { text: 'x', kind: 'sideways' })).status).toBe(400);
     expect((await post('NET-9999', { text: 'x' })).status).toBe(404);
 
+    // A pasted log dump is refused, not silently trimmed to fit — and the
+    // refusal says by how much, because "too long" alone leaves the operator
+    // deleting characters at random. The ticket store is rewritten in full on
+    // every append and gates every write in the portal, so this bound is not
+    // cosmetic.
+    const long = await post('NET-4188', { text: 'x'.repeat(MAX_NOTE_CHARS + 1) });
+    expect(long.status).toBe(400);
+    expect(((await long.json()) as any).error).toContain(String(MAX_NOTE_CHARS + 1));
+    expect((await post('NET-4188', { text: 'x'.repeat(MAX_NOTE_CHARS) })).status).toBe(200);
+
     const ok = await post('NET-4188', { text: 'checking the AP channel plan', kind: 'note' });
     expect(ok.status).toBe(200);
     const okBody = (await ok.json()) as any;
     expect(okBody.ticket.id).toBe('NET-4188');
-    expect(okBody.ticket.notes).toHaveLength(1);
+    expect(okBody.ticket.notes).toHaveLength(2);
 
     // The promoted ticket appears exactly once in the merged queue, with its log.
     const q = await getJson('/api/tickets');
     const matching = (q.body.tickets as any[]).filter((t) => t.id === 'NET-4188');
     expect(matching).toHaveLength(1);
-    expect(matching[0].notes[0]).toMatchObject({ kind: 'note', text: 'checking the AP channel plan' });
-    expect(Number.isNaN(Date.parse(matching[0].notes[0].ts))).toBe(false);
+    expect(matching[0].notes[1]).toMatchObject({ kind: 'note', text: 'checking the AP channel plan' });
+    expect(Number.isNaN(Date.parse(matching[0].notes[1].ts))).toBe(false);
 
     const action = await post('NET-4188', { text: 'Pin channels on ap-3f-12/14', kind: 'action' });
     expect(action.status).toBe(200);
-    expect(((await action.json()) as any).ticket.notes).toHaveLength(2);
+    expect(((await action.json()) as any).ticket.notes).toHaveLength(3);
   });
 
   it('POST /api/tickets/:id/resolve closes a ticket idempotently; 404 for an unknown id', async () => {

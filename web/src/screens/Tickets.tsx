@@ -21,7 +21,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Alert, Badge, Button, EmptyState, Heading, SectionHeader, Spinner, Textarea, useToast } from '../nightdesk';
 import { addTicketNote, getTickets, resolveTicket } from '../api/client';
 import type { TicketsData } from '../api/client';
-import { relativeAge, slaCountdown } from '@hpe/shared';
+import { MAX_NOTE_CHARS, relativeAge, slaCountdown } from '@hpe/shared';
 import type { TicketRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -104,6 +104,7 @@ export default function Tickets() {
   const openCount = tickets.filter((t) => t.state !== 'resolved').length;
   const now = Date.now();
   const notes = notesByTicket[cur.id] ?? cur.notes ?? [];
+  const overLimit = note.trim().length > MAX_NOTE_CHARS;
   const firstDevice = cur.evidence.find((e) => e.device)?.device ?? null;
 
   /** Resolves true only when the store took the entry. */
@@ -126,6 +127,14 @@ export default function Tickets() {
   const addNote = async () => {
     const text = note.trim();
     if (!text) return;
+    // Checked here against the same shared constant the route enforces, so
+    // the operator is stopped while still typing rather than after pressing
+    // Log. The box is not truncated to fit: silently dropping the tail of an
+    // incident note is the failure the refusal exists to prevent.
+    if (text.length > MAX_NOTE_CHARS) {
+      toast(`not logged — ${text.length} characters, the limit is ${MAX_NOTE_CHARS}`, { tone: 'danger' });
+      return;
+    }
     // The box empties only once the store has the note. Clearing it on submit
     // meant a rejected POST destroyed what the operator had typed — an
     // incident note is often the longest thing anyone writes in this portal,
@@ -404,9 +413,26 @@ export default function Tickets() {
                 onChange={(e) => setNote(e.target.value)}
               />
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Button variant="secondary" size="sm" disabled={!note.trim() || busy} onClick={() => void addNote()}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={!note.trim() || busy || note.trim().length > MAX_NOTE_CHARS}
+                  onClick={() => void addNote()}
+                >
                   Log note
                 </Button>
+                {overLimit ? (
+                  <span
+                    style={{
+                      fontFamily: 'var(--nd-font-mono)',
+                      fontSize: 10.5,
+                      color: 'var(--nd-danger)',
+                    }}
+                  >
+                    {note.trim().length} / {MAX_NOTE_CHARS} characters — too long to log. Nothing is
+                    truncated; shorten it and the button comes back.
+                  </span>
+                ) : null}
                 <span
                   style={{
                     fontFamily: 'var(--nd-font-mono)',
@@ -451,17 +477,18 @@ export default function Tickets() {
                           lineHeight: 1.4,
                         }}
                       >
-                        {n.kind === 'action' ? (
+                        {n.kind === 'action' || n.kind === 'retention' ? (
                           <span
                             style={{
                               fontFamily: 'var(--nd-font-mono)',
                               fontSize: 9.5,
                               letterSpacing: '.1em',
-                              color: 'var(--nd-accent-text)',
+                              color:
+                                n.kind === 'retention' ? 'var(--nd-warning)' : 'var(--nd-accent-text)',
                               marginRight: 8,
                             }}
                           >
-                            ACTION
+                            {n.kind === 'retention' ? 'RETAINED' : 'ACTION'}
                           </span>
                         ) : null}
                         {n.text}

@@ -835,10 +835,30 @@ export interface AlertCorrelation {
 
 // -- Tickets (NtTickets) --
 
+/**
+ * The longest note text the ticket log accepts. Shared because the browser
+ * must warn against exactly the number the server enforces — a client cap
+ * that disagrees with the server's either blocks text that would have been
+ * accepted, or promises one that will be refused after the operator has
+ * finished typing it.
+ */
+export const MAX_NOTE_CHARS = 2_000;
+
 export interface TicketNote {
   ts: string; // ISO timestamp
-  kind: 'note' | 'action'; // action = an operator-requested next action, logged for the record
+  /** action = an operator-requested next action, logged for the record.
+   *  retention = not an operator entry at all: a marker standing in for older
+   *  entries the store dropped to stay bounded. Anything rendering the log has
+   *  to tell it apart, or a deletion reads as something an operator did. */
+  kind: 'note' | 'action' | 'retention';
   text: string;
+  /** Only on kind 'retention': how many entries this marker stands in for,
+   *  carried forward across rotations. `text` is for the operator; this is for
+   *  the next rotation, which must not reset the running total to zero. */
+  discarded?: number;
+  /** Only on kind 'retention': ISO bounds of the entries that went. */
+  coveringFrom?: string;
+  coveringTo?: string;
 }
 
 export interface TicketRow extends Omit<Ticket, 'site'> {
