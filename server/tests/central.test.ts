@@ -1004,6 +1004,69 @@ describe('CentralAdapter.pull()', () => {
     expect(calls.some((c) => c.startsWith('GET /network-monitoring/v1alpha1/aps'))).toBe(true); // fallback worked
   });
 
+  // -- a 200 nobody can read is not an empty section -------------------------
+  //
+  // The status says OK and the body says nothing this build understands: an
+  // SSO interstitial, a response truncated in flight, an envelope from a
+  // release we have not seen. extractRows answered [] to all three, so the
+  // portal reported "this tenant has no clients" about bytes it never read.
+
+  /** Answers RAW bytes so the parse verdict, not just the shape, is exercised. */
+  function rawFetch(
+    raw: (method: string, pathname: string) => { status?: number; text: string; contentType?: string } | undefined,
+  ): FetchLike {
+    return async (url, init) => {
+      const u = new URL(url);
+      const method = (init?.method as string | undefined) ?? 'GET';
+      const hit = raw(method, u.pathname);
+      if (hit) {
+        return new Response(hit.text, {
+          status: hit.status ?? 200,
+          headers: { 'content-type': hit.contentType ?? 'text/html' },
+        });
+      }
+      const body = HAPPY_ROUTES[`${method} ${u.pathname}`];
+      return body === undefined
+        ? new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } })
+        : new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+  }
+
+  function rawAdapter(fn: FetchLike) {
+    return new CentralAdapter(CREDS, makeState(), () => {}, fn, async () => {});
+  }
+
+  const onClients = (hit: { status?: number; text: string; contentType?: string }) =>
+    rawFetch((method, pathname) => (method === 'GET' && pathname === '/monitoring/v1/clients' ? hit : undefined));
+
+  it('fails the section when a 200 carries a sign-in page instead of rows', async () => {
+    const adapter = rawAdapter(onClients({ text: '<!DOCTYPE html><html>Sign in to HPE GreenLake</html>' }));
+    await expect(adapter.pull()).rejects.toThrow(/section 'clients' failed/);
+  });
+
+  it('fails the section when a 200 is JSON that stops mid-body', async () => {
+    const adapter = rawAdapter(onClients({ text: '{"clients": [{"macaddr":"aa:bb', contentType: 'application/json' }));
+    await expect(adapter.pull()).rejects.toThrow(/section 'clients' failed/);
+  });
+
+  it('fails the section when a 200 is an envelope holding no rows anywhere', async () => {
+    const adapter = rawAdapter(onClients({ text: '{"message":"try again shortly"}', contentType: 'application/json' }));
+    await expect(adapter.pull()).rejects.toThrow(/section 'clients' failed/);
+  });
+
+  // Over-application guard. These three DO mean "nothing here" — the same
+  // three centralWebhooks has always accepted as an honest empty collection —
+  // and turning them into failures would be the opposite dishonesty.
+  it.each([
+    ['an empty body', ''],
+    ['a whitespace body', '   '],
+    ['a literal null body', 'null'],
+  ])('still reads %s as an honest empty section', async (_label, text) => {
+    const adapter = rawAdapter(onClients({ text, contentType: 'application/json' }));
+    const pull = await adapter.pull();
+    expect(pull.clients).toEqual([]);
+  });
+
   it('fails the pull naming the section when every inventory endpoint 404s', async () => {
     const routes = { ...HAPPY_ROUTES };
     delete routes['GET /monitoring/v1/aps'];
@@ -1993,6 +2056,20 @@ describe('CentralAdapter.clientDetail()', () => {
       expect(d.timelineTruncated).toBe(true);
     });
 
+    it('an unreadable trail is failed, not a stationary client', async () => {
+      // roams is published as 'ok' whatever the number, so an unread body
+      // used to arrive at the drawer as a confident "0 roams".
+      const { adapter } = makeDetailAdapter(
+        detailHandler({ '/mobility-trail': { body: { message: 'try again shortly' } } }),
+      );
+      const d = (await adapter.clientDetail(DETAIL_MAC))!;
+      expect(d.roams).toBeUndefined();
+      expect(d.source.sections.roams).toBe('failed');
+      expect(d.source.sections.timeline).toBe('failed');
+      expect(d.source.sections.rssi).toBe('failed');
+      expect(d.source.sections.tput).toBe('ok'); // the section that answered still ships
+    });
+
     it('does not qualify a short page — that is the whole window', async () => {
       // The precision that matters: a page that came back with room to spare
       // is the complete answer, and calling it a floor would be its own
@@ -2176,6 +2253,18 @@ describe('CentralAdapter.deviceDetail()', () => {
     expect(d.source.sections.radios).toBe('failed');
     expect(d.source.sections.wlans).toBe('ok'); // the section that answered still ships
     expect(d.source.note).toContain('radios: HTTP 404');
+  });
+
+  it('a 200 with no readable rows is failed, not empty — the AP has radios', async () => {
+    // 'empty' here would be a claim about the hardware ("this AP has no
+    // radios"), made from a body the adapter could not read. It takes the
+    // same branch as the 404 above.
+    const { adapter } = makeDetailAdapter(detailHandler({ '/radios': { body: { message: 'try again shortly' } } }));
+    const d = (await adapter.deviceDetail('PHT5M520SZ', 'ap'))!;
+    expect(d.radios).toBeUndefined();
+    expect(d.source.sections.radios).toBe('failed');
+    expect(d.source.sections.wlans).toBe('ok');
+    expect(d.source.note).toContain('radios: a 200 whose body carried no readable rows');
   });
 
   it('caches per serial AND kind, so one device drawer never re-reads the other', async () => {

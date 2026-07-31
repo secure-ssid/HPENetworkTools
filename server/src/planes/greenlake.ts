@@ -648,7 +648,17 @@ function mapGreenLakeRoleAssignment(
   };
 }
 
-function extractRows(body: unknown): unknown[] {
+/**
+ * Rows out of a collection body, or null when the payload carries no row
+ * container at all.
+ *
+ * Null, not `[]`. http() above tolerates a non-JSON body by leaving `body`
+ * null — right for a write, where the status was all that was wanted, and
+ * wrong here: an SSO interstitial or a truncated response would arrive on the
+ * Subscriptions screen as "this workspace has none", which is what the portal
+ * must never say about data it did not read. The caller fails the section.
+ */
+function extractRows(body: unknown): unknown[] | null {
   if (Array.isArray(body)) return body;
   if (body && typeof body === 'object') {
     const r = body as Record<string, unknown>;
@@ -661,7 +671,7 @@ function extractRows(body: unknown): unknown[] {
       if (Array.isArray(v)) return v;
     }
   }
-  return [];
+  return null;
 }
 
 /**
@@ -1280,6 +1290,7 @@ export class GreenLakeAdapter implements PlaneAdapter {
       if (first.status < 200 || first.status >= 300) throw new HttpStatusError(first.status, firstPath);
 
       const rows = extractRows(first.body);
+      if (rows === null) throw new Error(`unreadable body from ${firstPath}`);
       const total = extractTotal(first.body);
       let offset = rows.length;
       let lastPageSize = rows.length;
@@ -1290,6 +1301,7 @@ export class GreenLakeAdapter implements PlaneAdapter {
         // Page 1 worked, so the path is valid: a failure here fails the section.
         if (res.status < 200 || res.status >= 300) throw new HttpStatusError(res.status, path);
         const pageRows = extractRows(res.body);
+        if (pageRows === null) throw new Error(`unreadable body from ${path} (page ${pages + 1})`);
         if (pageRows.length === 0) break;
         rows.push(...pageRows);
         offset += pageRows.length;

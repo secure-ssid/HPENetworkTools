@@ -578,6 +578,33 @@ describe('GreenLakeAdapter.pull()', () => {
     await expect(adapter.pull()).rejects.toThrow(/section 'subscriptions' failed — HTTP 500/);
   });
 
+  // http() tolerates a non-JSON body by leaving `body` null — right for a
+  // write, where the status was the whole point, and wrong on a list read.
+  // The Subscriptions screen would have shown an empty workspace.
+  it('fails the section when a 200 carries no readable rows', async () => {
+    const { adapter } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/subscriptions/v1/subscriptions') {
+        return { body: { message: 'try again shortly' } }; // 200, no array anywhere
+      }
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    await expect(adapter.pull()).rejects.toThrow(/section 'subscriptions' failed — unreadable body/);
+  });
+
+  // Over-application guard: a stated-empty workspace is a real answer.
+  it('still reads a stated-empty collection as an honest empty section', async () => {
+    const { adapter } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/subscriptions/v1/subscriptions') {
+        return { body: { subscriptions: [], total: 0 } };
+      }
+      const body = HAPPY_ROUTES[`${method} ${pathname}`];
+      return body === undefined ? undefined : { body };
+    });
+    const pull = await adapter.pull();
+    expect(pull.subscriptions).toEqual([]);
+  });
+
   it('pages the real GLP envelope until total, merging every page', async () => {
     const rows = Array.from({ length: 250 }, (_, i) => ({ ...SUB_GLP_V1, id: `sub-${i}`, key: `KEY-${i}` }));
     const { adapter, calls, state } = makeAdapter(pagingHandler(rows));

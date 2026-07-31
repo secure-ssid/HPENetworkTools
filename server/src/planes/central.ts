@@ -1350,7 +1350,19 @@ const PAYLOAD_KEYS = [
   'wlan-ssid',
 ];
 
-function extractRows(body: unknown): unknown[] {
+/**
+ * Rows out of a collection body, or null when the payload carries no row
+ * container at all.
+ *
+ * Null, not `[]`. A 200 whose body cannot be read is not evidence of zero
+ * rows: an SSO interstitial, a truncated response, or an envelope shape this
+ * build does not know would otherwise reach the screen as "this section has
+ * none" — the one thing the portal must never say about data it did not read.
+ * Callers turn null into a failed section. Mist has guarded its walk this way
+ * since it was written, and sse/clearpass return null for the same reason;
+ * this adapter and greenlake were the two that could not tell the difference.
+ */
+function extractRows(body: unknown): unknown[] | null {
   if (Array.isArray(body)) return body;
   if (body && typeof body === 'object') {
     const r = body as Record<string, unknown>;
@@ -1363,7 +1375,65 @@ function extractRows(body: unknown): unknown[] {
       if (Array.isArray(v)) return v;
     }
   }
-  return [];
+  return null;
+}
+
+/**
+ * The same read, but starting from how the bytes parsed.
+ *
+ * `bodyParse` already separates an absent body from an unreadable one, and
+ * centralWebhooks has consulted it since it was added — an empty, blank or
+ * literal-null list response is an honest empty collection there, a malformed
+ * or non-JSON one is an error and never an empty success. The inventory pull,
+ * which produces every device, client, site and alert row in the portal,
+ * never asked. Same three cases, same three failures, one reader now.
+ */
+function rowsFromResponse(res: { body: unknown; bodyParse?: CentralHttpBodyParse }): unknown[] | null {
+  switch (res.bodyParse) {
+    case 'empty':
+    case 'whitespace':
+    case 'json-null':
+      return [];
+    case 'malformed-json':
+    case 'non-json':
+    case 'unreadable':
+      return null;
+    default:
+      return extractRows(res.body);
+  }
+}
+
+/**
+ * A detail GET reduced to rows, or the note that explains their absence, so a
+ * body that could not be read takes the SAME branch as a transport failure
+ * instead of the one that renders 'empty'.
+ */
+function detailRows(
+  res: { ok: true; body: unknown; bodyParse: CentralHttpBodyParse } | { ok: false; note: string },
+): { rows: unknown[]; body: unknown } | { note: string } {
+  if (!res.ok) return { note: res.note };
+  const rows = rowsFromResponse(res);
+  return rows === null ? { note: 'a 200 whose body carried no readable rows' } : { rows, body: res.body };
+}
+
+/**
+ * A detail GET whose payload is read BY NAME rather than by row heuristic
+ * (topology has two sibling arrays), or null when there is no object to read.
+ */
+function readableObjectBody(res: {
+  body: unknown;
+  bodyParse?: CentralHttpBodyParse;
+}): Record<string, unknown> | null {
+  switch (res.bodyParse) {
+    case 'malformed-json':
+    case 'non-json':
+    case 'unreadable':
+      return null;
+    default:
+      return res.body && typeof res.body === 'object' && !Array.isArray(res.body)
+        ? (res.body as Record<string, unknown>)
+        : null;
+  }
 }
 
 /**
@@ -1909,7 +1979,7 @@ export class CentralAdapter implements PlaneAdapter {
     for (const path of candidates) {
       try {
         const res = await this.request('GET', path);
-        if (res.status >= 200 && res.status < 300) return extractRows(res.body);
+        if (res.status >= 200 && res.status < 300) return rowsFromResponse(res);
         if (res.status === 404) continue;
         return null;
       } catch {
@@ -1978,8 +2048,10 @@ export class CentralAdapter implements PlaneAdapter {
     try {
       const res = await this.request('GET', '/network-config/v1alpha1/config-assignments');
       if (res.status < 200 || res.status >= 300) return null;
+      const rows = rowsFromResponse(res);
+      if (rows === null) return null;
       const out = new Set<string>();
-      for (const raw of extractRows(res.body)) {
+      for (const raw of rows) {
         if (!raw || typeof raw !== 'object') continue;
         const r = raw as Record<string, unknown>;
         const scopeId = str(r['scope-id'] ?? r.scopeId);
@@ -2179,7 +2251,9 @@ export class CentralAdapter implements PlaneAdapter {
    * only turn a rate limit into a 30-second stall. Never throws — a transport
    * failure comes back as `ok:false` with a short, secret-free reason.
    */
-  private async detailGet(path: string): Promise<{ ok: true; body: unknown } | { ok: false; note: string }> {
+  private async detailGet(
+    path: string,
+  ): Promise<{ ok: true; body: unknown; bodyParse: CentralHttpBodyParse } | { ok: false; note: string }> {
     try {
       let res = await this.http('GET', path, { token: await this.tokens.get(), timeoutMs: DETAIL_TIMEOUT_MS });
       if (res.status === 401) {
@@ -2187,7 +2261,7 @@ export class CentralAdapter implements PlaneAdapter {
         res = await this.http('GET', path, { token: await this.tokens.get(), timeoutMs: DETAIL_TIMEOUT_MS });
       }
       if (res.status < 200 || res.status >= 300) return { ok: false, note: `HTTP ${res.status}` };
-      return { ok: true, body: res.body };
+      return { ok: true, body: res.body, bodyParse: res.bodyParse };
     } catch (err) {
       // http() prefixes the label; keep only the cause so the note stays a
       // sentence a human reads, and never a URL or a credential.
@@ -2218,24 +2292,28 @@ export class CentralAdapter implements PlaneAdapter {
     const notes: string[] = [];
     const out: ClientDetailLive = { mac, source: { plane: 'central', at: '', sections } };
 
-    if (trail === null) {
+    const trailRead = trail === null ? null : detailRows(trail);
+    if (trailRead === null) {
       // Ethernet clients have no mobility trail, RSSI, or roam count. Leave
       // those sections not-fetched rather than spending a call or presenting
       // an empty wireless result as a wired-client statistic.
-    } else if (!trail.ok) {
+    } else if ('note' in trailRead) {
+      // Reached by an unreadable 200 as well as a transport failure. `roams`
+      // is published as 'ok' below whatever the number is, so a body we could
+      // not read would otherwise have become a confident "0 roams".
       sections.rssi = 'failed';
       sections.roams = 'failed';
       sections.timeline = 'failed';
-      notes.push(`mobility trail: ${trail.note}`);
+      notes.push(`mobility trail: ${trailRead.note}`);
     } else {
-      const rows = extractRows(trail.body);
+      const rows = trailRead.rows;
       const events = rows
         .map((r) => mapMobilityEvent(r))
         .filter((e): e is ClientTimelineEvent => e !== null);
       // `total` is the roam count for the whole window; one page of 100 is
       // enough to RENDER the newest events without paying to walk the cursor
       // just to count them.
-      const total = extractTotal(trail.body);
+      const total = extractTotal(trailRead.body);
       // A page limit is not a window total. When Central states a `total` the
       // count is exact whatever the page held; when it does not, all the
       // portal counted is one page, and a FULL page is the evidence that
@@ -2305,11 +2383,12 @@ export class CentralAdapter implements PlaneAdapter {
         this.detailGet(`/network-monitoring/v1/aps/${seg}/radios`),
         this.detailGet(`/network-monitoring/v1/aps/${seg}/wlans`),
       ]);
-      if (!radios.ok) {
+      const radiosRead = detailRows(radios);
+      if ('note' in radiosRead) {
         sections.radios = 'failed';
-        notes.push(`radios: ${radios.note}`);
+        notes.push(`radios: ${radiosRead.note}`);
       } else {
-        const rows = extractRows(radios.body)
+        const rows = radiosRead.rows
           .map((r, i) => mapCentralRadio(r, i))
           .filter((r): r is DeviceRadio => r !== null)
           // Central hands them back unordered (1, 0, 2 live); radio 0 first is
@@ -2318,11 +2397,12 @@ export class CentralAdapter implements PlaneAdapter {
         out.radios = rows;
         sections.radios = rows.length > 0 ? 'ok' : 'empty';
       }
-      if (!wlans.ok) {
+      const wlansRead = detailRows(wlans);
+      if ('note' in wlansRead) {
         sections.wlans = 'failed';
-        notes.push(`wlans: ${wlans.note}`);
+        notes.push(`wlans: ${wlansRead.note}`);
       } else {
-        const rows = extractRows(wlans.body)
+        const rows = wlansRead.rows
           .map((r) => mapCentralWlan(r))
           .filter((w): w is DeviceWlan => w !== null);
         out.wlans = rows;
@@ -2338,12 +2418,13 @@ export class CentralAdapter implements PlaneAdapter {
           ? `/network-monitoring/v1/switches/${seg}/interfaces`
           : `/network-monitoring/v1/gateways/${seg}/ports`;
       const ports = await this.detailGet(path);
-      if (!ports.ok) {
+      const portsRead = detailRows(ports);
+      if ('note' in portsRead) {
         sections.ports = 'failed';
-        notes.push(`ports: ${ports.note}`);
+        notes.push(`ports: ${portsRead.note}`);
       } else {
         const map = kind === 'switch' ? mapCentralSwitchPort : mapCentralGatewayPort;
-        const rows = extractRows(ports.body)
+        const rows = portsRead.rows
           .map((r) => map(r))
           .filter((p): p is DevicePort => p !== null);
         out.ports = rows;
@@ -2386,15 +2467,20 @@ export class CentralAdapter implements PlaneAdapter {
     const res = await this.detailGet(`/network-monitoring/v1/topology/${encodeURIComponent(native)}`);
     const sections: Partial<Record<SiteTopologySection, DetailFetchState>> = {};
     const out: SiteTopologyLive = { siteId, source: { plane: 'central', at: '', sections } };
+    const topologyBody = res.ok ? readableObjectBody(res) : null;
     if (!res.ok) {
       sections.nodes = 'failed';
       sections.links = 'failed';
       out.source.note = `topology: ${res.note}`;
+    } else if (topologyBody === null) {
+      sections.nodes = 'failed';
+      sections.links = 'failed';
+      out.source.note = 'topology: a 200 whose body carried no readable topology';
     } else {
       // Read `devices`/`links` BY NAME, not through extractRows' first-array
       // heuristic: this payload has two sibling arrays and the heuristic would
       // pick whichever the tenant happens to serialize first.
-      const body = (res.body && typeof res.body === 'object' ? res.body : {}) as Record<string, unknown>;
+      const body = topologyBody;
       const nodes = (Array.isArray(body.devices) ? body.devices : [])
         .map((d) => mapTopologyNode(d))
         .filter((n): n is TopologyDeviceNode => n !== null);
@@ -2463,7 +2549,8 @@ export class CentralAdapter implements PlaneAdapter {
       if (first.status === 404) continue; // release variance — try the alternate namespace
       if (first.status < 200 || first.status >= 300) throw new HttpStatusError(first.status, firstPath);
 
-      const rows = extractRows(first.body);
+      const rows = rowsFromResponse(first);
+      if (rows === null) throw new Error(`unreadable body from ${firstPath}`);
       const total = extractTotal(first.body);
       let cursor = byCursor ? extractNextCursor(first.body) : null;
       let offset = rows.length;
@@ -2483,7 +2570,8 @@ export class CentralAdapter implements PlaneAdapter {
         const res = await this.authedGet(path, spec.timeoutMs);
         // Page 1 worked, so the path is valid: a failure here fails the section.
         if (res.status < 200 || res.status >= 300) throw new HttpStatusError(res.status, path);
-        const pageRows = extractRows(res.body);
+        const pageRows = rowsFromResponse(res);
+        if (pageRows === null) throw new Error(`unreadable body from ${path} (page ${page + 1})`);
         if (pageRows.length === 0) break;
         rows.push(...pageRows);
         offset += pageRows.length;
