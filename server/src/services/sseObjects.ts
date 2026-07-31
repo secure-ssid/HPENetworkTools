@@ -502,10 +502,11 @@ export class SseObjectsService {
       });
       const acceptedTerminal = this.persistCommitAccepted(pending, commit.httpCode ?? undefined, 'sse-commit-retry');
       const refreshed = await this.refreshCache(acceptedTerminal);
-      this.clearPending();
+      const journalRetained = !this.tryClearPending();
       return {
         commit,
         cacheRefresh: refreshed.outcome,
+        ...(journalRetained ? { journalRetained: true } : {}),
         recovery: {
           journalPhase: pending.phase,
           action: 'commit-retry',
@@ -804,7 +805,7 @@ export class SseObjectsService {
       // fails, the retained record remains provably ineligible for Commit.
       this.savePending(rejectedTerminal);
       this.recordMutation(kind, action, id, 'rejected', mutation.httpCode ?? undefined);
-      this.clearPending();
+      const journalRetained = !this.tryClearPending();
       return {
         mutation,
         commit: {
@@ -817,6 +818,7 @@ export class SseObjectsService {
         staged: false,
         outcome: 'rejected',
         cacheRefresh: { attempted: false, status: 'skipped', message: 'the mutation was rejected — nothing to refresh' },
+        ...(journalRetained ? { journalRetained: true } : {}),
       };
     }
 
@@ -898,7 +900,7 @@ export class SseObjectsService {
     );
 
     const refreshed = await this.refreshCache(acceptedTerminal, action === 'update' ? fields : undefined);
-    this.clearPending();
+    const journalRetained = !this.tryClearPending();
     const outcome = refreshed.mutationVerified ? 'applied' : 'unverified';
     this.recordMutation(kind, action, mutation.id ?? id, outcome, commit.httpCode ?? undefined);
     return {
@@ -907,6 +909,7 @@ export class SseObjectsService {
       staged: false,
       outcome,
       cacheRefresh: refreshed.outcome,
+      ...(journalRetained ? { journalRetained: true } : {}),
     };
   }
 
@@ -1229,6 +1232,34 @@ export class SseObjectsService {
       at: rec.at,
       tenantFingerprint: rec.tenantFingerprint,
     };
+  }
+
+  /**
+   * Delete the journal, reporting a failure instead of throwing it.
+   *
+   * Every caller is past the point where the change is already decided: the
+   * record has been moved to a terminal phase no recovery will replay Commit
+   * for, which is exactly what makes a failed deletion safe — both call sites
+   * that persist those phases say so in their own comments.
+   *
+   * Throwing here takes a settled outcome and hands the operator an internal
+   * error for it. For an applied change that is the worst answer the portal
+   * can give: the object exists, the audit line never gets written because the
+   * throw happens first, and the natural response to "internal error" is to do
+   * it again, which creates a second object. The leftover record does block
+   * the next SSE change, so the caller reports that — separately from an
+   * outcome that has not changed.
+   */
+  private tryClearPending(): boolean {
+    try {
+      this.journal.remove();
+      return true;
+    } catch (err) {
+      console.error(
+        `sse journal: could not delete durable mutation state: ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 
   private clearPending(): void {

@@ -1921,6 +1921,15 @@ export interface SseMutationResult {
   /** Explicit aggregate state; `unknown` means durable recovery is required. */
   outcome?: 'applied' | 'unverified' | 'staged' | 'unknown' | 'rejected';
   cacheRefresh: SseCacheRefreshOutcome;
+  /**
+   * The change is settled (see `outcome`) but its durable journal could not be
+   * deleted afterwards. This never changes what happened to the object — the
+   * record is already in a terminal phase no recovery will replay Commit for.
+   * It does mean the leftover journal blocks the NEXT SSE change until it is
+   * cleaned up, which the operator has to be told, and separately from the
+   * outcome so a settled change is never reported as a failed one.
+   */
+  journalRetained?: boolean;
 }
 
 /** Commit-only retry's result — never replays the original mutation, so
@@ -1929,6 +1938,9 @@ export interface SseMutationResult {
 export interface SseCommitRetryResult {
   commit: SseCommitOutcome;
   cacheRefresh: SseCacheRefreshOutcome;
+  /** As SseMutationResult.journalRetained: the retry settled, and the journal
+   *  it was recovering could not be removed afterwards. */
+  journalRetained?: boolean;
   /** Commit acceptance alone never proves the journaled object mutation. */
   recovery?: SseRecoveryOutcome;
 }

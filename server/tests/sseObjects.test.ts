@@ -947,10 +947,12 @@ describe('SseObjectsService — recovery phase allowlist', () => {
       },
     });
 
-    await expect(service.create('groups', { name: 'rejected' }, true)).rejects.toMatchObject({
-      status: 500,
-      code: 'SSE_JOURNAL_PERSIST_FAILED',
-    });
+    // SSE refused the object. That answer, and the reason attached to it, is
+    // what the operator needs; a failed cleanup afterwards does not turn the
+    // refusal into an internal error. What it does do is leave a blocker, and
+    // the result says so on its own field.
+    const rejected = await service.create('groups', { name: 'rejected' }, true);
+    expect(rejected).toMatchObject({ outcome: 'rejected', journalRetained: true });
     expect(JSON.parse(raw ?? '').phase).toBe('mutation-rejected');
     expect(retrySpy).toHaveBeenCalledTimes(0);
 
@@ -1275,7 +1277,7 @@ describe('SseObjectsService — journal IO is fail-closed', () => {
     await expect(service.create('groups', { name: 'blocked' }, true)).rejects.toMatchObject({ status: 409 });
   });
 
-  it('propagates journal deletion failure and retains the blocker after Commit succeeds', async () => {
+  it('reports the applied change and retains the blocker when journal deletion fails after Commit', async () => {
     let raw: string | null = null;
     const journalStore = {
       exists: () => raw !== null,
@@ -1327,11 +1329,20 @@ describe('SseObjectsService — journal IO is fail-closed', () => {
       dataDir: tmpDir,
       journalStore,
     });
-    await expect(service.create('groups', { name: 'g' }, true)).rejects.toMatchObject({
-      status: 500,
-      message: 'internal error',
-    });
+    // The object exists in the tenant and the Commit was accepted. Answering
+    // "internal error" here would be a lie about a change that happened, and
+    // the operator's response to it — do it again — creates a second object.
+    const applied = await service.create('groups', { name: 'g' }, true);
+    expect(applied).toMatchObject({ outcome: 'applied', journalRetained: true });
     expect(raw).not.toBeNull();
+    /* The change is auditable. Throwing out of the cleanup used to happen
+     * BEFORE the audit line was written, so a group that now exists in the
+     * tenant left no record that the portal created it — the one case where
+     * the trail matters most, because the operator was told it failed. */
+    const audit = readFileSync(join(tmpDir, 'change-log.jsonl'), 'utf8');
+    expect(audit).toContain('sse-create');
+    expect(audit).toContain('applied');
+    // The blocker is real, and the NEXT change is still refused.
     await expect(service.create('groups', { name: 'blocked' }, true)).rejects.toMatchObject({ status: 409 });
   });
 });
@@ -1458,7 +1469,8 @@ describe('SseObjectsService — terminal commit-accepted phase (requirement 1 + 
       journalStore,
     });
 
-    await expect(service.create('groups', { name: 'g' }, true)).rejects.toMatchObject({ status: 500 });
+    const applied = await service.create('groups', { name: 'g' }, true);
+    expect(applied).toMatchObject({ outcome: 'applied', journalRetained: true });
     expect(mutationCalls).toBe(1);
     expect(commitCalls).toBe(1);
     expect(JSON.parse(raw ?? '').phase).toBe('commit-accepted');

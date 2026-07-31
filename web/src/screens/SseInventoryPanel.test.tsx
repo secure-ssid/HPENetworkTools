@@ -130,6 +130,22 @@ function unknownMutationResult(step: 'mutation' | 'commit') {
   };
 }
 
+/** An applied+committed change whose durable journal survived the cleanup. */
+function appliedButJournalRetained() {
+  return {
+    ok: true,
+    message: 'applied and committed',
+    result: {
+      mutation: { ok: true, httpCode: 200, acceptance: 'accepted' as const, message: 'accepted' },
+      commit: { attempted: true, ok: true, httpCode: 204, acceptance: 'accepted' as const, message: 'committed' },
+      staged: false,
+      outcome: 'applied' as const,
+      cacheRefresh: { attempted: true, status: 'refreshed' as const, message: 'refreshed' },
+      journalRetained: true,
+    },
+  };
+}
+
 function renderPanel(
   canWrite: boolean,
   initial?: { kind: 'connectorZones' | 'users'; objectId?: string },
@@ -726,6 +742,32 @@ describe('SseInventoryPanel — reviewed create', () => {
       screen.getByRole('button', { name: 'Attest manual reconciliation and remove journal' }),
     ).toHaveProperty('disabled', true);
     expect(screen.queryByRole('button', { name: 'Run recovery' })).toBeNull();
+  });
+
+  /**
+   * The change landed. The bookkeeping afterwards did not, and the leftover
+   * journal is what the server refuses the NEXT change on. A green "deleted
+   * and committed" would be true about the delete and silent about the block,
+   * and the operator meets an unexplained 409 the next time they touch SSE.
+   */
+  it('does not call a change with a surviving journal a plain success', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue(listing('connectorZones', 'cz-1', 'HQ zone'));
+    mockDeleteSseObject.mockResolvedValue(appliedButJournalRetained());
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderPanel(true);
+    await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    // Says the delete happened AND that the next change is blocked...
+    await waitFor(() =>
+      expect(screen.getByText(/HQ zone was deleted and committed\./)).toBeTruthy(),
+    );
+    expect(screen.getByText(/next SSE change will be refused until it is cleaned up/)).toBeTruthy();
+    // ...and leaves up the control that clears it.
+    expect(screen.getByRole('button', { name: 'Run recovery' })).toBeTruthy();
+    confirm.mockRestore();
   });
 
   it('shows durable recovery for an unknown delete instead of treating ok:false as a generic failure', async () => {

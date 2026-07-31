@@ -59,6 +59,17 @@ import {
 const KIND_OPTIONS = SSE_OBJECT_KINDS.map((k) => ({ value: k, label: SSE_OBJECT_KIND_LABELS[k] }));
 const TENANT_WIDE_RECOVERY_WARNING =
   'Recovery may need a tenant-wide Commit that can apply other changes already staged on this SSE tenant.';
+/**
+ * The change itself is done — the object was mutated and the tenant accepted
+ * the Commit. Only the leftover bookkeeping failed, and a leftover journal is
+ * what the server refuses the NEXT SSE change on. Saying nothing would hand
+ * the operator a 409 later with no way to connect it to this, so the panel
+ * says it now and leaves the recovery controls up: the retained phases both
+ * route to a cleanup that never calls tenant-wide Commit.
+ */
+const JOURNAL_RETAINED_NOTICE =
+  'The durable journal could not be removed afterwards, so the next SSE change will be refused until it is cleaned up. Run the recovery below.';
+
 const MANUAL_CLEANUP_NO_COMMIT_NOTICE =
   'Manual reconciliation cleanup never calls tenant-wide Commit; it only refreshes the cache and removes the durable journal.';
 
@@ -363,7 +374,15 @@ export function SseInventoryPanel({
       toast(result.message, { tone: 'danger' });
       return;
     }
-    toast(`${row.name} deleted and committed`, { tone: 'success' });
+    if (result.result?.journalRetained) {
+      setStagedNotice(`${row.name} was deleted and committed. ${JOURNAL_RETAINED_NOTICE}`);
+      setUnknownRecovery(false);
+      setRetryReviewed(false);
+      setManualReconciled(false);
+      toast(`${row.name} deleted and committed — its journal was left behind`, { tone: 'warning' });
+    } else {
+      toast(`${row.name} deleted and committed`, { tone: 'success' });
+    }
     if (kindRef.current === rowKind) await load(rowKind, query);
   };
 
@@ -455,7 +474,16 @@ export function SseInventoryPanel({
       toast(result.message, { tone: 'danger' });
       return;
     }
-    toast(`${actionName} ${actionMode === 'create' ? 'created' : 'updated'} and committed`, { tone: 'success' });
+    const verb = actionMode === 'create' ? 'created' : 'updated';
+    if (result.result?.journalRetained) {
+      setStagedNotice(`${actionName} was ${verb} and committed. ${JOURNAL_RETAINED_NOTICE}`);
+      setUnknownRecovery(false);
+      setRetryReviewed(false);
+      setManualReconciled(false);
+      toast(`${actionName} ${verb} and committed — its journal was left behind`, { tone: 'warning' });
+    } else {
+      toast(`${actionName} ${verb} and committed`, { tone: 'success' });
+    }
     if (drawerIsCurrent) closeDrawer();
     if (kindRef.current === actionKind) {
       const reloaded = await load(actionKind, actionQuery);
@@ -481,9 +509,20 @@ export function SseInventoryPanel({
       if (unknownRecovery) setCommitWarning(MANUAL_CLEANUP_NO_COMMIT_NOTICE);
     }
     if (result.ok) {
-      setStagedNotice(null);
+      // A recovery whose entire job was to remove the journal, and which did
+      // not remove it, has not finished — and clearing the notice takes away
+      // the only control that can finish it. The commit part of the answer is
+      // still reported below, because that part did happen.
+      // Manual cleanup states the same fact as recovery.status, and api/sse.ts
+      // already refuses to call that one ok, so only the retry shape reaches
+      // here carrying it.
+      const stillBlocked =
+        !!result.result && 'journalRetained' in result.result && result.result.journalRetained === true;
+      setStagedNotice(stillBlocked ? JOURNAL_RETAINED_NOTICE : null);
       setUnknownRecovery(false);
-      if (result.result?.commit.attempted === false) {
+      if (stillBlocked) {
+        toast('Recovery ran, but the journal was left behind', { tone: 'warning' });
+      } else if (result.result?.commit.attempted === false) {
         const message =
           result.result.commit.message ||
           result.result.recovery?.message ||
