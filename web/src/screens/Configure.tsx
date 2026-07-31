@@ -78,6 +78,7 @@ import type {
   PortObject,
   SsidApplyResult,
   SsidBands,
+  SsidProfileStepResult,
   SsidScopeAssignmentResult,
   SsidCatalog,
   SsidForm,
@@ -191,6 +192,23 @@ function isUnconfirmed(a: SsidScopeAssignmentResult): boolean {
 
 function unconfirmedCount(assignments: readonly SsidScopeAssignmentResult[]): number {
   return assignments.filter(isUnconfirmed).length;
+}
+
+/**
+ * The profile half's version of the distinction the assignment half draws.
+ *
+ * `action` is only 'failed' when Central refused the write, or would not hand
+ * back the existing profile to compare against. Any other action means Central
+ * answered the write with a 2xx and it was the verifying read-back afterwards
+ * that fell over — which the adapter reports by turning `ok` off while leaving
+ * `action` alone.
+ *
+ * "Not applied" is then the opposite of what happened, in red, and it sends
+ * the operator to apply an SSID that may already be on the tenant. Same reason
+ * an assignment Central took but did not list is not marked ✗.
+ */
+function profileWrittenButUnconfirmed(profile: SsidProfileStepResult): boolean {
+  return !profile.ok && !profile.verified && profile.action !== 'failed';
 }
 
 function assignmentPartialTitle(assignments: readonly SsidScopeAssignmentResult[]): string {
@@ -627,6 +645,15 @@ export default function Configure() {
           tone: 'warning',
         },
       );
+    } else if (profileWrittenButUnconfirmed(r.profile)) {
+      toast(`${ssid.name}: profile ${r.profile.action}, not confirmed`, {
+        description: `${r.profile.message}. Central accepted the write — check the SSID in Central before applying it again.`,
+        tone: 'warning',
+      });
+      // The list below is the only other evidence available, and leaving it
+      // showing the pre-change estate argues for the wrong conclusion.
+      const refreshed = await getConfigure();
+      setData(refreshed);
     } else {
       toast(`${ssid.name} was not applied`, { description: r.profile.message, tone: 'danger' });
     }
@@ -1534,7 +1561,8 @@ export default function Configure() {
                           ? unconfirmedCount(ssidApplyResult.result.assignments) > 0
                             ? 'warning'
                             : 'success'
-                          : ssidApplyResult.result.partial
+                          : ssidApplyResult.result.partial ||
+                              profileWrittenButUnconfirmed(ssidApplyResult.result.profile)
                             ? 'warning'
                             : 'danger'
                       }
@@ -1543,7 +1571,9 @@ export default function Configure() {
                           ? assignmentAppliedTitle(ssidApplyResult.result.assignments)
                           : ssidApplyResult.result.partial
                             ? assignmentPartialTitle(ssidApplyResult.result.assignments)
-                            : 'Not applied'
+                            : profileWrittenButUnconfirmed(ssidApplyResult.result.profile)
+                              ? `Profile ${ssidApplyResult.result.profile.action}, not confirmed`
+                              : 'Not applied'
                       }
                     >
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

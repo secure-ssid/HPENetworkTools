@@ -816,6 +816,65 @@ describe('Configure — SSID direct apply', () => {
     expect(mockGetConfigure).toHaveBeenCalledTimes(1);
   });
 
+  /* The profile half of the same distinction. Central answered the PUT with a
+   * 201 — the SSID is very likely on the tenant — and only the read-back that
+   * would prove it failed. Reporting that as "Not applied" in red is the
+   * opposite of what happened, and the operator's response to it is to create
+   * the same SSID a second time. */
+  it('shows a written-but-unverified profile as unconfirmed, not as "Not applied"', async () => {
+    mockApplySsidDirect.mockResolvedValue({
+      ok: false,
+      partial: false,
+      profile: {
+        ok: false,
+        action: 'created',
+        verified: false,
+        httpCode: 201,
+        message: 'profile created — HTTP 201; verification read-back failed — HTTP 503',
+      },
+      assignments: [],
+    });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await waitFor(() => expect(screen.getByText('Campus-01')).toBeTruthy());
+    await fillReadySsidForm();
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'I have reviewed this profile and these scope assignments — apply directly, no ticket.' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Apply directly' }));
+
+    await waitFor(() => expect(screen.getByText('Profile created, not confirmed')).toBeTruthy());
+    expect(screen.queryByText('Not applied')).toBeNull();
+  });
+
+  // The other side of it: Central refused the write, and that IS "not applied".
+  it('still says Not applied when Central refused the profile write', async () => {
+    mockApplySsidDirect.mockResolvedValue({
+      ok: false,
+      partial: false,
+      profile: {
+        ok: false,
+        action: 'failed',
+        verified: false,
+        httpCode: 403,
+        message: 'profile create failed — HTTP 403',
+      },
+      assignments: [],
+    });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await waitFor(() => expect(screen.getByText('Campus-01')).toBeTruthy());
+    await fillReadySsidForm();
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'I have reviewed this profile and these scope assignments — apply directly, no ticket.' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Apply directly' }));
+
+    await waitFor(() => expect(screen.getByText('Not applied')).toBeTruthy());
+  });
+
   /* Central taking the assignment POST and then not listing it is neither a
    * success nor a rejection: the operator should wait and re-check, not retry.
    * Rendering it as ✗ under "an assignment failed" sends them to the wrong
