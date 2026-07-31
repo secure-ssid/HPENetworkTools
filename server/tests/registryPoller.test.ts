@@ -427,6 +427,57 @@ describe('poller — a pull that never returns is a failure, not silent stalenes
     expect(pulls).toBe(2);
   });
 
+  /* syncNowFor() exists so a change that has just been written is visible
+     immediately. A scheduled pull that was already running when it was called
+     was started BEFORE that change, so it cannot contain it — and reporting
+     'skipped' leaves the write invisible over a collision the operator can
+     neither see nor influence. */
+  it('waits out a colliding scheduled pull instead of reporting a skip', async () => {
+    process.env.HPE_POLL_TIMEOUT_MS = '5000';
+    const { Poller } = await import('../src/services/poller');
+    let releaseFirst: (v: unknown) => void = () => {};
+    let pulls = 0;
+    const adapter = {
+      state: () => ({ linked: true, deviceCount: 1 }),
+      pull: () => {
+        pulls += 1;
+        if (pulls === 1) return new Promise((r) => (releaseFirst = r));
+        return Promise.resolve({ devices: [{ name: 'sw-1' }] });
+      },
+    };
+    const p = new Poller(fakeRegistry(adapter, [], []), liveStore);
+
+    const scheduled = (p as unknown as Tickable).tick('mist');
+    const forced = p.syncNowFor('mist' as never);
+    // The forced call must not resolve while the scheduled pull is running: a
+    // pull started before the write cannot evidence it.
+    releaseFirst({ devices: [] });
+    await scheduled;
+
+    expect(await forced).toBe('ok');
+    expect(pulls).toBe(2);
+  });
+
+  /* The lock is deliberately held past the poll timeout when a vendor call has
+     been abandoned, which can outlast anything a caller will wait for. The
+     wait is bounded and the original honest answer stands. */
+  it('gives up waiting and still reports the skip rather than hanging', async () => {
+    vi.useFakeTimers();
+    process.env.HPE_POLL_TIMEOUT_MS = '5000';
+    const { Poller } = await import('../src/services/poller');
+    const adapter = {
+      state: () => ({ linked: true, deviceCount: 1 }),
+      pull: () => new Promise(() => {}), // never settles
+    };
+    const p = new Poller(fakeRegistry(adapter, [], []), liveStore);
+
+    void (p as unknown as Tickable).tick('mist');
+    await Promise.resolve();
+    const forced = p.syncNowFor('mist' as never);
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(await forced).toBe('skipped');
+  });
+
   it('leaves a pull that finishes in time completely alone', async () => {
     process.env.HPE_POLL_TIMEOUT_MS = '2000';
     const { Poller } = await import('../src/services/poller');

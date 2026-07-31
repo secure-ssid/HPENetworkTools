@@ -149,12 +149,20 @@ interface TickOutcome {
 
 const skip = (reason: SyncSkipReason): TickOutcome => ({ result: 'skipped', reason });
 
+/** How long syncNowFor() waits for a colliding scheduled pull before giving up
+ *  and reporting the skip. Long enough to cover an ordinary plane read, short
+ *  enough that an operator waiting on a write result is not left hanging. */
+const IN_FLIGHT_WAIT_MS = 10_000;
+
 export class Poller {
   private timers = new Map<PlaneId, NodeJS.Timeout>();
   private contributions = new Map<PlaneId, PlanePull>(); // last good pull per plane
   private syncLog: SyncEvent[] = [];
   private running = false;
-  private inFlight = new Set<PlaneId>(); // planes with an unsettled tick
+  /** Planes with an unsettled tick → a promise that resolves when the lock is
+   *  released. The promise is what lets syncNowFor() wait for a scheduled pull
+   *  it collided with instead of reporting a skip the caller cannot act on. */
+  private inFlight = new Map<PlaneId, Promise<void>>();
   private generations = new Map<PlaneId, number>(); // invalidates pulls started before a plane re-init
 
   constructor(
@@ -305,6 +313,32 @@ export class Poller {
    * immediately, not after the next 60s poll tick.
    */
   async syncNowFor(id: PlaneId): Promise<TickResult> {
+    const first = await this.tick(id, true);
+    if (first.reason !== 'in-flight') return first.result;
+    // The caller wants the cache to contain a change that has just been made.
+    // A pull already running when they asked was started BEFORE it, so it
+    // cannot contain it — waiting for that one and calling it a refresh would
+    // be a lie, and reporting 'skipped' leaves the write invisible over a
+    // collision the operator can neither see nor influence. So wait for the
+    // scheduled pull to release the lock and then take a real turn.
+    //
+    // Bounded, because tick() deliberately holds the lock past its own timeout
+    // when a vendor call has been abandoned (see its finally block), and that
+    // can outlast anything a caller is willing to wait for. If the wait runs
+    // out, the original honest 'skipped' stands.
+    const settled = this.inFlight.get(id);
+    if (!settled) return (await this.tick(id, true)).result;
+    let timer: NodeJS.Timeout | undefined;
+    const released = await Promise.race([
+      settled.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), IN_FLIGHT_WAIT_MS);
+        // Never hold the process open for a refresh nobody is waiting on.
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!released) return first.result;
     return (await this.tick(id, true)).result;
   }
 
@@ -336,7 +370,17 @@ export class Poller {
     // A slow pull (minutes) against a short interval must not stack up —
     // skip this tick if the plane's previous one hasn't settled yet.
     if (this.inFlight.has(id)) return skip('in-flight');
-    this.inFlight.add(id);
+    let release!: () => void;
+    this.inFlight.set(
+      id,
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const releaseLock = () => {
+      this.inFlight.delete(id);
+      release();
+    };
     let pending: Promise<PlanePull> | null = null;
     try {
       if (!force && !this.scheduledPollingEnabled()) return skip('polling-off');
@@ -437,12 +481,9 @@ export class Poller {
         // Hold the lock until it settles: releasing now would let the next
         // tick start a second concurrent pull against a plane already
         // struggling, and let a late reply overwrite a fresher one.
-        void pending.then(
-          () => this.inFlight.delete(id),
-          () => this.inFlight.delete(id),
-        );
+        void pending.then(releaseLock, releaseLock);
       } else {
-        this.inFlight.delete(id);
+        releaseLock();
       }
     }
   }
