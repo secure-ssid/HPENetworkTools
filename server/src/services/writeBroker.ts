@@ -783,7 +783,7 @@ export class WriteBroker {
   }
 
   /**
-   * The same read, plus the generations it could not open.
+   * The same read, plus what it did not see.
    *
    * Callers that render the audit log to an operator must use this one. An
    * unreadable generation makes the log come back short — and a short audit
@@ -791,15 +791,21 @@ export class WriteBroker {
    * "Nothing was brokered here" and "part of the record is unreachable" are
    * opposite claims and the drawer must never substitute the first for the
    * second.
+   *
+   * `truncated` is the same claim about the other cause of a short read: the
+   * limit was reached and there were more events behind it. A caller taking a
+   * WINDOW (the four most recent) expects that and should ignore it. A caller
+   * COUNTING (how many pushes today) must not — its total is then a floor,
+   * not a total.
    */
-  readRecentEvents(limit = 4): { events: BrokerEventRow[]; unreadable: string[] } {
+  readRecentEvents(limit = 4): { events: BrokerEventRow[]; unreadable: string[]; truncated: boolean } {
     // Reads across rotated generations. Without that, the first rotation would
     // make the Change history drawer look as though everything before it never
     // happened — the entries are still on disk.
     const isEvent = (v: unknown): v is BrokerEventRow =>
       typeof v === 'object' && v !== null && typeof (v as { ts?: unknown }).ts === 'string';
     const read = readJsonlNewestFirst<BrokerEventRow>(this.logFile, limit, isEvent);
-    return { events: read.entries, unreadable: read.unreadable };
+    return { events: read.entries, unreadable: read.unreadable, truncated: read.truncated };
   }
 
   // -- push -------------------------------------------------------------------

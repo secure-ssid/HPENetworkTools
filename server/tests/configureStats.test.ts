@@ -42,10 +42,15 @@ function push(result: string, id = 'c1'): Record<string, unknown> {
   };
 }
 
-function stubLog(events: Record<string, unknown>[], unreadable: string[] = []): void {
+function stubLog(
+  events: Record<string, unknown>[],
+  unreadable: string[] = [],
+  truncated = false,
+): void {
   vi.spyOn(writeBroker, 'readRecentEvents').mockReturnValue({
     events: events as never,
     unreadable,
+    truncated,
   });
 }
 
@@ -116,6 +121,32 @@ describe('Configure "Pushed today" tile', () => {
     expect(tile.delta).toContain('count may be short');
     expect(tile.tone).toBe('neutral');
     expect(tile.tone).not.toBe('positive');
+  });
+
+  /* The other way the count goes short, and the one that needs nothing to go
+   * wrong. The read takes the newest 1000 broker events of every kind and
+   * only then keeps today's pushes, so a busy enough day loses its earliest
+   * pushes off the back of the window — with the log perfectly healthy. */
+  it('declines to be certain when the read stopped at its own limit', () => {
+    stubLog([push('applied', 'c1')], [], true);
+
+    const tile = pushedTile();
+    expect(tile.value).toBe('1');
+    expect(tile.delta).toContain('count may be short');
+    expect(tile.delta).toContain('1000 broker events');
+    expect(tile.tone).toBe('neutral');
+    expect(tile.tone).not.toBe('positive');
+    expect(pushOutcomesToday().truncated).toBe(true);
+  });
+
+  /* Both caveats mean the same thing — "at least this many" — and the tile
+   * gets one sentence for it, not two arguing over which shortfall to blame. */
+  it('says the count may be short once, however many reasons there are', () => {
+    stubLog([push('applied', 'c1')], ['change-log.1.jsonl'], true);
+
+    const tile = pushedTile();
+    expect(tile.delta.match(/count may be short/g)).toHaveLength(1);
+    expect(tile.delta).toContain('unreadable');
   });
 
   // The fix fails by painting every day amber, so the clean day is pinned.

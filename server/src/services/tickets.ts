@@ -112,6 +112,8 @@ export interface BrokerLogRead {
   /** Spans deleted by retention; bounds are null when they could not be read. */
   discarded: { from: string | null; to: string | null }[];
   unreadable: string[];
+  /** True when the read hit its cap and older entries exist behind it. */
+  truncated: boolean;
 }
 
 export interface EvidenceSources {
@@ -329,7 +331,7 @@ export class TicketStore {
     // of its own, because evidence is snapshotted onto the ticket and the
     // gap has to travel with it — a caveat left in the server log is not
     // attached to the thing an auditor reads a year from now.
-    if (log.discarded.length > 0 || log.unreadable.length > 0) {
+    if (log.discarded.length > 0 || log.unreadable.length > 0 || log.truncated) {
       const spans = log.discarded
         .filter((g) => g.from !== null && g.to !== null)
         .map((g) => `${g.from}..${g.to}`);
@@ -341,6 +343,7 @@ export class TicketStore {
         raw:
           `source=change-log discarded=${log.discarded.length}` +
           ` unreadable=${log.unreadable.length}` +
+          (log.truncated ? ` truncated=${CHANGE_LOG_READ_LIMIT}` : '') +
           (spans.length > 0 ? ` covering=${spans.join(',')}` : ''),
         device,
       });
@@ -396,13 +399,23 @@ export class TicketStore {
         `ticket evidence is incomplete — unreadable change-log generations: ${read.unreadable.join(', ')}`,
       );
     }
+    // The cap is the other way this comes back short, and unlike an
+    // unreadable generation it needs nothing to go wrong: a long enough
+    // history reaches it on a working disk. Newest-first means what falls off
+    // is the OLDEST, which is the half of a change log an audit is usually
+    // asking about.
+    if (read.truncated) {
+      console.error(
+        `ticket evidence is incomplete — change log longer than the ${CHANGE_LOG_READ_LIMIT}-entry read limit; older entries not searched`,
+      );
+    }
     const entries: BrokerLogEntry[] = [];
     const discarded: BrokerLogRead['discarded'] = [];
     for (const row of read.entries) {
       if (isRetentionTombstone(row)) discarded.push({ from: row.coveringFrom ?? null, to: row.coveringTo ?? null });
       else entries.push(row);
     }
-    return { entries: entries.reverse(), discarded, unreadable: read.unreadable };
+    return { entries: entries.reverse(), discarded, unreadable: read.unreadable, truncated: read.truncated };
   }
 
   /**

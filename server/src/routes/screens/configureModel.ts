@@ -235,16 +235,28 @@ export function demoConfigureQueue(): QueuedChangeRow[] {
  * come back short, and a count taken over a short log is a smaller number
  * reported with full confidence. `unreadable` carries that out to the tile
  * so it can decline to be certain.
+ *
+ * `truncated` is the second way this count goes short, and the likelier one.
+ * The read takes the newest EVENTS_READ of every kind — queue, discard, push
+ * — and only then keeps today's pushes, so a day busy enough to fill the
+ * window loses its earliest pushes to it. Newest-first means the ones that
+ * fall off are the start of the day, which is precisely the stretch an
+ * operator counting today's work would not notice missing. It rides out
+ * beside `unreadable` because the tile's answer is the same either way: this
+ * is a floor, not a total.
  */
+const EVENTS_READ = 1000;
+
 export function pushOutcomesToday(): {
   applied: number;
   accepted: number;
   failed: number;
   total: number;
   unreadable: number;
+  truncated: boolean;
 } {
   const today = new Date().toISOString().slice(0, 10);
-  const read = writeBroker.readRecentEvents(1000);
+  const read = writeBroker.readRecentEvents(EVENTS_READ);
   const pushes = read.events.filter((event) => event.ts.startsWith(today) && event.event === 'push');
   const applied = pushes.filter((event) => event.result.startsWith('applied')).length;
   const accepted = pushes.filter((event) => event.result.startsWith('accepted')).length;
@@ -254,6 +266,7 @@ export function pushOutcomesToday(): {
     failed: pushes.length - applied - accepted,
     total: pushes.length,
     unreadable: read.unreadable.length,
+    truncated: read.truncated,
   };
 }
 
@@ -290,6 +303,7 @@ export function liveConfigureStats(
     accepted: acceptedToday,
     failed: failedToday,
     unreadable: unreadableLogs,
+    truncated: logTruncated,
   } = pushOutcomesToday();
   const pushDetail =
     [
@@ -297,6 +311,12 @@ export function liveConfigureStats(
       acceptedToday > 0 ? `${acceptedToday} accepted, unconfirmed` : null,
       unreadableLogs > 0
         ? `${unreadableLogs} log generation${unreadableLogs === 1 ? '' : 's'} unreadable — count may be short`
+        : null,
+      // Said only when the other caveat is absent: both mean "at least this
+      // many", and one sentence to that effect is the honest amount. Two is
+      // a tile arguing with itself.
+      logTruncated && unreadableLogs === 0
+        ? `read stopped at the newest ${EVENTS_READ} broker events — count may be short`
         : null,
     ]
       .filter((part): part is string => part !== null)
@@ -325,7 +345,7 @@ export function liveConfigureStats(
       tone:
         failedToday > 0
           ? 'negative'
-          : pushedToday > 0 && acceptedToday === 0 && unreadableLogs === 0
+          : pushedToday > 0 && acceptedToday === 0 && unreadableLogs === 0 && !logTruncated
             ? 'positive'
             : 'neutral',
     },

@@ -153,7 +153,63 @@ describe('readJsonlNewestFirst', () => {
   });
 
   it('is an empty list, not an error, when nothing has been written', () => {
-    expect(readJsonlNewestFirst<Row>(join(dir, 'nope.jsonl'), 10, isRow)).toEqual({ entries: [], unreadable: [] });
+    expect(readJsonlNewestFirst<Row>(join(dir, 'nope.jsonl'), 10, isRow)).toEqual({
+      entries: [],
+      unreadable: [],
+      truncated: false,
+    });
+  });
+});
+
+/**
+ * The cap.
+ *
+ * `unreadable` was added because a generation that will not open makes the
+ * read come back short, and a short read looks exactly like a quiet period.
+ * The limit does the same thing for no reason at all — no permission problem,
+ * no bad sector, just more history than the caller asked for — and it was the
+ * one cause of a short read that said nothing. Callers that take a window
+ * (the four most recent changes) do not care. Callers that COUNT — pushes
+ * today, a ticket's evidence trail — were reporting a floor as a total.
+ */
+describe('a read that stopped at its limit says so', () => {
+  it('reports truncation when an entry existed past the limit', () => {
+    write(file, [{ ts: 'a', n: 1 }, { ts: 'b', n: 2 }, { ts: 'c', n: 3 }]);
+    const read = readJsonlNewestFirst<Row>(file, 2, isRow);
+    expect(read.entries.map((r) => r.n)).toEqual([3, 2]);
+    expect(read.truncated).toBe(true);
+  });
+
+  it('does not cry truncation over a read that ended exactly on the limit', () => {
+    // A false caveat is its own dishonesty: it tells an operator the record
+    // has a hole in it when the record is whole.
+    write(file, [{ ts: 'a', n: 1 }, { ts: 'b', n: 2 }]);
+    expect(readJsonlNewestFirst<Row>(file, 2, isRow).truncated).toBe(false);
+  });
+
+  it('finds the proof in the next generation when the live file ends on the limit', () => {
+    // The evidence that something was left behind is not always in the file
+    // the read filled up on.
+    write(generationPath(file, 1), [{ ts: 'a', n: 1 }]);
+    write(file, [{ ts: 'b', n: 2 }, { ts: 'c', n: 3 }]);
+    expect(readJsonlNewestFirst<Row>(file, 2, isRow).truncated).toBe(true);
+  });
+
+  it('does not count trailing junk as history that was left behind', () => {
+    // A torn line past the limit is not an entry this caller would have
+    // returned, so it is not a gap in what this caller reads.
+    writeFileSync(file, `{"ts":"torn"\n${JSON.stringify({ ts: 'b', n: 2 })}\n${JSON.stringify({ ts: 'c', n: 3 })}\n`);
+    const read = readJsonlNewestFirst<Row>(file, 2, isRow);
+    expect(read.entries.map((r) => r.n)).toEqual([3, 2]);
+    expect(read.truncated).toBe(false);
+  });
+
+  it('applies the same rule to the raw-line reader', () => {
+    writeFileSync(file, 'one\n\ntwo\nthree\n');
+    expect(readLinesNewestFirst(file, 3).truncated).toBe(false);
+    const capped = readLinesNewestFirst(file, 2);
+    expect(capped.entries).toEqual(['three', 'two']);
+    expect(capped.truncated).toBe(true);
   });
 });
 
@@ -229,7 +285,11 @@ describe('a generation that exists but cannot be read', () => {
   it('distinguishes an unreadable log from one that was never written', () => {
     // Nothing on disk at all: the caller's "nothing has been brokered here"
     // empty state is the honest reading.
-    expect(readJsonlNewestFirst<Row>(file, 10, isRow)).toEqual({ entries: [], unreadable: [] });
+    expect(readJsonlNewestFirst<Row>(file, 10, isRow)).toEqual({
+      entries: [],
+      unreadable: [],
+      truncated: false,
+    });
 
     // The live file exists and cannot be read: same empty list, opposite
     // meaning. Only `unreadable` tells them apart.
@@ -248,14 +308,31 @@ describe('a generation that exists but cannot be read', () => {
     expect(read.unreadable).toEqual(['change-log.1.jsonl']);
   });
 
-  it('does not scan generations it never needed, so they are not falsely blamed', () => {
-    // The limit is met by the live file. A later generation being unreadable
-    // is not a hole in *this* answer, so claiming one would be its own lie.
-    write(file, [{ ts: 'b', n: 2 }, { ts: 'c', n: 3 }]);
+  it('stops at the entry past the limit, so deeper generations are not falsely blamed', () => {
+    // The live file itself proves there is more behind the limit, so the read
+    // ends there and never touches the rotated generation. Blaming a file it
+    // had no reason to open would be its own lie.
+    write(file, [{ ts: 'a', n: 1 }, { ts: 'b', n: 2 }, { ts: 'c', n: 3 }]);
     mkdirSync(generationPath(file, 1));
 
     const read = readJsonlNewestFirst<Row>(file, 2, isRow);
     expect(read.entries.map((r) => r.n)).toEqual([3, 2]);
     expect(read.unreadable).toEqual([]);
+    expect(read.truncated).toBe(true);
+  });
+
+  it('names the generation it had to open to answer whether anything was left behind', () => {
+    // The limit lands exactly on the live file's last entry, so whether the
+    // history goes further is a question only the next generation can answer
+    // — and it will not open. Previously the read stopped here and reported a
+    // clean, complete-looking result. "I could not tell" and "there was
+    // nothing more" are opposite claims, and `unreadable` is where the first
+    // one is already said.
+    write(file, [{ ts: 'b', n: 2 }, { ts: 'c', n: 3 }]);
+    mkdirSync(generationPath(file, 1));
+
+    const read = readJsonlNewestFirst<Row>(file, 2, isRow);
+    expect(read.entries.map((r) => r.n)).toEqual([3, 2]);
+    expect(read.unreadable).toEqual(['change-log.1.jsonl']);
   });
 });

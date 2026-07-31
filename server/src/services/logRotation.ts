@@ -206,6 +206,18 @@ export interface JsonlRead<T> {
   entries: T[];
   /** Basenames of generations that exist but could not be read. Empty is the good case. */
   unreadable: string[];
+  /**
+   * True when `limit` was reached and at least one further entry existed.
+   *
+   * `unreadable` covers history that could not be opened; this covers history
+   * that was deliberately not read. Both make `entries` shorter than the
+   * record, and a caller that COUNTS the result — pushes today, a ticket's
+   * evidence trail — reports a smaller number with full confidence unless it
+   * is told. For a caller that asked for a window on purpose (the four most
+   * recent changes) this is the expected case and means nothing; the rule is
+   * the same one `unreadable` follows, that the reader must be able to tell.
+   */
+  truncated: boolean;
 }
 
 /** Shared traversal for both readers. `take` returns false once it has enough. */
@@ -243,13 +255,26 @@ export function readLinesNewestFirst(
   keep = DEFAULT_POLICY.keep,
 ): JsonlRead<string> {
   const entries: string[] = [];
+  let truncated = false;
   const unreadable = eachGeneration(file, keep, (lines) => {
-    for (let i = lines.length - 1; i >= 0 && entries.length < limit; i -= 1) {
-      if (lines[i].trim()) entries.push(lines[i]);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (!lines[i].trim()) continue;
+      // Full, and here is one more line that would have been taken. That is
+      // the only thing that proves truncation: a read that ends exactly on
+      // the limit with nothing behind it is complete, and saying otherwise
+      // would raise a caveat about a record that has no gap in it.
+      if (entries.length >= limit) {
+        truncated = true;
+        return false;
+      }
+      entries.push(lines[i]);
     }
-    return entries.length < limit;
+    // Keep going even when full. The proof may be the first line of the next
+    // generation, and the traversal stops the moment it is found, so the
+    // common case still reads one file.
+    return true;
   });
-  return { entries, unreadable };
+  return { entries, unreadable, truncated };
 }
 
 /**
@@ -272,18 +297,29 @@ export function readJsonlNewestFirst<T>(
   keep = DEFAULT_POLICY.keep,
 ): JsonlRead<T> {
   const entries: T[] = [];
+  let truncated = false;
   const unreadable = eachGeneration(file, keep, (lines) => {
-    for (let i = lines.length - 1; i >= 0 && entries.length < limit; i -= 1) {
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
       const line = lines[i];
       if (!line.trim()) continue;
+      let parsed: unknown;
       try {
-        const parsed: unknown = JSON.parse(line);
-        if (accept(parsed)) entries.push(parsed);
+        parsed = JSON.parse(line);
       } catch {
         // torn or corrupt line — skip it, keep the rest
+        continue;
       }
+      if (!accept(parsed)) continue;
+      // See readLinesNewestFirst: truncation is only claimed once an entry
+      // that WOULD have been kept is found past the limit. A trailing run of
+      // corrupt or foreign lines is not a gap in what this caller reads.
+      if (entries.length >= limit) {
+        truncated = true;
+        return false;
+      }
+      entries.push(parsed);
     }
-    return entries.length < limit;
+    return true;
   });
-  return { entries, unreadable };
+  return { entries, unreadable, truncated };
 }

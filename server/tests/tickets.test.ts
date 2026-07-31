@@ -24,6 +24,7 @@ const logOf = (entries: BrokerLogEntry[] = []): BrokerLogRead => ({
   entries,
   discarded: [],
   unreadable: [],
+  truncated: false,
 });
 
 describe('TicketStore', () => {
@@ -224,6 +225,7 @@ describe('TicketStore evidence collection', () => {
         entries: [],
         discarded: [{ from: '2026-01-05T12:00:00Z', to: '2026-02-11T12:00:00Z' }],
         unreadable: [],
+        truncated: false,
       }),
     });
 
@@ -240,7 +242,7 @@ describe('TicketStore evidence collection', () => {
     const store = new TicketStore(dir, {
       devices: () => [],
       sessions: () => [],
-      changeLog: () => ({ entries: [], discarded: [], unreadable: ['change-log.2.jsonl'] }),
+      changeLog: () => ({ entries: [], discarded: [], unreadable: ['change-log.2.jsonl'], truncated: false }),
     });
 
     const t = store.raiseFromAlert(ALERT);
@@ -251,13 +253,43 @@ describe('TicketStore evidence collection', () => {
     expect(gap?.raw).not.toContain('covering=');
   });
 
+  /* Evidence is snapshotted onto the ticket and read by an auditor a year
+   * later. The change log is read newest-first and capped, so what falls off
+   * the cap is the OLDEST — the half an audit is usually asking about. A
+   * healthy disk is enough to cause it; nothing has to go wrong. */
+  it('records a change log longer than it was willing to read as a gap in the evidence', () => {
+    const store = new TicketStore(dir, {
+      devices: () => [],
+      sessions: () => [],
+      changeLog: () => ({ entries: [], discarded: [], unreadable: [], truncated: true }),
+    });
+
+    const t = store.raiseFromAlert(ALERT);
+    const gap = t.evidence.find((e) => e.finding.includes('incomplete'));
+    expect(gap).toBeTruthy();
+    expect(gap?.raw).toContain('truncated=');
+    expect(gap?.raw).toContain('discarded=0');
+    expect(gap?.raw).toContain('unreadable=0');
+  });
+
+  it('claims no gap at all when the log was read whole', () => {
+    // The caveat has to stay rare or it stops being read.
+    const store = new TicketStore(dir, {
+      devices: () => [],
+      sessions: () => [],
+      changeLog: () => ({ entries: [], discarded: [], unreadable: [], truncated: false }),
+    });
+
+    expect(store.raiseFromAlert(ALERT).evidence.some((e) => e.finding.includes('incomplete'))).toBe(false);
+  });
+
   // timeSpan returns null when the deleted generation's own lines would not
   // parse. The gap is still a fact; only its width is unknown.
   it('states a discarded stretch whose span is unknown without inventing one', () => {
     const store = new TicketStore(dir, {
       devices: () => [],
       sessions: () => [],
-      changeLog: () => ({ entries: [], discarded: [{ from: null, to: null }], unreadable: [] }),
+      changeLog: () => ({ entries: [], discarded: [{ from: null, to: null }], unreadable: [], truncated: false }),
     });
 
     const t = store.raiseFromAlert(ALERT);
@@ -277,6 +309,7 @@ describe('TicketStore evidence collection', () => {
         ],
         discarded: [{ from: '2026-01-05T12:00:00Z', to: '2026-02-11T12:00:00Z' }],
         unreadable: [],
+        truncated: false,
       }),
     });
 
