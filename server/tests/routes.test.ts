@@ -999,6 +999,61 @@ describe('live-mode screen contracts', () => {
     expect(body.unsearchedPlanes).not.toContain('Mist');
   });
 
+  /* The compliance route's only guard was datasetReported('devices'), which is
+   * true the moment ANY plane answers. A run over the devices one plane
+   * returned, while another linked plane's whole inventory went unread,
+   * produced a full coverage report and a green "Sites complete". Compliance
+   * is the screen an operator would screenshot for an audit. */
+  it('marks the scan partial, drops the green, and says so in the evidence text', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const mist = registry.get('mist').state();
+    const previous = { ...mist };
+    contributions.clear();
+    // Link a second plane and have it contribute nothing, so the run covers
+    // central's device but not mist's estate.
+    Object.assign(mist, { linked: true, health: 'healthy', lastSync: new Date().toISOString() });
+    contributions.set('central', { devices: [DEVICE] });
+
+    try {
+      const { body } = await getJson('/api/compliance');
+      expect(body.missingInventories).toContain('MIST');
+
+      const sitesComplete = (body.stats as any[]).find((t) => t.label === 'Sites complete');
+      // Every site in a one-device run is "complete", so this tile used to be
+      // green regardless of how much of the estate was missing.
+      expect(sitesComplete.tone).not.toBe('positive');
+      expect(sitesComplete.delta).toContain('MIST');
+
+      const findings = (body.stats as any[]).find((t) => t.label === 'Coverage findings');
+      expect(findings.tone).not.toBe('positive');
+
+      const scope = (body.stats as any[]).find((t) => t.label === 'Devices in scope');
+      expect(scope.delta).not.toBe('from live inventory');
+      expect(scope.delta).toContain('short of the estate');
+
+      // The evidence text is the copy-pasteable artifact; scope must survive
+      // being copied out of the banner's reach.
+      expect(body.diff).toContain('MIST');
+      expect(body.diff).toContain('does not cover them');
+    } finally {
+      Object.assign(mist, previous);
+      contributions.clear();
+    }
+  });
+
+  it('keeps the clean green result when every linked inventory is in the run', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [DEVICE] });
+    const { body } = await getJson('/api/compliance');
+    expect(body.missingInventories).toEqual([]);
+    const sitesComplete = (body.stats as any[]).find((t) => t.label === 'Sites complete');
+    // The fix must not grey out every compliance run forever.
+    expect(sitesComplete.tone).toBe('positive');
+    expect(sitesComplete.delta).toBe('for available evidence fields');
+    expect(body.diff).not.toContain('does not cover them');
+    contributions.clear();
+  });
+
   it('rejects malformed inventory parents and cursors instead of returning an unbounded or failed response', async () => {
     expect((await getJson('/api/inventory/tree?parent=site%3A%25')).status).toBe(400);
     expect((await getJson('/api/inventory/tree?cursor=-1')).status).toBe(400);

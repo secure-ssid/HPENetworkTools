@@ -1529,9 +1529,18 @@ screensRouter.get('/compliance', (_req, res) => {
     // plane reports inventory, serve the live evidence-coverage run instead —
     // Compliance was the last screen still pinned to fixtures under a blend.
     if (blendFor('compliance') && datasetReported('devices')) {
-      const blendCompliance = liveComplianceData(liveDeviceData().devices);
+      const blendMissing = planesMissingDataset('devices');
+      const blendCompliance = liveComplianceData(liveDeviceData().devices, blendMissing);
       res.json(
-        withBlended(envelopeFor('compliance', { ...blendCompliance, evidenceMode: 'coverage' }), ['compliance'], 'compliance'),
+        withBlended(
+          envelopeFor('compliance', {
+            ...blendCompliance,
+            missingInventories: blendMissing,
+            evidenceMode: 'coverage',
+          }),
+          ['compliance'],
+          'compliance',
+        ),
       );
       return;
     }
@@ -1547,12 +1556,17 @@ screensRouter.get('/compliance', (_req, res) => {
     return;
   }
   const devicesReported = datasetReported('devices');
+  // datasetReported is true as soon as ONE plane answers. Naming the planes
+  // that did not keeps a coverage run over a fraction of the estate from
+  // reading as a verdict on all of it.
+  const missingInventories = planesMissingDataset('devices');
   const compliance = devicesReported
-    ? liveComplianceData(liveDeviceData().devices)
+    ? liveComplianceData(liveDeviceData().devices, missingInventories)
     : { stats: [], findings: [], baselines: [], diff: '' };
   res.json(
     envelopeFor('compliance', {
       ...compliance,
+      missingInventories,
       evidenceMode: devicesReported ? 'coverage' : 'unavailable',
     }),
   );

@@ -151,3 +151,50 @@ describe('Compliance with no live evidence', () => {
     expect(alert.closest('[style*="width: 210px"]')).toBeNull();
   });
 });
+
+/* evidenceMode 'coverage' only means SOMETHING was read. The route's guard is
+ * datasetReported('devices'), true as soon as one plane answers — so a scan
+ * over one plane's devices while another linked plane's whole inventory went
+ * unread rendered as an ordinary, complete coverage report. This is the screen
+ * an operator would screenshot for an audit. */
+describe('Compliance scan scope', () => {
+  it('says which planes the scan does not cover, above everything it claims', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      missingInventories: ['CENTRAL', 'MIST'],
+    } as ComplianceData);
+    renderCompliance();
+
+    expect(await screen.findByText('This scan does not cover CENTRAL, MIST')).toBeTruthy();
+    expect(screen.getByText(/not a verdict on the estate/)).toBeTruthy();
+  });
+
+  it('uses the singular when exactly one plane is missing', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      missingInventories: ['CENTRAL'],
+    } as ComplianceData);
+    renderCompliance();
+
+    expect(await screen.findByText('This scan does not cover CENTRAL')).toBeTruthy();
+    expect(screen.getByText(/That plane is linked but contributed no device inventory/)).toBeTruthy();
+  });
+
+  it('stays silent when the scan covers every linked inventory', async () => {
+    mockGetCompliance.mockResolvedValue({ ...LIVE_COVERAGE, missingInventories: [] } as ComplianceData);
+    renderCompliance();
+
+    await waitFor(() => expect(mockGetCompliance).toHaveBeenCalled());
+    expect(screen.queryByText(/does not cover/)).toBeNull();
+  });
+
+  it('stays silent when the route said nothing about scan scope', async () => {
+    // Absent is not empty: an older server that never looked must not render
+    // as one that looked and found the scan complete.
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    renderCompliance();
+
+    await waitFor(() => expect(mockGetCompliance).toHaveBeenCalled());
+    expect(screen.queryByText(/does not cover/)).toBeNull();
+  });
+});

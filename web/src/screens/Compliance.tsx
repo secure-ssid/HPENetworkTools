@@ -204,6 +204,24 @@ export default function Compliance() {
         }
       />
 
+      {/* The scope warning leads. Everything below it — findings, tiles, the
+          evidence text — is a claim about the estate, and this says how much
+          of the estate it was derived from. */}
+      {(data.missingInventories ?? []).length > 0 ? (
+        <Alert
+          tone="warning"
+          title={`This scan does not cover ${(data.missingInventories ?? []).join(', ')}`}
+        >
+          <span>
+            {(data.missingInventories ?? []).length === 1
+              ? 'That plane is linked but contributed no device inventory, so none of its devices were checked.'
+              : 'Those planes are linked but contributed no device inventory, so none of their devices were checked.'}{' '}
+            A clean result below is a clean result for the planes that answered — it is not a verdict on the estate,
+            and should not be reported as one.
+          </span>
+        </Alert>
+      ) : null}
+
       {/* Page-level status Alerts sit in the body, not in the header action row. */}
       {data.evidenceMode === 'coverage' ? (
         <Alert tone="info" title="Coverage findings are not configuration drift">

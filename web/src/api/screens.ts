@@ -248,6 +248,10 @@ export interface ComplianceData extends ScreenEnvelope {
   baselines: BaselineProgressRow[];
   diff: string;
   evidenceMode: 'baseline' | 'coverage' | 'unavailable';
+  /** Linked planes that contributed no inventory, so this run does not cover
+   *  them. `evidenceMode: 'coverage'` only means SOMETHING was read. Absent
+   *  means the route did not say; empty means it looked and the run is whole. */
+  missingInventories?: Plane[];
 }
 
 export interface SearchIndexData extends ScreenEnvelope {

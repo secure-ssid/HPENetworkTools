@@ -115,7 +115,22 @@ export function evidenceChecksFor(device: ReconciledDeviceRow): DeviceCheckRow[]
   });
 }
 
-export function liveComplianceData(devices: ReconciledDeviceRow[]): LiveComplianceData {
+/**
+ * `missingInventories` names linked planes that contributed no device list to
+ * this run. The route's only guard was datasetReported('devices'), which is
+ * true as soon as ANY plane answers — so a run over the two devices Mist
+ * returned, while Central's five hundred went unread, produced a full
+ * coverage report and a green "Sites complete 1 / 1".
+ *
+ * Compliance is the screen whose entire purpose is making a truth claim about
+ * the estate. A green scorecard derived from a fraction of it is the worst
+ * version of the mistake this codebase keeps guarding against, because it is
+ * the screen an operator would screenshot for an audit.
+ */
+export function liveComplianceData(
+  devices: ReconciledDeviceRow[],
+  missingInventories: readonly string[] = [],
+): LiveComplianceData {
   if (devices.length === 0) return { stats: [], findings: [], baselines: [], diff: '' };
 
   const checks = EVIDENCE_CHECKS;
@@ -175,21 +190,48 @@ export function liveComplianceData(devices: ReconciledDeviceRow[]): LiveComplian
       .map((device) => device.siteId),
   );
   const cleanSites = sites.size - affectedSites.size;
+  const partial = missingInventories.length > 0;
   const totalChecks = devices.length * checks.length;
   const failedChecks = checks.reduce((sum, check) => sum + devices.filter(check.missing).length, 0);
 
   return {
     stats: [
       { label: 'Evidence checks', value: String(totalChecks), delta: 'current poller snapshot', tone: 'neutral' },
-      { label: 'Devices in scope', value: String(devices.length), delta: 'from live inventory', tone: 'neutral' },
-      { label: 'Coverage findings', value: String(failedChecks), delta: `${findings.length} grouped finding${findings.length === 1 ? '' : 's'}`, tone: failedChecks > 0 ? 'negative' : 'positive' },
-      { label: 'Sites complete', value: `${cleanSites} / ${sites.size}`, delta: 'for available evidence fields', tone: cleanSites === sites.size ? 'positive' : 'neutral' },
+      {
+        label: 'Devices in scope',
+        value: String(devices.length),
+        // "from live inventory" implies the whole of it. Say which part.
+        delta: partial
+          ? `from ${missingInventories.length} unread inventor${missingInventories.length === 1 ? 'y' : 'ies'} short of the estate`
+          : 'from live inventory',
+        tone: 'neutral',
+      },
+      {
+        label: 'Coverage findings',
+        value: String(failedChecks),
+        delta: `${findings.length} grouped finding${findings.length === 1 ? '' : 's'}`,
+        // Zero findings over a partial estate is not a clean result, so it
+        // does not get the colour of one. Neutral rather than negative:
+        // nothing has actually failed a check — the run is just incomplete.
+        tone: failedChecks > 0 ? 'negative' : partial ? 'neutral' : 'positive',
+      },
+      {
+        label: 'Sites complete',
+        value: `${cleanSites} / ${sites.size}`,
+        delta: partial ? `${missingInventories.join(', ')} not in this run` : 'for available evidence fields',
+        tone: cleanSites === sites.size && !partial ? 'positive' : 'neutral',
+      },
       { label: 'Config drift', value: '—', delta: 'no running-config baseline source', tone: 'neutral' },
     ],
     findings,
     baselines,
     diff: [
       'Live evidence coverage',
+      // The evidence text is the copy-pasteable artifact. Its scope belongs
+      // in it, at the top, not only in a banner that does not survive a copy.
+      ...(partial
+        ? [`! Scope: ${missingInventories.join(', ')} contributed no inventory — this run does not cover them`]
+        : []),
       ...baselines.map((baseline) => `${baseline.value === 100 ? '+' : '-'} ${baseline.label}: ${baseline.note}`),
       '- Running configuration drift cannot be evaluated from inventory-only plane responses',
     ].join('\n'),
