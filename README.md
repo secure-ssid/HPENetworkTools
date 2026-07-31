@@ -23,6 +23,8 @@ HPE Aruba Networking SSE in one interface.
 - HPE Aruba Networking SSE inventory and reviewed CRUD with Commit handling.
 - Central webhook management with one-time HMAC-key handoff.
 - Recorded, allow-listed SSH terminal sessions for locally managed devices.
+- Central and Mist region pickers with full cluster/region lists.
+- EdgeConnect Orchestrator API key support (preferred for automation).
 - SSO via OpenID Connect (Authentik or any OIDC provider).
 - Demo, live, blended, and per-screen data-source controls.
 
@@ -38,7 +40,7 @@ HPE Aruba Networking SSE in one interface.
 | HPE UXI | Sensor fleet and test results |
 | HPE Aruba AOS-8 | Devices, clients, SSID profiles |
 | HPE Aruba AOS-CX | Local switch inventory via REST |
-| HPE Aruba EdgeConnect | SD-WAN appliance inventory and alarms |
+| HPE Aruba EdgeConnect | SD-WAN appliance inventory and alarms (API key or username/password) |
 | HPE OpsRamp | Resource inventory and alert feed |
 | HPE Aruba SSE | Connector and object inventory |
 | Local | Locally managed switch inventory |
