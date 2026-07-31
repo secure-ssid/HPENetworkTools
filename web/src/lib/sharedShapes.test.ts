@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  CLOCK_SKEW_TOLERANCE_MS,
   CONNECT_ENDPOINT_KEY,
   CONNECT_FIELDS,
   DEVICES,
@@ -64,6 +65,21 @@ describe('relativeAge — the fixtures own age vocabulary', () => {
     expect(relativeAge(undefined, NOW)).toBe('—');
     expect(relativeAge('not-a-date', NOW)).toBe('—');
   });
+
+  /* Almost every stamp the browser ages was written by another clock — the
+     portal server, or a plane. A few seconds of drift must not turn the
+     freshest value on the screen into the only one that cannot be read. */
+  it('reads a stamp a little ahead of this clock as brand new, not as absent', () => {
+    expect(relativeAge(ago(-2_000), NOW)).toBe('1s');
+    expect(relativeAge(ago(-CLOCK_SKEW_TOLERANCE_MS), NOW)).toBe('1s');
+  });
+
+  it('still refuses a stamp too far ahead to be drift', () => {
+    // A plane echoing 2099 is not a fresh device; it is a broken timestamp,
+    // and the callers that read '—' as "say nothing" are right to.
+    expect(relativeAge(ago(-CLOCK_SKEW_TOLERANCE_MS - 1_000), NOW)).toBe('—');
+    expect(relativeAge(ago(-40 * 86_400_000), NOW)).toBe('—');
+  });
 });
 
 describe('slaCountdown — a countdown, not a snapshot', () => {
@@ -90,6 +106,20 @@ describe('planeFreshness — staleness expires (design rule 1)', () => {
 
   it('treats a plane that has never synced as stale, not as healthy', () => {
     expect(planeFreshness(null, 90, NOW)).toEqual({ lastSync: null, ageSec: null, stale: true });
+  });
+
+  it('reads a stamp a little ahead of this clock as just-synced', () => {
+    expect(planeFreshness(ago(-5_000), 90, NOW)).toEqual({ lastSync: ago(-5_000), ageSec: 0, stale: false });
+  });
+
+  it('never lets a stamp from the future make a plane permanently fresh', () => {
+    // Clamping every future stamp to age 0 meant `ageSec` could never exceed
+    // the window, so `stale` could never become true: the plane's rows would
+    // be presented as current forever, which is the one outcome design rule 1
+    // exists to prevent. An unreadable age is stale, exactly as an unparseable
+    // stamp already was.
+    const ahead = ago(-3 * 86_400_000);
+    expect(planeFreshness(ahead, 90, NOW)).toEqual({ lastSync: ahead, ageSec: null, stale: true });
   });
 });
 

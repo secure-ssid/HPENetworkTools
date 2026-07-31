@@ -668,14 +668,39 @@ export function buildSiteTopology(
 // ---------------------------------------------------------------------------
 
 /**
+ * How far ahead of the reading clock a timestamp may be and still be aged.
+ *
+ * Nearly every stamp the browser ages was written by a different clock: the
+ * portal server stamps `raisedAt` and `lastSync`, and a plane stamps its own
+ * `lastSeen`. Two clocks a few seconds apart is ordinary NTP drift, not a bad
+ * timestamp — but arithmetic that only ever expects the past turns the very
+ * FRESHEST value into the one it cannot read, which is the wrong way round.
+ *
+ * Two minutes is far wider than drift between synchronised clocks and far
+ * narrower than any age worth rendering, so it separates skew from a stamp
+ * that is genuinely not an age (a plane echoing 2099, a bad epoch conversion)
+ * without letting one be read as the other.
+ */
+export const CLOCK_SKEW_TOLERANCE_MS = 120_000;
+
+/**
  * Compact relative age in the fixtures' own vocabulary ('40s', '12m', '6h',
  * '3d'), '—' when there is no timestamp to age from. Same shape the authored
  * rows use, so a live row and a demo row read identically.
+ *
+ * A stamp slightly ahead of this clock reads as the floor the function
+ * already uses for anything under a second — '1s' — rather than as no stamp
+ * at all. Callers treat '—' as an absent timestamp: Tickets falls back to the
+ * authored age string, and SiteTopology drops the "last seen" phrase entirely.
+ * Under the old rule a ticket raised one second ago by a server whose clock
+ * ran fractionally fast rendered worse than a ticket carrying no `raisedAt`
+ * at all, and a device a plane had only just seen said nothing about when.
  */
 export function relativeAge(iso: string | null | undefined, now: number = Date.now()): string {
   if (!iso) return '—';
   const ms = now - new Date(iso).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (!Number.isFinite(ms)) return '—';
+  if (ms < 0) return ms >= -CLOCK_SKEW_TOLERANCE_MS ? '1s' : '—';
   if (ms < 60_000) return `${Math.max(1, Math.floor(ms / 1000))}s`;
   const min = Math.floor(ms / 60_000);
   if (min < 60) return `${min}m`;
@@ -797,7 +822,16 @@ export function planeFreshness(
   if (!lastSync) return { lastSync: null, ageSec: null, stale: true };
   const ts = new Date(lastSync).getTime();
   if (!Number.isFinite(ts)) return { lastSync, ageSec: null, stale: true };
-  const ageSec = Math.max(0, Math.round((now - ts) / 1000));
+  const deltaMs = now - ts;
+  // The mirror of relativeAge's rule, and the more dangerous half. Clamping
+  // EVERY future stamp to age 0 — as this did — makes a plane stamped beyond
+  // any tolerance permanently fresh: `ageSec` can never exceed the window, so
+  // `stale` can never become true and its rows are presented as current
+  // forever. That is the one thing design rule 1 exists to stop. A stamp that
+  // far ahead is not an age, and gets the same answer as one that will not
+  // parse: unknown, and therefore stale.
+  if (deltaMs < -CLOCK_SKEW_TOLERANCE_MS) return { lastSync, ageSec: null, stale: true };
+  const ageSec = Math.max(0, Math.round(deltaMs / 1000));
   return { lastSync, ageSec, stale: ageSec > staleAfterSec };
 }
 

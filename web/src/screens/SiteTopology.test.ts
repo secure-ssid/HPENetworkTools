@@ -151,7 +151,8 @@ describe('buildLiveSiteTopology — layout without inventing facts', () => {
      1970. An invented 56-year outage is worse than no answer. */
   it('refuses to date an outage the plane put no stamp on', () => {
     const now = Date.parse('2026-03-01T12:00:00.000Z');
-    for (const lastSeen of [0, null, undefined, Number.NaN, 8.64e15 * 2, now + 60_000]) {
+    const unusable = [0, null, undefined, Number.NaN, 8.64e15 * 2, now + 3 * 86_400_000];
+    for (const lastSeen of unusable) {
       const diagram = buildLiveSiteTopology(
         live({ nodes: [{ ...node('SW', 'core-1', 'Switch'), status: 'DOWN', lastSeen }] }),
         [],
@@ -159,6 +160,22 @@ describe('buildLiveSiteTopology — layout without inventing facts', () => {
       );
       expect(diagram.nodes[0].state).toBe('down');
     }
+  });
+
+  /* A stamp a minute ahead is a third clock, not a missing one. `lastSeen` is
+     the PLANE's epoch, read against the browser's clock, and the two are never
+     synchronised — so a stamp slightly in the future is the plane saying "just
+     now". Refusing it dropped the phrase from exactly the devices the plane
+     had most recently seen, which is the wrong way round; the answer is only
+     ever as precise as the drift, and at this granularity that is fine. */
+  it('dates a device the plane stamped a moment into the future', () => {
+    const now = Date.parse('2026-03-01T12:00:00.000Z');
+    const diagram = buildLiveSiteTopology(
+      live({ nodes: [{ ...node('SW', 'core-1', 'Switch'), status: 'DOWN', lastSeen: now + 60_000 }] }),
+      [],
+      now,
+    );
+    expect(diagram.nodes[0].state).toBe('down · last seen 1s ago');
   });
 
   /* Eight cluster members are drawn as eight cards, which reads as eight
