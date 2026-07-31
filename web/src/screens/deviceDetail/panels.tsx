@@ -11,6 +11,7 @@ import {
   healthTone,
   joinFacts,
   pctText,
+  portAdminDown,
   portIsUp,
   statusTone,
 } from './facts';
@@ -148,12 +149,23 @@ export function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null;
       };
       return rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { numeric: true });
     });
+  /* Ports that are down because someone disabled them, counted over every
+     interface and not just the listed ones. A shut port with nothing plugged
+     into it does not earn a row — that is the whole point of the filter — but
+     it must not vanish either. "Why is this port dead" is answered by a
+     configuration change far more often than by a fault, and a switch whose
+     unused ports are shut by policy looks exactly like one where the wrong
+     twenty were shut by mistake unless the number is on the screen. */
+  const adminDown = all.filter((p) => portAdminDown(p) === true);
+  const hiddenAdminDown = adminDown.filter((p) => !interesting.includes(p)).length;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <SectionHeader
         label="Ports of interest"
         meta={
-          all.length > 0 ? `${interesting.length} OF ${all.length} CONNECTED` : undefined
+          all.length > 0
+            ? `${interesting.length} OF ${all.length} CONNECTED${adminDown.length > 0 ? ` · ${adminDown.length} ADMIN DOWN` : ''}`
+            : undefined
         }
       />
       {all.length === 0 ? (
@@ -166,7 +178,9 @@ export function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null;
         </LiveGapNote>
       ) : interesting.length === 0 ? (
         <LiveGapNote>
-          {`None of the ${all.length} interfaces ${plane} reported is connected — every port is down with no neighbour discovered.`}
+          {adminDown.length > 0
+            ? `None of the ${all.length} interfaces ${plane} reported is connected. ${adminDown.length} ${adminDown.length === 1 ? 'is' : 'are'} administratively down — shut in configuration, not a link fault${adminDown.length === all.length ? '' : ', and the rest are down with no neighbour discovered'}.`
+            : `None of the ${all.length} interfaces ${plane} reported is connected — every port is down with no neighbour discovered.`}
         </LiveGapNote>
       ) : (
         /* A table, not a paragraph per port. Every port answers the same
@@ -176,6 +190,11 @@ export function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null;
            repetition collapses and the outlier is the only thing that moves. */
         <PortTable rows={interesting} />
       )}
+      {interesting.length > 0 && hiddenAdminDown > 0 ? (
+        <LiveGapNote>
+          {`${hiddenAdminDown} further ${hiddenAdminDown === 1 ? 'port is' : 'ports are'} administratively down with no neighbour discovered, and ${hiddenAdminDown === 1 ? 'is' : 'are'} not listed above.`}
+        </LiveGapNote>
+      ) : null}
     </div>
   );
 }

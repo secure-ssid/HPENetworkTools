@@ -11,6 +11,7 @@ import {
 } from '../dataColumns';
 import {
   healthTone,
+  portAdminDown,
   joinFacts,
   sameMac,
   speedText,
@@ -213,9 +214,26 @@ export function PortTable({ rows }: { rows: DevicePort[] }) {
                 <PortCell key={c.key} value={c.value(p)} nowrap={c.nowrap} />
               ))}
               <Table.Cell>
-                <Badge tone={p.neighbourHealth ? healthTone(p.neighbourHealth) : statusTone(p.status)}>
-                  {p.neighbourHealth || p.status || '—'}
-                </Badge>
+                {/* A port someone shut is not a healthy port, whatever the
+                    plane's cached verdict on its neighbour still says. That
+                    verdict scored a link that is not passing traffic, and left
+                    in the Health column it renders GOOD in green on a port
+                    that is disabled — the answer to "why is the AP on 1/1/12
+                    offline" shown as evidence that nothing is wrong. The admin
+                    state takes the badge; the verdict stays, dimmed, so the
+                    reading is not lost, only demoted. */}
+                {portAdminDown(p) === true ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Badge tone="warning">ADMIN DOWN</Badge>
+                    {p.neighbourHealth ? (
+                      <span className="nt-cell-dim">{p.neighbourHealth}</span>
+                    ) : null}
+                  </span>
+                ) : (
+                  <Badge tone={p.neighbourHealth ? healthTone(p.neighbourHealth) : statusTone(p.status)}>
+                    {p.neighbourHealth || p.status || '—'}
+                  </Badge>
+                )}
               </Table.Cell>
             </Table.Row>
           ))}

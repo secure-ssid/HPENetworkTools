@@ -167,6 +167,31 @@ export function portIsUp(p: DevicePort): boolean {
   return /^connected$/i.test((p.status ?? '').trim());
 }
 
+/**
+ * Has someone deliberately shut this port?
+ *
+ * Three-state on purpose. A port that is down because it was disabled in
+ * configuration and a port that is down because the cable, the optic or the
+ * far end failed look identical in every other column, and they demand
+ * opposite responses: one is a change to reverse, the other is hardware to
+ * replace. `operStatus` alone cannot tell them apart.
+ *
+ * null is returned when the plane said nothing, or said something this does
+ * not recognise. An unread admin state is not an enabled one — and labelling a
+ * port "shut in configuration" on no evidence sends someone hunting through
+ * change records for an edit that was never made.
+ *
+ * Central words it differently per device class: switch interfaces answer
+ * 'Up'/'Down' and gateway ports 'Enabled'/'Disabled' (see mapCentralPort and
+ * mapCentralGatewayPort), so both vocabularies are read here.
+ */
+export function portAdminDown(p: DevicePort): boolean | null {
+  const v = (p.adminStatus ?? '').trim().toLowerCase();
+  if (v === 'down' || v === 'disabled' || v === 'shutdown' || v === 'admin-down') return true;
+  if (v === 'up' || v === 'enabled') return false;
+  return null;
+}
+
 /** Is this display name just the MAC the row already carries? */
 export function sameMac(name: string, mac?: string | null): boolean {
   if (!mac) return false;

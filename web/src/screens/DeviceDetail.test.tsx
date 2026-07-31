@@ -940,6 +940,86 @@ describe('DeviceDetail — class-aware detail panels', () => {
     ).toBeTruthy();
     expect(screen.queryByText(/could not be read/)).toBeNull();
   });
+
+  const shutPort = (name: string, extra: Partial<DevicePort> = {}): DevicePort => ({
+    name,
+    status: 'Down',
+    adminStatus: 'Down',
+    operStatus: 'Down',
+    speedBps: null,
+    duplex: '-',
+    vlanMode: 'Access',
+    nativeVlan: 200,
+    ...extra,
+  });
+
+  /* Central keeps scoring the neighbour it last saw on a port after the port
+   * is shut, so the row for a disabled uplink read "AP-Floor2 … Good" in
+   * green — the answer to why the AP is offline presented as proof that
+   * nothing is wrong. */
+  it('marks a port that was shut in configuration instead of badging its stale health green', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(liveBase('sw-core-a'), {
+        serial: 'SG30LMR164',
+        kind: 'switch',
+        ports: [shutPort('1/1/12', { neighbour: 'AP-Floor2', neighbourType: 'Access Point', neighbourHealth: 'Good' })],
+        source: { plane: 'central', at: '2026-07-28T15:47:00.000Z', sections: { ports: 'ok' } },
+      }),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('ADMIN DOWN')).toBeTruthy();
+    // The verdict is demoted, not deleted, and the count is in the header.
+    expect(screen.getByText('Good')).toBeTruthy();
+    expect(screen.getByText('1 OF 1 CONNECTED · 1 ADMIN DOWN')).toBeTruthy();
+  });
+
+  /* A shut port with nothing plugged into it does not earn a row. It must
+   * still be countable: twenty ports shut by policy and twenty shut by
+   * mistake look identical when neither is on the screen. */
+  it('counts shut ports it does not list rather than dropping them silently', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(liveBase('sw-core-a'), {
+        serial: 'SG30LMR164',
+        kind: 'switch',
+        ports: [SWITCH_PORTS[1], shutPort('1/1/20'), shutPort('1/1/21')],
+        source: { plane: 'central', at: '2026-07-28T15:47:00.000Z', sections: { ports: 'ok' } },
+      }),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('1 OF 3 CONNECTED · 2 ADMIN DOWN')).toBeTruthy();
+    expect(
+      screen.getByText(
+        '2 further ports are administratively down with no neighbour discovered, and are not listed above.',
+      ),
+    ).toBeTruthy();
+  });
+
+  // "Every port is down with no neighbour" names a link fault. Shut ports are not one.
+  it('does not describe a switch of shut ports as a switch of dead links', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(liveBase('sw-core-a'), {
+        serial: 'SG30LMR164',
+        kind: 'switch',
+        ports: [shutPort('1/1/20')],
+        source: { plane: 'central', at: '2026-07-28T15:47:00.000Z', sections: { ports: 'ok' } },
+      }),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(
+      await screen.findByText(
+        'None of the 1 interfaces CENTRAL reported is connected. 1 is administratively down — shut in configuration, not a link fault.',
+      ),
+    ).toBeTruthy();
+  });
 });
 
 // ---------------------------------------------------------------------------
