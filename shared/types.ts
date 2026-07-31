@@ -582,11 +582,20 @@ export interface SsidProfileStepResult extends SsidApplyStep {
 }
 
 /** One configuration-assignment outcome. `skipped` means it was already on file
- *  (idempotent no-op) — still ok:true, just not a new write. */
+ *  (idempotent no-op) — still ok:true, just not a new write.
+ *
+ *  `verified` mirrors SsidProfileStepResult.verified for the assignment half:
+ *  true when a re-read of the assignment list found it, false when that read
+ *  succeeded and the assignment was absent (the write was accepted but has not
+ *  landed), and undefined when the confirming read could not be made at all.
+ *  Undefined is deliberately NOT false — an unreadable list is not an empty
+ *  one, and reporting a missing assignment we never actually looked for would
+ *  be its own lie. */
 export interface SsidScopeAssignmentResult extends SsidApplyStep {
   scopeId: string;
   label: string;
   skipped?: boolean;
+  verified?: boolean;
 }
 
 /**

@@ -2233,6 +2233,37 @@ function fakeFetchWithBody(handler: ScriptedHandler): { fn: FetchLike; calls: Bo
   return { fn, calls };
 }
 
+/**
+ * A config-assignment endpoint that remembers what it accepted.
+ *
+ * applySsidProfile() reads the assignment list twice — once before writing (to
+ * skip duplicates) and once after (to confirm the writes landed). A fake that
+ * answers the second read with the same static list as the first models a
+ * Central that took a POST and then denied it happened, so every write looks
+ * unconfirmed. Recording accepted POSTs is what a working Central does.
+ */
+function configAssignmentFake(initial: string[] = [], acceptStatus = 200) {
+  const assigned = new Set(initial);
+  return {
+    assigned,
+    get: () => ({
+      body: {
+        'config-assignment': [...assigned].map((scopeId) => ({
+          'scope-id': scopeId,
+          'device-function': 'CAMPUS_AP',
+          'profile-type': 'wlan-ssids',
+          'profile-instance': 'MRDN-Guest',
+        })),
+      },
+    }),
+    post: (body: unknown) => {
+      const rows = (body as { 'config-assignment'?: Array<{ 'scope-id'?: string }> })['config-assignment'] ?? [];
+      for (const row of rows) if (row['scope-id']) assigned.add(row['scope-id']);
+      return { status: acceptStatus, body: {} };
+    },
+  };
+}
+
 function makeSsidAdapter(handler: ScriptedHandler, creds: typeof CREDS | typeof NEW_CREDS = NEW_CREDS) {
   const { fn, calls } = fakeFetchWithBody(handler);
   const state = makeState();
@@ -2404,18 +2435,16 @@ describe('CentralAdapter.applySsidProfile()', () => {
   it('creates an absent profile, verifies it, and assigns every requested scope', async () => {
     const counter = scriptedCounter();
     const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
-    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+    const assignmentApi = configAssignmentFake();
+    const { adapter, calls } = makeSsidAdapter((method, pathname, body) => {
       if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
       if (method === 'GET' && pathname === profilePath) {
         const n = counter.next(`GET ${profilePath}`);
         return n === 1 ? undefined : { body: buildWlanSsidPayload(BASE_SSID_FORM) }; // absent, then verified
       }
       if (method === 'PUT' && pathname === profilePath) return { status: 201, body: {} };
-      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
-        return { body: { 'config-assignment': [] } };
-      }
-      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
-        return { status: 200, body: {} };
+      if (pathname === '/network-config/v1alpha1/config-assignments') {
+        return method === 'GET' ? assignmentApi.get() : assignmentApi.post(body);
       }
       return undefined;
     });
@@ -2424,7 +2453,7 @@ describe('CentralAdapter.applySsidProfile()', () => {
 
     expect(result.profile).toMatchObject({ ok: true, action: 'created', verified: true, httpCode: 201 });
     expect(result.assignments).toHaveLength(2);
-    expect(result.assignments.every((a) => a.ok && !a.skipped)).toBe(true);
+    expect(result.assignments.every((a) => a.ok && !a.skipped && a.verified === true)).toBe(true);
     expect(result.ok).toBe(true);
     expect(result.partial).toBe(false);
 
@@ -2470,25 +2499,12 @@ describe('CentralAdapter.applySsidProfile()', () => {
     const form: SsidForm = { ...BASE_SSID_FORM, security: 'open', passphrase: undefined };
     const desired = buildWlanSsidPayload(form);
     const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
-    const { adapter, calls } = makeSsidAdapter((method, pathname) => {
+    const assignmentApi = configAssignmentFake(['site-1']);
+    const { adapter, calls } = makeSsidAdapter((method, pathname, body) => {
       if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
       if (method === 'GET' && pathname === profilePath) return { body: desired };
-      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
-        return {
-          body: {
-            'config-assignment': [
-              {
-                'scope-id': 'site-1',
-                'device-function': 'CAMPUS_AP',
-                'profile-type': 'wlan-ssids',
-                'profile-instance': 'MRDN-Guest',
-              },
-            ],
-          },
-        };
-      }
-      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
-        return { status: 200, body: {} };
+      if (pathname === '/network-config/v1alpha1/config-assignments') {
+        return method === 'GET' ? assignmentApi.get() : assignmentApi.post(body);
       }
       return undefined;
     });
@@ -2502,8 +2518,10 @@ describe('CentralAdapter.applySsidProfile()', () => {
     const site1 = result.assignments.find((a) => a.scopeId === 'site-1')!;
     expect(site1).toMatchObject({ ok: true, skipped: true });
     const site2 = result.assignments.find((a) => a.scopeId === 'site-2')!;
-    expect(site2).toMatchObject({ ok: true });
+    expect(site2).toMatchObject({ ok: true, verified: true });
     expect(site2.skipped).toBeFalsy();
+    // A skipped assignment was never written, so there is nothing to confirm.
+    expect(site1.verified).toBeUndefined();
   });
 
   it.each([
@@ -2631,14 +2649,55 @@ describe('CentralAdapter.applySsidProfile()', () => {
     }
   });
 
-  it('adds no such caveat when the check was read and simply came back empty', async () => {
+  /* The profile half of this apply has always read itself back and refused to
+   * claim success when the read-back disagreed. The assignment half did not,
+   * so a POST answered 202 — or a 200 Central did not actually honour — was
+   * reported as "assigned". An SSID that is not broadcasting at a site then
+   * looks like a finished rollout, which is the whole point of the apply. */
+  it('does not claim an assignment landed when the list read back does not contain it', async () => {
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const { adapter } = makeSsidAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) return { body: buildWlanSsidPayload(BASE_SSID_FORM) };
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      // Accepts the write, then never shows it — an async apply, or one Central
+      // took and dropped. Indistinguishable from here, and both matter.
+      if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { body: { 'config-assignment': [] } };
+      }
+      if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
+        return { status: 202, body: {} };
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    expect(result.assignments).toHaveLength(2);
+    for (const a of result.assignments) {
+      expect(a.verified).toBe(false);
+      expect(a.ok).toBe(false);
+      expect(a.message).toContain('absent when the list is read back');
+      expect(a.message).toContain('do not treat this SSID as live at this scope');
+    }
+    // The profile really did apply, so this is partial — not a clean success
+    // and not a total failure.
+    expect(result.ok).toBe(false);
+    expect(result.partial).toBe(true);
+    expect(result.profile.ok).toBe(true);
+  });
+
+  it('leaves verified undefined — never false — when the confirming read cannot be made', async () => {
+    // An assignment list that could not be fetched is not an empty one. Saying
+    // "absent" about a list we never read would trade one wrong claim for
+    // another, so an unreadable re-read must not downgrade the write.
     const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
     const { adapter } = makeSsidAdapter((method, pathname) => {
       if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
       if (method === 'GET' && pathname === profilePath) return { body: buildWlanSsidPayload(BASE_SSID_FORM) };
       if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
       if (method === 'GET' && pathname === '/network-config/v1alpha1/config-assignments') {
-        return { body: { 'config-assignment': [] } };
+        return { status: 503, body: {} };
       }
       if (method === 'POST' && pathname === '/network-config/v1alpha1/config-assignments') {
         return { status: 200, body: {} };
@@ -2649,7 +2708,56 @@ describe('CentralAdapter.applySsidProfile()', () => {
     const result = await adapter.applySsidProfile(BASE_SSID_FORM);
 
     for (const a of result.assignments) {
-      expect(a.message).toBe('assigned — HTTP 200');
+      expect(a.verified).toBeUndefined();
+      expect(a.ok).toBe(true);
+      expect(a.message).toContain('could not re-read the assignment list to confirm it landed');
+    }
+    expect(result.ok).toBe(true);
+  });
+
+  it('makes no confirming read at all when every scope was already assigned', async () => {
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const assignmentApi = configAssignmentFake(['site-1', 'site-2']);
+    let assignmentGets = 0;
+    const { adapter } = makeSsidAdapter((method, pathname, body) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) return { body: buildWlanSsidPayload(BASE_SSID_FORM) };
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      if (pathname === '/network-config/v1alpha1/config-assignments') {
+        if (method === 'GET') {
+          assignmentGets += 1;
+          return assignmentApi.get();
+        }
+        return assignmentApi.post(body);
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    // Nothing was written, so there is nothing to confirm and no reason to
+    // spend a second call on the tenant's rate budget.
+    expect(assignmentGets).toBe(1);
+    expect(result.assignments.every((a) => a.skipped && a.ok && a.verified === undefined)).toBe(true);
+  });
+
+  it('adds no such caveat when the check was read and simply came back empty', async () => {
+    const profilePath = '/network-config/v1alpha1/wlan-ssids/MRDN-Guest';
+    const assignmentApi = configAssignmentFake();
+    const { adapter } = makeSsidAdapter((method, pathname, body) => {
+      if (method === 'POST' && pathname === '/oauth2/token') return { body: { access_token: 'tok', expires_in: 7200 } };
+      if (method === 'GET' && pathname === profilePath) return { body: buildWlanSsidPayload(BASE_SSID_FORM) };
+      if (method === 'PATCH' && pathname === profilePath) return { status: 200, body: {} };
+      if (pathname === '/network-config/v1alpha1/config-assignments') {
+        return method === 'GET' ? assignmentApi.get() : assignmentApi.post(body);
+      }
+      return undefined;
+    });
+
+    const result = await adapter.applySsidProfile(BASE_SSID_FORM);
+
+    for (const a of result.assignments) {
+      expect(a.message).toBe('assignment accepted — HTTP 200 — confirmed present on re-read');
     }
   });
 

@@ -157,7 +157,16 @@ const SSID_APPLIED: SsidApplyResult = {
   ok: true,
   partial: false,
   profile: { ok: true, action: 'created', verified: true, httpCode: 201, message: 'profile created — HTTP 201' },
-  assignments: [{ scopeId: 'site-1', label: 'Campus-01', ok: true, httpCode: 200, message: 'assigned — HTTP 200' }],
+  assignments: [
+    {
+      scopeId: 'site-1',
+      label: 'Campus-01',
+      ok: true,
+      verified: true,
+      httpCode: 200,
+      message: 'assignment accepted — HTTP 200 — confirmed present on re-read',
+    },
+  ],
 };
 
 beforeEach(() => {
@@ -776,7 +785,7 @@ describe('Configure — SSID direct apply', () => {
 
     await waitFor(() => expect(screen.getByText('Applied')).toBeTruthy());
     expect(screen.getAllByText(/profile created — HTTP 201/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/assigned — HTTP 200/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/confirmed present on re-read/).length).toBeGreaterThan(0);
     // /api/configure is refreshed after a successful apply.
     await waitFor(() => expect(mockGetConfigure).toHaveBeenCalledTimes(2));
   });
@@ -805,6 +814,69 @@ describe('Configure — SSID direct apply', () => {
     expect(screen.getByRole('checkbox', { name: 'Campus-01' })).toHaveProperty('checked', true);
     // No refresh on anything less than a full success.
     expect(mockGetConfigure).toHaveBeenCalledTimes(1);
+  });
+
+  /* Central taking the assignment POST and then not listing it is neither a
+   * success nor a rejection: the operator should wait and re-check, not retry.
+   * Rendering it as ✗ under "an assignment failed" sends them to the wrong
+   * action; rendering it as ✓ would claim the SSID is live at a site where it
+   * may not be broadcasting at all. */
+  it('shows an accepted-but-unconfirmed assignment as its own outcome, not as a failure', async () => {
+    mockApplySsidDirect.mockResolvedValue({
+      ok: false,
+      partial: true,
+      profile: { ok: true, action: 'updated', verified: true, httpCode: 200, message: 'profile updated — HTTP 200' },
+      assignments: [
+        {
+          scopeId: 'site-1',
+          label: 'Campus-01',
+          ok: false,
+          verified: false,
+          httpCode: 202,
+          message: 'assignment accepted — HTTP 202, but the assignment is absent when the list is read back.',
+        },
+      ],
+    });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await waitFor(() => expect(screen.getByText('Campus-01')).toBeTruthy());
+    await fillReadySsidForm();
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'I have reviewed this profile and these scope assignments — apply directly, no ticket.' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Apply directly' }));
+
+    await waitFor(() =>
+      expect(screen.getByText('Partial — profile applied, scope assignments not confirmed')).toBeTruthy(),
+    );
+    // The per-assignment line is marked as pending confirmation, not failed.
+    expect(screen.getByText(/⧗ Campus-01/)).toBeTruthy();
+    expect(screen.queryByText(/✗ Campus-01/)).toBeNull();
+    expect(screen.queryByText('Partial — profile applied, an assignment failed')).toBeNull();
+  });
+
+  it('still calls a genuinely rejected assignment a failure', async () => {
+    mockApplySsidDirect.mockResolvedValue({
+      ok: false,
+      partial: true,
+      profile: { ok: true, action: 'updated', verified: true, httpCode: 200, message: 'profile updated — HTTP 200' },
+      assignments: [
+        { scopeId: 'site-1', label: 'Campus-01', ok: false, httpCode: 500, message: 'assignment failed — HTTP 500' },
+      ],
+    });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await waitFor(() => expect(screen.getByText('Campus-01')).toBeTruthy());
+    await fillReadySsidForm();
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'I have reviewed this profile and these scope assignments — apply directly, no ticket.' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Apply directly' }));
+
+    await waitFor(() => expect(screen.getByText('Partial — profile applied, an assignment failed')).toBeTruthy());
+    expect(screen.getByText(/✗ Campus-01/)).toBeTruthy();
   });
 
   it('a failed apply (offline) surfaces the error, keeps the form, and a retry can still succeed', async () => {

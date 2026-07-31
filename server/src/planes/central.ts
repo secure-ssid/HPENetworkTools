@@ -1858,10 +1858,11 @@ export class CentralAdapter implements PlaneAdapter {
           ok,
           httpCode: res.status,
           message: ok
-            ? `assigned — HTTP ${res.status}${caveat}`
+            ? `assignment accepted — HTTP ${res.status}${caveat}`
             : `assignment failed — HTTP ${res.status}${caveat}`,
         });
       }
+      await this.confirmScopeAssignments(name, assignments);
     }
 
     const allAssigned = scopeIds.length > 0 && assignments.every((a) => a.ok);
@@ -1903,6 +1904,48 @@ export class CentralAdapter implements PlaneAdapter {
    * the operator as a plain assignment failure, telling them a write did not
    * land when the desired state was in fact already correct.
    */
+  /**
+   * Re-read the assignment list and say, per assignment we actually wrote,
+   * whether it is there.
+   *
+   * The profile half of this apply has always verified itself by reading the
+   * object back and refusing to claim success when the read-back disagreed.
+   * The assignment half did not, even though the reader it needs is the same
+   * one called moments earlier to skip duplicates — so a POST answered 202
+   * (or a 200 Central did not honour) was reported as `assigned`, and an SSID
+   * that is not actually broadcasting at a site looked like a finished
+   * rollout.
+   *
+   * A read that fails leaves `verified` undefined rather than false: an
+   * assignment list we could not fetch is not an empty one, and downgrading a
+   * write we simply did not look at would trade one wrong claim for another.
+   */
+  private async confirmScopeAssignments(
+    resource: string,
+    assignments: SsidScopeAssignmentResult[],
+  ): Promise<void> {
+    const written = assignments.filter((a) => a.ok && !a.skipped);
+    if (written.length === 0) return;
+    const after = await this.existingScopeAssignments(resource);
+    if (after === null) {
+      for (const a of written) {
+        a.message = `${a.message}; could not re-read the assignment list to confirm it landed`;
+      }
+      return;
+    }
+    for (const a of written) {
+      a.verified = after.has(a.scopeId);
+      if (a.verified) {
+        a.message = `${a.message} — confirmed present on re-read`;
+      } else {
+        a.ok = false;
+        a.message =
+          `${a.message}, but the assignment is absent when the list is read back. ` +
+          `Central may still be applying it; do not treat this SSID as live at this scope until it appears.`;
+      }
+    }
+  }
+
   private async existingScopeAssignments(resource: string): Promise<Set<string> | null> {
     try {
       const res = await this.request('GET', '/network-config/v1alpha1/config-assignments');

@@ -78,6 +78,7 @@ import type {
   PortObject,
   SsidApplyResult,
   SsidBands,
+  SsidScopeAssignmentResult,
   SsidCatalog,
   SsidForm,
   SsidObject,
@@ -153,6 +154,29 @@ import '../app/app.css';
 
 
 
+
+/**
+ * Three outcomes, not two.
+ *
+ * `verified === false` means Central took the assignment POST and the list
+ * read back without it — an async apply still in flight, or a write that was
+ * dropped. It is not the same as a rejected POST: one says wait and re-check,
+ * the other says retry. Rendering both as ✗ under "an assignment failed" sends
+ * the operator to the wrong action, and rendering the first as ✓ would claim
+ * an SSID is live at a site where it may not be broadcasting at all.
+ */
+function assignmentMark(a: SsidScopeAssignmentResult): string {
+  if (a.ok) return '✓';
+  return a.verified === false ? '⧗' : '✗';
+}
+
+function assignmentPartialTitle(assignments: readonly SsidScopeAssignmentResult[]): string {
+  const unconfirmed = assignments.some((a) => a.verified === false);
+  const failed = assignments.some((a) => !a.ok && a.verified !== false);
+  if (unconfirmed && !failed) return 'Partial — profile applied, scope assignments not confirmed';
+  if (unconfirmed) return 'Partial — profile applied, an assignment failed and another is unconfirmed';
+  return 'Partial — profile applied, an assignment failed';
+}
 
 export default function Configure() {
   const { showPlatformTags } = useSettings();
@@ -547,10 +571,18 @@ export default function Configure() {
       const refreshed = await getConfigure();
       setData(refreshed);
     } else if (r.partial) {
-      toast(`${ssid.name}: profile applied, one or more scope assignments failed`, {
-        description: 'Review the assignment results below and retry — the profile was not rolled back.',
-        tone: 'warning',
-      });
+      const unconfirmed = r.assignments.some((a) => a.verified === false);
+      toast(
+        unconfirmed
+          ? `${ssid.name}: profile applied, scope assignments not confirmed`
+          : `${ssid.name}: profile applied, one or more scope assignments failed`,
+        {
+          description: unconfirmed
+            ? 'Central took the assignment but it is not in the list yet. Re-check before treating the SSID as live at those scopes — the profile was not rolled back.'
+            : 'Review the assignment results below and retry — the profile was not rolled back.',
+          tone: 'warning',
+        },
+      );
     } else {
       toast(`${ssid.name} was not applied`, { description: r.profile.message, tone: 'danger' });
     }
@@ -1455,7 +1487,7 @@ export default function Configure() {
                         ssidApplyResult.result.ok
                           ? 'Applied'
                           : ssidApplyResult.result.partial
-                            ? 'Partial — profile applied, an assignment failed'
+                            ? assignmentPartialTitle(ssidApplyResult.result.assignments)
                             : 'Not applied'
                       }
                     >
@@ -1464,8 +1496,14 @@ export default function Configure() {
                           Profile ({ssidApplyResult.result.profile.action}): {ssidApplyResult.result.profile.message}
                         </span>
                         {ssidApplyResult.result.assignments.map((a) => (
-                          <span key={a.scopeId} style={{ fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
-                            {a.ok ? '✓' : '✗'} {a.label} — {a.message}
+                          <span
+                            key={a.scopeId}
+                            style={{
+                              fontSize: 12.5,
+                              color: a.verified === false ? 'var(--nd-warning)' : 'var(--nd-text-secondary)',
+                            }}
+                          >
+                            {assignmentMark(a)} {a.label} — {a.message}
                           </span>
                         ))}
                       </div>
