@@ -23,6 +23,7 @@ import {
   EXPIRING_SOON_DAYS,
   GreenLakeAdapter,
   expiryDisplay,
+  daysUntilUtc,
   mapGreenLakeSubscription,
   subStatusFor,
 } from '../src/planes/greenlake';
@@ -126,6 +127,59 @@ describe('pure helpers', () => {
     expect(expiryDisplay(Date.parse('2026-09-02T00:00:00Z'))).toBe('02 Sep 26');
   });
 
+  /* The renewal list renders the date and the countdown side by side, so they
+     have to be counting the same thing. floor((end - now) / 86_400_000) was
+     not: it counted elapsed 24-hour blocks from this instant, while the date
+     beside it was a UTC calendar day. Every case below is one where the two
+     used to disagree, and none of them needs an unusual clock — just an expiry
+     that is not exactly midnight. */
+  it('daysUntilUtc counts to the calendar day expiryDisplay prints, not 24h blocks', () => {
+    const now = Date.parse('2026-03-13T20:00:00Z');
+    const end = Date.parse('2026-03-15T02:00:00Z');
+    // 30 hours away: one whole 24h block and a bit, but two calendar days.
+    expect(Math.floor((end - now) / 86_400_000)).toBe(1);
+    expect(daysUntilUtc(end, now)).toBe(2);
+    expect(expiryDisplay(end)).toBe('15 Mar 26');
+  });
+
+  it('daysUntilUtc reads 0 as "expires later today"', () => {
+    const now = Date.parse('2026-03-15T01:00:00Z');
+    expect(daysUntilUtc(Date.parse('2026-03-15T23:00:00Z'), now)).toBe(0);
+    expect(daysUntilUtc(Date.parse('2026-03-16T00:30:00Z'), now)).toBe(1);
+  });
+
+  /* An expiry is an instant, not a date. Something that lapsed at 02:00Z must
+     not spend the rest of the day reported as expiring today, and once it is
+     past the count is of calendar days behind, not of full days elapsed —
+     'lapsed yesterday' is what an operator can check against the date. */
+  it('daysUntilUtc keeps a lapsed subscription negative and dates it by the calendar', () => {
+    const end = Date.parse('2026-03-15T02:00:00Z');
+    expect(daysUntilUtc(end, Date.parse('2026-03-15T20:00:00Z'))).toBe(-1); // same day, already gone
+    expect(daysUntilUtc(end, Date.parse('2026-03-16T22:00:00Z'))).toBe(-1); // yesterday, not -2
+    expect(daysUntilUtc(end, Date.parse('2026-03-20T00:30:00Z'))).toBe(-5);
+    // Sharpest case: expired at midnight, so the date it displays IS today's
+    // and it is still lapsed. The instant decides the sign, the calendar only
+    // decides the magnitude.
+    expect(daysUntilUtc(Date.parse('2026-03-15T00:00:00Z'), Date.parse('2026-03-15T11:47:00Z'))).toBe(-1);
+  });
+
+  /* The invariant the whole change exists to hold, stated directly: for an
+     expiry still ahead of us, the row says 0d exactly when the date it shows
+     is today's. Bounded to the future on purpose — the case above is why. */
+  it('daysUntilUtc reads 0 exactly when the date it displays is today', () => {
+    const now = Date.parse('2026-03-15T11:47:00Z');
+    for (const iso of [
+      '2026-03-15T11:47:01Z',
+      '2026-03-15T23:59:59Z',
+      '2026-03-16T00:00:01Z',
+      '2026-03-16T23:59:59Z',
+      '2026-06-01T09:00:00Z',
+    ]) {
+      const ms = Date.parse(iso);
+      expect([iso, daysUntilUtc(ms, now) === 0]).toEqual([iso, expiryDisplay(ms) === expiryDisplay(now)]);
+    }
+  });
+
   it('subStatusFor applies retiring > expiring > idle > active', () => {
     expect(subStatusFor(null, 10, 400)).toEqual({ status: 'active', tone: 'success' });
     expect(subStatusFor('ACTIVE', 10, EXPIRING_SOON_DAYS - 1)).toEqual({ status: 'expiring', tone: 'warning' });
@@ -155,7 +209,7 @@ describe('mapGreenLakeSubscription', () => {
     expect(s!.status).toBe('active');
     expect(s!.tone).toBe('success');
     expect(s!.expiresAtMs).toBe(Date.parse(SUB_ACTIVE.end_date));
-    expect(s!.daysLeft).toBe(Math.floor((Date.parse(SUB_ACTIVE.end_date) - NOW) / 86_400_000));
+    expect(s!.daysLeft).toBe(416); // 25 Jul 26 -> 14 Sep 27, stated rather than recomputed
     expect(s!.qtyValue).toBe(180);
     expect(s!.assignedValue).toBe(174);
   });
@@ -238,7 +292,7 @@ describe('mapGreenLakeSubscription', () => {
     expect(s!.pct).toBe('60%');
     expect(s!.expires).toBe('03 Aug 27'); // endTime
     expect(s!.expiresAtMs).toBe(Date.parse(SUB_GLP_V1.endTime));
-    expect(s!.daysLeft).toBe(Math.floor((Date.parse(SUB_GLP_V1.endTime) - NOW) / 86_400_000));
+    expect(s!.daysLeft).toBe(374); // 25 Jul 26 -> 03 Aug 27
     expect(s!.qtyValue).toBe(5);
     expect(s!.assignedValue).toBe(3);
     expect(s!.term).toBe('1 yr subscription'); // derived from startTime/endTime

@@ -265,6 +265,37 @@ export function expiryDisplay(ms: number): string {
   return `${day} ${MONTHS[d.getUTCMonth()]} ${year}`;
 }
 
+/** Midnight UTC on the day `ms` falls in — the day expiryDisplay() prints. */
+function utcDayStart(ms: number): number {
+  const d = new Date(ms);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
+/**
+ * Whole days from today to the expiry day, both read in UTC — the calendar
+ * expiryDisplay() above prints, so the date and the countdown beside it are
+ * answering the same question.
+ *
+ * They did not used to. daysLeft was floor((end - now) / 86_400_000), a
+ * rolling count of elapsed 24-hour blocks, and the renewal list renders it
+ * next to the date as '15 Mar 26 · 1d'. On the 13th, an expiry at 02:00Z on
+ * the 15th is 30 hours away — one whole day and a bit — so the row said '1d'
+ * beside a date two days out. Nothing was wrong with either number; they were
+ * simply in different units, and only one of them was labelled.
+ *
+ * Counting calendar days makes 0d mean "expires today" and 1d "tomorrow", and
+ * drops the assumption that every day is exactly 86,400,000 ms along with it.
+ *
+ * Expiry is still an instant rather than a date. Anything already past is
+ * negative however recently it lapsed, so a subscription that ended at 02:00Z
+ * does not spend the remaining twenty-two hours claiming it expires today.
+ */
+export function daysUntilUtc(expiresAtMs: number, nowMs: number): number {
+  const days = Math.round((utcDayStart(expiresAtMs) - utcDayStart(nowMs)) / DAY_MS);
+  if (expiresAtMs <= nowMs) return Math.min(-1, days);
+  return Math.max(0, days);
+}
+
 /**
  * Status + badge tone. Precedence (documented in the header): retiring →
  * expiring → idle → active. `rawStatus` only ever moves a row INTO retiring;
@@ -385,7 +416,7 @@ export function mapGreenLakeSubscription(raw: unknown, nowMs: number = Date.now(
   );
   const assigned = assignedCount(r, qty);
   const expiresAtMs = subscriptionDates(r).end;
-  const daysLeft = expiresAtMs !== null ? Math.floor((expiresAtMs - nowMs) / DAY_MS) : null;
+  const daysLeft = expiresAtMs !== null ? daysUntilUtc(expiresAtMs, nowMs) : null;
   const rawStatus = str(r.status ?? r.state ?? r.subscriptionStatus ?? r.subscription_status);
   const { status, tone } = subStatusFor(rawStatus, assigned, daysLeft);
   const skuBase =
