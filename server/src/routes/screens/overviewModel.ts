@@ -6,6 +6,7 @@ import {
   PLANE_IDS,
   type PlaneHealth,
 } from '../../planes/types';
+import { LOG_RETENTION_EVENT, type RetentionTombstone } from '../../services/logRotation';
 import { poller } from '../../services/poller';
 import {
   PLANE_LABEL,
@@ -264,6 +265,14 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
   ];
 }
 
+/** Calendar day of an ISO instant. A retention span can cover months, so the
+ *  hh:mm the rest of this log uses would say nothing about its width. */
+export function isoDay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 /** Local hh:mm for an ISO instant — the screen's own clock, not UTC. */
 export function localHhmm(iso: string): string {
   const d = new Date(iso);
@@ -292,6 +301,22 @@ export function liveOverviewChanges(): { changes: ChangeLogEntry[]; unreadable: 
   const read = writeBroker.readRecentEvents(4);
   return {
     changes: read.events.map((e) => {
+      // A retention tombstone shares the file but is not a change: no
+      // changeId, ticket or kind, because nothing was pushed. The generic
+      // fallback interpolates all three anyway and renders
+      // "log-retention undefined — discarded" by "undefined · write broker",
+      // so the row written precisely to stop a deleted generation from
+      // looking like an absence of changes arrives as the least legible line
+      // on the screen. Say what it means instead.
+      if (e.event === LOG_RETENTION_EVENT) {
+        const t = e as unknown as Partial<RetentionTombstone>;
+        const span = t.coveringFrom && t.coveringTo ? ` covering ${isoDay(t.coveringFrom)} to ${isoDay(t.coveringTo)}` : '';
+        return {
+          time: localHhmm(e.ts),
+          text: `Older audit history discarded by retention policy${span} — those entries are no longer available here`,
+          who: 'retention · write broker',
+        };
+      }
       const change = queued.get(e.changeId);
       return {
         time: localHhmm(e.ts),

@@ -104,6 +104,32 @@ function timeSpan(file: string): { from: string; to: string } | null {
  * be the reason a change goes unrecorded — a too-large log is a much smaller
  * problem than a missing entry.
  */
+/**
+ * The event name of a retention tombstone, and the shape of one.
+ *
+ * A tombstone travels in the same JSONL file as the brokered-write events and
+ * is read back by the same readers, but it is NOT a BrokerEventRow: it has no
+ * changeId, ticket or kind, because no change happened. Anything rendering
+ * the audit log to an operator has to branch on this, or it interpolates
+ * three absent fields and prints the word "undefined" at them — which is what
+ * the Overview change log did, turning the one row that exists to make a gap
+ * visible into the one row nobody could read.
+ */
+export const LOG_RETENTION_EVENT = 'log-retention';
+
+export interface RetentionTombstone {
+  ts: string;
+  event: typeof LOG_RETENTION_EVENT;
+  result: 'discarded';
+  /** Basename of the generation that was removed. */
+  file: string;
+  bytes: number;
+  /** ISO bounds of the entries that went with it, when they could be read. */
+  coveringFrom?: string;
+  coveringTo?: string;
+  note: string;
+}
+
 export function rotateIfNeeded(
   file: string,
   policy: RotationPolicy = DEFAULT_POLICY,
@@ -116,12 +142,12 @@ export function rotateIfNeeded(
     // a silent deletion makes "no record of that change" look exactly like
     // "that change never happened".
     const oldest = generationPath(file, policy.keep);
-    let tombstone: Record<string, unknown> | null = null;
+    let tombstone: RetentionTombstone | null = null;
     if (fs.existsSync(oldest)) {
       const span = timeSpan(oldest);
       tombstone = {
         ts: new Date().toISOString(),
-        event: 'log-retention',
+        event: LOG_RETENTION_EVENT,
         result: 'discarded',
         file: path.basename(oldest),
         bytes: fileSize(oldest),

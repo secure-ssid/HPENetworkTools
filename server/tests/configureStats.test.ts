@@ -186,3 +186,88 @@ describe('Overview change log completeness', () => {
     expect(liveOverviewChanges()).toMatchObject({ changes: [], unreadable: 0 });
   });
 });
+
+/* The rotation tombstone is written into the same JSONL file as the brokered
+ * writes, and exists for one reason: a generation deleted by the retention
+ * policy must not make "no record of that change" look like "that change
+ * never happened". It is not a BrokerEventRow, though — no changeId, no
+ * ticket, no kind, because no change happened. The generic row builder
+ * interpolated all three regardless, so the single most important line in the
+ * log arrived reading "log-retention undefined — discarded" by "undefined ·
+ * write broker": the disclosure was there and was the one row an operator
+ * would dismiss as a bug. */
+describe('Overview change log — retention tombstone', () => {
+  function tombstone(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      ts: `${today()}T04:00:00.000Z`,
+      event: 'log-retention',
+      result: 'discarded',
+      file: 'change-log.5.jsonl',
+      bytes: 16_777_216,
+      note: 'oldest retained generation deleted by retention policy',
+      ...extra,
+    };
+  }
+
+  it('never prints "undefined" at the three fields a tombstone does not carry', () => {
+    stubLog([tombstone()]);
+
+    const [row] = liveOverviewChanges().changes;
+    expect(row.text.includes('undefined')).toBe(false);
+    expect(row.who.includes('undefined')).toBe(false);
+  });
+
+  it('says the history was discarded rather than naming a raw event', () => {
+    stubLog([tombstone()]);
+
+    const [row] = liveOverviewChanges().changes;
+    expect(row.text.toLowerCase().includes('discarded by retention policy')).toBe(true);
+    expect(row.text.toLowerCase().includes('no longer available')).toBe(true);
+    expect(row.who).toBe('retention · write broker');
+  });
+
+  // Width is the whole point: a month of missing audit is a different fact
+  // from an hour of it, and hh:mm alone would report neither.
+  it('reports the span the discarded generation covered', () => {
+    stubLog([
+      // Midday UTC: the row renders on the operator's local clock like every
+      // other line in this log, so a midnight instant would land on the
+      // previous day in any western timezone and make this assertion about
+      // the test runner's location rather than about the code.
+      tombstone({ coveringFrom: '2026-01-05T12:00:00.000Z', coveringTo: '2026-02-11T12:00:00.000Z' }),
+    ]);
+
+    const [row] = liveOverviewChanges().changes;
+    expect(row.text.includes('2026-01-05')).toBe(true);
+    expect(row.text.includes('2026-02-11')).toBe(true);
+  });
+
+  // timeSpan returns null when the generation's own lines could not be parsed.
+  // A tombstone with no bounds still has to read as a sentence.
+  it('stays legible when the discarded generation had no readable bounds', () => {
+    stubLog([tombstone()]);
+
+    const [row] = liveOverviewChanges().changes;
+    expect(row.text.includes('covering')).toBe(false);
+    expect(row.text.includes('undefined')).toBe(false);
+    expect(row.text.endsWith('no longer available here')).toBe(true);
+  });
+
+  // Must not over-apply: everything that IS a change keeps its own rendering.
+  it('leaves an ordinary brokered event on the existing path', () => {
+    stubLog([push('applied', 'c9')]);
+
+    const [row] = liveOverviewChanges().changes;
+    expect(row.who).toBe('NET-1 · write broker');
+    expect(row.text.includes('retention')).toBe(false);
+  });
+
+  it('renders a tombstone alongside real changes without displacing them', () => {
+    stubLog([tombstone(), push('rejected', 'c2')]);
+
+    const { changes } = liveOverviewChanges();
+    expect(changes.length).toBe(2);
+    expect(changes[0].who).toBe('retention · write broker');
+    expect(changes[1].who).toBe('NET-1 · write broker');
+  });
+});
