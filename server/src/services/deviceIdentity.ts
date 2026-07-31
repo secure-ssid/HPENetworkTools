@@ -19,6 +19,27 @@ export interface DeviceIdentityResolution<T extends DeviceIdentityCandidate> {
 }
 
 /**
+ * Compare two serials the way the rest of the portal decides whether two rows
+ * are the same physical device.
+ *
+ * services/reconcile.ts's identityKey() keys a merged device on
+ * `serial:${serial.trim().toLowerCase()}` — so trimming and case are already
+ * settled as *not* part of a serial's identity, and two planes reporting
+ * `SG12345` and `sg12345` are merged into one row. Comparing with `===` here
+ * would disagree with that: an operator who supplies the serial in the casing
+ * printed on the device label, rather than the casing whichever plane won the
+ * merge happened to report, resolves to nothing at all.
+ *
+ * That failure is quiet in the worst way — the resolver returns
+ * `{device: null, ambiguous: null, invalid: null}`, which callers render as
+ * "device not found in inventory" for a device that is plainly in it.
+ */
+function sameSerial(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
  * Resolve a device without ever choosing the first duplicate display name.
  * A supplied immutable identity must be a complete plane+serial pair.
  */
@@ -38,7 +59,7 @@ export function resolveDeviceIdentity<T extends DeviceIdentityCandidate>(
     };
   }
   if (plane && serial) {
-    const device = devices.find((candidate) => candidate.plane === plane && candidate.serial === serial) ?? null;
+    const device = devices.find((candidate) => candidate.plane === plane && sameSerial(candidate.serial, serial)) ?? null;
     if (device && opts.requireNameMatch && device.name !== name) {
       return {
         device: null,
@@ -49,7 +70,7 @@ export function resolveDeviceIdentity<T extends DeviceIdentityCandidate>(
     return { device, ambiguous: null, invalid: null };
   }
   if (serial) {
-    const device = devices.find((candidate) => candidate.serial === serial) ?? null;
+    const device = devices.find((candidate) => sameSerial(candidate.serial, serial)) ?? null;
     if (device && opts.requireNameMatch && device.name !== name) {
       return {
         device: null,
