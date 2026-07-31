@@ -1,10 +1,6 @@
 /** Portal and shell settings. */
 
-import {
-  fetchScreen,
-  fromApi,
-  serverMessage,
-} from './core';
+import { apiFetch, fetchScreen, fromApi, serverMessage } from './core';
 import { SystemMutationResult } from './systems';
 import { type SectionMode } from '@hpe/shared';
 
@@ -71,7 +67,7 @@ export async function saveSettings(settings: Settings): Promise<SystemMutationRe
     /* storage unavailable — the server copy may still succeed */
   }
   try {
-    const r = await fetch('/api/settings', {
+    const r = await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -114,7 +110,7 @@ export async function savePortalSettings(
   patch: Partial<PortalSettings>,
 ): Promise<SystemMutationResult> {
   try {
-    const r = await fetch('/api/settings', {
+    const r = await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),

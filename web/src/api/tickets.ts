@@ -1,5 +1,6 @@
 /** Ticket raise, note and resolve. */
 
+import { apiFetch } from './core';
 import {
   type AlertRow,
   type TicketRow,
@@ -13,7 +14,7 @@ import {
 /** POST /api/tickets/raise — creates (or finds) the ticket for an alert. */
 export async function raiseTicket(alert: AlertRow): Promise<{ ticket: TicketRow } | { error: string; offline?: boolean }> {
   try {
-    const r = await fetch('/api/tickets/raise', {
+    const r = await apiFetch('/api/tickets/raise', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(alert),
@@ -33,7 +34,7 @@ export async function addTicketNote(
   kind: 'note' | 'action' = 'note',
 ): Promise<{ ticket: TicketRow } | { error: string; offline?: boolean }> {
   try {
-    const r = await fetch(`/api/tickets/${encodeURIComponent(id)}/notes`, {
+    const r = await apiFetch(`/api/tickets/${encodeURIComponent(id)}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, kind }),
@@ -49,7 +50,7 @@ export async function addTicketNote(
 /** POST /api/tickets/:id/resolve — close the ticket (idempotent on the server). */
 export async function resolveTicket(id: string): Promise<{ ticket: TicketRow } | { error: string; offline?: boolean }> {
   try {
-    const r = await fetch(`/api/tickets/${encodeURIComponent(id)}/resolve`, {
+    const r = await apiFetch(`/api/tickets/${encodeURIComponent(id)}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',

@@ -6,7 +6,7 @@
  * queued.
  */
 
-import { serverMessage } from './core';
+import { apiFetch, serverMessage } from './core';
 import { DeviceDetailIdentity } from './screens';
 import {
   type DiagnosticAuditEntry,
@@ -40,7 +40,7 @@ export async function rebootDevice(
   identity: DeviceDetailIdentity = {},
 ): Promise<RebootResult | { ok: false; applied: false; message: string }> {
   try {
-    const r = await fetch(`/api/devices/${encodeURIComponent(name)}/reboot`, {
+    const r = await apiFetch(`/api/devices/${encodeURIComponent(name)}/reboot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -62,13 +62,13 @@ export async function rebootDevice(
 // ---------------------------------------------------------------------------
 
 export async function getDiagnosticEligibility(): Promise<DiagnosticEligibilityResponse> {
-  const r = await fetch('/api/diagnostics/eligible');
+  const r = await apiFetch('/api/diagnostics/eligible');
   if (!r.ok) throw new Error(await serverMessage(r, `diagnostic eligibility failed — HTTP ${r.status}`));
   return (await r.json()) as DiagnosticEligibilityResponse;
 }
 
 export async function reviewDiagnostic(request: DiagnosticReviewRequest): Promise<DiagnosticReview> {
-  const r = await fetch('/api/diagnostics/review', {
+  const r = await apiFetch('/api/diagnostics/review', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -89,7 +89,7 @@ export async function startDiagnostic(
   serial: string,
 ): Promise<DiagnosticJob> {
   const body: DiagnosticStartRequest = { reviewId, confirmed: true, plane, serial };
-  const r = await fetch('/api/diagnostics/start', {
+  const r = await apiFetch('/api/diagnostics/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -114,7 +114,7 @@ export class DiagnosticJobStatusError extends Error {
 }
 
 export async function getDiagnosticJob(id: string): Promise<DiagnosticJob> {
-  const r = await fetch(`/api/diagnostics/jobs/${encodeURIComponent(id)}`);
+  const r = await apiFetch(`/api/diagnostics/jobs/${encodeURIComponent(id)}`);
   if (!r.ok) {
     throw new DiagnosticJobStatusError(
       r.status,
@@ -125,7 +125,7 @@ export async function getDiagnosticJob(id: string): Promise<DiagnosticJob> {
 }
 
 export async function cancelDiagnostic(id: string): Promise<DiagnosticJob> {
-  const r = await fetch(`/api/diagnostics/jobs/${encodeURIComponent(id)}/cancel`, {
+  const r = await apiFetch(`/api/diagnostics/jobs/${encodeURIComponent(id)}/cancel`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
@@ -135,7 +135,7 @@ export async function cancelDiagnostic(id: string): Promise<DiagnosticJob> {
 }
 
 export async function getDiagnosticHistory(): Promise<DiagnosticAuditEntry[]> {
-  const r = await fetch('/api/diagnostics/history');
+  const r = await apiFetch('/api/diagnostics/history');
   if (!r.ok) throw new Error(await serverMessage(r, `diagnostic history failed — HTTP ${r.status}`));
   const body = (await r.json()) as { entries?: DiagnosticAuditEntry[] };
   return body.entries ?? [];
@@ -160,7 +160,7 @@ export async function disconnectClient(
   ticket: string,
 ): Promise<DisconnectResult | { ok: false; applied: false; message: string }> {
   try {
-    const r = await fetch(`/api/clients/${encodeURIComponent(mac)}/disconnect`, {
+    const r = await apiFetch(`/api/clients/${encodeURIComponent(mac)}/disconnect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ticket }),
@@ -182,7 +182,7 @@ export async function blockClient(
   ticket: string,
 ): Promise<DisconnectResult | { ok: false; applied: false; message: string }> {
   try {
-    const r = await fetch(`/api/clients/${encodeURIComponent(mac)}/block`, {
+    const r = await apiFetch(`/api/clients/${encodeURIComponent(mac)}/block`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ticket }),
@@ -213,7 +213,7 @@ export async function ackAlert(
   ticket: string,
 ): Promise<AckAlertResult | { ok: false; applied: false; message: string }> {
   try {
-    const r = await fetch('/api/alerts/ack', {
+    const r = await apiFetch('/api/alerts/ack', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ticket, alert }),

@@ -1,6 +1,6 @@
 /** SSE object CRUD, commit retry and manual-reconciliation cleanup. */
 
-import { serverMessage } from './core';
+import { apiFetch, serverMessage } from './core';
 import {
   type SseCommitRetryResult,
   type SseInventory,
@@ -24,7 +24,7 @@ import {
  *  either way rather than a spinner that never resolves. */
 export async function getSseInventory(): Promise<SseInventory | null> {
   try {
-    const r = await fetch('/api/sse/inventory');
+    const r = await apiFetch('/api/sse/inventory');
     if (!r.ok) return null;
     return (await r.json()) as SseInventory;
   } catch {
@@ -75,7 +75,7 @@ export function failedSseReadStatus(status: number): SseKindReadStatus {
 export async function getSseKind(kind: SseObjectKind, q?: string): Promise<SseKindListing> {
   try {
     const qs = q?.trim() ? `?q=${encodeURIComponent(q.trim())}` : '';
-    const r = await fetch(`/api/sse/objects/${encodeURIComponent(kind)}${qs}`);
+    const r = await apiFetch(`/api/sse/objects/${encodeURIComponent(kind)}${qs}`);
     if (!r.ok) {
       return {
         rows: [],
@@ -123,7 +123,7 @@ export async function getSseKind(kind: SseObjectKind, q?: string): Promise<SseKi
 /** GET /api/sse/objects/:kind/:id — on-demand fresh detail read (edit drawer). */
 export async function getSseObject(kind: SseObjectKind, id: string): Promise<{ ok: boolean; object?: Record<string, unknown>; message?: string }> {
   try {
-    const r = await fetch(`/api/sse/objects/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`);
+    const r = await apiFetch(`/api/sse/objects/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`);
     if (r.ok) return { ok: true, object: (await r.json()) as Record<string, unknown> };
     return { ok: false, message: await serverMessage(r, `read failed — HTTP ${r.status}`) };
   } catch (err) {
@@ -188,7 +188,7 @@ export async function sseErrorResponse(r: Response, fallback: string): Promise<S
 
 export async function sseMutate(url: string, method: 'POST' | 'PUT' | 'DELETE', body: unknown): Promise<SseMutationCallResult> {
   try {
-    const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (r.ok) {
       const result = (await r.json()) as SseMutationResult;
       const message = !result.mutation.ok
@@ -234,7 +234,7 @@ export async function retrySseCommit(reviewConfirmed: boolean): Promise<SseCommi
     return { ok: false, message: 'review the tenant-wide commit before retrying' };
   }
   try {
-    const r = await fetch('/api/sse/commit/retry', {
+    const r = await apiFetch('/api/sse/commit/retry', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reviewConfirmed: true }),
@@ -281,7 +281,7 @@ export async function cleanupSseManualReconciliation(
     };
   }
   try {
-    const r = await fetch('/api/sse/recovery/manual-cleanup', {
+    const r = await apiFetch('/api/sse/recovery/manual-cleanup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reviewConfirmed: true, manualReconciled: true }),

@@ -11,6 +11,7 @@
 import {
   ApiError,
   ApiResult,
+  apiFetch,
   messageFromBody,
   responseJson,
   serverMessage,
@@ -74,7 +75,7 @@ export async function getCentralWebhooks(
   if (opts.q?.trim()) params.set('q', opts.q.trim());
   const qs = params.toString();
   try {
-    const r = await fetch(`/api/central/webhooks${qs ? `?${qs}` : ''}`);
+    const r = await apiFetch(`/api/central/webhooks${qs ? `?${qs}` : ''}`);
     if (!r.ok) return emptyWebhookEnvelope(opts, await serverMessage(r, `request failed — HTTP ${r.status}`));
     const body = (await r.json()) as Partial<WebhookListEnvelope>;
     if (!Array.isArray(body.items)) {
@@ -90,7 +91,7 @@ export async function getCentralWebhooks(
  *  populate the edit drawer's "before" state for the review diff. */
 export async function getCentralWebhook(id: string): Promise<ApiResult<WebhookDetail>> {
   try {
-    const r = await fetch(`/api/central/webhooks/${encodeURIComponent(id)}`);
+    const r = await apiFetch(`/api/central/webhooks/${encodeURIComponent(id)}`);
     if (r.ok) return (await r.json()) as WebhookDetail;
     return { error: await serverMessage(r, `request failed — HTTP ${r.status}`) };
   } catch (err) {
@@ -100,7 +101,7 @@ export async function getCentralWebhook(id: string): Promise<ApiResult<WebhookDe
 
 export async function getCentralWebhookHandoffStatus(): Promise<ApiResult<WebhookHandoffStatus>> {
   try {
-    const r = await fetch('/api/central/webhooks/handoff');
+    const r = await apiFetch('/api/central/webhooks/handoff');
     if (r.ok) return (await r.json()) as WebhookHandoffStatus;
     return { error: await serverMessage(r, `request failed — HTTP ${r.status}`), httpCode: r.status };
   } catch (err) {
@@ -113,7 +114,7 @@ export async function acknowledgeCentralWebhookHandoff(
   secretStored: true,
 ): Promise<ApiResult<WebhookHandoffResolutionResult>> {
   try {
-    const r = await fetch('/api/central/webhooks/handoff/acknowledge', {
+    const r = await apiFetch('/api/central/webhooks/handoff/acknowledge', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ operationId, secretStored }),
@@ -133,7 +134,7 @@ export async function resolveCentralWebhookHandoff(input: {
   matchedWebhookId?: string;
 }): Promise<ApiResult<WebhookHandoffResolutionResult>> {
   try {
-    const r = await fetch('/api/central/webhooks/handoff/resolve', {
+    const r = await apiFetch('/api/central/webhooks/handoff/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
@@ -152,7 +153,7 @@ export async function webhookMutate(
   secrets: readonly string[] = [],
 ): Promise<ApiResult<WebhookMutationResult>> {
   try {
-    const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await apiFetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (r.ok) return (await r.json()) as WebhookMutationResult;
     const responseBody = await responseJson(r);
     if (r.status === 409) {
@@ -285,7 +286,7 @@ export async function webhookSecretMutate(
   secrets: readonly string[] = [],
 ): Promise<ApiResult<WebhookOneTimeSecretResult>> {
   try {
-    const r = await fetch(path, {
+    const r = await apiFetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

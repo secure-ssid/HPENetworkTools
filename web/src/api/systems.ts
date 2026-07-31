@@ -4,6 +4,7 @@ import {
   DataSource,
   ScreenEnvelope,
   apiFailure,
+  apiFetch,
   fetchScreen,
   serverMessage,
 } from './core';
@@ -153,7 +154,7 @@ export interface SystemMutationResult {
 /** Ask the poller to run one immediate cycle for every linked plane. */
 export async function syncSystems(): Promise<SystemMutationResult> {
   try {
-    const r = await fetch('/api/systems/sync', { method: 'POST' });
+    const r = await apiFetch('/api/systems/sync', { method: 'POST' });
     if (r.ok) {
       const body = (await r.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -188,7 +189,7 @@ export async function testSystem(
   creds: SystemCredentialPayload,
 ): Promise<SystemMutationResult> {
   try {
-    const r = await fetch(`/api/systems/${encodeURIComponent(plane)}/test`, {
+    const r = await apiFetch(`/api/systems/${encodeURIComponent(plane)}/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(creds),
@@ -214,7 +215,7 @@ export async function saveSystemCredentials(
   creds: SystemCredentialPayload,
 ): Promise<SystemMutationResult> {
   try {
-    const r = await fetch(`/api/systems/${encodeURIComponent(plane)}/credentials`, {
+    const r = await apiFetch(`/api/systems/${encodeURIComponent(plane)}/credentials`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(creds),
@@ -229,7 +230,7 @@ export async function saveSystemCredentials(
 /** DELETE /api/systems/:plane — clear creds; the adapter becomes unlinked. */
 export async function retireSystem(plane: string): Promise<SystemMutationResult> {
   try {
-    const r = await fetch(`/api/systems/${encodeURIComponent(plane)}`, { method: 'DELETE' });
+    const r = await apiFetch(`/api/systems/${encodeURIComponent(plane)}`, { method: 'DELETE' });
     if (r.ok) return { ok: true, message: 'plane retired — credentials cleared, adapter unlinked' };
     return { ok: false, message: await serverMessage(r, `retire failed — HTTP ${r.status}`) };
   } catch (err) {

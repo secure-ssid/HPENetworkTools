@@ -15,12 +15,17 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  apiFetch,
   fetchScreen,
   isBackendReachable,
   noteResponseStatus,
+  onAuthLapse,
   onBackendReachabilityChange,
   resetBackendReachability,
 } from './core';
+import { ackAlert } from './actions';
+import { runGreenLakeAction } from './greenlake';
+import { searchInventory } from './inventory';
 
 afterEach(() => {
   resetBackendReachability();
@@ -125,5 +130,103 @@ describe('backend reachability signal', () => {
 
     expect(isBackendReachable()).toBe(false);
     expect(seen).toEqual([]);
+  });
+});
+
+/**
+ * The auth-lapse signal used to reach only the screen readers, because only
+ * they went through fetchScreen/fetchDetail. Every action and every write
+ * called `fetch` directly, so a session that expired while a tab sat open
+ * produced, on the very next click, a message blaming the plane — "GreenLake
+ * refused the change", "inventory search failed — HTTP 401" — with nothing on
+ * the page offering a way back. That is exactly the failure onAuthLapse was
+ * built to prevent, missed on the half of the app where the operator is
+ * trying to change something.
+ */
+describe('apiFetch — actions and writes report a lapsed session', () => {
+  function stub(status: number, body: unknown = {}) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: status >= 200 && status < 300,
+        status,
+        json: vi.fn().mockResolvedValue(body),
+        text: vi.fn().mockResolvedValue(''),
+        headers: { get: () => 'application/json' },
+      }),
+    );
+  }
+
+  it('raises the lapse signal for a 401 on a write action', async () => {
+    let lapses = 0;
+    onAuthLapse(() => {
+      lapses += 1;
+    });
+    stub(401, { error: 'not authenticated' });
+
+    const r = await runGreenLakeAction('inviteUser', { email: 'a@b.com' });
+
+    expect(r.ok).toBe(false);
+    expect(lapses).toBe(1);
+  });
+
+  it('raises the lapse signal for a 401 on an alert acknowledgement', async () => {
+    let lapses = 0;
+    onAuthLapse(() => {
+      lapses += 1;
+    });
+    stub(401, { error: 'not authenticated' });
+
+    const r = await ackAlert({ plane: 'central', alertId: 'a-1' }, 'CHG-1');
+
+    expect(r.ok).toBe(false);
+    expect(lapses).toBe(1);
+  });
+
+  it('raises the lapse signal for a 401 on inventory search', async () => {
+    let lapses = 0;
+    onAuthLapse(() => {
+      lapses += 1;
+    });
+    stub(401);
+
+    await expect(searchInventory('sw')).rejects.toThrow();
+    expect(lapses).toBe(1);
+  });
+
+  // A plane genuinely refusing a write is not a lapsed session. The signal is
+  // a prompt to re-ask the server, and AuthGate only closes the gate when the
+  // server itself says the session is gone — but a 200 must not prompt at all.
+  it('stays quiet when the action simply succeeded', async () => {
+    let lapses = 0;
+    onAuthLapse(() => {
+      lapses += 1;
+    });
+    stub(200, { action: 'inviteUser', outcome: 'applied', detail: 'sent' });
+
+    await runGreenLakeAction('inviteUser', { email: 'a@b.com' });
+
+    expect(lapses).toBe(0);
+  });
+
+  it('marks the backend unreachable when a write cannot connect', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+    const r = await runGreenLakeAction('inviteUser', { email: 'a@b.com' });
+
+    expect(r.ok).toBe(false);
+    expect(isBackendReachable()).toBe(false);
+  });
+
+  // An abort is the caller cancelling its own request — a superseded search or
+  // an unmounting component. Reporting it as a missing backend would raise the
+  // fixtures warning over a portal that is answering perfectly well.
+  it('does not call an aborted request an unreachable backend', async () => {
+    const abort = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abort));
+
+    await expect(apiFetch('/api/inventory/search?q=x')).rejects.toThrow();
+
+    expect(isBackendReachable()).toBe(true);
   });
 });

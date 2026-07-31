@@ -1,9 +1,6 @@
 /** Assistant chat: status, settings and message posting. */
 
-import {
-  fromApi,
-  serverMessage,
-} from './core';
+import { apiFetch, fromApi, serverMessage } from './core';
 import { SystemMutationResult } from './systems';
 
 // ---------------------------------------------------------------------------
@@ -53,7 +50,7 @@ export async function postChat(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120_000);
   try {
-    const r = await fetch('/api/chat', {
+    const r = await apiFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages, allowWrite }),
@@ -93,7 +90,7 @@ export async function getChatSettings(): Promise<ChatSettings | null> {
  */
 export async function saveChatSettings(patch: Partial<ChatSettings>): Promise<SystemMutationResult> {
   try {
-    const r = await fetch('/api/settings', {
+    const r = await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),

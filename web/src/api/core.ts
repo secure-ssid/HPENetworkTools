@@ -246,6 +246,40 @@ export function resetBackendReachability(): void {
 }
 
 /**
+ * `fetch` with the two portal-wide signals attached: the auth lapse above and
+ * backend reachability below.
+ *
+ * The lapse signal used to reach only the screen readers, because only they
+ * went through fetchScreen/fetchDetail. Every action and every write called
+ * `fetch` directly, so a session that expired while a tab sat open produced,
+ * on the very next click, a message blaming the plane: "GreenLake refused the
+ * change", "inventory search failed — HTTP 401", "could not acknowledge".
+ * None of that is what happened. The portal had simply stopped knowing who
+ * the operator was, and nothing on the page offered a way back — the precise
+ * failure onAuthLapse exists to prevent, missed on exactly the half of the
+ * app where the operator is trying to change something.
+ *
+ * Aborts are not reachability failures. A component unmounting mid-request or
+ * a superseded search cancels its own call; reporting that as a missing
+ * backend would raise the fixtures warning over a portal that is answering
+ * perfectly well.
+ *
+ * api/auth.ts deliberately does NOT use this. A 401 from /api/auth/me is that
+ * endpoint's ordinary answer for "not signed in", not a lapse, and feeding it
+ * back into the lapse listeners would have the auth gate re-asking itself.
+ */
+export async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    const response = await fetch(input, init);
+    noteResponseStatus(response.status);
+    return response;
+  } catch (err) {
+    if ((err as Error | null)?.name !== 'AbortError') noteBackendReachable(false);
+    throw err;
+  }
+}
+
+/**
  * Screen endpoints only use fixtures when no backend answered. An HTTP error
  * is an explicit live/API failure and must never turn into believable demo
  * inventory.

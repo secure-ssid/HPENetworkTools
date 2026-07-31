@@ -1,6 +1,6 @@
 /** GreenLake inventory summary and workspace actions. */
 
-import { serverMessage } from './core';
+import { apiFetch, serverMessage } from './core';
 import {
   type GreenLakeInventory,
   type GreenLakeWriteAction,
@@ -23,7 +23,7 @@ export interface GreenLakeInventoryResponse extends GreenLakeInventory {
  */
 export async function getGreenLakeInventory(): Promise<GreenLakeInventoryResponse | null> {
   try {
-    const r = await fetch('/api/greenlake/inventory');
+    const r = await apiFetch('/api/greenlake/inventory');
     if (!r.ok) return null;
     return (await r.json()) as GreenLakeInventoryResponse;
   } catch {
@@ -59,7 +59,7 @@ export async function runGreenLakeAction(
   fields: Record<string, unknown>,
 ): Promise<GreenLakeActionCallResult> {
   try {
-    const r = await fetch(`/api/greenlake/actions/${encodeURIComponent(action)}`, {
+    const r = await apiFetch(`/api/greenlake/actions/${encodeURIComponent(action)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fields, reviewConfirmed: true }),

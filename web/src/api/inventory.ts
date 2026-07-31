@@ -1,5 +1,6 @@
 /** GreenLake inventory tree: lazy node expansion and search. */
 
+import { apiFetch } from './core';
 import {
   type InventorySearchPage,
   type InventoryTreeNode,
@@ -20,7 +21,7 @@ export async function getInventoryTree(
   if (options.query) params.set('q', options.query);
   if (options.cursor) params.set('cursor', options.cursor);
   if (options.limit) params.set('limit', String(options.limit));
-  const response = await fetch(`/api/inventory/tree?${params.toString()}`, {
+  const response = await apiFetch(`/api/inventory/tree?${params.toString()}`, {
     signal: options.signal,
   });
   if (!response.ok) throw new Error(`inventory tree failed — HTTP ${response.status}`);
@@ -34,7 +35,7 @@ export async function searchInventory(
   const params = new URLSearchParams({ q: query });
   if (options.cursor) params.set('cursor', options.cursor);
   if (options.limit) params.set('limit', String(options.limit));
-  const response = await fetch(`/api/inventory/search?${params.toString()}`, {
+  const response = await apiFetch(`/api/inventory/search?${params.toString()}`, {
     signal: options.signal,
   });
   if (!response.ok) throw new Error(`inventory search failed — HTTP ${response.status}`);
@@ -42,7 +43,7 @@ export async function searchInventory(
 }
 
 export async function getInventoryNode(id: string, signal?: AbortSignal): Promise<InventoryTreeNode> {
-  const response = await fetch(`/api/inventory/node?id=${encodeURIComponent(id)}`, { signal });
+  const response = await apiFetch(`/api/inventory/node?id=${encodeURIComponent(id)}`, { signal });
   if (!response.ok) throw new Error(`inventory node failed — HTTP ${response.status}`);
   return (await response.json()) as InventoryTreeNode;
 }
