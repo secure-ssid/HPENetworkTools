@@ -94,6 +94,18 @@ export function PlaneRow({ view: v, onOpen }: { view: PlaneView; onOpen: (v: Pla
  * being rate-limited, so name it and quote its own count. Everything else —
  * including an unlinked Classic that the portal has never called — gets no
  * banner at all.
+ *
+ * Every throttling plane is named. This used to stop at the first one in view
+ * order, which made two different mistakes at once. Naming one of three read
+ * as there being one, and view order is not severity, so a plane with a single
+ * 429 in fifty calls could stand in front of one getting nothing through at
+ * all. Both matter more here than for a single outage: 429s often share a
+ * cause — a poll interval, a tenant quota — and a banner that shows one plane
+ * at a time is a banner that hides the pattern.
+ *
+ * It reads like pollFailureBanner below because the two sit one above the
+ * other on the same screen, and the operator should not have to learn that one
+ * of them lists everything and the other does not.
  */
 export interface ThrottleBanner {
   title: string;
@@ -101,17 +113,28 @@ export interface ThrottleBanner {
 }
 
 export function throttleBanner(views: Array<{ row: SystemRow; live: LivePlaneState | null }>): ThrottleBanner | null {
-  for (const v of views) {
-    if (!v.live?.linked) continue;
-    const total = v.live.recentCalls.length;
-    const rate = v.live.recentCalls.filter((c) => c.code === '429').length;
-    if (rate === 0) continue;
-    return {
-      title: `${v.row.name} is throttling us`,
-      body: `${rate} of the last ${total} calls to this plane came back 429, so inventory from it falls behind.${v.live.note ? ` Registry note: ${v.live.note}.` : ''}`,
-    };
-  }
-  return null;
+  const throttled = views
+    .filter((v) => v.live?.linked)
+    .map((v) => ({
+      name: v.row.name,
+      total: v.live!.recentCalls.length,
+      rate: v.live!.recentCalls.filter((c) => c.code === '429').length,
+      note: v.live!.note?.trim(),
+    }))
+    .filter((t) => t.rate > 0);
+  if (throttled.length === 0) return null;
+  const body = throttled
+    .map((t) => `${t.name} — ${t.rate} of the last ${t.total} calls came back 429.${t.note ? ` Registry note: ${t.note}.` : ''}`)
+    .join(' ');
+  return {
+    title:
+      throttled.length === 1
+        ? `${throttled[0]!.name} is throttling us`
+        : `${throttled.length} systems are throttling us`,
+    // The consequence is stated once, after the list, rather than repeated
+    // after every plane — it is the same consequence for all of them.
+    body: `${body} Inventory from ${throttled.length === 1 ? 'it' : 'them'} falls behind.`,
+  };
 }
 
 /**

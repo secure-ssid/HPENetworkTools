@@ -64,8 +64,7 @@ describe('pollFailureBanner', () => {
     expect(stale?.body).not.toContain('never completed one');
   });
 
-  /* throttleBanner returns the first match and stops. A failing poll is not a
-     thing to report one of. */
+  /* A failing poll is not a thing to report one of. */
   it('names every failing plane, not just the first', () => {
     const banner = pollFailureBanner([
       view('Central', { consecutiveFailures: 2, note: 'auth: 401' }),
@@ -109,6 +108,16 @@ describe('pollFailureBanner', () => {
   });
 });
 
+/** `n` 429s inside a buffer of `total` recent calls. */
+function calls(n: number, total: number): LivePlaneState['recentCalls'] {
+  return Array.from({ length: total }, (_, i) => ({
+    time: '11:00',
+    path: '/a',
+    ms: 10,
+    code: i < n ? '429' : '200',
+  })) as LivePlaneState['recentCalls'];
+}
+
 describe('throttleBanner', () => {
   it('names a linked plane whose recent calls carry 429s, and counts them', () => {
     const banner = throttleBanner([
@@ -123,8 +132,63 @@ describe('throttleBanner', () => {
     expect(banner?.body).toContain('1 of the last 2 calls');
   });
 
+  /* 429s usually share a cause — a poll interval, a tenant quota — so showing
+     one plane at a time hides the very thing worth noticing. */
+  it('names every throttling plane and counts them in the title', () => {
+    const banner = throttleBanner([
+      view('Central', { recentCalls: calls(1, 50) }),
+      view('GreenLake', { recentCalls: calls(0, 50) }),
+      view('SSE', { recentCalls: calls(45, 50) }),
+    ]);
+    expect(banner?.title).toBe('2 systems are throttling us');
+    expect(banner?.body).toContain('Central — 1 of the last 50 calls came back 429');
+    expect(banner?.body).toContain('SSE — 45 of the last 50 calls came back 429');
+    // A plane the portal is getting clean answers from is not in the list.
+    expect(banner?.body).not.toContain('GreenLake');
+  });
+
+  it('states the consequence once, and for all of them', () => {
+    const banner = throttleBanner([
+      view('Central', { recentCalls: calls(3, 10) }),
+      view('SSE', { recentCalls: calls(4, 10) }),
+    ]);
+    expect(banner?.body).toContain('Inventory from them falls behind.');
+    // Once, not once per plane.
+    expect(banner?.body.match(/falls behind/g)?.length).toBe(1);
+  });
+
+  it('quotes the registry note per plane, and omits the fragment when there is none', () => {
+    const banner = throttleBanner([
+      view('Central', { recentCalls: calls(2, 10), note: 'gateway quota exhausted' }),
+      view('SSE', { recentCalls: calls(2, 10), note: null }),
+    ]);
+    expect(banner?.body).toContain('Registry note: gateway quota exhausted.');
+    // One note, not two — a plane with nothing recorded gets no invented one.
+    expect(banner?.body.match(/Registry note:/g)?.length).toBe(1);
+  });
+
+  /* Guard: the single-plane wording is what it always was. One throttling
+     plane is not a list, and must not start reading like the head of one. */
+  it('keeps the singular wording when only one plane is throttling', () => {
+    const banner = throttleBanner([
+      view('Central', { recentCalls: calls(1, 2) }),
+      view('GreenLake', { recentCalls: calls(0, 2) }),
+    ]);
+    expect(banner?.title).toBe('Central is throttling us');
+    expect(banner?.body).toContain('Inventory from it falls behind.');
+    expect(banner?.body).not.toContain('them');
+  });
+
   it('raises nothing for a plane the portal has never called', () => {
     expect(throttleBanner([view('Classic', { linked: false })])).toBeNull();
     expect(throttleBanner([view('Central')])).toBeNull();
+  });
+
+  /* Guard: an unlinked plane with 429s in its buffer is history, not a
+     current fault — the portal is not calling it any more. */
+  it('ignores an unlinked plane even when its buffer holds 429s', () => {
+    expect(
+      throttleBanner([view('Classic', { linked: false, recentCalls: calls(9, 10) })]),
+    ).toBeNull();
   });
 });
