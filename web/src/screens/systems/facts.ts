@@ -367,4 +367,5 @@ export const SECTION_LABEL: Record<ScreenSection, string> = {
   configure: 'Configure',
   compliance: 'Compliance',
   systems: 'Systems',
+  uxi: 'UXI',
 };

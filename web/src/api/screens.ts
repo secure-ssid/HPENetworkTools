@@ -49,6 +49,7 @@ import {
   SSIDS,
   SUBSCRIPTIONS,
   TICKETS,
+  UXI_SENSORS,
   VLANS,
   deriveSiteProfile,
   deviceProfile,
@@ -99,6 +100,7 @@ import {
   type SubscriptionRow,
   type TerminalLine,
   type TicketRow,
+  type UxiSensorRow,
   type VlanObject,
 } from '@hpe/shared';
 
@@ -168,6 +170,15 @@ export interface ClearPassData extends ScreenEnvelope {
   /** Linked planes that contributed nothing to the endpoint or auth-event
    *  dataset — absent means the route did not say; an empty array means it
    *  looked and every linked plane reported. */
+  missingSources?: Plane[];
+}
+
+export interface UxiData extends ScreenEnvelope {
+  sensors: UxiSensorRow[];
+  /** Non-empty only when the UXI plane is linked but did not contribute a
+   *  sensor read this cycle — a single-plane dataset, unlike the merged
+   *  multi-plane `missingSources` other screens carry. Absent means the
+   *  route did not say. */
   missingSources?: Plane[];
 }
 
@@ -400,6 +411,19 @@ export async function getClearPass(): Promise<ClearPassData> {
   return {
     endpoints: CLEARPASS_ENDPOINTS,
     authEvents: AUTH_EVENTS,
+    dataSource: 'demo',
+    syncedAt: DEMO_SYNCED_AT,
+  };
+}
+
+export async function getUxi(): Promise<UxiData> {
+  const result = await fetchScreen<UxiData>('/api/uxi');
+  if (result.kind === 'ok') return result.data;
+  if (result.kind === 'http-error') {
+    return apiFailure<UxiData>(result.message, { sensors: [] });
+  }
+  return {
+    sensors: UXI_SENSORS,
     dataSource: 'demo',
     syncedAt: DEMO_SYNCED_AT,
   };

@@ -34,7 +34,7 @@ import { getSites } from '../api/client';
 import type { SitesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { hhmmLocal as hhmm, countOf } from '@hpe/shared';
-import type { SiteHealthTone, SiteRow } from '@hpe/shared';
+import type { MistSleRow, SiteHealthTone, SiteRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
@@ -45,6 +45,31 @@ const HEALTH_COLORS: Record<SiteHealthTone, string> = {
   bad: 'var(--nd-danger)',
   stale: 'var(--nd-border-strong)',
 };
+
+/** ≥0.9 good, 0.7–0.9 moderate, <0.7 poor — the SLE badge's own thresholds,
+ *  independent of the site health tone above (Mist scores per classifier,
+ *  not per the merged inventory's device/alert mix). */
+function sleTone(overall: number | null): 'success' | 'warning' | 'danger' | 'neutral' {
+  if (overall === null) return 'neutral';
+  if (overall >= 0.9) return 'success';
+  if (overall >= 0.7) return 'warning';
+  return 'danger';
+}
+
+function pct(v: number | null): string {
+  return v === null ? '—' : `${Math.round(v * 100)}%`;
+}
+
+function sleTooltip(sle: MistSleRow): string {
+  return [
+    `Coverage ${pct(sle.coverage)}`,
+    `Capacity ${pct(sle.capacity)}`,
+    `Roaming ${pct(sle.roaming)}`,
+    `AP Health ${pct(sle.apHealth)}`,
+    `WAN ${pct(sle.wan)}`,
+  ].join(' · ');
+}
+
 
 function planeNames(sites: SiteRow[]): string[] {
   const all: string[] = [];
@@ -126,6 +151,7 @@ export default function Sites() {
   // A plane that contributed no device list contributed no sites either, so
   // its locations are missing from the table rather than present-and-empty.
   const missingSources = data.missingSources ?? [];
+  const sleBySiteId = data.sleBySiteId ?? {};
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -198,6 +224,7 @@ export default function Sites() {
             <Table.HeaderCell numeric>Devices</Table.HeaderCell>
             <Table.HeaderCell numeric>Clients</Table.HeaderCell>
             <Table.HeaderCell>Health</Table.HeaderCell>
+            <Table.HeaderCell>SLE</Table.HeaderCell>
             <Table.HeaderCell>Alerts</Table.HeaderCell>
             <Table.HeaderCell numeric>Last sync</Table.HeaderCell>
           </Table.Row>
@@ -310,6 +337,18 @@ export default function Sites() {
                     {s.health ?? '—'}
                   </span>
                 </div>
+              </Table.Cell>
+              <Table.Cell>
+                {(() => {
+                  const sle = sleBySiteId[s.id];
+                  return (
+                    <span title={sle ? sleTooltip(sle) : 'no SLE score reported for this site'}>
+                      <Badge tone={sleTone(sle?.overall ?? null)}>
+                        {sle && sle.overall !== null ? pct(sle.overall) : '—'}
+                      </Badge>
+                    </span>
+                  );
+                })()}
               </Table.Cell>
               <Table.Cell>
                 <Badge tone={s.alertTone}>{s.alerts}</Badge>

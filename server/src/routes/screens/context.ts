@@ -116,6 +116,11 @@ export function syncedAtFor(section: ScreenSection): string | null {
       return poller.lastSyncFor('clients');
     case 'compliance':
       return poller.lastSyncFor('devices');
+    // UXI's own dedicated dataset (uxiSensors) is not a PLANE_ROW_DATASET_KEY
+    // (it is UXI-only, same as mistSle/sse/greenlake), so freshness here is
+    // the plane's own registry stamp rather than a merged-row lookup.
+    case 'uxi':
+      return registry.state('uxi').lastSync;
   }
 }
 

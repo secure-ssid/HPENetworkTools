@@ -65,6 +65,12 @@ export const NAV_ICONS: Partial<Record<View, ReactNode>> = {
       <path d="M8 10v1.5" />
     </Svg>
   ),
+  uxi: (
+    <Svg>
+      <path d="M1.5 8.5h3l1.5-4 2.5 7 1.5-4.5h3.5" />
+      <circle cx="13" cy="8.5" r="1.5" />
+    </Svg>
+  ),
   inventory: (
     <Svg>
       <path d="M2.5 3.5h4" />

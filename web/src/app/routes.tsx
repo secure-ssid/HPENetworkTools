@@ -23,6 +23,7 @@ import GreenLake from '../screens/GreenLake';
 import Configure from '../screens/Configure';
 import Compliance from '../screens/Compliance';
 import Systems from '../screens/Systems';
+import Uxi from '../screens/Uxi';
 import { DsGallery } from '../screens/DsGallery';
 
 export function AppRoutes() {
@@ -46,6 +47,7 @@ export function AppRoutes() {
         <Route path="/configure" element={<Configure />} />
         <Route path="/compliance" element={<Compliance />} />
         <Route path="/systems" element={<Systems />} />
+        <Route path="/uxi" element={<Uxi />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />
       </Route>
       <Route path="/ds" element={<DsGallery />} />

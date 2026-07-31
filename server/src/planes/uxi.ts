@@ -52,7 +52,7 @@
  * never in a URL; the call log records method + path + ms + status only.
  */
 
-import type { AlertRow, DeviceRow, PlaneDatasetKey, Sev, SiteId, Tone } from '@hpe/shared';
+import type { AlertRow, DeviceRow, PlaneDatasetKey, Sev, SiteId, Tone, UxiSensorRow } from '@hpe/shared';
 import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
@@ -219,6 +219,66 @@ export function mapUxiIssue(raw: unknown, sensor: UxiIssueSensor, nowMs: number 
     state: /resolv|clos|clear/.test(statusRaw) ? 'cleared' : 'open',
     age: ts !== null ? ageString(ts, nowMs) : '—',
     device: sensor.name,
+  };
+}
+
+/** One sensor-status issue → the simplified shape UxiSensorRow.issues carries.
+ *  Deliberately not AlertRow: the dedicated UXI screen wants the raw
+ *  severity/status vocabulary and a short context string, not the merged
+ *  queue's sev/tone/site/age. */
+function mapUxiSensorIssue(raw: unknown): { code: string; severity: string; status: string; context: string | null } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const code = str(r.code);
+  if (!code) return null;
+  const ctx = (r.context && typeof r.context === 'object' ? r.context : {}) as Record<string, unknown>;
+  const context =
+    [str(ctx.network_name ?? ctx.networkName), str(ctx.service_test_name ?? ctx.serviceTestName)]
+      .filter((v): v is string => v !== null)
+      .join(' · ') || null;
+  return {
+    code,
+    severity: str(r.severity) ?? 'unknown',
+    status: str(r.status) ?? 'unknown',
+    context,
+  };
+}
+
+/**
+ * The sensor list entry + its live status → UxiSensorRow, the richer
+ * per-sensor view the dedicated UXI screen reads. Reuses exactly the data
+ * pull() already fetched for `devices`/`alerts` — no extra API calls.
+ * `activeIssues` are this sensor's issues whose status is NOT resolved/closed
+ * (mirrors mapUxiIssue's 'cleared' test): the row's issue count and detail
+ * describe what is still open, not the sensor's full history.
+ */
+export function mapUxiSensorRow(
+  raw: unknown,
+  online: boolean | null,
+  testing: boolean | null,
+  rawIssues: unknown[],
+): UxiSensorRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const id = str(r.id);
+  const name = str(r.name) ?? id;
+  if (!id || !name) return null;
+  const activeIssues = rawIssues
+    .map(mapUxiSensorIssue)
+    .filter((i): i is NonNullable<ReturnType<typeof mapUxiSensorIssue>> => i !== null)
+    .filter((i) => !/resolv|clos|clear/.test(i.status.toLowerCase()));
+  return {
+    id,
+    name,
+    serial: str(r.serial),
+    model: str(r.modelNumber ?? r.model),
+    site: str(r.groupName ?? r.site ?? r.site_name ?? r.group_name),
+    isOnline: online,
+    isTesting: testing,
+    issueCount: activeIssues.length,
+    issues: activeIssues,
+    wifiMac: str(r.wifiMacAddress ?? r.wifi_mac_address),
+    ethernetMac: str(r.ethernetMacAddress ?? r.ethernet_mac_address),
   };
 }
 
@@ -392,6 +452,28 @@ export class UxiAdapter implements PlaneAdapter {
       })
       .filter((d): d is UxiDeviceRow => d !== null);
 
+    // The richer per-sensor view for the dedicated UXI screen — same sensors
+    // list + status reads above, grouped by name so each sensor gets its own
+    // raw issues rather than the flat list mapUxiIssue works from.
+    const rawIssuesByName = new Map<string, unknown[]>();
+    for (const { issue, sensorName } of issues) {
+      const list = rawIssuesByName.get(sensorName);
+      if (list) list.push(issue);
+      else rawIssuesByName.set(sensorName, [issue]);
+    }
+    const uxiSensors = sensors
+      .map((s) => {
+        const r = s && typeof s === 'object' ? (s as Record<string, unknown>) : {};
+        const name = str(r.name) ?? str(r.id);
+        return mapUxiSensorRow(
+          s,
+          name !== null ? (onlineByName.get(name) ?? null) : null,
+          name !== null ? (testingByName.get(name) ?? null) : null,
+          (name !== null && rawIssuesByName.get(name)) || [],
+        );
+      })
+      .filter((s): s is UxiSensorRow => s !== null);
+
     // An issue inherits the site of the sensor it was read from unless its own
     // context names a group — the sensor row is where groupName was resolved.
     const sensorByName = new Map<string, UxiIssueSensor>(
@@ -441,7 +523,7 @@ export class UxiAdapter implements PlaneAdapter {
       ...(truncated ? (['devices'] as const) : []),
       ...(named.length > MAX_SENSOR_STATUSES || statusFailures > 0 ? (['alerts'] as const) : []),
     ];
-    return partial.length > 0 ? { devices, alerts, partial } : { devices, alerts };
+    return partial.length > 0 ? { devices, alerts, uxiSensors, partial } : { devices, alerts, uxiSensors };
   }
 
   // -- internals -------------------------------------------------------------
