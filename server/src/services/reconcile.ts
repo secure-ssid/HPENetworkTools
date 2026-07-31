@@ -58,6 +58,8 @@ export const PLANE_LABEL: Record<PlaneId, Plane> = {
   clearpass: 'CLEARPASS',
   uxi: 'UXI',
   sse: 'SSE',
+  opsramp: 'OPSRAMP',
+  edgeconnect: 'EDGECONNECT',
 };
 
 /**
@@ -131,6 +133,11 @@ const PLANE_RANK: Record<PlaneId, number> = {
   // shared SseInventory) so this rank is never actually consulted; it exists
   // only to keep this map exhaustive over PlaneId.
   sse: 9,
+  opsramp: 10,
+  // EdgeConnect never contributes a DeviceRow it needs ranked against another
+  // plane's claim on the SAME device today (it is the sole claimant of its
+  // SD-WAN appliances), but the map must stay exhaustive over PlaneId.
+  edgeconnect: 11,
 };
 
 /** 'AA:BB:CC:DD:EE:FF', 'aabb.ccdd.eeff' and 'aabb-ccdd-eeff' all → 'aabbccddeeff'. */

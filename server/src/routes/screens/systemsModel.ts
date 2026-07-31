@@ -46,6 +46,8 @@ export const SYSTEM_DISPLAY: Partial<Record<PlaneId, string>> = {
   clearpass: 'ClearPass',
   uxi: 'UXI',
   sse: 'HPE Aruba Networking SSE',
+  edgeconnect: 'EdgeConnect SD-WAN',
+  opsramp: 'HPE OpsRamp',
 };
 
 export const SYSTEM_HEALTH_TONE: Record<PlaneHealth, Tone> = {

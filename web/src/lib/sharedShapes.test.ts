@@ -279,6 +279,7 @@ describe('connect-drawer credential keys match what the adapters read', () => {
       clearpass: 'host',
       uxi: 'baseUrl',
       sse: 'baseUrl',
+      edgeconnect: 'baseUrl',
     });
   });
 

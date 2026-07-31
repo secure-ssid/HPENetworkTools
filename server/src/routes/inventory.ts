@@ -44,6 +44,8 @@ const SYSTEM_LABEL: Record<PlaneId, string> = {
   clearpass: 'ClearPass',
   uxi: 'UXI',
   sse: 'HPE Aruba Networking SSE',
+  opsramp: 'HPE OpsRamp',
+  edgeconnect: 'HPE Aruba EdgeConnect SD-WAN',
 };
 
 const DEVICE_PLANE: Record<PlaneId, string> = {
@@ -57,6 +59,8 @@ const DEVICE_PLANE: Record<PlaneId, string> = {
   clearpass: 'CLEARPASS',
   uxi: 'UXI',
   sse: 'SSE',
+  opsramp: 'OPSRAMP',
+  edgeconnect: 'EDGECONNECT',
 };
 
 function demoPulls(): Map<PlaneId, PlanePull> {
