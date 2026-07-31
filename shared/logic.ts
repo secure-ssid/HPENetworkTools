@@ -709,6 +709,30 @@ export function hhmmLocal(value: string): string {
 }
 
 /**
+ * The calendar day an instant falls on, on the host's own clock — 'YYYY-MM-DD'.
+ *
+ * "Today" is a local question, and the portal already answers it that way:
+ * the per-plane call counter rolls at local midnight (planes/registry.ts
+ * roll()). Anything else that says "today" has to mean the same day, or two
+ * counters on the same portal reset at different times and only one of them
+ * matches the day the operator has had.
+ *
+ * A UTC slice is the tempting shortcut and it is wrong everywhere but
+ * Greenwich. Seven hours west, the UTC date rolls over at 17:00 local — so a
+ * count of "today" empties itself in the middle of the working afternoon and
+ * reports zero with a straight face.
+ *
+ * '—' for a stamp that is not an instant, so it can never collide with a real
+ * day and quietly join that day's bucket.
+ */
+export function localDayKey(value: string | number | Date = new Date()): string {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  const p2 = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+
+/**
  * The same, with seconds.
  *
  * Auth events are the one screen that needs them: it exists to expose bursts

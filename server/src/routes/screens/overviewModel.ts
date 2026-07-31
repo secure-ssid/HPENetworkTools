@@ -38,6 +38,7 @@ import {
   type SiteRow,
   type StatDef,
   type Tone,
+  localDayKey,
 } from '@hpe/shared';
 
 export const HEALTH_TONE: Record<PlaneHealth, Tone> = {
@@ -265,14 +266,6 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
   ];
 }
 
-/** Calendar day of an ISO instant. A retention span can cover months, so the
- *  hh:mm the rest of this log uses would say nothing about its width. */
-export function isoDay(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 /**
  * The instant a row happened, for a browser to render in the reader's own
  * clock (shared/logic.ts hhmmLocal).
@@ -321,7 +314,7 @@ export function liveOverviewChanges(): { changes: ChangeLogEntry[]; unreadable: 
       // on the screen. Say what it means instead.
       if (e.event === LOG_RETENTION_EVENT) {
         const t = e as unknown as Partial<RetentionTombstone>;
-        const span = t.coveringFrom && t.coveringTo ? ` covering ${isoDay(t.coveringFrom)} to ${isoDay(t.coveringTo)}` : '';
+        const span = t.coveringFrom && t.coveringTo ? ` covering ${localDayKey(t.coveringFrom)} to ${localDayKey(t.coveringTo)}` : '';
         return {
           time: displayTime(e.ts),
           text: `Older audit history discarded by retention policy${span} — those entries are no longer available here`,

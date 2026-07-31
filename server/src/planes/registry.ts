@@ -44,6 +44,7 @@ import {
   planeStaleness,
   staleAfterSecFor,
   type PlaneStaleReason,
+  localDayKey,
 } from '@hpe/shared';
 import { currentActor } from '../services/auth';
 import { settings, type PlaneCredentials, type SettingsStore } from '../config/settings';
@@ -205,13 +206,6 @@ function callBudgetFor(id: PlaneId, creds: PlaneCredentials | null): number | nu
   return DEFAULT_CALL_BUDGET[id] ?? null;
 }
 
-function todayKey(): string {
-  const d = new Date();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
-}
-
 export class PlaneRegistry {
   private runtime = new Map<PlaneId, PlaneRuntime>();
 
@@ -287,7 +281,7 @@ export class PlaneRegistry {
         /* releasing the old session is best-effort — the re-link proceeds */
       }
     }
-    if (prev && prev.day === todayKey()) {
+    if (prev && prev.day === localDayKey()) {
       rt.callsToday = prev.callsToday;
       rt.day = prev.day;
       rt.state.callsToday = rt.callsToday;
@@ -377,7 +371,7 @@ export class PlaneRegistry {
    *  as well as on write: a plane that stopped calling (unlinked, backed off,
    *  polling paused) must not keep showing yesterday's total as today's. */
   private roll(rt: PlaneRuntime): void {
-    const day = todayKey();
+    const day = localDayKey();
     if (rt.day === day) return;
     rt.day = day;
     rt.callsToday = 0;
@@ -497,7 +491,7 @@ export class PlaneRegistry {
     } else {
       adapter = new UnconfiguredAdapter(id, state);
     }
-    return { adapter, state, baseHealth, calls, events, callsToday: 0, day: todayKey() };
+    return { adapter, state, baseHealth, calls, events, callsToday: 0, day: localDayKey() };
   }
 }
 

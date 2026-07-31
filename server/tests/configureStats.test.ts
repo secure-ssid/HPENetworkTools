@@ -302,3 +302,55 @@ describe('Overview change log — retention tombstone', () => {
     expect(changes[1].who).toBe('NET-1 · write broker');
   });
 });
+
+/**
+ * Which day is "today".
+ *
+ * The tile decided it with a UTC slice of the clock and compared that against
+ * the UTC prefix of each event stamp. Self-consistent, and consistently about
+ * the wrong day: west of Greenwich the UTC date rolls over during the
+ * afternoon, so the count of the day's pushes reset itself hours before the
+ * day ended — beside a per-plane call counter that has always rolled at local
+ * midnight, on the same screen.
+ */
+describe('Configure "Pushed today" and the operator\u2019s calendar', () => {
+  const realTz = process.env.TZ;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    if (realTz === undefined) delete process.env.TZ;
+    else process.env.TZ = realTz;
+  });
+
+  /** Pin the host to `tz` and the clock to that zone's local wall time. */
+  function at(tz: string, y: number, mIdx: number, d: number, h: number, min: number): void {
+    process.env.TZ = tz;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(y, mIdx, d, h, min, 0));
+  }
+
+  it('still counts the afternoon after the UTC date has rolled over', () => {
+    // 17:30 in Los Angeles on the 26th is already the 27th in UTC.
+    at('America/Los_Angeles', 2026, 6, 26, 17, 30);
+    const morning = new Date(2026, 6, 26, 9, 0, 0).toISOString();
+    expect(morning.slice(0, 10)).not.toBe(new Date().toISOString().slice(0, 10));
+
+    stubLog([{ ...push('applied', 'c1'), ts: morning }]);
+    expect(pushOutcomesToday()).toMatchObject({ applied: 1, total: 1 });
+  });
+
+  it('does not sweep yesterday evening into this morning east of Greenwich', () => {
+    // 09:00 in Sydney on the 27th is still the 26th in UTC, and so is
+    // yesterday evening — a UTC day would count both.
+    at('Australia/Sydney', 2026, 6, 27, 9, 0);
+    const lastNight = new Date(2026, 6, 26, 20, 0, 0).toISOString();
+    const thisMorning = new Date(2026, 6, 27, 8, 0, 0).toISOString();
+    expect(lastNight.slice(0, 10)).toBe(thisMorning.slice(0, 10));
+
+    stubLog([
+      { ...push('applied', 'c1'), ts: thisMorning },
+      { ...push('applied', 'c2'), ts: lastNight },
+    ]);
+    expect(pushOutcomesToday()).toMatchObject({ applied: 1, total: 1 });
+  });
+});

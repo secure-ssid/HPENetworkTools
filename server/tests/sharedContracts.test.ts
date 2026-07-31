@@ -57,6 +57,7 @@ import {
   ssidPreview,
   hhmmLocal,
   hhmmssLocal,
+  localDayKey,
   staleAfterSecFor,
   type AlertRow,
   type ClientDetailLive,
@@ -929,5 +930,41 @@ describe('hhmmLocal', () => {
   it('agrees with itself across the two precisions', () => {
     const at = new Date(2026, 0, 2, 3, 4, 5).toISOString();
     expect(hhmmssLocal(at).startsWith(hhmmLocal(at))).toBe(true);
+  });
+});
+
+/**
+ * One "today".
+ *
+ * The per-plane call counter has always rolled at local midnight. The
+ * Configure "Pushed today" tile decided the day with a UTC slice. Both said
+ * "today", on the same portal, and west of Greenwich they meant different
+ * days for part of every afternoon.
+ */
+describe('localDayKey', () => {
+  it('answers on the host clock, not UTC', () => {
+    // 23:30 on the 26th, local. A UTC slice of this instant reads as the 26th
+    // or the 27th depending only on where the host is standing; the calendar
+    // on the wall says the 26th.
+    const late = new Date(2026, 6, 26, 23, 30, 0);
+    expect(localDayKey(late)).toBe('2026-07-26');
+    expect(localDayKey(late.toISOString())).toBe('2026-07-26');
+  });
+
+  it('puts an instant and the moment it happened in the same bucket', () => {
+    // The whole point: a stamp written now must land in the day it is now.
+    expect(localDayKey(new Date().toISOString())).toBe(localDayKey());
+  });
+
+  it('gives a non-instant a key no real day can collide with', () => {
+    expect(localDayKey('not-a-date')).toBe('—');
+    expect(localDayKey('')).toBe('—');
+  });
+
+  it('rolls at local midnight, not seventeen hours before or after it', () => {
+    const endOfDay = new Date(2026, 6, 26, 23, 59, 59);
+    const startOfNext = new Date(2026, 6, 27, 0, 0, 0);
+    expect(localDayKey(endOfDay)).toBe('2026-07-26');
+    expect(localDayKey(startOfNext)).toBe('2026-07-27');
   });
 });

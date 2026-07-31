@@ -23,6 +23,7 @@ import {
   type StatDef,
   type Tone,
   type VlanObject,
+  localDayKey,
 } from '@hpe/shared';
 
 export interface ObservedConfigureInventory {
@@ -255,9 +256,15 @@ export function pushOutcomesToday(): {
   unreadable: number;
   truncated: boolean;
 } {
-  const today = new Date().toISOString().slice(0, 10);
+  // The operator's day, not Greenwich's. A UTC slice compared against a UTC
+  // stamp looks self-consistent and is: it is just consistently about the
+  // wrong day. Seven hours west, this tile emptied itself at 17:00 local and
+  // reported the afternoon's pushes as none at all — while the call counter
+  // beside it, which has always rolled at local midnight, still showed the
+  // day's work. Two counters, one portal, two midnights.
+  const today = localDayKey();
   const read = writeBroker.readRecentEvents(EVENTS_READ);
-  const pushes = read.events.filter((event) => event.ts.startsWith(today) && event.event === 'push');
+  const pushes = read.events.filter((event) => localDayKey(event.ts) === today && event.event === 'push');
   const applied = pushes.filter((event) => event.result.startsWith('applied')).length;
   const accepted = pushes.filter((event) => event.result.startsWith('accepted')).length;
   return {
