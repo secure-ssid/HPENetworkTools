@@ -404,30 +404,50 @@ export function mergeLiveSites(
  * Clients / Sites with alerts), computed from the same merge that feeds the
  * table. Datasets no plane reported read '—' rather than a false zero, and
  * unverified devices are named in the delta (design rule 1).
+ *
+ * `missingInventories` names linked planes that contributed no device list.
+ * Clients and alerts were already gated on datasetReported, but Sites and
+ * Devices were not, and those two are the ones derived from the inventory:
+ * a site nobody reported a device for does not appear at all, so the count
+ * silently describes a smaller estate than the operator believes they are
+ * looking at. 'all claims verified' was the sharper half of it — a positive
+ * assertion about claims on a list that was short an entire plane.
  */
 export function liveSiteStats(
   sites: SiteRow[],
   devices: ReconciledDeviceRow[],
   clients: ClientRow[],
   alerts: AlertRow[],
+  missingInventories: readonly string[] = [],
 ): StatDef[] {
   const clientsReported = datasetReported('clients');
   const alertsReported = datasetReported('alerts');
   const unverified = devices.filter((d) => d.state === 'unverified').length;
   const stale = sites.filter((s) => s.tone === 'stale').length;
   const withAlerts = new Set(alerts.filter((a) => a.state === 'open').map((a) => a.siteId)).size;
+  const short = missingInventories.length > 0 ? missingInventories.join(', ') : null;
   return [
     {
       label: 'Sites',
       value: String(sites.length),
-      delta: stale > 0 ? `${stale} without verified health` : 'from the merged inventory',
-      tone: stale > 0 ? 'negative' : 'neutral',
+      delta: short
+        ? `short of ${short}`
+        : stale > 0
+          ? `${stale} without verified health`
+          : 'from the merged inventory',
+      tone: short || stale > 0 ? 'negative' : 'neutral',
     },
     {
       label: 'Devices',
       value: devices.length.toLocaleString('en-US'),
-      delta: unverified > 0 ? `▼ ${unverified} unverified` : 'all claims verified',
-      tone: unverified > 0 ? 'negative' : 'neutral',
+      // Order matters: an unverified count is a fact about the devices that
+      // were read, but naming it alone would still imply the read was whole.
+      delta: short
+        ? `${unverified > 0 ? `▼ ${unverified} unverified · ` : ''}${short} contributed no inventory`
+        : unverified > 0
+          ? `▼ ${unverified} unverified`
+          : 'all claims verified',
+      tone: short || unverified > 0 ? 'negative' : 'neutral',
     },
     {
       label: 'Clients',

@@ -164,3 +164,64 @@ describe('Sites live rows', () => {
     expect(screen.getByText('2 sites, and the plane each one actually answers to.')).toBeTruthy();
   });
 });
+
+/* Sites are derived from the merged device inventory, so a linked plane that
+ * contributed no devices contributes no sites — its locations are absent from
+ * the table rather than listed empty. The screen showed a count and an
+ * unqualified subtitle over that, with nothing saying the estate was short. */
+describe('Sites unread-inventory disclosure', () => {
+  it('names the planes that contributed no inventory and qualifies the count', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite()],
+      missingSources: ['CENTRAL', 'MIST'],
+    });
+
+    renderSites();
+
+    await waitFor(() => expect(screen.getByText('Site A')).toBeTruthy());
+    expect(screen.getByText(/2 linked planes contributed no inventory: CENTRAL, MIST/)).toBeTruthy();
+    // 'unknown', not 'absent' — the table is short, it is not complete.
+    expect(screen.getByText(/absent\s+from the table below — not listed as empty/)).toBeTruthy();
+    // The count must not present a partial estate as the whole one.
+    expect(screen.getByText(/1 site so far, and the plane each one actually answers to\./)).toBeTruthy();
+  });
+
+  it('says nothing when every linked plane reported', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite()],
+      missingSources: [],
+    });
+
+    renderSites();
+
+    await waitFor(() => expect(screen.getByText('Site A')).toBeTruthy());
+    expect(screen.queryByText(/contributed no inventory/)).toBeNull();
+    expect(screen.queryByText(/so far/)).toBeNull();
+    expect(screen.getByText(/1 site, and the plane each one actually answers to\./)).toBeTruthy();
+  });
+
+  // An empty table with an unread plane behind it is not "no sites exist".
+  it('does not let an empty table read as an estate with no sites', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [],
+      missingSources: ['CENTRAL'],
+    });
+
+    renderSites();
+
+    await waitFor(() => expect(screen.getByText('No sites from the planes that answered')).toBeTruthy());
+    expect(
+      screen.getByText(/CENTRAL contributed no inventory, so any site there is unknown rather than absent\./),
+    ).toBeTruthy();
+    expect(screen.queryByText('Nothing matches that filter')).toBeNull();
+  });
+});

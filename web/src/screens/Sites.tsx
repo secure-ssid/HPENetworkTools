@@ -16,6 +16,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  Alert,
   Badge,
   Button,
   Divider,
@@ -127,6 +128,10 @@ export default function Sites() {
     setNewPlane('CENTRAL');
   };
 
+  // A plane that contributed no device list contributed no sites either, so
+  // its locations are missing from the table rather than present-and-empty.
+  const missingSources = data.missingSources ?? [];
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <ScreenHeader
@@ -134,7 +139,9 @@ export default function Sites() {
         title="Sites"
         subtitle={
           sitesLive
-            ? `${sites.length} site${sites.length === 1 ? '' : 's'}, and the plane each one actually answers to.`
+            ? `${sites.length} site${sites.length === 1 ? '' : 's'}${
+                missingSources.length > 0 ? ' so far' : ''
+              }, and the plane each one actually answers to.`
             : 'Ten sites, and the plane each one actually answers to.'
         }
         actions={
@@ -163,6 +170,21 @@ export default function Sites() {
           </>
         }
       />
+
+      {missingSources.length > 0 ? (
+        <Alert
+          tone="warning"
+          title={`${missingSources.length} linked plane${
+            missingSources.length === 1 ? '' : 's'
+          } contributed no inventory: ${missingSources.join(', ')}`}
+        >
+          <span style={{ fontSize: 13 }}>
+            Sites are derived from the merged device inventory, so any location known only to these planes is absent
+            from the table below — not listed as empty. The counts above describe the estate that answered, not the
+            whole one. Check them in Connected systems.
+          </span>
+        </Alert>
+      ) : null}
 
       {/* The server computes this row in every mode; an older payload that
           ships none must not leave a zero-height grid behind. */}
@@ -305,8 +327,16 @@ export default function Sites() {
 
       {rows.length === 0 ? (
         <EmptyState
-          title="Nothing matches that filter"
-          description="No site matches that plane and name combination."
+          title={
+            sites.length === 0 && missingSources.length > 0
+              ? 'No sites from the planes that answered'
+              : 'Nothing matches that filter'
+          }
+          description={
+            sites.length === 0 && missingSources.length > 0
+              ? `${missingSources.join(', ')} contributed no inventory, so any site there is unknown rather than absent.`
+              : 'No site matches that plane and name combination.'
+          }
         />
       ) : null}
 

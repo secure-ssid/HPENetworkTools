@@ -919,11 +919,13 @@ screensRouter.get('/sites', (_req, res) => {
       const live = liveMerged();
       if (live.sites.length > 0) {
         blended.push('sites');
+        const missing = planesMissingDevices();
         res.json(
           withBlended(
             envelopeFor('sites', {
-              stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts),
+              stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts, missing),
               sites: live.sites,
+              missingSources: missing,
             }),
             blended,
             'sites',
@@ -936,10 +938,16 @@ screensRouter.get('/sites', (_req, res) => {
     return;
   }
   const live = liveMerged();
+  // Sites are derived from the merged inventory, so a plane that contributed
+  // no devices contributes no sites either — its locations are absent from
+  // the table entirely rather than shown empty. Without this the screen
+  // reports a count for a smaller estate than the operator is asking about.
+  const missing = planesMissingDevices();
   res.json(
     envelopeFor('sites', {
-      stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts),
+      stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts, missing),
       sites: live.sites,
+      missingSources: missing,
     }),
   );
 });

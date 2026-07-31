@@ -155,6 +155,11 @@ export interface AuthEventsData extends ScreenEnvelope {
 export interface SitesData extends ScreenEnvelope {
   stats: StatDef[];
   sites: SiteRow[];
+  /** Linked planes that contributed no device list. Sites are derived from
+   *  the merged inventory, so these planes' locations are missing from the
+   *  table entirely — not shown empty. Absent means the route did not say;
+   *  an empty array means it looked and every linked plane reported. */
+  missingSources?: Plane[];
 }
 
 export interface SiteDetailData extends ScreenEnvelope {

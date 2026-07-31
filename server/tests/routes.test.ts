@@ -818,6 +818,63 @@ describe('live-mode screen contracts', () => {
     }
   });
 
+  /* Alerts, Clients, Devices and Compliance all name the linked planes that
+   * contributed nothing. Sites did not, and Sites is derived from the merged
+   * device inventory — a plane that reported no devices reports no sites, so
+   * its locations are missing from the table entirely rather than shown
+   * empty. The screen then printed a count and 'all claims verified' over an
+   * estate it had only partly read. */
+  it('names the planes whose missing inventory left sites out of /api/sites', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const central = registry.get('central').state();
+    const previousCentral = { ...central };
+    contributions.clear();
+    // Linked, and answering — but carrying no `devices` key at all.
+    Object.assign(central, { linked: true, health: 'healthy', stale: false });
+    contributions.set('central', { alerts: [], clients: [] });
+
+    try {
+      const { status, body } = await getJson('/api/sites');
+      expect(status).toBe(200);
+      expect(body.missingSources).toContain('CENTRAL');
+
+      const sitesStat = body.stats.find((st: any) => st.label === 'Sites');
+      expect(sitesStat.delta).toContain('CENTRAL');
+      expect(sitesStat.tone).toBe('negative');
+
+      const devicesStat = body.stats.find((st: any) => st.label === 'Devices');
+      // The false all-clear this fixes.
+      expect(devicesStat.delta).not.toBe('all claims verified');
+      expect(devicesStat.delta).toContain('CENTRAL');
+      expect(devicesStat.tone).not.toBe('positive');
+    } finally {
+      Object.assign(central, previousCentral);
+      contributions.clear();
+    }
+  });
+
+  // The complement: a plane that answered with an empty device list HAS
+  // reported, and must not be named. Warning about it would train the
+  // operator to scroll past the banner.
+  it('does not name a plane that answered /api/sites with an empty inventory', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const central = registry.get('central').state();
+    const previousCentral = { ...central };
+    contributions.clear();
+    Object.assign(central, { linked: true, health: 'healthy', stale: false });
+    contributions.set('central', { devices: [] });
+
+    try {
+      const { body } = await getJson('/api/sites');
+      expect(body.missingSources).toEqual([]);
+      const devicesStat = body.stats.find((st: any) => st.label === 'Devices');
+      expect(devicesStat.delta).toBe('all claims verified');
+    } finally {
+      Object.assign(central, previousCentral);
+      contributions.clear();
+    }
+  });
+
   /* registry.state() reports 'never-synced' through `reason` and deliberately
    * NOT through `stale`, because a plane serving no rows must not mark other
    * planes' data unverified by association. The inventory tree's status ladder
