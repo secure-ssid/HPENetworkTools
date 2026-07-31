@@ -134,6 +134,14 @@ export function buildLiveSiteTopology(
       members: null,
     };
   });
+  // A link whose far end is not in the node list cannot be drawn, because
+  // there is no card to draw it to. Dropping it silently leaves a switch
+  // looking unconnected while the "Reported physical links" table directly
+  // below still lists the link — the same read contradicting itself across
+  // two panels a thumb's width apart.
+  const undrawable = (topology.links ?? []).filter(
+    (link) => !nodeBySerial.has(link.from) || !nodeBySerial.has(link.to),
+  );
   const edges = (topology.links ?? []).flatMap((link) => {
     if (!nodeBySerial.has(link.from) || !nodeBySerial.has(link.to)) return [];
     const fromLayer = layerBySerial.get(link.from) as TopologyLayerKey;
@@ -149,11 +157,44 @@ export function buildLiveSiteTopology(
   });
   const layers = LAYER_ORDER.filter((layer) => nodes.some((node) => node.layer === layer));
   const plane = topology.source.plane.toUpperCase();
+  const omissions: string[] = [];
+  if (undrawable.length > 0) {
+    const ends = [
+      ...new Set(
+        undrawable.flatMap((link) =>
+          [link.from, link.to].filter((serial) => !nodeBySerial.has(serial)),
+        ),
+      ),
+    ];
+    omissions.push(
+      `${undrawable.length} reported link${undrawable.length === 1 ? '' : 's'} ${
+        undrawable.length === 1 ? 'is' : 'are'
+      } not drawn — ${plane} named ${ends.length === 1 ? 'an endpoint' : 'endpoints'} it did not return as ` +
+        `${ends.length === 1 ? 'a node' : 'nodes'} (${ends.join(', ')}). ${
+          undrawable.length === 1 ? 'It is' : 'They are'
+        } listed under Reported physical links.`,
+    );
+  }
+  // The plane volunteered this: it holds these devices for the site and could
+  // not place them on the graph. Parsed by the adapter, carried across the
+  // wire, and until now read by nobody — so a site whose plane said "12 of
+  // these are unplaced" drew the rest and called it the topology.
+  const isolated = topology.isolatedDevicesCount;
+  if (typeof isolated === 'number' && isolated > 0) {
+    const health = topology.isolatedHealth?.trim();
+    omissions.push(
+      `${plane} could not place ${isolated} device${isolated === 1 ? '' : 's'} on this graph${
+        health ? ` (reported health ${health.toLowerCase()})` : ''
+      }, so ${isolated === 1 ? 'it is' : 'they are'} absent from the diagram. This is not a site with ` +
+        `no such devices — it is a graph that does not reach them.`,
+    );
+  }
   return {
     layers,
     nodes,
     edges,
     note: `${plane} reports these links as physical adjacency, not traffic direction or internet routing. No Internet hop is inferred, and unmanaged neighbors keep the names the plane supplied.`,
+    omissions,
   };
 }
 

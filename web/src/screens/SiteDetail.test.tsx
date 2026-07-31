@@ -186,6 +186,77 @@ describe('SiteDetail live summary', () => {
     expect(screen.queryByText('EMPTY')).toBeNull();
   });
 
+  /* A drawn graph is read as "this is the site". Central volunteers
+   * `isolatedDevicesCount` — devices it holds for the site and could not place
+   * — and the adapter has always parsed it; nothing rendered it, so a site
+   * whose plane said twelve were unplaced drew the rest and called it the
+   * topology. */
+  it('says when the plane could not place devices on the graph', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      topology: { ...LIVE_TOPOLOGY, isolatedDevicesCount: 12, isolatedHealth: 'Poor' },
+      devices: [],
+    } as unknown as SiteDetailData);
+
+    renderDetail();
+
+    await waitFor(() =>
+      expect(screen.getByText('This diagram is not the whole graph the plane reported')).toBeTruthy(),
+    );
+    expect(screen.getByText(/could not place 12 devices on this graph/)).toBeTruthy();
+    expect(screen.getByText(/reported health poor/)).toBeTruthy();
+    // Not "a site with no such devices" — the counts above the diagram stop
+    // reading as an inventory of the estate.
+    expect(screen.getByText(/PARTIAL · 11 NODES · 10 LINKS · CENTRAL/)).toBeTruthy();
+  });
+
+  it('says when a reported link could not be drawn because an endpoint is missing', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      topology: {
+        ...LIVE_TOPOLOGY,
+        links: [
+          ...(LIVE_TOPOLOGY.links ?? []),
+          {
+            from: 'SW',
+            to: 'GHOST',
+            fromPorts: [{ name: '1/1/48' }],
+            toPorts: [{ name: 'uplink' }],
+            speedBps: 10_000_000_000,
+            health: 'Good',
+          },
+        ],
+      },
+      devices: [],
+    } as unknown as SiteDetailData);
+
+    renderDetail();
+
+    // The link table below the diagram lists this link, so silently omitting
+    // it from the picture had one read contradicting itself across two panels.
+    await waitFor(() => expect(screen.getByText(/1 reported link is not drawn/)).toBeTruthy());
+    expect(screen.getByText(/\(GHOST\)/)).toBeTruthy();
+  });
+
+  it('says nothing about omissions when the diagram is the whole graph', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      topology: { ...LIVE_TOPOLOGY, isolatedDevicesCount: 0 },
+      devices: [],
+    } as unknown as SiteDetailData);
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('11 NODES · 10 LINKS · CENTRAL')).toBeTruthy());
+    expect(screen.queryByText('This diagram is not the whole graph the plane reported')).toBeNull();
+  });
+
   it('keeps empty, failed, and cached topology outcomes distinct', async () => {
     mockGetSiteDetail.mockResolvedValue({
       site: LIVE_SITE,

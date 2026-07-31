@@ -30,6 +30,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
+  Alert,
   Badge,
   Button,
   Divider,
@@ -379,14 +380,28 @@ function LiveTopologyPanel({
 
   const diagram = buildLiveSiteTopology(topology as SiteTopologyLive, devices);
   const readAt = topology?.source.at ? hhmm(topology.source.at) : null;
+  const omissions = diagram.omissions ?? [];
+  // "12 NODES · 8 LINKS" over a diagram that is missing some of them reads as
+  // an inventory of the picture. Say the picture is short before the counts
+  // are taken for the whole graph.
+  const drawn = omissions.length > 0 ? 'PARTIAL · ' : '';
   const sourceMeta = topology?.source.cached
-    ? `${nodes.length} NODES · ${links.length} LINKS · CACHED`
-    : `${nodes.length} NODES · ${links.length} LINKS · ${plane ?? 'LIVE'}`;
+    ? `${drawn}${nodes.length} NODES · ${links.length} LINKS · CACHED`
+    : `${drawn}${nodes.length} NODES · ${links.length} LINKS · ${plane ?? 'LIVE'}`;
   const names = new Map(nodes.map((node) => [node.serial, node.name]));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <SectionHeader label="Topology" meta={sourceMeta} />
+      {omissions.length > 0 ? (
+        <Alert tone="warning" title="This diagram is not the whole graph the plane reported">
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.5 }}>
+            {omissions.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        </Alert>
+      ) : null}
       <SiteTopologyDiagram topology={diagram} onDevice={onDevice} />
       <div
         style={{

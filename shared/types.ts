@@ -1083,6 +1083,14 @@ export interface SiteTopology {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
   note: string; // honesty note: where the wiring comes from
+  /** What the plane reported and the diagram could not draw, one phrase per
+   *  reason. A drawn graph is read as "this is the site", so anything the
+   *  plane said it could not place — or that the builder had to leave out —
+   *  has to travel with the picture instead of being dropped at the point it
+   *  becomes inconvenient. Empty means the diagram is the whole of what the
+   *  plane reported; absent means the builder did not say, which is the case
+   *  for the recorded profile wiring, where there is nothing to omit. */
+  omissions?: string[];
 }
 
 // -- Devices (NtDevices) --
