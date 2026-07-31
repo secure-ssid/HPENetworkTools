@@ -106,6 +106,52 @@ describe('ChatPanel', () => {
     expect(sendButton.disabled).toBe(false);
   });
 
+  /**
+   * The error banner is cleared by the next send. What is left behind is a
+   * question sitting in the stream with no reply under it, which reads as an
+   * assistant that ignored it rather than a request that never arrived.
+   */
+  it('labels a turn the assistant never answered, and hands the question back for a retry', async () => {
+    mockedGetChatStatus.mockResolvedValue(CONFIGURED_STATUS);
+    mockedPostChat.mockResolvedValue({ ok: false, error: 'the backend is unreachable' });
+
+    renderPanel();
+    const input = (await screen.findByLabelText('Message the assistant')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'how many APs are down?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(screen.getByText(/NOT ANSWERED/)).toBeTruthy());
+    // What was asked stays on screen — hiding it would be its own lie.
+    expect(screen.getByText('how many APs are down?')).toBeTruthy();
+    // And retrying does not mean retyping it off the screen.
+    expect(input.value).toBe('how many APs are down?');
+  });
+
+  // Replaying an unanswered turn puts two user turns back to back with nothing
+  // between them: not what the operator asked, and not a shape to hand a model.
+  it('does not resend an unanswered turn as context on the next attempt', async () => {
+    mockedGetChatStatus.mockResolvedValue(CONFIGURED_STATUS);
+    mockedPostChat.mockResolvedValue({ ok: false, error: 'the backend is unreachable' });
+
+    renderPanel();
+    const input = (await screen.findByLabelText('Message the assistant')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'first question' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(screen.getByText(/NOT ANSWERED/)).toBeTruthy());
+
+    mockedPostChat.mockResolvedValue({ ok: true, reply: 'four', transcript: [] });
+    fireEvent.change(input, { target: { value: 'second question' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(screen.getByText('four')).toBeTruthy());
+    expect(mockedPostChat).toHaveBeenLastCalledWith(
+      [{ role: 'user', content: 'second question' }],
+      false,
+    );
+    // The failed turn is gone from the stream once its question is superseded.
+    expect(screen.queryByText(/NOT ANSWERED/)).toBeNull();
+  });
+
   it('shows the not-configured empty state instead of a composer when MCP/LLM are unconfigured', async () => {
     mockedGetChatStatus.mockResolvedValue({
       configured: { mcp: false, llm: false },

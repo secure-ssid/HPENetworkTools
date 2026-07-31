@@ -23,6 +23,13 @@ interface PanelMessage {
   role: 'user' | 'assistant';
   content: string;
   transcript?: ChatTranscriptEntry[];
+  /**
+   * A user turn the assistant never answered. The turn stays in the stream —
+   * hiding what was asked would be its own kind of lie — but it is labelled,
+   * because the error banner is cleared by the next send and what remains
+   * otherwise reads as a question the assistant simply ignored.
+   */
+  failed?: true;
 }
 
 /** Lines that render in mono: prompts, fences, indentation, key: value data. */
@@ -171,7 +178,11 @@ export default function ChatPanel({
     const text = draft.trim();
     if (!text || pending) return;
     setError(null);
-    const next: PanelMessage[] = [...messages, { role: 'user', content: text }];
+    /* Turns that were never answered are not conversation. Replaying one puts
+     * two user turns back to back with nothing between them, which is not what
+     * the operator asked and not a shape the model should be handed. */
+    const history = messages.filter((m) => !m.failed);
+    const next: PanelMessage[] = [...history, { role: 'user', content: text }];
     setMessages(next);
     setDraft('');
     setPending(true);
@@ -182,6 +193,12 @@ export default function ChatPanel({
     setPending(false);
     if (!res.ok) {
       setError(res.error);
+      setMessages([...history, { role: 'user', content: text, failed: true }]);
+      /* Give the question back so it can be sent again. Retrying a failed
+       * request should not mean retyping it off the screen. Safe to overwrite
+       * unconditionally: the composer is disabled for the whole request, so
+       * there is nothing else in it to lose. */
+      setDraft(text);
       return;
     }
     setMessages([...next, { role: 'assistant', content: res.reply, transcript: res.transcript }]);
@@ -279,6 +296,18 @@ export default function ChatPanel({
                       }}
                     >
                       {m.content}
+                      {m.failed ? (
+                        <div
+                          style={{
+                            marginTop: 4,
+                            fontFamily: 'var(--nd-font-mono)',
+                            fontSize: 'var(--nd-text-10)',
+                            color: 'var(--nd-danger)',
+                          }}
+                        >
+                          NOT ANSWERED — SEND AGAIN TO ASK IT
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ) : (
