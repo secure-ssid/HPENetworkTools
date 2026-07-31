@@ -79,6 +79,79 @@ const RETRY_MAX_DELAY_MS = 8_000; // mirrors the server's own poll backoff ceili
 // retries at the same order of magnitude plus headroom for one more round trip.
 const RETRY_MAX_ELAPSED_MS = 100_000;
 
+/**
+ * How long this job has had to reach a terminal state, for the purpose of the
+ * ceiling above.
+ *
+ * The ceiling is documented as "the plane's own job deadline", and the
+ * server's deadline runs from when the job STARTED. Measuring only from when
+ * this effect mounted made the two agree by accident: the poll effect is keyed
+ * on the job's state, so a `starting` → `running` transition restarted the
+ * clock, and re-opening the panel over a job already past its server deadline
+ * restarted it again. The panel would then keep retrying status checks — and
+ * keep saying "retrying" — long after the server had already answered
+ * `timed_out`, which is exactly the contradiction the ceiling exists to avoid.
+ *
+ * `startedAt` is the server's clock and `now` is the browser's, so the two can
+ * disagree. Taking whichever elapsed reading is LARGER means skew can only
+ * make the panel stop retrying sooner, never later, and stopping sooner is the
+ * safe error: it leaves the last known state on screen and says the status
+ * CHECKS failed. It never claims anything about the diagnostic itself.
+ */
+export function retryElapsedMs(job: DiagnosticJob, watchedSinceMs: number, now: number): number {
+  const sinceWatching = now - watchedSinceMs;
+  const startedAtMs = new Date(job.startedAt).getTime();
+  if (!Number.isFinite(startedAtMs)) return sinceWatching;
+  const sinceStarted = now - startedAtMs;
+  return sinceStarted > sinceWatching ? sinceStarted : sinceWatching;
+}
+
+/** A span in the vocabulary the rest of the portal ages rows in. */
+function spanText(ms: number): string {
+  if (ms < 1_000) return '<1s';
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  const min = Math.floor(ms / 60_000);
+  const sec = Math.round((ms % 60_000) / 1000);
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+}
+
+/**
+ * How long the run has been going, or took.
+ *
+ * A job sitting at '45% · Running traceroute' for eight seconds and one that
+ * has sat there for eight minutes are different facts about the estate, and
+ * the panel drew them identically — `startedAt` and `finishedAt` were on the
+ * wire and never read. A terminal state that carries no `finishedAt` gets an
+ * age rather than a duration: the run's end is not known, so no length may be
+ * claimed for it.
+ */
+export function jobDurationText(job: DiagnosticJob, now: number): string | null {
+  const startedAtMs = new Date(job.startedAt).getTime();
+  if (!Number.isFinite(startedAtMs)) return null;
+  if (job.finishedAt !== null) {
+    const finishedAtMs = new Date(job.finishedAt).getTime();
+    if (Number.isFinite(finishedAtMs) && finishedAtMs >= startedAtMs) {
+      return `took ${spanText(finishedAtMs - startedAtMs)}`;
+    }
+  }
+  const age = now - startedAtMs;
+  if (age < 0) return null;
+  return TERMINAL.has(job.state) ? `started ${spanText(age)} ago` : `running ${spanText(age)}`;
+}
+
+/** The run's timing and Central's handle for it, as one muted line. */
+export function jobTiming(job: DiagnosticJob, now: number): string {
+  return [
+    jobDurationText(job, now),
+    job.taskId !== null ? `task ${job.taskId}` : null,
+    job.taskId === null && job.state === 'cancelled'
+      ? 'New Central returned no task id, so this run cannot be looked up there'
+      : null,
+  ]
+    .filter((part): part is string => part !== null && part !== '')
+    .join(' \u00b7 ');
+}
+
 /** Stable device identity for state-keying and race protection: plane+serial
  *  when the plane reports a serial (the only thing the reviewed-diagnostics
  *  API can address), a name-qualified fallback otherwise. Never just the
@@ -134,6 +207,17 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
   const [useManagementInterface, setUseManagementInterface] = useState(false);
   const [review, setReview] = useState<DiagnosticReview | null>(null);
   const [job, setJob] = useState<DiagnosticJob | null>(null);
+  // The clock the run's age is drawn against. Polling stops at a terminal
+  // state, so a ticking age would otherwise freeze mid-run whenever the
+  // status endpoint went quiet, and read as a job that had stopped.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  /** The only writer for `job`: every job the panel adopts re-stamps the
+   *  clock its age is measured against, so a terminal state that arrives
+   *  after the ticker has stopped is still aged from the right instant. */
+  const adoptJob = (next: DiagnosticJob | null) => {
+    setJob(next);
+    setNowMs(Date.now());
+  };
   const [history, setHistory] = useState<DiagnosticAuditEntry[]>([]);
   // Holes in the audit log itself, not in this device's runs. Kept apart from
   // `history` because they survive the identity filter below: a generation
@@ -182,7 +266,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
     setDevice(null);
     setHistory([]);
     setReview(null);
-    setJob(null);
+    adoptJob(null);
     setTarget('');
     setSourceInterface('');
     setVrfName('');
@@ -224,7 +308,10 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
     let failureCount = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const jobId = job.id;
-    const startedAtMs = Date.now();
+    const watchedSinceMs = Date.now();
+    // Captured once: the effect is re-keyed on the job's state, and the
+    // ceiling must survive that (see retryElapsedMs).
+    const watched = job;
 
     const schedule = (delay: number) => {
       if (!live) return;
@@ -238,7 +325,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
         const next = await getDiagnosticJob(jobId);
         if (!live) return;
         failureCount = 0;
-        setJob(next);
+        adoptJob(next);
         setError(null);
         if (!TERMINAL.has(next.state)) schedule(JOB_POLL_STEADY_DELAY_MS);
       } catch (err) {
@@ -253,7 +340,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
           return;
         }
         failureCount += 1;
-        const elapsed = Date.now() - startedAtMs;
+        const elapsed = retryElapsedMs(watched, watchedSinceMs, Date.now());
         const message = err instanceof Error ? err.message : String(err);
         if (elapsed >= RETRY_MAX_ELAPSED_MS) {
           setError(`Diagnostic status checks kept failing (${message}); giving up after the plane's own job deadline.`);
@@ -267,8 +354,14 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
     };
 
     schedule(JOB_POLL_INITIAL_DELAY_MS);
+    // The run's age ticks on its own clock rather than on the poll's. A status
+    // check that stalls must not also freeze the age beside it — a run stuck
+    // at '45% · running 8s' reads as one that stopped, which is the opposite
+    // of what a stalled poll over a live job means.
+    const tick = setInterval(() => setNowMs(Date.now()), 1_000);
     return () => {
       live = false;
+      clearInterval(tick);
       if (timer) clearTimeout(timer);
     };
   }, [job?.id, job?.state]);
@@ -341,7 +434,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
     try {
       const started = await startDiagnostic(review.reviewId, review.plane, review.serial);
       if (!isCurrent(generation)) return; // never confirm a review for a device we've left
-      setJob(started);
+      adoptJob(started);
       setReview(null);
     } catch (err) {
       if (!isCurrent(generation)) return;
@@ -358,7 +451,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
     try {
       const cancelled = await cancelDiagnostic(job.id);
       if (!isCurrent(generation)) return;
-      setJob(cancelled);
+      adoptJob(cancelled);
     } catch (err) {
       if (!isCurrent(generation)) return;
       setError((err as Error).message);
@@ -482,6 +575,16 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
             </Badge>
             <span style={{ fontSize: 12 }}>{job.progressPercent}% · {job.message}</span>
           </div>
+          {/* How long, and Central's own handle for the run. `cancelled` means
+              the PORTAL stopped watching and the upstream task kept going, so
+              that is the state in which an operator most needs an identifier
+              to chase it with — and the one state where its absence has to be
+              said out loud rather than left as a blank. */}
+          {jobTiming(job, nowMs) ? (
+            <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)', paddingTop: 6 }}>
+              {jobTiming(job, nowMs)}
+            </div>
+          ) : null}
           {/* What the run was actually aimed at. `resolvedIp` is the answer to
               "am I even tracing to the host I meant?" — a stale DNS record
               sends a perfect-looking trace to the wrong address. */}

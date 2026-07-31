@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DiagnosticsPanel } from './DiagnosticsPanel';
+import { DiagnosticsPanel, jobTiming, retryElapsedMs } from './DiagnosticsPanel';
 import {
   DiagnosticJobStatusError,
   getDiagnosticEligibility,
@@ -83,6 +83,12 @@ function apReview(overrides: Partial<DiagnosticReview> = {}): DiagnosticReview {
     ...overrides,
   };
 }
+
+/** The instant apJob() says its run began. A faked clock must agree with it:
+ *  the retry ceiling is measured from the job's own `startedAt`, so a fixture
+ *  dated two days before the test's clock describes a run long past the
+ *  plane's deadline — which is exactly when the panel should stop retrying. */
+const JOB_CLOCK = new Date('2026-07-29T11:00:00Z');
 
 function apJob(overrides: Partial<DiagnosticJob> = {}): DiagnosticJob {
   return {
@@ -263,6 +269,7 @@ describe('DiagnosticsPanel', () => {
 
   it('submits only documented CX options and renders an async failure', async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(JOB_CLOCK);
     eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [CX] });
     history.mockResolvedValue(historyOf());
     review.mockResolvedValue(apReview({
@@ -389,6 +396,7 @@ describe('DiagnosticsPanel', () => {
 
   it('retries transient job-status failures with bounded exponential backoff until it recovers', async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(JOB_CLOCK);
     eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
     history.mockResolvedValue(historyOf());
     review.mockResolvedValue(apReview());
@@ -438,6 +446,7 @@ describe('DiagnosticsPanel', () => {
 
   it('stops polling with an honest message once persistent failures exceed the client-side deadline', async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(JOB_CLOCK);
     eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
     history.mockResolvedValue(historyOf());
     review.mockResolvedValue(apReview());
@@ -468,6 +477,7 @@ describe('DiagnosticsPanel', () => {
 
   it('stops immediately with an honest message on an answered 404, without retrying', async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(JOB_CLOCK);
     eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
     history.mockResolvedValue(historyOf());
     review.mockResolvedValue(apReview());
@@ -496,6 +506,7 @@ describe('DiagnosticsPanel', () => {
 
   it('never overlaps polls — a slow in-flight status check blocks the next tick', async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(JOB_CLOCK);
     eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
     history.mockResolvedValue(historyOf());
     review.mockResolvedValue(apReview());
@@ -536,6 +547,7 @@ describe('DiagnosticsPanel', () => {
 
   it('clears its poll timer and stops updating state after unmount', async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(JOB_CLOCK);
     eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
     history.mockResolvedValue(historyOf());
     review.mockResolvedValue(apReview());
@@ -713,5 +725,81 @@ describe('DiagnosticsPanel', () => {
     expect(screen.queryByText('Audit history is incomplete')).toBeNull();
     await act(async () => Promise.resolve());
     expect(screen.queryByText('Audit history is incomplete')).toBeNull();
+  });
+});
+
+/**
+ * The retry ceiling and the run's own clock. Both read `startedAt`, which was
+ * on the wire and unread: the ceiling measured from when the browser started
+ * watching, and the panel drew a run stuck for eight minutes exactly like one
+ * eight seconds old.
+ */
+describe('diagnostic job timing', () => {
+  const STARTED = Date.parse('2026-07-29T11:00:00Z');
+
+  it('measures the retry ceiling from the job, not from when the panel started watching', () => {
+    const job = apJob();
+    // The poll effect is re-keyed on the job's state, so a starting -> running
+    // transition remounts it and `watchedSince` becomes now. Before this, that
+    // handed the job a fresh 100s of retries it had already spent.
+    const remountedNow = STARTED + 95_000;
+    expect(retryElapsedMs(job, remountedNow, remountedNow)).toBe(95_000);
+  });
+
+  it('falls back to the watch clock when the plane did not date the run', () => {
+    const job = apJob({ startedAt: 'not a date' });
+    expect(retryElapsedMs(job, 1_000, 61_000)).toBe(60_000);
+  });
+
+  it('never shortens the ceiling below what the panel itself has watched', () => {
+    // A browser clock behind the server's would otherwise read as a run that
+    // had barely begun, and retry past a deadline the server already passed.
+    const job = apJob();
+    expect(retryElapsedMs(job, STARTED - 30_000, STARTED)).toBe(30_000);
+  });
+
+  it('ages a running job so a stalled one cannot look like a fresh one', () => {
+    expect(jobTiming(apJob(), STARTED + 8_000)).toBe('running 8s · task t1');
+    expect(jobTiming(apJob(), STARTED + 488_000)).toBe('running 8m 8s · task t1');
+  });
+
+  it('reports how long a finished run took, from the run own stamps', () => {
+    const done = apJob({ state: 'succeeded', finishedAt: '2026-07-29T11:00:02Z' });
+    // Not "2s ago" — the browser's clock is irrelevant to a span both of whose
+    // ends the plane reported.
+    expect(jobTiming(done, STARTED + 900_000)).toBe('took 2s · task t1');
+  });
+
+  it('claims no duration for a terminal run the plane never dated the end of', () => {
+    const done = apJob({ state: 'failed', finishedAt: null });
+    expect(jobTiming(done, STARTED + 45_000)).toBe('started 45s ago · task t1');
+  });
+
+  it('says a cancelled run has no handle, because that is the run still going upstream', () => {
+    // 'cancelled' means the PORTAL stopped polling; Central was not cancelled.
+    const orphan = apJob({ state: 'cancelled', taskId: null, finishedAt: '2026-07-29T11:00:05Z' });
+    expect(jobTiming(orphan, STARTED)).toContain('New Central returned no task id');
+    const tracked = apJob({ state: 'cancelled', finishedAt: '2026-07-29T11:00:05Z' });
+    expect(jobTiming(tracked, STARTED)).toBe('took 5s · task t1');
+  });
+
+  it('shows the duration and Central task handle beside a finished run', async () => {
+    eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
+    history.mockResolvedValue(historyOf());
+    review.mockResolvedValue(apReview());
+    start.mockResolvedValue(apJob({
+      state: 'succeeded',
+      progressPercent: 100,
+      finishedAt: '2026-07-29T11:00:02Z',
+      message: 'Traceroute completed',
+      result: { device: 'ap-1', serial: 'AP-SERIAL', plane: 'CENTRAL', destination: 'example.net', resolvedIp: '192.0.2.1', hops: [] },
+    }));
+    render(<DiagnosticsPanel deviceName="ap-1" plane="CENTRAL" serial="AP-SERIAL" />);
+    fireEvent.change(await screen.findByLabelText('Traceroute target'), { target: { value: 'example.net' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Review traceroute' }));
+    expect(await screen.findByText('Operator review')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and run traceroute' }));
+    expect(await screen.findByText('succeeded')).toBeTruthy();
+    expect(await screen.findByText('took 2s · task t1')).toBeTruthy();
   });
 });
