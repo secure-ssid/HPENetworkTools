@@ -587,6 +587,69 @@ describe('Systems connect drawer', () => {
     );
   });
 
+  /** Drives the drawer to a successful test and clicks Save, for the tests
+   *  that only care about what the save reports back. */
+  async function saveClearPass() {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+
+    renderSystems();
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'clearpass' } });
+    await waitFor(() => expect(screen.getByText('ClearPass publisher URL')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
+      target: { value: 'cppm-01.meridian.health' },
+    });
+    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tok-123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save and index' }).hasAttribute('disabled')).toBe(
+        false,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save and index' }));
+  }
+
+  it('does not announce success over a plane that rejected the credentials', async () => {
+    mockSaveSystemCredentials.mockResolvedValue({
+      ok: true,
+      indexed: 'error',
+      message: 'credentials saved, but the first poll failed — the plane detail says why',
+    });
+
+    await saveClearPass();
+
+    // The save succeeded and the plane did not. The toast title follows the
+    // poll, because "Saved" over a plane that answered 401 is the failure this
+    // screen exists to surface, dressed as the opposite.
+    await waitFor(() =>
+      expect(screen.getByText('Saved — but the plane did not answer')).toBeTruthy(),
+    );
+    expect(screen.getByText(/the first poll failed/)).toBeTruthy();
+  });
+
+  it('still says plainly Saved when the plane answered', async () => {
+    // Over-application guard: the caution above is earned by a failed poll and
+    // by nothing else. A save that worked gets no caveat, because a false
+    // caveat is its own dishonesty.
+    mockSaveSystemCredentials.mockResolvedValue({
+      ok: true,
+      indexed: 'ok',
+      message: 'credentials saved and the plane indexed',
+    });
+
+    await saveClearPass();
+
+    await waitFor(() => expect(screen.getByText('Saved')).toBeTruthy());
+    expect(screen.queryByText('Saved — but the plane did not answer')).toBeNull();
+    expect(screen.getByText('credentials saved and the plane indexed')).toBeTruthy();
+  });
+
   it('sends the optional CoA enforcement profile under the key the adapter honours', async () => {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
     mockGetSystemsState.mockResolvedValue(registry());

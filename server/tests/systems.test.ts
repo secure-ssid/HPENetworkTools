@@ -32,6 +32,11 @@ beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'hpe-systems-'));
   process.env.HPE_SETTINGS_PATH = join(tmpDir, 'settings.json');
   process.env.HPE_DATA_DIR = join(tmpDir, 'data'); // ticket writes land in tmp, never real data/
+  // A real budget, shrunk: the credential-save tests below poll localhost (which
+  // refuses in microseconds) and the no-adapter stub (which returns without any
+  // I/O at all), so a second is generous for the outcomes that resolve — and it
+  // keeps the one that deliberately does not inside the test timeout.
+  process.env.HPE_CREDENTIAL_INDEX_WAIT_MS = '1000';
   previousSseHttpOverride = process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV];
   process.env[SSE_INSECURE_HTTP_OVERRIDE_ENV] = '1';
   const index = await import('../src/index');
@@ -598,6 +603,89 @@ describe('manual systems sync', () => {
       // Whichever way the race lands, no skip is left unexplained.
       expect(second.skipped.every((id) => second.skippedReason[id] !== undefined)).toBe(true);
       expect([...reasons].every((r) => r === 'in-flight' || r === 'no-adapter')).toBe(true);
+    } finally {
+      await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });
+    }
+  });
+});
+
+describe('saving credentials indexes the plane', () => {
+  it('polls the plane right away — even in demo mode — and reports what came back', async () => {
+    const spy = vi.spyOn(poller, 'syncNowFor');
+    try {
+      // 127.0.0.1:1 refuses instantly, so this is the shape of a real save
+      // against credentials the plane will not accept.
+      const save = await postJson('/api/systems/clearpass/credentials', {
+        host: '127.0.0.1:1',
+        token: 'clearpass-token',
+      });
+      expect(save.status).toBe(200);
+      // Storing the credentials is not the job; reading the plane with them is.
+      expect(spy).toHaveBeenCalledWith('clearpass');
+      expect(save.body.indexed).toBe('error');
+    } finally {
+      spy.mockRestore();
+      await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
+    }
+  });
+
+  it('returns the state the poll left, not the one from before it ran', async () => {
+    const spy = vi.spyOn(poller, 'syncNowFor').mockImplementation(async (id) => {
+      const state = registry.get(id).state();
+      state.note = 'the plane refused the new token';
+      return 'error';
+    });
+    try {
+      const save = await postJson('/api/systems/clearpass/credentials', {
+        host: '127.0.0.1:1',
+        token: 'clearpass-token',
+      });
+      // reinitPlane's state predates the attempt. Returning that one describes
+      // the moment before the credentials were ever tried, which is the moment
+      // nobody asked about.
+      expect(save.body.state.note).toBe('the plane refused the new token');
+    } finally {
+      spy.mockRestore();
+      await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
+    }
+  });
+
+  it('answers pending, not success, when the poll outlasts the wait', async () => {
+    // A host that does not route takes the full per-plane poll timeout to fail.
+    // The save must not hold the request open that long, and it must not round
+    // its own impatience up to an outcome: it did not wait for the result, so
+    // it says that, and the poll carries on without it.
+    let release: (() => void) | undefined;
+    const spy = vi.spyOn(poller, 'syncNowFor').mockImplementation(
+      () => new Promise((resolve) => (release = () => resolve('ok'))),
+    );
+    try {
+      const started = Date.now();
+      const save = await postJson('/api/systems/clearpass/credentials', {
+        host: '127.0.0.1:1',
+        token: 'clearpass-token',
+      });
+      expect(save.status).toBe(200);
+      expect(save.body.indexed).toBe('pending');
+      // Bounded by the budget, not by the poll it gave up on.
+      expect(Date.now() - started).toBeLessThan(4_000);
+    } finally {
+      release?.();
+      spy.mockRestore();
+      await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
+    }
+  });
+
+  it("calls a plane with no adapter 'skipped' rather than indexed", async () => {
+    try {
+      // 'classic' is still on the StubAdapter. Saving credentials for it stores
+      // them and reads nothing, and the reply has to be able to say so —
+      // otherwise a plane that will never index looks exactly like one that did.
+      const save = await postJson('/api/systems/classic/credentials', {
+        host: 'classic.example.test',
+      });
+      expect(save.status).toBe(200);
+      expect(save.body.indexed).toBe('skipped');
     } finally {
       await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });
     }

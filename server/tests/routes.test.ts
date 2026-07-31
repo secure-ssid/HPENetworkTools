@@ -26,6 +26,13 @@ beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'hpe-routes-'));
   process.env.HPE_SETTINGS_PATH = join(tmpDir, 'settings.json');
   process.env.HPE_DATA_DIR = join(tmpDir, 'data'); // ticket writes land in tmp, never real data/
+  // These tests seed the poller's contributions by hand and link planes at
+  // addresses that do not route (10.48.0.10, and so on). Saving credentials
+  // polls the plane; with no budget the save answers 'pending' at once instead
+  // of holding the request open until the pull gives up. The poll still runs,
+  // and the poller's generation guard discards it if the plane is retired
+  // first — which is what every one of these tests does in its finally.
+  process.env.HPE_CREDENTIAL_INDEX_WAIT_MS = '0';
   const { createApp } = await import('../src/index');
   server = createApp().listen(0, '127.0.0.1');
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -57,6 +64,7 @@ afterAll(async () => {
   rmSync(tmpDir, { recursive: true, force: true });
   delete process.env.HPE_SETTINGS_PATH;
   delete process.env.HPE_DATA_DIR;
+  delete process.env.HPE_CREDENTIAL_INDEX_WAIT_MS;
 });
 
 async function getJson(path: string): Promise<{ status: number; body: any }> {

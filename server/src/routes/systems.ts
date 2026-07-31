@@ -43,7 +43,7 @@ import { MistAdapter } from '../planes/mist';
 import { ClearPassAdapter } from '../planes/clearpass';
 import { Aos8Adapter } from '../planes/aos8';
 import { registry } from '../planes/registry';
-import { poller } from '../services/poller';
+import { poller, type TickResult } from '../services/poller';
 import { SseObjectsError, sseObjects, sseObjectsErrorBody } from '../services/sseObjects';
 import { CentralWebhooksError, centralWebhooks } from '../services/centralWebhooks';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
@@ -625,64 +625,124 @@ systemsRouter.post(
 
 // -- Credentials ---------------------------------------------------------------
 
-systemsRouter.post('/systems/:plane/credentials', (req, res) => {
-  const plane = asPlaneId(req.params.plane);
-  if (!plane) {
-    res.status(404).json({ error: `unknown plane '${req.params.plane}'` });
-    return;
-  }
-  const body = req.body as Record<string, unknown> | undefined;
-  const submitted = sanitizeCreds(body && typeof body === 'object' && body.credentials !== undefined
-    ? body.credentials
-    : body);
-  if (!submitted) {
-    res.status(400).json({ error: 'body must be an object with at least one non-empty credential field' });
-    return;
-  }
+/** How long a credential save waits for the first poll before answering.
+ *  Overridable for a slow WAN, or downward for tests that seed the poller
+ *  by hand and do not want to wait on a real pull. */
+const CREDENTIAL_INDEX_WAIT_MS = Number(process.env.HPE_CREDENTIAL_INDEX_WAIT_MS ?? 9_000);
 
-  let creds = submitted;
-  if (plane === 'central') {
-    try {
-      centralWebhooks.assertCentralCredentialsMutable();
-    } catch (err) {
-      if (err instanceof CentralWebhooksError) {
-        res.status(err.status).json({ error: err.message });
-        return;
-      }
-      throw err;
-    }
+/** The outcome of the poll a credential save triggers — the poller's own three
+ *  results, plus the one this route can produce on its own. */
+export type FirstPollOutcome = TickResult | 'pending';
+
+/**
+ * Poll one plane with its new credentials and report what happened, waiting no
+ * longer than CREDENTIAL_INDEX_WAIT_MS for the answer.
+ *
+ * Storing the credentials used to be the whole of the save: the cache was
+ * cleared, the adapter re-initialised, and nothing asked the plane anything.
+ * The portal answered "Saved and indexing" over a description reading
+ * "re-indexes on the next poll" — the two contradicted each other, and in demo
+ * mode with no live section there is no next poll to re-index on at all. The
+ * plane sat empty, and working credentials looked exactly like broken ones.
+ *
+ * The wait is bounded because the poll is not: a plane whose host does not
+ * route takes the full per-plane poll timeout to fail, and an operator who has
+ * just pasted the wrong address should not hold a request open for two minutes
+ * to be told so. Past the budget this returns 'pending' and the poll carries on
+ * in the background — 'pending' is a real answer, distinct from all three of
+ * the poller's, and the caller has to be able to say it did not wait for the
+ * result rather than imply one. Nothing is cancelled, so the plane still
+ * indexes; and a pull that outlives a later re-init is discarded by the
+ * poller's own generation guard rather than landing stale.
+ */
+async function firstPollOutcome(plane: PlaneId): Promise<FirstPollOutcome> {
+  const poll = poller.syncNowFor(plane);
+  if (CREDENTIAL_INDEX_WAIT_MS <= 0) {
+    void poll.catch(() => {}); // still runs; we simply do not wait to hear
+    return 'pending';
   }
-  if (plane === 'sse') {
-    // A submitted overlay (e.g. a token-only re-key) is merged onto whatever
-    // is already stored and canonicalized as ONE record — the same record
-    // /test would exercise — so the base URL that gets validated here is
-    // exactly the base URL that gets persisted, not a default that then
-    // silently coexists with a saved custom value.
-    try {
-      creds = buildSseCredentialRecord(settings.get().planes.sse, submitted);
-    } catch (err) {
-      if (err instanceof SseEndpointValidationError) {
-        res.status(err.status).json({ error: err.message });
-        return;
-      }
-      throw err;
-    }
-    try {
-      sseObjects.assertCredentialsMutable();
-    } catch (err) {
-      if (err instanceof SseObjectsError) {
-        if (err.status >= 500) console.error(`error: ${err.message}`);
-        res.status(err.status).json(sseObjectsErrorBody(err));
-        return;
-      }
-      throw err;
-    }
+  let timer: NodeJS.Timeout | undefined;
+  const budget = new Promise<'pending'>((resolve) => {
+    timer = setTimeout(() => resolve('pending'), CREDENTIAL_INDEX_WAIT_MS);
+    timer.unref?.(); // never hold the process open for a wait nobody is reading
+  });
+  try {
+    return await Promise.race([poll, budget]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  settings.update({ planes: { [plane]: creds } });
-  poller.clearPlane(plane);
-  const state = registry.reinitPlane(plane);
-  res.json({ plane, state, credentials: settings.maskedView().planes[plane] });
-});
+}
+
+systemsRouter.post(
+  '/systems/:plane/credentials',
+  h(async (req, res) => {
+    const plane = asPlaneId(req.params.plane);
+    if (!plane) {
+      res.status(404).json({ error: `unknown plane '${req.params.plane}'` });
+      return;
+    }
+    const body = req.body as Record<string, unknown> | undefined;
+    const submitted = sanitizeCreds(body && typeof body === 'object' && body.credentials !== undefined
+      ? body.credentials
+      : body);
+    if (!submitted) {
+      res.status(400).json({ error: 'body must be an object with at least one non-empty credential field' });
+      return;
+    }
+
+    let creds = submitted;
+    if (plane === 'central') {
+      try {
+        centralWebhooks.assertCentralCredentialsMutable();
+      } catch (err) {
+        if (err instanceof CentralWebhooksError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    }
+    if (plane === 'sse') {
+      // A submitted overlay (e.g. a token-only re-key) is merged onto whatever
+      // is already stored and canonicalized as ONE record — the same record
+      // /test would exercise — so the base URL that gets validated here is
+      // exactly the base URL that gets persisted, not a default that then
+      // silently coexists with a saved custom value.
+      try {
+        creds = buildSseCredentialRecord(settings.get().planes.sse, submitted);
+      } catch (err) {
+        if (err instanceof SseEndpointValidationError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+      try {
+        sseObjects.assertCredentialsMutable();
+      } catch (err) {
+        if (err instanceof SseObjectsError) {
+          if (err.status >= 500) console.error(`error: ${err.message}`);
+          res.status(err.status).json(sseObjectsErrorBody(err));
+          return;
+        }
+        throw err;
+      }
+    }
+    settings.update({ planes: { [plane]: creds } });
+    poller.clearPlane(plane);
+    registry.reinitPlane(plane);
+    const indexed = await firstPollOutcome(plane);
+    res.json({
+      plane,
+      // Read AFTER the poll: reinitPlane's state predates the attempt, so
+      // returning that one describes the moment before the credentials were
+      // ever tried and leaves the caller to assume the rest.
+      state: registry.get(plane).state(),
+      indexed,
+      credentials: settings.maskedView().planes[plane],
+    });
+  }),
+);
 
 systemsRouter.delete('/systems/:plane', (req, res) => {
   const plane = asPlaneId(req.params.plane);

@@ -150,6 +150,10 @@ export interface SystemMutationResult {
   message: string;
   ms?: number;
   source?: 'request' | 'stored';
+  /** How the first poll with the new credentials went, when one was run. */
+  /** Outcome of the first poll the save ran. 'pending' means the save did
+   *  not wait long enough to find out — not that nothing is happening. */
+  indexed?: 'ok' | 'error' | 'skipped' | 'pending';
 }
 
 /** One sentence per kind of skip. Only the first is work in progress; the
@@ -251,7 +255,44 @@ export async function saveSystemCredentials(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(creds),
     });
-    if (r.ok) return { ok: true, message: 'credentials saved — the plane re-indexes on the next poll' };
+    if (r.ok) {
+      /* The save runs the plane's first poll before it answers, so the message
+         can report what the plane actually said instead of promising a future.
+         Each outcome gets its own sentence because they are four different
+         situations, and the generic wording made a plane that will never index
+         read the same as one that already had. A body we cannot read leaves
+         `indexed` undefined, and the wording drops back to the save alone
+         rather than claiming an outcome nobody observed. */
+      const indexed = ((await r.json().catch(() => null)) as { indexed?: string } | null)?.indexed;
+      if (indexed === 'ok') {
+        return { ok: true, message: 'credentials saved and the plane indexed', indexed };
+      }
+      if (indexed === 'error') {
+        return {
+          ok: true,
+          message: 'credentials saved, but the first poll failed — the plane detail says why',
+          indexed: 'error',
+        };
+      }
+      if (indexed === 'skipped') {
+        return {
+          ok: true,
+          message: 'credentials saved — no poll ran, so nothing has been read yet',
+          indexed: 'skipped',
+        };
+      }
+      if (indexed === 'pending') {
+        // The poll is genuinely running; the save just stopped waiting for it.
+        // That is a different thing from success and from failure, and the
+        // operator is the one who decides whether to go and look.
+        return {
+          ok: true,
+          message: 'credentials saved — the first poll is still running, so the plane detail is the place to check it',
+          indexed: 'pending',
+        };
+      }
+      return { ok: true, message: 'credentials saved' };
+    }
     return { ok: false, message: await serverMessage(r, `save failed — HTTP ${r.status}`) };
   } catch (err) {
     return { ok: false, message: `cannot reach the portal backend: ${(err as Error).message}` };

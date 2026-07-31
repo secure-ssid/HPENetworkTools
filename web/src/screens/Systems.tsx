@@ -457,7 +457,16 @@ export default function Systems() {
       toast(res.message, { tone: 'danger' });
       return;
     }
-    toast('Saved and indexing', { description: res.message, tone: 'success' });
+    // The title follows the poll the save actually ran. Announcing success
+    // over a plane that answered 401 is the failure this screen exists to
+    // surface, dressed as the opposite.
+    // Only 'error' earns the caveat. A poll still running is not a failure, and
+    // the description already says so — a caveat over a save that worked would
+    // be its own small dishonesty.
+    toast(res.indexed === 'error' ? 'Saved — but the plane did not answer' : 'Saved', {
+      description: res.message,
+      tone: res.indexed === 'error' ? 'warning' : 'success',
+    });
     setAddOpen(false);
     await refresh();
   };
