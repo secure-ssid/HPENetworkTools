@@ -10,6 +10,7 @@ import { reportedValue } from './context';
 import { LiveSubscription } from './liveCore';
 import {
   type OrphanRow,
+  type Plane,
   type RenewalRow,
   type StatDef,
   type SubscriptionAssignment,
@@ -164,14 +165,34 @@ export function assignmentSample(rows: SubscriptionAssignment[]): string {
  *   gap    — a device the plane says is unassigned, or holds no subscription;
  *   idle   — a subscription with none of its seats assigned.
  *
- * Orphan detection is gated on the merged inventory actually carrying serials:
- * against a plane that publishes none, every assignment would "match nothing"
- * and the panel would invent a estate-wide reclaim list out of a missing field.
+ * Orphan detection is gated TWICE, because it is the only row here derived by
+ * subtracting one plane's data from another's, and a subtraction is only as
+ * true as the smaller operand.
+ *
+ * First, on the merged inventory actually carrying serials: against a plane
+ * that publishes none, every assignment would "match nothing" and the panel
+ * would invent an estate-wide reclaim list out of a missing field.
+ *
+ * Second, and the case that actually happens, on every linked plane having
+ * contributed a device list at all. The merged inventory is a UNION: a plane
+ * that has not finished its first pull, or whose devices read failed inside an
+ * otherwise successful one, drops out of it silently and the union simply gets
+ * shorter (liveCore.ts planesMissingDataset). Every entitlement on that
+ * plane's estate then matches nothing and is reported as hardware the estate
+ * no longer has — "reclaim before renewal" aimed at devices sitting in the
+ * rack passing traffic. The serials guard does not catch it, because the other
+ * nine planes are still contributing serials.
+ *
+ * So an incomplete inventory suppresses the orphan verdict and says so. The
+ * `gap` and `archived` rows are unaffected: they read GreenLake's own
+ * `assigned`/`subscriptionKey`/`archived` fields and never touch the
+ * inventory, so a plane being unread costs them nothing.
  */
 export function liveOrphans(
   devices: ReconciledDeviceRow[],
   subs: LiveSubscription[],
   assignments: SubscriptionAssignment[] | null,
+  missingDevicePlanes: readonly Plane[] = [],
 ): OrphanRow[] {
   const rows: OrphanRow[] = [];
   if (assignments !== null && assignments.length > 0) {
@@ -185,8 +206,11 @@ export function liveOrphans(
        unassigned BY DESIGN, so the gap row's "no active subscription" is the
        finished state, not a finding. */
     const live = assignments.filter((a) => !isArchived(a));
+    const inventoryComplete = missingDevicePlanes.length === 0;
     const orphaned =
-      serials.size > 0 ? live.filter((a) => a.serial && !serials.has(a.serial.trim().toUpperCase())) : [];
+      inventoryComplete && serials.size > 0
+        ? live.filter((a) => a.serial && !serials.has(a.serial.trim().toUpperCase()))
+        : [];
     const orphanSerials = new Set(orphaned.map((a) => a.serial));
     const gaps = live.filter(
       (a) => !orphanSerials.has(a.serial) && (a.assigned === false || a.subscriptionKey === null),
@@ -200,6 +224,17 @@ export function liveOrphans(
         isArchived(a) &&
         (a.assigned === true || (typeof a.subscriptionKey === 'string' && a.subscriptionKey.trim().length > 0)),
     );
+    /* Said out loud rather than left as a quiet absence. A reclaim panel with
+       no orphan row reads as "nothing to reclaim", which is a finding; this
+       cycle has no finding to give, and the difference is the whole point. */
+    if (!inventoryComplete && live.length > 0) {
+      rows.push({
+        tag: 'unchecked',
+        tone: 'neutral',
+        what: `${live.length} entitlement${live.length === 1 ? '' : 's'} not checked against the estate`,
+        detail: `${missingDevicePlanes.join(' · ')} contributed no device list this cycle · an entitlement missing from a partial inventory is not evidence the hardware is gone`,
+      });
+    }
     if (orphaned.length > 0) {
       rows.push({
         tag: 'orphan',

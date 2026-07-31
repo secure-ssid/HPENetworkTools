@@ -111,8 +111,14 @@ export default function Licenses() {
     ? `GREENLAKE ${data.syncedAt ? hhmm(data.syncedAt) : 'NOT SYNCED'}`
     : 'DEMO FIXTURES';
   // Gaps that cost money are the orphaned and unlicensed rows; an `idle` row is
-  // spare capacity, not a reconciliation gap.
-  const gaps = data.orphans.filter((o) => o.tag !== 'idle');
+  // spare capacity, not a reconciliation gap, and an `unchecked` row is the
+  // server saying it could not run the comparison at all — counting that as a
+  // gap "worth money" would put a number on findings nobody made.
+  const gaps = data.orphans.filter((o) => o.tag !== 'idle' && o.tag !== 'unchecked');
+  // The server emits these when it could not compare entitlements against the
+  // estate at all. They are the reason the money-gap count below may be short,
+  // so they get their own line rather than sitting unexplained in the list.
+  const unchecked = data.orphans.filter((o) => o.tag === 'unchecked');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -154,22 +160,36 @@ export default function Licenses() {
             record at all, which is fine for local management but means no TAC entitlement.
           </span>
         </Alert>
-      ) : gaps.length > 0 ? (
-        <Alert
-          tone="warning"
-          title={`${gaps.length} reconciliation gap${gaps.length === 1 ? '' : 's'} worth money`}
-        >
-          <span style={{ fontSize: 13 }}>
-            {gaps.map((g) => `${g.what} — ${g.detail}`).join('. ')}.
-          </span>
-        </Alert>
       ) : (
-        <Alert tone="info" title="Reconciliation gaps are not reported by this plane">
-          <span style={{ fontSize: 13 }}>
-            The subscriptions feed carries seat totals but no device assignments, so orphaned
-            subscriptions and unlicensed devices cannot be computed from live data.
-          </span>
-        </Alert>
+        <>
+          {unchecked.length > 0 ? (
+            <Alert tone="info" title="The estate comparison could not be run this cycle">
+              <span style={{ fontSize: 13 }}>
+                {unchecked.map((u) => `${u.what} — ${u.detail}`).join('. ')}.
+              </span>
+            </Alert>
+          ) : null}
+          {gaps.length > 0 ? (
+            <Alert
+              tone="warning"
+              title={`${gaps.length} reconciliation gap${gaps.length === 1 ? '' : 's'} worth money`}
+            >
+              <span style={{ fontSize: 13 }}>
+                {gaps.map((g) => `${g.what} — ${g.detail}`).join('. ')}.
+              </span>
+            </Alert>
+          ) : unchecked.length === 0 ? (
+            /* Only reachable with the comparison genuinely run and clean —
+               with an `unchecked` row above, "not reported by this plane"
+               would be a second, false explanation for the same silence. */
+            <Alert tone="info" title="Reconciliation gaps are not reported by this plane">
+              <span style={{ fontSize: 13 }}>
+                The subscriptions feed carries seat totals but no device assignments, so orphaned
+                subscriptions and unlicensed devices cannot be computed from live data.
+              </span>
+            </Alert>
+          ) : null}
+        </>
       )}
 
       <Table density={density}>

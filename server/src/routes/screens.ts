@@ -1398,7 +1398,7 @@ screensRouter.get('/licenses', (_req, res) => {
               stats: liveLicenseStats(subs, blendDevices, blendAssignments),
               subscriptions: subs,
               renewals: liveRenewals(subs),
-              orphans: liveOrphans(blendDevices, subs, blendAssignments),
+              orphans: liveOrphans(blendDevices, subs, blendAssignments, planesMissingDevices()),
             }),
             ['licenses'],
             'licenses',
@@ -1425,7 +1425,7 @@ screensRouter.get('/licenses', (_req, res) => {
       stats: liveLicenseStats(subs, devices, assignments),
       subscriptions: subs,
       renewals: liveRenewals(subs),
-      orphans: liveOrphans(devices, subs, assignments),
+      orphans: liveOrphans(devices, subs, assignments, planesMissingDevices()),
     }),
   );
 });

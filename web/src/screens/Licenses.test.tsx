@@ -149,6 +149,61 @@ describe('Licences reconciliation honesty', () => {
     expect(screen.getByText('NEXT 180 DAYS')).toBeTruthy();
   });
 
+  /* An `unchecked` row is the server saying it could not compare entitlements
+     against the estate at all. It is not a finding, so it must not be counted
+     into a headline that puts a number on money being wasted. */
+  it('does not count a comparison that never ran as a gap worth money', async () => {
+    mockGetLicenses.mockResolvedValue({
+      ...LIVE,
+      orphans: [
+        {
+          tag: 'unchecked',
+          tone: 'neutral',
+          what: '38 entitlements not checked against the estate',
+          detail: 'CENTRAL contributed no device list this cycle',
+        },
+        { tag: 'gap', tone: 'info', what: '2 devices with no active subscription', detail: 'reported unassigned' },
+      ],
+    });
+
+    renderLicenses();
+
+    expect(await screen.findByText('1 reconciliation gap worth money')).toBeTruthy();
+    // And the reason the count may be short is stated rather than left to be
+    // spotted in the list below.
+    expect(screen.getByText('The estate comparison could not be run this cycle')).toBeTruthy();
+  });
+
+  /* Two explanations for one silence, and the second one is false: the feed
+     DID carry assignments, the inventory is what was short. */
+  it('does not blame the subscriptions feed for a silence the inventory caused', async () => {
+    mockGetLicenses.mockResolvedValue({
+      ...LIVE,
+      orphans: [
+        {
+          tag: 'unchecked',
+          tone: 'neutral',
+          what: '38 entitlements not checked against the estate',
+          detail: 'CENTRAL contributed no device list this cycle',
+        },
+      ],
+    });
+
+    renderLicenses();
+
+    expect(await screen.findByText('The estate comparison could not be run this cycle')).toBeTruthy();
+    expect(screen.queryByText('Reconciliation gaps are not reported by this plane')).toBeNull();
+  });
+
+  it('still explains a genuinely silent feed when nothing went unchecked', async () => {
+    mockGetLicenses.mockResolvedValue(LIVE);
+
+    renderLicenses();
+
+    expect(await screen.findByText('Reconciliation gaps are not reported by this plane')).toBeTruthy();
+    expect(screen.queryByText('The estate comparison could not be run this cycle')).toBeNull();
+  });
+
   it('keeps the authored two-gap Alert on the demo path', async () => {
     mockGetLicenses.mockResolvedValue(DEMO);
 
