@@ -11,6 +11,7 @@ import {
   healthTone,
   joinFacts,
   pctText,
+  airtimeText,
   portAdminDown,
   portIsUp,
   statusTone,
@@ -65,11 +66,26 @@ export function RadiosPanel({ detail, plane }: { detail: DeviceDetailLive | null
               r.powerDbm == null ? null : `${r.powerDbm} dBm`,
               r.mode || null,
             ])}
+            /* non-Wi-Fi interference sits against utilisation because the
+               two are one reading. 78% busy with the interference low is the
+               estate's own traffic — a capacity or RF-design problem, fixed
+               with channels, power or more APs. The same 78% with the
+               interference high is an emitter: a microwave, a camera bridge,
+               radar. Adding APs makes that one worse. The panel showed the
+               78% to both and Central had already told us which it was.
+
+               `drops` was the other omission, and an arbitrary one: it is
+               parsed beside `retries`, means something worse than it —
+               frames given up on rather than sent again — and `retries` was
+               being rendered on its own. */
             facts={joinFacts([
               r.clients == null ? null : `${r.clients} client${r.clients === 1 ? '' : 's'}`,
               pctText(r.channelUtilPct, 'util'),
+              pctText(r.nonWifiInterference, 'non-Wi-Fi'),
+              airtimeText(r.rxUtilPct, r.txUtilPct),
               r.noiseFloorDbm == null ? null : `noise ${r.noiseFloorDbm} dBm`,
               pctText(r.retries, 'retries'),
+              pctText(r.drops, 'drops'),
               r.channelQuality == null ? null : `quality ${r.channelQuality}`,
             ]) || 'No per-radio counters in this read.'}
             badge={r.status || undefined}

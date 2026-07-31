@@ -727,16 +727,23 @@ describe('DeviceDetail — class-aware detail panels', () => {
     const bands = screen.getAllByText(/^(2\.4|5|6) GHz$/).map((el) => el.textContent);
     expect(bands).toEqual(['2.4 GHz', '5 GHz', '6 GHz']);
 
-    // Every number the brief asked for, per radio.
+    // Every number the brief asked for, per radio — which for a long time
+    // was every number minus four, silently, because the row only listed the
+    // ones someone had thought to name.
     expect(screen.getByText('ch 11 · 20 MHz · 9 dBm · Client Access')).toBeTruthy();
     expect(
-      screen.getByText('1 client · util 23% · noise -98 dBm · retries 0.09% · quality 97'),
+      screen.getByText(
+        '1 client · util 23% · non-Wi-Fi 5% · airtime rx 18% tx 0% · noise -98 dBm · retries 0.09% · drops 0.09% · quality 97',
+      ),
     ).toBeTruthy();
     expect(screen.getByText('ch 157E · 80 MHz · 19 dBm · Client Access')).toBeTruthy();
     expect(screen.getByText('ch 213S · 160 MHz · 15 dBm · Client Access')).toBeTruthy();
-    // A zero is a reading, not a missing value — 0 clients / 0% util survive.
+    // A zero is a reading, not a missing value — 0 clients / 0% util survive,
+    // and so does an airtime split of nothing at all.
     expect(
-      screen.getByText('0 clients · util 0% · noise -87 dBm · retries 0% · quality 100'),
+      screen.getByText(
+        '0 clients · util 0% · non-Wi-Fi 0% · airtime rx 0% tx 0% · noise -87 dBm · retries 0% · drops 0% · quality 100',
+      ),
     ).toBeTruthy();
 
     // SSIDs: name / security / band / VLAN / clients.
@@ -939,6 +946,53 @@ describe('DeviceDetail — class-aware detail panels', () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByText(/could not be read/)).toBeNull();
+  });
+
+  /* Two radios, equally congested, needing opposite work. Central reports
+   * which is which and the panel was throwing it away, so both read "util
+   * 78%" and the obvious response to that — more APs, more power — makes the
+   * interference case worse. */
+  it('separates air this AP is losing to interference from air its own estate is using', async () => {
+    const congested: DeviceRadio[] = [
+      { ...AP_RADIOS[0], number: 0, band: '5 GHz', channelUtilPct: 78, nonWifiInterference: 61, rxUtilPct: 6, txUtilPct: 3, drops: 14, retries: 22 },
+      { ...AP_RADIOS[1], number: 1, band: '2.4 GHz', channelUtilPct: 78, nonWifiInterference: 2, rxUtilPct: 41, txUtilPct: 30, drops: 0, retries: 1 },
+    ];
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(liveBase('ap-1f-04'), apDetail({ radios: 'ok' }, { radios: congested })),
+    );
+    quietDeps();
+
+    renderDeviceDetail('ap-1f-04');
+
+    await screen.findByText('Radios');
+    // Something else owns the 5 GHz air; this AP is barely on it.
+    expect(screen.getByText(/util 78% · non-Wi-Fi 61% · airtime rx 6% tx 3%/)).toBeTruthy();
+    // The 2.4 GHz air is busy with this AP's own traffic.
+    expect(screen.getByText(/util 78% · non-Wi-Fi 2% · airtime rx 41% tx 30%/)).toBeTruthy();
+    // drops was parsed beside retries and only retries was ever printed.
+    expect(screen.getByText(/retries 22% · drops 14%/)).toBeTruthy();
+  });
+
+  // A counter the plane did not report is absent, not zero, and one reported
+  // side of the airtime split is still worth printing.
+  it('prints the airtime side a radio did report and omits the one it did not', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(
+        liveBase('ap-1f-04'),
+        apDetail({ radios: 'ok' }, {
+          radios: [{ ...AP_RADIOS[0], rxUtilPct: 12, txUtilPct: null, nonWifiInterference: null, drops: null }],
+        }),
+      ),
+    );
+    quietDeps();
+
+    renderDeviceDetail('ap-1f-04');
+
+    await screen.findByText('Radios');
+    expect(screen.getByText(/airtime rx 12%/)).toBeTruthy();
+    expect(screen.queryByText(/tx/)).toBeNull();
+    expect(screen.queryByText(/non-Wi-Fi/)).toBeNull();
+    expect(screen.queryByText(/drops/)).toBeNull();
   });
 
   const shutPort = (name: string, extra: Partial<DevicePort> = {}): DevicePort => ({

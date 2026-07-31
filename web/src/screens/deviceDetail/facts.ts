@@ -115,6 +115,22 @@ export function pctText(v: number | null | undefined, label: string): string | n
   return v == null ? null : `${label} ${v}%`;
 }
 
+/**
+ * The AP's own share of the air, as one fact rather than two.
+ *
+ * Channel utilisation says how busy the air is; this says how much of that
+ * was this radio. The pair only means anything read together, so they are
+ * printed together — and a radio that reported only one side still prints it,
+ * labelled, because half a reading is not both and an absent side must not be
+ * mistaken for a zero one.
+ */
+export function airtimeText(rxPct: number | null, txPct: number | null): string | null {
+  const parts = [rxPct == null ? null : `rx ${rxPct}%`, txPct == null ? null : `tx ${txPct}%`].filter(
+    (v): v is string => v !== null,
+  );
+  return parts.length === 0 ? null : `airtime ${parts.join(' ')}`;
+}
+
 /** Bits per second as an engineer writes it: 1000000000 → `1 Gb`. */
 export function speedText(bps: number | null | undefined): string | null {
   if (bps == null || !Number.isFinite(bps) || bps <= 0) return null;
