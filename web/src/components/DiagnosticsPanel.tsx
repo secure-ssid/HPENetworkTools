@@ -99,6 +99,13 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
   const [review, setReview] = useState<DiagnosticReview | null>(null);
   const [job, setJob] = useState<DiagnosticJob | null>(null);
   const [history, setHistory] = useState<DiagnosticAuditEntry[]>([]);
+  // Holes in the audit log itself, not in this device's runs. Kept apart from
+  // `history` because they survive the identity filter below: a generation
+  // that was deleted or would not open cannot be searched for this device, so
+  // it is exactly the rows we cannot rule out that are missing.
+  const [historyGaps, setHistoryGaps] = useState<{ discarded: number; unreadable: number }>(
+    { discarded: 0, unreadable: 0 },
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -147,13 +154,15 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
     setUseManagementInterface(false);
     setBusy(false);
     setError(null);
+    setHistoryGaps({ discarded: 0, unreadable: 0 });
     setLoading(true);
 
     Promise.all([getDiagnosticEligibility(), getDiagnosticHistory()])
-      .then(([eligibility, entries]) => {
+      .then(([eligibility, read]) => {
         if (!isCurrent(generation)) return;
         setDevice(findEligibleDevice(eligibility.devices, plane, serial, deviceName));
-        setHistory(entries.filter((entry) => matchesIdentity(entry, plane, serial, deviceName)).slice(0, 5));
+        setHistory(read.entries.filter((entry) => matchesIdentity(entry, plane, serial, deviceName)).slice(0, 5));
+        setHistoryGaps({ discarded: read.discarded.length, unreadable: read.unreadable.length });
       })
       .catch((err: Error) => {
         if (!isCurrent(generation)) return;
@@ -450,6 +459,25 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
       ) : null}
 
       {error ? <Alert tone="danger" title="Diagnostic not started or updated">{error}</Alert> : null}
+
+      {/* Deliberately outside the `history.length` gate. The dangerous case is
+          an empty list beside a log with a hole in it: no rows then reads as
+          "this device has never been diagnosed", when the runs that would say
+          otherwise are in a generation retention deleted or one that will not
+          open. The wording stays at "may not be listed" because that is the
+          honest limit of what we know — the deleted entries cannot be
+          searched for this device. */}
+      {historyGaps.discarded > 0 || historyGaps.unreadable > 0 ? (
+        <Alert tone="warning" title="Audit history is incomplete">
+          {historyGaps.discarded > 0
+            ? `${historyGaps.discarded} older ${historyGaps.discarded === 1 ? 'stretch' : 'stretches'} of history ${historyGaps.discarded === 1 ? 'was' : 'were'} discarded by the retention policy. `
+            : ''}
+          {historyGaps.unreadable > 0
+            ? `${historyGaps.unreadable} rotated ${historyGaps.unreadable === 1 ? 'generation' : 'generations'} could not be read. `
+            : ''}
+          Earlier diagnostics for this device may not be listed{history.length ? '' : ' — including any that would have appeared here'}.
+        </Alert>
+      ) : null}
 
       {history.length ? (
         <div>

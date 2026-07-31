@@ -130,6 +130,24 @@ export interface RetentionTombstone {
   note: string;
 }
 
+/**
+ * Is this parsed JSONL row a retention tombstone rather than a record of
+ * something that happened?
+ *
+ * Readers of a rotating log apply a type guard for their OWN row shape, and a
+ * tombstone fails every one of them — it has no changeId, no operation, no
+ * state, because nothing was done. Failing the guard means it is dropped, and
+ * a dropped tombstone is a deleted generation that once again looks like an
+ * absence of history: the write path paid for the disclosure and the read
+ * path threw it away. Callers use this to pull it out before their own guard
+ * gets the chance.
+ */
+export function isRetentionTombstone(v: unknown): v is RetentionTombstone {
+  if (typeof v !== 'object' || v === null) return false;
+  const row = v as Partial<RetentionTombstone>;
+  return row.event === LOG_RETENTION_EVENT && typeof row.ts === 'string';
+}
+
 export function rotateIfNeeded(
   file: string,
   policy: RotationPolicy = DEFAULT_POLICY,

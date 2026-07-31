@@ -2484,6 +2484,29 @@ export interface DiagnosticJob {
   result: DiagnosticResult | null;
 }
 
+/** One stretch of Diagnostics history removed by the log retention policy.
+ *  The bounds are null when the deleted generation's own lines could not be
+ *  parsed for a range — the gap is still real, only its width is unknown. */
+export interface DiagnosticHistoryGap {
+  from: string | null;
+  to: string | null;
+}
+
+/**
+ * A read of the Diagnostics audit history, with the holes it knows about.
+ *
+ * `entries` alone cannot express why it is short. A generation deleted by
+ * retention and a generation that would not open both produce a list missing
+ * a stretch of runs, and neither is distinguishable from a device that was
+ * simply never diagnosed. Both are carried out so the panel can say which.
+ */
+export interface DiagnosticHistoryRead {
+  entries: DiagnosticAuditEntry[];
+  discarded: DiagnosticHistoryGap[];
+  /** Basenames of rotated generations present on disk that could not be read. */
+  unreadable: string[];
+}
+
 export interface DiagnosticAuditEntry {
   id: string;
   at: string;

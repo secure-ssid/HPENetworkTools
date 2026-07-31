@@ -388,7 +388,7 @@ describe('DiagnosticsService documented paths and lifecycle', () => {
     });
     await cancelSched.run();
     expect(cancellable.status(pending.id).state).toBe('cancelled');
-    expect(cancellable.history().filter((entry) => entry.id === pending.id).map((entry) => entry.state))
+    expect(cancellable.history().entries.filter((entry) => entry.id === pending.id).map((entry) => entry.state))
       .toEqual(['succeeded', 'cancelled']);
   });
 });
@@ -510,7 +510,7 @@ describe('DiagnosticsService limits and concurrent confirmations', () => {
     await expect(startReviewed(svc, reviewed(svc, 'SERIAL-B'))).rejects.toMatchObject({ status: 429 });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(vi.getTimerCount()).toBe(0);
-    expect(svc.history().filter((entry) => entry.id === starting.public.id).map((entry) => entry.state))
+    expect(svc.history().entries.filter((entry) => entry.id === starting.public.id).map((entry) => entry.state))
       .toEqual(['timed_out', 'cancelled']);
 
     const replacement = await startReviewed(svc, reviewed(svc, 'SERIAL-B'));
@@ -554,7 +554,7 @@ describe('DiagnosticsService limits and concurrent confirmations', () => {
 
     await vi.advanceTimersByTimeAsync(1);
     expect(vi.getTimerCount()).toBe(0);
-    expect(svc.history().filter((entry) => entry.id === first.id).map((entry) => entry.state))
+    expect(svc.history().entries.filter((entry) => entry.id === first.id).map((entry) => entry.state))
       .toEqual(['succeeded', 'cancelled']);
 
     const second = await startReviewed(svc, reviewed(svc, 'SERIAL-B'));
@@ -586,7 +586,7 @@ describe('DiagnosticsService limits and concurrent confirmations', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(vi.getTimerCount()).toBe(0);
     expect(svc.status(first.id).state).toBe('cancelled');
-    expect(svc.history().filter((entry) => entry.id === first.id).map((entry) => entry.state))
+    expect(svc.history().entries.filter((entry) => entry.id === first.id).map((entry) => entry.state))
       .toEqual(['timed_out', 'cancelled']);
 
     const replacement = await startReviewed(svc, reviewed(svc));
@@ -718,7 +718,7 @@ describe('DiagnosticsService rate limits and failure classification', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(vi.getTimerCount()).toBe(0);
     expect(svc.status(unknownJob.id).state).toBe('failed');
-    expect(svc.history().filter((entry) => entry.id === unknownJob.id).map((entry) => entry.state))
+    expect(svc.history().entries.filter((entry) => entry.id === unknownJob.id).map((entry) => entry.state))
       .toEqual(['reservation_expired', 'initiation_unknown']);
 
     await expect(startReviewed(svc, reviewed(svc, 'SERIAL-B'))).rejects.toMatchObject({ status: 502 });
@@ -788,7 +788,7 @@ describe('DiagnosticsService rate limits and failure classification', () => {
       await expect(startReviewed(svc, reviewed(svc, 'SERIAL-A'))).rejects.toMatchObject({ status: 409 });
       await vi.advanceTimersByTimeAsync(1);
       expect(vi.getTimerCount()).toBe(0);
-      expect(svc.history().filter((entry) => entry.id === heldJob.id)).toMatchObject([
+      expect(svc.history().entries.filter((entry) => entry.id === heldJob.id)).toMatchObject([
         { state: 'reservation_expired' },
         { state: 'accepted_untrackable', httpCode: 202 },
       ]);
@@ -955,11 +955,95 @@ describe('DiagnosticsService audit history', () => {
     expect(raw).not.toContain('upstream-secret');
     expect(raw).not.toContain('private route');
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
-    expect(svc.history().find((entry) => entry.id === job.id)).toMatchObject({
+    expect(svc.history().entries.find((entry) => entry.id === job.id)).toMatchObject({
       device: 'ap-1',
       serial: 'AP-SERIAL',
       plane: 'CENTRAL',
       state: 'succeeded',
     });
+  });
+
+  /* Rotation deletes the oldest generation and leaves a tombstone in its
+   * place, precisely so a deleted stretch of history does not read as a
+   * stretch in which nothing happened. Every reader of a rotating log applies
+   * a type guard for its own row shape, and a tombstone fails all of them —
+   * no id, no operation, no state, because nothing was run. Dropped by the
+   * guard, the disclosure the write path paid for never reaches anybody. */
+  it('reports a generation the retention policy discarded, with the span it covered', () => {
+    const file = path.join(root, 'diagnostics-history.jsonl');
+    fs.writeFileSync(file, [
+      JSON.stringify({
+        ts: '2026-07-30T00:00:00.000Z',
+        event: 'log-retention',
+        result: 'discarded',
+        file: 'diagnostics-history.5.jsonl',
+        bytes: 16_777_216,
+        coveringFrom: '2026-01-05T12:00:00.000Z',
+        coveringTo: '2026-02-11T12:00:00.000Z',
+        note: 'oldest retained generation deleted by retention policy',
+      }),
+      JSON.stringify({
+        id: 'kept-1',
+        at: '2026-07-30T01:00:00.000Z',
+        device: 'ap-1',
+        serial: 'AP-SERIAL',
+        plane: 'CENTRAL',
+        operation: 'traceroute',
+        state: 'succeeded',
+        target: '[redacted]',
+      }),
+    ].join('\n') + '\n');
+
+    const read = service([device()], { request: async () => ({ status: 200, body: {} }) }, scheduler()).history();
+    expect(read.discarded).toEqual([
+      { from: '2026-01-05T12:00:00.000Z', to: '2026-02-11T12:00:00.000Z' },
+    ]);
+    // The tombstone must not be smuggled into the list as if it were a run.
+    expect(read.entries.map((entry) => entry.id)).toEqual(['kept-1']);
+  });
+
+  // timeSpan returns null when the deleted generation's own lines would not
+  // parse. The gap is still a fact; only its width is unknown.
+  it('still reports a discarded generation whose covered span could not be read', () => {
+    const file = path.join(root, 'diagnostics-history.jsonl');
+    fs.writeFileSync(file, JSON.stringify({
+      ts: '2026-07-30T00:00:00.000Z',
+      event: 'log-retention',
+      result: 'discarded',
+      file: 'diagnostics-history.5.jsonl',
+      bytes: 4096,
+      note: 'oldest retained generation deleted by retention policy',
+    }) + '\n');
+
+    const read = service([device()], { request: async () => ({ status: 200, body: {} }) }, scheduler()).history();
+    expect(read.discarded).toEqual([{ from: null, to: null }]);
+  });
+
+  // Must not over-apply: a log with nothing but real runs claims no holes.
+  it('claims no gaps when every line is a run', () => {
+    const file = path.join(root, 'diagnostics-history.jsonl');
+    fs.writeFileSync(file, JSON.stringify({
+      id: 'only-1',
+      at: '2026-07-30T01:00:00.000Z',
+      device: 'ap-1',
+      serial: 'AP-SERIAL',
+      plane: 'CENTRAL',
+      operation: 'traceroute',
+      state: 'succeeded',
+      target: '[redacted]',
+    }) + '\n');
+
+    const read = service([device()], { request: async () => ({ status: 200, body: {} }) }, scheduler()).history();
+    expect(read).toMatchObject({ discarded: [], unreadable: [] });
+    expect(read.entries.length).toBe(1);
+  });
+
+  // A missing file is a portal that has never run a diagnostic — an absence
+  // of runs, not an absence of evidence. It must not imply a hole.
+  it('reports no gaps when the history file does not exist', () => {
+    fs.rmSync(path.join(root, 'diagnostics-history.jsonl'), { force: true });
+
+    expect(service([device()], { request: async () => ({ status: 200, body: {} }) }, scheduler()).history())
+      .toEqual({ entries: [], discarded: [], unreadable: [] });
   });
 });

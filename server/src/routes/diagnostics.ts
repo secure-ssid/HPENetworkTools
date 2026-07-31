@@ -21,7 +21,7 @@ export function createDiagnosticsRouter(service: DiagnosticsService = diagnostic
   const router = Router();
 
   router.get('/diagnostics/eligible', (_req, res) => res.json(service.eligibility()));
-  router.get('/diagnostics/history', (_req, res) => res.json({ entries: service.history() }));
+  router.get('/diagnostics/history', (_req, res) => res.json(service.history()));
 
   router.post('/diagnostics/review', h((req, res) => {
     res.json(service.review((req.body ?? {}) as Record<string, unknown>));

@@ -38,6 +38,8 @@ import { randomUUID } from 'node:crypto';
 import type {
   DeviceRow,
   DiagnosticAuditEntry,
+  DiagnosticHistoryGap,
+  DiagnosticHistoryRead,
   DiagnosticDeviceClass,
   DiagnosticEligibleDevice,
   DiagnosticEligibilityResponse,
@@ -50,7 +52,7 @@ import type {
   DiagnosticTracerouteOptions,
   Plane,
 } from '@hpe/shared';
-import { readLinesNewestFirst, rotateIfNeeded } from './logRotation';
+import { isRetentionTombstone, readLinesNewestFirst, rotateIfNeeded } from './logRotation';
 import { CentralAdapter, CentralRequestError } from '../planes/central';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { poller } from './poller';
@@ -579,24 +581,41 @@ export class DiagnosticsService {
     return this.copy(job.public);
   }
 
-  history(): DiagnosticAuditEntry[] {
+  /**
+   * The audit history, newest first, WITH the holes it knows about.
+   *
+   * Two things make this list short in ways the list cannot show. A rotation
+   * deletes the oldest generation and leaves a tombstone behind; the strict
+   * parse below rejects that tombstone, because it has no id, operation or
+   * state — nothing was run. And a generation still on disk may refuse to
+   * open. Both leave a stretch of runs missing, and a stretch of missing runs
+   * is indistinguishable from a device that was never diagnosed at all.
+   *
+   * This used to report both to the console with the note that the shape had
+   * nowhere to put them. It has somewhere now: an operator reading the panel
+   * is the one who needs to know, and they are not reading the server log.
+   */
+  history(): DiagnosticHistoryRead {
+    const empty: DiagnosticHistoryRead = { entries: [], discarded: [], unreadable: [] };
     try {
       const file = path.join(this.dataDir, 'diagnostics-history.jsonl');
       // Newest first, across rotated generations: a rotation must not make the
       // Diagnostics history look as though the earlier runs never happened.
       const read = readLinesNewestFirst(file, MAX_HISTORY);
-      // A generation we could not read is a hole in this list that the list
-      // itself cannot show. Diagnostics history has no field to carry it, so
-      // the least it can do is not be silent about it.
       if (read.unreadable.length > 0) {
         console.error(
           `diagnostics history is incomplete — unreadable generations: ${read.unreadable.join(', ')}`,
         );
       }
-      return read.entries
+      const discarded: DiagnosticHistoryGap[] = [];
+      const entries: DiagnosticAuditEntry[] = read.entries
         .flatMap((line) => {
           try {
             const raw = JSON.parse(line) as Record<string, unknown>;
+            if (isRetentionTombstone(raw)) {
+              discarded.push({ from: raw.coveringFrom ?? null, to: raw.coveringTo ?? null });
+              return [];
+            }
             const id = text(raw.id, 128);
             const at = text(raw.at, 64);
             const device = text(raw.device, 256);
@@ -634,8 +653,9 @@ export class DiagnosticsService {
             return [];
           }
         });
+      return { entries, discarded, unreadable: read.unreadable };
     } catch {
-      return [];
+      return empty;
     }
   }
 

@@ -9,7 +9,7 @@
 import { apiFetch, serverMessage } from './core';
 import { DeviceDetailIdentity } from './screens';
 import {
-  type DiagnosticAuditEntry,
+  type DiagnosticHistoryRead,
   type DiagnosticEligibilityResponse,
   type DiagnosticJob,
   type DiagnosticReview,
@@ -134,11 +134,24 @@ export async function cancelDiagnostic(id: string): Promise<DiagnosticJob> {
   return (await r.json()) as DiagnosticJob;
 }
 
-export async function getDiagnosticHistory(): Promise<DiagnosticAuditEntry[]> {
+/**
+ * The audit history and the holes in it.
+ *
+ * `discarded` and `unreadable` are absent on an older server, and absent is
+ * not the same claim as "no gaps" — but a client cannot invent a disclosure
+ * it was not sent, so they default to empty and the panel says nothing. What
+ * it must never do is drop them when they ARE sent, which is why they are
+ * read here rather than left on the wire.
+ */
+export async function getDiagnosticHistory(): Promise<DiagnosticHistoryRead> {
   const r = await apiFetch('/api/diagnostics/history');
   if (!r.ok) throw new Error(await serverMessage(r, `diagnostic history failed — HTTP ${r.status}`));
-  const body = (await r.json()) as { entries?: DiagnosticAuditEntry[] };
-  return body.entries ?? [];
+  const body = (await r.json()) as Partial<DiagnosticHistoryRead>;
+  return {
+    entries: body.entries ?? [],
+    discarded: body.discarded ?? [],
+    unreadable: body.unreadable ?? [],
+  };
 }
 
 // ---------------------------------------------------------------------------
