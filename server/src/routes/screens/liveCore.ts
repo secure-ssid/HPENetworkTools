@@ -33,6 +33,10 @@ import {
 import { withLiveShellGate } from './deviceAccess';
 import { relSync } from './overviewModel';
 import {
+  ALERT_SEV_RANK,
+  alertAgeMinutes,
+  compareAlerts,
+  correlateAlerts,
   siteDisplayName,
   type AlertCorrelation,
   type AlertRow,
@@ -101,28 +105,17 @@ export function planesMissingDevices(): Plane[] {
   return planesMissingDataset('devices');
 }
 
-/** Parse the fixtures'/adapters' age strings ('45s', '12m', '6h', '2d') → minutes. */
-export function ageMinutes(age: string): number {
-  const m = age.trim().match(/^(\d+)\s*([smhd])$/);
-  if (!m) return 0;
-  const n = Number(m[1]);
-  switch (m[2]) {
-    case 's':
-      return n / 60;
-    case 'h':
-      return n * 60;
-    case 'd':
-      return n * 60 * 24;
-    default:
-      return n; // 'm'
-  }
-}
+/** Parse the fixtures'/adapters' age strings ('45s', '12m', '6h', '2d') → minutes.
+ *  Re-exported under this file's own name: the parser and the order it feeds
+ *  are shared with the browser, which derives the same banner (shared/logic.ts
+ *  correlateAlerts). */
+export const ageMinutes = alertAgeMinutes;
 
-export const SEV_RANK: Record<Sev, number> = { P1: 0, P2: 1, P3: 2 };
+export const SEV_RANK: Record<Sev, number> = ALERT_SEV_RANK;
 
 /** Merged alert queue: P1 first; within a severity, oldest unresolved first. */
 export function sortLiveAlerts(alerts: AlertRow[]): AlertRow[] {
-  return [...alerts].sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev] || ageMinutes(b.age) - ageMinutes(a.age));
+  return [...alerts].sort(compareAlerts);
 }
 
 /**
@@ -174,27 +167,13 @@ export function liveAlerts(): AlertRow[] {
 }
 
 /**
- * The banner over the live alert queue (README §5): the worst open row,
- * crossed with the worst OTHER open row whose plane is behind. Both halves are
- * read off the rows — nothing is asserted about a site the portal never
- * fetched — and the tone says which of the two facts is doing the talking: a
- * P1 estate is 'danger', a queue whose second finding is only "we cannot see
- * that plane" is 'warning'. Null when nothing is open, so no banner renders.
+ * The banner over the live alert queue (README §5). The rule itself lives in
+ * shared/logic.ts because the browser derives the identical banner whenever
+ * the payload carries none — this wrapper exists so the live route keeps its
+ * own vocabulary at the call site.
  */
 export function liveCorrelation(alerts: AlertRow[]): AlertCorrelation | null {
-  const open = alerts.filter((a) => a.state === 'open');
-  const worst = open.find((a) => a.sev === 'P1') ?? open.find((a) => a.sev === 'P2') ?? open[0];
-  if (!worst) return null;
-  const behind = open.filter((a) => a !== worst && a.stale);
-  const partner = behind.find((a) => a.siteId === worst.siteId) ?? behind[0];
-  const lead = `${worst.detail} · ${worst.siteName} · ${worst.plane} · ${worst.age}.`;
-  return {
-    tone: worst.sev === 'P1' ? 'danger' : 'warning',
-    title: partner ? `${worst.title} — and ${partner.plane} is stale` : worst.title,
-    body: partner
-      ? `${lead} Second finding: ${partner.title} — ${partner.plane} is behind, so that row's age was frozen at pull time and its state is unverified, not current.`
-      : lead,
-  };
+  return correlateAlerts(alerts);
 }
 
 /**

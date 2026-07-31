@@ -858,9 +858,10 @@ export interface AlertCorrelation {
   body: string;
   /** Severity of the banner itself. A correlation over a stale plane is a
    *  'warning' ("we cannot see the estate"), one over live P1s is 'danger'
-   *  ("the estate is on fire") — the client-side correlate() could only ever
-   *  express the latter. Optional: absent keeps the renderer's existing
-   *  default ('danger'), so the authored/derived banners are unchanged. */
+   *  ("the estate is on fire"). Optional: absent keeps the renderer's existing
+   *  default ('danger'), so the authored banners are unchanged. Derived
+   *  banners always set it — server and browser both go through
+   *  shared/logic.ts correlateAlerts. */
   tone?: Tone;
 }
 

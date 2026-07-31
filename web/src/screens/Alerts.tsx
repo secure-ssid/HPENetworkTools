@@ -7,8 +7,10 @@
  * additive (AND); an empty result shows the EmptyState.
  * The banner is a served correlation when the payload carries one, else
  * authored prose for a demo-sourced queue and a correlation derived from the
- * rows (correlate()) for a live/blended one; rows from a plane that is behind
- * read `unverified`, never a current age.
+ * rows for a live/blended one — by the SAME rule the server applies
+ * (shared/logic.ts correlateAlerts), so the two can never name a different
+ * worst finding; rows from a plane that is behind read `unverified`, never a
+ * current age.
  * Data: getAlerts() — live /api/alerts when the server is up, fixtures otherwise.
  */
 
@@ -29,6 +31,7 @@ import {
 } from '../nightdesk';
 import { ackAlert, getAlerts, getTickets, raiseTicket } from '../api/client';
 import type { AlertsData } from '../api/client';
+import { correlateAlerts } from '@hpe/shared';
 import type { AlertCorrelation, AlertRow, TicketRow } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
@@ -64,24 +67,31 @@ interface Banner {
 }
 
 /**
+ * A correlation in the Alert component's own vocabulary. `accent` is not one
+ * of its tones, and a correlation that states no tone keeps the renderer's
+ * historic default rather than inventing a calmer one.
+ */
+function bannerFrom(correlation: AlertCorrelation | null | undefined): Banner | null {
+  if (!correlation || !correlation.title) return null;
+  return {
+    tone:
+      correlation.tone && correlation.tone !== 'accent' ? correlation.tone : 'danger',
+    title: correlation.title,
+    body: correlation.body,
+  };
+}
+
+/**
  * A correlation the SERVER computed, if the payload carries one. It outranks
- * correlate() because it can see facts no alert row carries — a plane's sync
- * age, its call budget, the sections that failed to fetch — and it states its
- * own severity (shared/types.ts AlertCorrelation.tone), which the row-derived
- * banner can only ever infer from a P1.
+ * the locally derived banner because it can see facts no alert row carries —
+ * a plane's sync age, its call budget, the sections that failed to fetch.
  * The key is optional on the wire (and on `AlertsData`, which belongs to
  * another file), so it is read defensively: an absent or empty correlation
  * changes nothing, and a served one renders instead of a weaker banner
  * derived beside it.
  */
 function servedBanner(data: AlertsData): Banner | null {
-  const served = (data as AlertsData & { correlation?: AlertCorrelation | null }).correlation;
-  if (!served || !served.title) return null;
-  return {
-    tone: served.tone && served.tone !== 'accent' ? served.tone : 'danger',
-    title: served.title,
-    body: served.body,
-  };
+  return bannerFrom((data as AlertsData & { correlation?: AlertCorrelation | null }).correlation);
 }
 
 /**
@@ -117,31 +127,6 @@ function rowKey(a: AlertRow, i: number): string {
 /** Toast-safe rendering of an unknown thrown value. */
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-/**
- * The danger banner is a correlation over the queue (README §2 — "correlates the
- * two worst findings"), not prose: the worst open alert crossed with the worst
- * open row whose source plane is behind (`stale`, design rule 1). Every word is
- * read off the rows; nothing is asserted about a site the portal never fetched.
- * Null when the queue holds nothing open — then no banner renders at all.
- */
-function correlate(alerts: AlertRow[]): Banner | null {
-  const open = alerts.filter((a) => a.state === 'open');
-  const worst = open.find((a) => a.sev === 'P1') ?? open.find((a) => a.sev === 'P2') ?? open[0];
-  if (!worst) return null;
-  // Second finding: the worst other open row served by a plane that is behind —
-  // same site first, since that is the pair an operator must read together.
-  const behind = open.filter((a) => a !== worst && a.stale);
-  const partner = behind.find((a) => a.siteId === worst.siteId) ?? behind[0];
-  const lead = `${worst.detail} · ${worst.siteName} · ${worst.plane} · ${worst.age}.`;
-  return {
-    tone: worst.sev === 'P1' ? 'danger' : 'warning',
-    title: partner ? `${worst.title} — and ${partner.plane} is stale` : worst.title,
-    body: partner
-      ? `${lead} Second finding: ${partner.title} — ${partner.plane} is behind, so that row's age was frozen at pull time and its state is unverified, not current.`
-      : lead,
-  };
 }
 
 export default function Alerts() {
@@ -335,7 +320,9 @@ export default function Alerts() {
    * blend mode swapped this section in (README — the envelope's `blended` list). */
   const sectionLive = data.dataSource === 'live' || (data.blended?.includes('alerts') ?? false);
   const synced = sectionLive ? `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'}` : 'SYNCED 09:41';
-  const banner = servedBanner(data) ?? (sectionLive ? correlate(data.alerts) : DEMO_BANNER);
+  const banner =
+    servedBanner(data) ??
+    (sectionLive ? bannerFrom(correlateAlerts(data.alerts)) : DEMO_BANNER);
   // Linked planes whose alert read never came back. An empty queue is the
   // most dangerous empty state in the portal — it reads as all-clear — so a
   // queue that is merely unread must never be allowed to look like a quiet one.

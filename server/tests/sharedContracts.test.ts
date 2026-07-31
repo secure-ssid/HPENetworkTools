@@ -39,7 +39,10 @@ import {
   SSE_OBJECT_KINDS,
   SSE_OBJECT_KIND_LABELS,
   UNKNOWN_LANE_META,
+  alertAgeMinutes,
   clientFieldProvenance,
+  compareAlerts,
+  correlateAlerts,
   deriveRssiDbm,
   detailHasRows,
   detailState,
@@ -53,6 +56,7 @@ import {
   ssidDependencyRequirementsFor,
   ssidPreview,
   staleAfterSecFor,
+  type AlertRow,
   type ClientDetailLive,
   type ClientDetailSection,
   type ClientTimelineEvent,
@@ -798,5 +802,92 @@ describe('SSE contracts — object kinds, inventory, and the mutation/commit spl
     };
     expect(pull.devices).toBeUndefined();
     expect(pull.sse?.unavailable).toHaveLength(SSE_OBJECT_KINDS.length);
+  });
+});
+
+/**
+ * The alert banner rule, which the server and the browser both apply. It is
+ * one function precisely so the sentence at the top of the queue and the one
+ * the API serves can never name a different worst finding.
+ */
+describe('correlateAlerts', () => {
+  const alert = (over: Partial<AlertRow> & { title: string }): AlertRow =>
+    ({
+      id: over.title,
+      sev: 'P3',
+      detail: `${over.title} detail`,
+      plane: 'CENTRAL',
+      state: 'open',
+      age: '5m',
+      tone: 'warning',
+      siteId: 'campus-01',
+      siteName: 'Campus-01 — Meridian HQ',
+      ...over,
+    }) as AlertRow;
+
+  it('reads ages in the fixtures own vocabulary, and an unknown one as brand new', () => {
+    expect(alertAgeMinutes('45s')).toBeCloseTo(0.75);
+    expect(alertAgeMinutes('12m')).toBe(12);
+    expect(alertAgeMinutes('6h')).toBe(360);
+    expect(alertAgeMinutes('2d')).toBe(2880);
+    // Not evidence of a long-running problem — so it must not outrank one.
+    expect(alertAgeMinutes('unverified')).toBe(0);
+    expect(compareAlerts(alert({ title: 'old', age: '2d' }), alert({ title: 'odd', age: 'unverified' }))).toBeLessThan(0);
+  });
+
+  it('returns null when nothing is open, so no banner renders', () => {
+    expect(correlateAlerts([])).toBeNull();
+    expect(correlateAlerts([alert({ title: 'Cleared', state: 'acked' })])).toBeNull();
+  });
+
+  it('names the worst open row even when it is not the first one', () => {
+    const banner = correlateAlerts([
+      alert({ title: 'Noisy radio', sev: 'P3' }),
+      alert({ title: 'Gateway down', sev: 'P1', detail: 'no heartbeat for 6m' }),
+      alert({ title: 'Port flapping', sev: 'P2' }),
+    ]);
+    expect(banner?.title).toBe('Gateway down');
+    expect(banner?.tone).toBe('danger');
+    expect(banner?.body).toContain('no heartbeat for 6m');
+  });
+
+  it('breaks a severity tie the way the queue does — oldest first', () => {
+    const banner = correlateAlerts([
+      alert({ title: 'Recent P1', sev: 'P1', age: '3m' }),
+      alert({ title: 'Long-running P1', sev: 'P1', age: '4h' }),
+    ]);
+    expect(banner?.title).toBe('Long-running P1');
+  });
+
+  it('picks the WORST stale row as the second finding, not the first one it meets', () => {
+    const banner = correlateAlerts([
+      alert({ title: 'Gateway down', sev: 'P1' }),
+      alert({ title: 'Cosmetic', sev: 'P3', plane: 'UXI', stale: true }),
+      alert({ title: 'Radios offline', sev: 'P1', plane: 'MIST', stale: true }),
+    ]);
+    expect(banner?.title).toBe('Gateway down — and MIST is stale');
+    expect(banner?.body).toContain('Radios offline');
+  });
+
+  it('prefers a stale row at the worst rows own site over a more severe one elsewhere', () => {
+    const banner = correlateAlerts([
+      alert({ title: 'Gateway down', sev: 'P1', siteId: 'campus-01' }),
+      alert({ title: 'Elsewhere', sev: 'P1', plane: 'MIST', stale: true, siteId: 'campus-02' }),
+      alert({ title: 'Same site', sev: 'P3', plane: 'UXI', stale: true, siteId: 'campus-01' }),
+    ]);
+    // Two findings about one site are a story; two about two sites are a list.
+    expect(banner?.title).toBe('Gateway down — and UXI is stale');
+  });
+
+  it('says warning, not danger, when the worst open row is not a P1', () => {
+    const banner = correlateAlerts([alert({ title: 'Port flapping', sev: 'P2' })]);
+    expect(banner?.tone).toBe('warning');
+    expect(banner?.title).toBe('Port flapping');
+  });
+
+  it('never crosses the worst row with itself', () => {
+    const only = correlateAlerts([alert({ title: 'Gateway down', sev: 'P1', stale: true })]);
+    expect(only?.title).toBe('Gateway down');
+    expect(only?.body).not.toContain('Second finding');
   });
 });

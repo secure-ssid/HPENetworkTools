@@ -10,6 +10,8 @@
  */
 
 import type {
+  AlertCorrelation,
+  AlertRow,
   ApUplinkMap,
   BlastRadiusRow,
   ClientRow,
@@ -679,6 +681,86 @@ export function relativeAge(iso: string | null | undefined, now: number = Date.n
   if (min < 60) return `${min}m`;
   const h = Math.floor(min / 60);
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
+}
+
+/** Alert severity order — P1 is the worst thing on the screen. */
+export const ALERT_SEV_RANK: Record<Sev, number> = { P1: 0, P2: 1, P3: 2 };
+
+/** Parse the fixtures'/adapters' age strings ('45s', '12m', '6h', '2d') to
+ *  minutes. An age this does not recognise sorts as brand new rather than as
+ *  ancient: an unparseable string is not evidence of a long-running problem. */
+export function alertAgeMinutes(age: string): number {
+  const m = age.trim().match(/^(\d+)\s*([smhd])$/);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  switch (m[2]) {
+    case 's':
+      return n / 60;
+    case 'h':
+      return n * 60;
+    case 'd':
+      return n * 60 * 24;
+    default:
+      return n; // 'm'
+  }
+}
+
+/** Queue order: P1 first; within a severity, oldest unresolved first. */
+export function compareAlerts(a: AlertRow, b: AlertRow): number {
+  return (
+    ALERT_SEV_RANK[a.sev] - ALERT_SEV_RANK[b.sev] || alertAgeMinutes(b.age) - alertAgeMinutes(a.age)
+  );
+}
+
+/**
+ * The single worst row of a set, by the queue's own order. Ties keep the
+ * earlier row, so a caller that already sorted gets its own first row back.
+ */
+export function worstAlert(rows: readonly AlertRow[]): AlertRow | undefined {
+  return rows.reduce<AlertRow | undefined>(
+    (best, row) => (best === undefined || compareAlerts(row, best) < 0 ? row : best),
+    undefined,
+  );
+}
+
+/**
+ * The banner over the alert queue (README §5): the worst open row, crossed
+ * with the worst OTHER open row whose plane is behind. Both halves are read
+ * off the rows — nothing is asserted about a site the portal never fetched —
+ * and the tone says which of the two facts is doing the talking: a P1 estate
+ * is 'danger', a queue whose second finding is only "we cannot see that plane"
+ * is 'warning'. Null when nothing is open, so no banner renders.
+ *
+ * Lives here because the server derives this banner for a live queue and the
+ * browser derives it for itself whenever the payload carries none. Two copies
+ * of the sentence an operator reads first is one copy too many; the screen and
+ * the API must not be able to disagree about which finding is the worst.
+ *
+ * Both picks are made by ordering the rows, not by taking the first match.
+ * Every caller today hands in a queue already sorted, which made position and
+ * severity agree by accident — but the doc above promises "the worst", and a
+ * banner that names a P3 while a P1 sits under it is exactly the kind of
+ * quietly wrong summary the rest of this file exists to prevent.
+ */
+export function correlateAlerts(alerts: readonly AlertRow[]): AlertCorrelation | null {
+  const open = alerts.filter((a) => a.state === 'open');
+  const worst = worstAlert(open);
+  if (!worst) return null;
+  // Same site first — that is the pair an operator must read together — and
+  // only then by severity. A stale row at the worst row's own site outranks a
+  // more severe stale row somewhere else, because together they describe one
+  // site rather than two unrelated problems.
+  const behind = open.filter((a) => a !== worst && a.stale);
+  const sameSite = behind.filter((a) => a.siteId === worst.siteId);
+  const partner = worstAlert(sameSite.length > 0 ? sameSite : behind);
+  const lead = `${worst.detail} · ${worst.siteName} · ${worst.plane} · ${worst.age}.`;
+  return {
+    tone: worst.sev === 'P1' ? 'danger' : 'warning',
+    title: partner ? `${worst.title} — and ${partner.plane} is stale` : worst.title,
+    body: partner
+      ? `${lead} Second finding: ${partner.title} — ${partner.plane} is behind, so that row's age was frozen at pull time and its state is unverified, not current.`
+      : lead,
+  };
 }
 
 /** SLA window per severity — the table the ticket raiser already applies. */
