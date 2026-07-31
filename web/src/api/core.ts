@@ -169,6 +169,7 @@ export function onAuthLapse(listener: () => void): () => void {
 
 /** Called for every answered request. Only 401/403 mean anything here. */
 export function noteResponseStatus(status: number): void {
+  noteBackendReachable(true); // the backend answered, whatever it said
   if (status !== 401 && status !== 403) return;
   for (const listener of [...authLapseListeners]) {
     try {
@@ -177,6 +178,71 @@ export function noteResponseStatus(status: number): void {
       // A listener that throws must not take the request path down with it.
     }
   }
+}
+
+/**
+ * Whether the portal backend is answering at all.
+ *
+ * This exists because of what the screen getters do when it is not. A screen
+ * whose fetch never completes gets `kind: 'unreachable'`, and every getter
+ * answers that by returning the authored demo fixtures — a deliberate choice
+ * that lets the web app run standalone with no server behind it.
+ *
+ * In a running deployment that same path has a much worse meaning. A tab left
+ * open on live data, whose backend then crashes or is restarted, quietly
+ * re-renders as a fully populated fictional estate: ten sites, seven alerts,
+ * six planes, and a header stamped SYNCED 09:41. The payload is
+ * byte-identical to the one a portal deliberately running in demo mode
+ * serves, so nothing downstream can tell "the portal is showing samples" from
+ * "the portal is gone". On a wall display that is a dead backend rendering as
+ * a healthy network.
+ *
+ * The fixtures stay — removing them would break standalone use, and a blank
+ * screen is not obviously better. What was missing is the fact that they are
+ * fixtures *because nobody answered*, which is a different statement from the
+ * one `dataSource: 'demo'` makes.
+ *
+ * Deliberately a notification, like onAuthLapse above: one failed request is
+ * reported as it happens, and any answered request clears it. Nothing here
+ * decides what a screen should render.
+ */
+const reachabilityListeners = new Set<(reachable: boolean) => void>();
+let backendReachable = true;
+
+export function onBackendReachabilityChange(
+  listener: (reachable: boolean) => void,
+): () => void {
+  reachabilityListeners.add(listener);
+  return () => {
+    reachabilityListeners.delete(listener);
+  };
+}
+
+/** The last observed reachability. Starts optimistic: nothing has failed yet,
+ *  and warning before a single request has been made would be a guess. */
+export function isBackendReachable(): boolean {
+  return backendReachable;
+}
+
+/** Broadcast only on a change, so a 60-second poll against a dead backend
+ *  does not re-notify every tick. */
+export function noteBackendReachable(reachable: boolean): void {
+  if (reachable === backendReachable) return;
+  backendReachable = reachable;
+  for (const listener of [...reachabilityListeners]) {
+    try {
+      listener(reachable);
+    } catch {
+      // A listener that throws must not take the request path down with it.
+    }
+  }
+}
+
+/** Test seam — module state outlives a component, so a suite that simulated an
+ *  outage would otherwise leak the warning into every later test. */
+export function resetBackendReachability(): void {
+  backendReachable = true;
+  reachabilityListeners.clear();
 }
 
 /**
@@ -202,6 +268,7 @@ export async function fetchScreen<T>(path: string): Promise<ScreenFetch<T>> {
     if (controller.signal.aborted) {
       return { kind: 'http-error', message: 'The portal API did not respond within 15 seconds.' };
     }
+    noteBackendReachable(false); // fixtures are about to stand in for the estate
     return { kind: 'unreachable' };
   } finally {
     window.clearTimeout(timer);
@@ -258,6 +325,7 @@ export async function fetchDetail<T>(
     if (controller.signal.aborted) {
       return { kind: 'answered', status: 504, message: 'The portal API did not respond within 15 seconds.' };
     }
+    noteBackendReachable(false); // fixtures are about to stand in for the estate
     return { kind: 'unreachable' };
   } finally {
     window.clearTimeout(timer);

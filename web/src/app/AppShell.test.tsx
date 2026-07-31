@@ -11,9 +11,10 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AppShellLayout } from './AppShell';
+import { noteBackendReachable, resetBackendReachability } from '../api/core';
 import { SettingsProvider } from './SettingsContext';
 
 // ---------------------------------------------------------------------------
@@ -51,7 +52,10 @@ vi.mock('../api/client', () => ({
   postChat: vi.fn(),
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetBackendReachability();
+});
 
 /** Renders the shell at a site drill-down route, with a stub content outlet. */
 function renderShellAtSite(path: string) {
@@ -103,5 +107,51 @@ describe('AppShellLayout site-route breadcrumbs', () => {
     // SITE_DISPLAY_NAMES['campus-01'] — the canonical display name, not the id.
     expect(within(crumbs).getByText('Campus-01 — Meridian HQ')).toBeTruthy();
     expect(within(crumbs).queryByText('campus-01')).toBeNull();
+  });
+});
+
+/**
+ * The screens substitute authored demo fixtures whenever no backend answers,
+ * and that payload is indistinguishable from a portal deliberately serving
+ * demo data. So a tab left open on live data, whose backend then dies, quietly
+ * re-renders a complete and plausible estate that does not exist. The shell
+ * carries the correction because the substitution is global — the operator
+ * could be on any screen when it happens.
+ */
+describe('AppShellLayout backend-unreachable banner', () => {
+  it('says nothing while the backend is answering', () => {
+    renderShellAtSite('/sites/campus-01');
+    expect(screen.queryByText('The portal backend is not answering')).toBeNull();
+  });
+
+  it('states that the estate on screen is fixtures once the backend stops answering', () => {
+    renderShellAtSite('/sites/campus-01');
+
+    act(() => {
+      noteBackendReachable(false);
+    });
+
+    expect(screen.getByText('The portal backend is not answering')).toBeTruthy();
+    // The point is not that something failed — it is that what remains on
+    // screen is not the network, which is the part an operator would
+    // otherwise read as an all-clear.
+    expect(screen.getByText(/Nothing below is your estate/)).toBeTruthy();
+    // The routed content is still rendered underneath; the banner corrects it
+    // rather than replacing it.
+    expect(screen.getByText('site content stub')).toBeTruthy();
+  });
+
+  it('withdraws the warning when the backend answers again', () => {
+    renderShellAtSite('/sites/campus-01');
+
+    act(() => {
+      noteBackendReachable(false);
+    });
+    expect(screen.getByText('The portal backend is not answering')).toBeTruthy();
+
+    act(() => {
+      noteBackendReachable(true);
+    });
+    expect(screen.queryByText('The portal backend is not answering')).toBeNull();
   });
 });

@@ -18,11 +18,12 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
-import { AppShell as NightdeskAppShell, Avatar, Breadcrumbs, Button, Drawer } from '../nightdesk';
+import { Alert, AppShell as NightdeskAppShell, Avatar, Breadcrumbs, Button, Drawer } from '../nightdesk';
 import type { Crumb } from '../nightdesk';
 import { CRUMBS, NAV_GROUPS, SITE_IDS, SYSTEMS, siteDisplayName } from '@hpe/shared';
 import type { SiteId, View } from '@hpe/shared';
 import { getSystemsState } from '../api/client';
+import { isBackendReachable, onBackendReachabilityChange } from '../api/core';
 import { useSettings } from './SettingsContext';
 import { SearchPanel } from './SearchPanel';
 import ChatPanel from '../screens/ChatPanel';
@@ -82,6 +83,37 @@ function SignedInAs() {
       <Button variant="ghost" size="sm" onClick={() => void logout()}>
         Sign out
       </Button>
+    </div>
+  );
+}
+
+/**
+ * Says out loud that the backend stopped answering.
+ *
+ * Every screen getter substitutes the authored demo fixtures when no backend
+ * answers, and the resulting payload is indistinguishable from the one a
+ * portal deliberately running in demo mode serves. Without this banner a tab
+ * left open on live data re-renders, on the next poll after a crash or a
+ * restart, as a complete and plausible estate that does not exist — under a
+ * "SYNCED 09:41" stamp that reads like an ordinary timestamp.
+ *
+ * It sits in the shell rather than on each screen because the substitution is
+ * global: the operator may be looking at any of them when the backend goes.
+ */
+function BackendUnreachableBanner() {
+  const [reachable, setReachable] = useState(isBackendReachable);
+  useEffect(() => onBackendReachabilityChange(setReachable), []);
+  if (reachable) return null;
+  return (
+    <div style={{ padding: '12px 0 0' }}>
+      <Alert tone="danger" title="The portal backend is not answering">
+        <span style={{ fontSize: 13 }}>
+          Nothing below is your estate. The screens fall back to built-in sample data when no
+          backend answers, so the sites, alerts and devices shown are fixtures — not a reading of
+          your network, and not a statement that it is healthy. This clears by itself as soon as
+          the portal responds again.
+        </span>
+      </Alert>
     </div>
   );
 }
@@ -292,6 +324,7 @@ export function AppShellLayout() {
 
   return (
     <NightdeskAppShell sidebar={sidebar} topbar={topbar} className={rail ? 'nd-shell--rail' : undefined}>
+      <BackendUnreachableBanner />
       <Outlet />
       <ChatPanel open={chatOpen} onOpenChange={setChatOpen} />
       <Drawer
