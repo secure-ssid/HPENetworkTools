@@ -72,7 +72,35 @@ function fakeRegistry(): PlaneRegistry {
   } as unknown as PlaneRegistry;
 }
 
-const emptyPoller = { contributionsByPlane: () => new Map() } as unknown as Poller;
+/** A poller that answers a forced pull but contributes no greenlake section —
+ *  i.e. the cache is left exactly as stale as it was. */
+const emptyPoller = {
+  contributionsByPlane: () => new Map(),
+  syncNowFor: async () => 'ok',
+} as unknown as Poller;
+
+/** A poller whose forced pull lands and contributes a greenlake section. */
+function refreshingPoller(tick: string = 'ok'): Poller {
+  return {
+    contributionsByPlane: () =>
+      new Map([
+        [
+          'greenlake',
+          {
+            greenlake: {
+              users: [],
+              locations: [],
+              roleAssignments: [],
+              unavailable: [],
+              readStatus: {},
+              source: 'test',
+            },
+          },
+        ],
+      ]),
+    syncNowFor: async () => tick,
+  } as unknown as Poller;
+}
 
 /**
  * Every field GLP validates as required on a location create — including the
@@ -237,6 +265,91 @@ describe('GreenLakeObjectsService.write outcomes', () => {
     const result = await service.write('addSubscription', { key: 'K-1' }, true);
     expect(result.outcome).toBe('accepted');
     expect(String(auditLines()[0].result)).toContain('accepted');
+  });
+
+  /**
+   * The GreenLake screen re-renders its lists from the poller cache right
+   * after a write. If nothing forced that cache forward, "Applied" is followed
+   * by the pre-change list, which reads as a silent failure — and the natural
+   * operator response is to run the action again, creating a duplicate user,
+   * location or device.
+   */
+  it('forces the workspace cache forward after an applied write', async () => {
+    const poller = refreshingPoller();
+    const forced: string[] = [];
+    (poller as unknown as { syncNowFor: (id: string) => Promise<string> }).syncNowFor = async (
+      id: string,
+    ) => {
+      forced.push(id);
+      return 'ok';
+    };
+    const service = makeService({
+      plane: makeGlAdapter(() => ({ body: { id: 'loc-9' } })),
+      pollerRef: poller,
+    });
+    const result = await service.write('createLocation', LOCATION_INPUT, true);
+    expect(forced).toEqual(['greenlake']);
+    expect(result.cacheRefresh).toEqual({ attempted: true, ok: true });
+  });
+
+  // A refresh that did not land must be reported, not assumed. The write
+  // itself still succeeded — only the operator's view of it is behind.
+  it('reports a refresh that failed rather than implying the list is current', async () => {
+    const service = makeService({
+      plane: makeGlAdapter(() => ({ body: { id: 'loc-9' } })),
+      pollerRef: refreshingPoller('error'),
+    });
+    const result = await service.write('createLocation', LOCATION_INPUT, true);
+    expect(result.outcome).toBe('applied');
+    expect(result.cacheRefresh?.attempted).toBe(true);
+    expect(result.cacheRefresh?.ok).toBe(false);
+    expect(result.cacheRefresh?.message).toContain('could not be re-read');
+  });
+
+  // A pull that completes but contributes no greenlake section leaves the
+  // cache exactly as stale as a failed one; calling that a success would be
+  // the same lie by a quieter route.
+  it('does not call a pull that contributed no sections a successful refresh', async () => {
+    const service = makeService({ plane: makeGlAdapter(() => ({ body: { id: 'loc-9' } })) });
+    const result = await service.write('createLocation', LOCATION_INPUT, true);
+    expect(result.cacheRefresh).toMatchObject({ attempted: true, ok: false });
+    expect(result.cacheRefresh?.message).toContain('no platform sections');
+  });
+
+  // A 202 has not been applied, so a pull would faithfully return a list
+  // without the new row — and having just re-read the workspace makes that
+  // absence look like a verdict rather than a race.
+  it('does not refresh after an accepted 202', async () => {
+    const poller = refreshingPoller();
+    let forced = 0;
+    (poller as unknown as { syncNowFor: () => Promise<string> }).syncNowFor = async () => {
+      forced += 1;
+      return 'ok';
+    };
+    const service = makeService({
+      plane: makeGlAdapter(() => ({ status: 202, body: { transactionId: 'txn-7' } })),
+      pollerRef: poller,
+    });
+    const result = await service.write('addSubscription', { key: 'K-1' }, true);
+    expect(result.outcome).toBe('accepted');
+    expect(forced).toBe(0);
+    expect(result.cacheRefresh).toEqual({ attempted: false, ok: false });
+  });
+
+  // The refresh is a display concern. A write that the workspace performed
+  // must never be reported as failed because the follow-up pull threw.
+  it('never fails an applied write because the refresh threw', async () => {
+    const poller = refreshingPoller();
+    (poller as unknown as { syncNowFor: () => Promise<string> }).syncNowFor = async () => {
+      throw new Error('poller exploded');
+    };
+    const service = makeService({
+      plane: makeGlAdapter(() => ({ body: { id: 'loc-9' } })),
+      pollerRef: poller,
+    });
+    const result = await service.write('createLocation', LOCATION_INPUT, true);
+    expect(result.outcome).toBe('applied');
+    expect(result.cacheRefresh).toMatchObject({ attempted: true, ok: false });
   });
 
   it('translates a missing required field into a 400 and audits the rejection', async () => {

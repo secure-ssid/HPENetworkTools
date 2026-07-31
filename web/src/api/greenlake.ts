@@ -36,6 +36,10 @@ export interface GreenLakeActionCallResult {
   message: string;
   /** Present on success — 'applied' or 'accepted' (202, validated async). */
   outcome?: GreenLakeWriteResult['outcome'];
+  /** Whether the server re-read the workspace after the change. Absent means
+   *  an older server that never refreshed, which the screen reports
+   *  differently from a refresh that was tried and failed. */
+  cacheRefresh?: GreenLakeWriteResult['cacheRefresh'];
 }
 
 /**
@@ -44,6 +48,11 @@ export interface GreenLakeActionCallResult {
  * `outcome` is surfaced verbatim so the caller can distinguish a change the
  * workspace performed from one it merely accepted for asynchronous
  * validation — reporting a 202 as done would overstate what happened.
+ *
+ * `cacheRefresh` is surfaced for the same reason one step further on: an
+ * applied change whose inventory re-read failed leaves the screen showing the
+ * state from before it, and the operator has to be told that rather than left
+ * to conclude the write did nothing.
  */
 export async function runGreenLakeAction(
   action: GreenLakeWriteAction,
@@ -59,7 +68,12 @@ export async function runGreenLakeAction(
       return { ok: false, message: await serverMessage(r, `${action} failed — HTTP ${r.status}`) };
     }
     const body = (await r.json()) as GreenLakeWriteResult;
-    return { ok: true, message: body.detail, outcome: body.outcome };
+    return {
+      ok: true,
+      message: body.detail,
+      outcome: body.outcome,
+      cacheRefresh: body.cacheRefresh,
+    };
   } catch (err) {
     return { ok: false, message: `cannot reach the portal backend: ${(err as Error).message}` };
   }

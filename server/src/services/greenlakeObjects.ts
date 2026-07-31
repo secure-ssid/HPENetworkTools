@@ -33,6 +33,7 @@
 import {
   GREENLAKE_SECTION_KEYS,
   GREENLAKE_WRITE_ACTIONS,
+  type GreenLakeCacheRefresh,
   type GreenLakeInventory,
   type GreenLakeWriteAction,
   type GreenLakeWriteResult,
@@ -136,7 +137,7 @@ export class GreenLakeObjectsService {
     try {
       const result = await adapter.write(action, input);
       this.audit(action, 'greenlake-write', result.outcome, result.detail);
-      return result;
+      return { ...result, cacheRefresh: await this.refreshCache(result.outcome) };
     } catch (err) {
       if (err instanceof GreenLakeWriteInputError) {
         this.audit(action, 'greenlake-write', 'rejected', err.message);
@@ -149,6 +150,55 @@ export class GreenLakeObjectsService {
       }
       console.error(`greenlake write '${action}' failed: ${(err as Error).message}`);
       throw new GreenLakeObjectsError(502, `the GreenLake workspace refused the ${action} request`);
+    }
+  }
+
+  /**
+   * Force one fresh pull so the lists the screen re-renders actually contain
+   * the change, and report whether that landed instead of letting the caller
+   * assume it did.
+   *
+   * This is the same duty sseObjects.refreshCache() performs for the SSE
+   * mutation routes; without it a GreenLake write reported "applied" is
+   * followed by the pre-change cache, which is indistinguishable from the
+   * write having done nothing.
+   *
+   * An `accepted` (202) write is deliberately NOT refreshed. The workspace has
+   * not applied it yet, so a pull would faithfully return a list without the
+   * new row — and having just re-read the workspace makes that absence look
+   * like a verdict rather than a race.
+   *
+   * A refresh failure never fails the write. The change already happened; only
+   * the operator's view of it is behind, and that is what gets reported.
+   */
+  private async refreshCache(
+    outcome: GreenLakeWriteResult['outcome'],
+  ): Promise<GreenLakeCacheRefresh> {
+    if (outcome !== 'applied') return { attempted: false, ok: false };
+    try {
+      const tick = await this.pollerRef.syncNowFor('greenlake');
+      if (tick !== 'ok') {
+        return {
+          attempted: true,
+          ok: false,
+          message: `the workspace could not be re-read (poll ${tick})`,
+        };
+      }
+      // A pull that completed but contributed no greenlake section leaves the
+      // cache exactly as stale as a failed one; treating it as a success would
+      // be the same lie by a quieter route.
+      const pull = this.pollerRef.contributionsByPlane().get('greenlake');
+      if (!pull?.greenlake) {
+        return {
+          attempted: true,
+          ok: false,
+          message: 'the workspace was re-read but returned no platform sections',
+        };
+      }
+      return { attempted: true, ok: true };
+    } catch (err) {
+      console.error(`greenlake cache refresh failed: ${(err as Error).message}`);
+      return { attempted: true, ok: false, message: 'the workspace could not be re-read' };
     }
   }
 

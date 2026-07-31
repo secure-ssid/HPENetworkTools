@@ -1372,6 +1372,30 @@ export type GreenLakeWriteAction = (typeof GREENLAKE_WRITE_ACTIONS)[number];
  *  transaction id and validate asynchronously, so a 202 means the workspace
  *  took the request, not that it succeeded. Collapsing the two would tell an
  *  operator a subscription was added when the key may still be rejected. */
+/**
+ * Whether the cached workspace inventory was re-read after a write.
+ *
+ * The GreenLake screen re-renders its lists straight after a change, but those
+ * lists are served from the poller's cache, not a live call. If the cache was
+ * not refreshed, the list the operator is looking at PREDATES the change they
+ * were just told succeeded — which reads exactly like a silent failure and
+ * invites a retry that would create a second user, location or device.
+ *
+ * So the refresh is reported rather than assumed.
+ */
+export interface GreenLakeCacheRefresh {
+  /** False when no refresh was tried. That is the correct state for an
+   *  `accepted` (202) write: nothing has been applied yet, so re-reading
+   *  would only assert more confidently that nothing changed. */
+  attempted: boolean;
+  /** True only when a fresh pull completed. When false, the inventory the
+   *  screen shows next is the pre-change snapshot and must say so. */
+  ok: boolean;
+  /** Operator-facing reason, present only when a refresh was attempted and
+   *  did not land. Never a vendor body. */
+  message?: string;
+}
+
 export interface GreenLakeWriteResult {
   action: GreenLakeWriteAction;
   outcome: 'applied' | 'accepted';
@@ -1381,6 +1405,10 @@ export interface GreenLakeWriteResult {
   transactionId?: string | null;
   /** Identifier of the object created, when the API returned one. */
   id?: string | null;
+  /** Set by the service layer, not the adapter. Absent means an older server
+   *  that did not refresh at all — which is NOT the same as a refresh that
+   *  was tried and failed, and the screen must not conflate them. */
+  cacheRefresh?: GreenLakeCacheRefresh;
 }
 
 // -- Configure (NtConfigure) --

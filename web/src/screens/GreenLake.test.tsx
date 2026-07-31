@@ -8,10 +8,10 @@
  * read-only credential must not be shown write controls it cannot use.
  */
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getGreenLakeInventory } from '../api/client';
+import { getGreenLakeInventory, runGreenLakeAction } from '../api/client';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import GreenLake from './GreenLake';
@@ -22,6 +22,7 @@ vi.mock('../api/client', async (importOriginal) => {
 });
 
 const mockInventory = vi.mocked(getGreenLakeInventory);
+const mockAction = vi.mocked(runGreenLakeAction);
 
 afterEach(() => {
   cleanup();
@@ -102,5 +103,73 @@ describe('GreenLake screen', () => {
     renderScreen(inventory());
     await screen.findByText('ops@example.com');
     expect(screen.getByRole('button', { name: /create location/i })).toBeTruthy();
+  });
+});
+
+/**
+ * The lists on this screen come from the poller cache, not a live read, so a
+ * change the workspace applied is only visible once that cache moves forward.
+ * When it does not, "Applied" over an unchanged table is indistinguishable
+ * from the write having done nothing — and the obvious operator response to
+ * that is to run the action again, which on invite/create actions means a
+ * duplicate. So the stale view has to be stated.
+ */
+describe('GreenLake screen — post-write freshness', () => {
+  async function invite(result: Record<string, unknown>) {
+    mockAction.mockResolvedValue(result as never);
+    renderScreen(inventory());
+    const field = await screen.findByPlaceholderText('person@example.com');
+    fireEvent.change(field, { target: { value: 'new@example.com' } });
+    fireEvent.click(screen.getByText('Send invite'));
+  }
+
+  it('says the lists are behind when the workspace could not be re-read', async () => {
+    await invite({
+      ok: true,
+      message: 'invitation sent',
+      outcome: 'applied',
+      cacheRefresh: { attempted: true, ok: false, message: 'the workspace could not be re-read' },
+    });
+    expect(await screen.findByText(/the lists below are behind/i)).toBeTruthy();
+    // It must also say what to do, because the instinct is to try again.
+    expect(await screen.findByText(/Do not repeat it/i)).toBeTruthy();
+  });
+
+  it('reports a plain applied result when the re-read landed', async () => {
+    await invite({
+      ok: true,
+      message: 'invitation sent',
+      outcome: 'applied',
+      cacheRefresh: { attempted: true, ok: true },
+    });
+    expect(await screen.findByText('Applied in GreenLake')).toBeTruthy();
+    expect(screen.queryByText(/the lists below are behind/i)).toBeNull();
+  });
+
+  // An older server that never refreshed at all is not the same as one whose
+  // refresh was tried and failed, and the screen must not invent the claim.
+  it('stays quiet about freshness when the server did not report any', async () => {
+    await invite({ ok: true, message: 'invitation sent', outcome: 'applied' });
+    expect(await screen.findByText('Applied in GreenLake')).toBeTruthy();
+    expect(screen.queryByText(/the lists below are behind/i)).toBeNull();
+  });
+
+  // A 202 already explains why the row is missing. Adding a staleness warning
+  // on top would blame the cache for an absence the workspace intends.
+  it('does not add a staleness warning to an accepted 202', async () => {
+    await invite({
+      ok: true,
+      message: 'key submitted',
+      outcome: 'accepted',
+      cacheRefresh: { attempted: false, ok: false },
+    });
+    expect(await screen.findByText('Submitted to GreenLake')).toBeTruthy();
+    expect(screen.queryByText(/the lists below are behind/i)).toBeNull();
+  });
+
+  it('reports a refused change as a failure and never as applied', async () => {
+    await invite({ ok: false, message: 'HTTP 403 — not permitted' });
+    expect(await screen.findByText('GreenLake refused the change')).toBeTruthy();
+    expect(screen.queryByText(/Applied in GreenLake/)).toBeNull();
   });
 });

@@ -170,13 +170,20 @@ export default function GreenLake() {
       toast('Submitted to GreenLake', {
         description: `${r.message}. The workspace validates this asynchronously — it is not applied yet.`,
       });
+    } else if (r.cacheRefresh && !r.cacheRefresh.ok) {
+      // The change landed but the lists below still show the state from before
+      // it. Saying only "Applied" here would leave the operator staring at an
+      // unchanged table, and the obvious response to that is to do it again.
+      toast('Applied in GreenLake — the lists below are behind', {
+        description: `${r.message}. The workspace inventory could not be re-read (${
+          r.cacheRefresh.message ?? 'reason not reported'
+        }), so this change is not shown yet. Do not repeat it; sync again in a moment.`,
+        tone: 'warning',
+      });
     } else {
       toast('Applied in GreenLake', { description: r.message });
     }
     onDone?.();
-    // The platform sections are cached on a 5-minute cadence, so a fresh row
-    // may not appear until the next pull; say so rather than imply staleness
-    // is a failure.
     await load();
   };
 
