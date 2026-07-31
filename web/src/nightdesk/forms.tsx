@@ -44,9 +44,11 @@ type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, 'size'> & {
   mono?: boolean;
 };
 
-export function Input({ size = 'md', mono, className, ...rest }: InputProps) {
+export function Input({ size = 'md', mono, className, id, ...rest }: InputProps) {
+  const generatedId = useId();
   return (
     <input
+      id={id ?? generatedId}
       className={cx('nd-input', `nd-input--${size}`, mono && 'nd-input--mono', className)}
       {...rest}
     />
@@ -56,9 +58,11 @@ export function Input({ size = 'md', mono, className, ...rest }: InputProps) {
 export function Textarea({
   mono,
   className,
+  id,
   ...rest
 }: TextareaHTMLAttributes<HTMLTextAreaElement> & { mono?: boolean }) {
-  return <textarea className={cx('nd-textarea', mono && 'nd-textarea--mono', className)} {...rest} />;
+  const generatedId = useId();
+  return <textarea id={id ?? generatedId} className={cx('nd-textarea', mono && 'nd-textarea--mono', className)} {...rest} />;
 }
 
 /* ---------- Select ---------- */
@@ -78,11 +82,14 @@ export function Select({
   onChange,
   className,
   children,
+  id,
   ...rest
 }: SelectProps) {
+  const generatedId = useId();
   return (
     <span className={cx('nd-select-wrap', className)}>
       <select
+        id={id ?? generatedId}
         className={`nd-select nd-select--${size}`}
         onChange={(e) => {
           onChange?.(e);
