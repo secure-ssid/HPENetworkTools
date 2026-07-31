@@ -75,6 +75,7 @@ import type {
   Tone,
   TopologyDeviceNode,
   TopologyLink,
+  UsageSample,
 } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -181,6 +182,66 @@ function formatWindow(sec: number | null | undefined): string | null {
 function windowPhrase(sec: number | null | undefined): string {
   const w = formatWindow(sec);
   return w ? `the last ${w}` : 'the read window';
+}
+
+/**
+ * What the averaged throughput figure leaves out.
+ *
+ * Central reports usage as byte totals per fixed sampling bucket, and the
+ * server divides the lot by the window. A client that saturated its radio for
+ * five minutes and did nothing for the remaining three hours averages out to
+ * almost nothing — which is the shape of every complaint that brings someone
+ * to this drawer in the first place. The buckets are read, cached and shipped
+ * here already; only the average was ever drawn.
+ *
+ * The bucket rate is itself an average over one interval, so it is worded as
+ * the busiest sample rather than as a peak rate the plane never measured.
+ *
+ * A bucket the plane reported with neither figure is a reading that is not
+ * there, not a quiet one, and is skipped rather than counted as a zero.
+ */
+function usagePeakAndSplit(
+  samples: UsageSample[] | undefined,
+  windowSec: number | null | undefined,
+): string[] {
+  if (!samples || samples.length === 0) return [];
+  if (typeof windowSec !== 'number' || !Number.isFinite(windowSec) || windowSec <= 0) return [];
+  const intervalSec = windowSec / samples.length;
+  if (!Number.isFinite(intervalSec) || intervalSec <= 0) return [];
+
+  let peakBytes: number | null = null;
+  let tx = 0;
+  let rx = 0;
+  let reported = 0;
+  for (const sample of samples) {
+    const hasTx = typeof sample.txBytes === 'number' && Number.isFinite(sample.txBytes);
+    const hasRx = typeof sample.rxBytes === 'number' && Number.isFinite(sample.rxBytes);
+    if (!hasTx && !hasRx) continue;
+    reported += 1;
+    const sampleTx = hasTx ? sample.txBytes! : 0;
+    const sampleRx = hasRx ? sample.rxBytes! : 0;
+    tx += sampleTx;
+    rx += sampleRx;
+    const total = sampleTx + sampleRx;
+    if (peakBytes === null || total > peakBytes) peakBytes = total;
+  }
+  if (reported === 0 || peakBytes === null) return [];
+
+  const out = [`busiest ${formatWindow(intervalSec) ?? 'sample'} ${formatBps((peakBytes * 8) / intervalSec)}`];
+  // 'tx' and 'rx' as the plane words them. Calling them up and down would
+  // assert a perspective Central's usage endpoint does not state, and getting
+  // it backwards is worse than not saying it.
+  if (tx > 0 || rx > 0) out.push(`tx ${formatBytes(tx)} / rx ${formatBytes(rx)}`);
+  return out;
+}
+
+/** Byte totals, as an operator says them. */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
+  if (bytes >= 1e3) return `${Math.round(bytes / 1e3)} kB`;
+  return `${Math.round(bytes)} B`;
 }
 
 /** dBm with the design's U+2212 minus, matching the fixtures' own metrics. */
@@ -883,7 +944,10 @@ export default function Clients() {
           note:
             detailNote(
               'tput',
-              `avg over ${formatWindow(det?.tputWindowSec) ?? 'the read window'}`,
+              [
+                `avg over ${formatWindow(det?.tputWindowSec) ?? 'the read window'}`,
+                ...usagePeakAndSplit(det?.usageSeries, det?.tputWindowSec),
+              ].join(' · '),
               `no usage samples in ${windowPhrase(det?.tputWindowSec)}`,
             ) || metricNote(cur.tput, 'current rate'),
           color: warn(false),

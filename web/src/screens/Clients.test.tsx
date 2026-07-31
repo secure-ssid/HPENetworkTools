@@ -515,6 +515,56 @@ describe('Clients drawer — on-demand detail read', () => {
     expect(screen.getByText('27 bps')).toBeTruthy();
   });
 
+  /* The average is the shape of every complaint that brings someone to this
+     drawer and the one number that hides it: a client that saturated its radio
+     for five minutes and did nothing for the next three hours averages out to
+     almost nothing. Central sends the buckets; only the average was drawn. */
+  it('says how busy the busiest sample was, not only the average', async () => {
+    mockGetClientDetail.mockResolvedValue({
+      ...FULL_DETAIL,
+      tputWindowSec: 900, // three 5-minute buckets
+      usageSeries: [
+        { ts: '2026-07-28T14:00:00Z', txBytes: 1_000, rxBytes: 1_000 },
+        { ts: '2026-07-28T14:05:00Z', txBytes: 10_000_000, rxBytes: 90_000_000 },
+        { ts: '2026-07-28T14:10:00Z', txBytes: 2_000, rxBytes: 2_000 },
+      ],
+    });
+    renderDrawer();
+
+    // 100 MB in one 300s bucket = 2.7 Mbps, against an average two orders
+    // smaller. Worded as the busiest sample, because a bucket rate is itself
+    // an average and Central never measured an instantaneous peak.
+    await waitFor(() => expect(screen.getByText(/busiest 5m 2\.7 Mbps/)).toBeTruthy());
+    // tx and rx as the plane words them — asserting up/down would claim a
+    // perspective the usage endpoint does not state.
+    expect(screen.getByText(/tx 10\.0 MB \/ rx 90\.0 MB/)).toBeTruthy();
+  });
+
+  /* A bucket the plane reported with neither figure is a reading that is not
+     there, and counting it as a zero would drag the busiest sample down. */
+  it('skips a bucket the plane put no numbers in rather than reading it as idle', async () => {
+    mockGetClientDetail.mockResolvedValue({
+      ...FULL_DETAIL,
+      tputWindowSec: 600,
+      usageSeries: [
+        { ts: '2026-07-28T14:00:00Z', txBytes: null, rxBytes: null },
+        { ts: '2026-07-28T14:05:00Z', txBytes: null, rxBytes: 30_000_000 },
+      ],
+    });
+    renderDrawer();
+
+    // 30 MB over the 300s bucket that reported, not over both.
+    await waitFor(() => expect(screen.getByText(/busiest 5m 800 kbps/)).toBeTruthy());
+  });
+
+  it('adds nothing to the average when the plane sent no buckets at all', async () => {
+    mockGetClientDetail.mockResolvedValue(FULL_DETAIL);
+    renderDrawer();
+
+    await waitFor(() => expect(screen.getByText('avg over 3h')).toBeTruthy());
+    expect(screen.queryByText(/busiest/)).toBeNull();
+  });
+
   it('says an empty trail is empty, not that no source reported events', async () => {
     mockGetClientDetail.mockResolvedValue(EMPTY_TRAIL_DETAIL);
     renderDrawer();
