@@ -502,6 +502,53 @@ describe('Clients drawer — on-demand detail read', () => {
     expect(screen.getByText(/ROAM · Office-655 · aruba-home · 5 GHz · ch 157E · −58 dBm/)).toBeTruthy();
   });
 
+  /* The mobility trail arrives as ONE page. The drawer draws a roam count and
+     an event list from it, and both used to be stated as though the page were
+     the whole 24h window — a client that roamed 340 times read `100`, which is
+     the page size and looks exactly like a real count of 100. */
+  it('writes a roam count the plane never stated as the floor it is', async () => {
+    mockGetClientDetail.mockResolvedValue({
+      ...FULL_DETAIL,
+      roams: 100,
+      roamsAtLeast: true,
+      timelineTruncated: true,
+    });
+    renderDrawer();
+
+    await waitFor(() => expect(screen.getByText('100+')).toBeTruthy());
+    expect(screen.getByText(/at least — CENTRAL stated no total, so one page was counted/)).toBeTruthy();
+    // The list carries the same caveat in its own words: its length is a fact
+    // about the page, not about the window.
+    expect(screen.getByText('NEWEST 1 EVENT · CENTRAL')).toBeTruthy();
+  });
+
+  it('leaves an exact count unqualified even when the list beside it is short', async () => {
+    // The two claims are independent: a stated total fixes the count and still
+    // proves the list is missing rows. Qualifying the count here would be its
+    // own dishonesty.
+    mockGetClientDetail.mockResolvedValue({
+      ...FULL_DETAIL,
+      roams: 340,
+      roamsAtLeast: false,
+      timelineTruncated: true,
+    });
+    renderDrawer();
+
+    await waitFor(() => expect(screen.getByText('340')).toBeTruthy());
+    expect(screen.queryByText('340+')).toBeNull();
+    expect(screen.queryByText(/at least —/)).toBeNull();
+    expect(screen.getByText('NEWEST 1 EVENT · CENTRAL')).toBeTruthy();
+  });
+
+  it('says nothing extra when nothing was cut off', async () => {
+    mockGetClientDetail.mockResolvedValue(FULL_DETAIL);
+    renderDrawer();
+
+    await waitFor(() => expect(screen.getByText('3')).toBeTruthy());
+    expect(screen.queryByText(/at least —/)).toBeNull();
+    expect(screen.getByText('1 EVENT · CENTRAL')).toBeTruthy();
+  });
+
   it('labels the window the plane actually sampled, not a rounded fiction', async () => {
     // The live tenant returns 37 five-minute samples = 11,100s of usage.
     mockGetClientDetail.mockResolvedValue({

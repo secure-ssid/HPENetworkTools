@@ -2241,11 +2241,24 @@ export interface ClientDetailLive {
   /** Roam count in `roamsWindowSec`. 0 is a REAL answer for a stationary
    *  client and must render as "no roaming in the last 24h". */
   roams?: number | null;
+  /** True when `roams` is a FLOOR rather than a total: the plane stated no
+   *  window total, so all the portal could count was the single page it
+   *  fetched, and that page came back full. A renderer must not present the
+   *  number as firm — a client that roamed 340 times reads as exactly the
+   *  page size, which is indistinguishable from a real count of that size.
+   *  Absent = an older server that never made the distinction. */
+  roamsAtLeast?: boolean;
   /** The lookback `roams`/`timeline` cover, seconds. */
   roamsWindowSec?: number;
   /** Session events, newest-first. Present-and-empty = the plane has no events
    *  in the window (honest), absent = not fetched. */
   timeline?: ClientTimelineEvent[];
+  /** True when `timeline` holds only the NEWEST page of the window, not all of
+   *  it. Set independently of `roamsAtLeast`: a stated total makes the count
+   *  exact and still leaves the rest of the events unfetched. A renderer
+   *  captioning the list with its own length is stating a fact about the
+   *  window that it does not have. */
+  timelineTruncated?: boolean;
   /** Usage samples over the detail window, oldest-first. */
   usageSeries?: UsageSample[];
   /** The AP radio this client is on. Absent = not matched (see the

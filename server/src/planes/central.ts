@@ -2201,15 +2201,30 @@ export class CentralAdapter implements PlaneAdapter {
       sections.timeline = 'failed';
       notes.push(`mobility trail: ${trail.note}`);
     } else {
-      const events = extractRows(trail.body)
+      const rows = extractRows(trail.body);
+      const events = rows
         .map((r) => mapMobilityEvent(r))
         .filter((e): e is ClientTimelineEvent => e !== null);
       // `total` is the roam count for the whole window; one page of 100 is
       // enough to RENDER the newest events without paying to walk the cursor
       // just to count them.
       const total = extractTotal(trail.body);
+      // A page limit is not a window total. When Central states a `total` the
+      // count is exact whatever the page held; when it does not, all the
+      // portal counted is one page, and a FULL page is the evidence that
+      // there was more behind it. A SHORT page is the whole answer and is not
+      // qualified — the same discipline the JSONL readers use, where
+      // truncation is only claimed once something past the limit is seen.
+      const pageFull = rows.length >= MOBILITY_PAGE_LIMIT;
       out.timeline = events;
       out.roams = total ?? events.length;
+      out.roamsAtLeast = total === null && pageFull;
+      // The list is capped by the same page the count came from, and is capped
+      // INDEPENDENTLY of it: a stated total of 340 makes `roams` exact and
+      // still leaves 240 events unfetched. Rows that arrived but would not map
+      // are missing from the list too, which is why the stated total is
+      // compared against the mapped length rather than the raw one.
+      out.timelineTruncated = total !== null ? total > events.length : pageFull;
       out.roamsWindowSec = MOBILITY_WINDOW_SEC;
       // 0 roams is a REAL answer for a stationary client, so `roams` is 'ok'
       // while the (genuinely empty) event list is 'empty'.

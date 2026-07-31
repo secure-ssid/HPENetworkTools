@@ -1933,6 +1933,94 @@ describe('CentralAdapter.clientDetail()', () => {
     expect(d.source.note).toBeNull(); // an empty result is not an error
   });
 
+  /**
+   * The mobility trail is fetched as ONE page of 100. Two separate claims are
+   * drawn from it — how many times the client roamed, and which roams to draw
+   * — and both used to be stated as though the page were the window. A client
+   * that roamed 340 times in 24h reported `roams: 100`, which is the page
+   * size and is indistinguishable from a real count of 100.
+   */
+  describe('one page of mobility events, two claims', () => {
+    /** `n` distinct roam rows, newest first, all mappable. */
+    const trailRows = (n: number): unknown[] =>
+      Array.from({ length: n }, (_, i) => ({
+        ...MOBILITY_ROW,
+        occurredAt: new Date(Date.parse(MOBILITY_ROW.occurredAt) - i * 60_000).toISOString(),
+      }));
+
+    it('says the count is a floor when the plane stated no total and the page came back full', async () => {
+      const { adapter } = makeDetailAdapter(
+        detailHandler({ '/mobility-trail': { body: { items: trailRows(100), count: 100, next: null } } }),
+      );
+      const d = (await adapter.clientDetail(DETAIL_MAC))!;
+      expect(d.roams).toBe(100);
+      expect(d.roamsAtLeast).toBe(true);
+      expect(d.timelineTruncated).toBe(true);
+    });
+
+    it('does not qualify a short page — that is the whole window', async () => {
+      // The precision that matters: a page that came back with room to spare
+      // is the complete answer, and calling it a floor would be its own
+      // dishonesty. Same rule as the JSONL readers, which claim truncation
+      // only once they have seen something past the limit.
+      const { adapter } = makeDetailAdapter(
+        detailHandler({ '/mobility-trail': { body: { items: trailRows(99), count: 99, next: null } } }),
+      );
+      const d = (await adapter.clientDetail(DETAIL_MAC))!;
+      expect(d.roams).toBe(99);
+      expect(d.roamsAtLeast).toBe(false);
+      expect(d.timelineTruncated).toBe(false);
+    });
+
+    it('keeps the count exact when the plane stated a total, and still says the list is short', async () => {
+      // The two flags are independent. A stated total of 340 makes the roam
+      // count a fact; it also proves 240 events were never fetched.
+      const { adapter } = makeDetailAdapter(
+        detailHandler({ '/mobility-trail': { body: { items: trailRows(100), total: 340, count: 100, next: null } } }),
+      );
+      const d = (await adapter.clientDetail(DETAIL_MAC))!;
+      expect(d.roams).toBe(340);
+      expect(d.roamsAtLeast).toBe(false);
+      expect(d.timeline).toHaveLength(100);
+      expect(d.timelineTruncated).toBe(true);
+    });
+
+    it('treats a stated total the page fully covers as a complete list', async () => {
+      const { adapter } = makeDetailAdapter(
+        detailHandler({ '/mobility-trail': { body: { items: trailRows(4), total: 4, count: 4, next: null } } }),
+      );
+      const d = (await adapter.clientDetail(DETAIL_MAC))!;
+      expect(d.roams).toBe(4);
+      expect(d.roamsAtLeast).toBe(false);
+      expect(d.timelineTruncated).toBe(false);
+    });
+
+    it('counts rows that arrived but would not map as missing from the list', async () => {
+      // The stated total is compared against the MAPPED length, not the raw
+      // one, so three unreadable rows leave the list short of what the plane
+      // says happened — which is what the caption has to admit.
+      const { adapter } = makeDetailAdapter(
+        detailHandler({
+          '/mobility-trail': { body: { items: [...trailRows(4), {}, {}, {}], total: 7, count: 7, next: null } },
+        }),
+      );
+      const d = (await adapter.clientDetail(DETAIL_MAC))!;
+      expect(d.roams).toBe(7);
+      expect(d.timeline!.length).toBeLessThan(7);
+      expect(d.timelineTruncated).toBe(true);
+    });
+
+    it('leaves a stationary client unqualified — nothing was cut off', async () => {
+      const { adapter } = makeDetailAdapter(
+        detailHandler({ '/mobility-trail': { body: { items: [], total: 0, count: 0, next: null } } }),
+      );
+      const d = (await adapter.clientDetail(DETAIL_MAC))!;
+      expect(d.roams).toBe(0);
+      expect(d.roamsAtLeast).toBe(false);
+      expect(d.timelineTruncated).toBe(false);
+    });
+  });
+
   it('a broken section is marked failed while the section that answered still ships', async () => {
     const { adapter } = makeDetailAdapter(detailHandler({ '/mobility-trail': { status: 500, body: { error: 'boom' } } }));
     const d = (await adapter.clientDetail(DETAIL_MAC))!;

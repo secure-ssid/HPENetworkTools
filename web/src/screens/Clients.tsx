@@ -62,6 +62,7 @@ import {
   timelineFor,
   hhmmLocal as hhmm,
   countOf,
+  formatCount,
 } from '@hpe/shared';
 import type {
   ClientDetailLive,
@@ -768,6 +769,12 @@ export default function Clients() {
         const rssiNum = typeof det?.rssi === 'number' ? det.rssi : null;
         const tputNum = typeof det?.tput === 'number' ? det.tput : null;
         const roamsNum = typeof det?.roams === 'number' ? det.roams : null;
+        /* Both are about the SAME page: the plane answered with one page of
+         * mobility events, and the portal drew a count and a list from it. A
+         * stated window total fixes the count and leaves the list short, so
+         * the two qualifiers are independent and neither implies the other. */
+        const roamsFloor = det?.roamsAtLeast === true;
+        const timelineCapped = det?.timelineTruncated === true;
 
         /* The AP radio this client is actually on. Central models retries and
          * the noise floor per RADIO, so these are the only honest source for
@@ -930,7 +937,7 @@ export default function Clients() {
         const timelineMeta = !sectionLive
           ? 'STITCHED ACROSS PLANES'
           : timeline.length
-            ? `${timeline.length} EVENT${timeline.length === 1 ? '' : 'S'} · ${cur.plane}`
+            ? `${timelineCapped ? 'NEWEST ' : ''}${countOf(timeline.length, 'EVENT').toUpperCase()} · ${cur.plane}`
             : timelineState === 'empty' || timelineState === 'ok'
               ? `NO EVENTS IN ${(formatWindow(det?.roamsWindowSec) ?? 'THE WINDOW').toUpperCase()}`
               : timelineState === 'failed'
@@ -1029,11 +1036,21 @@ export default function Clients() {
               throughputMetric,
               {
                 k: 'Roams',
-                v: roamsNum !== null ? String(roamsNum) : cur.roams,
+                // A count the plane never stated is a floor, and reads as an
+                // exact number unless it is written as one. `100` and `100+`
+                // are the difference between a busy client and a client the
+                // portal stopped counting.
+                v:
+                  roamsNum !== null
+                    ? `${formatCount(roamsNum)}${roamsFloor ? '+' : ''}`
+                    : cur.roams,
                 note:
                   detailNote(
                     'roams',
-                    roamsNum === 0 ? `no roaming in ${roamWindow}` : `in ${roamWindow}`,
+                    [
+                      roamsNum === 0 ? `no roaming in ${roamWindow}` : `in ${roamWindow}`,
+                      ...(roamsFloor ? [`at least — ${cur.plane} stated no total, so one page was counted`] : []),
+                    ].join(' · '),
                     `no roaming in ${roamWindow}`,
                   ) || metricNote(cur.roams, 'this session'),
                 color: warn(roamsNum !== null ? roamsNum > 8 : parseInt(cur.roams, 10) > 8),
