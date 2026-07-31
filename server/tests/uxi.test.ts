@@ -352,6 +352,66 @@ describe('UxiAdapter.pull', () => {
     expect(pull.partial).toBeUndefined();
   });
 
+  // -- a 200 nobody can read is not an estate of zero sensors ----------------
+  //
+  // http() tolerates a non-JSON body by leaving `body` null, which is right
+  // for a write and wrong on the inventory walk: an expired SSO session
+  // answering 200 with a sign-in page used to arrive as a complete, healthy
+  // reading of an estate with no sensors in it.
+
+  /** Serves RAW bytes for the sensors list; token and statuses stay normal. */
+  function rawListFetch(text: string, contentType = 'text/html'): FetchLike {
+    return async (url) => {
+      const u = String(url);
+      if (u.includes('token.oauth2')) {
+        return new Response(JSON.stringify({ access_token: 'tok-1', expires_in: 7200 }), { status: 200 });
+      }
+      if (u.includes('/sensors/') && u.endsWith('/status')) {
+        return new Response(JSON.stringify({ isOnline: true, isTesting: true, issues: [] }), { status: 200 });
+      }
+      if (u.includes('/sensors')) {
+        return new Response(text, { status: 200, headers: { 'content-type': contentType } });
+      }
+      return new Response('{}', { status: 404 });
+    };
+  }
+
+  it('fails the pull when the sensors list 200 carries a sign-in page', async () => {
+    const { adapter } = makeAdapter(rawListFetch('<!DOCTYPE html><html>Sign in to HPE GreenLake</html>'));
+    await expect(adapter.pull()).rejects.toThrow(/unreadable body/);
+  });
+
+  it('fails the pull when the sensors list 200 holds no items container', async () => {
+    const { adapter } = makeAdapter(rawListFetch('{"message":"try again shortly"}', 'application/json'));
+    await expect(adapter.pull()).rejects.toThrow(/unreadable body/);
+  });
+
+  // Over-application guard: {items: []} is a real answer about the estate and
+  // must stay an honest empty inventory, not become a failure.
+  it('still reads a stated-empty page as an honest empty inventory', async () => {
+    const { adapter, st } = makeAdapter(fakeFetch({ sensorPages: [{ items: [], next: null }] }));
+    const pull = await adapter.pull();
+    expect(pull.devices).toEqual([]);
+    expect(pull.partial).toBeUndefined();
+    expect(st.health).toBe('healthy');
+  });
+
+  it('counts a status 200 with no readable body as a failed read, not a silent zero', async () => {
+    // Issues only ever arrive from this call, so an unreadable status body
+    // contributes nothing to `alerts` AND no evidence that it could not.
+    const { adapter, st } = makeAdapter(
+      fakeFetch({
+        statuses: {
+          'sen-001': { status: 200, body: 'sign-in page' },
+          'sen-002': { status: 200, body: { isOnline: true, isTesting: true, issues: [] } },
+        },
+      }),
+    );
+    const pull = await adapter.pull();
+    expect(st.note).toContain('1 status reads failed');
+    expect(pull.partial).toEqual(['alerts']);
+  });
+
   // The spec's maximum page size is 100 (default 50): asking for it halves the
   // calls, and both params must ride the cursor or the server resets the size.
   it('asks for the maximum page size and carries it onto the cursor', async () => {

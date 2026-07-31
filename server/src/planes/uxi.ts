@@ -231,15 +231,26 @@ interface SensorsPage {
   next: string | null;
 }
 
-function parseSensorsPage(body: unknown): SensorsPage {
+/**
+ * One page of the sensors walk, or null when the body carries no page at all.
+ *
+ * Null, not an empty page. http() below tolerates a non-JSON body by leaving
+ * `body` null — right for a write, where the status was the whole point, and
+ * wrong here, because `{items: []}` and "the bytes were a sign-in page" would
+ * otherwise be the same answer: an estate of zero sensors, reported complete
+ * and healthy. `{items: []}` IS a real answer and stays one; a body with no
+ * items container at all is not. aos8 has drawn this line since it was
+ * written, with parseError separating "the MM sent no JSON" from "the MM sent
+ * an empty result"; this was the last adapter that could not tell.
+ */
+function parseSensorsPage(body: unknown): SensorsPage | null {
   if (Array.isArray(body)) return { items: body, next: null };
   if (body && typeof body === 'object') {
     const r = body as Record<string, unknown>;
-    const items = Array.isArray(r.items) ? r.items : [];
-    const next = str(r.next);
-    return { items, next };
+    if (!Array.isArray(r.items)) return null;
+    return { items: r.items, next: str(r.next) };
   }
-  return { items: [], next: null };
+  return null;
 }
 
 export class UxiAdapter implements PlaneAdapter {
@@ -355,7 +366,14 @@ export class UxiAdapter implements PlaneAdapter {
           statusFailures += 1;
           continue;
         }
-        const body = res.body && typeof res.body === 'object' ? (res.body as Record<string, unknown>) : {};
+        // A 200 whose body is not a readable object proves nothing about this
+        // sensor. Counting it is what puts 'alerts' into partial[] below —
+        // otherwise it contributes no issues and no evidence that it didn't.
+        if (!res.body || typeof res.body !== 'object' || Array.isArray(res.body)) {
+          statusFailures += 1;
+          continue;
+        }
+        const body = res.body as Record<string, unknown>;
         onlineByName.set(s.name, bool(body.isOnline ?? body.is_online));
         testingByName.set(s.name, bool(body.isTesting ?? body.is_testing));
         if (Array.isArray(body.issues)) {
@@ -412,8 +430,9 @@ export class UxiAdapter implements PlaneAdapter {
 
     /* Issues arrive from the per-sensor status call, so a sensor whose status
        was never read contributes no issues — and there is nothing in the
-       alerts array to show for it. Both gaps do that: the status loop stops at
-       MAX_SENSOR_STATUSES, and any sensor that answered non-2xx is skipped.
+       alerts array to show for it. Three gaps do that: the status loop stops
+       at MAX_SENSOR_STATUSES, any sensor that answered non-2xx is skipped, and
+       so is one whose 200 carried no readable object.
        "4 ongoing issues" then describes the sensors that were asked, not the
        estate, and until the pull says so the plane reports it green with a
        fresh stamp behind it. The note already carried the numbers; partial[]
@@ -443,6 +462,7 @@ export class UxiAdapter implements PlaneAdapter {
         throw new Error(`HTTP ${res.status} from ${path}`);
       }
       const parsed = parseSensorsPage(res.body);
+      if (parsed === null) throw new Error(`unreadable body from ${path} (page ${page + 1})`);
       out.push(...parsed.items);
       // Both params ride the cursor path: dropping `limit` would silently
       // reset the server to its default page size mid-walk.
