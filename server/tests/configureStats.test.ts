@@ -10,6 +10,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { localDayKey } from '@hpe/shared';
 
 // Must be set before the settings singleton is constructed at import time —
 // the real data/settings.json is never touched by the suite.
@@ -28,12 +29,31 @@ beforeAll(async () => {
   ({ writeBroker } = await import('../src/services/writeBroker'));
 });
 
-const today = (): string => new Date().toISOString().slice(0, 10);
+/**
+ * An instant at LOCAL midday on the day `dayOffset` days from today.
+ *
+ * The fixtures used to be built as `${new Date().toISOString().slice(0, 10)}T09:00:00Z`
+ * — a UTC calendar day pinned to a UTC hour, feeding code whose entire subject
+ * is the operator's LOCAL day. The two agree across most of Europe and the
+ * Americas for most of the day, which is why the suite was green everywhere it
+ * was ever run, and they disagree in Honolulu and Auckland, where eight of
+ * these tests fail. A suite that guards a timezone fix must not be written in
+ * the one timezone where the bug it guards cannot happen.
+ *
+ * Local midday is the safe anchor: it is twelve hours from either midnight, so
+ * the calendar day it belongs to is the same one in every zone on earth.
+ */
+function middayLocal(dayOffset = 0): string {
+  const d = new Date();
+  d.setDate(d.getDate() + dayOffset);
+  d.setHours(12, 0, 0, 0);
+  return d.toISOString();
+}
 
 /** A broker push event stamped today, with the given result string. */
 function push(result: string, id = 'c1'): Record<string, unknown> {
   return {
-    ts: `${today()}T09:00:00.000Z`,
+    ts: middayLocal(),
     event: 'push',
     changeId: id,
     ticket: 'NET-1',
@@ -45,14 +65,6 @@ function push(result: string, id = 'c1'): Record<string, unknown> {
 /** An instant N hours before now — today, and clear of any midnight. */
 function hoursAgo(n: number): string {
   return new Date(Date.now() - n * 3_600_000).toISOString();
-}
-
-/** Local midday N days back, so the local calendar day is unambiguous. */
-function daysAgoMidday(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  d.setHours(12, 0, 0, 0);
-  return d.toISOString();
 }
 
 function pushAt(ts: string, result: string, id = 'c1'): Record<string, unknown> {
@@ -169,7 +181,7 @@ describe('Configure "Pushed today" tile', () => {
   it('does not call a count short when the window reached back past midnight', () => {
     // Newest-first, and the window's furthest reach is yesterday: every push
     // today is inside it, so the count is exact however long the log is.
-    stubLog([pushAt(hoursAgo(2), 'applied', 'c1'), eventAt(daysAgoMidday(1), 'queue')], [], true);
+    stubLog([pushAt(hoursAgo(2), 'applied', 'c1'), eventAt(middayLocal(-1), 'queue')], [], true);
 
     const tile = pushedTile();
     expect(tile.value).toBe('1');
@@ -183,7 +195,7 @@ describe('Configure "Pushed today" tile', () => {
    * count that is exactly right. */
   it('keeps quiet on a long log and a quiet day', () => {
     stubLog(
-      [pushAt(hoursAgo(1), 'applied', 'c1'), ...[3, 9, 40].map((d) => eventAt(daysAgoMidday(d), 'push'))],
+      [pushAt(hoursAgo(1), 'applied', 'c1'), ...[3, 9, 40].map((d) => eventAt(middayLocal(-d), 'push'))],
       [],
       true,
     );
@@ -301,7 +313,7 @@ describe('Overview change log completeness', () => {
 describe('Overview change log — retention tombstone', () => {
   function tombstone(extra: Record<string, unknown> = {}): Record<string, unknown> {
     return {
-      ts: `${today()}T04:00:00.000Z`,
+      ts: middayLocal(),
       event: 'log-retention',
       result: 'discarded',
       file: 'change-log.5.jsonl',
@@ -332,16 +344,20 @@ describe('Overview change log — retention tombstone', () => {
   // from an hour of it, and hh:mm alone would report neither.
   it('reports the span the discarded generation covered', () => {
     stubLog([
-      // Midday UTC: the row renders on the operator's local clock like every
-      // other line in this log, so a midnight instant would land on the
-      // previous day in any western timezone and make this assertion about
-      // the test runner's location rather than about the code.
-      tombstone({ coveringFrom: '2026-01-05T12:00:00.000Z', coveringTo: '2026-02-11T12:00:00.000Z' }),
+      // Midday LOCAL, not midday UTC. The row renders on the reader's own
+      // clock, so the span has to be built on that clock too — the original
+      // fixture picked 12:00Z as "far from either midnight", which is true up
+      // to UTC+11 and false in Auckland and Kiritimati, where 12:00Z is the
+      // small hours of the following day and this assertion failed.
+      tombstone({ coveringFrom: middayLocal(-37), coveringTo: middayLocal(-3) }),
     ]);
 
     const [row] = liveOverviewChanges().changes;
-    expect(row.text.includes('2026-01-05')).toBe(true);
-    expect(row.text.includes('2026-02-11')).toBe(true);
+    expect(row.text.includes(localDayKey(middayLocal(-37)))).toBe(true);
+    expect(row.text.includes(localDayKey(middayLocal(-3)))).toBe(true);
+    // Not a tautology against localDayKey: the point is that the day printed
+    // is the day the instant falls on where the reader is, in any zone.
+    expect(row.text).toMatch(/covering \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}/);
   });
 
   // timeSpan returns null when the generation's own lines could not be parsed.

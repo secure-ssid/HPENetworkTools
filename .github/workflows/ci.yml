@@ -50,5 +50,28 @@ jobs:
       - name: Web tests
         run: npm run test -w web
 
+      # The portal formats dates and buckets "today" on whichever clock the
+      # reader is on, and several bugs have come from a value bucketed on one
+      # machine and displayed on another. Those are invisible in UTC, which is
+      # exactly where CI runs: eight tests in configureStats passed on every
+      # machine this suite had ever seen and failed the moment the host moved
+      # west of Greenwich, because they built their fixtures from a UTC
+      # calendar day and asserted against local-day logic.
+      #
+      # So the suites run again at the two extremes. UTC+14 and UTC-10 are a
+      # full day apart, which means any test that quietly assumes the host's
+      # calendar day matches Greenwich's disagrees with itself in at least one
+      # of them. This costs about thirty seconds and is the only way this class
+      # of defect fails loudly rather than on someone else's laptop.
+      - name: Tests at UTC+14
+        run: npm run test -w server && npm run test -w web
+        env:
+          TZ: Pacific/Kiritimati
+
+      - name: Tests at UTC-10
+        run: npm run test -w server && npm run test -w web
+        env:
+          TZ: Pacific/Honolulu
+
       - name: Build web
         run: npm run build -w web
