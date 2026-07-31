@@ -55,16 +55,37 @@ export function liveDeviceClients(deviceName: string): DeviceClientSet | null {
 }
 
 /**
- * Can the portal really open a recorded shell on this device?
+ * Do the planes claiming this device allow a shell to it?
  *
- * Three facts have to agree, and the weakest wins (README honesty rule — the
- * shell block must never advertise a session the bridge cannot open):
- *   - the device CLASS has a shell at all (deviceTerminalKind, from the live
- *     row's `type`, never the demo name-prefix rules);
- *   - the inventory row says the collector reaches it (`localShell`);
- *   - no claiming plane's adapter says otherwise (PlaneCapabilities.localShell
- *     false — a cloud plane describes hardware it cannot give a shell to).
- * A plane that makes no capability claim is not treated as a refusal.
+ * A vote among the claimants, and it is three-valued, because a plane can
+ * publish PlaneCapabilities.localShell true, publish it false, or publish
+ * nothing. Silence is the common case: a plane with no adapter — 'local'
+ * included, which is the plane the collector shell actually runs through —
+ * publishes no capabilities at all.
+ *
+ *   any claimant says true   → allowed. A cloud plane is right that IT cannot
+ *                              open a shell and wrong as a verdict on the
+ *                              device; one plane that can is enough.
+ *   every claimant says false → refused. Nobody has a path to it.
+ *   anything else            → allowed. Silence is not a refusal, and it does
+ *                              not become one by standing next to one.
+ *
+ * That last line is the case to be deliberate about, because it is the one a
+ * stricter reading would get wrong. A device claimed by CENTRAL (false) and
+ * LOCAL (silent) is allowed here. Counting LOCAL's silence as agreement with
+ * CENTRAL would refuse exactly the dual-claimed devices the collector exists
+ * to reach — it has no adapter to speak with.
+ *
+ * Note the two unknowns are not the same and do not behave the same. A label
+ * naming no registry plane ('THIRD-PARTY') is dropped from the vote entirely,
+ * so it cannot cancel a plane that genuinely said no; a plane that is present
+ * but silent is a voter, and it allows.
+ *
+ * This is not the last gate, which is why it can afford to be permissive:
+ * canOpenShell() below also requires the row's own `localShell` and
+ * terminalManager.canShell(), and the README honesty rule that the shell block
+ * must never advertise a session the bridge cannot open is enforced by all
+ * three together, weakest wins.
  */
 export function planeAllowsShell(device: ReconciledDeviceRow): boolean {
   const labels = device.claimedBy && device.claimedBy.length > 0 ? device.claimedBy : [device.plane];
