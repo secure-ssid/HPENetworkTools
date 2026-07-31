@@ -151,6 +151,31 @@ export interface SystemMutationResult {
   source?: 'request' | 'stored';
 }
 
+/** One sentence per kind of skip. Only the first is work in progress; the
+ *  rest are planes that were not contacted, and three of them will still not
+ *  be contacted on the next attempt. */
+const SKIP_WORDING: Record<string, (n: number) => string> = {
+  'in-flight': (n) => `${n} already syncing`,
+  'no-adapter': (n) => `${n} has no sync adapter yet — nothing was sent`,
+  unlinked: (n) => `${n} no longer linked`,
+  'polling-off': (n) => `${n} skipped — scheduled polling is off`,
+  backoff: (n) => `${n} still in its failure backoff window`,
+  superseded: (n) => `${n} discarded — credentials changed mid-sync`,
+};
+
+function skipClauses(skipped: string[], reasons: Record<string, string>): string[] {
+  const counts = new Map<string, number>();
+  for (const plane of skipped) {
+    // A skip the server did not explain must not borrow another skip's
+    // wording. It gets counted as unexplained, which is what it is.
+    const reason = reasons[plane] ?? 'unexplained';
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+  return [...counts].map(([reason, n]) =>
+    SKIP_WORDING[reason] ? SKIP_WORDING[reason](n) : `${n} skipped for an unstated reason`,
+  );
+}
+
 /** Ask the poller to run one immediate cycle for every linked plane. */
 export async function syncSystems(): Promise<SystemMutationResult> {
   try {
@@ -158,20 +183,25 @@ export async function syncSystems(): Promise<SystemMutationResult> {
     if (r.ok) {
       const body = (await r.json().catch(() => ({}))) as {
         ok?: boolean;
+        requested?: string[];
         started?: string[];
+        synced?: string[];
         failed?: string[];
         skipped?: string[];
+        skippedReason?: Record<string, string>;
       };
-      const started = body.started?.length ?? 0;
+      const skipped = body.skipped ?? [];
       const failed = body.failed?.length ?? 0;
-      const skipped = body.skipped?.length ?? 0;
-      return {
-        ok: body.ok !== false,
-        message:
-          failed > 0
-            ? `${failed} linked system${failed === 1 ? '' : 's'} failed to synchronize`
-            : `${started} linked system${started === 1 ? '' : 's'} synchronized${skipped > 0 ? `; ${skipped} already syncing` : ''}`,
-      };
+      // `started` counts attempts and has always included the failures, so it
+      // was never the number that synchronized. Older servers do not send
+      // `synced`; subtracting is then the only honest reading available.
+      const synced = body.synced?.length ?? Math.max(0, (body.started?.length ?? 0) - failed);
+      const clauses = [`${synced} linked system${synced === 1 ? '' : 's'} synchronized`];
+      // The failure count used to REPLACE the success count, so a run that
+      // refreshed four planes and lost one reported only the loss.
+      if (failed > 0) clauses.push(`${failed} failed`);
+      clauses.push(...skipClauses(skipped, body.skippedReason ?? {}));
+      return { ok: body.ok !== false, message: clauses.join('; ') };
     }
     return { ok: false, message: await serverMessage(r, `sync failed — HTTP ${r.status}`) };
   } catch (err) {

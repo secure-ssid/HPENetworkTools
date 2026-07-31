@@ -219,12 +219,99 @@ describe('screen API source handling', () => {
   it('reports partial manual-sync failures instead of showing a false success', async () => {
     mockFetch({
       ok: true,
-      body: { ok: false, started: ['central'], failed: ['central'] },
+      body: { ok: false, started: ['central'], synced: [], failed: ['central'] },
     });
 
     const result = await syncSystems();
     expect(result.ok).toBe(false);
-    expect(result.message).toContain('failed to synchronize');
+    expect(result.message).toContain('1 failed');
+  });
+
+  /* A run that refreshed four planes and lost one used to report only the
+   * loss: the failure clause REPLACED the success clause, so an operator who
+   * clicked Sync could not tell whether anything on screen had moved. */
+  it('keeps the success count beside the failure count', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        ok: false,
+        requested: ['central', 'mist', 'greenlake', 'uxi', 'clearpass'],
+        started: ['central', 'mist', 'greenlake', 'uxi', 'clearpass'],
+        synced: ['central', 'mist', 'greenlake', 'uxi'],
+        failed: ['clearpass'],
+      },
+    });
+
+    const result = await syncSystems();
+    expect(result.message).toContain('4 linked systems synchronized');
+    expect(result.message).toContain('1 failed');
+  });
+
+  /* The defect. tick() answers 'skipped' for five different situations and the
+   * summary called every one of them "already syncing". A plane still on the
+   * StubAdapter is skipped on every cycle forever — it holds credentials and
+   * has no implementation to spend them on — so the operator was told to wait
+   * for a sync that was never going to start. */
+  it('does not call a plane with no sync adapter "already syncing"', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        ok: true,
+        requested: ['central', 'local'],
+        started: ['central'],
+        synced: ['central'],
+        skipped: ['local'],
+        skippedReason: { local: 'no-adapter' },
+      },
+    });
+
+    const result = await syncSystems();
+    expect(result.message).toContain('1 has no sync adapter yet');
+    expect(result.message).not.toContain('already syncing');
+    expect(result.message).toContain('1 linked system synchronized');
+  });
+
+  it('still says "already syncing" for a plane that genuinely is', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        ok: true,
+        started: ['central'],
+        synced: ['central'],
+        skipped: ['mist'],
+        skippedReason: { mist: 'in-flight' },
+      },
+    });
+
+    expect((await syncSystems()).message).toContain('1 already syncing');
+  });
+
+  it('groups mixed skip reasons rather than merging them into one number', async () => {
+    mockFetch({
+      ok: true,
+      body: {
+        ok: true,
+        started: ['central'],
+        synced: ['central'],
+        skipped: ['mist', 'local', 'aos8'],
+        skippedReason: { mist: 'in-flight', local: 'no-adapter', aos8: 'no-adapter' },
+      },
+    });
+
+    const result = await syncSystems();
+    expect(result.message).toContain('1 already syncing');
+    expect(result.message).toContain('2 has no sync adapter yet');
+  });
+
+  it('will not borrow another skip reason for a skip the server did not explain', async () => {
+    mockFetch({
+      ok: true,
+      body: { ok: true, started: ['central'], synced: ['central'], skipped: ['mist'] },
+    });
+
+    const result = await syncSystems();
+    expect(result.message).toContain('1 skipped for an unstated reason');
+    expect(result.message).not.toContain('already syncing');
   });
 
   it('surfaces answered terminal storage failures instead of showing an empty list', async () => {

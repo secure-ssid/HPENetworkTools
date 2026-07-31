@@ -61,6 +61,10 @@ export interface SyncNowResult {
   synced: PlaneId[];
   failed: PlaneId[];
   skipped: PlaneId[];
+  /** Why each skipped plane was skipped — see SyncSkipReason. Without this a
+   *  caller can only count skips, and every summary that tried to describe
+   *  them had to guess which kind they were. */
+  skippedReason: Partial<Record<PlaneId, SyncSkipReason>>;
 }
 
 const SYNC_LOG_LIMIT = 100;
@@ -113,6 +117,37 @@ function withPollTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   });
 }
 export type TickResult = 'ok' | 'error' | 'skipped';
+
+/**
+ * Why a tick did nothing.
+ *
+ * 'skipped' on its own is five different facts wearing one word, and only the
+ * first of them is work in progress. A plane still on the StubAdapter is
+ * skipped on every cycle forever — it has credentials and no implementation to
+ * spend them on — and reporting that as "already syncing" tells the operator
+ * to wait for a result that is never coming.
+ */
+export type SyncSkipReason =
+  /** A previous tick for this plane has not settled yet. Genuinely in flight. */
+  | 'in-flight'
+  /** Scheduled polling is off (demo mode with nothing set to live). */
+  | 'polling-off'
+  /** The adapter reports no credentials. */
+  | 'unlinked'
+  /** Linked, but still on the StubAdapter: no call was made and none will be. */
+  | 'no-adapter'
+  /** The plane's failure backoff window has not expired (scheduled polls only). */
+  | 'backoff'
+  /** Credentials were re-saved mid-pull, so the answer was discarded. */
+  | 'superseded';
+
+/** A tick's outcome, plus the reason when it did nothing. */
+interface TickOutcome {
+  result: TickResult;
+  reason?: SyncSkipReason;
+}
+
+const skip = (reason: SyncSkipReason): TickOutcome => ({ result: 'skipped', reason });
 
 export class Poller {
   private timers = new Map<PlaneId, NodeJS.Timeout>();
@@ -227,11 +262,16 @@ export class Poller {
     const states = this.reg.states();
     const requested = PLANE_IDS.filter((id) => states[id].linked);
     const results = await Promise.all(requested.map(async (id) => [id, await this.tick(id, true)] as const));
+    const skippedReason: Partial<Record<PlaneId, SyncSkipReason>> = {};
+    for (const [id, outcome] of results) {
+      if (outcome.result === 'skipped' && outcome.reason) skippedReason[id] = outcome.reason;
+    }
     return {
       requested,
-      synced: results.filter(([, result]) => result === 'ok').map(([id]) => id),
-      failed: results.filter(([, result]) => result === 'error').map(([id]) => id),
-      skipped: results.filter(([, result]) => result === 'skipped').map(([id]) => id),
+      synced: results.filter(([, o]) => o.result === 'ok').map(([id]) => id),
+      failed: results.filter(([, o]) => o.result === 'error').map(([id]) => id),
+      skipped: results.filter(([, o]) => o.result === 'skipped').map(([id]) => id),
+      skippedReason,
     };
   }
 
@@ -242,7 +282,7 @@ export class Poller {
    * immediately, not after the next 60s poll tick.
    */
   async syncNowFor(id: PlaneId): Promise<TickResult> {
-    return this.tick(id, true);
+    return (await this.tick(id, true)).result;
   }
 
   /**
@@ -269,28 +309,28 @@ export class Poller {
     );
   }
 
-  private async tick(id: PlaneId, force = false): Promise<TickResult> {
+  private async tick(id: PlaneId, force = false): Promise<TickOutcome> {
     // A slow pull (minutes) against a short interval must not stack up —
     // skip this tick if the plane's previous one hasn't settled yet.
-    if (this.inFlight.has(id)) return 'skipped';
+    if (this.inFlight.has(id)) return skip('in-flight');
     this.inFlight.add(id);
     let pending: Promise<PlanePull> | null = null;
     try {
-      if (!force && !this.scheduledPollingEnabled()) return 'skipped';
+      if (!force && !this.scheduledPollingEnabled()) return skip('polling-off');
       const adapter = this.reg.get(id);
       const state = adapter.state();
-      if (!state.linked) return 'skipped';
+      if (!state.linked) return skip('unlinked');
       // A stub plane has no sync implementation: pull() makes no call and
       // reads nothing. Recording it as a cycle would fabricate a success —
       // the registry already refuses the stamp and the call entry, and the
       // history row would be just as untrue.
-      if (adapter instanceof StubAdapter) return 'skipped';
+      if (adapter instanceof StubAdapter) return skip('no-adapter');
       // Failure backoff: a plane that just failed (429, dead token) waits out
       // the registry's window before a SCHEDULED poll retries. An operator's
       // syncNow(force) always gets to try.
       if (!force && state.nextAttemptAt) {
         const due = Date.parse(state.nextAttemptAt);
-        if (Number.isFinite(due) && Date.now() < due) return 'skipped';
+        if (Number.isFinite(due) && Date.now() < due) return skip('backoff');
       }
       const generation = this.generations.get(id) ?? 0;
       const timeoutMs = pollTimeoutMs();
@@ -305,7 +345,7 @@ export class Poller {
       try {
         const pull = await withPollTimeout(pending, timeoutMs);
         pending = null;
-        if ((this.generations.get(id) ?? 0) !== generation) return 'skipped';
+        if ((this.generations.get(id) ?? 0) !== generation) return skip('superseded');
         // A sync stamp means data arrived. A cycle that returned no dataset at
         // all (not even config/assignments/sse) proves the plane answered, not
         // that anything was read, so it must not move `lastSync`.
@@ -324,7 +364,7 @@ export class Poller {
         if (id === 'sse' && pull.sse && Object.keys(pull.sse.kinds).length === 0) {
           this.reg.markSyncResult(id, false, { note: 'SSE inventory read failed for every object kind' });
           this.log(id, 'poll failed — SSE inventory read failed for every object kind', 'error');
-          return 'error';
+          return { result: 'error' };
         }
         this.reg.markSyncResult(id, true, {
           deviceCount,
@@ -342,11 +382,11 @@ export class Poller {
           carried ? `poll ok — ${counts.length > 0 ? counts.join(', ') : 'no rows'}${unread}` : 'poll ok — no datasets returned',
           'ok',
         );
-        return 'ok';
+        return { result: 'ok' };
       } catch (err) {
         const timedOut = err instanceof PollTimeoutError;
         if (!timedOut) pending = null;
-        if ((this.generations.get(id) ?? 0) !== generation) return 'skipped';
+        if ((this.generations.get(id) ?? 0) !== generation) return skip('superseded');
         // A timeout is reported as a plane failure, not as silent staleness.
         // Before this, a pull that never returned stranded the plane on data
         // the UI went on presenting as current until the process restarted.
@@ -366,7 +406,7 @@ export class Poller {
           `${timedOut ? 'poll timed out' : 'poll failed'} — ${(err as Error).message}${backoff}`,
           'error',
         );
-        return 'error';
+        return { result: 'error' };
       }
     } finally {
       if (pending) {

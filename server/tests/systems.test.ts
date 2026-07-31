@@ -566,7 +566,38 @@ describe('manual systems sync', () => {
       // demo mode — and reports honestly what happened to it. 'classic' is
       // still on the StubAdapter: it makes no outbound call and reads nothing,
       // so it is SKIPPED rather than counted as a synced plane.
-      expect(synced.body).toEqual({ ok: true, started: [], skipped: ['classic'] });
+      expect(synced.body).toEqual({
+        ok: true,
+        requested: ['classic'],
+        started: [],
+        synced: [],
+        skipped: ['classic'],
+        // And it says WHY. 'skipped' alone covered five different situations,
+        // only one of which is work in progress; the Systems toast read them
+        // all as "already syncing", so a plane that will never sync until an
+        // adapter is written was reported as one to wait for.
+        skippedReason: { classic: 'no-adapter' },
+      });
+    } finally {
+      await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });
+    }
+  });
+
+  it('separates a plane that is mid-poll from one that has no adapter', async () => {
+    const { poller } = await import('../src/services/poller');
+    const save = await postJson('/api/systems/classic/credentials', { host: 'classic.example.test' });
+    expect(save.status).toBe(200);
+    try {
+      // Two concurrent syncs: the second finds the first still in flight for
+      // every plane it wants, which is the one skip that really is progress.
+      const [, second] = await Promise.all([poller.syncNow(), poller.syncNow()]);
+      const reasons = new Set(Object.values(second.skippedReason));
+      expect(second.skipped.length + second.synced.length + second.failed.length).toBe(
+        second.requested.length,
+      );
+      // Whichever way the race lands, no skip is left unexplained.
+      expect(second.skipped.every((id) => second.skippedReason[id] !== undefined)).toBe(true);
+      expect([...reasons].every((r) => r === 'in-flight' || r === 'no-adapter')).toBe(true);
     } finally {
       await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });
     }

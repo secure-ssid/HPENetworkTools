@@ -219,7 +219,16 @@ describe('registry — "Calls today" is today\'s', () => {
 
 // -- poller ------------------------------------------------------------------
 
-type Tickable = { tick: (id: string, force?: boolean) => Promise<'ok' | 'error' | 'skipped'> };
+type TickOutcome = {
+  result: 'ok' | 'error' | 'skipped';
+  reason?: 'in-flight' | 'polling-off' | 'unlinked' | 'no-adapter' | 'backoff' | 'superseded';
+};
+type Tickable = { tick: (id: string, force?: boolean) => Promise<TickOutcome> };
+
+/** tick() now answers WHY it skipped as well as whether it did; most cases
+ *  here only care about the latter. */
+const tick = (p: unknown, id: string, force?: boolean): Promise<'ok' | 'error' | 'skipped'> =>
+  (p as Tickable).tick(id, force).then((outcome) => outcome.result);
 
 interface MarkCall {
   ok: boolean;
@@ -256,8 +265,11 @@ describe('poller — a cycle only claims what happened', () => {
     const calls: string[] = [];
     const p = new Poller(fakeRegistry(stub, marks, calls), liveStore);
 
-    expect(await (p as unknown as Tickable).tick('classic')).toBe('skipped');
-    expect(await (p as unknown as Tickable).tick('classic', true)).toBe('skipped'); // even forced
+    expect(await (p as unknown as Tickable).tick('classic')).toEqual({
+      result: 'skipped',
+      reason: 'no-adapter',
+    });
+    expect(await tick(p, 'classic', true)).toBe('skipped'); // even forced
     expect(marks).toEqual([]);
     expect(calls).toEqual([]);
     expect(p.history()).toEqual([]);
@@ -269,7 +281,7 @@ describe('poller — a cycle only claims what happened', () => {
     const marks: MarkCall[] = [];
     const p = new Poller(fakeRegistry(adapter, marks, []), liveStore);
 
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('ok');
+    expect(await tick(p, 'mist')).toBe('ok');
     expect(marks[0].ok).toBe(true);
     expect(marks[0].info.stamp).toBe(false); // the plane answered; nothing arrived
     expect(marks[0].info.note).toContain('no dataset');
@@ -286,7 +298,7 @@ describe('poller — a cycle only claims what happened', () => {
     const calls: string[] = [];
     const p = new Poller(fakeRegistry(adapter, marks, calls), liveStore);
 
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('ok');
+    expect(await tick(p, 'mist')).toBe('ok');
     // The cycle is history, not vendor traffic: the adapters record the real
     // requests, so no synthetic 'poll()' entry inflates Calls today.
     expect(calls).toEqual([]);
@@ -327,13 +339,15 @@ describe('poller — a cycle only claims what happened', () => {
     };
     const p = new Poller(fakeRegistry(adapter, [], []), liveStore);
 
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('skipped');
+    // The reason travels with the skip: a backoff window is not the same fact
+    // as a plane with no adapter, and the operator-facing summary needs both.
+    expect(await (p as unknown as Tickable).tick('mist')).toEqual({ result: 'skipped', reason: 'backoff' });
     expect(pulls).toBe(0);
-    expect(await (p as unknown as Tickable).tick('mist', true)).toBe('ok'); // operator sync
+    expect(await tick(p, 'mist', true)).toBe('ok'); // operator sync
     expect(pulls).toBe(1);
     // Once the window has passed the scheduled cycle resumes on its own.
     state.nextAttemptAt = new Date(Date.now() - 1_000).toISOString();
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('ok');
+    expect(await tick(p, 'mist')).toBe('ok');
     expect(pulls).toBe(2);
   });
 });
@@ -353,7 +367,7 @@ describe('poller — a pull that never returns is a failure, not silent stalenes
     const marks: MarkCall[] = [];
     const p = new Poller(fakeRegistry(adapter, marks, []), liveStore);
 
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('error');
+    expect(await tick(p, 'mist')).toBe('error');
     expect(marks[0].ok).toBe(false);
     expect(marks[0].info.note).toContain('timed out');
     expect(p.history()[0].result).toBe('error');
@@ -378,13 +392,13 @@ describe('poller — a pull that never returns is a failure, not silent stalenes
     };
     const p = new Poller(fakeRegistry(adapter, [], []), liveStore);
 
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('error');
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('skipped');
+    expect(await tick(p, 'mist')).toBe('error');
+    expect(await tick(p, 'mist')).toBe('skipped');
     expect(pulls).toBe(1);
 
     release({ devices: [] });
     await new Promise((r) => setTimeout(r, 5));
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('ok');
+    expect(await tick(p, 'mist')).toBe('ok');
     expect(pulls).toBe(2);
   });
 
@@ -398,10 +412,10 @@ describe('poller — a pull that never returns is a failure, not silent stalenes
     const marks: MarkCall[] = [];
     const p = new Poller(fakeRegistry(adapter, marks, []), liveStore);
 
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('ok');
+    expect(await tick(p, 'mist')).toBe('ok');
     expect(marks[0].ok).toBe(true);
     // A second tick must be free to run — the lock released normally.
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('ok');
+    expect(await tick(p, 'mist')).toBe('ok');
   });
 
   it('still says "poll failed" for an ordinary vendor error', async () => {
@@ -415,10 +429,10 @@ describe('poller — a pull that never returns is a failure, not silent stalenes
     const marks: MarkCall[] = [];
     const p = new Poller(fakeRegistry(adapter, marks, []), liveStore);
 
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('error');
+    expect(await tick(p, 'mist')).toBe('error');
     expect(marks[0].info.note).toBe('poll failed: HTTP 429');
     expect(p.history()[0].what).toContain('poll failed — HTTP 429');
     // And the lock must be released, since nothing is still running.
-    expect(await (p as unknown as Tickable).tick('mist')).toBe('error');
+    expect(await tick(p, 'mist')).toBe('error');
   });
 });

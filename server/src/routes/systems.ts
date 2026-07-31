@@ -74,12 +74,22 @@ systemsRouter.post(
   '/systems/sync',
   h(async (_req, res) => {
     const result = await poller.syncNow();
+    // `started` is every plane a pull was actually attempted for. It has always
+    // included the failures — they were started too — so it cannot double as
+    // the success count, and `synced` now travels beside it rather than being
+    // inferred. `skippedReason` says WHY each skip happened: a plane on the
+    // stub adapter is skipped on every cycle forever, and the summary used to
+    // call that "already syncing".
     const started = [...result.synced, ...result.failed];
     res.json({
       ok: result.failed.length === 0,
+      requested: result.requested,
       started,
+      synced: result.synced,
       ...(result.failed.length > 0 ? { failed: result.failed } : {}),
-      ...(result.skipped.length > 0 ? { skipped: result.skipped } : {}),
+      ...(result.skipped.length > 0
+        ? { skipped: result.skipped, skippedReason: result.skippedReason }
+        : {}),
     });
   }),
 );
