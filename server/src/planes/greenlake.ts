@@ -829,7 +829,12 @@ export class GreenLakeAdapter implements PlaneAdapter {
     const platform = await this.refreshPlatform();
 
     const expiring = subscriptions.filter((s) => s.status === 'expiring').length;
-    const unlicensed = assignments?.filter((a) => a.assigned === false).length ?? null;
+    // Archived devices are retired, so being unassigned is their finished
+    // state and not a licensing gap. Counted separately rather than dropped:
+    // a number quietly smaller than the feed cannot be checked against it.
+    const archivedCount = assignments?.filter((a) => a.archived === true).length ?? 0;
+    const unlicensed =
+      assignments?.filter((a) => a.assigned === false && a.archived !== true).length ?? null;
     this.stateRef.note =
       `${subscriptions.length.toLocaleString('en-US')} subscriptions · ` +
       `${expiring.toLocaleString('en-US')} expiring < ${EXPIRING_SOON_DAYS}d` +
@@ -840,7 +845,8 @@ export class GreenLakeAdapter implements PlaneAdapter {
       (page.truncated ? ` · partial (page cap ${MAX_PAGES})` : '') +
       (assignments !== null
         ? ` · ${assignments.length.toLocaleString('en-US')} devices` +
-          (unlicensed !== null ? ` · ${unlicensed.toLocaleString('en-US')} unlicensed` : '')
+          (unlicensed !== null ? ` · ${unlicensed.toLocaleString('en-US')} unlicensed` : '') +
+          (archivedCount > 0 ? ` · ${archivedCount.toLocaleString('en-US')} archived` : '')
         : ` · assignments unavailable (${this.assignmentsError ?? 'not read'})`) +
       // A section we could not read is named, never folded into the counts.
       (platform.unavailable.length > 0

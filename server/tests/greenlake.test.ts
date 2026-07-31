@@ -426,6 +426,33 @@ function pagingHandler(rows: unknown[]): Handler {
 }
 
 describe('GreenLakeAdapter.pull()', () => {
+  /* A device archived in GreenLake is retired, so holding no subscription is
+   * the finished state and not a licensing gap. Counting it as 'unlicensed'
+   * in the plane's own summary line puts retired hardware into the number an
+   * operator reconciles against. Named separately rather than dropped: a
+   * count quietly smaller than the feed cannot be checked against it. */
+  it('keeps archived devices out of the unlicensed count and names them instead', async () => {
+    const { adapter, state } = makeAdapter(
+      routeHandler({
+        ...HAPPY_ROUTES,
+        'GET /devices/v1/devices': {
+          items: [
+            DEVICE_ASSIGNED,
+            DEVICE_UNASSIGNED,
+            { ...DEVICE_UNASSIGNED, id: 'dev-3', serialNumber: 'SG07OLD001', archived: true },
+          ],
+          count: 3,
+          offset: 0,
+          total: 3,
+        },
+      }),
+    );
+    await adapter.pull();
+    expect(state.note).toBe(
+      '4 subscriptions · 1 expiring < 90d · 3 devices · 1 unlicensed · 1 archived · 1 users · 1 role grants',
+    );
+  });
+
   it('pulls subscriptions, maps them, and reports the summary note', async () => {
     const { adapter, state, recorded, calls } = makeAdapter(routeHandler(HAPPY_ROUTES));
     const pull = await adapter.pull();

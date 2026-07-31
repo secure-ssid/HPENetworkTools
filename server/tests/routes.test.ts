@@ -2135,6 +2135,70 @@ describe('live-mode screen contracts', () => {
     expect(noFeed.body.orphans).toEqual([]);
   });
 
+  /* Archiving a device in GreenLake is how it is retired. It is then absent
+   * from every inventory and holds no subscription BY DESIGN — which is
+   * exactly what the orphan row, the gap row and the unlicensed tile were all
+   * built to flag. Retired hardware was therefore reported three times over as
+   * a licensing failure, in red, with "reclaim before renewal" next to it.
+   *
+   * The one archived case that IS money had no row at all: a retired device
+   * that never gave its seat back escaped the gap filter precisely because it
+   * is still assigned. */
+  it('does not bill archived devices as a licensing gap, and finds the archived seats that are', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [{ ...DEVICE, serial: 'SG01ABC123' }] });
+    contributions.set('greenlake', {
+      subscriptions: [],
+      assignments: [
+        { serial: 'SG01ABC123', deviceName: 'sw-test-1', assigned: true, subscriptionKey: 'K1' },
+        // Retired and released. The finished state, not a finding.
+        {
+          serial: 'SG07OLD001',
+          deviceName: 'ap-retired-1',
+          assigned: false,
+          subscriptionKey: null,
+          archived: true,
+        },
+        // Retired and STILL consuming a seat. Real money, previously silent.
+        {
+          serial: 'SG07OLD002',
+          deviceName: 'ap-retired-2',
+          assigned: true,
+          subscriptionKey: 'K9',
+          archived: true,
+        },
+      ],
+    });
+    const { body } = await getJson('/api/licenses');
+
+    // The retired-and-released device is out of the count, and said so.
+    expect(body.stats[4]).toMatchObject({ label: 'Devices unlicensed', value: '0', tone: 'positive' });
+    expect(body.stats[4].delta).toBe('1 of 1 assignment states an entitlement · 2 archived, not counted');
+
+    const rows = body.orphans as any[];
+    // Neither archived serial is in the inventory, and neither is an orphan.
+    expect(rows.map((o) => o.tag)).toEqual(['archived']);
+    expect(rows[0].what).toBe('1 archived device still holding a subscription');
+    expect(rows[0].detail).toContain('ap-retired-2');
+    expect(rows[0].detail).not.toContain('ap-retired-1');
+  });
+
+  // An unread `archived` is not an archived device: absent must not shrink a
+  // compliance count on evidence nobody supplied.
+  it('treats an assignment that never states archived as live', async () => {
+    contributions.clear();
+    contributions.set('central', { devices: [{ ...DEVICE, serial: 'SG01ABC123' }] });
+    contributions.set('greenlake', {
+      subscriptions: [],
+      assignments: [
+        { serial: 'SG01ABC123', deviceName: 'sw-test-1', assigned: false, subscriptionKey: null },
+      ],
+    });
+    const { body } = await getJson('/api/licenses');
+    expect(body.stats[4]).toMatchObject({ label: 'Devices unlicensed', value: '1', tone: 'negative' });
+    expect(body.stats[4].delta).toBe('1 of 1 assignment states an entitlement');
+  });
+
   it("live overview's Config drift comes from the evidence engine, not a hardwired dash", async () => {
     contributions.clear();
     contributions.set('central', { devices: [{ ...DEVICE, firmware: '' }] });

@@ -84,25 +84,30 @@ export function liveUnlicensedStat(
   // TRI-STATE: undefined means the plane never said, and must not be counted
   // as unlicensed — only an explicit false is a device without entitlement.
   if (assignments !== null && assignments.length > 0) {
-    const stated = assignments.filter((a) => a.assigned !== undefined);
-    const unlicensed = assignments.filter((a) => a.assigned === false).length;
+    const archived = assignments.filter(isArchived).length;
+    const live = assignments.filter((a) => !isArchived(a));
+    const stated = live.filter((a) => a.assigned !== undefined);
+    const unlicensed = live.filter((a) => a.assigned === false).length;
+    // Excluded, and said out loud. A tile that is quietly smaller than the
+    // feed it came from is a tile nobody can check.
+    const archivedNote = archived > 0 ? ` · ${archived} archived, not counted` : '';
     if (stated.length === 0) {
       return {
         label: 'Devices unlicensed',
         value: '—',
-        delta: `${assignments.length} assignment${assignments.length === 1 ? '' : 's'} · none states an assignment`,
+        delta: `${assignments.length} assignment${assignments.length === 1 ? '' : 's'} · none states an assignment${archivedNote}`,
         tone: 'neutral',
       };
     }
     return {
       label: 'Devices unlicensed',
       value: String(unlicensed),
-      delta: `${stated.length} of ${assignments.length} assignment${assignments.length === 1 ? '' : 's'} state an entitlement`,
+      delta: `${stated.length} of ${live.length} assignment${live.length === 1 ? ' states' : 's state'} an entitlement${archivedNote}`,
       // Zero explicit `assigned: false` is only an all-clear when every
       // assignment stated one. With some silent, the honest reading is "none
       // of the ones we can see", which is not green.
       tone:
-        unlicensed > 0 ? 'negative' : stated.length < assignments.length ? 'neutral' : 'positive',
+        unlicensed > 0 ? 'negative' : stated.length < live.length ? 'neutral' : 'positive',
     };
   }
   const known = devices.filter((d) => reportedValue(d.licence));
@@ -126,6 +131,22 @@ export function liveUnlicensedStat(
  */
 export function liveAssignments(): SubscriptionAssignment[] | null {
   return poller.contributionsByPlane().get('greenlake')?.assignments ?? null;
+}
+
+/**
+ * Archiving a device in GreenLake IS how it is retired, and a retired device
+ * is SUPPOSED to hold no subscription. Every count below therefore takes it
+ * out of the licensing-gap arithmetic: it is not a device someone forgot to
+ * license, it is one somebody deliberately decommissioned, and putting it in
+ * a red tile sends an operator to buy entitlement for hardware that is gone.
+ *
+ * Only an explicit `true` retires anything. `archived` is absent when the
+ * plane never said, and dropping a device from a compliance count on a field
+ * that was never read would shrink the number with no evidence behind it —
+ * the opposite failure, and the worse one.
+ */
+function isArchived(a: SubscriptionAssignment): boolean {
+  return a.archived === true;
 }
 
 /** '4 shown · +12 more' style sample line for a grouped reclaim row. */
@@ -157,11 +178,27 @@ export function liveOrphans(
     const serials = new Set(
       devices.map((d) => d.serial?.trim().toUpperCase()).filter((s): s is string => !!s),
     );
+    /* Archived devices are held out of both buckets below and answered on
+       their own terms. They are absent from the merged inventory BY DESIGN,
+       so the orphan row's "no plane reports it — reclaim before renewal"
+       would send someone hunting for hardware nobody lost; and they are
+       unassigned BY DESIGN, so the gap row's "no active subscription" is the
+       finished state, not a finding. */
+    const live = assignments.filter((a) => !isArchived(a));
     const orphaned =
-      serials.size > 0 ? assignments.filter((a) => a.serial && !serials.has(a.serial.trim().toUpperCase())) : [];
+      serials.size > 0 ? live.filter((a) => a.serial && !serials.has(a.serial.trim().toUpperCase())) : [];
     const orphanSerials = new Set(orphaned.map((a) => a.serial));
-    const gaps = assignments.filter(
+    const gaps = live.filter(
       (a) => !orphanSerials.has(a.serial) && (a.assigned === false || a.subscriptionKey === null),
+    );
+    /* The case that IS worth money and had no row at all: retired hardware
+       that never gave its seat back. It escaped `gaps` precisely because it
+       is still assigned, so the panel whose whole job is finding entitlement
+       to reclaim was silent about the clearest instance of it. */
+    const stillHolding = assignments.filter(
+      (a) =>
+        isArchived(a) &&
+        (a.assigned === true || (typeof a.subscriptionKey === 'string' && a.subscriptionKey.trim().length > 0)),
     );
     if (orphaned.length > 0) {
       rows.push({
@@ -177,6 +214,14 @@ export function liveOrphans(
         tone: 'info',
         what: `${gaps.length} device${gaps.length === 1 ? '' : 's'} with no active subscription`,
         detail: `${assignmentSample(gaps)} · reported unassigned by the entitlement plane`,
+      });
+    }
+    if (stillHolding.length > 0) {
+      rows.push({
+        tag: 'archived',
+        tone: 'warning',
+        what: `${stillHolding.length} archived device${stillHolding.length === 1 ? '' : 's'} still holding a subscription`,
+        detail: `${assignmentSample(stillHolding)} · retired in GreenLake but the seat was never released · reclaim before renewal`,
       });
     }
   }
