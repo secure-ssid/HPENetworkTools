@@ -2208,8 +2208,79 @@ describe('live-mode screen contracts', () => {
     expect(names.some((w: string) => w.startsWith('Overdue'))).toBe(true); // most urgent of all
     expect(names.some((w: string) => w.startsWith('Due soon'))).toBe(true);
     expect(names.some((w: string) => w.startsWith('Years out'))).toBe(false); // not "next 180 days"
-    // The same horizon the Overview tile counts.
-    expect((body.stats as any[])[3]).toMatchObject({ label: 'Expiring ≤60d', value: '1' });
+    // The same horizon the Overview tile counts — and the overdue row the
+    // renewals panel just called the most urgent thing on the screen is in it.
+    // The filter used to be `daysLeft >= 0`, so this read '1'.
+    expect((body.stats as any[])[3]).toMatchObject({ label: 'Expiring ≤60d', value: '2' });
+    expect((body.stats as any[])[3].delta).toContain('1 already expired');
+    contributions.clear();
+  });
+
+  /* liveRenewals()'s own doc comment calls already-overdue rows "the most
+   * urgent thing on the screen". Both expiry tiles filtered them out with
+   * `daysLeft >= 0`, so an estate whose only licence problem was a lapsed
+   * subscription counted zero and rendered POSITIVE — green — directly above
+   * a renewals panel showing that same subscription in red as `overdue`. */
+  it('does not render an estate of expired licences as a green zero', async () => {
+    const { SUBSCRIPTIONS } = await import('@hpe/shared');
+    const day = 24 * 60 * 60 * 1000;
+    contributions.clear();
+    contributions.set('greenlake', {
+      subscriptions: [
+        { ...SUBSCRIPTIONS[0], name: 'Lapsed yesterday', daysLeft: -1, expiresAtMs: Date.now() - day },
+      ],
+    });
+
+    const licences = await getJson('/api/licenses');
+    const tile = (licences.body.stats as any[])[3];
+    expect(tile).toMatchObject({ label: 'Expiring ≤60d', value: '1' });
+    expect(tile.tone).toBe('negative');
+    expect(tile.tone).not.toBe('positive');
+    expect(tile.delta).toContain('already expired');
+    expect(tile.delta).not.toBe('none on the horizon');
+
+    // Overview answers the same question and must not disagree with it.
+    const overview = await getJson('/api/overview');
+    const licenceTile = (overview.body.stats as any[]).find((t: any) => t.label === 'Licences ≤60d');
+    expect(licenceTile).toMatchObject({ value: '1', tone: 'negative' });
+    expect(licenceTile.delta).toContain('1 already expired');
+    expect(licenceTile.delta).not.toBe('none due');
+    contributions.clear();
+  });
+
+  it('keeps the green zero honest when there is genuinely nothing to renew', async () => {
+    const { SUBSCRIPTIONS } = await import('@hpe/shared');
+    const day = 24 * 60 * 60 * 1000;
+    contributions.clear();
+    contributions.set('greenlake', {
+      subscriptions: [
+        { ...SUBSCRIPTIONS[0], name: 'Years out', daysLeft: 1200, expiresAtMs: Date.now() + 1200 * day },
+      ],
+    });
+
+    const licences = await getJson('/api/licenses');
+    const tile = (licences.body.stats as any[])[3];
+    // The fix must not turn every licence tile permanently red.
+    expect(tile).toMatchObject({ value: '0', tone: 'positive', delta: 'none on the horizon' });
+
+    const overview = await getJson('/api/overview');
+    const licenceTile = (overview.body.stats as any[]).find((t: any) => t.label === 'Licences ≤60d');
+    expect(licenceTile).toMatchObject({ value: '0', delta: 'none due', tone: 'neutral' });
+    contributions.clear();
+  });
+
+  it('a renewal merely coming up is a diary entry, not an outage, on Overview', async () => {
+    const { SUBSCRIPTIONS } = await import('@hpe/shared');
+    const day = 24 * 60 * 60 * 1000;
+    contributions.clear();
+    contributions.set('greenlake', {
+      subscriptions: [
+        { ...SUBSCRIPTIONS[0], name: 'Due soon', daysLeft: 20, expiresAtMs: Date.now() + 20 * day },
+      ],
+    });
+    const overview = await getJson('/api/overview');
+    const licenceTile = (overview.body.stats as any[]).find((t: any) => t.label === 'Licences ≤60d');
+    expect(licenceTile).toMatchObject({ value: '1', delta: '▲ renewals due', tone: 'neutral' });
     contributions.clear();
   });
 });

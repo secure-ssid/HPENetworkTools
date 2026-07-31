@@ -15,7 +15,7 @@ import { writeBroker } from '../../services/writeBroker';
 import { liveComplianceData } from './complianceModel';
 import { reportedValue } from './context';
 import { canOpenShell } from './deviceAccess';
-import { LICENCE_HORIZON_DAYS } from './licenseModel';
+import { LICENCE_HORIZON_DAYS, licencesNeedingRenewal } from './licenseModel';
 import {
   LiveSubscription,
   SEV_RANK,
@@ -156,9 +156,10 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
   const open = live.alerts.filter((a) => a.state === 'open');
   const p1 = open.filter((a) => a.sev === 'P1').length;
   const subs = poller.getCache().subscriptions as LiveSubscription[];
-  const expiring = subs.filter(
-    (s) => s.daysLeft !== undefined && s.daysLeft >= 0 && s.daysLeft <= LICENCE_HORIZON_DAYS,
-  ).length;
+  // Same derivation as the Licences screen's tile — the two answer the same
+  // question and must never disagree.
+  const { expired: expiredLicences, expiring: expiringLicences } = licencesNeedingRenewal(subs);
+  const expiring = expiredLicences.length + expiringLicences.length;
   const states = registry.states();
   const linked = PLANE_IDS.filter((id) => states[id].linked).length;
   const unhealthy = PLANE_IDS.map((id) => states[id]).find((s) => s.linked && s.health !== 'healthy');
@@ -195,8 +196,15 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
     {
       label: `Licences ≤${LICENCE_HORIZON_DAYS}d`,
       value: String(expiring),
-      delta: expiring > 0 ? '▲ renewals due' : 'none due',
-      tone: 'neutral',
+      // A renewal coming up is a diary entry; one that has already lapsed is
+      // a live problem, so only the lapsed case earns the negative tone.
+      delta:
+        expiredLicences.length > 0
+          ? `▲ ${expiredLicences.length} already expired`
+          : expiring > 0
+            ? '▲ renewals due'
+            : 'none due',
+      tone: expiredLicences.length > 0 ? 'negative' : 'neutral',
     },
     {
       label: 'Planes linked',

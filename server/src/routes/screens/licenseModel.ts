@@ -28,6 +28,33 @@ export const LICENCE_HORIZON_DAYS = 60;
 /** How far ahead the "Renewals, soonest first" panel claims to look. */
 export const RENEWAL_WINDOW_DAYS = 180;
 
+/**
+ * The subscriptions inside the horizon, split into the ones that have already
+ * lapsed and the ones that are about to.
+ *
+ * Both tiles used to filter on `daysLeft >= 0 && daysLeft <= HORIZON`, which
+ * excludes exactly the rows liveRenewals() below calls "the most urgent thing
+ * on the screen". An estate whose only licence problem was a subscription that
+ * lapsed yesterday counted zero, read "none on the horizon", and rendered
+ * POSITIVE — green — while the renewals panel directly underneath it showed
+ * the same subscription in red as `overdue`.
+ *
+ * One shared derivation so the Overview tile and the Licences tile cannot
+ * drift apart again, in either direction.
+ */
+export function licencesNeedingRenewal(subs: LiveSubscription[]): {
+  expired: LiveSubscription[];
+  expiring: LiveSubscription[];
+} {
+  const dated = subs.filter(
+    (s): s is LiveSubscription & { daysLeft: number } => s.daysLeft !== undefined,
+  );
+  return {
+    expired: dated.filter((s) => s.daysLeft < 0),
+    expiring: dated.filter((s) => s.daysLeft >= 0 && s.daysLeft <= LICENCE_HORIZON_DAYS),
+  };
+}
+
 /** Renewal urgency colours, matching the fixtures' thresholds. */
 export function renewalColor(daysLeft: number): string {
   if (daysLeft < 30) return 'var(--nd-danger)';
@@ -170,7 +197,7 @@ export function liveLicenseStats(
   const totalQty = subs.reduce((n, s) => n + (s.qtyValue ?? 0), 0);
   const totalAssigned = subs.reduce((n, s) => n + (s.assignedValue ?? 0), 0);
   const unassigned = Math.max(0, totalQty - totalAssigned);
-  const expiring = subs.filter((s) => s.daysLeft !== undefined && s.daysLeft >= 0 && s.daysLeft <= LICENCE_HORIZON_DAYS);
+  const { expired, expiring } = licencesNeedingRenewal(subs);
   const idle = subs.filter((s) => s.assignedValue === 0);
   const soonest = expiring.reduce<LiveSubscription | null>(
     (a, s) => (a === null || (s.daysLeft ?? 0) < (a.daysLeft ?? 0) ? s : a),
@@ -192,10 +219,19 @@ export function liveLicenseStats(
       tone: unassigned > 0 ? 'negative' : 'neutral',
     },
     {
+      // Both halves of the number are named, the way `Devices reachable` names
+      // down and unverified: a lapsed subscription leads, because it is the
+      // one that is costing the operator something right now.
       label: `Expiring ≤${LICENCE_HORIZON_DAYS}d`,
-      value: String(expiring.length),
-      delta: soonest?.expiresAtMs !== undefined ? `next ${expiryDisplay(soonest.expiresAtMs)}` : 'none on the horizon',
-      tone: expiring.length > 0 ? 'negative' : 'positive',
+      value: String(expired.length + expiring.length),
+      delta:
+        [
+          expired.length > 0 ? `${expired.length} already expired` : null,
+          soonest?.expiresAtMs !== undefined ? `next ${expiryDisplay(soonest.expiresAtMs)}` : null,
+        ]
+          .filter((part): part is string => part !== null)
+          .join(' · ') || 'none on the horizon',
+      tone: expired.length + expiring.length > 0 ? 'negative' : 'positive',
     },
     liveUnlicensedStat(devices, assignments),
   ];
