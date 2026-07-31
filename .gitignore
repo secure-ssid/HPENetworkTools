@@ -6,3 +6,7 @@ data/
 *.png
 !docs/images/
 !docs/images/*.png
+
+# Agent temporary workspaces
+.agent-tmp/
+dev-server.log
