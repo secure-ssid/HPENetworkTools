@@ -124,10 +124,18 @@ export async function getChangeHistory(limit = 50): Promise<ChangeHistory | ApiE
   return null;
 }
 
-/** Push outcome; `applied` is true ONLY on a 2xx from the plane. */
+/**
+ * Push outcome.
+ *
+ * `applied` means the plane confirmed the change is in effect — not merely
+ * that the call returned 2xx. A 202 arrives as `accepted`, which is neither
+ * success nor failure: the plane has the request and has not acted on it yet,
+ * so there is nothing to retry and nothing to celebrate.
+ */
 export interface PushResult {
   ok: boolean;
   applied: boolean;
+  accepted?: boolean;
   changeId: string;
   ticket: string;
   kind: string;

@@ -117,7 +117,24 @@ export interface DryRunResult extends RenderedPayload {
 
 export interface PushResult {
   ok: boolean;
-  applied: boolean; // true ONLY on a 2xx from the plane — never on 404/5xx/network errors
+  /**
+   * The plane confirmed the change is in effect.
+   *
+   * NOT simply "the call returned 2xx". A 202 is the plane saying it has taken
+   * the request and will act on it later, which is a different claim; that
+   * comes back as `accepted` with `applied` false. The UI turns this field
+   * into a green toast and the broker drops the change off the queue on it, so
+   * anything less than a confirmed write must not set it.
+   */
+  applied: boolean;
+  /**
+   * The plane took the request but has not said it is done (HTTP 202).
+   *
+   * Deliberately distinct from both success and failure: there is nothing to
+   * retry — a second PUT could duplicate the write — and nothing to celebrate.
+   * The operator has to go and confirm it on the plane.
+   */
+  accepted?: boolean;
   changeId: string;
   ticket: string;
   kind: ConfigKind;
@@ -869,6 +886,19 @@ export class WriteBroker {
     }
 
     if (res.status >= 200 && res.status < 300) {
+      // A 202 is not a completed write. Central answers it for work it will
+      // carry out afterwards, and the tenant's exact behaviour here is
+      // unverified (see pushBodyFor), so this cannot be assumed away. It gets
+      // its own outcome rather than being flattened into either side:
+      //
+      //  - not `applied`, because the UI renders that as a green "done" toast
+      //    and nothing would ever tell the operator it had not landed;
+      //  - not a failure either, because the plane has the request. Re-queueing
+      //    it would invite a second PUT and a duplicate write.
+      //
+      // So the change comes off the queue exactly as a success does — there is
+      // nothing left to push — but the operator is told to go and confirm it.
+      const accepted = res.status === 202;
       const queue = [...this.loadQueue()];
       const idx = queue.findIndex((c) => c.id === change.id);
       if (idx >= 0) {
@@ -879,31 +909,45 @@ export class WriteBroker {
         } catch {
           cleanupFailed = true;
         }
-        this.log({ event: 'push', ...base, result: 'applied', httpCode: res.status });
+        this.log({
+          event: 'push',
+          ...base,
+          result: accepted ? 'accepted (unconfirmed)' : 'applied',
+          httpCode: res.status,
+        });
         if (cleanupFailed) {
           return {
             ...base,
             ok: true,
-            applied: true,
+            applied: !accepted,
+            accepted,
             httpCode: res.status,
             snapshot,
             message:
-              `accepted by Central — HTTP ${res.status}; queue cleanup failed, so the change remains marked applying and cannot replay automatically`,
+              `${accepted ? 'accepted for later action by Central' : 'accepted by Central'} — HTTP ${res.status}; queue cleanup failed, so the change remains marked applying and cannot replay automatically`,
           };
         }
       } else {
         // Discarded while the PUT was in flight: applied on the plane, already
         // off the queue — never splice(-1) an unrelated change out from under it.
-        this.log({ event: 'push', ...base, result: 'applied (discarded mid-push)', httpCode: res.status });
+        this.log({
+          event: 'push',
+          ...base,
+          result: accepted ? 'accepted (unconfirmed, discarded mid-push)' : 'applied (discarded mid-push)',
+          httpCode: res.status,
+        });
       }
       return {
         ...base,
         ok: true,
-        applied: true,
+        applied: !accepted,
+        accepted,
         httpCode: res.status,
         snapshot,
         message:
-          `accepted by Central — HTTP ${res.status}; ` +
+          (accepted
+            ? `accepted for later action by Central — HTTP 202; Central has NOT confirmed the change is in effect, so verify it on the plane before relying on it. `
+            : `accepted by Central — HTTP ${res.status}; `) +
           (snapshot ? 'rollback snapshot on file, kept 24h' : 'no pre-existing object to snapshot') +
           (idx < 0 ? '; note: the change was discarded while the push was in flight' : ''),
       };

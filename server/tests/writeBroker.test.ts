@@ -677,3 +677,74 @@ describe('configure routes', () => {
     expect(afterBody.changes).toHaveLength(0);
   });
 });
+
+/**
+ * HTTP 202 on the push.
+ *
+ * The broker treated the whole 2xx range as "done": applied true, audit line
+ * 'applied', change spliced off the queue, and the UI turning that into a
+ * green toast. A 202 means Central has taken the request and will act on it
+ * afterwards, which is a different claim about a configuration change to
+ * production network equipment — and pushBodyFor already states the tenant's
+ * exact behaviour on these paths is unverified, so it cannot be assumed away.
+ */
+describe('push — a 202 is taken, not done', () => {
+  it('does not report an accepted change as applied', async () => {
+    const transport = transportWith(202, { taskId: 't-1' });
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    const change = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-5');
+
+    const r = await broker.push(change.id);
+    // ok: the call succeeded. applied: false, because Central has not said the
+    // change is in effect — and the UI's green toast hangs off that field.
+    expect(r.ok).toBe(true);
+    expect(r.applied).toBe(false);
+    expect(r.accepted).toBe(true);
+    expect(r.httpCode).toBe(202);
+    expect(r.message).toMatch(/NOT confirmed/);
+    expect(r.message).toMatch(/verify it on the plane/);
+  });
+
+  it('still takes the change off the queue, because re-pushing could duplicate it', async () => {
+    const transport = transportWith(202, {});
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    const change = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-6');
+
+    await broker.push(change.id);
+    // Central has the request. Leaving it queued would invite a second PUT of
+    // the same change, which is worse than an unconfirmed one.
+    expect(broker.list().map((c) => c.id)).not.toContain(change.id);
+  });
+
+  it('records it in the audit log as unconfirmed rather than as applied', async () => {
+    const transport = transportWith(202, {});
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    const change = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-7');
+
+    await broker.push(change.id);
+    const events = broker.recentEvents(10);
+    const push = events.find((e) => e.event === 'push');
+    // The audit trail is what someone reads months later to find out whether a
+    // change was made. 'applied' there would be the same lie, made durable.
+    expect(push?.result).toBe('accepted (unconfirmed)');
+  });
+
+  it('still calls a plain 200 applied, so a real success is not downgraded', async () => {
+    const transport = transportWith(200, {});
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    const change = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-8');
+
+    const r = await broker.push(change.id);
+    expect(r.applied).toBe(true);
+    expect(r.accepted).toBe(false);
+    expect(broker.recentEvents(10).find((e) => e.event === 'push')?.result).toBe('applied');
+  });
+
+  it('treats 201 Created as applied — it is a completed write, not a promise', async () => {
+    const transport = transportWith(201, {});
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    const change = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-9');
+
+    expect((await broker.push(change.id)).applied).toBe(true);
+  });
+});

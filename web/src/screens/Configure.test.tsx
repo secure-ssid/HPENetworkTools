@@ -912,3 +912,52 @@ describe('Configure — change history that could not be fully read', () => {
     expect(screen.getByText(/2 rotated logs/)).toBeTruthy();
   });
 });
+
+/**
+ * A push Central accepted but has not confirmed.
+ *
+ * `applied` drove a green success toast, and the broker used to set it on any
+ * 2xx — so a 202 ended the operator's involvement in a change that Central had
+ * only promised to look at. The change is off the queue either way (a second
+ * PUT could duplicate the write), which is exactly why the toast has to carry
+ * the caveat: it is the operator's last chance to learn there is something to
+ * go and verify.
+ */
+describe('Configure — a push accepted but not confirmed', () => {
+  it('does not celebrate a 202 as a completed change', async () => {
+    mockPushChange.mockResolvedValue({
+      ok: true,
+      applied: false,
+      accepted: true,
+      changeId: 'chg-server-1',
+      ticket: 'NET-4100',
+      kind: 'vlan',
+      httpCode: 202,
+      snapshot: true,
+      message: 'accepted for later action by Central — HTTP 202; Central has NOT confirmed the change is in effect, so verify it on the plane before relying on it.',
+    });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Push queue' }));
+
+    await waitFor(() =>
+      expect(screen.getByText('Accepted by Central, not yet confirmed')).toBeTruthy(),
+    );
+    // The instruction to go and check has to reach the screen, not just the
+    // server's log.
+    expect(screen.getByText(/verify it on the plane/)).toBeTruthy();
+  });
+
+  it('still reports a confirmed push plainly, with no caveat attached', async () => {
+    // The other half: a real success must not be dressed up as uncertain, or
+    // the caveat stops meaning anything on the day it matters.
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Push queue' }));
+
+    await waitFor(() => expect(mockPushChange).toHaveBeenCalledWith('chg-server-1'));
+    expect(screen.queryByText('Accepted by Central, not yet confirmed')).toBeNull();
+  });
+});

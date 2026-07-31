@@ -441,6 +441,15 @@ export default function Configure() {
           toast(r.error, { description: entry.what, tone: 'danger' });
         } else if (r.applied) {
           toast(r.message, { description: entry.what, tone: 'success' });
+        } else if (r.accepted) {
+          // Central took it and has not said it is done. A success tone here
+          // would end the operator's involvement in a change that may never
+          // land; a danger tone would send them chasing a failure that has not
+          // happened. It is its own outcome and reads as one.
+          toast('Accepted by Central, not yet confirmed', {
+            description: `${entry.what} — ${r.message}`,
+            tone: 'warning',
+          });
         } else {
           // Rendered-but-unverified and rejected pushes are honest outcomes.
           toast(r.message, { description: entry.what, tone: 'warning' });
