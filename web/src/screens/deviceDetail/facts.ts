@@ -28,11 +28,6 @@ export const CFG_TABS = [
 ];
 
 /** Envelope freshness stamp, same format the other live screens use. */
-export function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
 
 // ---------------------------------------------------------------------------
 // Class blocks — the per-object subresources that actually apply to a device

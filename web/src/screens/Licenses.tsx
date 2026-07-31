@@ -29,16 +29,11 @@ import {
 } from '../nightdesk';
 import { getLicenses } from '../api/client';
 import type { LicensesData } from '../api/client';
+import { hhmmLocal as hhmm } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
-
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
 
 /**
  * The renewals panel caption, read off the payload rather than asserted. The

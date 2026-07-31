@@ -21,19 +21,12 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Alert, Badge, Button, EmptyState, Heading, SectionHeader, Spinner, Textarea, useToast } from '../nightdesk';
 import { addTicketNote, getTickets, resolveTicket } from '../api/client';
 import type { TicketsData } from '../api/client';
-import { MAX_NOTE_CHARS, relativeAge, slaCountdown } from '@hpe/shared';
+import { hhmmLocal as hhmm, MAX_NOTE_CHARS, relativeAge, slaCountdown } from '@hpe/shared';
 import type { TicketRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 
 type TicketNote = NonNullable<TicketsData['tickets'][number]['notes']>[number];
-
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? iso
-    : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
 
 /**
  * Age and SLA are rendered from the ticket's own timestamps whenever it has
@@ -338,7 +331,7 @@ export default function Tickets() {
                     paddingTop: 2,
                   }}
                 >
-                  {e.time}
+                  {hhmm(e.time)}
                 </span>
                 <div style={{ width: 88, flex: '0 0 88px', paddingTop: 1 }}>
                   <Badge tone="neutral">{e.plane}</Badge>

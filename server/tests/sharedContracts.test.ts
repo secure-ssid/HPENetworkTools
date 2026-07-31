@@ -55,6 +55,8 @@ import {
   planeSupportsClientField,
   ssidDependencyRequirementsFor,
   ssidPreview,
+  hhmmLocal,
+  hhmmssLocal,
   staleAfterSecFor,
   type AlertRow,
   type ClientDetailLive,
@@ -889,5 +891,43 @@ describe('correlateAlerts', () => {
     const only = correlateAlerts([alert({ title: 'Gateway down', sev: 'P1', stale: true })]);
     expect(only?.title).toBe('Gateway down');
     expect(only?.body).not.toContain('Second finding');
+  });
+});
+
+/**
+ * One clock per screen.
+ *
+ * Twelve identical copies of this lived in web/src/screens and two more on the
+ * server. The duplication was cosmetic; the split was not. A time the server
+ * formatted was hh:mm in the server process's timezone and a time the browser
+ * formatted was hh:mm in the reader's, and they rendered as the same four
+ * digits and a colon on the same screen.
+ */
+describe('hhmmLocal', () => {
+  it('renders an instant on the clock of whoever is reading it', () => {
+    const at = new Date(2026, 6, 26, 14, 7, 3);
+    expect(hhmmLocal(at.toISOString())).toBe('14:07');
+  });
+
+  it('leaves an already-rendered fixture time exactly as it was authored', () => {
+    // Load-bearing: the demo rows carry '09:15' and the evidence trail uses
+    // the literal 'now' for a row it is generating as you read it. Neither is
+    // an instant, and neither needs improving.
+    expect(hhmmLocal('09:15')).toBe('09:15');
+    expect(hhmmLocal('now')).toBe('now');
+    expect(hhmmLocal('—')).toBe('—');
+  });
+
+  it('keeps seconds when the screen is about bursts', () => {
+    // Auth events exist to expose repeats; at minute precision six attempts
+    // in four minutes are six identical strings.
+    const at = new Date(2026, 6, 26, 9, 41, 22);
+    expect(hhmmssLocal(at.toISOString())).toBe('09:41:22');
+    expect(hhmmssLocal('09:41:22')).toBe('09:41:22');
+  });
+
+  it('agrees with itself across the two precisions', () => {
+    const at = new Date(2026, 0, 2, 3, 4, 5).toISOString();
+    expect(hhmmssLocal(at).startsWith(hhmmLocal(at))).toBe(true);
   });
 });

@@ -46,7 +46,7 @@ import { getSiteDetail, type SiteDetailData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { Density } from '../app/SettingsContext';
 import { deviceDetailPath } from '../app/nav';
-import { SITE_CHAIN, buildSiteTopology, detailState } from '@hpe/shared';
+import { hhmmLocal as hhmm, SITE_CHAIN, buildSiteTopology, detailState } from '@hpe/shared';
 import type {
   SiteAlertRow,
   SiteDeviceRow,
@@ -72,12 +72,6 @@ type LiveSiteSections = {
   reachability?: SiteReachability;
   topology?: SiteTopologyLive | null;
 };
-
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
 
 /** Design rule 1: say which source answered and when it last succeeded. Demo
  *  fixtures carry a synthetic syncedAt, so they are labelled, never timed. */

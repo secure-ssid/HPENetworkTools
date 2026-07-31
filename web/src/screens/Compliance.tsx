@@ -31,6 +31,7 @@ import {
 import { getCompliance, syncSystems } from '../api/client';
 import type { ComplianceData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
+import { hhmmLocal as hhmm } from '@hpe/shared';
 import type { FindingRow, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -63,12 +64,6 @@ const FIX_TONES: Record<FindingRow['fix'], Tone> = {
 
 function fixTone(f: FindingRow): Tone {
   return FIX_COLOR_TONES[f.fixColor] ?? FIX_TONES[f.fix];
-}
-
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 export default function Compliance() {

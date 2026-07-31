@@ -105,6 +105,30 @@ describe('AuthEvents', () => {
     expect(screen.queryByText(/1,904 events indexed today/)).toBeNull();
   });
 
+  /* The row used to carry only hh:mm:ss, rendered by the SERVER — which is
+   * the reader's clock only while the two are the same machine. It sat in the
+   * same table as a header stamp the browser renders itself, in the same
+   * shape, with nothing saying they were different zones. */
+  it('renders a live event on the reader\u2019s clock, not the server\u2019s', async () => {
+    const at = new Date(2026, 6, 26, 14, 7, 3);
+    mockGetAuthEvents.mockResolvedValue(
+      liveData({ events: [{ ...EVENT, time: '22:07:03', at: at.toISOString() }] }),
+    );
+    renderAuthEvents();
+
+    await waitFor(() => expect(screen.getByText('14:07:03')).toBeTruthy());
+    // The server's own rendering of the same instant must not also appear.
+    expect(screen.queryByText('22:07:03')).toBeNull();
+  });
+
+  it('keeps an authored row\u2019s time exactly as written when no instant rides with it', async () => {
+    // Fixtures carry no `at`, and '09:41:02' is already the thing to display.
+    mockGetAuthEvents.mockResolvedValue(liveData({ dataSource: 'demo' }));
+    renderAuthEvents();
+
+    await waitFor(() => expect(screen.getByText('09:41:02')).toBeTruthy());
+  });
+
   it('(b) a demo-sourced feed keeps the authored indexed-today tail', async () => {
     mockGetAuthEvents.mockResolvedValue(liveData({ dataSource: 'demo' }));
     renderAuthEvents();

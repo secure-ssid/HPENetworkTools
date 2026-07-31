@@ -71,6 +71,7 @@ import {
   CONNECT_FIELDS,
   CONNECT_HIDE_CLIENT_CREDENTIALS,
   CONNECT_TYPE_OPTIONS,
+  hhmmLocal as hhmm,
 } from '@hpe/shared';
 import type { SystemRow, SystemTypeKey } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
@@ -99,7 +100,6 @@ import {
   SSE_WRITE_SCOPE_LABEL,
   ScopeFlags,
   TAB_OPTIONS,
-  hhmm,
   mergedFacts,
   retryNote,
   sameCredentialSnapshot,
@@ -611,7 +611,7 @@ export default function Systems() {
                   flex: '0 0 44px',
                 }}
               >
-                {h.time}
+                {hhmm(h.time)}
               </span>
               <span
                 style={{
@@ -936,7 +936,7 @@ export default function Systems() {
                           flex: '0 0 44px',
                         }}
                       >
-                        {c.time}
+                        {hhmm(c.time)}
                       </span>
                       <span
                         style={{
@@ -1001,7 +1001,7 @@ export default function Systems() {
                           flex: '0 0 44px',
                         }}
                       >
-                        {e.time}
+                        {hhmm(e.time)}
                       </span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12.5, color: 'var(--nd-text-primary)', lineHeight: 1.4 }}>

@@ -27,6 +27,7 @@ import { getOverview } from '../api/client';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { pathForView } from '../app/nav';
+import { hhmmLocal as hhmm } from '@hpe/shared';
 import type { LaunchpadRow, OverviewAlert, SiteHealthTone, SiteId } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -42,12 +43,6 @@ const HEALTH_COLORS: Record<SiteHealthTone, string> = {
 
 /** Rows of the Sites preview — the design lists six of the estate. */
 const SITES_PREVIEW = 6;
-
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -611,7 +606,7 @@ export default function Overview() {
                     paddingTop: 2,
                   }}
                 >
-                  {c.time}
+                  {hhmm(c.time)}
                 </span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div

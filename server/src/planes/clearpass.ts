@@ -299,6 +299,9 @@ export function mapClearPassAuthEvent(raw: unknown): ClearPassAuthEventRow | nul
   const unmapped = !matched && rawResult !== null ? `unmapped result: ${rawResult}` : null;
   return {
     time: tsMs !== null ? hhmmss(tsMs) : '—',
+    // The instant as well as this host's rendering of it: the reader may be
+    // in another timezone, and HH:MM:SS alone does not say whose.
+    ...(tsMs !== null ? { at: new Date(tsMs).toISOString() } : {}),
     who: who ?? 'unknown',
     mac: macRaw ? normalizeMac(macRaw) : '—',
     service: str(r.service ?? r.service_name ?? r.policy_service) ?? '—',

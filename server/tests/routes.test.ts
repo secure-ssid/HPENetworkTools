@@ -2397,11 +2397,13 @@ describe('live-mode screen contracts', () => {
       // object and its blast radius, so the row says them.
       expect(entry.text).toBe(`${change.what} — ${change.where}`);
       expect(entry.who).toContain('NET-4188');
-      // Local clock, like the header stamp beside it — a UTC slice reads as a
-      // change that happened hours from now.
-      expect(entry.time).toMatch(/^\d{2}:\d{2}$/);
-      const expected = new Date();
-      expect(Number(entry.time.slice(0, 2))).toBe(expected.getHours());
+      // The instant, not this host's rendering of it. The row has to read in
+      // the same clock as the header stamp beside it, and that stamp is
+      // rendered in the browser — so this one is too (shared/logic.ts
+      // hhmmLocal). Sending hh:mm from here matched only while the server and
+      // the reader were the same machine.
+      expect(entry.time).toBe(new Date(entry.time).toISOString());
+      expect(Date.now() - Date.parse(entry.time)).toBeLessThan(60_000);
     } finally {
       await fetch(`${base}/api/configure/discard`, {
         method: 'POST',
@@ -2418,7 +2420,9 @@ describe('live-mode screen contracts', () => {
     const central = (body.systems as any[]).find((s) => s.planeId === 'central');
     const events = central.events as any[];
     expect(events[0]).toMatchObject({ what: 'credentials updated', who: 'settings · operator' });
-    expect(events[0].time).toMatch(/^\d{2}:\d{2}$/); // local hh:mm, like every other stamp
+    // An instant, like every other stamp on the wire — the reader's browser
+    // decides which clock it reads in.
+    expect(events[0].time).toBe(new Date(events[0].time).toISOString());
   });
 
   it('a stale plane never lets a site claim its alerts are clear', async () => {

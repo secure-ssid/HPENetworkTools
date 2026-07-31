@@ -29,6 +29,7 @@ import { getAuthEvents } from '../api/client';
 import type { AuthEventsData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { planeFilterForParam } from '../app/nav';
+import { hhmmLocal as hhmm, hhmmssLocal } from '@hpe/shared';
 import type { AuthEventRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -43,12 +44,6 @@ const RESULT_OPTIONS = [
 
 function uniq<K extends keyof AuthEventRow>(events: AuthEventRow[], k: K): string[] {
   return events.map((e) => String(e[k])).filter((v, i, a) => a.indexOf(v) === i);
-}
-
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 export default function AuthEvents() {
@@ -231,7 +226,7 @@ export default function AuthEvents() {
                     color: 'var(--nd-text-muted)',
                   }}
                 >
-                  {e.time}
+                  {e.at ? hhmmssLocal(e.at) : e.time}
                 </span>
               </Table.Cell>
               <Table.Cell>

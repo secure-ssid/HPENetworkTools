@@ -73,6 +73,7 @@ import {
   ssidNameProblem,
   vlanIdProblem,
   wpaPassphraseProblem,
+  hhmmLocal as hhmm,
 } from '@hpe/shared';
 import type {
   ConfigForm,
@@ -123,7 +124,6 @@ import {
   QueueEntry,
   ROW,
   auditTone,
-  hhmm,
   queuedEntryFor,
   rowForChange,
 } from './configure/queue';

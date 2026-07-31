@@ -10,7 +10,6 @@ import {
   codeTone,
   countFact,
   factValue,
-  hhmm,
   msFmt,
   staleTitle,
 } from './facts';
@@ -18,6 +17,7 @@ import {
   type SyncHistoryRow,
   type SystemRow,
   type Tone,
+  hhmmLocal as hhmm,
 } from '@hpe/shared';
 
 /**

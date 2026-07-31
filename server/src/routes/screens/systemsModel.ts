@@ -12,7 +12,7 @@ import {
 } from '../../planes/types';
 import { poller } from '../../services/poller';
 import {
-  localHhmm,
+  displayTime,
   relSync,
 } from './overviewModel';
 import {
@@ -118,7 +118,7 @@ export function planeEvents(id: PlaneId): SystemEvent[] {
   return [...fromRegistry, ...fromPoller]
     .sort((a, b) => (a.time === b.time ? 0 : a.time < b.time ? 1 : -1))
     .slice(0, 6)
-    .map((e) => ({ time: localHhmm(e.time), what: e.what, who: e.who }));
+    .map((e) => ({ time: displayTime(e.time), what: e.what, who: e.who }));
 }
 
 /**

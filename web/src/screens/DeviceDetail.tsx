@@ -80,7 +80,7 @@ import {
 import { getDeviceDetail, getTerminalSession, getTerminalSessions, getTickets, rebootDevice } from '../api/client';
 import type { TerminalSession, TerminalSessionEvent } from '../api/client';
 import type { DeviceDetailData } from '../api/client';
-import { deviceTerminalKind, terminalQuickCommands } from '@hpe/shared';
+import { deviceTerminalKind, hhmmLocal as hhmm, terminalQuickCommands } from '@hpe/shared';
 import type {
   CfgHistoryRow,
   Fact,
@@ -98,7 +98,6 @@ import { RecordedSessions } from './deviceDetail/RecordedSessions';
 import {
   CFG_TABS,
   CfgTab,
-  hhmm,
   sectionsToRender,
   servedDeviceDetail,
 } from './deviceDetail/facts';

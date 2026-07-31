@@ -33,6 +33,7 @@ import {
 import { getSites } from '../api/client';
 import type { SitesData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
+import { hhmmLocal as hhmm } from '@hpe/shared';
 import type { SiteHealthTone, SiteRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
@@ -44,12 +45,6 @@ const HEALTH_COLORS: Record<SiteHealthTone, string> = {
   bad: 'var(--nd-danger)',
   stale: 'var(--nd-border-strong)',
 };
-
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
 
 function planeNames(sites: SiteRow[]): string[] {
   const all: string[] = [];

@@ -31,7 +31,7 @@ import {
 } from '../nightdesk';
 import { ackAlert, getAlerts, getTickets, raiseTicket } from '../api/client';
 import type { AlertsData } from '../api/client';
-import { correlateAlerts } from '@hpe/shared';
+import { hhmmLocal as hhmm, correlateAlerts } from '@hpe/shared';
 import type { AlertCorrelation, AlertRow, TicketRow } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
@@ -43,12 +43,6 @@ const SEV_OPTIONS = [
   { value: 'P2', label: 'P2 — major' },
   { value: 'P3', label: 'P3 — minor' },
 ];
-
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
 
 /** The authored banner from design/NtAlerts.dc.html — demo fixtures only. */
 const DEMO_BANNER: Banner = {

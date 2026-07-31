@@ -15,6 +15,7 @@ import {
 import {
   CLOCK_SKEW_TOLERANCE_MS,
   CONNECT_ENDPOINT_KEY,
+  hhmmLocal as hhmm,
   type Fact,
   type ScreenSection,
   type SystemRow,
@@ -173,12 +174,6 @@ export function storedScopes(row: SystemRow, live: LivePlaneState | null): Scope
 }
 
 // -- formatting helpers -------------------------------------------------------
-
-export function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
 
 /** A span of seconds in this screen's own vocabulary. */
 function agoText(sec: number): string {

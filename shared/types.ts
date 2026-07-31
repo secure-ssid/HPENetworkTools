@@ -264,7 +264,18 @@ export interface PathHop {
 }
 
 export interface AuthEvent {
+  /**
+   * Wall-clock for display. Authored fixtures carry it already written
+   * ('09:41:22'); a live row carries `at` as well and the screen renders that
+   * instead, so the column reads in the timezone of whoever is looking.
+   */
   time: string;
+  /**
+   * ISO instant the event happened, when the plane gave one. Absent on the
+   * authored rows and on a live row whose timestamp would not parse — which
+   * is why `time` stays and is not replaced by it.
+   */
+  at?: string;
   who: string;
   mac: string;
   service: string;

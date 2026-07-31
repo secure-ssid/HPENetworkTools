@@ -684,6 +684,45 @@ export function buildSiteTopology(
 export const CLOCK_SKEW_TOLERANCE_MS = 120_000;
 
 /**
+ * An instant as HH:MM on the clock of whoever is READING it.
+ *
+ * Twelve byte-identical copies of this lived in web/src/screens, and the
+ * server had two more of its own — which is where the problem was. A time the
+ * SERVER formats is HH:MM in the server process's timezone; a time the
+ * browser formats is HH:MM in the reader's. They render as the same four
+ * digits and a colon, with nothing on the screen to tell them apart, so
+ * Overview could show a change log in one zone under a "synced" stamp in
+ * another and look entirely consistent doing it. Formatting belongs where the
+ * reader is, and this is the one place it happens.
+ *
+ * Anything that is not an instant comes back unchanged. That is deliberate
+ * and load-bearing: the authored fixtures carry times already written as
+ * '09:15', the evidence trail uses the literal 'now' for a row it is
+ * generating as you read it, and a server that could not parse a stamp sends
+ * '—'. All three are already the right thing to display, and none of them is
+ * an instant this can improve on.
+ */
+export function hhmmLocal(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * The same, with seconds.
+ *
+ * Auth events are the one screen that needs them: it exists to expose bursts
+ * ('6th attempt in 4 minutes'), and at minute precision six rows collapse into
+ * six identical strings.
+ */
+export function hhmmssLocal(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const p2 = (n: number): string => String(n).padStart(2, '0');
+  return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+}
+
+/**
  * Compact relative age in the fixtures' own vocabulary ('40s', '12m', '6h',
  * '3d'), '—' when there is no timestamp to age from. Same shape the authored
  * rows use, so a live row and a demo row read identically.

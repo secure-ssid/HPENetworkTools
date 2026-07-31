@@ -122,10 +122,22 @@ export interface EvidenceSources {
   devices?: () => ReconciledDeviceRow[];
 }
 
-function hhmmOf(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+/**
+ * The instant an evidence row happened, left for the browser to render in the
+ * reader's own clock (shared/logic.ts hhmmLocal).
+ *
+ * Formatting it here produced hh:mm in the SERVER's timezone, which the
+ * ticket drawer then showed alongside note timestamps the browser formats
+ * itself — two clocks, one column, identical shape. Evidence is snapshotted
+ * onto the ticket and read later by someone who was not there; a time in an
+ * unstated zone is a worse fact than an instant.
+ *
+ * Unparseable still resolves to '—' rather than being passed through: it is
+ * not an instant, and a time column is not the place to print whatever it
+ * was instead.
+ */
+function timeOf(iso: string): string {
+  return Number.isNaN(new Date(iso).getTime()) ? '—' : iso;
 }
 
 /** Planes currently failing and serving last-good data — "stale" for reconcile. */
@@ -350,7 +362,7 @@ export class TicketStore {
     }
     for (const e of writes) {
       out.push({
-        time: hhmmOf(e.ts),
+        time: timeOf(e.ts),
         plane: 'PORTAL',
         finding: `portal write: ${e.event} — ${e.result}`,
         raw: `ticket=${e.ticket}${e.httpCode !== undefined ? ` http=${e.httpCode}` : ''}`,
@@ -360,7 +372,7 @@ export class TicketStore {
 
     for (const s of this.sources.sessions().filter((s) => s.device === device).slice(0, 2)) {
       out.push({
-        time: hhmmOf(s.openedAt),
+        time: timeOf(s.openedAt),
         plane: 'LOCAL SSH',
         finding: `recorded shell session by ${s.user} (${s.target})`,
         raw: `recording=${s.file}`,

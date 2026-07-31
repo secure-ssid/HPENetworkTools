@@ -35,12 +35,6 @@ export const ROW: CSSProperties = {
   cursor: 'pointer',
 };
 
-export function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
 /**
  * The broker writes its own outcome word into every audit row ('applied',
  * 'rejected', 'lease-expired', 'render-only (read-only plane)', …). The badge

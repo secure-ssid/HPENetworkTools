@@ -273,11 +273,22 @@ export function isoDay(iso: string): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-/** Local hh:mm for an ISO instant — the screen's own clock, not UTC. */
-export function localHhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+/**
+ * The instant a row happened, for a browser to render in the reader's own
+ * clock (shared/logic.ts hhmmLocal).
+ *
+ * This used to format hh:mm here and send the digits. The comment above it
+ * said "the screen's own clock" — it was the SERVER process's clock, which is
+ * the reader's only while the two are the same machine. Rendered beside times
+ * the browser formats itself, in the same four-digits-and-a-colon, one screen
+ * showed two timezones and nothing said so.
+ *
+ * A stamp that will not parse still resolves here, to '—'. It is not an
+ * instant and there is nothing for the browser to improve on; passing the
+ * unparseable value through would put it in a time column.
+ */
+export function displayTime(iso: string): string {
+  return Number.isNaN(new Date(iso).getTime()) ? '—' : iso;
 }
 
 /**
@@ -312,14 +323,14 @@ export function liveOverviewChanges(): { changes: ChangeLogEntry[]; unreadable: 
         const t = e as unknown as Partial<RetentionTombstone>;
         const span = t.coveringFrom && t.coveringTo ? ` covering ${isoDay(t.coveringFrom)} to ${isoDay(t.coveringTo)}` : '';
         return {
-          time: localHhmm(e.ts),
+          time: displayTime(e.ts),
           text: `Older audit history discarded by retention policy${span} — those entries are no longer available here`,
           who: 'retention · write broker',
         };
       }
       const change = queued.get(e.changeId);
       return {
-        time: localHhmm(e.ts),
+        time: displayTime(e.ts),
         text: change ? `${change.what} — ${change.where}` : `${e.event} ${e.kind} — ${e.result}`,
         who: `${e.ticket} · write broker`,
       };

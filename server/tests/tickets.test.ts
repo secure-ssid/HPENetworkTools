@@ -203,6 +203,11 @@ describe('TicketStore evidence collection', () => {
     expect(t.evidence[3].finding).toBe('portal write: reboot — rejected');
     expect(t.evidence[4]).toMatchObject({ plane: 'LOCAL SSH' });
     expect(t.evidence[4].raw).toBe('recording=sw-riv-1-2026-07-26T08-00-00.jsonl');
+    // Instants, not this host's rendering of them. Evidence is snapshotted
+    // onto the ticket and read later by someone who was not here; hh:mm in an
+    // unstated timezone is a worse fact than the instant it came from.
+    expect(t.evidence[2].time).toBe('2026-07-26T09:10:00Z');
+    expect(t.evidence[4].time).toBe('2026-07-26T08:00:00Z');
     // nothing from other devices leaked in
     expect(t.evidence.every((e) => e.device === 'sw-riv-1')).toBe(true);
     // A whole log claims no holes. A caveat printed over intact evidence is
@@ -257,6 +262,22 @@ describe('TicketStore evidence collection', () => {
    * later. The change log is read newest-first and capped, so what falls off
    * the cap is the OLDEST — the half an audit is usually asking about. A
    * healthy disk is enough to cause it; nothing has to go wrong. */
+  it('refuses to put an unparseable stamp in a time column', () => {
+    // Passing it through would print whatever the plane sent where a time
+    // belongs; the browser cannot improve on it, and '—' is the answer this
+    // codebase already gives for a stamp it cannot read.
+    const store = new TicketStore(dir, {
+      devices: () => [],
+      sessions: () => [
+        { file: 'x.jsonl', device: 'sw-riv-1', user: 'r.okafor', target: '10.42.8.11', openedAt: 'not-a-date' },
+      ],
+      changeLog: () => logOf([]),
+    });
+
+    const row = store.raiseFromAlert(ALERT).evidence.find((e) => e.plane === 'LOCAL SSH');
+    expect(row?.time).toBe('—');
+  });
+
   it('records a change log longer than it was willing to read as a gap in the evidence', () => {
     const store = new TicketStore(dir, {
       devices: () => [],

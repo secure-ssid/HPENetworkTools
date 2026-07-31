@@ -60,6 +60,7 @@ import {
   pathFor,
   planeKeyOf,
   timelineFor,
+  hhmmLocal as hhmm,
 } from '@hpe/shared';
 import type {
   ClientDetailLive,
@@ -90,12 +91,6 @@ const MEDIUM_OPTIONS = [
 /** Numeric value of a metric string; fixtures use U+2212 for negative dBm. */
 function metricNum(s: string): number {
   return parseFloat(s.replace(/−/g, '-'));
-}
-
-function hhmm(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 /**
