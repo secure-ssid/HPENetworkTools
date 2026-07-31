@@ -27,6 +27,7 @@ import type {
   DeviceClientSet,
   DeviceProfile,
   DeviceRow,
+  EndpointRow,
   EndpointVariant,
   Fact,
   FailReasonRow,
@@ -138,6 +139,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: 'Tickets', view: 'tickets' },
       { label: 'Clients', view: 'clients' },
       { label: 'Auth events', view: 'auth' },
+      { label: 'ClearPass', view: 'clearpass' },
     ],
   },
   {
@@ -189,6 +191,7 @@ export const CRUMBS: CrumbMap = {
   tickets: [{ label: 'Operate' }, { label: 'Tickets' }],
   clients: [{ label: 'Operate' }, { label: 'Clients' }],
   auth: [{ label: 'Operate' }, { label: 'Auth & policy events' }],
+  clearpass: [{ label: 'Operate' }, { label: 'ClearPass' }],
   inventory: [{ label: 'Inventory' }, { label: 'Explorer' }],
   sites: [{ label: 'Inventory' }, { label: 'Sites' }],
   devices: [{ label: 'Inventory' }, { label: 'Devices' }],
@@ -503,6 +506,30 @@ export const POLICY_SERVICES: PolicyServiceRow[] = [
   { name: 'AOS-8 Controller 802.1X', detail: 'Lakeshore + Airport Annex', rate: '744', state: 'ok', tone: 'success' },
   { name: 'Remote VIA / VPN', detail: 'AOS-10 gateways, OnGuard posture', rate: '368', state: 'ok', tone: 'success' },
   { name: 'Device Admin (TACACS)', detail: 'engineer + portal service accounts', rate: '96', state: 'ok', tone: 'success' },
+];
+
+/**
+ * ClearPass endpoint repository (demo). 15 rows spanning the categories,
+ * statuses and OS families the endpoint table is meant to show — Computer /
+ * Phone / Printer / IoT devices, Known / Unknown / Disabled statuses, and
+ * Windows / iOS / Android / macOS / Linux operating systems.
+ */
+export const CLEARPASS_ENDPOINTS: EndpointRow[] = [
+  { id: 'ep-001', mac: '3c:22:fb:41:0a:19', ip: '10.44.12.88', hostname: 'm-okonjo-ipad', status: 'Known', category: 'Phone', family: 'iOS', os: 'iOS 17.5', profile: 'Clinical staff', updatedAt: '2 minutes ago' },
+  { id: 'ep-002', mac: '00:1b:c5:09:7f:22', ip: '10.42.30.44', hostname: 'infusion-4a-12', status: 'Known', category: 'Computer', family: 'Embedded', os: 'RTOS 4.2', profile: 'Medical device', updatedAt: '4 minutes ago' },
+  { id: 'ep-003', mac: '6e:41:0d:99:2b:af', ip: null, hostname: null, status: 'Unknown', category: null, family: null, os: null, profile: 'Quarantine', updatedAt: '9 minutes ago' },
+  { id: 'ep-004', mac: '2c:33:61:8a:04:12', ip: '10.42.18.90', hostname: 'guest-4488', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 11', profile: 'Guest', updatedAt: '11 minutes ago' },
+  { id: 'ep-005', mac: '8c:85:90:22:d1:04', ip: '10.42.14.19', hostname: 'j-alvarez-mbp', status: 'Known', category: 'Computer', family: 'macOS', os: 'macOS 14.5 Sonoma', profile: 'IT admin', updatedAt: '12 minutes ago' },
+  { id: 'ep-006', mac: '00:0c:29:7a:41:88', ip: '10.48.10.12', hostname: 'xray-cart-2', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 10 IoT', profile: 'Medical device', updatedAt: '18 minutes ago' },
+  { id: 'ep-007', mac: '00:17:c8:20:11:70', ip: '10.42.18.4', hostname: 'printer-2f-04', status: 'Known', category: 'Printer', family: 'Embedded', os: null, profile: 'Printer', updatedAt: '21 minutes ago' },
+  { id: 'ep-008', mac: 'de:ad:0b:14:65:22', ip: '10.44.12.140', hostname: 's-mehta-iphone', status: 'Known', category: 'Phone', family: 'iOS', os: 'iOS 17.4', profile: 'Clinical staff', updatedAt: '24 minutes ago' },
+  { id: 'ep-009', mac: 'a4:83:e7:5f:00:31', ip: '10.70.8.44', hostname: 'p-singh-surface', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 11', profile: 'Remote worker', updatedAt: '29 minutes ago' },
+  { id: 'ep-010', mac: '00:1e:c0:44:81:07', ip: '10.42.60.14', hostname: 'badge-reader-14', status: 'Disabled', category: 'IoT', family: 'Embedded', os: null, profile: 'Building system (revoked)', updatedAt: '1 hour ago' },
+  { id: 'ep-011', mac: '48:2a:e3:11:07:c4', ip: null, hostname: 'lab-laptop-7', status: 'Disabled', category: 'Computer', family: 'Windows', os: 'Windows 10', profile: 'Disabled — AD account locked', updatedAt: '2 hours ago' },
+  { id: 'ep-012', mac: '9a:11:74:0c:33:81', ip: '10.48.30.09', hostname: 'a-ferreira-android', status: 'Known', category: 'Phone', family: 'Android', os: 'Android 14', profile: 'Clinical staff', updatedAt: '2 hours ago' },
+  { id: 'ep-013', mac: '00:04:f2:aa:19:60', ip: '10.42.16.114', hostname: 'voip-3f-114', status: 'Known', category: 'Phone', family: 'Embedded', os: null, profile: 'Voice', updatedAt: '3 hours ago' },
+  { id: 'ep-014', mac: '00:50:56:11:c4:07', ip: '10.48.30.61', hostname: 'ct-scanner-b', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 10 IoT', profile: 'Medical device', updatedAt: '5 hours ago' },
+  { id: 'ep-015', mac: 'f0:18:98:5c:11:73', ip: null, hostname: null, status: 'Unknown', category: null, family: null, os: null, profile: 'Guest pending', updatedAt: '6 hours ago' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1263,6 +1290,7 @@ export const PLANE_WRITE_MODE: Record<PlaneKey, WriteMode> = {
   // on GET /api/systems/state), which the Systems Configuration tab reads
   // directly to enable/disable its own mutation controls.
   sse: 'read only',
+  opsramp: 'read only',
 };
 
 /**
@@ -1286,6 +1314,7 @@ export const PLANE_KEY_BY_LABEL: Record<Plane, PlaneKey | null> = {
   CLEARPASS: 'clearpass',
   UXI: 'uxi',
   SSE: 'sse',
+  OPSRAMP: 'opsramp',
   'THIRD-PARTY': null,
 };
 
@@ -1691,6 +1720,8 @@ export const CONNECT_TYPE_OPTIONS: SelectOption[] = [
   { value: 'clearpass', label: 'ClearPass' },
   { value: 'uxi', label: 'HPE Aruba UXI (sensors)' },
   { value: 'sse', label: 'HPE Aruba Networking SSE' },
+  { value: 'edgeconnect', label: 'HPE Aruba EdgeConnect SD-WAN' },
+  { value: 'opsramp', label: 'HPE OpsRamp' },
 ];
 
 /** Connect-a-system: type-dependent endpoint field — `endpoints` (7 variants). */
@@ -1707,6 +1738,16 @@ export const CONNECT_ENDPOINTS: Record<SystemTypeKey, EndpointVariant> = {
     label: 'SSE Admin API base — optional',
     help: 'Defaults to admin-api.axissecurity.com; auth is a scoped static Admin API token (Settings → Admin API in the SSE console).',
     hint: 'admin-api.axissecurity.com',
+  },
+  opsramp: {
+    label: 'OpsRamp tenant ID',
+    help: 'OpsRamp tenant ID from your account settings.',
+    hint: 'tenant-123',
+  },
+  edgeconnect: {
+    label: 'Orchestrator URL',
+    help: 'HTTPS URL of the EdgeConnect Orchestrator',
+    hint: 'https://orchestrator.example.com',
   },
 };
 
@@ -1733,6 +1774,12 @@ export const CONNECT_FIELDS: Record<SystemTypeKey, ConnectField[]> = {
     { key: 'password', label: 'Password', help: 'Stored with the plane credentials.', secret: true },
   ],
   local: [
+    // Read by aoscx.ts's AosCxAdapter.isComplete(): baseUrl + username +
+    // password together turn the local plane's stub into a real read-only
+    // REST poll (system/interfaces/vlans) of one AOS-CX switch, on top of
+    // the recorded-SSH fields below. Optional here because the SSH-only
+    // path (no REST inventory) is still a valid, complete local plane.
+    { key: 'baseUrl', label: 'Switch URL', help: 'HTTPS URL of the switch management interface, e.g. https://10.0.0.1', optional: true },
     { key: 'username', label: 'SSH username', help: 'Account the collector opens recorded sessions with.' },
     { key: 'password', label: 'SSH password', help: 'Omit when a private key is supplied.', secret: true, optional: true },
     { key: 'privateKey', label: 'SSH private key', help: 'PEM body; preferred over a password.', secret: true, optional: true },
@@ -1751,6 +1798,13 @@ export const CONNECT_FIELDS: Record<SystemTypeKey, ConnectField[]> = {
   sse: [
     { key: 'token', label: 'Admin API token', help: 'Scoped static token from Settings → Admin API in the SSE console — sent as Authorization: Bearer.', secret: true },
   ],
+  opsramp: [
+    { key: 'baseUrl', label: 'Base URL', help: 'Leave blank for app.opsramp.net.', optional: true },
+  ],
+  edgeconnect: [
+    { key: 'username', label: 'Username', help: 'Read-only management account on the Orchestrator.' },
+    { key: 'password', label: 'Password', help: 'Stored with the plane credentials.', secret: true },
+  ],
 };
 
 /**
@@ -1768,18 +1822,22 @@ export const CONNECT_HIDE_CLIENT_CREDENTIALS: readonly SystemTypeKey[] = ['sse']
  *   workspaceId · aos8.ts:264 master · clearpass.ts:213 host · uxi.ts:190
  *   baseUrl (optional) · sse.ts baseUrl (optional) · terminal.ts:410 host
  *   (the collector's jump box).
- * `classic` has no adapter yet; its record keeps the generic baseUrl key.
+ * `classic` reuses CentralAdapter (central.ts's isNewCentralGateway() already
+ * tells New Central and Classic gateways apart per-call), so it saves under
+ * the same gatewayBaseUrl key central does.
  */
 export const CONNECT_ENDPOINT_KEY: Record<SystemTypeKey, string> = {
   central: 'gatewayBaseUrl',
   mist: 'apiHost',
-  classic: 'baseUrl',
+  classic: 'gatewayBaseUrl',
   greenlake: 'workspaceId',
   aos8: 'master',
   local: 'host',
   clearpass: 'host',
   uxi: 'baseUrl',
   sse: 'baseUrl',
+  opsramp: 'tenantId',
+  edgeconnect: 'baseUrl',
 };
 
 /** Success alert body after "Test connection" — `testResult`. */

@@ -49,8 +49,10 @@ import {
 import { currentActor } from '../services/auth';
 import { settings, type PlaneCredentials, type SettingsStore } from '../config/settings';
 import { Aos8Adapter } from './aos8';
+import { AosCxAdapter } from './aoscx';
 import { CentralAdapter } from './central';
 import { ClearPassAdapter } from './clearpass';
+import { EdgeConnectAdapter } from './edgeconnect';
 import { GreenLakeAdapter } from './greenlake';
 import { MistAdapter } from './mist';
 import { SseAdapter } from './sse';
@@ -500,6 +502,17 @@ export class PlaneRegistry {
       state.health = 'warning';
       state.note = 'credentials saved — first sync pending';
       adapter = new CentralAdapter(creds, state, (call) => this.recordCall(id, call));
+    } else if (id === 'classic' && creds && CentralAdapter.isComplete(creds)) {
+      // Classic Central is the SAME REST surface as New Central — central.ts's
+      // isNewCentralGateway() tells them apart per-call from the gateway URL
+      // alone (Classic just answers false: no direct-write, legacy config
+      // namespace). So 'classic' reuses CentralAdapter rather than a second
+      // adapter class; the two plane ids stay independently credentialed and
+      // independently linked in the registry.
+      baseHealth = 'healthy';
+      state.health = 'warning';
+      state.note = 'credentials saved — first sync pending';
+      adapter = new CentralAdapter(creds, state, (call) => this.recordCall(id, call));
     } else if (id === 'greenlake' && creds && GreenLakeAdapter.isComplete(creds)) {
       // Real adapter — same lifecycle as central above.
       baseHealth = 'healthy';
@@ -530,12 +543,24 @@ export class PlaneRegistry {
       state.health = 'warning';
       state.note = 'credentials saved — first sync pending';
       adapter = new Aos8Adapter(creds, state, (call) => this.recordCall(id, call));
+    } else if (id === 'local' && creds && AosCxAdapter.isComplete(creds)) {
+      // Real adapter — same lifecycle as central above.
+      baseHealth = 'healthy';
+      state.health = 'warning';
+      state.note = 'credentials saved — first sync pending';
+      adapter = new AosCxAdapter(id, state, creds, (call) => this.recordCall(id, call));
     } else if (id === 'sse' && creds && SseAdapter.isComplete(creds)) {
       // Real adapter — same lifecycle as central above.
       baseHealth = 'healthy';
       state.health = 'warning';
       state.note = 'credentials saved — first sync pending';
       adapter = new SseAdapter(creds, state, (call) => this.recordCall(id, call));
+    } else if (id === 'edgeconnect' && creds && EdgeConnectAdapter.isComplete(creds)) {
+      // Real adapter — same lifecycle as central above.
+      baseHealth = 'healthy';
+      state.health = 'warning';
+      state.note = 'credentials saved — connecting…';
+      adapter = new EdgeConnectAdapter(id, state, creds, (call) => this.recordCall(id, call));
     } else if (linked) {
       baseHealth = 'warning';
       state.health = 'warning';

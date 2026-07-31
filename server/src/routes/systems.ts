@@ -145,12 +145,13 @@ const HOST_KEYS = ['host', 'baseUrl', 'url', 'endpoint', 'jumpHost', 'address', 
  * (workspaceId + clientId + clientSecret) was therefore rejected as
  * "incomplete" while the same set plus any throwaway baseUrl sailed through.
  *
- * HOST_KEYS remains the fallback for planes with no adapter-side rule (classic,
- * local), where a reachability check needs something real to dial.
+ * HOST_KEYS remains the fallback for planes with no adapter-side rule (local),
+ * where a reachability check needs something real to dial.
  */
 function completeCredsFor(plane: PlaneId, creds: Record<string, string> | null): boolean {
   if (!creds) return false;
   if (plane === 'central') return CentralAdapter.isComplete(creds);
+  if (plane === 'classic') return CentralAdapter.isComplete(creds);
   if (plane === 'uxi') return UxiAdapter.isComplete(creds);
   if (plane === 'greenlake') return GreenLakeAdapter.isComplete(creds);
   if (plane === 'mist') return MistAdapter.isComplete(creds);
@@ -594,7 +595,7 @@ systemsRouter.post(
 
     const started = Date.now();
     const outcome =
-      plane === 'central'
+      plane === 'central' || plane === 'classic'
         ? await testCentral(creds)
         : plane === 'uxi'
           ? await testUxi(creds)
@@ -607,7 +608,7 @@ systemsRouter.post(
 
     registry.recordCall(plane, {
       path:
-        plane === 'central'
+        plane === 'central' || plane === 'classic'
           ? 'OAuth client-credentials (connection test)'
           : plane === 'uxi' || plane === 'greenlake'
             ? 'POST sso token.oauth2 (connection test)'

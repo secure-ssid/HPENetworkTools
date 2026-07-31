@@ -40,7 +40,13 @@
  *                  loses the Mist SUB rows until this section lands. The
  *                  device row's `licence: 'unknown'` says "not read", not
  *                  "does not exist".
- *   config         no SSID/VLAN read, so capabilities().configRead is false.
+ *
+ * config  GET /api/v1/orgs/{orgId}/wlans — a single non-paginated call that
+ *         returns the org's WLAN templates; readConfig() maps them into
+ *         SsidObject[] so the Configure screen gets a real 'configured'
+ *         inventory for this plane. Non-fatal: a failure here reports
+ *         `unavailable: ['ssids']` rather than failing the cycle, same
+ *         contract every other optional section in this file uses.
  *
  * Failure policy: `sites` and `devices` are the inventory this plane exists
  * for — either failing throws, naming the section. `clients` and `alarms` are
@@ -57,11 +63,19 @@ import type {
   AlertRow,
   ClientRow,
   ClientType,
+  ConfigInventory,
+  DetailFetchState,
   DeviceRow,
   DeviceType,
+  MistSleRow,
   PlaneDatasetKey,
   SiteRow,
+  SiteTopologyLive,
+  SiteTopologySection,
+  SsidObject,
   Tone,
+  TopologyDeviceNode,
+  TopologyLink,
 } from '@hpe/shared';
 import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
@@ -376,6 +390,159 @@ export function mapMistAlarm(
   };
 }
 
+/** Case/separator-insensitive classifier match: 'ap_health' / 'ap-health' /
+ *  'ap health' all name the same SLE dimension. */
+function normalizeClassifier(raw: string): string {
+  return raw.toLowerCase().replace(/[\s_-]+/g, '');
+}
+
+/**
+ * One org-insights row (`GET /api/v1/orgs/{orgId}/insights/site`) → an SLE
+ * score per site. `results` carries one entry per classifier this org scores
+ * — a classifier Mist never returns for this site (no WAN edge, insufficient
+ * data) is `null`, not an assumed 0; `overall` averages only the classifiers
+ * actually present, so a WAN-less site is not penalised for a dimension Mist
+ * never scores it on.
+ */
+export function mapMistSle(raw: unknown, siteNameById: ReadonlyMap<string, string>): MistSleRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const siteUuid = str(r.site_id);
+  const name = siteUuid !== null ? (siteNameById.get(siteUuid) ?? null) : null;
+  const site = siteIdForName(name);
+  const results = Array.isArray(r.results) ? r.results : [];
+  const scores: Partial<Record<'coverage' | 'capacity' | 'roaming' | 'apHealth' | 'wan', number>> = {};
+  for (const entry of results) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    const classifier = str(e.classifier);
+    const value = num(e.value);
+    if (classifier === null || value === null) continue;
+    switch (normalizeClassifier(classifier)) {
+      case 'coverage':
+        scores.coverage = value;
+        break;
+      case 'capacity':
+        scores.capacity = value;
+        break;
+      case 'roaming':
+        scores.roaming = value;
+        break;
+      case 'aphealth':
+        scores.apHealth = value;
+        break;
+      case 'wan':
+        scores.wan = value;
+        break;
+      default:
+        break; // an SLE dimension this adapter does not surface yet
+    }
+  }
+  const present = Object.values(scores).filter((v): v is number => v !== undefined);
+  const overall = present.length > 0 ? present.reduce((a, b) => a + b, 0) / present.length : null;
+  return {
+    siteId: site.siteId,
+    siteName: site.siteName,
+    coverage: scores.coverage ?? null,
+    capacity: scores.capacity ?? null,
+    roaming: scores.roaming ?? null,
+    apHealth: scores.apHealth ?? null,
+    wan: scores.wan ?? null,
+    overall,
+  };
+}
+
+/** Mist `wlans.auth.type` → the same display-label vocabulary Central's
+ *  mapCentralSsid uses, so Configure rows read consistently across planes. */
+function mistSecurityLabel(authType: string | null): string {
+  const s = (authType ?? '').toLowerCase();
+  if (s === 'eap' || s === '8021x' || s === 'dot1x') return 'WPA2-Enterprise';
+  if (s === 'psk' || s === 'wpa2-psk' || s === 'wpa3-sae') return 'WPA2-PSK';
+  if (s === 'open') return 'Open';
+  return authType ?? 'Not reported';
+}
+
+/**
+ * A Mist org WLAN template (GET /orgs/{orgId}/wlans row) → SsidObject. Mist
+ * has no separate profile-name/broadcast-name split — `ssid` IS the
+ * identifier — so both `name` and the broadcast label read the same field.
+ */
+export function mapMistWlan(raw: unknown): SsidObject | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.ssid);
+  if (!name) return null;
+  const auth = r.auth && typeof r.auth === 'object' ? (r.auth as Record<string, unknown>) : {};
+  const vlan = str(r.vlan_id) ?? '—';
+  const enabled = typeof r.enabled === 'boolean' ? r.enabled : null;
+  return {
+    kind: 'ssid',
+    origin: 'configured',
+    name,
+    vlan,
+    security: mistSecurityLabel(str(auth.type)),
+    targets: enabled === null ? 'State not reported' : enabled ? 'Enabled template' : 'Disabled template',
+    plane: 'MIST',
+    tone: 'accent',
+  };
+}
+
+/**
+ * One `GET /api/v1/sites/{siteId}/topology` `results[]` entry → a graph node.
+ * Mist's documented shape (mistsys/mist_openapi) carries id/mac/name/type —
+ * no per-node connectivity or health verdict the way Central's topology does,
+ * so `status`/`health` are left unstated rather than guessed.
+ */
+export function mapMistTopologyNode(raw: unknown): TopologyDeviceNode | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const mac = macKey(str(r.mac));
+  // The graph key: Mist's node id is a MAC, not a device serial, but the
+  // links below reference it the same way Central's links reference serials.
+  const key = mac ?? str(r.id);
+  if (!key) return null;
+  const kind = str(r.type);
+  const type = kind === 'ap' ? 'Access Point' : kind === 'switch' ? 'Switch' : kind === 'gateway' ? 'Gateway' : 'Unmanaged';
+  const deviceFunction =
+    kind === 'ap' ? 'Campus Access Point' : kind === 'switch' ? 'Access Switch' : kind === 'gateway' ? 'Mobility GW' : '-';
+  return {
+    serial: key,
+    name: str(r.name) ?? mac ?? key,
+    type,
+    deviceFunction,
+    status: '', // not stated by this endpoint's documented shape
+    health: null,
+    healthReason: null,
+    model: null,
+    ipv4: null,
+    mac,
+  };
+}
+
+/** One node's `links[]` entries → TopologyLink, keyed by the near node's MAC/id. */
+export function mapMistTopologyLinks(raw: unknown, nearKey: string): TopologyLink[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TopologyLink[] = [];
+  for (const l of raw) {
+    if (!l || typeof l !== 'object') continue;
+    const rec = l as Record<string, unknown>;
+    const farKey = macKey(str(rec.mac));
+    if (!farKey) continue;
+    const portId = str(rec.port_id);
+    out.push({
+      from: nearKey,
+      to: farKey,
+      fromPorts: [],
+      toPorts: portId ? [{ name: portId }] : [],
+      speedBps: null,
+      // Mist's topology endpoint does not publish a link-level health
+      // verdict in the documented shape — null, not a fabricated 'Good'.
+      health: null,
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
@@ -429,6 +596,8 @@ const SECTION_DATASET: Record<string, PlaneDatasetKey> = {
   devices: 'devices',
   clients: 'clients',
   alarms: 'alerts',
+  config: 'config',
+  sle: 'mistSle',
 };
 
 /**
@@ -452,6 +621,10 @@ export class MistAdapter implements PlaneAdapter {
   private readonly baseUrl: string;
   private readonly orgId: string;
   private readonly token: string;
+  /** Portal site key (name and 'ext-<slug>' id) → Mist's native site UUID,
+   *  refreshed on every pull() — the topology endpoint is keyed by the
+   *  latter, but callers only hold the former (see central.ts's twin map). */
+  private readonly nativeSiteIds = new Map<string, string>();
 
   constructor(
     creds: PlaneCredentials,
@@ -486,10 +659,11 @@ export class MistAdapter implements PlaneAdapter {
    *                 path exists for it, so the recorded-SSH gate must not open.
    *   brokeredWrite false — README integration table: read-only. Config stays
    *                 in the Mist dashboard and the portal never fakes an edit.
-   *   configRead    false — pull() reads inventory/clients/alarms only.
+   *   configRead    true — pull() reads org WLAN templates back (readConfig()
+   *                 below) into PlanePull.config.
    */
   capabilities(): PlaneCapabilities {
-    return { localShell: false, brokeredWrite: false, configRead: false };
+    return { localShell: false, brokeredWrite: false, configRead: true };
   }
 
   state(): PlaneState {
@@ -527,6 +701,14 @@ export class MistAdapter implements PlaneAdapter {
       const id = str(r.id);
       const name = str(r.name);
       if (id && name) siteNameById.set(id, name);
+    }
+    // Refreshed wholesale each cycle: a site renamed/removed on the Mist side
+    // must not leave a stale uuid answering for a name that no longer maps to it.
+    this.nativeSiteIds.clear();
+    for (const [uuid, name] of siteNameById) {
+      const mapped = siteIdForName(name);
+      this.nativeSiteIds.set(mapped.siteName, uuid);
+      this.nativeSiteIds.set(mapped.siteId, uuid);
     }
 
     const devices = deviceRows
@@ -575,6 +757,28 @@ export class MistAdapter implements PlaneAdapter {
     }
 
     const clients = await this.pullClients(siteRows, siteNameById, deviceNameByKey, missing, truncated);
+
+    // Config read is additive too: a failed WLAN-template fetch must not
+    // touch device/client/alarm inventory, it just reports its own gap via
+    // ConfigInventory.unavailable (readConfig() below never throws).
+    const config = await this.readConfig(org);
+    if (config.unavailable?.includes('ssids')) missing.push('config');
+
+    // -- SLE (optional, non-fatal) --------------------------------------------
+    // Service Level Expectations — the platform's headline per-site score.
+    // A single un-paginated org-wide read, so a failure or an unreadable shape
+    // simply omits the section (never a fabricated all-null table).
+    let mistSle: MistSleRow[] | null = null;
+    try {
+      const sleRead = await this.fetchRaw(`/api/v1/orgs/${org}/insights/site?duration=1h`);
+      if (Array.isArray(sleRead)) {
+        mistSle = sleRead.map((item) => mapMistSle(item, siteNameById)).filter((s): s is MistSleRow => s !== null);
+      } else {
+        missing.push('sle');
+      }
+    } catch {
+      missing.push('sle');
+    }
 
     // -- rows ----------------------------------------------------------------
     const countBySite = new Map<string, number>();
@@ -629,6 +833,8 @@ export class MistAdapter implements PlaneAdapter {
     if (alerts !== null) {
       summary.push(`${formatCount(alerts.filter((a) => a.state === 'open').length)} open alarms`);
     }
+    if (config.ssids) summary.push(`${formatCount(config.ssids.length)} SSID templates`);
+    if (mistSle !== null) summary.push(`${formatCount(mistSle.length)} SLE scores`);
     if (missing.length > 0) summary.push(`not available: ${missing.join(', ')}`);
     if (truncated.length > 0) summary.push(`truncated: ${truncated.join(', ')}`);
     this.stateRef.note = summary.join(' · ');
@@ -645,10 +851,62 @@ export class MistAdapter implements PlaneAdapter {
     return {
       devices,
       sites,
+      config,
       ...(clients === null ? {} : { clients }),
       ...(alerts === null ? {} : { alerts }),
+      ...(mistSle !== null ? { mistSle } : {}),
       ...(partial.length > 0 ? { partial } : {}),
     };
+  }
+
+  /**
+   * The plane's link topology for ONE site — GET /api/v1/sites/{siteId}/topology
+   * (mistsys/mist_openapi). Callers (detailCache.ts's liveSiteTopology) hold
+   * only the portal's site key (name, or the 'ext-<slug>' id minted from it);
+   * nativeSiteIds (built fresh every pull()) resolves that back to Mist's
+   * site UUID the endpoint actually wants.
+   *
+   * Returns null — not a failed read — when the site is unknown to this
+   * plane, or when Mist answers 404: not every site has a topology graph, and
+   * an absent graph is not evidence this adapter could not read one.
+   */
+  async siteTopology(siteId: string): Promise<SiteTopologyLive | null> {
+    const id = (siteId ?? '').trim();
+    if (!id) return null;
+    const native = this.nativeSiteIds.get(id) ?? this.nativeSiteIds.get(siteIdForName(id).siteId) ?? null;
+    if (native === null) return null; // not a Mist site — nothing this plane can answer
+    const res = await this.get(`/api/v1/sites/${encodeURIComponent(native)}/topology`);
+    if (res.status === 404) return null; // Mist does not publish a graph for every site
+    const sections: Partial<Record<SiteTopologySection, DetailFetchState>> = {};
+    const out: SiteTopologyLive = { siteId: id, source: { plane: 'mist', at: new Date().toISOString(), sections } };
+    if (res.status < 200 || res.status >= 300 || !res.parsed) {
+      sections.nodes = 'failed';
+      sections.links = 'failed';
+      out.source.note = `topology: HTTP ${res.status}`;
+      return out;
+    }
+    const body = res.body && typeof res.body === 'object' ? (res.body as Record<string, unknown>) : {};
+    const results = Array.isArray(body.results) ? body.results : null;
+    if (results === null) {
+      sections.nodes = 'failed';
+      sections.links = 'failed';
+      out.source.note = 'topology: a 200 whose body carried no readable `results` array';
+      return out;
+    }
+    const nodes: TopologyDeviceNode[] = [];
+    const links: TopologyLink[] = [];
+    for (const item of results) {
+      const node = mapMistTopologyNode(item);
+      if (!node) continue;
+      nodes.push(node);
+      const rec = item as Record<string, unknown>;
+      links.push(...mapMistTopologyLinks(rec.links, node.serial));
+    }
+    out.nodes = nodes;
+    out.links = links;
+    sections.nodes = nodes.length > 0 ? 'ok' : 'empty';
+    sections.links = links.length > 0 ? 'ok' : 'empty';
+    return out;
   }
 
   // -- internals -------------------------------------------------------------
@@ -690,6 +948,25 @@ export class MistAdapter implements PlaneAdapter {
   }
 
   /**
+   * Org WLAN templates — the Configure screen's inventory for this plane.
+   * `/orgs/{orgId}/wlans` answers a bare array in one call (no paging
+   * envelope), so fetchRaw() is enough. Non-fatal: a failure here reports
+   * `unavailable: ['ssids']` rather than failing pull(), same contract every
+   * other optional section in this file uses.
+   */
+  private async readConfig(org: string): Promise<ConfigInventory> {
+    const source = `Mist /api/v1/orgs/${this.orgId}/wlans`;
+    try {
+      const body = await this.fetchRaw(`/api/v1/orgs/${org}/wlans`);
+      const rows = Array.isArray(body) ? body : [];
+      const ssids = rows.map(mapMistWlan).filter((s): s is SsidObject => s !== null);
+      return { mode: 'configured', ssids, source };
+    } catch {
+      return { mode: 'configured', unavailable: ['ssids'], source };
+    }
+  }
+
+  /**
    * All pages of a list endpoint. The authoritative row count comes from
    * X-Page-Total (or a search envelope's `total`) and the page size the server
    * actually used from X-Page-Limit — a gateway that trims `limit=1000` down
@@ -698,6 +975,23 @@ export class MistAdapter implements PlaneAdapter {
    * Capped at MAX_PAGES; a walk that ends with rows still outstanding is
    * reported as truncated rather than passed off as the whole dataset.
    */
+  /**
+   * GET → parsed JSON body directly, no pagination walk. For single-page
+   * endpoints like the org insights read — a 429 is still paced, and a
+   * non-2xx or unreadable body throws so the caller's catch marks the
+   * section unavailable rather than presenting it as an empty result.
+   */
+  private async fetchRaw(path: string): Promise<unknown> {
+    const res = await this.pacedGet(path);
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`HTTP ${res.status} from ${path}`);
+    }
+    if (!res.parsed) {
+      throw new Error(`unreadable body from ${path}`);
+    }
+    return res.body;
+  }
+
   private async fetchAll(path: string): Promise<FetchAllResult> {
     const sep = path.includes('?') ? '&' : '?';
     const out: unknown[] = [];
