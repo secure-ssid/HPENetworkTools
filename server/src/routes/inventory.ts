@@ -10,6 +10,7 @@ import {
   type InventorySearchPage,
   type InventoryTreeNode,
   type InventoryTreePage,
+  type PageCursorState,
   type SiteRow,
   type SseKindReadStatus,
   type SseObjectKind,
@@ -109,9 +110,42 @@ function queryFrom(req: Request): string {
   return typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase().slice(0, 120) : '';
 }
 
-function paginate<T>(rows: T[], offset: number, limit: number): { rows: T[]; nextCursor: string | null } {
+/**
+ * Slice one page, and say whether the cursor still pointed at a real one.
+ *
+ * `rows.slice(offset, ...)` past the end returns `[]`, and the next-cursor
+ * test then yields null — so a cursor whose page has vanished produces a
+ * response byte-identical to "that was the last page". The inventory is a
+ * live cache read fresh on every request: a plane going stale, unlinking, or
+ * simply losing devices between two clicks of Load More shortens the list
+ * under a half-finished paging run. Answering that with end-of-list tells the
+ * operator they have now seen the whole estate, which is the one thing that
+ * is certainly not true.
+ *
+ * A cursor is only ever issued when `offset + page.length < rows.length`, so
+ * landing at or past `rows.length` cannot be a client that paged too far. The
+ * exception is offset 0, which no cursor produced and which over an empty
+ * list means exactly what it looks like: nothing matched.
+ */
+/** What `pagedChildrenFor` hands back, before the route names the parent. */
+interface PagedChildren {
+  nodes: InventoryTreeNode[];
+  total: number;
+  nextCursor: string | null;
+  cursorState: PageCursorState;
+}
+
+function paginate<T>(
+  rows: T[],
+  offset: number,
+  limit: number,
+): { rows: T[]; nextCursor: string | null; cursorState: PageCursorState } {
   const page = rows.slice(offset, offset + limit);
-  return { rows: page, nextCursor: offset + page.length < rows.length ? String(offset + page.length) : null };
+  return {
+    rows: page,
+    nextCursor: offset + page.length < rows.length ? String(offset + page.length) : null,
+    cursorState: offset > 0 && offset >= rows.length ? 'past-end' : 'ok',
+  };
 }
 
 function matches(node: InventoryTreeNode, query: string): boolean {
@@ -588,7 +622,16 @@ function pagedChildrenFor(
   query: string,
   offset: number,
   limit: number,
-): { nodes: InventoryTreeNode[]; total: number; nextCursor: string | null } | null {
+): PagedChildren | null {
+  // Every branch below goes through `paginate` rather than slicing for
+  // itself. The three hand-rolled copies this replaces each carried the same
+  // blind spot, which is what open-coding a rule three times buys you.
+  const pageOf = <T>(rows: T[], toNode: (row: T) => InventoryTreeNode): PagedChildren => {
+    const { rows: page, nextCursor, cursorState } = paginate(rows, offset, limit);
+    return { nodes: page.map(toNode), total: rows.length, nextCursor, cursorState };
+  };
+  const noRows = (): PagedChildren => pageOf<InventoryTreeNode>([], (node) => node);
+
   if (parentId) {
     const parts = nodeParts(parentId);
     if (!parts) return null;
@@ -597,35 +640,28 @@ function pagedChildrenFor(
     if (kind === 'system-devices' || kind === 'site') {
       const plane = asPlane(first);
       const pull = plane ? inventoryPulls().get(plane) : undefined;
-      if (!plane || !pull) return { nodes: [], total: 0, nextCursor: null };
+      // The plane's pull is gone. Mid-page that is the starkest form of the
+      // list moving under the operator, so it must not read as end-of-list.
+      if (!plane || !pull) return noRows();
       const devices = (pull.devices ?? []).filter(
         (device) => (kind !== 'site' || device.siteId === second) && deviceMatches(device, query),
       );
-      const page = devices.slice(offset, offset + limit);
-      return {
-        nodes: page.map((device) => deviceNode(device, parentId, plane)),
-        total: devices.length,
-        nextCursor: offset + page.length < devices.length ? String(offset + page.length) : null,
-      };
+      return pageOf(devices, (device) => deviceNode(device, parentId, plane));
     }
     if (kind === 'sse-kind' && (SSE_OBJECT_KINDS as readonly string[]).includes(first)) {
       const pull = inventoryPulls().get('sse');
-      if (!pull) return { nodes: [], total: 0, nextCursor: null };
+      if (!pull) return noRows();
       const objectKind = first as SseObjectKind;
       const rows = (pull.sse?.kinds[objectKind]?.rows ?? []).filter((row) => sseObjectMatches(row, query));
-      const page = rows.slice(offset, offset + limit);
-      return {
-        nodes: page.map((row) => sseObjectNode(objectKind, row)),
-        total: rows.length,
-        nextCursor: offset + page.length < rows.length ? String(offset + page.length) : null,
-      };
+      return pageOf(rows, (row) => sseObjectNode(objectKind, row));
     }
   }
   const children = childrenFor(parentId);
   if (children === null) return null;
-  const rows = children.filter((node) => matches(node, query));
-  const { rows: nodes, nextCursor } = paginate(rows, offset, limit);
-  return { nodes, total: rows.length, nextCursor };
+  return pageOf(
+    children.filter((node) => matches(node, query)),
+    (node) => node,
+  );
 }
 
 function allSearchNodes(query = ''): InventoryTreeNode[] {
@@ -768,11 +804,12 @@ inventoryRouter.get('/inventory/search', (req, res) => {
     return;
   }
   const rows = allSearchNodes(query);
-  const { rows: nodes, nextCursor } = paginate(rows, cursor, limit);
+  const { rows: nodes, nextCursor, cursorState } = paginate(rows, cursor, limit);
   const body: InventorySearchPage = {
     nodes,
     total: rows.length,
     nextCursor,
+    cursorState,
     query,
     unsearchedPlanes: unsearchedPlanes(),
   };

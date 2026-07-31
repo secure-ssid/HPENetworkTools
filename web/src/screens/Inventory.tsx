@@ -19,6 +19,11 @@ export default function Inventory() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [searchTotal, setSearchTotal] = useState<number | null>(null);
+  // Set when a Load More lands on a page that no longer exists. The rows
+  // already on screen came from a read of an estate that has since changed,
+  // so they stay — deleting them would lose an answer the operator is still
+  // reading — but they stop being presented as the whole of anything.
+  const [listMoved, setListMoved] = useState(false);
   /* Linked planes the search could not look inside. A miss over an unsearched
    * plane is a false negative, and "No inventory matches" is exactly how an
    * operator asking "is this serial in the estate?" reads a no. */
@@ -66,6 +71,7 @@ export default function Inventory() {
       setNextCursor(null);
       setSearchTotal(null);
       setUnsearched([]);
+      setListMoved(false);
       return;
     }
     activeSearchRef.current = q;
@@ -77,6 +83,7 @@ export default function Inventory() {
       setNextCursor(null);
       setSearchTotal(null);
       setUnsearched([]);
+      setListMoved(false);
       void searchInventory(q, { limit: 50, signal: controller.signal })
         .then((page) => {
           if (activeSearchRef.current !== q) return;
@@ -105,6 +112,10 @@ export default function Inventory() {
     try {
       const page = await searchInventory(q, { cursor, limit: 50 });
       if (activeSearchRef.current !== q) return;
+      // No rows and no next cursor is what the end of the list looks like AND
+      // what a vanished page looks like. Only the server can tell them apart,
+      // so take its word rather than inferring from the empty page.
+      if (page.cursorState === 'past-end') setListMoved(true);
       setResults((current) => {
         const known = new Set(current.map((node) => node.id));
         return [...current, ...page.nodes.filter((node) => !known.has(node.id))];
@@ -148,7 +159,12 @@ export default function Inventory() {
         <div>
           <SectionHeader
             label="Search results"
-            meta={searchTotal === null ? `${results.length} SHOWN` : `${results.length} OF ${searchTotal}`}
+            meta={
+              // "50 OF 40" once the estate shrinks under a paged read. The
+              // two numbers came from two different reads, so pairing them
+              // states a ratio that was never true of either.
+              searchTotal === null || listMoved ? `${results.length} SHOWN` : `${results.length} OF ${searchTotal}`
+            }
           />
           {searching ? (
             <div role="status" aria-label="Searching inventory">
@@ -156,6 +172,16 @@ export default function Inventory() {
             </div>
           ) : null}
           {searchError ? <EmptyState title="Inventory search unavailable" description={searchError} /> : null}
+          {!searching && !searchError && listMoved ? (
+            <Alert tone="warning" title="The inventory changed while these results were being paged">
+              <span style={{ fontSize: 13 }}>
+                The next page no longer exists — the estate shrank between reads, which is what happens when a plane
+                goes stale or unlinks mid-search. The {results.length} result{results.length === 1 ? '' : 's'} below
+                came from the earlier read and may name objects that have since left the cache; anything added since is
+                not here. Search again for the current estate.
+              </span>
+            </Alert>
+          ) : null}
           {!searching && !searchError && unsearched.length > 0 ? (
             <Alert tone="warning" title={`${unsearched.join(', ')} could not be searched`}>
               <span style={{ fontSize: 13 }}>

@@ -212,3 +212,76 @@ describe('inventory routes — request bounds', () => {
     expect((await get('/api/inventory/node?id=')).status).toBe(400);
   });
 });
+
+/* A cursor is only ever issued when the list had strictly more rows to give,
+ * so a request that lands at or past the end is not a client paging too far —
+ * it is the list having shrunk between two reads. The inventory is a live
+ * cache, so that is an ordinary Tuesday, and on the wire it is byte-identical
+ * to the last page: no rows, no next cursor. */
+describe('inventory paging — a page that vanished is not the end of the list', () => {
+  const many = (n: number): DeviceRow[] =>
+    Array.from({ length: n }, (_, i) => device({ serial: `SN-${i}`, name: `ap-${i}`, mac: `aa:bb:cc:00:00:${i}` }));
+
+  it('calls a cursor inside the list ok and offers the next one', async () => {
+    stubEstate(['central'], [['central', { devices: many(10), sites: [site()] }]]);
+    const { body } = await get('/api/inventory/tree?parent=system-devices%3Acentral&limit=4&cursor=0');
+    expect(body.nodes).toHaveLength(4);
+    expect(body.nextCursor).toBe('4');
+    expect(body.cursorState).toBe('ok');
+  });
+
+  it('calls the genuine last page ok, not past-end', async () => {
+    stubEstate(['central'], [['central', { devices: many(10), sites: [site()] }]]);
+    const { body } = await get('/api/inventory/tree?parent=system-devices%3Acentral&limit=4&cursor=8');
+    expect(body.nodes).toHaveLength(2);
+    expect(body.nextCursor).toBeNull();
+    expect(body.cursorState).toBe('ok');
+  });
+
+  it('says past-end when the branch shrank under a half-paged read', async () => {
+    // The operator paged to 8 against a 10-device plane; by the time they
+    // clicked again the plane holds 5. Before this the answer was an empty
+    // page with a null cursor — the same answer as "you have seen them all".
+    stubEstate(['central'], [['central', { devices: many(5), sites: [site()] }]]);
+    const { body } = await get('/api/inventory/tree?parent=system-devices%3Acentral&limit=4&cursor=8');
+    expect(body.nodes).toHaveLength(0);
+    expect(body.nextCursor).toBeNull();
+    expect(body.cursorState).toBe('past-end');
+  });
+
+  it('says past-end when the plane pull is gone entirely, not an empty branch', async () => {
+    stubEstate(['central'], []);
+    const { body } = await get('/api/inventory/tree?parent=system-devices%3Acentral&limit=4&cursor=8');
+    expect(body.nodes).toHaveLength(0);
+    expect(body.cursorState).toBe('past-end');
+  });
+
+  it('keeps an empty first page as an ordinary empty answer', async () => {
+    // Nothing was issued to get here, so this is "no rows matched", which is
+    // a real answer and must not be dressed up as a list that moved.
+    stubEstate(['central'], [['central', { devices: [], sites: [site()] }]]);
+    const { body } = await get('/api/inventory/tree?parent=system-devices%3Acentral&limit=4');
+    expect(body.nodes).toHaveLength(0);
+    expect(body.cursorState).toBe('ok');
+  });
+
+  it('reports past-end on search the same way it does on a branch', async () => {
+    stubEstate(['central'], [['central', { devices: many(3), sites: [site()] }]]);
+    const inRange = await get('/api/inventory/search?q=ap&limit=2&cursor=0');
+    expect((inRange.body as InventorySearchPage).cursorState).toBe('ok');
+    const past = await get('/api/inventory/search?q=ap&limit=2&cursor=40');
+    expect((past.body as InventorySearchPage).nodes).toHaveLength(0);
+    expect((past.body as InventorySearchPage).nextCursor).toBeNull();
+    expect((past.body as InventorySearchPage).cursorState).toBe('past-end');
+  });
+
+  it('reports past-end on an SSE object branch, which paged itself by hand', async () => {
+    stubEstate(
+      ['sse'],
+      [['sse', { sse: { unavailable: [], kinds: { tunnels: { rows: [], status: 'ok' } } } } as unknown as PlanePull]],
+    );
+    const { body } = await get('/api/inventory/tree?parent=sse-kind%3Atunnels&limit=5&cursor=25');
+    expect(body.nodes).toHaveLength(0);
+    expect(body.cursorState).toBe('past-end');
+  });
+});

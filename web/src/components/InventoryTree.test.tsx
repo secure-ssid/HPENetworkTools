@@ -92,4 +92,63 @@ describe('InventoryTree', () => {
       expect.objectContaining({ parent: CENTRAL.id }),
     );
   });
+
+  /* A branch that shrinks under a half-paged read answers Load More with no
+   * rows and no next cursor — the same answer as the genuine last page. The
+   * button then simply disappeared, which reads as "those were all of them"
+   * over a branch that had just got shorter. */
+  it('says the branch changed rather than letting Load more silently vanish', async () => {
+    mockGetInventoryTree.mockImplementation(async (options = {}) => {
+      const { parent, cursor } = options;
+      if (!parent) return page(null, [ROOT]);
+      if (parent === ROOT.id) return { ...page(ROOT.id, [CENTRAL]), nextCursor: '1', cursorState: 'ok' };
+      if (parent === ROOT.id && cursor) return page(ROOT.id, []);
+      return page(parent ?? null, []);
+    });
+
+    render(
+      <MemoryRouter>
+        <InventoryTree />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('HPE Aruba Central');
+    expect(screen.queryByText(/list changed while loading/)).toBeNull();
+
+    mockGetInventoryTree.mockResolvedValueOnce({
+      ...page(ROOT.id, []),
+      cursorState: 'past-end',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText(/list changed while loading/)).toBeTruthy();
+    // What was already read stays on screen — it is still the best answer
+    // anyone has for that branch.
+    expect(screen.getByText('HPE Aruba Central')).toBeTruthy();
+  });
+
+  it('leaves a branch alone when its last page is simply the last one', async () => {
+    mockGetInventoryTree.mockImplementation(async (options = {}) => {
+      const { parent } = options;
+      if (!parent) return page(null, [ROOT]);
+      if (parent === ROOT.id) return { ...page(ROOT.id, [CENTRAL]), nextCursor: '1', cursorState: 'ok' };
+      return page(parent ?? null, []);
+    });
+
+    render(
+      <MemoryRouter>
+        <InventoryTree />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('HPE Aruba Central');
+    mockGetInventoryTree.mockResolvedValueOnce({
+      ...page(ROOT.id, [DEVICES]),
+      cursorState: 'ok',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    await screen.findByText('Devices');
+    expect(screen.queryByText(/list changed while loading/)).toBeNull();
+  });
 });

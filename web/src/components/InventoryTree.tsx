@@ -7,6 +7,10 @@ import { getInventoryTree } from '../api/client';
 interface BranchPage {
   nodes: InventoryTreeNode[];
   nextCursor: string | null;
+  /** A Load More landed on a page the branch no longer has. The rows already
+   *  fetched stay — they are still the best answer anyone has — but the
+   *  branch stops looking like a complete listing of its parent. */
+  moved: boolean;
 }
 
 export function InventoryTree({
@@ -46,6 +50,10 @@ export function InventoryTree({
         [key]: {
           nodes: append ? [...(current[key]?.nodes ?? []), ...page.nodes] : page.nodes,
           nextCursor: page.nextCursor,
+          // An empty final page is indistinguishable from a vanished one on
+          // the wire, so this is the server's answer, not an inference. A
+          // fresh (non-append) read starts the branch clean again.
+          moved: append ? (current[key]?.moved ?? false) || page.cursorState === 'past-end' : false,
         },
       }));
       if (parentId === null && page.nodes[0]) {
@@ -218,6 +226,13 @@ export function InventoryTree({
                 >
                   Load more
                 </button>
+              ) : null}
+              {expanded.has(node.id) && branch?.moved ? (
+                // Without this the button simply disappears, which reads as
+                // "that was all of them" over a branch that got shorter.
+                <div className="nt-inventory-tree__loading" style={{ paddingLeft: 34 + level * 14 }}>
+                  list changed while loading — collapse and reopen for the current children
+                </div>
               ) : null}
             </div>
           );

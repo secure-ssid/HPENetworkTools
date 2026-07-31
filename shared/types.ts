@@ -677,12 +677,30 @@ export interface InventoryTreeNode {
   };
 }
 
+/**
+ * The cursor named a page that is no longer there.
+ *
+ * A cursor is only ever handed out when the list had strictly more rows to
+ * give, so a request that lands at or past the end is not a client that paged
+ * too far — it is a list that SHRANK between the two reads. The inventory is
+ * a live cache: a plane going stale or unlinking takes its rows out from
+ * under a half-paged answer.
+ *
+ * That case has to be distinguishable from a genuine end-of-list, because the
+ * two look identical on the wire (no rows, no next cursor) and mean opposite
+ * things. Reading it as the end tells the operator they have seen everything,
+ * on a list that has since changed under them.
+ */
+export type PageCursorState = 'ok' | 'past-end';
+
 export interface InventoryTreePage {
   parentId: string | null;
   nodes: InventoryTreeNode[];
   total: number;
   nextCursor: string | null;
   query: string;
+  /** Absent means the route did not say — treat it as unknown, not as 'ok'. */
+  cursorState?: PageCursorState;
 }
 
 export interface InventorySearchPage {
@@ -690,6 +708,8 @@ export interface InventorySearchPage {
   total: number;
   nextCursor: string | null;
   query: string;
+  /** Absent means the route did not say — treat it as unknown, not as 'ok'. */
+  cursorState?: PageCursorState;
   /** Linked planes that contributed no searchable rows, by display name. The
    *  search walked what the poller holds, so a plane whose read has not come
    *  back was never searched at all — and "no matches" over an unsearched

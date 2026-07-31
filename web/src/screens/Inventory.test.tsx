@@ -89,6 +89,112 @@ describe('Inventory Explorer search', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
   });
 
+  /* Before this, a Load More that landed past the end of a shrunken estate
+   * appended nothing, hid the button and left the header reading "1 OF 0" —
+   * a ratio drawn from two different reads, over a list the operator was now
+   * being told was complete. */
+  it('says the estate moved when the next page no longer exists', async () => {
+    mockGetInventoryNode.mockRejectedValue(new Error('not selected'));
+    mockSearchInventory
+      .mockResolvedValueOnce({
+        nodes: [
+          {
+            id: 'device:central:one',
+            parentId: 'system-devices:central',
+            kind: 'device',
+            label: 'Switch one',
+            status: 'current',
+            tone: 'success',
+            hasChildren: false,
+          },
+        ],
+        total: 40,
+        nextCursor: '1',
+        cursorState: 'ok',
+        query: 'switch',
+      })
+      // The plane went stale between clicks: its rows left the cache, so the
+      // page the cursor named is gone.
+      .mockResolvedValueOnce({ nodes: [], total: 0, nextCursor: null, cursorState: 'past-end', query: 'switch' });
+
+    render(
+      <MemoryRouter initialEntries={['/inventory']}>
+        <Routes>
+          <Route path="/inventory" element={<Inventory />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'switch' } });
+    expect(await screen.findByText('Switch one')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(
+      await screen.findByText('The inventory changed while these results were being paged'),
+    ).toBeTruthy();
+    // The rows already read stay: they are still the best answer anyone has.
+    expect(screen.getByText('Switch one')).toBeTruthy();
+    // But the header stops pairing a count from one read with a total from
+    // another, and stops implying the list is complete.
+    expect(screen.getByText('1 SHOWN')).toBeTruthy();
+    expect(screen.queryByText('1 OF 0')).toBeNull();
+  });
+
+  it('says nothing about a moved list when the last page is simply the last one', async () => {
+    mockGetInventoryNode.mockRejectedValue(new Error('not selected'));
+    mockSearchInventory
+      .mockResolvedValueOnce({
+        nodes: [
+          {
+            id: 'device:central:one',
+            parentId: 'system-devices:central',
+            kind: 'device',
+            label: 'Switch one',
+            status: 'current',
+            tone: 'success',
+            hasChildren: false,
+          },
+        ],
+        total: 2,
+        nextCursor: '1',
+        cursorState: 'ok',
+        query: 'switch',
+      })
+      .mockResolvedValueOnce({
+        nodes: [
+          {
+            id: 'device:central:two',
+            parentId: 'system-devices:central',
+            kind: 'device',
+            label: 'Switch two',
+            status: 'current',
+            tone: 'success',
+            hasChildren: false,
+          },
+        ],
+        total: 2,
+        nextCursor: null,
+        cursorState: 'ok',
+        query: 'switch',
+      });
+
+    render(
+      <MemoryRouter initialEntries={['/inventory']}>
+        <Routes>
+          <Route path="/inventory" element={<Inventory />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'switch' } });
+    expect(await screen.findByText('Switch one')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByText('Switch two')).toBeTruthy();
+    expect(screen.getByText('2 OF 2')).toBeTruthy();
+    expect(screen.queryByText('The inventory changed while these results were being paged')).toBeNull();
+  });
+
   it('leaves search mode and reveals an in-page SSE selection', async () => {
     mockGetInventoryNode.mockResolvedValue({
       id: 'sse-kind:users',
