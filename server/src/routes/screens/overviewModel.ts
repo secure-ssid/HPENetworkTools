@@ -5,6 +5,7 @@ import { registry } from '../../planes/registry';
 import {
   PLANE_IDS,
   type PlaneHealth,
+  type PlaneId,
 } from '../../planes/types';
 import { LOG_RETENTION_EVENT, type RetentionTombstone } from '../../services/logRotation';
 import { poller } from '../../services/poller';
@@ -48,6 +49,53 @@ export const HEALTH_TONE: Record<PlaneHealth, Tone> = {
   degraded: 'danger',
   unlinked: 'neutral',
 };
+
+/** Worst first. The tile has room for a couple of names, and the milder
+ *  problem must not stand in front of the worse one. */
+const HEALTH_SEVERITY: Record<PlaneHealth, number> = {
+  degraded: 0,
+  warning: 1,
+  healthy: 2,
+  unlinked: 3,
+};
+
+/** How many unhealthy planes the delta names before it starts counting. */
+const NAMED_UNHEALTHY_LIMIT = 2;
+
+/**
+ * The line under "Planes linked N / 10".
+ *
+ * It used to be the first unhealthy plane in roster order, which got both
+ * halves of the job wrong. Roster order is not severity order, so a plane on a
+ * warning could stand in front of one that was fully degraded — 'central' is
+ * first in PLANE_IDS and 'sse' is last, and an operator told "Mist warning"
+ * goes and looks at Mist. And naming one of several read exactly like there
+ * being one: the tile is the landing screen's whole account of plane health,
+ * so a second outage did not merely rank lower, it was not on the screen.
+ *
+ * Now: worst first, up to two named, and any remainder counted rather than
+ * dropped. The wording for a single unhealthy plane is unchanged, because that
+ * case was always right.
+ */
+export function planesLinkedDelta(
+  states: Record<PlaneId, { id: PlaneId; linked: boolean; health: PlaneHealth }>,
+): string {
+  const linked = PLANE_IDS.filter((id) => states[id].linked);
+  if (linked.length === 0) return 'none configured';
+  const unhealthy = linked
+    .map((id) => states[id])
+    .filter((s) => s.health !== 'healthy')
+    // Stable, so planes of equal severity keep roster order rather than
+    // reshuffling between polls for no reason the reader can see.
+    .sort((a, b) => HEALTH_SEVERITY[a.health] - HEALTH_SEVERITY[b.health]);
+  if (unhealthy.length === 0) return 'all healthy';
+  const named = unhealthy
+    .slice(0, NAMED_UNHEALTHY_LIMIT)
+    .map((s) => `${PLANE_LABEL[s.id]} ${s.health}`)
+    .join(' · ');
+  const rest = unhealthy.length - NAMED_UNHEALTHY_LIMIT;
+  return rest > 0 ? `${named} · +${rest} more` : named;
+}
 
 /** Compact duration ('40s', '6h', '3d') — the fixtures' own vocabulary. */
 export function relDuration(ms: number): string {
@@ -182,6 +230,7 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
   const states = registry.states();
   const linked = PLANE_IDS.filter((id) => states[id].linked).length;
   const unhealthy = PLANE_IDS.map((id) => states[id]).find((s) => s.linked && s.health !== 'healthy');
+  const planesDelta = planesLinkedDelta(states);
   // Config drift: the same live evidence-coverage engine Configure and
   // Compliance already run, so the three screens cannot disagree. '—' only
   // when no inventory has been reported at all.
@@ -263,7 +312,7 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
     {
       label: 'Planes linked',
       value: `${linked} / ${PLANE_IDS.length}`,
-      delta: linked === 0 ? 'none configured' : unhealthy ? `${PLANE_LABEL[unhealthy.id]} ${unhealthy.health}` : 'all healthy',
+      delta: planesDelta,
       tone: unhealthy ? 'negative' : 'neutral',
     },
   ];
