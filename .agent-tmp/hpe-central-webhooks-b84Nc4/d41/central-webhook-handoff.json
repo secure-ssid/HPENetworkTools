@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "operationId": "5bd52d09-26c5-4f0a-8f7f-6433a3aef183",
+  "opType": "rotate",
+  "tenantFingerprint": "288db76da58b06fbc51cfdb186140667f17dfe105a57d8c3fea0367e1f80e5ca",
+  "state": "secret-issued-awaiting-handoff",
+  "webhookId": "wh-1",
+  "createdAt": "2026-07-31T18:56:53.603Z",
+  "updatedAt": "2026-07-31T18:56:53.617Z"
+}

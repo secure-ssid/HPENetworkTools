@@ -146,14 +146,16 @@ describe('connection tests never disclose or dial stored secrets', () => {
   });
 
   it('non-http(s) targets are rejected instead of probed', async () => {
-    const res = await postJson('/api/systems/classic/test', { host: 'file:///etc/passwd', token: 'unused-secret' });
+    // Use aos10 (generic testReachable path) — classic now uses testCentral which expects
+    // { gatewayBaseUrl, clientId, clientSecret } rather than { host, token }.
+    const res = await postJson('/api/systems/aos10/test', { host: 'file:///etc/passwd', token: 'unused-secret' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/cannot parse a host/);
     expect(JSON.stringify(res.body)).not.toContain('unused-secret');
   });
 
   it('a failed fetch test keeps the error detail server-side', async () => {
-    const res = await postJson('/api/systems/classic/test', { host: 'http://127.0.0.1:1', token: 'body-secret' });
+    const res = await postJson('/api/systems/aos10/test', { host: 'http://127.0.0.1:1', token: 'body-secret' });
     expect(res.status).toBe(502);
     expect(res.body.message).toBe('cannot reach http://127.0.0.1:1');
     expect(JSON.stringify(res.body)).not.toContain('body-secret');
@@ -497,7 +499,7 @@ describe('poller tick guard', () => {
     const reg = {
       states: () => {
         const states: Record<string, { linked: boolean }> = {};
-        for (const id of ['central', 'classic', 'mist', 'greenlake', 'aos8', 'aos10', 'local', 'clearpass', 'uxi', 'sse']) {
+        for (const id of ['central', 'classic', 'mist', 'greenlake', 'aos8', 'aos10', 'local', 'clearpass', 'uxi', 'sse', 'edgeconnect', 'opsramp']) {
           states[id] = { linked: id === 'mist' };
         }
         return states;

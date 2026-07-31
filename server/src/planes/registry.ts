@@ -55,6 +55,7 @@ import { ClearPassAdapter } from './clearpass';
 import { EdgeConnectAdapter } from './edgeconnect';
 import { GreenLakeAdapter } from './greenlake';
 import { MistAdapter } from './mist';
+import { OpsRampAdapter } from './opsramp';
 import { SseAdapter } from './sse';
 import { UxiAdapter } from './uxi';
 import {
@@ -561,6 +562,12 @@ export class PlaneRegistry {
       state.health = 'warning';
       state.note = 'credentials saved — connecting…';
       adapter = new EdgeConnectAdapter(id, state, creds, (call) => this.recordCall(id, call));
+    } else if (id === 'opsramp' && creds && OpsRampAdapter.isComplete(creds)) {
+      // Real adapter — same lifecycle as central above.
+      baseHealth = 'healthy';
+      state.health = 'warning';
+      state.note = 'credentials saved — first sync pending';
+      adapter = new OpsRampAdapter(creds, state, (call) => this.recordCall(id, call));
     } else if (linked) {
       baseHealth = 'warning';
       state.health = 'warning';

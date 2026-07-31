@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "operationId": "923bbc5e-b0de-44a1-9d39-22bac13ce20d",
+  "opType": "create",
+  "tenantFingerprint": "288db76da58b06fbc51cfdb186140667f17dfe105a57d8c3fea0367e1f80e5ca",
+  "state": "outcome-unknown",
+  "candidate": {
+    "name": "noc-hook",
+    "endpoint": "https://hooks.example.com/central",
+    "authMechanism": "API_KEY"
+  },
+  "createdAt": "2026-07-31T18:56:52.900Z",
+  "updatedAt": "2026-07-31T18:56:52.910Z"
+}

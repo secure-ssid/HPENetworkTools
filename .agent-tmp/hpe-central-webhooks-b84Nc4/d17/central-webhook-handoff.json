@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "operationId": "ef21c346-8b0b-4407-8f6d-9e3032542bb0",
+  "opType": "create",
+  "tenantFingerprint": "288db76da58b06fbc51cfdb186140667f17dfe105a57d8c3fea0367e1f80e5ca",
+  "state": "secret-issued-awaiting-handoff",
+  "candidate": {
+    "name": "oidc-hook",
+    "endpoint": "https://hooks.example.com/oidc",
+    "authMechanism": "OIDC",
+    "oidcClientId": "client-id",
+    "oidcWellKnownUrl": "https://issuer.example/.well-known/openid-configuration"
+  },
+  "createdAt": "2026-07-31T18:56:52.819Z",
+  "updatedAt": "2026-07-31T18:56:52.830Z"
+}

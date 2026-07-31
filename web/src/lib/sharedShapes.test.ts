@@ -272,7 +272,7 @@ describe('connect-drawer credential keys match what the adapters read', () => {
     expect(CONNECT_ENDPOINT_KEY).toEqual({
       central: 'gatewayBaseUrl',
       mist: 'apiHost',
-      classic: 'baseUrl',
+      classic: 'gatewayBaseUrl',
       greenlake: 'workspaceId',
       aos8: 'master',
       local: 'host',
@@ -280,6 +280,7 @@ describe('connect-drawer credential keys match what the adapters read', () => {
       uxi: 'baseUrl',
       sse: 'baseUrl',
       edgeconnect: 'baseUrl',
+      opsramp: 'tenantId',
     });
   });
 

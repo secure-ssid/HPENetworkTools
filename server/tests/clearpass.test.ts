@@ -346,6 +346,7 @@ describe('ClearPassAdapter.pull()', () => {
     }));
     const newestFirst = [...many].reverse(); // the server honours sort=-…, as CPPM does
     const { adapter, calls } = makeAdapter((method, pathname, query) => {
+      if (method === 'GET' && pathname === '/api/endpoint') return { body: hal([]) };
       if (method !== 'GET' || pathname !== AUTH_PATH) return undefined;
       const offset = Number(query.get('offset') ?? '0');
       const limit = Number(query.get('limit') ?? '25');
@@ -383,9 +384,10 @@ describe('ClearPassAdapter.pull()', () => {
 
   it('stops paging when a short page says the window is exhausted', async () => {
     const rows = Array.from({ length: 40 }, (_, i) => ({ ...ROW_ACCEPT, username: `u${i}` }));
-    const { adapter, calls, state } = makeAdapter((method, pathname) =>
-      method === 'GET' && pathname === AUTH_PATH ? { body: hal(rows) } : undefined,
-    );
+    const { adapter, calls, state } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/api/endpoint') return { body: hal([]) };
+      return method === 'GET' && pathname === AUTH_PATH ? { body: hal(rows) } : undefined;
+    });
     const pull = await adapter.pull();
     expect(pull.authEvents).toHaveLength(40);
     expect(calls.filter((c) => c.startsWith(`GET ${AUTH_PATH}`))).toHaveLength(1);
@@ -402,6 +404,7 @@ describe('ClearPassAdapter.pull()', () => {
   it('declares a build that can only ever serve page one', async () => {
     const rows = Array.from({ length: 120 }, (_, i) => ({ ...ROW_ACCEPT, username: `u${i}` }));
     const { adapter, state } = makeAdapter((method, pathname, query) => {
+      if (method === 'GET' && pathname === '/api/endpoint') return { body: hal([]) };
       if (method !== 'GET' || pathname !== AUTH_PATH) return undefined;
       if (query.has('filter')) return { status: 400, body: { detail: 'unknown parameter filter' } };
       return { body: hal(rows) };
@@ -690,10 +693,12 @@ describe('ClearPassAdapter endpoints', () => {
     expect(state.deviceCount).toBe(4182);
     expect(state.note).toBe('4,182 endpoints · 1 auth events · 0 rejects');
     expect(calls.some((c) => c.startsWith('GET /api/endpoint?'))).toBe(true);
+    // one call for the count refresh, one for the detail-row walk
+    expect(calls.filter((c) => c.startsWith('GET /api/endpoint'))).toHaveLength(2);
 
-    // the repository is a 5-minute pull, not a 60-second one
+    // the repository is a 5-minute pull, not a 60-second one — for both halves
     await adapter.pull();
-    expect(calls.filter((c) => c.startsWith('GET /api/endpoint'))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith('GET /api/endpoint'))).toHaveLength(2);
   });
 
   it('drops the endpoint fact without failing the auth feed when /api/endpoint errors', async () => {

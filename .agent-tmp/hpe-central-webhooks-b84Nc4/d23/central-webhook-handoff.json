@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "operationId": "67ccaffd-e093-4c9b-9ce6-8af8a73bd9a0",
+  "opType": "rotate",
+  "tenantFingerprint": "288db76da58b06fbc51cfdb186140667f17dfe105a57d8c3fea0367e1f80e5ca",
+  "state": "outcome-unknown",
+  "webhookId": "wh-1",
+  "createdAt": "2026-07-31T18:56:52.961Z",
+  "updatedAt": "2026-07-31T18:56:52.977Z"
+}

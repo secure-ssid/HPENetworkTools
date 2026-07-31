@@ -470,6 +470,8 @@ export class ClearPassAdapter implements PlaneAdapter {
   /** Endpoint repository total and when it was last proven (5m cadence). */
   private endpointCount: number | null = null;
   private endpointCountAtMs = 0;
+  private endpointRows: EndpointRow[] | null = null;
+  private endpointRowsAtMs = 0;
 
   constructor(
     creds: PlaneCredentials,
@@ -605,31 +607,46 @@ export class ClearPassAdapter implements PlaneAdapter {
 
   /**
    * Endpoint repository DETAIL rows (README:465's second dataset), paged at
-   * ENDPOINT_DETAIL_PAGE_LIMIT and capped at MAX_ENDPOINTS. Best-effort: any
-   * non-2xx, unreadable payload, or network error returns null (never throws)
-   * so the caller marks the section partial instead of failing the pull the
-   * auth feed already succeeded on.
+   * ENDPOINT_DETAIL_PAGE_LIMIT and capped at MAX_ENDPOINTS. Same 5-minute
+   * cache window as refreshEndpointCount() — this is the repository's slower
+   * dataset, not a 60-second one, so a pull inside the window returns the
+   * last successful read instead of re-walking /api/endpoint. Best-effort:
+   * any non-2xx, unreadable payload, or network error returns null (never
+   * throws) so the caller marks the section partial instead of failing the
+   * pull the auth feed already succeeded on.
    */
   private async fetchEndpoints(): Promise<EndpointRow[] | null> {
+    const now = Date.now();
+    if (this.endpointRows !== null && now - this.endpointRowsAtMs < ENDPOINT_REFRESH_MS) {
+      return this.endpointRows;
+    }
     const rows: EndpointRow[] = [];
+    // A read that never even completed page one has nothing to report; a
+    // read that completed at least one page — even a genuinely empty one —
+    // is a real answer and must be cached/returned as [], not confused with
+    // "never asked".
+    let readOk = false;
     try {
       for (let offset = 0; rows.length < MAX_ENDPOINTS; offset += ENDPOINT_DETAIL_PAGE_LIMIT) {
         const limit = Math.min(ENDPOINT_DETAIL_PAGE_LIMIT, MAX_ENDPOINTS - rows.length);
         const path = `${ENDPOINT_PATH}?limit=${limit}&offset=${offset}`;
         const res = await this.authedGet(path);
-        if (res.status < 200 || res.status >= 300) return rows.length > 0 ? rows : null;
+        if (res.status < 200 || res.status >= 300) break;
         const raw = extractRows(res.body);
-        if (raw === null) return rows.length > 0 ? rows : null;
+        if (raw === null) break;
+        readOk = true;
         const mapped = raw.map(mapClearPassEndpoint).filter((e): e is EndpointRow => e !== null);
         rows.push(...mapped);
         if (raw.length < limit) break; // short page — no more rows to read
       }
-      return rows.slice(0, MAX_ENDPOINTS);
     } catch {
-      // A network error mid-walk still leaves whatever pages were read; an
-      // empty walk is indistinguishable from "never asked" and reported null.
-      return rows.length > 0 ? rows : null;
+      // A network error mid-walk still leaves whatever pages read ok.
     }
+    if (!readOk) return null;
+    const capped = rows.slice(0, MAX_ENDPOINTS);
+    this.endpointRows = capped;
+    this.endpointRowsAtMs = now;
+    return capped;
   }
 
 

@@ -255,8 +255,9 @@ describe('routes', () => {
   });
 
   it('test-then-save: a generic plane tests body credentials it has nothing stored for', async () => {
-    // 'classic' has nothing stored — without the body-creds path this is a 400.
-    const res = await fetch(`${base}/api/systems/classic/test`, {
+    // 'aos10' has nothing stored — without the body-creds path this is a 400.
+    // (classic now routes through testCentral which requires gatewayBaseUrl/clientId/clientSecret)
+    const res = await fetch(`${base}/api/systems/aos10/test`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ host: mockCentralBase }),
@@ -676,7 +677,7 @@ describe('live-mode screen contracts', () => {
     expect(status).toBe(200);
     expect(body.dataSource).toBe('live');
     expect(Array.isArray(body.systems)).toBe(true);
-    expect(body.systems).toHaveLength(10); // the screen's plane rows, from the registry
+    expect(body.systems).toHaveLength(12); // the screen's plane rows, from the registry
     const names = (body.systems as any[]).map((s) => s.name);
     expect(names).toContain('HPE Aruba Central');
     expect(names).toContain('Mist');
@@ -2581,8 +2582,8 @@ describe('live-mode screen contracts', () => {
     contributions.clear();
     const { body } = await getJson('/api/overview');
     const planes = body.planes as any[];
-    // "Planes linked N / 10" beside it must be reconcilable with the list.
-    expect(planes).toHaveLength(10);
+    // "Planes linked N / 12" beside it must be reconcilable with the list.
+    expect(planes).toHaveLength(12);
     const central = planes[0];
     expect(central.name).toBe('CENTRAL'); // linked planes lead
     const mist = planes.find((p) => p.name === 'MIST');

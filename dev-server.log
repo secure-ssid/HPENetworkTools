@@ -1,0 +1,818 @@
+
+> hpe-network-tools@0.0.0 dev
+> npm run build -w web && concurrently -n web-build,server -c blue,magenta "npm run build -w web -- --watch" "npm run dev -w server"
+
+
+> web@0.0.0 build
+> vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 114 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.73 kB │ gzip:   0.40 kB
+dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+dist/assets/index-ie-KeIGJ.js   694.03 kB │ gzip: 195.34 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 888ms
+[server] 
+[server] > server@0.0.0 dev
+[server] > tsx watch src/index.ts
+[server] 
+[web-build] 
+[web-build] > web@0.0.0 build
+[web-build] > vite build --watch
+[web-build] 
+[web-build] vite v5.4.21 building for production...
+[web-build] 
+[web-build] watching for file changes...
+[web-build] 
+[web-build] build started...
+[web-build] transforming...
+[server] FATAL uncaught exception: Error: listen EADDRINUSE: address already in use 127.0.0.1:5173
+[server]     at Server.setupListenHandle [as _listen2] (node:net:2008:16)
+[server]     at listenInCluster (node:net:2065:12)
+[server]     at node:net:2274:7
+[server]     at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+[server] shutting down (uncaught exception)
+[server] shutdown step 'http server' failed: Server is not running.
+[server] shutdown finished with 1 step(s) incomplete: http server
+[web-build] ✓ 114 modules transformed.
+[web-build] rendering chunks...
+[web-build] computing gzip size...
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.40 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-ie-KeIGJ.js   694.03 kB │ gzip: 195.34 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 931ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-BmILEs98.js   694.07 kB │ gzip: 195.34 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 729ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-CiWIZA4k.js   694.10 kB │ gzip: 195.36 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 639ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 591ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 674ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 559ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 554ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 551ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 595ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 543ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 570ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-C0mIqWNB.js   694.16 kB │ gzip: 195.38 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 573ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DgiZStc9.js   694.21 kB │ gzip: 195.38 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 564ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DgiZStc9.js   694.21 kB │ gzip: 195.38 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 535ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J6CQEJMX.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 527ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J6CQEJMX.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 568ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J6CQEJMX.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 589ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J6CQEJMX.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 559ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-yWDkb4lE.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 525ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 644ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-yWDkb4lE.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 574ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 0 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-yWDkb4lE.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 521ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 606ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-yWDkb4lE.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 550ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-yWDkb4lE.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 563ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-yWDkb4lE.js   694.25 kB │ gzip: 195.39 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 544ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J8hAMtRl.js   694.27 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 544ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J8hAMtRl.js   694.27 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 586ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J8hAMtRl.js   694.27 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 542ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J8hAMtRl.js   694.27 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 572ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 642ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 0 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 565ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J8hAMtRl.js   694.27 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 552ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 0 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J8hAMtRl.js   694.27 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 524ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 575ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 0 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 570ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J8hAMtRl.js   694.27 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 635ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 617ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 0 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 551ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J8hAMtRl.js   694.27 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 567ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 0 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-J8hAMtRl.js   694.27 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 528ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 666ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 0 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 637ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 645ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 625ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 551ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 567ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 538ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 564ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DTRKpTob.js   694.13 kB │ gzip: 195.37 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 643ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.40 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-bdunuJiS.js   694.14 kB │ gzip: 195.38 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 563ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] src/api/screens.ts (19:2): "CLEARPASS_ENDPOINTS" is not exported by "../shared/index.ts", imported by "src/api/screens.ts".
+[web-build] file: /Users/stephenchoate/Documents/HPENetworkTools/web/src/api/screens.ts:19:2
+[web-build] 
+[web-build] 17:   BASELINE_PROGRESS,
+[web-build] 18:   CAPABILITY_MATRIX,
+[web-build] 19:   CLEARPASS_ENDPOINTS,
+[web-build]       ^
+[web-build] 20:   CLIENTS,
+[web-build] 21:   CLIENT_STATS,
+[web-build] 
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 2 modules transformed.
+[web-build] src/api/screens.ts (19:2): "CLEARPASS_ENDPOINTS" is not exported by "../shared/index.ts", imported by "src/api/screens.ts".
+[web-build] file: /Users/stephenchoate/Documents/HPENetworkTools/web/src/api/screens.ts:19:2
+[web-build] 
+[web-build] 17:   BASELINE_PROGRESS,
+[web-build] 18:   CAPABILITY_MATRIX,
+[web-build] 19:   CLEARPASS_ENDPOINTS,
+[web-build]       ^
+[web-build] 20:   CLIENTS,
+[web-build] 21:   CLIENT_STATS,
+[web-build] 
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 2 modules transformed.
+[web-build] src/api/screens.ts (19:2): "CLEARPASS_ENDPOINTS" is not exported by "../shared/index.ts", imported by "src/api/screens.ts".
+[web-build] file: /Users/stephenchoate/Documents/HPENetworkTools/web/src/api/screens.ts:19:2
+[web-build] 
+[web-build] 17:   BASELINE_PROGRESS,
+[web-build] 18:   CAPABILITY_MATRIX,
+[web-build] 19:   CLEARPASS_ENDPOINTS,
+[web-build]       ^
+[web-build] 20:   CLIENTS,
+[web-build] 21:   CLIENT_STATS,
+[web-build] 
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 2 modules transformed.
+[web-build] src/api/screens.ts (19:2): "CLEARPASS_ENDPOINTS" is not exported by "../shared/index.ts", imported by "src/api/screens.ts".
+[web-build] file: /Users/stephenchoate/Documents/HPENetworkTools/web/src/api/screens.ts:19:2
+[web-build] 
+[web-build] 17:   BASELINE_PROGRESS,
+[web-build] 18:   CAPABILITY_MATRIX,
+[web-build] 19:   CLEARPASS_ENDPOINTS,
+[web-build]       ^
+[web-build] 20:   CLIENTS,
+[web-build] 21:   CLIENT_STATS,
+[web-build] 
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] src/api/screens.ts (19:2): "CLEARPASS_ENDPOINTS" is not exported by "../shared/index.ts", imported by "src/api/screens.ts".
+[web-build] file: /Users/stephenchoate/Documents/HPENetworkTools/web/src/api/screens.ts:19:2
+[web-build] 
+[web-build] 17:   BASELINE_PROGRESS,
+[web-build] 18:   CAPABILITY_MATRIX,
+[web-build] 19:   CLEARPASS_ENDPOINTS,
+[web-build]       ^
+[web-build] 20:   CLIENTS,
+[web-build] 21:   CLIENT_STATS,
+[web-build] 
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 3 modules transformed.
+[web-build] src/api/screens.ts (19:2): "CLEARPASS_ENDPOINTS" is not exported by "../shared/index.ts", imported by "src/api/screens.ts".
+[web-build] file: /Users/stephenchoate/Documents/HPENetworkTools/web/src/api/screens.ts:19:2
+[web-build] 
+[web-build] 17:   BASELINE_PROGRESS,
+[web-build] 18:   CAPABILITY_MATRIX,
+[web-build] 19:   CLEARPASS_ENDPOINTS,
+[web-build]       ^
+[web-build] 20:   CLIENTS,
+[web-build] 21:   CLIENT_STATS,
+[web-build] 
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 5 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-BLsXN7zT.js   694.15 kB │ gzip: 195.38 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 976ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 0 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-BLsXN7zT.js   694.15 kB │ gzip: 195.38 kB
+[web-build] built in 872ms.
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-DHP_X1yt.js   694.28 kB │ gzip: 195.41 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 941ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-BrOSZOBL.js   694.31 kB │ gzip: 195.43 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 1315ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-BrOSZOBL.js   694.31 kB │ gzip: 195.43 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 608ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-CNjRw9R3.js   694.43 kB │ gzip: 195.46 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 750ms.
+[web-build] 
+[web-build] build started...
+[web-build] ✓ 1 modules transformed.
+[web-build] dist/index.html                   0.73 kB │ gzip:   0.41 kB
+[web-build] dist/assets/index-VtQvnhuM.css   43.00 kB │ gzip:   7.57 kB
+[web-build] dist/assets/index-CNjRw9R3.js   694.43 kB │ gzip: 195.46 kB
+[web-build] 
+[web-build] (!) Some chunks are larger than 500 kB after minification. Consider:
+[web-build] - Using dynamic import() to code-split the application
+[web-build] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[web-build] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[web-build] built in 792ms.

@@ -1,0 +1,2 @@
+{"ts":"2026-07-31T18:56:52.755Z","event":"webhook-create","changeId":"direct-webhook-82c36d9c-60b6-49f2-9c18-d757a0402e7f","ticket":"(none — direct apply, review-confirmed)","kind":"webhook","result":"created","httpCode":200,"callbackValidatedAt":"2026-07-31T18:56:52.745Z","who":"operator"}
+{"ts":"2026-07-31T18:56:52.815Z","event":"webhook-rotate-hmac-key","changeId":"direct-webhook-37b51af0-3265-4b11-8e8f-4e3c8c6efbdf","ticket":"(none — direct apply, review-confirmed)","kind":"webhook","result":"rotated","httpCode":200,"who":"operator"}
