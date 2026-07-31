@@ -307,6 +307,7 @@ screensRouter.get('/overview', (_req, res) => {
       const statsLive = live.devices.length > 0 || live.alerts.length > 0;
       const stats = statsLive ? liveOverviewStats(live) : OVERVIEW_STATS;
       if (statsLive) blended.push('stats');
+      const liveChanges = liveOverviewChanges();
       res.json(
         withBlended(
           envelopeFor('overview', {
@@ -315,7 +316,14 @@ screensRouter.get('/overview', (_req, res) => {
             alerts: blendSection('alerts', needsYouNowAlerts(live.alerts), OVERVIEW_ALERTS, blended),
             sites: blendSection('sites', live.sites.map(liveOverviewSite), OVERVIEW_SITES, blended),
             planes: blendSection('planes', livePlanes, OVERVIEW_PLANES, blended),
-            changes: blendSection('changes', liveOverviewChanges(), OVERVIEW_CHANGES, blended),
+            changes: blendSection('changes', liveChanges.changes, OVERVIEW_CHANGES, blended),
+            // Only meaningful once the live tail actually displaced the
+            // authored rows — the fixtures are complete by construction, so
+            // warning that the record is short would be about a log they were
+            // never read from.
+            ...(blended.includes('changes') && liveChanges.unreadable > 0
+              ? { changesUnreadable: liveChanges.unreadable }
+              : {}),
             // Once a plane is linked the authored rows would offer consoles
             // and an SSH target this estate does not have — and the device
             // row would 404 against the swapped device section.
@@ -341,6 +349,7 @@ screensRouter.get('/overview', (_req, res) => {
     return;
   }
   const live = liveMerged();
+  const liveChanges = liveOverviewChanges();
   res.json(
     envelopeFor('overview', {
       workspace: settings.get().workspaceName,
@@ -348,7 +357,10 @@ screensRouter.get('/overview', (_req, res) => {
       alerts: needsYouNowAlerts(live.alerts),
       sites: live.sites.map(liveOverviewSite),
       planes: liveOverviewPlanes(),
-      changes: liveOverviewChanges(),
+      changes: liveChanges.changes,
+      // A blank change log is a fact until the record cannot be read; then it
+      // is a failure wearing the same panel.
+      changesUnreadable: liveChanges.unreadable,
       launchpad: liveLaunchpad(live.devices),
     }),
   );

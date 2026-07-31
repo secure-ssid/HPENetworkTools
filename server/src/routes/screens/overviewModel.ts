@@ -240,17 +240,28 @@ export function localHhmm(iso: string): string {
  * left the queue falls back to the raw event line. Times are the operator's
  * local clock — the header stamp on the same screen is local, and a UTC slice
  * next to it reads as a change that happened hours from now.
+ *
+ * Read through readRecentEvents, which reports the rotated generations it
+ * could not open. The screen's empty state calls an empty log "a fact, not a
+ * failure", and that is true right up until the record cannot be read: then
+ * the same blank panel asserts nothing was ever brokered here over a history
+ * that exists and is unreachable. `unreadable` is carried out so the two can
+ * be told apart.
  */
-export function liveOverviewChanges(): ChangeLogEntry[] {
+export function liveOverviewChanges(): { changes: ChangeLogEntry[]; unreadable: number } {
   const queued = new Map(writeBroker.list().map((change) => [change.id, change]));
-  return writeBroker.recentEvents(4).map((e) => {
-    const change = queued.get(e.changeId);
-    return {
-      time: localHhmm(e.ts),
-      text: change ? `${change.what} — ${change.where}` : `${e.event} ${e.kind} — ${e.result}`,
-      who: `${e.ticket} · write broker`,
-    };
-  });
+  const read = writeBroker.readRecentEvents(4);
+  return {
+    changes: read.events.map((e) => {
+      const change = queued.get(e.changeId);
+      return {
+        time: localHhmm(e.ts),
+        text: change ? `${change.what} — ${change.where}` : `${e.event} ${e.kind} — ${e.result}`,
+        who: `${e.ticket} · write broker`,
+      };
+    }),
+    unreadable: read.unreadable.length,
+  };
 }
 
 /**

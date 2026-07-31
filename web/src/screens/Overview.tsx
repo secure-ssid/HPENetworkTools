@@ -14,6 +14,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  Alert,
   Badge,
   Button,
   Divider,
@@ -557,11 +558,32 @@ export default function Overview() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <SectionHeader label="Change log" meta={sourceBadge(changesLive)} />
             {/* The change log is the write broker's audit tail — empty until the
-                first brokered change, which is a fact, not a failure. */}
+                first brokered change, which is a fact, not a failure. It stops
+                being a fact the moment a rotated generation cannot be opened:
+                the record exists and is unreachable, which is the opposite
+                claim to "nothing has happened here". */}
             {data.changes.length === 0 ? (
-              <EmptyState
-                title="No brokered changes yet"
-                description="Every write the portal makes lands here with its authorising ticket."
+              (data.changesUnreadable ?? 0) > 0 ? (
+                <EmptyState
+                  title="Part of the change record could not be read"
+                  description={`${data.changesUnreadable} rotated log generation${
+                    data.changesUnreadable === 1 ? '' : 's'
+                  } could not be opened, so this is not a record of nothing happening. Check the portal's data directory.`}
+                />
+              ) : (
+                <EmptyState
+                  title="No brokered changes yet"
+                  description="Every write the portal makes lands here with its authorising ticket."
+                />
+              )
+            ) : (data.changesUnreadable ?? 0) > 0 ? (
+              // A non-empty tail with a hole behind it: the rows shown are
+              // real, but they are not the whole history.
+              <Alert
+                tone="warning"
+                title={`${data.changesUnreadable} rotated log generation${
+                  data.changesUnreadable === 1 ? '' : 's'
+                } could not be read — this tail is short`}
               />
             ) : null}
             {/* ChangeLogEntry is {time,text,who} — the broker's audit rows lose

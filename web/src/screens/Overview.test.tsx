@@ -385,3 +385,56 @@ describe('Overview', () => {
     );
   });
 });
+
+/* The Change log panel is a render of the write broker's audit tail. Its
+ * empty state describes a blank log as "No brokered changes yet" — a claim
+ * that nothing has happened. When a rotated generation cannot be opened the
+ * tail comes back short (or empty) and that same panel makes the claim over
+ * a history that exists and is unreachable, which is its opposite. */
+describe('Overview change log completeness', () => {
+  it('does not say "no brokered changes" when part of the record is unreadable', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ changes: [], changesUnreadable: 2 }));
+
+    renderOverview();
+
+    await waitFor(() =>
+      expect(screen.getByText('Part of the change record could not be read')).toBeTruthy(),
+    );
+    expect(screen.queryByText('No brokered changes yet')).toBeNull();
+    expect(screen.getByText(/2 rotated log generations could not be opened/)).toBeTruthy();
+    expect(screen.getByText(/not a record of nothing happening/)).toBeTruthy();
+  });
+
+  it('marks a non-empty tail as short when a generation could not be read', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({ changes: [{ time: '09:32', text: 'VLAN 812 added', who: 'NET-1' }], changesUnreadable: 1 }),
+    );
+
+    renderOverview();
+
+    // The rows shown are real and stay shown; what is added is that they are
+    // not the whole history.
+    await waitFor(() => expect(screen.getByText('VLAN 812 added')).toBeTruthy());
+    expect(screen.getByText(/1 rotated log generation could not be read — this tail is short/)).toBeTruthy();
+  });
+
+  it('leaves a genuinely quiet log reading as quiet', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ changes: [], changesUnreadable: 0 }));
+
+    renderOverview();
+
+    await waitFor(() => expect(screen.getByText('No brokered changes yet')).toBeTruthy());
+    expect(screen.queryByText(/could not be/)).toBeNull();
+  });
+
+  // An older server (or demo fixtures) sends no such field; absent must not
+  // be read as a hole in the record.
+  it('says nothing when the route did not report readability at all', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ changes: [] }));
+
+    renderOverview();
+
+    await waitFor(() => expect(screen.getByText('No brokered changes yet')).toBeTruthy());
+    expect(screen.queryByText(/could not be/)).toBeNull();
+  });
+});

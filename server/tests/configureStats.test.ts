@@ -19,10 +19,12 @@ process.env.HPE_DATA_DIR = join(tmp, 'data');
 
 let liveConfigureStats: typeof import('../src/routes/screens/configureModel').liveConfigureStats;
 let pushOutcomesToday: typeof import('../src/routes/screens/configureModel').pushOutcomesToday;
+let liveOverviewChanges: typeof import('../src/routes/screens/overviewModel').liveOverviewChanges;
 let writeBroker: typeof import('../src/services/writeBroker').writeBroker;
 
 beforeAll(async () => {
   ({ liveConfigureStats, pushOutcomesToday } = await import('../src/routes/screens/configureModel'));
+  ({ liveOverviewChanges } = await import('../src/routes/screens/overviewModel'));
   ({ writeBroker } = await import('../src/services/writeBroker'));
 });
 
@@ -150,5 +152,37 @@ describe('Configure "Pushed today" tile', () => {
     ]);
 
     expect(pushOutcomesToday()).toMatchObject({ applied: 1, accepted: 0, failed: 0, total: 1 });
+  });
+});
+
+/* The same audit log, rendered as the Overview's Change log panel. Its empty
+ * state calls a blank log "a fact, not a failure" — true until a rotated
+ * generation cannot be opened, at which point the identical blank panel
+ * asserts nothing was ever brokered here over a history that exists and is
+ * unreachable. readRecentEvents exists precisely to tell those apart. */
+describe('Overview change log completeness', () => {
+  it('reports the generations it could not read', () => {
+    stubLog([push('applied', 'c1')], ['change-log.1.jsonl', 'change-log.2.jsonl']);
+
+    const result = liveOverviewChanges();
+    expect(result.changes.length).toBe(1);
+    expect(result.unreadable).toBe(2);
+  });
+
+  // The dangerous shape: nothing readable AND part of the record missing.
+  it('does not present an unreadable record as an empty one', () => {
+    stubLog([], ['change-log.1.jsonl']);
+
+    const result = liveOverviewChanges();
+    expect(result.changes).toEqual([]);
+    // Same empty list as a quiet portal — the count is the only thing that
+    // distinguishes them, so it must not be dropped.
+    expect(result.unreadable).toBe(1);
+  });
+
+  it('reports a genuinely quiet log as readable and empty', () => {
+    stubLog([]);
+
+    expect(liveOverviewChanges()).toMatchObject({ changes: [], unreadable: 0 });
   });
 });

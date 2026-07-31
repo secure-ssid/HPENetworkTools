@@ -104,6 +104,12 @@ export interface OverviewData extends ScreenEnvelope {
   sites: OverviewSiteRow[];
   planes: OverviewPlaneRow[];
   changes: ChangeLogEntry[];
+  /** Rotated audit-log generations the server could not open. The tail above
+   *  is short by whatever they hold, so an empty change log is only "nothing
+   *  was brokered yet" when this is 0 — otherwise part of the record is
+   *  unreachable, which is the opposite claim. Absent means the route did not
+   *  say (demo fixtures, or an older server). */
+  changesUnreadable?: number;
   launchpad: LaunchpadRow[];
   syncedAt: string | null; // null in live mode before the first successful poll
   workspace?: string;
