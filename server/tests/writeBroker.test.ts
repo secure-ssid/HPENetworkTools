@@ -92,6 +92,24 @@ function transportWith(status: number, body: unknown = {}): BrokerTransport & { 
   };
 }
 
+/** Structural stand-in for the poller: only the two methods the push path
+ *  uses. An absent section models a Central pull that omitted it because it
+ *  could not read it — Central never sends one empty. */
+function fakePoller(
+  opts: { tick?: string; sections?: Record<string, unknown[]>; throws?: boolean } = {},
+): { poller: import('../src/services/poller').Poller; syncCalls: string[] } {
+  const syncCalls: string[] = [];
+  const poller = {
+    syncNowFor: async (plane: string) => {
+      syncCalls.push(plane);
+      if (opts.throws) throw new Error('https://central.example/token?secret=abc exploded');
+      return opts.tick ?? 'ok';
+    },
+    contributionsByPlane: () => new Map([['central', { config: opts.sections ?? {} }]]),
+  } as unknown as import('../src/services/poller').Poller;
+  return { poller, syncCalls };
+}
+
 /** A 200 transport whose PUT blocks until releasePut() — for in-flight push tests. */
 function gatedTransport() {
   const calls: { method: string; path: string }[] = [];
@@ -352,6 +370,85 @@ describe('push', () => {
       'NET-AMBIGUOUS',
     )).toThrow(/pass plane and serial/);
     expect(transport.calls).toEqual([]);
+  });
+
+  /* The Configure screen lists SSIDs, VLANs and ports out of the poll cache,
+     and those lists are the evidence an operator uses to decide whether a push
+     worked. Before this, a push dequeued the change and left them showing the
+     estate from before it for up to a full poll interval. */
+  it('re-reads Central after an applied push so the lists are not the pre-change ones', async () => {
+    const { poller, syncCalls } = fakePoller({ sections: { ssids: [{ name: 'MRDN-Staff' }] } });
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport: transportWith(200, {}),
+      knownTicket: anyTicket,
+      pollerRef: poller,
+    });
+    const change = broker.queue('ssid', DEFAULT_SSID_FORM, 'NET-5');
+    const r = await broker.push(change.id);
+    expect(r.applied).toBe(true);
+    expect(syncCalls).toEqual(['central']);
+    expect(r.cacheRefresh).toEqual({ attempted: true, ok: true });
+  });
+
+  /* Central omits a section it could not read rather than sending it empty, so
+     a pull that came back without the vlan list leaves the vlan list exactly as
+     stale as a failed pull would. */
+  it('checks the section that would actually show the change, not merely that a poll ran', async () => {
+    const { poller } = fakePoller({ sections: { ssids: [{ name: 'MRDN-Staff' }] } });
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport: transportWith(200, {}),
+      knownTicket: anyTicket,
+      pollerRef: poller,
+    });
+    const change = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-6');
+    const r = await broker.push(change.id);
+    expect(r.applied).toBe(true);
+    expect(r.cacheRefresh).toEqual({
+      attempted: true,
+      ok: false,
+      message: 'Central was re-read but returned no vlan list',
+    });
+  });
+
+  it.each([
+    ['a poll that did not complete', { tick: 'error' }],
+    ['a poller that threw', { throws: true }],
+  ])('reports %s as a list that is behind, never as a refresh', async (_label, opts) => {
+    const { poller } = fakePoller(opts);
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport: transportWith(200, {}),
+      knownTicket: anyTicket,
+      pollerRef: poller,
+    });
+    const change = broker.queue('ssid', DEFAULT_SSID_FORM, 'NET-7');
+    const r = await broker.push(change.id);
+    expect(r.applied).toBe(true);
+    expect(r.cacheRefresh?.attempted).toBe(true);
+    expect(r.cacheRefresh?.ok).toBe(false);
+    // Operator-facing and never the caught error, which can carry a URL.
+    expect(r.cacheRefresh?.message).toMatch(/^Central could not be re-read/);
+    expect(r.cacheRefresh?.message).not.toMatch(/secret|https:/);
+  });
+
+  /* A 202 means Central has the request and has not acted on it. Re-reading
+     would only assert more confidently that nothing had changed. */
+  it('attempts no refresh for a 202, which has changed nothing yet', async () => {
+    const { poller, syncCalls } = fakePoller({ sections: { ssids: [] } });
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport: transportWith(202, {}),
+      knownTicket: anyTicket,
+      pollerRef: poller,
+    });
+    const change = broker.queue('ssid', DEFAULT_SSID_FORM, 'NET-8');
+    const r = await broker.push(change.id);
+    expect(r.accepted).toBe(true);
+    expect(r.applied).toBe(false);
+    expect(syncCalls).toEqual([]);
+    expect(r.cacheRefresh).toEqual({ attempted: false, ok: false });
   });
 
   it('a 2xx applies, dequeues, and keeps the read-back snapshot (0600)', async () => {

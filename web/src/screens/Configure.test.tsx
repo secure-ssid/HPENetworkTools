@@ -1295,6 +1295,41 @@ describe('Configure — a push accepted but not confirmed', () => {
     expect(screen.getByText(/verify it on the plane/)).toBeTruthy();
   });
 
+  /* The push loop re-read the ticket queue and nothing else. The change left
+     the queue, a green toast said "pushed", and the SSID/VLAN/port lists on the
+     same screen carried on showing the estate from before it — which is the
+     only evidence the operator has that the push did anything. */
+  it('re-reads the estate after an applied push, not only the ticket queue', async () => {
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    const before = mockGetConfigure.mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Push queue' }));
+
+    await waitFor(() => expect(mockGetConfigure.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it('says the lists are behind when Central could not be re-read after a push', async () => {
+    mockPushChange.mockResolvedValue({
+      ok: true,
+      applied: true,
+      changeId: 'chg-server-1',
+      ticket: 'NET-4100',
+      kind: 'vlan',
+      snapshot: true,
+      message: 'pushed',
+      cacheRefresh: { attempted: true, ok: false, message: 'Central could not be re-read (poll error)' },
+    });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Push queue' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/could not be re-read \(Central could not be re-read \(poll error\)\), so they do not show this yet\. Do not queue it again\./)).toBeTruthy(),
+    );
+  });
+
   it('still reports a confirmed push plainly, with no caveat attached', async () => {
     // The other half: a real success must not be dressed up as uncertain, or
     // the caveat stops meaning anything on the day it matters.

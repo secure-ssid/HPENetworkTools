@@ -13,6 +13,7 @@ import {
   type ConfigKind,
   type SsidApplyResult,
   type SsidCatalog,
+  type WriteCacheRefresh,
 } from '@hpe/shared';
 
 /** POST /api/configure/render — pure render, no ticket needed. */
@@ -142,6 +143,11 @@ export interface PushResult {
   httpCode?: number;
   snapshot: boolean;
   message: string;
+  /** Whether the server re-read Central afterwards, so the lists on the
+   *  Configure screen show the pushed change. Absent means no refresh was
+   *  tried — correct for a 202 and for every failure — which is not the same
+   *  as one that was tried and did not land. */
+  cacheRefresh?: WriteCacheRefresh;
 }
 
 export async function pushChange(changeId: string): Promise<ApiResult<PushResult>> {

@@ -50,9 +50,11 @@ import {
   type VlanForm,
   type Plane,
   vlanIdProblem,
+  type WriteCacheRefresh,
 } from '@hpe/shared';
 import { readJsonlNewestFirst, rotateIfNeeded } from './logRotation';
 import { CentralAdapter } from '../planes/central';
+import { poller as defaultPoller, type Poller } from './poller';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { settings } from '../config/settings';
 import { knownTicketId } from './tickets';
@@ -142,6 +144,19 @@ export interface PushResult {
   httpCode?: number;
   snapshot: boolean; // a rollback snapshot is on file (kept 24h)
   message: string;
+  /**
+   * Set after an `applied` push, never by the transport. The Configure screen
+   * lists SSIDs, VLANs and ports out of the poll cache, so without a forced
+   * re-read the estate it shows after a successful push is the one from before
+   * it — the same list the operator is looking at when they decide whether the
+   * change worked.
+   *
+   * Absent means no refresh was tried: correct for `accepted` (a 202 has
+   * changed nothing yet, so re-reading would only assert more confidently that
+   * nothing had) and for every failure. That is NOT the same as a refresh that
+   * was tried and did not land, and the screen must not conflate them.
+   */
+  cacheRefresh?: WriteCacheRefresh;
 }
 
 /** Errors that map straight onto HTTP statuses in the routes layer. */
@@ -516,6 +531,7 @@ export function appendBrokerLog(dataDir: string, entry: BrokerLogEntry): void {
 
 export interface WriteBrokerOptions {
   registry?: PlaneRegistry; // default: the process-wide singleton
+  pollerRef?: Poller; // default: the process-wide poller — re-read after a push
   transport?: BrokerTransport | null; // undefined → resolve the CentralAdapter from the registry
   dataDir?: string; // default: HPE_DATA_DIR or <repo>/data
   nowMs?: () => number; // injected clock for tests (lease/snapshot timing)
@@ -545,6 +561,7 @@ export interface BrokerEventRow {
 
 export class WriteBroker {
   private readonly registry: PlaneRegistry;
+  private readonly pollerRef: Poller;
   private readonly transportOverride: BrokerTransport | null | undefined;
   private readonly dataDir: string;
   private readonly nowMs: () => number;
@@ -555,6 +572,7 @@ export class WriteBroker {
 
   constructor(opts: WriteBrokerOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
+    this.pollerRef = opts.pollerRef ?? defaultPoller;
     this.transportOverride = opts.transport;
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
@@ -909,9 +927,9 @@ export class WriteBroker {
       const accepted = res.status === 202;
       const queue = [...this.loadQueue()];
       const idx = queue.findIndex((c) => c.id === change.id);
+      let cleanupFailed = false;
       if (idx >= 0) {
         queue.splice(idx, 1);
-        let cleanupFailed = false;
         try {
           this.saveQueue(queue);
         } catch {
@@ -923,18 +941,6 @@ export class WriteBroker {
           result: accepted ? 'accepted (unconfirmed)' : 'applied',
           httpCode: res.status,
         });
-        if (cleanupFailed) {
-          return {
-            ...base,
-            ok: true,
-            applied: !accepted,
-            accepted,
-            httpCode: res.status,
-            snapshot,
-            message:
-              `${accepted ? 'accepted for later action by Central' : 'accepted by Central'} — HTTP ${res.status}; queue cleanup failed, so the change remains marked applying and cannot replay automatically`,
-          };
-        }
       } else {
         // Discarded while the PUT was in flight: applied on the plane, already
         // off the queue — never splice(-1) an unrelated change out from under it.
@@ -945,6 +951,22 @@ export class WriteBroker {
           httpCode: res.status,
         });
       }
+      // The queue is settled; now make the screen's next read of the estate
+      // include what was just pushed.
+      const cacheRefresh = await this.refreshCache(kind, accepted);
+      if (cleanupFailed) {
+        return {
+          ...base,
+          ok: true,
+          applied: !accepted,
+          accepted,
+          httpCode: res.status,
+          snapshot,
+          cacheRefresh,
+          message:
+            `${accepted ? 'accepted for later action by Central' : 'accepted by Central'} — HTTP ${res.status}; queue cleanup failed, so the change remains marked applying and cannot replay automatically`,
+        };
+      }
       return {
         ...base,
         ok: true,
@@ -952,6 +974,7 @@ export class WriteBroker {
         accepted,
         httpCode: res.status,
         snapshot,
+        cacheRefresh,
         message:
           (accepted
             ? `accepted for later action by Central — HTTP 202; Central has NOT confirmed the change is in effect, so verify it on the plane before relying on it. `
@@ -1001,6 +1024,45 @@ export class WriteBroker {
   // -- internals ----------------------------------------------------------------
 
   /** The Central adapter as a push transport; null when Central can't write. */
+  /**
+   * Force one Central pull after a push so the Configure lists reflect it.
+   *
+   * Those lists — SSIDs, VLANs, switch ports — are served from the poll cache,
+   * and they are the evidence the operator uses to decide whether a push
+   * worked. Leaving them showing the pre-change estate under a green "applied"
+   * toast argues for the wrong conclusion, and the natural response to it is
+   * to queue the change again.
+   *
+   * A 202 gets no refresh: Central has taken the request and not acted on it,
+   * so a re-read would only assert more confidently that nothing has changed.
+   * A refresh failure never fails the push — the change is already on the
+   * plane; only the view of it is behind, and that is reported rather than
+   * assumed.
+   */
+  private async refreshCache(kind: ConfigKind, accepted: boolean): Promise<WriteCacheRefresh> {
+    if (accepted) return { attempted: false, ok: false };
+    try {
+      const tick = await this.pollerRef.syncNowFor('central');
+      if (tick !== 'ok') {
+        return { attempted: true, ok: false, message: `Central could not be re-read (poll ${tick})` };
+      }
+      // Check the section that would actually show this change. Central omits
+      // sections it could not read rather than sending them empty, so an
+      // absent one means unread — a pull that completed without it leaves the
+      // list exactly as stale as a failed pull would.
+      const config = this.pollerRef.contributionsByPlane().get('central')?.config;
+      const section = kind === 'ssid' ? config?.ssids : kind === 'vlan' ? config?.vlans : config?.ports;
+      if (!section) {
+        return { attempted: true, ok: false, message: `Central was re-read but returned no ${kind} list` };
+      }
+      return { attempted: true, ok: true };
+    } catch (err) {
+      // Secret-free: the poller's own message can carry a URL or vendor body.
+      console.error(`central cache refresh failed: ${(err as Error).message}`);
+      return { attempted: true, ok: false, message: 'Central could not be re-read' };
+    }
+  }
+
   private centralTransport(): BrokerTransport | null {
     if (this.transportOverride !== undefined) return this.transportOverride;
     const adapter = this.registry.get('central');

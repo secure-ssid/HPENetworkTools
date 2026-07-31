@@ -561,13 +561,27 @@ export default function Configure() {
   const pushQueue = async () => {
     if (readyCount === 0 || pushing) return;
     setPushing(true);
+    let anyApplied = false;
     if (queueSource === 'server') {
       for (const entry of queue.filter((q) => q.state === 'ready' && q.id !== null)) {
         const r = await pushChange(entry.id as string);
         if (isApiError(r)) {
           toast(r.error, { description: entry.what, tone: 'danger' });
         } else if (r.applied) {
-          toast(r.message, { description: entry.what, tone: 'success' });
+          anyApplied = true;
+          // The lists below are this operator's evidence that the push worked.
+          // When the server could not re-read Central they are still the
+          // pre-change ones, and saying only "applied" over them invites the
+          // change to be queued a second time.
+          const stale = r.cacheRefresh?.attempted && !r.cacheRefresh.ok;
+          toast(r.message, {
+            description: stale
+              ? `${entry.what} — the lists below could not be re-read (${
+                  r.cacheRefresh?.message ?? 'reason not reported'
+                }), so they do not show this yet. Do not queue it again.`
+              : entry.what,
+            tone: stale ? 'warning' : 'success',
+          });
         } else if (r.accepted) {
           // Central took it and has not said it is done. A success tone here
           // would end the operator's involvement in a change that may never
@@ -583,6 +597,11 @@ export default function Configure() {
         }
       }
       await refreshServerQueue();
+      // refreshServerQueue() re-reads the ticket queue, which is a different
+      // thing from the estate. Without this the change left the queue and the
+      // SSID/VLAN/port lists beside it carried on showing the state from
+      // before it for up to a full poll interval.
+      if (anyApplied) setData(await getConfigure());
     }
     // Entries queued while the broker was unreachable have no server id.
     // Keep them visible until they can be submitted to the authoritative
