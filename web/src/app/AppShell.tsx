@@ -122,6 +122,7 @@ export function AppShellLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { workspaceName, settingsError } = useSettings();
+  const auth = useAuth();
   const [chatOpen, setChatOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [rail, setRail] = useState(readRailPref);
@@ -303,7 +304,7 @@ export function AppShellLayout() {
       >
         <div style={{ textAlign: 'right', lineHeight: 1.25 }}>
           <div style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
-            R. Okafor
+            {auth?.principal?.name ?? 'Operator'}
           </div>
           <div
             style={{
@@ -314,10 +315,10 @@ export function AppShellLayout() {
               letterSpacing: '.1em',
             }}
           >
-            Network engineer
+            {auth?.principal?.email ?? (auth?.configured ? '' : 'no sign-in required')}
           </div>
         </div>
-        <Avatar name="R. Okafor" size="sm" />
+        <Avatar name={auth?.principal?.name ?? 'Operator'} size="sm" />
       </div>
     </>
   );
