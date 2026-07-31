@@ -173,6 +173,80 @@ describe('the Auth events tile row', () => {
     expect(single[0]!.note).toBe('1 event · 1 endpoint');
   });
 
+  /* The panel is titled "Why authentications failed". Answering it with the
+     five biggest reasons and no sign of the rest presents a partial list as a
+     whole one — and breaks the arithmetic against the "Rejects / hour" tile
+     built from the same events. */
+  it('summarises the reject reasons it has no room to name', () => {
+    // Eight distinct reasons: five get named, three have to go somewhere.
+    const many = Array.from({ length: 8 }, (_, r) =>
+      Array.from({ length: 10 - r }, (_, i) => ({
+        ...events[0]!,
+        result: 'reject' as const,
+        reason: `Reason ${r}`,
+        mac: `00:00:00:00:0${r}:0${i}`,
+      })),
+    ).flat();
+
+    const rows = liveFailReasons(many);
+    expect(rows).toHaveLength(6);
+    expect(rows.slice(0, 5).map((r) => r.label)).toEqual([
+      'Reason 0',
+      'Reason 1',
+      'Reason 2',
+      'Reason 3',
+      'Reason 4',
+    ]);
+    // 5 + 4 + 3 events behind the three reasons there was no room to name.
+    expect(rows[5]!.label).toBe('3 further reasons');
+    expect(rows[5]!.value).toBe(12);
+    expect(rows[5]!.note).toBe('12 events · 12 endpoints · not itemised');
+
+    // The whole point: the bars still add up to the rejects the tile counts.
+    const summed = rows.reduce((n, r) => n + r.value, 0);
+    expect(summed).toBe(many.length);
+  });
+
+  it('counts an endpoint once across the reasons it was rejected for', () => {
+    // The same MAC turned away for six different reasons is one endpoint, not
+    // six. Summing the per-reason sizes would report more distinct endpoints
+    // than the window holds.
+    const repeat = Array.from({ length: 6 }, (_, r) => ({
+      ...events[0]!,
+      result: 'reject' as const,
+      reason: `Reason ${r}`,
+      mac: '00:00:00:00:00:01',
+    }));
+    const rows = liveFailReasons(repeat);
+    expect(rows[5]!.note).toBe('1 event · 1 endpoint · not itemised');
+  });
+
+  it('pluralises a single unnamed reason', () => {
+    const six = Array.from({ length: 6 }, (_, r) => ({
+      ...events[0]!,
+      result: 'reject' as const,
+      reason: `Reason ${r}`,
+      mac: `00:00:00:00:00:0${r}`,
+    }));
+    expect(liveFailReasons(six)[5]!.label).toBe('1 further reason');
+  });
+
+  /* Guard: the summary row is earned by a reason that did not fit and by
+     nothing else. Five reasons is a complete list, and a row saying otherwise
+     would be its own small lie. */
+  it('adds no summary row when every reason is named', () => {
+    const five = Array.from({ length: 5 }, (_, r) => ({
+      ...events[0]!,
+      result: 'reject' as const,
+      reason: `Reason ${r}`,
+      mac: `00:00:00:00:00:0${r}`,
+    }));
+    const rows = liveFailReasons(five);
+    expect(rows).toHaveLength(5);
+    expect(rows.some((r) => r.label.includes('further'))).toBe(false);
+    expect(liveFailReasons(events).some((r) => r.label.includes('further'))).toBe(false);
+  });
+
   it('groups a per-hour service rate', () => {
     const rows = livePolicyServices(events);
     // 1,204 events over ~2h — a four-figure rate once the span is short.

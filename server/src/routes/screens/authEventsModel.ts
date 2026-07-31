@@ -76,7 +76,26 @@ export function liveAuthStats(events: LiveAuthEvent[]): StatDef[] {
   ];
 }
 
-/** "Why authentications failed" — top reject reasons, top 5 like the fixtures. */
+/** How many reject reasons the panel names before it starts summarising. */
+const NAMED_FAIL_REASONS = 5;
+
+/**
+ * "Why authentications failed" — reject reasons, the top 5 named like the
+ * fixtures, and the tail summarised rather than dropped.
+ *
+ * The fixture feed has five reasons, so the cut never showed; a live policy
+ * plane readily produces a dozen. Dropping the rest silently answered "why
+ * authentications failed" with a partial list presented as a whole one, and
+ * broke the arithmetic besides: these bars sit beside a "Rejects / hour" tile
+ * derived from the same events, and an operator adding the bars up got a
+ * smaller number than the tile with nothing on screen to explain the gap.
+ *
+ * So the remainder gets a row of its own, carrying its own event count — the
+ * list adds up again, and how much is not itemised is itself on the screen.
+ * The panel already takes care to separate "no rejects" from "no feed at all";
+ * this is the same distinction one step along, between the reasons there were
+ * and the reasons it had room for.
+ */
 export function liveFailReasons(events: LiveAuthEvent[]): FailReasonRow[] {
   const byReason = new Map<string, { count: number; macs: Set<string> }>();
   for (const e of events) {
@@ -87,14 +106,26 @@ export function liveFailReasons(events: LiveAuthEvent[]): FailReasonRow[] {
     if (e.mac !== '—') entry.macs.add(e.mac);
     byReason.set(label, entry);
   }
-  return [...byReason.entries()]
-    .sort((a, b) => b[1].count - a[1].count)
-    .slice(0, 5)
-    .map(([label, { count, macs }]) => ({
-      label,
-      value: count,
-      note: `${countOf(count, 'event')} · ${countOf(macs.size, 'endpoint')}`,
-    }));
+  const ranked = [...byReason.entries()].sort((a, b) => b[1].count - a[1].count);
+  const rows: FailReasonRow[] = ranked.slice(0, NAMED_FAIL_REASONS).map(([label, { count, macs }]) => ({
+    label,
+    value: count,
+    note: `${countOf(count, 'event')} · ${countOf(macs.size, 'endpoint')}`,
+  }));
+  const rest = ranked.slice(NAMED_FAIL_REASONS);
+  if (rest.length === 0) return rows;
+  const restEvents = rest.reduce((n, [, v]) => n + v.count, 0);
+  // Union, not a sum of the per-reason sizes: one endpoint can be rejected for
+  // several different reasons, and adding the counts would report more
+  // distinct endpoints than the window contains.
+  const restMacs = new Set<string>();
+  for (const [, v] of rest) for (const mac of v.macs) restMacs.add(mac);
+  rows.push({
+    label: `${countOf(rest.length, 'further reason')}`,
+    value: restEvents,
+    note: `${countOf(restEvents, 'event')} · ${countOf(restMacs.size, 'endpoint')} · not itemised`,
+  });
+  return rows;
 }
 
 /**
