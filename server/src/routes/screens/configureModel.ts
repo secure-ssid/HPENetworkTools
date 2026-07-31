@@ -246,6 +246,21 @@ export function demoConfigureQueue(): QueuedChangeRow[] {
  * operator counting today's work would not notice missing. It rides out
  * beside `unreadable` because the tile's answer is the same either way: this
  * is a floor, not a total.
+ *
+ * But the broker's own `truncated` answers a different question than this
+ * tile asks. It means "older broker events exist beyond the window", which
+ * becomes permanently true the day the log passes EVENTS_READ entries and
+ * stays true forever after. Forwarded as-is, the tile hung "count may be
+ * short" on every exact count it would ever produce — a caveat that is
+ * always on says nothing, and the operator stops reading it before the day
+ * it is finally true.
+ *
+ * The window is read newest-first, so its last row is the furthest back it
+ * reached. If that row predates today, the read spans the whole of today and
+ * no push from today can be behind the cap: the count is exact and earns no
+ * caveat. Only when the window itself ends inside today can a push have been
+ * cut off. Same rule the reader below it already keeps — claim a gap on
+ * evidence of a gap, never on a read that merely ended at its limit.
  */
 const EVENTS_READ = 1000;
 
@@ -266,6 +281,8 @@ export function pushOutcomesToday(): {
   const today = localDayKey();
   const read = writeBroker.readRecentEvents(EVENTS_READ);
   const pushes = read.events.filter((event) => localDayKey(event.ts) === today && event.event === 'push');
+  const oldestRead = read.events[read.events.length - 1];
+  const windowEndedInsideToday = oldestRead === undefined || localDayKey(oldestRead.ts) === today;
   const applied = pushes.filter((event) => event.result.startsWith('applied')).length;
   const accepted = pushes.filter((event) => event.result.startsWith('accepted')).length;
   return {
@@ -274,7 +291,7 @@ export function pushOutcomesToday(): {
     failed: pushes.length - applied - accepted,
     total: pushes.length,
     unreadable: read.unreadable.length,
-    truncated: read.truncated,
+    truncated: read.truncated && windowEndedInsideToday,
   };
 }
 

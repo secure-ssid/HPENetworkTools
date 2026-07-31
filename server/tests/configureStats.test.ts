@@ -42,6 +42,27 @@ function push(result: string, id = 'c1'): Record<string, unknown> {
   };
 }
 
+/** An instant N hours before now — today, and clear of any midnight. */
+function hoursAgo(n: number): string {
+  return new Date(Date.now() - n * 3_600_000).toISOString();
+}
+
+/** Local midday N days back, so the local calendar day is unambiguous. */
+function daysAgoMidday(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  d.setHours(12, 0, 0, 0);
+  return d.toISOString();
+}
+
+function pushAt(ts: string, result: string, id = 'c1'): Record<string, unknown> {
+  return { ...push(result, id), ts };
+}
+
+function eventAt(ts: string, event: string): Record<string, unknown> {
+  return { ...push('applied', 'older'), ts, event };
+}
+
 function stubLog(
   events: Record<string, unknown>[],
   unreadable: string[] = [],
@@ -137,6 +158,56 @@ describe('Configure "Pushed today" tile', () => {
     expect(tile.tone).toBe('neutral');
     expect(tile.tone).not.toBe('positive');
     expect(pushOutcomesToday().truncated).toBe(true);
+  });
+
+  /* The broker's `truncated` answers "are there older events beyond the
+   * window", which goes permanently true once the log passes 1000 entries.
+   * This tile asks something narrower: "could a push from TODAY be behind the
+   * cap". Forwarding one as the other hung "count may be short" on every
+   * exact count the tile would ever produce — and a caveat that is always on
+   * is one the operator has stopped reading by the day it matters. */
+  it('does not call a count short when the window reached back past midnight', () => {
+    // Newest-first, and the window's furthest reach is yesterday: every push
+    // today is inside it, so the count is exact however long the log is.
+    stubLog([pushAt(hoursAgo(2), 'applied', 'c1'), eventAt(daysAgoMidday(1), 'queue')], [], true);
+
+    const tile = pushedTile();
+    expect(tile.value).toBe('1');
+    expect(tile.delta).not.toContain('count may be short');
+    expect(tile.delta).not.toContain('1000 broker events');
+    expect(pushOutcomesToday().truncated).toBe(false);
+  });
+
+  /* The distinction is not academic: this is the shape of every deployment
+   * that has been running a while. Months of history, a quiet day, and a
+   * count that is exactly right. */
+  it('keeps quiet on a long log and a quiet day', () => {
+    stubLog(
+      [pushAt(hoursAgo(1), 'applied', 'c1'), ...[3, 9, 40].map((d) => eventAt(daysAgoMidday(d), 'push'))],
+      [],
+      true,
+    );
+
+    expect(pushOutcomesToday()).toMatchObject({ applied: 1, total: 1, truncated: false });
+    expect(pushedTile().delta).not.toContain('may be short');
+  });
+
+  /* …and it must still speak when the window really does end inside today. */
+  it('still says the count may be short when the window stopped inside today', () => {
+    stubLog([pushAt(hoursAgo(1), 'applied', 'c1'), pushAt(hoursAgo(2), 'applied', 'c2')], [], true);
+
+    expect(pushOutcomesToday()).toMatchObject({ applied: 2, truncated: true });
+    expect(pushedTile().delta).toContain('count may be short');
+  });
+
+  /* A read that ended at its limit is not evidence of a gap — the flag it
+   * forwards is. With nothing truncated, a window ending inside today is just
+   * a portal that started this morning. */
+  it('is silent when the read never hit its limit, wherever the window ends', () => {
+    stubLog([pushAt(hoursAgo(1), 'applied', 'c1')], [], false);
+
+    expect(pushOutcomesToday().truncated).toBe(false);
+    expect(pushedTile().delta).not.toContain('may be short');
   });
 
   /* Both caveats mean the same thing — "at least this many" — and the tile
