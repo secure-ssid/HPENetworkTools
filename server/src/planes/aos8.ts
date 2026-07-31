@@ -594,7 +594,7 @@ export class Aos8Adapter implements PlaneAdapter {
       // 401/403 is the MM saying the session is gone (reboot, aaa change, an
       // admin clearing management sessions) — that is expiry, not fatal.
       if (res.status === 401 || res.status === 403) {
-        this.session = null;
+        await this.dropSession(false);
         if (attempt === 0) continue;
         throw new Error(`HTTP ${res.status} from showcommand '${command}' after re-login`);
       }
@@ -606,13 +606,36 @@ export class Aos8Adapter implements PlaneAdapter {
       }
       const status = globalStatus(res.body);
       if (status !== null && status !== '0') {
-        this.session = null; // session rejected — force a fresh login on the retry
+        // Still alive: the MM answered 2xx on this very session, so hand it
+        // back before asking for another one.
+        await this.dropSession(true);
         if (attempt === 0) continue;
         throw new Error(`MM answered status ${status} for '${command}' after re-login`);
       }
       return extractTables(res.body);
     }
     throw new Error(`unreachable retry state for '${command}'`);
+  }
+
+  /**
+   * Forget the cached session, handing the UID back first when it is still
+   * one the MM would honour.
+   *
+   * `alive` is the whole point of this existing. A 401/403 says the UID is
+   * already gone, and logging out against it is a wasted call the MM answers
+   * 401 to. A 2xx carrying a CLI error status says the opposite: the session
+   * just worked, the *command* did not. Clearing the field on that path
+   * without logging out throws away the only handle to a live session —
+   * login()'s rollover then finds nothing stale to release and leaks a seat
+   * in the MM's capped pool of concurrent management sessions.
+   *
+   * Never throws: logout() swallows its own errors, and a command retry must
+   * not fail because the release call did.
+   */
+  private async dropSession(alive: boolean): Promise<void> {
+    const session = this.session;
+    this.session = null;
+    if (alive && session) await this.logout(session);
   }
 
   /**

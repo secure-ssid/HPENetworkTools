@@ -43,6 +43,11 @@ const USER_ROW_WIRED = { IP: '10.44.9.4', MAC: 'b0:22:7a:11:90:03', Name: 'lab-p
 
 const LOGIN_OK = { _global_result: { status: '0', status_str: 'Login successful', UIDARUBA: 'uid-abc-123' } };
 
+/** A login answer carrying a named UID, so successive sessions stay tellable apart. */
+function loginAs(uid: string): unknown {
+  return { _global_result: { status: '0', status_str: 'Login successful', UIDARUBA: uid } };
+}
+
 function apDatabaseBody(aps: unknown[]): unknown {
   return { _global_result: { status: '0' }, 'AP Database': aps };
 }
@@ -81,6 +86,8 @@ function fakeFetch(opts: {
   apRaw?: Array<{ status: number; text: string }>;
   switchBodies?: Array<{ status: number; body: unknown }>;
   userBodies?: Array<{ status: number; body: unknown }>;
+  /** Answers to the older-image fallback command `show user-table`. */
+  fallbackUserBodies?: Array<{ status: number; body: unknown }>;
   seen?: Seen;
 }): FetchLike {
   const apBodies = opts.apBodies ?? [{ status: 200, body: apDatabaseBody([AP_UP, AP_DOWN]) }];
@@ -91,6 +98,7 @@ function fakeFetch(opts: {
   let apIdx = 0;
   let swIdx = 0;
   let userIdx = 0;
+  let fbIdx = 0;
   return async (url, init) => {
     const u = String(url);
     const headers = (init?.headers ?? {}) as Record<string, string>;
@@ -126,6 +134,11 @@ function fakeFetch(opts: {
     if (u.includes('showcommand') && u.includes(encodeURIComponent('show global-user-table list'))) {
       const b = userBodies[Math.min(userIdx, userBodies.length - 1)];
       userIdx += 1;
+      return new Response(JSON.stringify(b.body), { status: b.status });
+    }
+    if (opts.fallbackUserBodies && u.includes('showcommand') && u.includes(encodeURIComponent('show user-table'))) {
+      const b = opts.fallbackUserBodies[Math.min(fbIdx, opts.fallbackUserBodies.length - 1)];
+      fbIdx += 1;
       return new Response(JSON.stringify(b.body), { status: b.status });
     }
     return new Response('{}', { status: 404 });
@@ -460,6 +473,70 @@ describe('Aos8Adapter.pull', () => {
     // No session left to release — a second dispose() sends nothing.
     await adapter.dispose();
     expect(calls.filter((c) => c.path.startsWith('POST /v1/api/logout'))).toHaveLength(1);
+  });
+
+  /* login() and dispose() both release the old UID; showcommand() used to
+     defeat both by clearing the field itself, leaving login()'s rollover
+     nothing stale to find. A 2xx carrying a CLI error status is the case that
+     matters: the session just answered, so it is still checked out. */
+  it('releases a session the MM is still honouring before re-logging in after a CLI error', async () => {
+    const seen = seenLog();
+    const { adapter, calls } = makeAdapter(
+      fakeFetch({
+        seen,
+        loginBodies: [loginAs('uid-first'), loginAs('uid-second')],
+        apBodies: [
+          { status: 200, body: { _global_result: { status: '1', status_str: 'Session expired' } } },
+          { status: 200, body: apDatabaseBody([AP_UP]) },
+        ],
+      }),
+    );
+    await adapter.pull();
+    expect(seen.loginBodies).toHaveLength(2);
+    expect(seen.urls.some((u) => u.includes('/v1/api/logout?UIDARUBA=uid-first'))).toBe(true);
+    expect(calls.filter((c) => c.path.startsWith('POST /v1/api/logout'))).toHaveLength(1);
+  });
+
+  // The other half of the same decision: a 401 says the UID is already gone,
+  // so a logout against it is a wasted call the MM answers 401 to.
+  it('does not spend a logout on a UID a 401 already invalidated', async () => {
+    const seen = seenLog();
+    const { adapter, calls } = makeAdapter(
+      fakeFetch({
+        seen,
+        apBodies: [
+          { status: 401, body: {} },
+          { status: 200, body: apDatabaseBody([AP_UP]) },
+        ],
+      }),
+    );
+    await adapter.pull();
+    expect(seen.loginBodies).toHaveLength(2);
+    expect(calls.filter((c) => c.path.startsWith('POST /v1/api/logout'))).toHaveLength(0);
+  });
+
+  /* The realistic drain. `show global-user-table list` is rejected by older
+     images — that is why the fallback exists — so the CLI-error path ran on
+     every poll tick, twice, and abandoned a live session each time. A plane
+     polled all day emptied the MM's pool and then could not log in at all,
+     which loses the AP and switch inventory too. */
+  it('leaves nothing checked out when an older image rejects the global user table', async () => {
+    const seen = seenLog();
+    const { adapter, calls } = makeAdapter(
+      fakeFetch({
+        seen,
+        loginBodies: [loginAs('uid-1'), loginAs('uid-2'), loginAs('uid-3')],
+        userBodies: [{ status: 200, body: { _global_result: { status: '2', status_str: 'Invalid command' } } }],
+        fallbackUserBodies: [{ status: 200, body: usersBody([USER_ROW]) }],
+      }),
+    );
+    const pull = await adapter.pull();
+    expect(pull.clients).toHaveLength(1); // the fallback carried the table
+    expect(seen.loginBodies).toHaveLength(3);
+    // Every session but the one still cached was handed back.
+    expect(calls.filter((c) => c.path.startsWith('POST /v1/api/logout'))).toHaveLength(2);
+    expect(seen.urls.some((u) => u.includes('/v1/api/logout?UIDARUBA=uid-1'))).toBe(true);
+    expect(seen.urls.some((u) => u.includes('/v1/api/logout?UIDARUBA=uid-2'))).toBe(true);
   });
 
   it('dispose() never throws when the master is unreachable', async () => {
