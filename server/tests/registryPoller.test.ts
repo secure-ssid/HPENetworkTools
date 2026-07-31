@@ -71,6 +71,52 @@ describe('registry — a partial pull is a sync, but not a complete one', () => 
   });
 });
 
+describe('registry — a credential the adapter refuses degrades one plane, not the portal', () => {
+  /* Adapter constructors validate, and the sharpest case is a plaintext base
+     URL: every plane here posts a secret or carries a bearer, so http:// would
+     put it on the wire. Rejecting it is a throw, and buildRuntime runs for all
+     ten planes at boot and again on every credential save — so an unguarded
+     throw turns one mistyped scheme in settings.json into a portal that will
+     not start, with a stack trace where the explanation should be. */
+  it('does not let one plaintext base URL take down the other planes', async () => {
+    await withRegistry(
+      {
+        central: { gatewayBaseUrl: 'http://apigw.example.com', clientId: 'id', clientSecret: 'sec' },
+        mist: { apiHost: 'api.mist.example.com', orgId: 'org-1', token: 'mist-token-1234' },
+      },
+      (reg) => {
+        const central = reg.state('central');
+        expect(central.health).toBe('degraded');
+        expect(central.linked).toBe(true);
+        // The note has to carry the constructor's own reason. "degraded" alone
+        // sends the operator looking for a network fault that is not there.
+        expect(central.note).toContain('must use https');
+        expect(central.note).toContain('cleartext');
+
+        // …and the plane that was configured correctly is untouched. A bad
+        // Central URL is not an outage of Mist.
+        expect(reg.state('mist').health).toBe('warning');
+        expect(reg.state('mist').note).toContain('first sync pending');
+      },
+    );
+  });
+
+  /* The likelier trigger is not boot but the credential save that caused it:
+     reinitPlane runs the same constructor while a request is in flight. */
+  it('contains the refusal on a re-link too, instead of failing the save', async () => {
+    await withRegistry(
+      { clearpass: { baseUrl: 'http://cppm.example.com', clientId: 'id', clientSecret: 'sec' } },
+      (reg) => {
+        const view = reg.reinitPlane('clearpass');
+        expect(view.health).toBe('degraded');
+        expect(view.note).toContain('must use https');
+        // Still answerable afterwards — the registry is not left half-built.
+        expect(reg.state('clearpass').health).toBe('degraded');
+      },
+    );
+  });
+});
+
 describe('registry — failure backoff', () => {
   it('grows the wait per consecutive failure, caps it, and clears it on success', async () => {
     vi.useFakeTimers();

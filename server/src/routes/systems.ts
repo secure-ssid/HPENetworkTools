@@ -37,6 +37,7 @@ import {
   SseEndpointValidationError,
 } from '../planes/sse';
 import { UxiAdapter } from '../planes/uxi';
+import { httpsBase } from '../planes/transport';
 import { GreenLakeAdapter } from '../planes/greenlake';
 import { MistAdapter } from '../planes/mist';
 import { ClearPassAdapter } from '../planes/clearpass';
@@ -185,10 +186,6 @@ function tcpCheck(host: string, port: number, timeoutMs: number): Promise<void> 
   });
 }
 
-function withScheme(base: string): string {
-  return /^https?:\/\//i.test(base) ? base : `https://${base}`;
-}
-
 /** HPE Aruba Networking Central: real OAuth client-credentials token fetch.
  *  New-Central gateways ({region}.api.central…) are minted by GreenLake SSO;
  *  classic *-apigw* gateways mint their own /oauth2/token — host shape picks
@@ -198,7 +195,15 @@ async function testCentral(creds: Record<string, string>): Promise<Omit<TestResu
   if (!base || !creds.clientId || !creds.clientSecret) {
     return { ok: false, message: 'central requires gatewayBaseUrl, clientId and clientSecret' };
   }
-  const baseUrl = withScheme(base);
+  // Test-connection posts the client secret to mint a token, so it refuses a
+  // plaintext base URL for the same reason the adapter does — and answers with
+  // the reason rather than a transport error the operator has to decode.
+  let baseUrl: string;
+  try {
+    baseUrl = httpsBase(base, 'the client secret is posted to mint a token');
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'invalid gatewayBaseUrl' };
+  }
   const sso = { url: GREENLAKE_CCS_TOKEN_URL, label: 'GreenLake SSO' };
   const local = { url: `${baseUrl}/oauth2/token`, label: 'gateway /oauth2/token' };
   const candidates = isNewCentralGateway(baseUrl) ? [sso, local] : [local, sso];

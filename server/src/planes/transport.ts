@@ -42,6 +42,81 @@ import type { PlaneTokenInfo } from './types';
 
 /** What a completed call cost, for the Activity tab. `code` is the HTTP status
  *  as a string, or a short label like 'timeout' when there was no response. */
+/**
+ * A plane's configured base URL, normalised to https and refused if it is not.
+ *
+ * A bare host gets `https://` — the operator typed a hostname, and https is
+ * the only scheme any of these planes actually serves. An explicit `https://`
+ * passes through. Anything else throws.
+ *
+ * The refusal is the point. Every plane here authenticates: Central and
+ * ClearPass POST a client secret to mint a token, GreenLake and Mist put a
+ * bearer or an API token on every request, AOS-8 posts a password. Over
+ * `http://` all of that crosses the network in the clear. The portal masks
+ * those same secrets in its logs, its audit trail and its settings reads, and
+ * then, if the base URL happened to start with `http://`, put them on the wire
+ * for anyone on the path — silently, because five of the six copies of this
+ * function accepted `http://` and said nothing.
+ *
+ * AOS-8's copy already refused, for exactly this reason and in almost these
+ * words. It was right and the others were not: none of these planes is
+ * reachable over plaintext in the first place — three are vendor SaaS that
+ * serve https only, and ClearPass and AOS-8 are appliances whose APIs are
+ * https. An `http://` base URL is a configuration mistake every time, so it is
+ * reported as one instead of being honoured.
+ *
+ * `whatTravels` names the credential at risk, so the error says what is
+ * actually at stake rather than quoting a rule.
+ *
+ * `http://` to a LOOPBACK address is the one exception, and it is not a
+ * concession: a packet to 127.0.0.1 or ::1 never reaches a network interface,
+ * so there is no path for anyone to read it off. This is the same line
+ * browsers draw when they treat http://localhost as a secure context. It is
+ * what makes a local mock of a vendor API testable, and it is the only reason
+ * a plaintext scheme is ever honoured here. `localhost.evil.com` is not
+ * loopback and does not qualify.
+ */
+const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
+
+export function httpsBase(raw: string, whatTravels: string): string {
+  const base = raw.trim();
+  if (/^https:\/\//i.test(base)) return base;
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(base)?.[1];
+  if (scheme !== undefined) {
+    let host: string | null = null;
+    try {
+      host = new URL(base).hostname;
+    } catch {
+      host = null; // unparseable: not demonstrably loopback, so refuse below
+    }
+    if (scheme.toLowerCase() === 'http' && host !== null && LOOPBACK_HOST.test(host)) return base;
+    throw new Error(
+      `base URL must use https — ${whatTravels}, and '${scheme}://' would send it in cleartext; ` +
+        `configure an https:// address`,
+    );
+  }
+  return `https://${base}`;
+}
+
+/**
+ * The same normalisation WITHOUT the refusal, for callers that are not about
+ * to put a credential on the wire — a fingerprint over the configured tenant,
+ * a base URL echoed back to the operator on a settings screen.
+ *
+ * It exists as its own name on purpose. This module already learned once what
+ * happens when two different contracts share one: `extractTotal` means "no
+ * total was stated, keep paging" in three adapters and "unknown, do not report
+ * a count" in two, and a caller that reached for the wrong one reported a page
+ * size as a window total. So the validating and non-validating forms are
+ * spelled differently, and this one says in its name that it does not check.
+ *
+ * Never build a request URL with this.
+ */
+export function normaliseBaseUrlUnchecked(raw: string): string {
+  const base = raw.trim();
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(base) ? base : `https://${base}`;
+}
+
 export type RecordCallFn = (call: { path: string; ms: number; code: string }) => void;
 
 /** The fetch surface an adapter is given. Injectable so tests answer without a

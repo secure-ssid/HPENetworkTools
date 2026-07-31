@@ -78,6 +78,7 @@ import {
   type FetchLike,
   type RecordCallFn,
   type SleepFn,
+  httpsBase,
 } from './transport';
 
 // Re-exported so tests can type an in-memory fake fetch against this adapter.
@@ -379,10 +380,6 @@ export function mapMistAlarm(
 // The adapter
 // ---------------------------------------------------------------------------
 
-function withScheme(base: string): string {
-  return /^https?:\/\//i.test(base) ? base : `https://${base}`;
-}
-
 /** Rows are a bare array on list endpoints; search endpoints wrap in `results`. */
 function extractRows(body: unknown): unknown[] {
   if (Array.isArray(body)) return body;
@@ -467,7 +464,7 @@ export class MistAdapter implements PlaneAdapter {
     if (!MistAdapter.isComplete(creds)) {
       throw new Error('mist requires apiHost, orgId and token');
     }
-    this.baseUrl = withScheme(creds.apiHost).replace(/\/+$/, '');
+    this.baseUrl = httpsBase(creds.apiHost, 'the API token is sent on every request').replace(/\/+$/, '');
     this.orgId = creds.orgId.trim();
     this.token = creds.token;
     // Publish the capability statement on the shared state too: nothing calls

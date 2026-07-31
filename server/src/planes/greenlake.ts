@@ -154,6 +154,7 @@ import {
   type FetchLike,
   type RecordCallFn,
   type SleepFn,
+  httpsBase,
 } from './transport';
 
 // Re-exported so tests can type an in-memory fake fetch against this adapter.
@@ -676,10 +677,6 @@ function extractTotal(body: unknown): number | null {
   return null;
 }
 
-function withScheme(base: string): string {
-  return /^https?:\/\//i.test(base) ? base : `https://${base}`;
-}
-
 export class GreenLakeAdapter implements PlaneAdapter {
   readonly id = 'greenlake' as const;
 
@@ -715,7 +712,7 @@ export class GreenLakeAdapter implements PlaneAdapter {
     if (!GreenLakeAdapter.isComplete(creds)) {
       throw new Error('greenlake requires workspaceId, clientId and clientSecret');
     }
-    this.baseUrl = withScheme(creds.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.baseUrl = httpsBase(creds.baseUrl ?? DEFAULT_BASE_URL, 'the workspace bearer token rides every call').replace(/\/+$/, '');
     this.declaredScopes = typeof creds.scopes === 'string' ? creds.scopes : '';
     const ws = encodeURIComponent(creds.workspaceId);
     this.workspaceGrn = `grn:glp/workspaces/${creds.workspaceId}`;

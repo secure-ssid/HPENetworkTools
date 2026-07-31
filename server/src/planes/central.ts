@@ -173,6 +173,7 @@ import {
   type FetchLike,
   type RecordCallFn,
   type SleepFn,
+  httpsBase,
 } from './transport';
 
 
@@ -1399,14 +1400,6 @@ function extractNextCursor(body: unknown): string | null {
   return str(raw);
 }
 
-/** Exported for display-only use by server/src/services/centralWebhooks.ts,
- *  which shows the exact (non-secret) outbound gateway URL a webhook write
- *  will target as part of its review-confirmation preview — never used
- *  there to make a call of its own. */
-export function withScheme(base: string): string {
-  return /^https?:\/\//i.test(base) ? base : `https://${base}`;
-}
-
 // -- token endpoints: which OAuth server mints a token for this gateway -------
 
 /**
@@ -1472,7 +1465,7 @@ export class CentralAdapter implements PlaneAdapter {
     if (!CentralAdapter.isComplete(creds)) {
       throw new Error('central requires gatewayBaseUrl, clientId and clientSecret');
     }
-    this.baseUrl = withScheme(creds.gatewayBaseUrl).replace(/\/+$/, '');
+    this.baseUrl = httpsBase(creds.gatewayBaseUrl, 'the client secret is posted to mint a token and the bearer rides every call').replace(/\/+$/, '');
     this.approved = parseApprovedFirmware(creds.approvedFirmware);
     // Publish the capability statement on the shared state too: nothing calls
     // PlaneAdapter.capabilities() yet, and an unset field reads as "claims

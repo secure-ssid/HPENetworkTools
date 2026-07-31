@@ -76,6 +76,7 @@ import {
 import {
   type FetchLike,
   type RecordCallFn,
+  httpsBase,
 } from './transport';
 
 // Re-exported so tests can type an in-memory fake fetch against this adapter.
@@ -417,16 +418,6 @@ function sessionCookieFrom(res: Response, uid: string): string {
   return `SESSION=${uid}`;
 }
 
-function withScheme(base: string): string {
-  if (/^https:\/\//i.test(base)) return base;
-  // The login POST carries the password — a plaintext scheme is a config error,
-  // not something to silently honour.
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(base)) {
-    throw new Error(`aos8 master must use https — the login carries the password and '${base.split('://')[0]}://' would send it in cleartext; configure an https:// master`);
-  }
-  return `https://${base}`;
-}
-
 // ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
@@ -449,7 +440,7 @@ export class Aos8Adapter implements PlaneAdapter {
     if (!Aos8Adapter.isComplete(creds)) {
       throw new Error("aos8 requires master plus username/password (or clientId/clientSecret)");
     }
-    this.baseUrl = withScheme(creds.master).replace(/\/+$/, '');
+    this.baseUrl = httpsBase(creds.master, 'the login carries the password').replace(/\/+$/, '');
     this.username = (creds.username ?? creds.clientId).trim();
     this.password = creds.password ?? creds.clientSecret;
     this.approved = parseApprovedFirmware(creds.approvedFirmware);

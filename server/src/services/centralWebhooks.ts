@@ -62,7 +62,8 @@ import {
   WEBHOOKS_DEMO,
 } from '@hpe/shared';
 import type { PlaneCapabilities } from '../planes/types';
-import { CentralAdapter, withScheme, type CentralHttpBodyParse } from '../planes/central';
+import { CentralAdapter, type CentralHttpBodyParse } from '../planes/central';
+import { normaliseBaseUrlUnchecked } from '../planes/transport';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
 import { effectiveSectionSource, settings } from '../config/settings';
@@ -708,7 +709,7 @@ export class CentralWebhooksService {
         const creds = settings.get().planes.central;
         if (creds?.gatewayBaseUrl && creds.clientId && creds.clientSecret) {
           return hashTenantIdentity({
-            gatewayBaseUrl: withScheme(creds.gatewayBaseUrl.trim()).replace(/\/+$/, ''),
+            gatewayBaseUrl: normaliseBaseUrlUnchecked(creds.gatewayBaseUrl).replace(/\/+$/, ''),
             clientId: creds.clientId.trim(),
             clientSecret: creds.clientSecret,
           });
@@ -1038,7 +1039,7 @@ export class CentralWebhooksService {
   private gatewayBaseUrlForDisplay(): string | null {
     const creds = settings.get().planes.central;
     const raw = creds?.gatewayBaseUrl?.trim();
-    return raw ? withScheme(raw).replace(/\/+$/, '') : null;
+    return raw ? normaliseBaseUrlUnchecked(raw).replace(/\/+$/, '') : null;
   }
 
   private requireReview(reviewConfirmedRaw: unknown): void {

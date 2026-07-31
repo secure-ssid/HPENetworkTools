@@ -135,6 +135,30 @@ operator changing production by accident.
 Protect the host account, settings file, runtime data directory, and backups.
 The portal does not replace operating-system or deployment secret management.
 
+### Credentials in transit
+
+A connected system's base URL must be `https://`. A bare hostname is assumed to
+be https; any other explicit scheme is refused when the adapter is built.
+
+This is enforced rather than recommended because every plane authenticates:
+Central and ClearPass POST a client secret to mint a token, GreenLake and Mist
+put a bearer or API token on every request, and AOS-8 posts a password to its
+login form. Over `http://` all of that crosses the network in the clear, which
+would make the masking described above pointless — the secret is protected in
+the logs and then handed to anyone on the path. None of these planes serves
+plaintext in the first place, so an `http://` base URL is a configuration
+mistake in every case and is reported as one.
+
+`http://` to a loopback address (`127.0.0.0/8`, `localhost`, `[::1]`) is
+permitted. Those packets never reach a network interface, so there is nothing
+on the path to read them; this is the same distinction browsers draw when they
+treat `http://localhost` as a secure context. A hostname that merely begins
+with `localhost` does not qualify.
+
+A refused base URL degrades that one plane — shown on Systems as `degraded`
+with the reason in its note — and does not prevent the portal from starting or
+affect any other plane.
+
 ## Review gates
 
 Mutating operations require explicit review confirmation. Device operations are

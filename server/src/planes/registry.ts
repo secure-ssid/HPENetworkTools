@@ -419,7 +419,60 @@ export class PlaneRegistry {
     };
   }
 
+  /**
+   * Build a plane's runtime, or degrade that ONE plane if its adapter refuses
+   * to be constructed.
+   *
+   * Adapter constructors validate: an `http://` base URL is rejected outright
+   * because every plane here posts a secret or carries a bearer, and plaintext
+   * would put it on the wire. That rejection is a throw, and this is called
+   * from init() for all ten planes at boot and from reinitPlane() on every
+   * credential save. Unguarded, one mistyped scheme in data/settings.json
+   * would take the whole portal down at startup, and the operator would get a
+   * stack trace on stdout instead of the one screen that could tell them which
+   * plane and why.
+   *
+   * So the failure is contained to its own plane and stated where it belongs:
+   * degraded, with the constructor's own message as the note. That message
+   * names the credential at risk, so the Systems row explains the problem and
+   * the fix. The other nine planes are unaffected, which is the point — a bad
+   * ClearPass URL is not an outage of Central.
+   */
   private buildRuntime(id: PlaneId, calls: ApiCallLogEntry[], events: PlaneEventEntry[] = []): PlaneRuntime {
+    try {
+      return this.buildRuntimeOrThrow(id, calls, events);
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      const state: PlaneState = {
+        id,
+        linked: true,
+        health: 'degraded',
+        lastSync: null,
+        deviceCount: null,
+        callsToday: 0,
+        note: `credentials rejected — ${why}`,
+        callBudget: null,
+        token: null,
+        consecutiveFailures: 0,
+        nextAttemptAt: null,
+      };
+      return {
+        adapter: new UnconfiguredAdapter(id, state),
+        state,
+        baseHealth: 'degraded',
+        calls,
+        events,
+        callsToday: 0,
+        day: localDayKey(),
+      };
+    }
+  }
+
+  private buildRuntimeOrThrow(
+    id: PlaneId,
+    calls: ApiCallLogEntry[],
+    events: PlaneEventEntry[] = [],
+  ): PlaneRuntime {
     const creds = this.store.get().planes[id];
     const linked = creds !== null && Object.keys(creds).length > 0;
     const state: PlaneState = {

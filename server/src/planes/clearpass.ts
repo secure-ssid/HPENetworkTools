@@ -111,6 +111,7 @@ import {
   type FetchLike,
   type RecordCallFn,
   type SleepFn,
+  httpsBase,
 } from './transport';
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
@@ -416,10 +417,6 @@ function extractTotal(body: unknown, rows: unknown[], pageLimit: number): number
   return null;
 }
 
-function withScheme(base: string): string {
-  return /^https?:\/\//i.test(base) ? base : `https://${base}`;
-}
-
 function filled(v: unknown): boolean {
   return typeof v === 'string' && v.trim().length > 0;
 }
@@ -454,7 +451,7 @@ export class ClearPassAdapter implements PlaneAdapter {
     // 'publisher' is the key the connect drawer writes (README:322, and the
     // design's own credential record); host/baseUrl stay accepted.
     const host = [creds.publisher, creds.host, creds.baseUrl].find(filled) as string;
-    this.baseUrl = withScheme(host).replace(/\/+$/, '');
+    this.baseUrl = httpsBase(host, 'the client secret is posted to mint a token').replace(/\/+$/, '');
     this.coaEnforcementProfile = filled(creds.coaEnforcementProfile) ? creds.coaEnforcementProfile : null;
     this.staticToken = filled(creds.token) && !ClearPassAdapter.hasOauthCreds(creds) ? creds.token : null;
     this.tokens = ClearPassAdapter.hasOauthCreds(creds)
