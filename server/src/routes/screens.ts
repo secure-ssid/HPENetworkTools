@@ -23,6 +23,7 @@ import {
   AUTH_STATS,
   BASELINE_PROGRESS,
   CAPABILITY_MATRIX,
+  CLEARPASS_ENDPOINTS,
   CLIENT_STATS,
   CLIENTS,
   COMPLIANCE_DIFF,
@@ -49,11 +50,13 @@ import {
   SITE_PROFILES,
   SITE_STATS,
   SITES,
+  SITE_SLE,
   SSIDS,
   SUBSCRIPTIONS,
   SYNC_HISTORY,
   SYSTEMS,
   TICKETS,
+  UXI_SENSORS,
   VLANS,
   deriveRssiDbm,
   deriveSiteProfile,
@@ -76,6 +79,7 @@ import {
   type DetailFetchState,
   type DeviceEvidence,
   type DeviceRow,
+  type EndpointRow,
   type Plane,
   type PlaneKey,
   type SearchIndexEntry,
@@ -159,6 +163,7 @@ import {
   liveClients,
   liveCorrelation,
   liveDeviceData,
+  liveMistSle,
   planesMissingDataset,
   planesMissingDevices,
   liveMerged,
@@ -955,6 +960,72 @@ screensRouter.get('/auth-events', (_req, res) => {
   );
 });
 
+// -- UXI sensor fleet -----------------------------------------------------------
+
+/**
+ * Linked-but-silent for the ONE plane this screen reads. UXI's contribution
+ * is a single structured dataset (`uxiSensors`, same pattern as `sse` and
+ * `greenlake`), not a row array merged across planes — so the missing-source
+ * check here is "is UXI linked and did it contribute?", not the multi-plane
+ * planesMissingDataset() the merged screens use.
+ */
+function uxiMissingSources(): Plane[] {
+  const state = registry.state('uxi');
+  if (!state.linked) return [];
+  const pull = poller.contributionsByPlane().get('uxi');
+  return pull?.uxiSensors === undefined ? (['UXI'] as Plane[]) : [];
+}
+
+screensRouter.get('/uxi', (_req, res) => {
+  if (sourceFor('uxi') === 'demo') {
+    res.json(envelopeFor('uxi', { sensors: UXI_SENSORS }));
+    return;
+  }
+  const pull = poller.contributionsByPlane().get('uxi');
+  res.json(
+    envelopeFor('uxi', {
+      sensors: pull?.uxiSensors ?? [],
+      missingSources: uxiMissingSources(),
+    }),
+  );
+});
+
+/**
+ * ClearPass endpoint repository + auth feed, one screen. Demo mode serves
+ * both fixtures; live mode reads the poller cache — `endpoints` is the
+ * best-effort dataset (ClearPassAdapter.pull() never fails the auth feed on
+ * an endpoint-read failure), so a plane that pulled auth events but not
+ * endpoints this cycle still contributes its rows here instead of vanishing
+ * the whole screen.
+ */
+screensRouter.get('/clearpass', (_req, res) => {
+  if (dataSource() === 'demo') {
+    res.json({
+      dataSource: 'demo',
+      syncedAt: new Date().toISOString(),
+      missingSources: [],
+      endpoints: CLEARPASS_ENDPOINTS,
+      authEvents: AUTH_EVENTS,
+    });
+    return;
+  }
+  const endpoints = poller.getCache().endpoints as EndpointRow[];
+  const authEvents = withOwningPlane(poller.getCache().authEvents as LiveAuthEvent[]);
+  // A plane can be linked and contributing auth events without ever answering
+  // the endpoint read (or vice versa) — union both gaps so the banner names
+  // every plane missing either half of this screen, not just one.
+  const missing = [...planesMissingDataset('endpoints'), ...planesMissingDataset('authEvents')].filter(
+    (p, i, all) => all.indexOf(p) === i,
+  );
+  res.json({
+    dataSource: 'live',
+    syncedAt: poller.lastSyncFor('endpoints', 'authEvents'),
+    missingSources: missing,
+    endpoints,
+    authEvents,
+  });
+});
+
 // -- Sites --------------------------------------------------------------------
 
 screensRouter.get('/sites', (_req, res) => {
@@ -971,6 +1042,7 @@ screensRouter.get('/sites', (_req, res) => {
               stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts, missing),
               sites: live.sites,
               missingSources: missing,
+              sleBySiteId: liveMistSle(),
             }),
             blended,
             'sites',
@@ -979,7 +1051,7 @@ screensRouter.get('/sites', (_req, res) => {
         return;
       }
     }
-    res.json(envelopeFor('sites', { stats: SITE_STATS, sites: SITES }));
+    res.json(envelopeFor('sites', { stats: SITE_STATS, sites: SITES, sleBySiteId: SITE_SLE }));
     return;
   }
   const live = liveMerged();
@@ -993,6 +1065,7 @@ screensRouter.get('/sites', (_req, res) => {
       stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts, missing),
       sites: live.sites,
       missingSources: missing,
+      sleBySiteId: liveMistSle(),
     }),
   );
 });

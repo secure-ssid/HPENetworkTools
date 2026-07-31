@@ -97,7 +97,7 @@
  * records method + path + ms + status, never headers and never a body.
  */
 
-import type { AuthEvent, AuthEventRow, Tone } from '@hpe/shared';
+import type { AuthEvent, AuthEventRow, EndpointRow, Tone } from '@hpe/shared';
 import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
@@ -162,6 +162,12 @@ const TOKEN_DEFAULT_TTL_SEC = 28_800; // CPPM mints 8-hour tokens
 const ENDPOINT_PATH = '/api/endpoint';
 const ENDPOINT_PAGE_LIMIT = 500;
 const ENDPOINT_REFRESH_MS = 5 * 60 * 1000;
+
+/** Endpoint DETAIL rows for the ClearPass screen: paged at 100/call, capped at
+ *  500 total — a best-effort read (README second dataset), never fatal to the
+ *  auth feed pull() otherwise returns. */
+export const MAX_ENDPOINTS = 500;
+const ENDPOINT_DETAIL_PAGE_LIMIT = 100;
 
 /** One auth-log resource: its path and the query string for one page. */
 interface AuthCandidate {
@@ -315,6 +321,34 @@ export function mapClearPassAuthEvent(raw: unknown): ClearPassAuthEventRow | nul
     nas: str(r.nas ?? r.nas_ip ?? r.nasipaddress ?? r.nas_name ?? r.nas_identifier ?? r.source ?? r.nad) ?? '—',
     plane: 'CLEARPASS',
     ...(tsMs !== null ? { tsMs } : {}),
+  };
+}
+
+/**
+ * One /api/endpoint row → EndpointRow. CPPM's endpoint object nests profiling
+ * facts under `attributes` (Category/Family/OS/'Device Name'/'IP Address'/
+ * 'Updated At') rather than as top-level fields — a build that omits one
+ * leaves the corresponding column null rather than guessing.
+ */
+export function mapClearPassEndpoint(raw: unknown): EndpointRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const macRaw = str(r.mac_address ?? r.mac ?? r.macaddress);
+  const id = str(r.id ?? r.endpoint_id) ?? macRaw;
+  if (!id) return null; // no identity at all — not a real row
+  const attrs = r.attributes && typeof r.attributes === 'object' ? (r.attributes as Record<string, unknown>) : {};
+  const status = str(r.status) ?? 'Unknown';
+  return {
+    id,
+    mac: macRaw ? normalizeMac(macRaw) : '—',
+    ip: str(attrs['IP Address']),
+    hostname: str(attrs['Device Name']),
+    status: status as EndpointRow['status'],
+    category: str(attrs.Category),
+    family: str(attrs.Family),
+    os: str(attrs.OS),
+    profile: str(r.enforcement_profile ?? r.enforcement_profiles ?? attrs.Profile ?? attrs['Enforcement Profile']),
+    updatedAt: str(attrs['Updated At']),
   };
 }
 
@@ -535,6 +569,13 @@ export class ClearPassAdapter implements PlaneAdapter {
     // slower pull (design: every 5m); it never fails the auth feed.
     await this.refreshEndpointCount();
 
+    // Endpoint DETAIL rows for the ClearPass screen — a best-effort read on
+    // top of the required auth feed. A failure here (network error, 404 on
+    // /api/endpoint) must not fail the whole pull; it is reported as a
+    // partial 'endpoints' section instead, same honesty rule the auth feed's
+    // own `truncated` note follows.
+    const endpointsRead = await this.fetchEndpoints();
+
     const rejects = authEvents.filter((e) => e.result === 'reject').length;
     const parts = [
       ...(this.endpointCount !== null ? [`${formatCount(this.endpointCount)} endpoints`] : []),
@@ -551,8 +592,46 @@ export class ClearPassAdapter implements PlaneAdapter {
     this.stateRef.note = parts.join(' · ');
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 
-    return truncated !== null ? { authEvents, partial: ['authEvents'] } : { authEvents };
+    const partial = [
+      ...(truncated !== null ? (['authEvents'] as const) : []),
+      ...(endpointsRead === null ? (['endpoints'] as const) : []),
+    ];
+    return {
+      authEvents,
+      ...(endpointsRead !== null ? { endpoints: endpointsRead } : {}),
+      ...(partial.length > 0 ? { partial } : {}),
+    };
   }
+
+  /**
+   * Endpoint repository DETAIL rows (README:465's second dataset), paged at
+   * ENDPOINT_DETAIL_PAGE_LIMIT and capped at MAX_ENDPOINTS. Best-effort: any
+   * non-2xx, unreadable payload, or network error returns null (never throws)
+   * so the caller marks the section partial instead of failing the pull the
+   * auth feed already succeeded on.
+   */
+  private async fetchEndpoints(): Promise<EndpointRow[] | null> {
+    const rows: EndpointRow[] = [];
+    try {
+      for (let offset = 0; rows.length < MAX_ENDPOINTS; offset += ENDPOINT_DETAIL_PAGE_LIMIT) {
+        const limit = Math.min(ENDPOINT_DETAIL_PAGE_LIMIT, MAX_ENDPOINTS - rows.length);
+        const path = `${ENDPOINT_PATH}?limit=${limit}&offset=${offset}`;
+        const res = await this.authedGet(path);
+        if (res.status < 200 || res.status >= 300) return rows.length > 0 ? rows : null;
+        const raw = extractRows(res.body);
+        if (raw === null) return rows.length > 0 ? rows : null;
+        const mapped = raw.map(mapClearPassEndpoint).filter((e): e is EndpointRow => e !== null);
+        rows.push(...mapped);
+        if (raw.length < limit) break; // short page — no more rows to read
+      }
+      return rows.slice(0, MAX_ENDPOINTS);
+    } catch {
+      // A network error mid-walk still leaves whatever pages were read; an
+      // empty walk is indistinguishable from "never asked" and reported null.
+      return rows.length > 0 ? rows : null;
+    }
+  }
+
 
   /**
    * Trigger a CoA Disconnect-Request for an active session, by MAC — the one

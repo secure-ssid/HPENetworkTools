@@ -16,6 +16,7 @@ import {
   AUTH_STATS,
   BASELINE_PROGRESS,
   CAPABILITY_MATRIX,
+  CLEARPASS_ENDPOINTS,
   CLIENTS,
   CLIENT_STATS,
   COMPLIANCE_DIFF,
@@ -43,6 +44,7 @@ import {
   SITES,
   SITE_IDS,
   SITE_PROFILES,
+  SITE_SLE,
   SITE_STATS,
   SSIDS,
   SUBSCRIPTIONS,
@@ -69,10 +71,12 @@ import {
   type DeviceEvidence,
   type DeviceProfile,
   type DeviceRow,
+  type EndpointRow,
   type FailReasonRow,
   type FindingRow,
   type LaneMeta,
   type LaunchpadRow,
+  type MistSleRow,
   type OrphanRow,
   type OverviewAlert,
   type OverviewPlaneRow,
@@ -158,6 +162,15 @@ export interface AuthEventsData extends ScreenEnvelope {
   policyServices: PolicyServiceRow[];
 }
 
+export interface ClearPassData extends ScreenEnvelope {
+  endpoints: EndpointRow[];
+  authEvents: AuthEventRow[];
+  /** Linked planes that contributed nothing to the endpoint or auth-event
+   *  dataset — absent means the route did not say; an empty array means it
+   *  looked and every linked plane reported. */
+  missingSources?: Plane[];
+}
+
 export interface SitesData extends ScreenEnvelope {
   stats: StatDef[];
   sites: SiteRow[];
@@ -166,6 +179,10 @@ export interface SitesData extends ScreenEnvelope {
    *  table entirely — not shown empty. Absent means the route did not say;
    *  an empty array means it looked and every linked plane reported. */
   missingSources?: Plane[];
+  /** Mist's per-site Service Level Expectations, keyed by SiteId. Only Mist
+   *  publishes this, so a site absent from the map is "not reported by any
+   *  plane", not a score of zero. Absent map entirely = older server. */
+  sleBySiteId?: Partial<Record<string, MistSleRow>>;
 }
 
 export interface SiteDetailData extends ScreenEnvelope {
@@ -374,11 +391,25 @@ export async function getAuthEvents(): Promise<AuthEventsData> {
   };
 }
 
+export async function getClearPass(): Promise<ClearPassData> {
+  const result = await fetchScreen<ClearPassData>('/api/clearpass');
+  if (result.kind === 'ok') return result.data;
+  if (result.kind === 'http-error') {
+    return apiFailure<ClearPassData>(result.message, { endpoints: [], authEvents: [] });
+  }
+  return {
+    endpoints: CLEARPASS_ENDPOINTS,
+    authEvents: AUTH_EVENTS,
+    dataSource: 'demo',
+    syncedAt: DEMO_SYNCED_AT,
+  };
+}
+
 export async function getSites(): Promise<SitesData> {
   const result = await fetchScreen<SitesData>('/api/sites');
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') return apiFailure<SitesData>(result.message, { stats: [], sites: [] });
-  return { stats: SITE_STATS, sites: SITES, dataSource: 'demo' };
+  return { stats: SITE_STATS, sites: SITES, sleBySiteId: SITE_SLE, dataSource: 'demo' };
 }
 
 export async function getSiteDetail(param: string): Promise<SiteDetailData> {

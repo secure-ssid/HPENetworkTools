@@ -24,6 +24,10 @@ export function viewForPath(pathname: string): View | null {
       return 'clients';
     case 'auth-events':
       return 'auth';
+    case 'clearpass':
+      return 'clearpass';
+    case 'uxi':
+      return 'uxi';
     case 'inventory':
       return 'inventory';
     case 'sites':
@@ -151,6 +155,8 @@ const PLANE_LABEL_BY_ID: Record<string, Plane> = {
   local: 'LOCAL',
   clearpass: 'CLEARPASS',
   uxi: 'UXI',
+  edgeconnect: 'EDGECONNECT',
+  opsramp: 'OPSRAMP',
 };
 
 /**

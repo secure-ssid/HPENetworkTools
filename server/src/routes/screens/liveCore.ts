@@ -43,6 +43,7 @@ import {
   type AuthEventRow,
   type ClientRow,
   type DeviceRow,
+  type MistSleRow,
   type Plane,
   type Sev,
   type SiteId,
@@ -92,7 +93,7 @@ export function liveDeviceData(): { devices: ReconciledDeviceRow[]; doubleClaime
  * same class of lie in the other direction — the omitted/zero distinction the
  * rest of this file keeps.
  */
-export function planesMissingDataset(key: 'devices' | 'alerts' | 'clients'): Plane[] {
+export function planesMissingDataset(key: 'devices' | 'alerts' | 'clients' | 'authEvents' | 'endpoints'): Plane[] {
   const contributions = poller.contributionsByPlane();
   const out: Plane[] = [];
   for (const id of PLANE_IDS) {
@@ -470,6 +471,23 @@ export function liveMerged(): {
     alerts: sortLiveAlerts(alerts),
   };
 }
+
+/**
+ * Mist's per-site SLE scores, keyed by the portal's normalized SiteId — the
+ * only plane that publishes this dataset, so this reads the Mist
+ * contribution directly rather than merging across planes (there is nothing
+ * to merge). Absent Mist pull, or a pull that did not carry `mistSle` (not
+ * linked, or the org-insights read failed this cycle), returns an empty map:
+ * the Sites screen must read a site with no entry as "not reported", never
+ * as a score of zero.
+ */
+export function liveMistSle(): Record<SiteId, MistSleRow> {
+  const pull = poller.contributionsByPlane().get('mist');
+  const out = {} as Record<SiteId, MistSleRow>;
+  for (const row of pull?.mistSle ?? []) out[row.siteId] = row;
+  return out;
+}
+
 
 export type LiveSubscription = SubscriptionRow & SubscriptionMetricHints;
 

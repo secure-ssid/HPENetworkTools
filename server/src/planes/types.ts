@@ -25,7 +25,9 @@ import type {
   DeviceDetailKind,
   DeviceDetailLive,
   DeviceRow,
+  EndpointRow,
   GreenLakeInventory,
+  MistSleRow,
   PlaneDatasetKey,
   PlaneScope,
   SiteRow,
@@ -33,6 +35,7 @@ import type {
   SseInventory,
   SubscriptionAssignment,
   SubscriptionRow,
+  UxiSensorRow,
 } from '@hpe/shared';
 
 export const PLANE_IDS = [
@@ -46,6 +49,8 @@ export const PLANE_IDS = [
   'clearpass',
   'uxi',
   'sse',
+  'opsramp',
+  'edgeconnect',
 ] as const;
 
 export type PlaneId = (typeof PLANE_IDS)[number];
@@ -155,6 +160,10 @@ export interface PlanePull {
   clients?: ClientRow[];
   alerts?: AlertRow[];
   authEvents?: AuthEventRow[];
+  /** ClearPass endpoint repository rows (README:465's "endpoints" dataset) —
+   *  a best-effort detail read on top of the required auth feed; capped at
+   *  MAX_ENDPOINTS and never required for a healthy pull. */
+  endpoints?: EndpointRow[];
   subscriptions?: SubscriptionRow[];
   /** Configuration inventory read from the plane's config API — what the live
    *  Configure screen needs so it stops inferring SSIDs/VLANs from sessions. */
@@ -172,6 +181,15 @@ export interface PlanePull {
    *  their own dedicated fields: those feed the Licences screen, this does
    *  not. */
   greenlake?: GreenLakeInventory;
+  /** Mist per-site Service Level Expectations (org insights) — a structured
+   *  dataset, not a row array, same pattern as `config`/`sse`/`greenlake`. */
+  mistSle?: MistSleRow[];
+  /** UXI's richer per-sensor view (identity + live status + issues) for the
+   *  dedicated UXI screen — built from the SAME sensors list + status reads
+   *  pull() already fetches for `devices`/`alerts`, no extra API calls. A
+   *  row array, but not merged through PLANE_ROW_DATASET_KEYS: it is UXI-only
+   *  (no other plane populates it), same pattern as `mistSle`. */
+  uxiSensors?: UxiSensorRow[];
   /** Datasets this pull could NOT read (404, truncated page, no permission).
    *  The registry holds health at 'warning' for a pull that names any, so a
    *  half-read plane is never stamped as a complete sync; the poller must not

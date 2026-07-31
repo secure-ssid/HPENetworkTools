@@ -46,6 +46,7 @@ export interface DataCache {
   clients: NonNullable<PlanePull['clients']>;
   alerts: NonNullable<PlanePull['alerts']>;
   authEvents: NonNullable<PlanePull['authEvents']>;
+  endpoints: NonNullable<PlanePull['endpoints']>;
   subscriptions: NonNullable<PlanePull['subscriptions']>;
 }
 
@@ -203,7 +204,7 @@ export class Poller {
 
   /** Merged view of every plane's last good pull. Empty until planes sync. */
   getCache(): DataCache {
-    const cache: DataCache = { devices: [], sites: [], clients: [], alerts: [], authEvents: [], subscriptions: [] };
+    const cache: DataCache = { devices: [], sites: [], clients: [], alerts: [], authEvents: [], endpoints: [], subscriptions: [] };
     for (const pull of this.contributions.values()) {
       for (const key of DATASET_KEYS) {
         const rows = pull[key];

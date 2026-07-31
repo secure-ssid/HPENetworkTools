@@ -39,6 +39,8 @@ export type Plane =
   | 'CLEARPASS'
   | 'UXI'
   | 'SSE'
+  | 'EDGECONNECT'
+  | 'OPSRAMP'
   | 'THIRD-PARTY';
 
 export type Sev = 'P1' | 'P2' | 'P3';
@@ -59,7 +61,9 @@ export type View =
   | 'greenlake'
   | 'configure'
   | 'compliance'
-  | 'systems';
+  | 'systems'
+  | 'uxi'
+  | 'clearpass';
 
 // ---------------------------------------------------------------------------
 // Canonical site identity
@@ -988,12 +992,46 @@ export interface PolicyServiceRow {
   tone: Tone;
 }
 
+// -- ClearPass endpoint repository --
+
+export interface EndpointRow {
+  id: string;
+  mac: string;
+  ip: string | null;
+  hostname: string | null;
+  status: 'Known' | 'Unknown' | 'Disabled' | string;
+  category: string | null; // e.g. 'Computer', 'Phone', 'Printer'
+  family: string | null; // e.g. 'Windows', 'iOS'
+  os: string | null;
+  profile: string | null; // enforcement profile / role
+  updatedAt: string | null; // ISO or display string
+}
+
 // -- Sites (NtSites) --
 
 export interface SiteRow extends Site {
   id: SiteId;
   tone: SiteHealthTone;
   alertTone: Tone;
+}
+
+/**
+ * Mist Service Level Expectations — the platform's headline per-site score,
+ * one classifier per operational dimension (coverage/capacity/roaming/AP
+ * health/WAN). `value` rides straight off the wire as a 0.0–1.0 fraction, not
+ * a percentage; a classifier the org insights read never returned is `null`,
+ * never an assumed 0 — SLE has no "no signal" reading. `overall` is the mean
+ * of whichever classifiers ARE present, so a site missing `wan` (no WAN edge)
+ * is not penalised for a dimension Mist never scores it on. */
+export interface MistSleRow {
+  siteId: SiteId;
+  siteName: string; // raw Mist site name
+  coverage: number | null;
+  capacity: number | null;
+  roaming: number | null;
+  apHealth: number | null;
+  wan: number | null;
+  overall: number | null;
 }
 
 // -- Site detail (NtSiteDetail) --
@@ -1494,6 +1532,38 @@ export interface GreenLakeWriteResult {
   cacheRefresh?: GreenLakeCacheRefresh;
 }
 
+// -- UXI sensors (NtUxi) --
+
+/**
+ * One UXI sensor for the dedicated fleet screen — identity + live status +
+ * ongoing issues in a single row. This is deliberately richer than the
+ * DeviceRow/AlertRow projections UxiAdapter also produces for the merged
+ * Devices/Alerts screens: those two exist so UXI participates in the
+ * cross-plane views, this exists so the UXI screen does not have to
+ * reconstruct a sensor's own picture by re-joining them.
+ */
+export interface UxiSensorRow {
+  id: string;
+  name: string;
+  serial: string | null;
+  model: string | null;
+  /** groupName from UXI — the site the sensor is assigned to. */
+  site: string | null;
+  /** `boolean | null` — the vendor status read is tri-state; null = the
+   *  sensor did not answer, never assumed down. */
+  isOnline: boolean | null;
+  isTesting: boolean | null;
+  issueCount: number;
+  issues: Array<{
+    code: string;
+    severity: string; // 'critical' | 'warning' | 'info'
+    status: string; // 'active' | 'resolved'
+    context: string | null; // networkName or serviceTestName from context
+  }>;
+  wifiMac: string | null;
+  ethernetMac: string | null;
+}
+
 // -- Configure (NtConfigure) --
 
 /** Queued-change list row — the display-level view of a ChangeRequest. */
@@ -1592,7 +1662,9 @@ export type SystemTypeKey =
   | 'local'
   | 'clearpass'
   | 'uxi'
-  | 'sse';
+  | 'sse'
+  | 'edgeconnect'
+  | 'opsramp';
 
 /** Type-dependent endpoint field for the connect form. */
 export interface EndpointVariant {
@@ -1626,6 +1698,7 @@ export const SCREEN_SECTIONS = [
   'configure',
   'compliance',
   'systems',
+  'uxi',
 ] as const;
 export type ScreenSection = (typeof SCREEN_SECTIONS)[number];
 
@@ -1664,11 +1737,14 @@ export const PLANE_DATASET_KEYS = [
   'clients',
   'alerts',
   'authEvents',
+  'endpoints',
   'subscriptions',
   'config',
   'assignments',
   'sse',
   'greenlake',
+  'mistSle',
+  'uxiSensors',
 ] as const;
 export type PlaneDatasetKey = (typeof PLANE_DATASET_KEYS)[number];
 
@@ -1681,6 +1757,7 @@ export const PLANE_ROW_DATASET_KEYS = [
   'clients',
   'alerts',
   'authEvents',
+  'endpoints',
   'subscriptions',
 ] as const;
 export type PlaneRowDatasetKey = (typeof PLANE_ROW_DATASET_KEYS)[number];

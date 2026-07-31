@@ -34,6 +34,7 @@ import type {
   FindingRow,
   LaneMeta,
   LaunchpadRow,
+  MistSleRow,
   NavGroup,
   OrphanRow,
   OverviewAlert,
@@ -68,6 +69,7 @@ import type {
   TicketRow,
   TimelineStep,
   TimelineVariant,
+  UxiSensorRow,
   VlanObject,
   SelectOption,
   WriteMode,
@@ -140,6 +142,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: 'Clients', view: 'clients' },
       { label: 'Auth events', view: 'auth' },
       { label: 'ClearPass', view: 'clearpass' },
+      { label: 'UXI', view: 'uxi' },
     ],
   },
   {
@@ -192,6 +195,7 @@ export const CRUMBS: CrumbMap = {
   clients: [{ label: 'Operate' }, { label: 'Clients' }],
   auth: [{ label: 'Operate' }, { label: 'Auth & policy events' }],
   clearpass: [{ label: 'Operate' }, { label: 'ClearPass' }],
+  uxi: [{ label: 'Operate' }, { label: 'UXI' }],
   inventory: [{ label: 'Inventory' }, { label: 'Explorer' }],
   sites: [{ label: 'Inventory' }, { label: 'Sites' }],
   devices: [{ label: 'Inventory' }, { label: 'Devices' }],
@@ -570,6 +574,29 @@ export function isRealSiteId(id: string): id is SiteId {
   return (REAL_SITE_IDS as readonly string[]).includes(id);
 }
 
+/**
+ * Mist SLE fixture — per-site Service Level Expectations, keyed by SiteId.
+ * Only the sites Mist actually manages (the `MIST` badge on SITES above)
+ * carry a row; the rest are absent rather than a fabricated score, same
+ * "not reported" rule the live adapter follows. Covers the full spread the
+ * Sites screen's badge needs to demonstrate: good (≥0.9), moderate
+ * (0.7–0.9) and poor (<0.7).
+ */
+export const SITE_SLE: Partial<Record<SiteId, MistSleRow>> = {
+  'campus-02': {
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    coverage: 0.97, capacity: 0.95, roaming: 0.96, apHealth: 0.98, wan: 0.94, overall: 0.96,
+  },
+  northgate: {
+    siteId: 'northgate', siteName: 'Northgate Clinic',
+    coverage: 0.88, capacity: 0.82, roaming: 0.79, apHealth: 0.91, wan: null, overall: 0.85,
+  },
+  southpoint: {
+    siteId: 'southpoint', siteName: 'Southpoint Clinic',
+    coverage: 0.61, capacity: 0.58, roaming: 0.52, apHealth: 0.49, wan: 0.55, overall: 0.55,
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Site detail — NtSiteDetail.dc.html (the `profiles` map + fallback())
 // ---------------------------------------------------------------------------
@@ -865,6 +892,8 @@ export const PLANE_MARK: Record<Plane, string> = {
   CLEARPASS: 'var(--nd-border-strong)',
   UXI: 'var(--nd-info)',
   SSE: 'var(--nd-border-strong)',
+  EDGECONNECT: 'var(--nd-border-strong)',
+  OPSRAMP: 'var(--nd-border-strong)',
   'THIRD-PARTY': 'var(--nd-border-strong)',
 };
 
@@ -1291,6 +1320,7 @@ export const PLANE_WRITE_MODE: Record<PlaneKey, WriteMode> = {
   // directly to enable/disable its own mutation controls.
   sse: 'read only',
   opsramp: 'read only',
+  edgeconnect: 'read only',
 };
 
 /**
@@ -1315,6 +1345,7 @@ export const PLANE_KEY_BY_LABEL: Record<Plane, PlaneKey | null> = {
   UXI: 'uxi',
   SSE: 'sse',
   OPSRAMP: 'opsramp',
+  EDGECONNECT: 'edgeconnect',
   'THIRD-PARTY': null,
 };
 
@@ -1843,3 +1874,135 @@ export const CONNECT_ENDPOINT_KEY: Record<SystemTypeKey, string> = {
 /** Success alert body after "Test connection" — `testResult`. */
 export const CONNECT_TEST_RESULT =
   'Authenticated, read scopes granted. Found 164 devices across 3 sites and 486 subscription records — 3 devices are already claimed by another plane and will be flagged, not duplicated.';
+
+// ---------------------------------------------------------------------------
+// UXI sensor fleet (NtUxi) — demo data for the dedicated UXI screen.
+//
+// Unlike most of this file, these 8 rows are NOT extracted from a
+// design/*.dc.html mockup — there is no prototype markup for a dedicated UXI
+// screen. They are hand-authored to exercise every state the screen renders:
+// three healthy online sensors, one with a critical active issue, one with a
+// warning active issue, one offline, one whose status the sensor never
+// reported (unknown), and one online sensor that is not currently testing.
+// ---------------------------------------------------------------------------
+
+export const UXI_SENSORS: UxiSensorRow[] = [
+  {
+    id: 'sns-01',
+    name: 'uxi-meridian-lobby',
+    serial: 'UXI2201A001',
+    model: 'UXI Sensor V3',
+    site: 'Campus-01 — Meridian HQ',
+    isOnline: true,
+    isTesting: true,
+    issueCount: 0,
+    issues: [],
+    wifiMac: '3c:2a:f4:11:22:01',
+    ethernetMac: null,
+  },
+  {
+    id: 'sns-02',
+    name: 'uxi-meridian-3f-east',
+    serial: 'UXI2201A002',
+    model: 'UXI Sensor V3',
+    site: 'Campus-01 — Meridian HQ',
+    isOnline: true,
+    isTesting: true,
+    issueCount: 0,
+    issues: [],
+    wifiMac: '3c:2a:f4:11:22:02',
+    ethernetMac: null,
+  },
+  {
+    id: 'sns-03',
+    name: 'uxi-lakeshore-er',
+    serial: 'UXI2201A003',
+    model: 'UXI Sensor V3',
+    site: 'Lakeshore Medical Center',
+    isOnline: true,
+    isTesting: true,
+    issueCount: 0,
+    issues: [],
+    wifiMac: '3c:2a:f4:11:22:03',
+    ethernetMac: null,
+  },
+  {
+    id: 'sns-04',
+    name: 'uxi-meridian-guest-wifi',
+    serial: 'UXI2201A004',
+    model: 'UXI Sensor V3',
+    site: 'Campus-01 — Meridian HQ',
+    isOnline: true,
+    isTesting: true,
+    issueCount: 1,
+    issues: [
+      {
+        code: 'DNS_RESOLUTION_FAILURE',
+        severity: 'critical',
+        status: 'active',
+        context: 'MRDN-Guest',
+      },
+    ],
+    wifiMac: '3c:2a:f4:11:22:04',
+    ethernetMac: null,
+  },
+  {
+    id: 'sns-05',
+    name: 'uxi-riverside-checkin',
+    serial: 'UXI2201A005',
+    model: 'UXI Sensor V3',
+    site: 'Riverside Clinic',
+    isOnline: true,
+    isTesting: true,
+    issueCount: 1,
+    issues: [
+      {
+        code: 'HIGH_LATENCY',
+        severity: 'warning',
+        status: 'active',
+        context: 'EHR-portal-test',
+      },
+    ],
+    wifiMac: '3c:2a:f4:11:22:05',
+    ethernetMac: null,
+  },
+  {
+    id: 'sns-06',
+    name: 'uxi-warehouse-dock',
+    serial: 'UXI2201A006',
+    model: 'UXI Sensor V2',
+    site: 'Warehouse-DC1',
+    isOnline: false,
+    isTesting: false,
+    issueCount: 0,
+    issues: [],
+    wifiMac: null,
+    ethernetMac: '9c:8e:99:44:10:06',
+  },
+  {
+    id: 'sns-07',
+    name: 'uxi-meridian-basement',
+    serial: 'UXI2201A007',
+    model: 'UXI Sensor V3',
+    site: 'Campus-01 — Meridian HQ',
+    isOnline: null,
+    isTesting: null,
+    issueCount: 0,
+    issues: [],
+    wifiMac: '3c:2a:f4:11:22:07',
+    ethernetMac: null,
+  },
+  {
+    id: 'sns-08',
+    name: 'uxi-lakeshore-radiology',
+    serial: 'UXI2201A008',
+    model: 'UXI Sensor V3',
+    site: 'Lakeshore Medical Center',
+    isOnline: true,
+    isTesting: false,
+    issueCount: 0,
+    issues: [],
+    wifiMac: '3c:2a:f4:11:22:08',
+    ethernetMac: null,
+  },
+];

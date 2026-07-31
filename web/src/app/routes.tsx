@@ -12,6 +12,7 @@ import Alerts from '../screens/Alerts';
 import Tickets from '../screens/Tickets';
 import Clients from '../screens/Clients';
 import AuthEvents from '../screens/AuthEvents';
+import ClearPass from '../screens/ClearPass';
 import Inventory from '../screens/Inventory';
 import Sites from '../screens/Sites';
 import SiteDetail from '../screens/SiteDetail';
@@ -34,6 +35,7 @@ export function AppRoutes() {
         <Route path="/tickets" element={<Tickets />} />
         <Route path="/clients" element={<Clients />} />
         <Route path="/auth-events" element={<AuthEvents />} />
+        <Route path="/clearpass" element={<ClearPass />} />
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/sites" element={<Sites />} />
         <Route path="/sites/:siteId" element={<SiteDetail />} />
