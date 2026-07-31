@@ -476,6 +476,15 @@ export interface BrokerLogEntry {
   kind: string;
   result: string;
   httpCode?: number;
+  /**
+   * The PLANE's own handle for the change, when it issued one — distinct from
+   * `changeId`, which is the portal's. A write the plane merely accepted for
+   * asynchronous validation is settled somewhere the portal cannot see, so
+   * this is the only thing that ties this row to whatever the plane
+   * eventually did with it. Without it the audit trail records, permanently,
+   * that something was submitted and offers no way to find out how it ended.
+   */
+  transactionId?: string | null;
   callbackValidatedAt?: string;
   device?: string;
   plane?: string;

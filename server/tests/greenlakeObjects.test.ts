@@ -268,6 +268,30 @@ describe('GreenLakeObjectsService.write outcomes', () => {
   });
 
   /**
+   * The audit trail is the durable record; the toast that carries the same
+   * handle is gone in seconds. An `accepted` row describes a change settled
+   * somewhere the portal cannot see, so a row without the workspace's handle
+   * says permanently that something was submitted and gives no way to find
+   * out how it ended.
+   */
+  it('records the workspace transaction handle on an accepted write', async () => {
+    const service = makeService({
+      plane: makeGlAdapter(() => ({ status: 202, body: { transactionId: 'txn-7' } })),
+    });
+    await service.write('addSubscription', { key: 'K-1' }, true);
+    expect(auditLines()[0].transactionId).toBe('txn-7');
+  });
+
+  // A synchronous write is settled; there is no handle to record and the
+  // field must be absent rather than present-and-empty, which would read as
+  // "the workspace issued one and we lost it".
+  it('omits the handle entirely when the write was applied outright', async () => {
+    const service = makeService({ plane: makeGlAdapter(() => ({ body: { id: 'loc-9' } })) });
+    await service.write('createLocation', LOCATION_INPUT, true);
+    expect(Object.hasOwn(auditLines()[0], 'transactionId')).toBe(false);
+  });
+
+  /**
    * The GreenLake screen re-renders its lists from the poller cache right
    * after a write. If nothing forced that cache forward, "Applied" is followed
    * by the pre-change list, which reads as a silent failure — and the natural

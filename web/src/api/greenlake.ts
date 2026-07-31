@@ -40,6 +40,10 @@ export interface GreenLakeActionCallResult {
    *  an older server that never refreshed, which the screen reports
    *  differently from a refresh that was tried and failed. */
   cacheRefresh?: GreenLakeWriteResult['cacheRefresh'];
+  /** The workspace's handle for a change it accepted but has not applied. */
+  transactionId?: GreenLakeWriteResult['transactionId'];
+  /** The id of the object the change created, when the API returned one. */
+  id?: GreenLakeWriteResult['id'];
 }
 
 /**
@@ -53,6 +57,12 @@ export interface GreenLakeActionCallResult {
  * applied change whose inventory re-read failed leaves the screen showing the
  * state from before it, and the operator has to be told that rather than left
  * to conclude the write did nothing.
+ *
+ * `transactionId` and `id` complete the same thought. Telling an operator a
+ * change is not applied yet, or is applied but not yet visible, only helps if
+ * they can go and look. The workspace hands back a handle for exactly those
+ * cases and the portal was dropping it here — leaving "check GreenLake" as
+ * advice with nothing to check against.
  */
 export async function runGreenLakeAction(
   action: GreenLakeWriteAction,
@@ -73,6 +83,8 @@ export async function runGreenLakeAction(
       message: body.detail,
       outcome: body.outcome,
       cacheRefresh: body.cacheRefresh,
+      transactionId: body.transactionId,
+      id: body.id,
     };
   } catch (err) {
     return { ok: false, message: `cannot reach the portal backend: ${(err as Error).message}` };

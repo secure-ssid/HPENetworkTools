@@ -167,6 +167,44 @@ describe('GreenLake screen — post-write freshness', () => {
     expect(screen.queryByText(/the lists below are behind/i)).toBeNull();
   });
 
+  /**
+   * A 202 is the one outcome the operator cannot verify from this screen: the
+   * row will not appear, and whether it ever does is decided in GreenLake.
+   * Saying "not applied yet" without the workspace's handle for it leaves them
+   * with a warning and no way to act on it.
+   */
+  it('gives the operator the transaction handle for an accepted change', async () => {
+    await invite({
+      ok: true,
+      message: 'key submitted',
+      outcome: 'accepted',
+      transactionId: 'txn-7',
+    });
+    expect(await screen.findByText(/Workspace transaction txn-7/)).toBeTruthy();
+  });
+
+  // Not every 202 carries one. Silence would read as "there was nothing to
+  // tell you"; the screen says the handle is missing instead of implying the
+  // change can be traced when it cannot.
+  it('says so when an accepted change came back without a handle', async () => {
+    await invite({ ok: true, message: 'key submitted', outcome: 'accepted' });
+    expect(await screen.findByText(/no transaction id/i)).toBeTruthy();
+    expect(screen.queryByText(/Workspace transaction/)).toBeNull();
+  });
+
+  // The lists cannot show the new object, so its id is the only thing the
+  // operator can check the change against while the view is behind.
+  it('gives the created id when the change applied but the lists are behind', async () => {
+    await invite({
+      ok: true,
+      message: 'invitation sent',
+      outcome: 'applied',
+      cacheRefresh: { attempted: true, ok: false, message: 'the workspace could not be re-read' },
+      id: 'usr-42',
+    });
+    expect(await screen.findByText(/GreenLake id usr-42/)).toBeTruthy();
+  });
+
   it('reports a refused change as a failure and never as applied', async () => {
     await invite({ ok: false, message: 'HTTP 403 — not permitted' });
     expect(await screen.findByText('GreenLake refused the change')).toBeTruthy();

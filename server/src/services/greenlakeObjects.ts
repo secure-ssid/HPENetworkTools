@@ -136,7 +136,7 @@ export class GreenLakeObjectsService {
     const adapter = this.requireWrite();
     try {
       const result = await adapter.write(action, input);
-      this.audit(action, 'greenlake-write', result.outcome, result.detail);
+      this.audit(action, 'greenlake-write', result.outcome, result.detail, result.transactionId);
       return { ...result, cacheRefresh: await this.refreshCache(result.outcome) };
     } catch (err) {
       if (err instanceof GreenLakeWriteInputError) {
@@ -238,7 +238,21 @@ export class GreenLakeObjectsService {
   }
 
   /** One audit line per action. Never a payload, an email body or a key. */
-  private audit(action: string, event: string, result: string, detail: string): void {
+  /**
+   * `transactionId` is the workspace's handle for a change it accepted but has
+   * not finished validating. It goes in its own field rather than into
+   * `result`, so a reader can find it without parsing prose — and it goes in
+   * at all because an `accepted` row is a record of a change whose outcome is
+   * decided elsewhere, and one without the handle says permanently that
+   * something was submitted while offering no way to learn how it ended.
+   */
+  private audit(
+    action: string,
+    event: string,
+    result: string,
+    detail: string,
+    transactionId?: string | null,
+  ): void {
     appendBrokerLog(this.dataDir, {
       ts: new Date(this.nowMs()).toISOString(),
       event,
@@ -247,6 +261,7 @@ export class GreenLakeObjectsService {
       kind: `greenlake:${action}`,
       result: `${result} — ${detail}`,
       plane: 'greenlake',
+      ...(transactionId ? { transactionId } : {}),
     });
   }
 }

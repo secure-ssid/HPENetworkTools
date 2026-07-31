@@ -167,17 +167,29 @@ export default function GreenLake() {
       return;
     }
     if (r.outcome === 'accepted') {
+      // The handle is the whole value of telling someone a change is pending:
+      // without it "the workspace validates this asynchronously" is a fact the
+      // operator can do nothing with. It is also in the change log, because a
+      // toast is gone in seconds and this outcome is settled elsewhere.
       toast('Submitted to GreenLake', {
-        description: `${r.message}. The workspace validates this asynchronously — it is not applied yet.`,
+        description:
+          `${r.message}. The workspace validates this asynchronously — it is not applied yet. ` +
+          (r.transactionId
+            ? `Workspace transaction ${r.transactionId} — recorded in the change log.`
+            : 'GreenLake returned no transaction id, so there is no handle to track it by.'),
       });
     } else if (r.cacheRefresh && !r.cacheRefresh.ok) {
       // The change landed but the lists below still show the state from before
       // it. Saying only "Applied" here would leave the operator staring at an
       // unchanged table, and the obvious response to that is to do it again.
       toast('Applied in GreenLake — the lists below are behind', {
-        description: `${r.message}. The workspace inventory could not be re-read (${
-          r.cacheRefresh.message ?? 'reason not reported'
-        }), so this change is not shown yet. Do not repeat it; sync again in a moment.`,
+        description:
+          `${r.message}. The workspace inventory could not be re-read (${
+            r.cacheRefresh.message ?? 'reason not reported'
+          }), so this change is not shown yet. Do not repeat it; sync again in a moment.` +
+          // The lists cannot show the object, so its id is the only thing the
+          // operator can check the change against in the meantime.
+          (r.id ? ` GreenLake id ${r.id}.` : ''),
         tone: 'warning',
       });
     } else {
