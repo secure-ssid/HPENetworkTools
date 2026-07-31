@@ -158,7 +158,11 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
   const subs = poller.getCache().subscriptions as LiveSubscription[];
   // Same derivation as the Licences screen's tile — the two answer the same
   // question and must never disagree.
-  const { expired: expiredLicences, expiring: expiringLicences } = licencesNeedingRenewal(subs);
+  const {
+    expired: expiredLicences,
+    expiring: expiringLicences,
+    undated: undatedLicences,
+  } = licencesNeedingRenewal(subs);
   const expiring = expiredLicences.length + expiringLicences.length;
   const states = registry.states();
   const linked = PLANE_IDS.filter((id) => states[id].linked).length;
@@ -198,12 +202,18 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
       value: String(expiring),
       // A renewal coming up is a diary entry; one that has already lapsed is
       // a live problem, so only the lapsed case earns the negative tone.
+      // 'none due' is a claim about every subscription in the workspace, so
+      // it may only be made when every subscription carried an expiry. An
+      // undated one was dropped from the count silently — it could have
+      // lapsed last week.
       delta:
         expiredLicences.length > 0
           ? `▲ ${expiredLicences.length} already expired`
           : expiring > 0
             ? '▲ renewals due'
-            : 'none due',
+            : undatedLicences.length > 0
+              ? `${undatedLicences.length} undated`
+              : 'none due',
       tone: expiredLicences.length > 0 ? 'negative' : 'neutral',
     },
     {

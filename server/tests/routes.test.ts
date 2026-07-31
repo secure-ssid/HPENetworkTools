@@ -2475,6 +2475,99 @@ describe('live-mode screen contracts', () => {
     contributions.clear();
   });
 
+  /* The other half of the same tile. licencesNeedingRenewal filtered to rows
+   * carrying a daysLeft and silently dropped the rest, so a subscription the
+   * entitlement plane dated no expiry for counted as nothing to renew. An
+   * undated licence is not a licence that never expires — it may have lapsed
+   * last week — and a workspace of them rendered '0 · none on the horizon' in
+   * green. */
+  it('does not render undated subscriptions as nothing to renew', async () => {
+    const { SUBSCRIPTIONS } = await import('@hpe/shared');
+    contributions.clear();
+    contributions.set('greenlake', {
+      subscriptions: [
+        { ...SUBSCRIPTIONS[0], name: 'No expiry reported', daysLeft: undefined, expiresAtMs: undefined },
+      ],
+    });
+
+    const licences = await getJson('/api/licenses');
+    const tile = (licences.body.stats as any[])[3];
+    // Still zero KNOWN problems — the count is not inflated with unknowns.
+    expect(tile).toMatchObject({ label: 'Expiring ≤60d', value: '0' });
+    // But zero-known over a partial read is not an all-clear.
+    expect(tile.tone).toBe('neutral');
+    expect(tile.tone).not.toBe('positive');
+    expect(tile.delta).toContain('1 undated');
+    expect(tile.delta).not.toBe('none on the horizon');
+
+    const overview = await getJson('/api/overview');
+    const licenceTile = (overview.body.stats as any[]).find((t: any) => t.label === 'Licences ≤60d');
+    expect(licenceTile.delta).toContain('1 undated');
+    expect(licenceTile.delta).not.toBe('none due');
+    contributions.clear();
+  });
+
+  // An undated row must stay visible even when something dated is already
+  // wrong — that is when the operator most needs to know the count is short.
+  it('names undated subscriptions alongside an expired one rather than instead of it', async () => {
+    const { SUBSCRIPTIONS } = await import('@hpe/shared');
+    const day = 24 * 60 * 60 * 1000;
+    contributions.clear();
+    contributions.set('greenlake', {
+      subscriptions: [
+        { ...SUBSCRIPTIONS[0], name: 'Lapsed', daysLeft: -1, expiresAtMs: Date.now() - day },
+        { ...SUBSCRIPTIONS[0], id: 'sub-undated', name: 'No expiry', daysLeft: undefined, expiresAtMs: undefined },
+      ],
+    });
+
+    const licences = await getJson('/api/licenses');
+    const tile = (licences.body.stats as any[])[3];
+    expect(tile.value).toBe('1');
+    expect(tile.tone).toBe('negative');
+    expect(tile.delta).toContain('1 already expired');
+    expect(tile.delta).toContain('1 undated');
+    contributions.clear();
+  });
+
+  /* The Devices-unlicensed tile answers from the entitlement plane's own
+   * device→subscription join, where `assigned` is tri-state. Zero explicit
+   * `assigned: false` was rendered green even when most of the join said
+   * nothing at all, which is "none of the ones we can see", not "none". */
+  it('does not render a partly-silent entitlement join as fully licensed', async () => {
+    contributions.clear();
+    contributions.set('greenlake', {
+      assignments: [
+        { deviceId: 'd-1', assigned: true },
+        { deviceId: 'd-2' },
+        { deviceId: 'd-3' },
+      ],
+    });
+
+    const licences = await getJson('/api/licenses');
+    const tile = (licences.body.stats as any[])[4];
+    expect(tile).toMatchObject({ label: 'Devices unlicensed', value: '0' });
+    expect(tile.tone).toBe('neutral');
+    expect(tile.tone).not.toBe('positive');
+    expect(tile.delta).toContain('1 of 3');
+    contributions.clear();
+  });
+
+  // ...but a join where every row stated an entitlement is a real all-clear.
+  it('still renders a fully-stated entitlement join as licensed', async () => {
+    contributions.clear();
+    contributions.set('greenlake', {
+      assignments: [
+        { deviceId: 'd-1', assigned: true },
+        { deviceId: 'd-2', assigned: true },
+      ],
+    });
+
+    const licences = await getJson('/api/licenses');
+    const tile = (licences.body.stats as any[])[4];
+    expect(tile).toMatchObject({ label: 'Devices unlicensed', value: '0', tone: 'positive' });
+    contributions.clear();
+  });
+
   it('a renewal merely coming up is a diary entry, not an outage, on Overview', async () => {
     const { SUBSCRIPTIONS } = await import('@hpe/shared');
     const day = 24 * 60 * 60 * 1000;

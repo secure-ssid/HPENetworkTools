@@ -45,6 +45,7 @@ export const RENEWAL_WINDOW_DAYS = 180;
 export function licencesNeedingRenewal(subs: LiveSubscription[]): {
   expired: LiveSubscription[];
   expiring: LiveSubscription[];
+  undated: LiveSubscription[];
 } {
   const dated = subs.filter(
     (s): s is LiveSubscription & { daysLeft: number } => s.daysLeft !== undefined,
@@ -52,6 +53,12 @@ export function licencesNeedingRenewal(subs: LiveSubscription[]): {
   return {
     expired: dated.filter((s) => s.daysLeft < 0),
     expiring: dated.filter((s) => s.daysLeft >= 0 && s.daysLeft <= LICENCE_HORIZON_DAYS),
+    // A subscription the entitlement plane dated no expiry for is not a
+    // subscription that never expires. It was silently dropped here, so a
+    // workspace whose only lapsed licence carried no date counted zero and
+    // rendered green. Returned rather than discarded so both tiles can say
+    // how much of the answer they could not compute.
+    undated: subs.filter((s) => s.daysLeft === undefined),
   };
 }
 
@@ -91,7 +98,11 @@ export function liveUnlicensedStat(
       label: 'Devices unlicensed',
       value: String(unlicensed),
       delta: `${stated.length} of ${assignments.length} assignment${assignments.length === 1 ? '' : 's'} state an entitlement`,
-      tone: unlicensed > 0 ? 'negative' : 'positive',
+      // Zero explicit `assigned: false` is only an all-clear when every
+      // assignment stated one. With some silent, the honest reading is "none
+      // of the ones we can see", which is not green.
+      tone:
+        unlicensed > 0 ? 'negative' : stated.length < assignments.length ? 'neutral' : 'positive',
     };
   }
   const known = devices.filter((d) => reportedValue(d.licence));
@@ -197,7 +208,7 @@ export function liveLicenseStats(
   const totalQty = subs.reduce((n, s) => n + (s.qtyValue ?? 0), 0);
   const totalAssigned = subs.reduce((n, s) => n + (s.assignedValue ?? 0), 0);
   const unassigned = Math.max(0, totalQty - totalAssigned);
-  const { expired, expiring } = licencesNeedingRenewal(subs);
+  const { expired, expiring, undated } = licencesNeedingRenewal(subs);
   const idle = subs.filter((s) => s.assignedValue === 0);
   const soonest = expiring.reduce<LiveSubscription | null>(
     (a, s) => (a === null || (s.daysLeft ?? 0) < (a.daysLeft ?? 0) ? s : a),
@@ -228,10 +239,18 @@ export function liveLicenseStats(
         [
           expired.length > 0 ? `${expired.length} already expired` : null,
           soonest?.expiresAtMs !== undefined ? `next ${expiryDisplay(soonest.expiresAtMs)}` : null,
+          // Named in every branch, not only the quiet one: an operator
+          // reading "2 already expired" still needs to know the count was
+          // taken over less than the whole list.
+          undated.length > 0 ? `${undated.length} undated` : null,
         ]
           .filter((part): part is string => part !== null)
           .join(' · ') || 'none on the horizon',
-      tone: expired.length + expiring.length > 0 ? 'negative' : 'positive',
+      // Green is a claim that nothing needs renewing. It can only be made
+      // when every subscription was dated; otherwise this is zero KNOWN
+      // problems over a partial read, which is neutral, not clean.
+      tone:
+        expired.length + expiring.length > 0 ? 'negative' : undated.length > 0 ? 'neutral' : 'positive',
     },
     liveUnlicensedStat(devices, assignments),
   ];
