@@ -84,6 +84,44 @@ overview row with source badges and expandable source-specific details; they
 are never silently overwritten. Central, Central Classic, and Mist retain
 their native client screens, counts, fields, and drill-down behavior.
 
+## Visual Drill-Downs and Configuration Actions
+
+Every selectable operational object (site, device, interface, client, alert,
+SSID, connector, and configuration change) opens a source-aware detail view
+rather than forcing an operator to infer context from a dense table row. The
+view may combine the following references when the product or lab configuration
+provides them:
+
+- topology and client-path diagrams, with directly adjacent source/provenance;
+- port and interface maps, health/status badges, and configuration-diff views;
+- time-series charts and event/history timelines;
+- site floorplan or map context and device placement;
+- device/product images and operator-supplied reference documents or diagrams;
+- native product links and visual identifiers for the selected source.
+
+Visual assets are configured references, not fabricated operating facts. The
+lab may upload or link an image, diagram, floorplan, or document to a supported
+object. The application records source, attribution/owner, and update time,
+renders unavailable assets as an explicit empty state, and never treats an
+image or diagram as live telemetry.
+
+The detail view exposes editable fields only when the selected connector's
+typed capability manifest declares a compatible write operation. Every push
+uses the product's supported API and follows the same staged workflow:
+
+1. select a supported target and editable configuration field;
+2. render a source-labelled change preview and validation result;
+3. execute a dry run when that product provides one;
+4. collect the configured review/ticket confirmation;
+5. push the approved change and show the product response, audit event, and
+   any partial or uncertain outcome;
+6. refresh the affected source data without pretending that another product's
+   view was changed.
+
+Read-only, derived, and unsupported products remain visibly non-editable. The
+application must not synthesise a generic configuration push for an API that
+does not provide that operation.
+
 ## Repair Sequence
 
 1. Repair the existing test-suite defects and whitespace issue without
@@ -100,7 +138,9 @@ their native client screens, counts, fields, and drill-down behavior.
    datasets.
 5. Update native product screens and the unified Clients overview so source
    provenance and partial failures are explicit.
-6. Update generated/user documentation and smoke coverage from the same
+6. Add source-aware visual drill-downs, managed visual-reference metadata, and
+   capability-gated configuration action panels.
+7. Update generated/user documentation and smoke coverage from the same
    manifest-backed contracts where practical.
 
 ## Error Handling and Security
@@ -128,6 +168,9 @@ The rewrite is test-driven. For every product, a contract test covers:
 5. read/write capability enforcement;
 6. client contribution and source-specific partial failure behavior where the
    connector supplies clients.
+7. visual-reference empty, available, and attribution states plus the
+   detail-view configuration preview, approval, push, and failure states for
+   every supported write capability.
 
 The repair is accepted only after the full typecheck, lint, test, build, and
 smoke gates are rerun. Authenticated live probes require disposable lab
