@@ -1,0 +1,118 @@
+import { spawn } from 'node:child_process';
+import type { AssistantProviderConfig, AssistantProviderId } from '../../config/settings';
+
+export type ProviderExecutionKind = 'cli' | 'openai-compatible';
+
+export interface ProviderStatus {
+  installed: boolean;
+  authenticated: boolean;
+  mcpReady: boolean;
+  modelReady: boolean;
+  selected: boolean;
+  resolvedModel: string | null;
+  latencyMs: number | null;
+  /** Safe for API responses: implementation errors and credentials are never included. */
+  message: string;
+}
+
+export interface ProviderDiscovery {
+  installed: boolean;
+  authenticated: boolean;
+  modelReady: boolean;
+  resolvedModel?: string;
+}
+
+export interface ReadOnlyProbeResult {
+  authenticated: boolean;
+  modelReady: boolean;
+  resolvedModel?: string;
+  /** Set only after the adapter records an actual centralmcp read-only call. */
+  centralMcpReadOnlyInvocation: boolean;
+}
+
+export interface AssistantChatRequest {
+  messages: ReadonlyArray<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+}
+
+export interface AssistantChatResult {
+  text: string;
+}
+
+export interface AssistantProviderAdapter {
+  id: AssistantProviderId;
+  discover(config: AssistantProviderConfig): Promise<ProviderDiscovery>;
+  chat(request: AssistantChatRequest): Promise<AssistantChatResult>;
+  probeReadOnly(config: AssistantProviderConfig): Promise<ReadOnlyProbeResult>;
+}
+
+export interface CommandExecution {
+  command: string;
+  args: readonly string[];
+  cwd?: string;
+  env?: Readonly<Record<string, string | undefined>>;
+  timeoutMs?: number;
+}
+
+export interface CommandResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Injectable boundary for CLI adapters. Commands are always spawned without a shell. */
+export interface CommandRunner {
+  run(command: CommandExecution): Promise<CommandResult>;
+}
+
+function minimalEnvironment(extra: Readonly<Record<string, string | undefined>> | undefined): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of ['PATH', 'HOME', 'USER', 'LANG'] as const) {
+    if (process.env[name]) env[name] = process.env[name];
+  }
+  for (const [name, value] of Object.entries(extra ?? {})) {
+    if (value !== undefined) env[name] = value;
+  }
+  return env;
+}
+
+export function createSpawnCommandRunner(): CommandRunner {
+  return {
+    run(command) {
+      return new Promise<CommandResult>((resolve, reject) => {
+        const child = spawn(command.command, [...command.args], {
+          cwd: command.cwd,
+          env: minimalEnvironment(command.env),
+          shell: false,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        const timer = command.timeoutMs === undefined ? undefined : setTimeout(() => {
+          timedOut = true;
+          child.kill();
+        }, command.timeoutMs);
+        child.stdout?.setEncoding('utf8');
+        child.stderr?.setEncoding('utf8');
+        child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
+        child.stderr?.on('data', (chunk: string) => { stderr += chunk; });
+        child.once('error', (error) => {
+          if (timer) clearTimeout(timer);
+          reject(error);
+        });
+        child.once('close', (exitCode) => {
+          if (timer) clearTimeout(timer);
+          resolve({ exitCode: timedOut ? null : exitCode, stdout, stderr });
+        });
+      });
+    },
+  };
+}
+
+export interface AssistantProviderDescriptor {
+  id: AssistantProviderId;
+  title: string;
+  executionKind: ProviderExecutionKind;
+  requiredFields: readonly string[];
+  defaultConfig: AssistantProviderConfig;
+}
