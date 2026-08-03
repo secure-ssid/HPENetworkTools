@@ -86,6 +86,8 @@ export interface AssistantChatResult {
 
 export interface AssistantProviderAdapter {
   id: AssistantProviderId;
+  /** False when a probe transport exists but no equally isolated chat transport does. */
+  canChat?(): boolean;
   discover(config: AssistantProviderConfig): Promise<ProviderDiscovery>;
   chat(request: AssistantChatRequest): Promise<AssistantChatResult>;
   probeReadOnly(config: AssistantProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult>;

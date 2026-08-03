@@ -78,6 +78,7 @@ export class AssistantProviderRegistry {
     if (!settings.mcp.enabled) return unavailable(selected, 'centralmcp is disabled.');
     const adapter = this.adapters.get(id);
     if (!adapter) return unavailable(selected, 'Provider is unavailable.');
+    if (adapter.canChat?.() === false) return unavailable(selected, 'Provider is unavailable.');
 
     try {
       const discovery = await adapter.discover(config);

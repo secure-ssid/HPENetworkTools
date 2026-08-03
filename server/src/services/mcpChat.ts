@@ -506,7 +506,7 @@ export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = 
   return { reply: result.text, transcript: (result.transcript ?? []).filter(isTranscriptEntry) };
 }
 
-/** The only provider registry used by chat routes and the compatibility façade. */
+/** Native adapters are registered, but registry readiness excludes those without chat transport. */
 export const assistantProviderRegistry = new AssistantProviderRegistry([
   new CodexAdapter(),
   new ClaudeAdapter(),

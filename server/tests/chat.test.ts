@@ -4,10 +4,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import express from 'express';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SettingsStore } from '../src/config/settings';
 import type { ProviderStatus } from '../src/services/assistant/types';
 import { AssistantProviderTimeoutError } from '../src/services/assistant/openaiCompatible';
+import { AssistantProviderRegistry } from '../src/services/assistant/registry';
+import { ClaudeAdapter } from '../src/services/assistant/cliAdapters';
 import { classifyChatFailure } from '../src/routes/chat';
 
 let server: Server;
@@ -15,6 +17,7 @@ let base: string;
 let tmpDir: string;
 let settings: SettingsStore;
 let createChatRouter: typeof import('../src/routes/chat').createChatRouter;
+const requestFetch = globalThis.fetch;
 
 const ready: ProviderStatus = {
   installed: true,
@@ -47,7 +50,7 @@ function configureAssistant(overrides: Record<string, unknown> = {}): void {
 }
 
 async function request(path: string, init?: RequestInit): Promise<{ status: number; body: any }> {
-  const response = await fetch(`${base}${path}`, init);
+  const response = await requestFetch(`${base}${path}`, init);
   return { status: response.status, body: await response.json() };
 }
 
@@ -62,6 +65,10 @@ afterAll(() => {
   server?.close();
   rmSync(tmpDir, { recursive: true, force: true });
   delete process.env.HPE_SETTINGS_PATH;
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 beforeEach(() => {
@@ -116,6 +123,42 @@ describe('assistant provider chat routes', () => {
     expect(settings.get().assistant.activeProvider).toBe('ollama');
   });
 
+  it('dispatches a provider only after the real compatible adapter proves a read-only centralmcp call', async () => {
+    const requests: Array<{ url: string; method: string; name?: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target === 'http://llm.test/v1/chat/completions') {
+        return new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'real adapter reply' } }] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const body = JSON.parse(String(init?.body ?? '{}')) as { method?: string; params?: { name?: string } };
+      requests.push({ url: target, method: body.method ?? '', name: body.params?.name });
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }), {
+          headers: { 'content-type': 'application/json', 'mcp-session-id': 'test-session' },
+        });
+      }
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+      if (body.method === 'tools/call') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { content: [{ type: 'text', text: 'catalogue' }] } }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected MCP method ${body.method}`);
+    }));
+    await mount({});
+
+    const response = await request('/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'hello' }] }),
+    });
+
+    expect(response).toMatchObject({ status: 200, body: { reply: 'real adapter reply' } });
+    expect(requests).toContainEqual({ url: 'http://mcp.test/mcp', method: 'tools/call', name: 'find_tool' });
+    expect(requests.some((request) => request.name === 'invoke_tool')).toBe(false);
+  });
+
   it('accepts an enabled saved session provider without changing the active selection', async () => {
     configureAssistant({ providers: {
       ...settings.get().assistant.providers,
@@ -147,6 +190,38 @@ describe('assistant provider chat routes', () => {
 
     expect(response.status).toBe(409);
     expect(response.body.error).toMatch(/unavailable.*Test provider/i);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('keeps a native provider without an isolated chat transport unavailable', async () => {
+    configureAssistant({
+      activeProvider: 'claude',
+      providers: {
+        ...settings.get().assistant.providers,
+        claude: { enabled: true, model: 'sonnet', reasoningEffort: 'low' },
+      },
+    });
+    const nativeRegistry = new AssistantProviderRegistry([new ClaudeAdapter({
+      commandRunner: { run: async (command) => command.args.includes('--version')
+        ? { exitCode: 0, stdout: 'claude 2.0', stderr: '' }
+        : { exitCode: 0, stdout: [
+          '{"type":"system","subtype":"init"}',
+          '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"mcp__centralmcp__find_tool","input":{"query":"catalogue"}}]}}',
+          '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"catalogue","is_error":false}]}}',
+          '{"type":"result","subtype":"success","is_error":false,"result":"catalogue"}',
+        ].join('\n'), stderr: '' },
+      },
+      createMcpLaunchConfig: async () => ({ path: '/private/tmp/centralmcp.json', directory: '/private/tmp', dispose: async () => {} }),
+    })]);
+    const chat = vi.fn(async () => ({ reply: 'must not dispatch', transcript: [] }));
+    await mount({ providerRegistry: nativeRegistry, chat });
+
+    const response = await request('/api/chat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'hello' }] }),
+    });
+
+    expect(response.status).toBe(409);
     expect(chat).not.toHaveBeenCalled();
   });
 

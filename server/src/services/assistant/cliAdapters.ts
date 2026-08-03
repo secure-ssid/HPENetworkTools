@@ -165,6 +165,12 @@ abstract class NativeCliAdapter<TConfig extends AssistantProviderConfig> impleme
     this.cwd = dependencies.cwd;
   }
 
+  canChat(): boolean {
+    // No native adapter has a generated-config-only conversational transport
+    // yet. A successful readiness probe must not promise a later chat call.
+    return false;
+  }
+
   async discover(config: AssistantProviderConfig): Promise<ProviderDiscovery> {
     if (!this.policy.valid(config)) return { installed: false, authenticated: false, modelReady: false };
     try {

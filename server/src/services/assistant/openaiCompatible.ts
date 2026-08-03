@@ -103,13 +103,36 @@ async function complete(
 export class OpenAICompatibleAdapter implements AssistantProviderAdapter {
   constructor(readonly id: Extract<AssistantProviderId, 'ollama' | 'openrouter'>) {}
 
+  canChat(): boolean {
+    return true;
+  }
+
   async discover(config: AssistantProviderConfig): Promise<ProviderDiscovery> {
     if (!this.matchesConfig(config)) return { installed: false, authenticated: false, modelReady: false };
     return { installed: config.enabled, authenticated: config.enabled, modelReady: config.enabled, resolvedModel: config.model };
   }
 
-  async probeReadOnly(_config: AssistantProviderConfig, _context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
-    return { authenticated: false, modelReady: false };
+  async probeReadOnly(config: AssistantProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
+    try {
+      // Prove the saved model can answer before treating an enabled HTTP
+      // endpoint as authenticated. No tools are supplied to this short probe.
+      await this.run({
+        config: this.configFor(config, resolveProviderTimeoutMs('interactive')),
+        messages: [{ role: 'user', content: 'Reply with ready.' }],
+        tools: [],
+        executeTool: async () => { throw new Error('readiness probe does not permit tools'); },
+      });
+      // Use the same McpClient boundary as the chat tool loop. The only call
+      // is centralmcp find_tool, which cannot execute a product write.
+      const { chatMcpClient } = await import('../mcpChat');
+      const result = await chatMcpClient({ url: context.mcp.endpoint, bearerToken: context.mcp.authToken })
+        .callTool('find_tool', { query: 'provider readiness' });
+      if (result.isError) return { authenticated: false, modelReady: false };
+      context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
+      return { authenticated: true, modelReady: true, resolvedModel: config.model };
+    } catch {
+      return { authenticated: false, modelReady: false };
+    }
   }
 
   async chat(request: AssistantChatRequest): Promise<AssistantChatResult> {
