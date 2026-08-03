@@ -56,14 +56,17 @@ export interface UsernamePasswordAuth {
   password: string;
 }
 
-export interface SshCredentialsAuth {
+interface SshCredentialsAuthBase {
   kind: 'ssh';
   username: string;
-  password?: string;
-  privateKey?: string;
   passphrase?: string;
   port?: number;
 }
+
+export type SshCredentialsAuth = SshCredentialsAuthBase & (
+  | { password: string; privateKey?: string }
+  | { password?: string; privateKey: string }
+);
 
 export type ConnectorAuth =
   | OAuthClientCredentialsAuth
@@ -422,7 +425,7 @@ export const CONNECTOR_CATALOG: readonly ConnectorCatalogEntry[] = [
     auth: [{
       kind: 'ssh', label: 'AOS-CX management credentials', fields: [
         USERNAME,
-        PASSWORD,
+        { ...PASSWORD, required: false },
         { key: 'privateKey', label: 'SSH private key', help: 'Optional PEM key for recorded SSH.', type: 'string', required: false, secret: true },
         { key: 'passphrase', label: 'Key passphrase', help: 'Passphrase for the private key.', type: 'string', required: false, secret: true },
         { key: 'port', label: 'SSH port', help: 'Defaults to 22.', type: 'number', required: false },
@@ -541,6 +544,12 @@ function endpointUrl(value: unknown): string {
   } catch {
     throw new Error('endpoint must be a valid URL');
   }
+  if (parsed.username || parsed.password) {
+    throw new Error('endpoint must not contain URL credentials');
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error('endpoint must be a base URL without query or fragment material');
+  }
   if (parsed.protocol === 'https:') return candidate.replace(/\/+$/, '');
   if (parsed.protocol === 'http:' && LOOPBACK_HOST.test(parsed.hostname)) return candidate.replace(/\/+$/, '');
   throw new Error('endpoint must use HTTPS unless it is an explicit loopback lab endpoint');
@@ -583,6 +592,9 @@ function parseAuth(entry: ConnectorCatalogEntry, value: unknown): ConnectorAuth 
       if (typeof input !== 'string') throw new Error(`auth.${field.key} must be a string`);
       if (input.trim()) out[field.key] = input.trim();
     }
+  }
+  if (entry.id === 'local' && kind === 'ssh' && !out.password && !out.privateKey) {
+    throw new Error('local SSH authentication requires a password or privateKey');
   }
   return out as unknown as ConnectorAuth;
 }
@@ -635,6 +647,20 @@ export function maskConnectorConfig<I extends ConnectorConfig>(config: I): I {
   for (const key of Object.keys(auth)) {
     if (/secret|token|key|password|passphrase/i.test(key) && typeof auth[key] === 'string') auth[key] = MASK;
   }
+  try {
+    const endpoint = new URL(clone.endpoint);
+    if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+      endpoint.username = '';
+      endpoint.password = '';
+      endpoint.search = '';
+      endpoint.hash = '';
+      clone.endpoint = `${endpoint.origin}${endpoint.pathname === '/' ? '' : endpoint.pathname.replace(/\/+$/, '')}`;
+    }
+  } catch {
+    // A typed configuration should only come from parseConnectorConfig(). If
+    // untrusted code forged one, fail closed rather than echoing the string.
+    clone.endpoint = MASK;
+  }
   return clone;
 }
 
@@ -683,15 +709,19 @@ function legacyAuth(id: ConnectorId, legacy: Record<string, string>): ConnectorA
       const password = legacy.password ?? legacy.clientSecret;
       return username && password?.trim() ? { kind: 'username_password', username, password } : null;
     }
-    case 'local':
-      return legacy.username?.trim() && legacy.password?.trim()
-        ? {
-            kind: 'ssh', username: legacy.username.trim(), password: legacy.password,
-            ...(legacy.privateKey?.trim() ? { privateKey: legacy.privateKey } : {}),
-            ...(legacy.passphrase?.trim() ? { passphrase: legacy.passphrase } : {}),
-            ...(/^\d+$/.test(legacy.port ?? '') ? { port: Number(legacy.port) } : {}),
-          }
-        : null;
+    case 'local': {
+      const username = legacy.username?.trim();
+      const password = legacy.password?.trim() ? legacy.password : undefined;
+      const privateKey = legacy.privateKey?.trim() ? legacy.privateKey : undefined;
+      if (!username || (!password && !privateKey)) return null;
+      return {
+        kind: 'ssh', username,
+        ...(password ? { password } : {}),
+        ...(privateKey ? { privateKey } : {}),
+        ...(legacy.passphrase?.trim() ? { passphrase: legacy.passphrase } : {}),
+        ...(/^\d+$/.test(legacy.port ?? '') ? { port: Number(legacy.port) } : {}),
+      } as SshCredentialsAuth;
+    }
     case 'sse':
       return legacy.token?.trim() ? { kind: 'token', token: legacy.token } : null;
     case 'edgeconnect':
@@ -711,26 +741,32 @@ function legacyNumber(value: string | undefined, fallback: number | null, minimu
 }
 
 /** Convert a complete flat settings record without discarding stored policy. */
-export function migrateLegacyPlaneRecord(id: ConnectorId, legacy: Record<string, string>): ConnectorConfig | null {
+export function migrateLegacyPlaneRecord(
+  id: ConnectorId,
+  legacy: Record<string, string | boolean | undefined>,
+): ConnectorConfig | null {
   const entry = CATALOG_BY_ID.get(id);
   if (!entry) return null;
-  const auth = legacyAuth(id, legacy);
+  const strings = Object.fromEntries(
+    Object.entries(legacy).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
+  const auth = legacyAuth(id, strings);
   if (!auth) return null;
-  const scopes = (legacy.scopes ?? '')
+  const scopes = (strings.scopes ?? '')
     .split(',')
     .map((scope) => scope.trim())
     .filter(Boolean);
   return {
     id,
-    enabled: legacy.enabled === undefined ? true : legacy.enabled !== 'false',
-    endpoint: endpointUrl(legacyEndpoint(id, legacy, entry.endpoint.default)),
+    enabled: legacy.enabled === undefined ? true : legacy.enabled !== false && legacy.enabled !== 'false',
+    endpoint: endpointUrl(legacyEndpoint(id, strings, entry.endpoint.default)),
     auth,
-    verifyTls: legacy.verifyTls === undefined ? true : legacy.verifyTls === 'true',
-    pollIntervalSec: legacyNumber(legacy.pollIntervalSec, entry.defaultPollIntervalSec, 5) as number,
-    callBudget: legacyNumber(legacy.callBudget, entry.defaultCallBudget, 1),
+    verifyTls: legacy.verifyTls !== false && legacy.verifyTls !== 'false',
+    pollIntervalSec: legacyNumber(strings.pollIntervalSec, entry.defaultPollIntervalSec, 5) as number,
+    callBudget: legacyNumber(strings.callBudget, entry.defaultCallBudget, 1),
     datasets: [...entry.supportedDatasets],
     scopes,
-    ...(legacy.approvedFirmware === undefined ? {} : { approvedFirmware: legacy.approvedFirmware }),
+    ...(strings.approvedFirmware === undefined ? {} : { approvedFirmware: strings.approvedFirmware }),
   } as ConnectorConfig;
 }
 

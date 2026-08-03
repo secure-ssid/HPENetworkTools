@@ -108,6 +108,27 @@ describe('connector catalog', () => {
       .toBe('http://127.0.0.1:4010');
   });
 
+  it.each([
+    'https://operator:password@api.mist.com',
+    'https://api.mist.com?token=query-secret',
+    'https://api.mist.com#password=fragment-secret',
+  ])('rejects credential-bearing endpoint material in %s', (endpoint) => {
+    expect(() => parseConnectorConfig('mist', { ...mistInput, endpoint })).toThrow();
+  });
+
+  it('removes endpoint credential material when masking a typed value defensively', () => {
+    const config = parseConnectorConfig('mist', mistInput);
+    const adversarial = {
+      ...config,
+      endpoint: 'https://operator:userinfo-secret@api.mist.com?token=query-secret#fragment-secret',
+    };
+    const masked = JSON.stringify(maskConnectorConfig(adversarial));
+
+    expect(masked).not.toContain('userinfo-secret');
+    expect(masked).not.toContain('query-secret');
+    expect(masked).not.toContain('fragment-secret');
+  });
+
   it('masks every credential value without mutating the configuration', () => {
     const mistConfig = parseConnectorConfig('mist', mistInput);
     const masked = maskConnectorConfig(mistConfig);
@@ -151,5 +172,65 @@ describe('connector catalog', () => {
       pollIntervalSec: 120,
       approvedFirmware: '{"AP-635":"10.6.0.2"}',
     });
+  });
+
+  it.each([
+    [false, false],
+    ['false', false],
+    [undefined, true],
+    [true, true],
+    ['true', true],
+    ['False', true],
+    [' false ', true],
+    ['corrupt', true],
+  ] as const)('migrates legacy verifyTls %s to %s', (verifyTls, expected) => {
+    const migrated = migrateLegacyPlaneRecord('opsramp', {
+      tenantId: 'tenant-a',
+      clientId: 'client-a',
+      clientSecret: 'secret-a',
+      ...(verifyTls === undefined ? {} : { verifyTls }),
+    });
+
+    expect(migrated?.verifyTls).toBe(expected);
+  });
+
+  it('accepts and migrates a Local SSH private key without a password', () => {
+    const input = {
+      id: 'local',
+      enabled: true,
+      endpoint: 'https://10.42.0.9',
+      auth: { kind: 'ssh', username: 'cx-user', privateKey: 'cx-private-key', passphrase: 'cx-passphrase' },
+      verifyTls: true,
+      pollIntervalSec: 60,
+      callBudget: null,
+      datasets: ['devices'],
+      scopes: ['ssh:recorded'],
+    };
+
+    expect(parseConnectorConfig('local', input).auth).toMatchObject({
+      kind: 'ssh',
+      username: 'cx-user',
+      privateKey: 'cx-private-key',
+    });
+    expect(migrateLegacyPlaneRecord('local', {
+      baseUrl: 'https://10.42.0.9',
+      username: 'cx-user',
+      privateKey: 'cx-private-key',
+      passphrase: 'cx-passphrase',
+    })?.auth).toMatchObject({ kind: 'ssh', username: 'cx-user', privateKey: 'cx-private-key' });
+  });
+
+  it('rejects Local SSH credentials with neither a password nor a private key', () => {
+    expect(() => parseConnectorConfig('local', {
+      id: 'local',
+      enabled: true,
+      endpoint: 'https://10.42.0.9',
+      auth: { kind: 'ssh', username: 'cx-user' },
+      verifyTls: true,
+      pollIntervalSec: 60,
+      callBudget: null,
+      datasets: ['devices'],
+      scopes: ['ssh:recorded'],
+    })).toThrow();
   });
 });
