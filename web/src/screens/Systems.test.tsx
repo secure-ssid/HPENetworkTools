@@ -622,7 +622,7 @@ describe('Systems connect drawer', () => {
       },
       verifyTls: true,
     } satisfies Partial<ConnectorConfig>);
-    expect(screen.getByText(/authenticated probe: devices/i)).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(/authenticated probe: devices/i)).toBeTruthy());
 
     fireEvent.click(screen.getByLabelText('Verify TLS certificate'));
     expect(screen.getByText('Re-test required')).toBeTruthy();
