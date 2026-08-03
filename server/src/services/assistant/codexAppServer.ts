@@ -34,6 +34,14 @@ const MAX_JSONL_BUFFER = 1_048_576;
 const TRANSCRIPT_ARGS_CAP = 200;
 const TRANSCRIPT_RESULT_CAP = 300;
 const CHILD_EXIT_WAIT_MS = 1_000;
+const RATE_LIMIT_PLAN_TYPES = new Set<string>([
+  'free', 'go', 'plus', 'pro', 'prolite', 'team', 'self_serve_business_usage_based',
+  'business', 'enterprise_cbp_usage_based', 'enterprise', 'edu', 'unknown',
+]);
+const RATE_LIMIT_REACHED_TYPES = new Set<string>([
+  'rate_limit_reached', 'workspace_owner_credits_depleted', 'workspace_member_credits_depleted',
+  'workspace_owner_usage_limit_reached', 'workspace_member_usage_limit_reached',
+]);
 
 type JsonRecord = Record<string, unknown>;
 
@@ -152,6 +160,42 @@ interface QueuedRun {
 
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isRateLimitWindow(value: unknown): boolean {
+  return isRecord(value)
+    && Number.isFinite(value.usedPercent)
+    && (value.windowDurationMins === null || Number.isFinite(value.windowDurationMins))
+    && (value.resetsAt === null || Number.isFinite(value.resetsAt));
+}
+
+function isCreditsSnapshot(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.hasCredits === 'boolean'
+    && typeof value.unlimited === 'boolean'
+    && (value.balance === null || typeof value.balance === 'string');
+}
+
+function isSpendControlLimitSnapshot(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.limit === 'string'
+    && typeof value.used === 'string'
+    && Number.isFinite(value.remainingPercent)
+    && Number.isFinite(value.resetsAt);
+}
+
+function isRateLimitSnapshot(value: unknown): boolean {
+  return isRecord(value)
+    && (value.limitId === null || typeof value.limitId === 'string')
+    && (value.limitName === null || typeof value.limitName === 'string')
+    && (value.primary === null || isRateLimitWindow(value.primary))
+    && (value.secondary === null || isRateLimitWindow(value.secondary))
+    && (value.credits === null || isCreditsSnapshot(value.credits))
+    && (value.individualLimit === null || isSpendControlLimitSnapshot(value.individualLimit))
+    && (value.spendControlReached === null || typeof value.spendControlReached === 'boolean')
+    && (value.planType === null || (typeof value.planType === 'string' && RATE_LIMIT_PLAN_TYPES.has(value.planType)))
+    && (value.rateLimitReachedType === null
+      || (typeof value.rateLimitReachedType === 'string' && RATE_LIMIT_REACHED_TYPES.has(value.rateLimitReachedType)));
 }
 
 function compact(value: string, cap: number): string {
@@ -656,7 +700,7 @@ export class CodexAppServer implements CodexAppServerLike {
       return;
     }
     if (method === 'account/rateLimits/updated') {
-      if (params !== undefined && !isRecord(params)) {
+      if (!isRecord(params) || !isRateLimitSnapshot(params.rateLimits)) {
         this.invalidate(session, new CodexAppServerFailure(session.stage));
       }
       return;

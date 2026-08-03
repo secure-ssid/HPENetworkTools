@@ -14,13 +14,25 @@ interface SentMessage {
   params?: Record<string, unknown>;
 }
 
+const RATE_LIMIT_SNAPSHOT = {
+  limitId: 'codex',
+  limitName: 'Codex',
+  primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 1_700_000_000 },
+  secondary: null,
+  credits: null,
+  individualLimit: null,
+  spendControlReached: null,
+  planType: 'pro',
+  rateLimitReachedType: null,
+};
+
 class FakeChild implements CodexAppServerChild {
   readonly sent: SentMessage[] = [];
   readonly rawSent: string[] = [];
   killed = false;
   inventory = ['centralmcp'];
   emitRemoteStatus = false;
-  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' | 'streaming' | 'mismatched-stream' | 'incomplete-item' | 'terminal-start-completed' | 'terminal-start-failed' | 'missing-completed-at' | 'unsafe-completed-at' | 'token-arguments' | 'token-result' | 'token-error' | 'token-message' | 'completion-without-start' | 'rate-limits' = 'complete';
+  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' | 'streaming' | 'mismatched-stream' | 'incomplete-item' | 'terminal-start-completed' | 'terminal-start-failed' | 'missing-completed-at' | 'unsafe-completed-at' | 'token-arguments' | 'token-result' | 'token-error' | 'token-message' | 'completion-without-start' | 'rate-limits' | 'rate-limits-missing-params' | 'rate-limits-malformed-params' | 'rate-limits-malformed-snapshot' = 'complete';
   private readonly events = new EventEmitter();
   private resolveExit!: () => void;
   private readonly exited = new Promise<void>((resolve) => { this.resolveExit = resolve; });
@@ -331,10 +343,20 @@ class FakeChild implements CodexAppServerChild {
         },
       },
     });
-    if (this.turnMode === 'rate-limits') {
+    if (this.turnMode === 'rate-limits'
+      || this.turnMode === 'rate-limits-missing-params'
+      || this.turnMode === 'rate-limits-malformed-params'
+      || this.turnMode === 'rate-limits-malformed-snapshot') {
+      const params = this.turnMode === 'rate-limits'
+        ? { rateLimits: RATE_LIMIT_SNAPSHOT }
+        : this.turnMode === 'rate-limits-malformed-params'
+          ? {}
+          : this.turnMode === 'rate-limits-malformed-snapshot'
+            ? { rateLimits: { ...RATE_LIMIT_SNAPSHOT, primary: { usedPercent: 42, windowDurationMins: 300 } } }
+            : undefined;
       this.emit({
         method: 'account/rateLimits/updated',
-        params: { rateLimits: { remaining: 42 } },
+        ...(params === undefined ? {} : { params }),
       });
     }
     this.emit({
@@ -524,6 +546,17 @@ describe('CodexAppServer', () => {
     });
     expect(fake.children[0]?.killed).toBe(false);
   });
+
+  it.each(['rate-limits-missing-params', 'rate-limits-malformed-params', 'rate-limits-malformed-snapshot'] as const)(
+    'rejects a malformed account rate-limit notification via %s',
+    async (turnMode) => {
+      const fake = testHarness({ turnMode });
+      transports.push(fake.transport);
+
+      await expect(fake.transport.chat(request)).rejects.toMatchObject({ stage: 'after-turn' });
+      expect(fake.children[0]?.killed).toBe(true);
+    },
+  );
 
   it('rejects a schema-backed streaming event for a different turn', async () => {
     const fake = testHarness({ turnMode: 'mismatched-stream' });
