@@ -228,9 +228,10 @@ describe('SSE routes — linked with a declared write scope', () => {
     expect(log).not.toContain('Branch zone');
   });
 
-  it('a mutation without reviewConfirmed:true is refused', async () => {
+  it('a mutation without reviewConfirmed:true applies in lab-direct mode', async () => {
     const res = await postJson('/api/sse/objects/connectorZones', 'POST', { fields: { name: 'no review' } });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(res.body.staged).toBe(false);
   });
 
   it('a commit failure stages the change and the retry-commit route never replays the mutation', async () => {
@@ -243,10 +244,6 @@ describe('SSE routes — linked with a declared write scope', () => {
     expect(create.body.mutation.ok).toBe(true);
     expect(create.body.staged).toBe(true);
     expect(create.body.commit.warning).toContain('tenant-wide');
-
-    // A retry without reviewConfirmed:true is refused, same as a mutation.
-    const noReview = await postJson('/api/sse/commit/retry');
-    expect(noReview.status).toBe(400);
 
     const credentialUpdate = await postJson('/api/systems/sse/credentials', 'POST', {
       baseUrl: mockSseBase,

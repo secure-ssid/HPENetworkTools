@@ -1,13 +1,14 @@
 /**
- * server/src/services/clearpassDirectWrite.ts — the ClearPass reviewed
- * direct-write pipeline.
+ * server/src/services/clearpassDirectWrite.ts — the ClearPass direct-write
+ * pipeline.
  *
  * ClearPass has no ticket queue of its own, and the two datasets the portal
  * operates on it — the endpoint repository and the local-user list — are not
  * configuration the ticketed write broker's one-ticket-one-PUT model fits
  * either. So they take the same direct-write path the SSID editor set
- * (services/ssidDirectWrite.ts): an explicit review confirmation stands in
- * for a ticket, the form is validated against THAT plane's rules, the adapter
+ * (services/ssidDirectWrite.ts): hardened mode requires an explicit review
+ * confirmation, while lab mode applies immediately. The form is validated
+ * against THAT plane's rules, the adapter
  * writes AND reads back, and ONE audit-log line per attempt lands in the
  * broker's own change-log.jsonl so the Configure "Change history" drawer
  * stays one place for every brokered AND direct write.
@@ -48,6 +49,7 @@ import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { poller as defaultPoller, type Poller } from './poller';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
 import { settings } from '../config/settings';
+import { allowsLabDirectWrites } from './labWritePolicy';
 
 export class ClearPassDirectWriteError extends Error {
   constructor(
@@ -76,6 +78,8 @@ export interface ClearPassDirectWriteOptions {
   dataDir?: string; // default: HPE_DATA_DIR or <repo>/data
   nowMs?: () => number;
   demoMode?: () => boolean; // default: the settings store (coa.ts's own pattern)
+  /** Test seam; production always reads the shared persisted lab policy. */
+  allowsLabDirectWrites?: () => boolean;
 }
 
 const STATUS_VALUES = new Set<string>(CLEARPASS_ENDPOINT_STATUSES);
@@ -260,6 +264,7 @@ export class ClearPassDirectWriteService {
   private readonly dataDir: string;
   private readonly nowMs: () => number;
   private readonly demoMode: () => boolean;
+  private readonly allowsLabDirectWrites: () => boolean;
 
   constructor(opts: ClearPassDirectWriteOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
@@ -268,6 +273,7 @@ export class ClearPassDirectWriteService {
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
     this.demoMode = opts.demoMode ?? (() => settings.get().demoMode);
+    this.allowsLabDirectWrites = opts.allowsLabDirectWrites ?? allowsLabDirectWrites;
   }
 
   private adapter(): ClearPassWritePlane | null {
@@ -300,7 +306,7 @@ export class ClearPassDirectWriteService {
     }
   }
 
-  /** Register one endpoint — review → validate → apply → verify → audit. */
+  /** Register one endpoint — gate → validate → apply → verify → audit. */
   async registerEndpoint(formRaw: unknown, reviewConfirmedRaw: unknown): Promise<ClearPassWriteResult> {
     this.requireReview(reviewConfirmedRaw);
     const form = asEndpointRegisterForm(formRaw);
@@ -313,7 +319,7 @@ export class ClearPassDirectWriteService {
     return this.applyLive('endpoint-register', () => adapter.registerEndpoint(form), 'endpoints');
   }
 
-  /** Update one endpoint's status/note — review → validate → apply → verify → audit. */
+  /** Update one endpoint's status/note — gate → validate → apply → verify → audit. */
   async updateEndpoint(idRaw: unknown, formRaw: unknown, reviewConfirmedRaw: unknown): Promise<ClearPassWriteResult> {
     this.requireReview(reviewConfirmedRaw);
     const id = requireNonEmptyString(idRaw, 'endpoint id');
@@ -359,7 +365,7 @@ export class ClearPassDirectWriteService {
   }
 
   private requireReview(reviewConfirmedRaw: unknown): void {
-    if (reviewConfirmedRaw !== true) {
+    if (!this.allowsLabDirectWrites() && reviewConfirmedRaw !== true) {
       throw new ClearPassDirectWriteError(400, 'direct ClearPass writes require an explicit review confirmation');
     }
   }
@@ -442,7 +448,7 @@ export class ClearPassDirectWriteService {
       ts: new Date(this.nowMs()).toISOString(),
       event: AUDIT[kind].event,
       changeId: `direct-cppm-${randomUUID()}`,
-      ticket: '(none — direct apply, review-confirmed)',
+      ticket: '(none — direct apply)',
       kind: AUDIT[kind].kind,
       result: 'error (transport failure — outcome unknown)',
     });
@@ -455,7 +461,7 @@ export class ClearPassDirectWriteService {
       ts: new Date(this.nowMs()).toISOString(),
       event: AUDIT[kind].event,
       changeId: `direct-cppm-${randomUUID()}`,
-      ticket: '(none — direct apply, review-confirmed)',
+      ticket: '(none — direct apply)',
       kind: AUDIT[kind].kind,
       result: result.ok ? 'applied' : 'failed',
       ...(result.httpCode !== undefined ? { httpCode: result.httpCode } : {}),

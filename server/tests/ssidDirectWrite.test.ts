@@ -377,8 +377,23 @@ describe('SsidDirectWriteService — service level (every instance is given an e
     }
   });
 
-  it('rejects apply without an explicit reviewConfirmed:true', async () => {
-    const service = new SsidDirectWriteService({ dataDir: freshDataDir(), demoMode: () => false, plane: stubPlane() });
+  it('applies without reviewConfirmed in lab-direct mode', async () => {
+    const service = new SsidDirectWriteService({
+      dataDir: freshDataDir(),
+      demoMode: () => false,
+      plane: stubPlane(),
+      allowsLabDirectWrites: () => true,
+    });
+    await expect(service.apply(READY_FORM, undefined)).resolves.toMatchObject({ ok: true, profile: { action: 'created' } });
+  });
+
+  it('rejects apply without an explicit reviewConfirmed:true when hardened mode is enabled', async () => {
+    const service = new SsidDirectWriteService({
+      dataDir: freshDataDir(),
+      demoMode: () => false,
+      plane: stubPlane(),
+      allowsLabDirectWrites: () => false,
+    });
     await expect(service.apply(READY_FORM, false)).rejects.toThrow(/explicit review confirmation/);
     await expect(service.apply(READY_FORM, undefined)).rejects.toThrow(/explicit review confirmation/);
     await expect(service.apply(READY_FORM, 'true')).rejects.toThrow(/explicit review confirmation/); // truthy string is not `=== true`
@@ -665,10 +680,10 @@ describe('SSID direct-write routes', () => {
     expect(JSON.stringify(applied.body)).not.toMatch(/super-secret-pw/);
   });
 
-  it('POST /api/configure/ssids/apply answers 400 without an explicit reviewConfirmed:true', async () => {
+  it('POST /api/configure/ssids/apply applies without reviewConfirmed in the default lab mode', async () => {
     const res = await postJson('/api/configure/ssids/apply', { form: READY_FORM });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/explicit review confirmation/);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
   });
 
   it('POST /api/configure/ssids/apply answers 400 for an unsupported security value or a missing scope', async () => {
@@ -947,6 +962,7 @@ function mistBackedService(opts: { dataDir?: string; writes?: { method: string; 
     demoMode: () => false,
     registry: mistRegistry(adapter),
     pollerRef: poller,
+    allowsLabDirectWrites: () => false,
   });
   return { service, writes, syncCalls };
 }

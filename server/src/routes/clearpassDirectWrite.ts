@@ -1,15 +1,15 @@
 /**
- * server/src/routes/clearpassDirectWrite.ts — ClearPass reviewed direct writes.
+ * server/src/routes/clearpassDirectWrite.ts — ClearPass direct writes.
  *
  *   POST /api/clearpass/endpoints          {form, reviewConfirmed} → ClearPassWriteResult
  *   PUT  /api/clearpass/endpoints/:id      {form, reviewConfirmed} → ClearPassWriteResult
  *   POST /api/clearpass/local-users        {form, reviewConfirmed} → ClearPassWriteResult
  *   PUT  /api/clearpass/local-users/:id    {form, reviewConfirmed} → ClearPassWriteResult
  *
- * The same reviewed direct-write pattern routes/configure.ts exposes for
- * SSIDs (see services/ssidDirectWrite.ts for why this is not the ticketed
- * broker): `reviewConfirmed: true` stands in for a ticket this plane has
- * none of (400 without it), the service validates → applies → verifies →
+ * The same direct-write pattern routes/configure.ts exposes for SSIDs (see
+ * services/ssidDirectWrite.ts for why this is not the ticketed broker): lab
+ * mode applies immediately while explicit hardened mode requires
+ * `reviewConfirmed: true`. The service validates → applies → verifies →
  * audits one line per attempt, and a refused or failed write answers 200
  * with the honest result object — an outcome to report, not a request error.
  * Request/gating problems (validation, review gate, not-linked, an unknown

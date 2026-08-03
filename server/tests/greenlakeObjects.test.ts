@@ -127,12 +127,15 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function makeService(opts: { plane?: GreenLakeAdapter | null; pollerRef?: Poller } = {}) {
+function makeService(
+  opts: { plane?: GreenLakeAdapter | null; pollerRef?: Poller; allowsLabDirectWrites?: () => boolean } = {},
+) {
   return new GreenLakeObjectsService({
     registry: fakeRegistry(),
     pollerRef: opts.pollerRef ?? emptyPoller,
     plane: opts.plane === undefined ? makeGlAdapter(() => ({ status: 500 })) : opts.plane,
     dataDir: tmpDir,
+    allowsLabDirectWrites: opts.allowsLabDirectWrites,
   });
 }
 
@@ -205,13 +208,21 @@ describe('GreenLakeObjectsService.write gates', () => {
   // first, a read-only credential would leak "you are read-only" to a caller
   // who never confirmed a review, and an unconfirmed write against a writable
   // credential would be indistinguishable from one against a read-only one.
-  it('refuses an unconfirmed write before consulting the write scope', async () => {
+  it('applies without reviewConfirmed in lab-direct mode while preserving the write scope', async () => {
+    const service = makeService({
+      plane: makeGlAdapter(() => ({ body: { id: 'loc-9' } })),
+      allowsLabDirectWrites: () => true,
+    });
+    await expect(service.write('createLocation', LOCATION_INPUT, undefined)).resolves.toMatchObject({ outcome: 'applied' });
+  });
+
+  it('refuses an unconfirmed write before consulting the write scope when hardened mode is enabled', async () => {
     let called = false;
     const adapter = makeGlAdapter(() => {
       called = true;
       return { body: {} };
     }, 'read:inventory'); // read-only — the scope gate would also refuse
-    const service = makeService({ plane: adapter });
+    const service = makeService({ plane: adapter, allowsLabDirectWrites: () => false });
     await expect(service.write('createLocation', LOCATION_INPUT, undefined)).rejects.toMatchObject({
       status: 400,
       message: expect.stringContaining('review confirmation'),
@@ -219,8 +230,8 @@ describe('GreenLakeObjectsService.write gates', () => {
     expect(called).toBe(false);
   });
 
-  it('rejects a truthy-but-not-true confirmation', async () => {
-    const service = makeService({ plane: makeGlAdapter(() => ({ body: {} })) });
+  it('rejects a truthy-but-not-true confirmation when hardened mode is enabled', async () => {
+    const service = makeService({ plane: makeGlAdapter(() => ({ body: {} })), allowsLabDirectWrites: () => false });
     await expect(service.write('createLocation', LOCATION_INPUT, 'yes')).rejects.toMatchObject({ status: 400 });
     await expect(service.write('createLocation', LOCATION_INPUT, 1)).rejects.toMatchObject({ status: 400 });
   });

@@ -14,10 +14,8 @@
  * before it ever reaches an adapter method: there is no route here that
  * accepts an arbitrary path or forwards a caller-supplied URL to the SSE
  * Admin API. Mutations additionally require capabilities().directWrite (the
- * token's declared write scope) AND an explicit `reviewConfirmed: true` — the
- * review gate server/src/services/ssidDirectWrite.ts uses for Central's
- * direct SSID writes, standing in for a ticket reference this plane has none
- * of. A successful mutation always attempts the mandatory (tenant-wide)
+ * token's declared write scope) and, only in explicit hardened mode, an
+ * explicit `reviewConfirmed: true`. A successful mutation always attempts the mandatory (tenant-wide)
  * commit and reports the two outcomes separately, plus whether the cached
  * inventory actually got refreshed (server/src/services/sseObjects.ts).
  *

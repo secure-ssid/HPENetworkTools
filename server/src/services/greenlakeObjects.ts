@@ -2,9 +2,9 @@
  * server/src/services/greenlakeObjects.ts — HPE GreenLake platform writes.
  *
  * The route-facing layer over GreenLakeAdapter (server/src/planes/greenlake.ts):
- * resolves the linked adapter from the registry, enforces the review-confirmed
- * direct-write gate (ssidDirectWrite.ts's pattern — GreenLake has no ticket
- * queue), enforces the operator-declared write scope
+ * resolves the linked adapter from the registry, conditionally enforces the
+ * hardened review-confirmed direct-write gate (GreenLake has no ticket queue),
+ * and enforces the operator-declared write scope
  * (capabilities().directWrite), and records ONE audit line per action into the
  * broker's change-log.jsonl so the Configure "Change history" surface stays
  * one place for every direct write in the portal.
@@ -42,6 +42,7 @@ import { GreenLakeAdapter, GreenLakeWriteInputError } from '../planes/greenlake'
 import { registry as defaultRegistry, type PlaneRegistry } from '../planes/registry';
 import { poller as defaultPoller, type Poller } from './poller';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
+import { allowsLabDirectWrites } from './labWritePolicy';
 
 /** Generic message for a 5xx — an internal failure must not leak detail. */
 const GREENLAKE_INTERNAL_ERROR_MESSAGE =
@@ -68,6 +69,8 @@ export interface GreenLakeObjectsOptions {
   plane?: GreenLakeAdapter | null;
   dataDir?: string;
   nowMs?: () => number;
+  /** Test seam; production always reads the shared persisted lab policy. */
+  allowsLabDirectWrites?: () => boolean;
 }
 
 export class GreenLakeObjectsService {
@@ -76,6 +79,7 @@ export class GreenLakeObjectsService {
   private readonly planeOverride: GreenLakeAdapter | null | undefined;
   private readonly dataDir: string;
   private readonly nowMs: () => number;
+  private readonly allowsLabDirectWrites: () => boolean;
 
   constructor(opts: GreenLakeObjectsOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
@@ -83,6 +87,7 @@ export class GreenLakeObjectsService {
     this.planeOverride = opts.plane;
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
+    this.allowsLabDirectWrites = opts.allowsLabDirectWrites ?? allowsLabDirectWrites;
   }
 
   /** An unknown action is refused before any credential is touched. */
@@ -120,12 +125,12 @@ export class GreenLakeObjectsService {
   }
 
   /**
-   * Perform one reviewed platform write.
+   * Perform one platform write.
    *
-   * Gate order matters and mirrors sseObjects: the review confirmation is
-   * checked FIRST so an unconfirmed request is refused identically whether or
-   * not the credential happens to hold a write scope, then the declared write
-   * scope, then the action's own required inputs.
+   * In hardened mode, the review confirmation is checked FIRST so an
+   * unconfirmed request is refused identically whether or not the credential
+   * happens to hold a write scope. Both modes then enforce the declared write
+   * scope before the action's own required inputs.
    */
   async write(
     action: GreenLakeWriteAction,
@@ -215,10 +220,10 @@ export class GreenLakeObjectsService {
     return a;
   }
 
-  /** The direct-write review gate — must be exactly `true` (ssidDirectWrite's
-   *  own pattern), standing in for a ticket reference this plane has none of. */
+  /** Hardened mode's direct-write review gate; lab-direct mode bypasses only
+   *  this confirmation and keeps the write-scope check below. */
   private requireReview(reviewConfirmedRaw: unknown): void {
-    if (reviewConfirmedRaw !== true) {
+    if (!this.allowsLabDirectWrites() && reviewConfirmedRaw !== true) {
       throw new GreenLakeObjectsError(
         400,
         'GreenLake writes require an explicit review confirmation',
@@ -257,7 +262,7 @@ export class GreenLakeObjectsService {
       ts: new Date(this.nowMs()).toISOString(),
       event,
       changeId: `greenlake-${action}-${this.nowMs()}`,
-      ticket: '(none — direct apply, review-confirmed)',
+      ticket: '(none — direct apply)',
       kind: `greenlake:${action}`,
       result: `${result} — ${detail}`,
       plane: 'greenlake',

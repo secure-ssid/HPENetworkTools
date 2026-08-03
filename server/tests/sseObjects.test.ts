@@ -106,19 +106,46 @@ describe('SseObjectsService.inventory / listKind', () => {
 });
 
 describe('SseObjectsService write gates', () => {
-  function harness(creds: Record<string, string>, handler: Handler) {
+  function harness(
+    creds: Record<string, string>,
+    handler: Handler,
+    opts: { allowsLabDirectWrites?: () => boolean } = {},
+  ) {
     const events: { id: string; what: string; who: string }[] = [];
     const adapter = makeSseAdapter(handler, creds);
     const fakePoller = {
       contributionsByPlane: () => new Map(),
       syncNowFor: async () => 'ok' as const,
     } as unknown as Poller;
-    const service = new SseObjectsService({ registry: fakeRegistry(events), pollerRef: fakePoller, plane: adapter, dataDir: tmpDir });
+    const service = new SseObjectsService({
+      registry: fakeRegistry(events),
+      pollerRef: fakePoller,
+      plane: adapter,
+      dataDir: tmpDir,
+      allowsLabDirectWrites: opts.allowsLabDirectWrites ?? (() => false),
+    });
     return { service, events };
   }
 
-  it('rejects a mutation without reviewConfirmed: true', async () => {
-    const { service } = harness({ token: 'x', scopes: 'write:brokered' }, () => ({ status: 201, body: { id: 'z' } }));
+  it('creates and commits without reviewConfirmed in lab-direct mode', async () => {
+    const { service } = harness(
+      { token: 'x', scopes: 'write:brokered' },
+      (method, pathname) => {
+        if (method === 'POST' && pathname === SSE_KIND_SPEC.connectorZones.path) return { status: 201, body: { id: 'z' } };
+        if (method === 'POST' && pathname === '/api/v1.0/Commit') return { status: 204 };
+        return undefined;
+      },
+      { allowsLabDirectWrites: () => true },
+    );
+    await expect(service.create('connectorZones', { name: 'z' }, undefined)).resolves.toMatchObject({ staged: false });
+  });
+
+  it('rejects a mutation without reviewConfirmed: true when hardened mode is enabled', async () => {
+    const { service } = harness(
+      { token: 'x', scopes: 'write:brokered' },
+      () => ({ status: 201, body: { id: 'z' } }),
+      { allowsLabDirectWrites: () => false },
+    );
     await expect(service.create('connectorZones', { name: 'z' }, undefined)).rejects.toMatchObject({ status: 400 });
     await expect(service.create('connectorZones', { name: 'z' }, false)).rejects.toMatchObject({ status: 400 });
   });
@@ -477,7 +504,13 @@ describe('SseObjectsService — durable pending-commit state (requirement 2 + 3)
     const events: { id: string; what: string; who: string }[] = [];
     const adapter = makeSseAdapter(handler, creds);
     const fakePoller = { contributionsByPlane: () => new Map(), syncNowFor: async () => 'ok' as const } as unknown as Poller;
-    const service = new SseObjectsService({ registry: fakeRegistry(events), pollerRef: fakePoller, plane: adapter, dataDir: tmpDir });
+    const service = new SseObjectsService({
+      registry: fakeRegistry(events),
+      pollerRef: fakePoller,
+      plane: adapter,
+      dataDir: tmpDir,
+      allowsLabDirectWrites: () => false,
+    });
     return { service, events };
   }
 
@@ -522,6 +555,7 @@ describe('SseObjectsService — durable pending-commit state (requirement 2 + 3)
       pollerRef: { contributionsByPlane: () => new Map(), syncNowFor: async () => 'ok' as const } as unknown as Poller,
       plane: makeSseAdapter(handler, { token: 'x', scopes: 'write:brokered' }),
       dataDir: tmpDir,
+      allowsLabDirectWrites: () => false,
     });
     await expect(restarted.create('connectorZones', { name: 'Still blocked' }, true)).rejects.toMatchObject({ status: 409 });
 
@@ -562,6 +596,7 @@ describe('SseObjectsService — durable pending-commit state (requirement 2 + 3)
       pollerRef: { contributionsByPlane: () => new Map() } as unknown as Poller,
       plane: readOnlyAdapter,
       dataDir: tmpDir,
+      allowsLabDirectWrites: () => false,
     });
     await expect(readOnlyService.retryCommit(true)).rejects.toMatchObject({ status: 403 });
   });
@@ -749,6 +784,7 @@ describe('SseObjectsService — recovery phase allowlist', () => {
         plane: adapter,
         dataDir: tmpDir,
         journalStore,
+        allowsLabDirectWrites: () => false,
       }),
       retrySpy,
       raw: () => raw,
@@ -1050,6 +1086,7 @@ describe('SseObjectsService — manually reconciled ambiguous journal cleanup', 
         plane: adapter,
         dataDir: tmpDir,
         journalStore,
+        allowsLabDirectWrites: () => false,
       }),
       events,
       mutateSpy,

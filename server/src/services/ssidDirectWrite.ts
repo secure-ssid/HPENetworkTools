@@ -8,8 +8,8 @@
  * (see MistAdapter.ssidCatalog()/applySsidProfile()) — neither fits the
  * broker's one-ticket-one-PUT model. This service is the thin route-facing
  * layer over those adapter methods — it resolves the linked adapter for the
- * form's target plane, requires an explicit review confirmation instead of a
- * ticket, validates the form shape (against THAT plane's dependency rules —
+ * form's target plane, conditionally requires a hardened-mode review
+ * confirmation instead of a ticket, validates the form shape (against THAT plane's dependency rules —
  * Central's role/server-group/portal catalogs are not Mist's), and records
  * ONE audit-log line per apply (no ticket, no payload body, no passphrase)
  * into the broker's own change-log.jsonl so the Configure "Change history"
@@ -44,6 +44,7 @@ import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { poller as defaultPoller, type Poller } from './poller';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
 import { effectiveSectionSource, settings } from '../config/settings';
+import { allowsLabDirectWrites } from './labWritePolicy';
 
 export class SsidDirectWriteError extends Error {
   constructor(
@@ -85,6 +86,8 @@ export interface SsidDirectWriteOptions {
   nowMs?: () => number;
   effectiveDemoMode?: () => boolean; // default: Configure section override, then global demoMode
   demoMode?: () => boolean; // backwards-compatible test override
+  /** Test seam; production always reads the shared persisted lab policy. */
+  allowsLabDirectWrites?: () => boolean;
 }
 
 const SECURITY_VALUES = new Set(SSID_SECURITY_OPTIONS.map((o) => o.value));
@@ -194,6 +197,7 @@ export class SsidDirectWriteService {
   private readonly dataDir: string;
   private readonly nowMs: () => number;
   private readonly effectiveDemoMode: () => boolean;
+  private readonly allowsLabDirectWrites: () => boolean;
 
   constructor(opts: SsidDirectWriteOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
@@ -205,6 +209,7 @@ export class SsidDirectWriteService {
       opts.effectiveDemoMode ??
       opts.demoMode ??
       (() => effectiveSectionSource(settings.get(), 'configure') === 'demo');
+    this.allowsLabDirectWrites = opts.allowsLabDirectWrites ?? allowsLabDirectWrites;
   }
 
   private adapterFor(planeKey: SsidWritePlaneKey): SsidWritePlane | null {
@@ -255,14 +260,13 @@ export class SsidDirectWriteService {
   }
 
   /**
-   * Apply a reviewed SSID change directly. `reviewConfirmed` must be exactly
-   * `true` — this is the direct-write path's review gate, standing in for
-   * the ticketed broker's ticket reference. Every attempt (success, partial,
+   * Apply an SSID change directly. Hardened mode requires `reviewConfirmed`
+   * exactly `true`; lab-direct mode has no review gate. Every attempt (success, partial,
    * failure) is written to the shared change-log, never with a payload body
    * or a passphrase.
    */
   async apply(formRaw: unknown, reviewConfirmedRaw: unknown): Promise<SsidApplyResult> {
-    if (reviewConfirmedRaw !== true) {
+    if (!this.allowsLabDirectWrites() && reviewConfirmedRaw !== true) {
       throw new SsidDirectWriteError(400, 'direct SSID writes require an explicit review confirmation');
     }
     // The plane decides which dependency rules even apply — refuse a target
@@ -457,7 +461,7 @@ export class SsidDirectWriteService {
       ts: new Date(this.nowMs()).toISOString(),
       event: 'ssid-apply',
       changeId: planeKey === 'mist' ? `direct-ssid-mist-${randomUUID()}` : `direct-ssid-${randomUUID()}`,
-      ticket: '(none — direct apply, review-confirmed)',
+      ticket: '(none — direct apply)',
       kind: 'ssid',
       result: 'error (transport failure — outcome unknown)',
     });
@@ -469,7 +473,7 @@ export class SsidDirectWriteService {
       ts: new Date(this.nowMs()).toISOString(),
       event: 'ssid-apply',
       changeId: planeKey === 'mist' ? `direct-ssid-mist-${randomUUID()}` : `direct-ssid-${randomUUID()}`,
-      ticket: '(none — direct apply, review-confirmed)',
+      ticket: '(none — direct apply)',
       kind: 'ssid',
       result: outcome,
       ...(result.profile.httpCode !== undefined ? { httpCode: result.profile.httpCode } : {}),

@@ -11,7 +11,7 @@
  *   POST /api/configure/discard  {changeId}             → {ok, changeId} (404 unknown)
  *
  *   GET  /api/configure/ssids/catalog                    → SsidCatalog (live scope/dependency choices)
- *   POST /api/configure/ssids/apply {form, reviewConfirmed} → SsidApplyResult (400 without reviewConfirmed:true)
+ *   POST /api/configure/ssids/apply {form, reviewConfirmed?} → SsidApplyResult
  *
  * SSIDs are the one config kind that does NOT go through the ticketed
  * queue/push above — see server/src/services/ssidDirectWrite.ts for why
@@ -138,9 +138,8 @@ export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirect
   );
 
   /**
-   * Apply a reviewed direct SSID change. `reviewConfirmed` stands in for the
-   * ticketed broker's ticket reference — the direct-write path's own audit
-   * gate (400 without it). The result is always 200: a partial or failed
+   * Apply a direct SSID change. Lab mode applies without a review confirmation;
+   * hardened mode retains that gate. The result is always 200: a partial or failed
    * apply is an outcome to report, not a request error.
    */
   router.post(

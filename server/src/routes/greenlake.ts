@@ -2,15 +2,14 @@
  * server/src/routes/greenlake.ts — HPE GreenLake platform management.
  *
  *   GET  /api/greenlake/inventory        cached GreenLakeInventory (poller cache)
- *   POST /api/greenlake/actions/:action  one reviewed write {fields, reviewConfirmed}
+ *   POST /api/greenlake/actions/:action  one direct write {fields, reviewConfirmed?}
  *
  * `:action` is checked against the shared GREENLAKE_WRITE_ACTIONS allowlist
  * before it reaches an adapter method: there is no route here that accepts an
  * arbitrary path, method or body, and no caller-supplied URL is ever forwarded
  * to the GLP API. Writes additionally require capabilities().directWrite (the
- * operator-declared write scope) AND an explicit `reviewConfirmed: true` — the
- * review gate server/src/services/ssidDirectWrite.ts uses for Central's direct
- * SSID writes, standing in for a ticket reference this plane has none of.
+ * operator-declared write scope) and, only in explicit hardened mode, an
+ * explicit `reviewConfirmed: true`.
  *
  * The inventory response reports per-section read status. A section listed in
  * `unavailable` returned no data because the read FAILED — its array is not an

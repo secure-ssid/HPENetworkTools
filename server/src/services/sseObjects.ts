@@ -2,9 +2,9 @@
  * server/src/services/sseObjects.ts — HPE Aruba Networking SSE object CRUD.
  *
  * The route-facing layer over SseAdapter (server/src/planes/sse.ts): resolves
- * the linked adapter from the registry, enforces the review-confirmed direct-
- * write gate (ssidDirectWrite.ts's own pattern — SSE has no ticket queue
- * either), enforces the token's declared write scope
+ * the linked adapter from the registry, conditionally enforces the hardened
+ * review-confirmed direct-write gate (SSE has no ticket queue either), and
+ * enforces the token's declared write scope
  * (capabilities().directWrite), validates the one field every kind actually
  * requires, and records ONE audit-log line per action (no payload, no
  * secret) into the broker's own change-log.jsonl so the Configure "Change
@@ -71,6 +71,7 @@ import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { SSE_KIND_SPEC, SseAdapter } from '../planes/sse';
 import { Poller, poller as defaultPoller } from './poller';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
+import { allowsLabDirectWrites } from './labWritePolicy';
 import { currentActor } from './auth';
 
 /** Durable, secret-free phase record — never a payload or token.
@@ -223,6 +224,8 @@ export interface SseObjectsOptions {
   dataDir?: string; // default: HPE_DATA_DIR or <repo>/data
   nowMs?: () => number;
   journalStore?: SseJournalStore;
+  /** Test seam; production always reads the shared persisted lab policy. */
+  allowsLabDirectWrites?: () => boolean;
 }
 
 export interface SseJournalStore {
@@ -272,6 +275,7 @@ export class SseObjectsService {
   private readonly dataDir: string;
   private readonly nowMs: () => number;
   private readonly journal: SseJournalStore;
+  private readonly allowsLabDirectWrites: () => boolean;
   /** In-process mutex serializing every mutation and recovery operation —
    *  a promise chain, not a boolean flag, so a caller queues behind the
    *  current operation instead of being told "busy, try again". */
@@ -284,6 +288,7 @@ export class SseObjectsService {
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
     this.journal = opts.journalStore ?? new FileSseJournalStore(this.dataDir);
+    this.allowsLabDirectWrites = opts.allowsLabDirectWrites ?? allowsLabDirectWrites;
   }
 
   static assertKind(value: string): SseObjectKind {
@@ -670,10 +675,10 @@ export class SseObjectsService {
 
   // -- internals -------------------------------------------------------------
 
-  /** The direct-write review gate — must be exactly `true` (ssidDirectWrite's
-   *  own pattern), standing in for a ticket reference this plane has none of. */
+  /** Hardened mode's direct-write review gate. Lab mode preserves all recovery
+   *  controls but does not require review confirmation. */
   private requireReview(reviewConfirmedRaw: unknown): void {
-    if (reviewConfirmedRaw !== true) {
+    if (!this.allowsLabDirectWrites() && reviewConfirmedRaw !== true) {
       throw new SseObjectsError(400, 'SSE writes require an explicit review confirmation');
     }
   }
@@ -1156,7 +1161,7 @@ export class SseObjectsService {
       ts: new Date(this.nowMs()).toISOString(),
       event,
       changeId: `sse-${kind}-${this.nowMs()}`,
-      ticket: '(none — direct apply, review-confirmed)',
+      ticket: '(none — direct apply)',
       kind: `sse:${kind}`,
       result,
       ...(httpCode !== undefined ? { httpCode } : {}),

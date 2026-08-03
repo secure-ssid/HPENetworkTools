@@ -116,7 +116,12 @@ function fakePoller(opts: { tick?: string; sections?: Record<string, unknown>; t
 
 function makeService(
   plane: ClearPassWritePlane | null,
-  opts: { demo?: boolean; pollerOpts?: Parameters<typeof fakePoller>[0]; dataDir?: string } = {},
+  opts: {
+    demo?: boolean;
+    pollerOpts?: Parameters<typeof fakePoller>[0];
+    dataDir?: string;
+    allowsLabDirectWrites?: () => boolean;
+  } = {},
 ) {
   const { poller, syncCalls } = fakePoller(opts.pollerOpts);
   const dataDir = opts.dataDir ?? freshDataDir();
@@ -125,6 +130,7 @@ function makeService(
     pollerRef: poller,
     dataDir,
     demoMode: () => opts.demo ?? false,
+    allowsLabDirectWrites: opts.allowsLabDirectWrites,
     nowMs: () => 1_753_000_000_000,
   });
   return { service, dataDir, syncCalls };
@@ -154,8 +160,13 @@ async function postJson(path: string, body: unknown, method = 'POST'): Promise<{
 // -- the review gate ------------------------------------------------------------
 
 describe('the review gate', () => {
-  it('refuses every write without an explicit reviewConfirmed:true', async () => {
-    const { service } = makeService(stubPlane());
+  it('applies without reviewConfirmed in lab-direct mode', async () => {
+    const { service } = makeService(stubPlane(), { allowsLabDirectWrites: () => true });
+    await expect(service.registerEndpoint(REGISTER_FORM, undefined)).resolves.toMatchObject({ ok: true, action: 'created' });
+  });
+
+  it('refuses every write without an explicit reviewConfirmed:true when hardened mode is enabled', async () => {
+    const { service } = makeService(stubPlane(), { allowsLabDirectWrites: () => false });
     for (const attempt of [
       () => service.registerEndpoint(REGISTER_FORM, undefined),
       () => service.registerEndpoint(REGISTER_FORM, 'yes'),
@@ -259,7 +270,7 @@ describe('demo mode', () => {
     const lines = auditLines(dataDir);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ event: 'endpoint-register', kind: 'endpoint', result: 'applied' });
-    expect(lines[0].ticket).toBe('(none — direct apply, review-confirmed)');
+    expect(lines[0].ticket).toBe('(none — direct apply)');
   });
 
   it('demos the local-user create with no password anywhere near the audit log', async () => {
@@ -359,15 +370,15 @@ describe('the live flow', () => {
 // -- the routes (demo-mode createApp) ---------------------------------------------
 
 describe('routes', () => {
-  it('POST /api/clearpass/endpoints applies a reviewed form and refuses one without review', async () => {
+  it('POST /api/clearpass/endpoints applies a form without review in the default lab mode', async () => {
     const ok = await postJson('/api/clearpass/endpoints', { form: REGISTER_FORM, reviewConfirmed: true });
     expect(ok.status).toBe(200);
     expect(ok.body).toMatchObject({ ok: true, action: 'created', verified: true });
     expect((ok.body as { message: string }).message).toContain('no live CPPM was written');
 
     const denied = await postJson('/api/clearpass/endpoints', { form: REGISTER_FORM });
-    expect(denied.status).toBe(400);
-    expect(denied.body).toEqual({ error: 'direct ClearPass writes require an explicit review confirmation' });
+    expect(denied.status).toBe(200);
+    expect(denied.body).toMatchObject({ ok: true, action: 'created' });
   });
 
   it('POST /api/clearpass/endpoints answers 400 for an invalid MAC', async () => {
