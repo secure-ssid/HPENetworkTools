@@ -43,7 +43,7 @@
  * otherwise (see web/src/api/screens.ts).
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -139,17 +139,26 @@ export default function ClearPass() {
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('all');
   const [category, setCategory] = useState('all');
+  const endpointPageRequestSeqRef = useRef(0);
+  const endpointPageMountedRef = useRef(false);
+
+  const requestEndpointPage = async (offset: number, limit = 50): Promise<void> => {
+    const seq = ++endpointPageRequestSeqRef.current;
+    const page = await getClearPassEndpointPage(offset, limit);
+    if (endpointPageMountedRef.current && seq === endpointPageRequestSeqRef.current) setEndpointPage(page);
+  };
 
   useEffect(() => {
     let live = true;
+    endpointPageMountedRef.current = true;
     void getClearPass().then((d) => {
       if (live) setData(d);
     });
-    void getClearPassEndpointPage(0, 50).then((page) => {
-      if (live) setEndpointPage(page);
-    });
+    void requestEndpointPage(0, 50);
     return () => {
       live = false;
+      endpointPageMountedRef.current = false;
+      endpointPageRequestSeqRef.current += 1;
     };
   }, []);
 
@@ -177,10 +186,10 @@ export default function ClearPass() {
       category={category}
       setCategory={setCategory}
       endpointPage={endpointPage}
-      loadEndpointPage={async (offset) => setEndpointPage(await getClearPassEndpointPage(offset, 50))}
+      loadEndpointPage={(offset) => requestEndpointPage(offset, 50)}
       refreshEndpointPage={async () => {
         const page = endpointPage;
-        setEndpointPage(await getClearPassEndpointPage(page?.offset ?? 0, page?.limit ?? 50));
+        await requestEndpointPage(page?.offset ?? 0, page?.limit ?? 50);
       }}
       reload={async () => setData(await getClearPass())}
       mergeDemo={(fn) => setData((current) => (current ? fn(current) : current))}
@@ -251,6 +260,7 @@ function ClearPassView({
   /** The service whose detail drawer is open (null = none). */
   const [serviceView, setServiceView] = useState<ClearPassServiceRow | null>(null);
   const demo = data.dataSource === 'demo';
+  const canWrite = demo || data.canWrite === true;
   /** The table only ever sees this one on-demand page, never the screen cache. */
   const endpoints = endpointPage?.endpoints ?? [];
   const loadedEndpointCount = endpoints.length;
@@ -325,11 +335,24 @@ function ClearPassView({
 
       <SegmentedControl options={TAB_OPTIONS} value={tab} onValueChange={(v) => setTab(v as ClearPassTab)} ariaLabel="ClearPass sections" />
 
+      {!canWrite ? (
+        <Alert tone="info" title="ClearPass writes are unavailable">
+          This linked ClearPass connector has a read-only connector grant. Inventory remains available, but endpoint
+          and local-user mutation controls are hidden.
+        </Alert>
+      ) : null}
+
       {tab === 'endpoints' ? (
         <>
           <SectionHeader
             label="Endpoint repository"
-            meta={endpointPage ? `${rows.length} of ${endpointPage.limit} loaded endpoint rows` : 'LOADING PAGE'}
+            meta={
+              endpointPage
+                ? rows.length === loadedEndpointCount
+                  ? `${loadedEndpointCount} loaded endpoint ${loadedEndpointCount === 1 ? 'row' : 'rows'}`
+                  : `${rows.length} of ${loadedEndpointCount} loaded endpoint rows`
+                : 'LOADING PAGE'
+            }
           />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -370,11 +393,11 @@ function ClearPassView({
                 aria-label="Category on loaded page"
               />
             </div>
-            <div style={{ marginLeft: 'auto' }}>
+            {canWrite ? <div style={{ marginLeft: 'auto' }}>
               <Button variant="secondary" size="sm" onClick={() => setWriteDrawer({ kind: 'register' })}>
                 Register endpoint
               </Button>
-            </div>
+            </div> : null}
           </div>
 
           <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
@@ -402,7 +425,11 @@ function ClearPassView({
           ) : endpointPage.state === 'empty' ? (
             <EmptyState
               title="ClearPass returned an empty endpoint page"
-              description="The requested page contains no endpoint rows; it does not establish a repository-wide total."
+              description={
+                endpointPage.total === null
+                  ? 'The requested page contains no endpoint rows; ClearPass did not report a repository-wide total.'
+                  : `ClearPass reports ${endpointPage.total} total endpoints; this requested page contains no rows.`
+              }
             />
           ) : rows.length === 0 ? (
             endpoints.length === 0 ? (
@@ -437,7 +464,7 @@ function ClearPassView({
                     key={e.id}
                     row={e}
                     onOpenAuth={() => navigate(`/auth-events?q=${encodeURIComponent(e.mac)}`)}
-                    onEdit={() => setWriteDrawer({ kind: 'editEndpoint', row: e })}
+                    onEdit={canWrite ? () => setWriteDrawer({ kind: 'editEndpoint', row: e }) : undefined}
                   />
                 ))}
               </Table.Body>
@@ -549,8 +576,8 @@ function ClearPassView({
         <LocalUsersSection
           rows={data.localUsers}
           density={density}
-          onAdd={() => setWriteDrawer({ kind: 'createUser' })}
-          onEdit={(row) => setWriteDrawer({ kind: 'editUser', row })}
+          onAdd={canWrite ? () => setWriteDrawer({ kind: 'createUser' }) : undefined}
+          onEdit={canWrite ? (row) => setWriteDrawer({ kind: 'editUser', row }) : undefined}
         />
       ) : null}
       {tab === 'services' ? (
@@ -589,7 +616,7 @@ function ClearPassView({
           two CPPM datasets the portal writes; policy stays in ClearPass. Each
           mounts only while open (keyed by the row it edits), so its form
           state starts fresh per opening — no reset effects. */}
-      {writeDrawer?.kind === 'register' ? (
+      {canWrite && writeDrawer?.kind === 'register' ? (
         <RegisterEndpointDrawer
           onOpenChange={(v) => {
             if (!v) setWriteDrawer(null);
@@ -607,7 +634,7 @@ function ClearPassView({
           reloadEndpointPage={refreshEndpointPage}
         />
       ) : null}
-      {writeDrawer?.kind === 'editEndpoint' ? (
+      {canWrite && writeDrawer?.kind === 'editEndpoint' ? (
         <EditEndpointDrawer
           key={writeDrawer.row.id}
           row={writeDrawer.row}
@@ -634,7 +661,7 @@ function ClearPassView({
           reloadEndpointPage={refreshEndpointPage}
         />
       ) : null}
-      {writeDrawer?.kind === 'createUser' ? (
+      {canWrite && writeDrawer?.kind === 'createUser' ? (
         <LocalUserWriteDrawer
           mode="create"
           onOpenChange={(v) => {
@@ -652,7 +679,7 @@ function ClearPassView({
           reload={reload}
         />
       ) : null}
-      {writeDrawer?.kind === 'editUser' ? (
+      {canWrite && writeDrawer?.kind === 'editUser' ? (
         <LocalUserWriteDrawer
           key={writeDrawer.row.id}
           mode="edit"
@@ -692,7 +719,7 @@ function EndpointTableRow({
 }: {
   row: EndpointRow;
   onOpenAuth: () => void;
-  onEdit: () => void;
+  onEdit?: () => void;
 }) {
   return (
     <Table.Row>
@@ -750,9 +777,11 @@ function EndpointTableRow({
         </span>
       </Table.Cell>
       <Table.Cell>
-        <Button variant="ghost" size="sm" onClick={onEdit} aria-label={`Edit endpoint ${row.mac}`}>
-          Edit
-        </Button>
+        {onEdit ? (
+          <Button variant="ghost" size="sm" onClick={onEdit} aria-label={`Edit endpoint ${row.mac}`}>
+            Edit
+          </Button>
+        ) : null}
       </Table.Cell>
     </Table.Row>
   );
@@ -1147,17 +1176,17 @@ function LocalUsersSection({
 }: {
   rows: ClearPassLocalUserRow[] | undefined;
   density: 'comfortable' | 'compact';
-  onAdd: () => void;
-  onEdit: (row: ClearPassLocalUserRow) => void;
+  onAdd?: () => void;
+  onEdit?: (row: ClearPassLocalUserRow) => void;
 }) {
   return (
     <>
       <SectionHeader label="Local users" meta={inventoryMeta(rows)} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      {onAdd ? <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <Button variant="secondary" size="sm" onClick={onAdd}>
           Add local user
         </Button>
-      </div>
+      </div> : null}
       <InventoryGate
         rows={rows}
         notReportedDescription="ClearPass did not return its local users this cycle — the list is unknown, not empty."
@@ -1191,9 +1220,11 @@ function LocalUsersSection({
                   )}
                 </Table.Cell>
                 <Table.Cell>
-                  <Button variant="ghost" size="sm" onClick={() => onEdit(u)} aria-label={`Edit local user ${u.userId}`}>
-                    Edit
-                  </Button>
+                  {onEdit ? (
+                    <Button variant="ghost" size="sm" onClick={() => onEdit(u)} aria-label={`Edit local user ${u.userId}`}>
+                      Edit
+                    </Button>
+                  ) : null}
                 </Table.Cell>
               </Table.Row>
             ))}

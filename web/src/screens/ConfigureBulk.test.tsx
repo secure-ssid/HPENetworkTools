@@ -25,6 +25,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import Configure from './Configure';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -121,11 +122,13 @@ function pushed(id: string): PushResult {
 
 function renderConfigure() {
   return render(
-    <SettingsProvider>
-      <ToastProvider>
-        <Configure />
-      </ToastProvider>
-    </SettingsProvider>,
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <SettingsProvider>
+        <ToastProvider>
+          <Configure />
+        </ToastProvider>
+      </SettingsProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -247,6 +250,37 @@ describe('Configure — the change-queue bulk action bar', () => {
     await waitFor(() => expect(queueSection().getByText('NET-4101')).toBeTruthy());
     expect(queueSection().getByText(/Port 1\/1\/12 on sw-core-1 — uplink to fw/)).toBeTruthy();
     expect(queueSection().queryByText(/SELECTED/)).toBeNull();
+  });
+
+  it('separates an unknown push outcome from retryable failures and keeps its applying row', async () => {
+    mockGetChangeQueue.mockReset();
+    mockGetChangeQueue
+      .mockResolvedValueOnce([serverChange(), SECOND])
+      .mockResolvedValue([serverChange({ state: 'applying' })]);
+    mockPushChange.mockReset();
+    mockPushChange.mockImplementation((id) =>
+      id === 'chg-server-1'
+        ? Promise.resolve({
+            ok: false,
+            outcomeUnknown: true,
+            changeId: id,
+            ticket: 'NET-4100',
+            kind: 'vlan',
+            snapshot: true,
+            message: 'outcome unknown — reconcile before any retry',
+          })
+        : Promise.resolve(pushed(id)),
+    );
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4101')).toBeTruthy());
+
+    selectAll();
+    fireEvent.click(queueSection().getByRole('button', { name: 'Approve' }));
+
+    expect(await screen.findByText('Bulk approve — 1 of 2 applied')).toBeTruthy();
+    expect(screen.getByText(/outcome unknown — reconciliation required: Add DHCP helper/)).toBeTruthy();
+    expect(screen.queryByText(/failed: Add DHCP helper/)).toBeNull();
+    await waitFor(() => expect(queueSection().getByText('applying')).toBeTruthy());
   });
 
   it('(d) a not-ready row is skipped and named, never pushed', async () => {

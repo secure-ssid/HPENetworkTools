@@ -113,6 +113,7 @@ import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import {
   LIVE_CONFIG_DESCS,
+  LAB_CONFIG_DESCS,
   LIVE_PORT_FORM,
   LIVE_PUSH_NOTES,
   LIVE_SSID_FORM,
@@ -297,6 +298,7 @@ export default function Configure() {
   const [ssid, setSsid] = useState<SsidForm>(DEFAULT_SSID_FORM);
   const [port, setPort] = useState<PortForm>(DEFAULT_PORT_FORM);
   const [vlan, setVlan] = useState<VlanForm>(DEFAULT_VLAN_FORM);
+  const [genericSource, setGenericSource] = useState<'configured' | 'observed' | 'new'>('new');
   const [ticket, setTicket] = useState('');
   const [queued, setQueued] = useState(false);
   const [showDormantTargets, setShowDormantTargets] = useState(false);
@@ -434,11 +436,16 @@ export default function Configure() {
     // demo mode — the authored CLI template's "mist → read-only" annotation
     // predates the direct write path and would be a lie beside it.
     if (liveMode || mistSsid)
-      return livePreview(kind ?? 'ssid', formForPreview(kind, ssid, port, vlan), data?.capabilities ?? []);
+      return livePreview(
+        kind ?? 'ssid',
+        formForPreview(kind, ssid, port, vlan),
+        data?.capabilities ?? [],
+        labConfigMode,
+      );
     if (kind === 'port') return configPreviewFor('port', port);
     if (kind === 'vlan') return configPreviewFor('vlan', vlan);
     return configPreviewFor('ssid', ssid);
-  }, [data?.capabilities, kind, liveMode, mistSsid, ssid, port, vlan]);
+  }, [data?.capabilities, kind, labConfigMode, liveMode, mistSsid, ssid, port, vlan]);
   const previewMeta = useMemo(() => {
     if (liveMode || mistSsid) {
       if (mistSsid) return `${ssid.plane || 'MIST'} · SITE-SCOPED WLAN`;
@@ -451,20 +458,26 @@ export default function Configure() {
     return previewMetaFor('ssid', ssid);
   }, [kind, liveMode, mistSsid, ssid, port, vlan]);
   const radius = useMemo(() => {
-    if (liveMode || mistSsid) return liveRadius(kind ?? 'ssid', formForPreview(kind, ssid, port, vlan));
+    if (liveMode || mistSsid) {
+      return liveRadius(kind ?? 'ssid', formForPreview(kind, ssid, port, vlan), labConfigMode);
+    }
     if (kind === 'port') return blastRadiusFor('port', port);
     if (kind === 'vlan') return blastRadiusFor('vlan', vlan);
     return blastRadiusFor('ssid', ssid);
-  }, [kind, liveMode, mistSsid, ssid, port, vlan]);
+  }, [kind, labConfigMode, liveMode, mistSsid, ssid, port, vlan]);
 
   // -- SSID direct-apply derived state ---------------------------------------
   /** The deployment reported a Mist direct-write path (capability matrix
    *  'direct' mode) — the drawer offers the plane choice only then, never
    *  from the form's own claim. */
-  const mistDirectAvailable = useMemo(
-    () => (data?.capabilities ?? []).some((c) => c.planeId === 'mist' && c.mode === 'direct'),
-    [data?.capabilities],
-  );
+  const centralCapability = (data?.capabilities ?? []).find((c) => c.planeId === 'central');
+  const mistCapability = (data?.capabilities ?? []).find((c) => c.planeId === 'mist');
+  const mistDirectAvailable = !liveMode
+    ? mistCapability?.mode === 'direct'
+    : mistCapability?.canDirectWrite === true;
+  const ssidTargetCanWrite =
+    !liveMode || (mistSsid ? mistCapability?.canDirectWrite === true : centralCapability?.canDirectWrite === true);
+  const genericTargetCanWrite = !liveMode || centralCapability?.canBrokerWrite === true;
   /** What the form's security mode cannot express on Mist — the shared
    *  sentence the adapter refuses with, so drawer and plane never disagree. */
   const mistRefusal = mistSsid ? mistSsidSecurityRefusal(ssid.security) : null;
@@ -518,6 +531,7 @@ export default function Configure() {
     (!ssidRequirement.captivePortal || !!ssid.captivePortalProfileId) &&
     (!ssidRequirement.passphrase || !!ssid.passphrase);
   const ssidApplyDisabled =
+    !ssidTargetCanWrite ||
     !ssidFormComplete ||
     valueProblems.length > 0 ||
     ssidMissingDependencies.length > 0 ||
@@ -526,6 +540,29 @@ export default function Configure() {
     ssidApplying ||
     ssidCatalogLoading ||
     !ssidCatalog;
+  const genericFormComplete =
+    kind === 'port'
+      ? port.device.trim().length > 0 && port.id.trim().length > 0 && port.vlan.trim().length > 0
+      : kind === 'vlan'
+        ? vlan.id.trim().length > 0 && vlan.helpers.trim().length > 0 && vlan.scope.trim().length > 0
+        : false;
+  const genericHasConfiguredProvenance = !liveMode || genericSource === 'configured';
+  const genericHasExactIdentity =
+    !liveMode ||
+    (kind === 'port'
+      ? port.plane === 'CENTRAL' && (port.serial?.trim().length ?? 0) > 0
+      : kind === 'vlan'
+        ? vlan.plane === 'CENTRAL'
+        : false);
+  const directReplayBlocked = Boolean(
+    directApply?.result &&
+      (directApply.result.outcomeUnknown || directApply.result.accepted || directApply.result.applied),
+  );
+  const directFormComplete =
+    genericFormComplete &&
+    genericHasConfiguredProvenance &&
+    genericHasExactIdentity &&
+    genericTargetCanWrite;
 
   const switchGroups = useMemo(() => groupSwitchPorts(data?.ports ?? []), [data?.ports]);
   const filteredSwitchGroups = useMemo(() => {
@@ -725,19 +762,21 @@ export default function Configure() {
   const openPort = (row?: PortObject) => {
     setPort({
       ...(liveMode ? LIVE_PORT_FORM : DEFAULT_PORT_FORM),
-      ...(row ? seedFormFromRow('port', row) : {}),
+      ...(row ? seedFormFromRow('port', row, { live: liveMode }) : {}),
     });
+    setGenericSource(row?.origin === 'configured' ? 'configured' : row ? 'observed' : 'new');
     setKind('port');
   };
   const openVlan = (row?: VlanObject) => {
     setVlan({
       ...(liveMode ? LIVE_VLAN_FORM : DEFAULT_VLAN_FORM),
       ...(row
-        ? seedFormFromRow('vlan', row)
+        ? seedFormFromRow('vlan', row, { live: liveMode })
         : liveMode
           ? {}
           : { id: '', name: '', helpers: '10.42.0.20, 10.44.0.20' }),
     });
+    setGenericSource(row?.origin === 'configured' ? 'configured' : row ? 'observed' : 'new');
     setKind('vlan');
   };
 
@@ -806,6 +845,11 @@ export default function Configure() {
         const r = await pushChange(entry.id as string);
         if (isApiError(r)) {
           toast(r.error, { description: entry.what, tone: 'danger' });
+        } else if (r.outcomeUnknown) {
+          toast('Outcome unknown — reconciliation required', {
+            description: `${entry.what} — ${r.message}`,
+            tone: 'warning',
+          });
         } else if (r.applied) {
           anyApplied = true;
           // The lists below are this operator's evidence that the push worked.
@@ -880,9 +924,10 @@ export default function Configure() {
    * per-item broker flow — the same pushChange call Push queue makes per
    * ready entry, so every change keeps its own review, lease and audit line;
    * the bar only iterates. The summary toast names the per-item outcomes:
-   * applied, accepted (a 202 is neither success nor failure), failed, and
-   * skipped (not ready, or a local row with no broker id) — the failures
-   * named, never folded into a green count.
+   * applied, accepted (a 202 is neither success nor failure), unknown
+   * (transport confirmation was lost), failed, and skipped (not ready, or a
+   * local row with no broker id) — the failures named, never folded into a
+   * green count, and unknown outcomes never presented as safe to retry.
    */
   const bulkApprove = async () => {
     if (bulkBusy) return;
@@ -892,6 +937,7 @@ export default function Configure() {
     let applied = 0;
     let anyApplied = false;
     const accepted: string[] = [];
+    const unknown: string[] = [];
     const failed: string[] = [];
     const skipped: string[] = [];
     if (queueSource === 'server') {
@@ -902,6 +948,7 @@ export default function Configure() {
         }
         const r = await pushChange(entry.id);
         if (isApiError(r)) failed.push(entry.what);
+        else if (r.outcomeUnknown) unknown.push(entry.what);
         else if (r.applied) {
           applied++;
           anyApplied = true;
@@ -919,6 +966,7 @@ export default function Configure() {
     }
     const parts: string[] = [];
     if (accepted.length > 0) parts.push(`accepted, not yet confirmed: ${nameList(accepted)}`);
+    if (unknown.length > 0) parts.push(`outcome unknown — reconciliation required: ${nameList(unknown)}`);
     if (failed.length > 0) parts.push(`failed: ${nameList(failed)}`);
     if (skipped.length > 0) {
       parts.push(
@@ -931,10 +979,10 @@ export default function Configure() {
       description: parts.length > 0 ? parts.join(' · ') : undefined,
       tone:
         failed.length > 0
-          ? applied + accepted.length > 0
+          ? applied + accepted.length + unknown.length > 0
             ? 'warning'
             : 'danger'
-          : accepted.length + skipped.length > 0
+          : accepted.length + unknown.length + skipped.length > 0
             ? 'warning'
             : 'success',
     });
@@ -987,7 +1035,7 @@ export default function Configure() {
 
   const queueIt = async () => {
     const t = ticket.trim();
-    if (!kind || !t) return;
+    if (!kind || !t || !genericFormComplete) return;
     const r = await queueChange(kind, formFor(kind), t);
     if (isApiError(r)) {
       if (r.offline) {
@@ -1004,7 +1052,7 @@ export default function Configure() {
   };
 
   const doDryRun = async () => {
-    if (!kind || dryRunning) return;
+    if (!kind || dryRunning || !genericFormComplete) return;
     setDryRunning(true);
     const r = await dryRunConfig(kind, formFor(kind), ticket.trim());
     setDryRunning(false);
@@ -1024,7 +1072,7 @@ export default function Configure() {
    * stays in the drawer because a returned 202 or failed read-back is evidence
    * to act on, not a completed change. */
   const applyDirect = async () => {
-    if (!labConfigMode || !kind || kind === 'ssid' || directApplying) return;
+    if (!labConfigMode || !kind || kind === 'ssid' || directApplying || !directFormComplete || directReplayBlocked) return;
     setDirectApplying(true);
     const r = await applyConfigDirect(kind, formFor(kind));
     setDirectApplying(false);
@@ -1035,7 +1083,9 @@ export default function Configure() {
     }
     setDirectApply({ result: r });
     const stale = r.cacheRefresh?.attempted && !r.cacheRefresh.ok;
-    if (r.applied) {
+    if (r.outcomeUnknown) {
+      toast('Outcome unknown — reconciliation required', { description: r.message, tone: 'warning' });
+    } else if (r.applied) {
       toast(r.message, {
         description: stale
           ? `The lists below could not be re-read (${r.cacheRefresh?.message ?? 'reason not reported'}), so they do not show this yet. Do not apply it again.`
@@ -1059,7 +1109,7 @@ export default function Configure() {
    * every entered value stays exactly as typed so the operator can retry.
    */
   const applySsid = async () => {
-    if ((!labConfigMode && !ssidReviewed) || ssidApplying) return;
+    if (ssidApplyDisabled) return;
     const planeLabel = ssidPlaneOf(ssid) === 'mist' ? 'Mist' : 'Central';
     setSsidApplying(true);
     // A multi-plane display label ('CENTRAL + MIST') is not a write target:
@@ -1142,9 +1192,11 @@ export default function Configure() {
             <Button variant="ghost" size="sm" onClick={() => void openHistory()}>
               Change history
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => openVlan()}>
-              New VLAN
-            </Button>
+            {!labConfigMode || !liveMode ? (
+              <Button variant="secondary" size="sm" onClick={() => openVlan()}>
+                New VLAN
+              </Button>
+            ) : null}
             <Button variant="primary" size="sm" onClick={() => openSsid()}>
               New SSID
             </Button>
@@ -1176,7 +1228,7 @@ export default function Configure() {
         <Alert tone="warning" title="Live configuration inventory is not available">
           <span style={{ fontSize: 13 }}>
             {labConfigMode
-              ? 'The linked planes do not currently expose SSID, port, or VLAN inventory through this API. New changes can still be rendered and applied explicitly.'
+              ? 'The linked planes do not currently expose configured port or VLAN rows for immediate apply. SSIDs retain their scope-aware path when the target connector admits writes.'
               : 'The broker queue is live, but the linked planes do not currently expose SSID, port, or VLAN inventory through this API. New changes can still be rendered and queued explicitly.'}
           </span>
         </Alert>
@@ -1275,7 +1327,9 @@ export default function Configure() {
                 title="No SSIDs reported"
                 description={
                   liveMode
-                    ? 'No linked plane reported wireless configuration. "+ Add SSID" still renders and queues a new one.'
+                    ? labConfigMode
+                      ? 'No linked plane reported wireless configuration. "+ Add SSID" still opens an explicit apply form.'
+                      : 'No linked plane reported wireless configuration. "+ Add SSID" still renders and queues a new one.'
                     : 'This payload carries no SSID rows.'
                 }
               />
@@ -1286,9 +1340,11 @@ export default function Configure() {
             <SectionHeader
               label="Switch ports"
               meta={
-                <button type="button" style={MICRO_LINK} onClick={() => openPort()}>
-                  + Configure a port
-                </button>
+                !labConfigMode || !liveMode ? (
+                  <button type="button" style={MICRO_LINK} onClick={() => openPort()}>
+                    + Configure a port
+                  </button>
+                ) : undefined
               }
             />
             {data.ports.length > 0 ? (
@@ -1392,7 +1448,9 @@ export default function Configure() {
                 title="No switch ports reported"
                 description={
                   liveMode
-                    ? 'No linked plane reported port configuration. "+ Configure a port" still renders and queues a change.'
+                    ? labConfigMode
+                      ? 'No exact configured Central port row is available to apply. Link a writable Central connector and refresh its configuration inventory.'
+                      : 'No linked plane reported port configuration. "+ Configure a port" still renders and queues a change.'
                     : 'This payload carries no port rows.'
                 }
               />
@@ -1403,9 +1461,11 @@ export default function Configure() {
             <SectionHeader
               label="VLANs & roles"
               meta={
-                <button type="button" style={MICRO_LINK} onClick={() => openVlan()}>
-                  + Add VLAN
-                </button>
+                !labConfigMode || !liveMode ? (
+                  <button type="button" style={MICRO_LINK} onClick={() => openVlan()}>
+                    + Add VLAN
+                  </button>
+                ) : undefined
               }
             />
             {data.vlans.map((v) => (
@@ -1462,7 +1522,9 @@ export default function Configure() {
                 title="No VLANs reported"
                 description={
                   liveMode
-                    ? 'No linked plane reported VLAN configuration. "+ Add VLAN" still renders and queues a new one.'
+                    ? labConfigMode
+                      ? 'No exact configured Central VLAN row is available to apply. Link a writable Central connector and refresh its configuration inventory.'
+                      : 'No linked plane reported VLAN configuration. "+ Add VLAN" still renders and queues a new one.'
                     : 'This payload carries no VLAN rows.'
                 }
               />
@@ -1609,7 +1671,15 @@ export default function Configure() {
         }}
         width="lg"
         title={kind ? CONFIG_EDIT_TITLES[kind] : ''}
-        description={kind ? (liveMode ? LIVE_CONFIG_DESCS[kind] : CONFIG_EDIT_DESCS[kind]) : ''}
+        description={
+          kind
+            ? labConfigMode
+              ? LAB_CONFIG_DESCS[kind]
+              : liveMode
+                ? LIVE_CONFIG_DESCS[kind]
+                : CONFIG_EDIT_DESCS[kind]
+            : ''
+        }
       >
         {kind ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -1633,6 +1703,11 @@ export default function Configure() {
                       onValueChange={(v) => switchSsidPlane(v as 'CENTRAL' | 'MIST')}
                     />
                   </FormField>
+                ) : null}
+                {!ssidTargetCanWrite ? (
+                  <Alert tone="info" title={`${mistSsid ? 'Mist' : 'Central'} SSID writes are unavailable`}>
+                    This target's connector grant is read-only. Catalog and inventory reads remain available, but Apply is disabled.
+                  </Alert>
                 ) : null}
                 <div
                   style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
@@ -1982,7 +2057,9 @@ export default function Configure() {
                   label="DHCP helpers"
                   help={
                     liveMode
-                      ? 'Comma-separated helper addresses. The portal holds no baseline for this VLAN — the dry run reports what the plane currently has.'
+                      ? labConfigMode
+                        ? 'Comma-separated helper addresses. The portal assumes no existing baseline; apply evidence reports the observed outcome.'
+                        : 'Comma-separated helper addresses. The portal holds no baseline for this VLAN — the dry run reports what the plane currently has.'
                       : 'The CX baseline expects two helpers; the second one is the drift finding open on this VLAN.'
                   }
                 >
@@ -2003,7 +2080,7 @@ export default function Configure() {
             ) : null}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <SectionHeader label="What gets pushed" meta={previewMeta} />
+              <SectionHeader label={labConfigMode ? 'What will be applied' : 'What gets pushed'} meta={previewMeta} />
               <Code block>{preview}</Code>
             </div>
 
@@ -2038,7 +2115,7 @@ export default function Configure() {
 
             {kind === 'ssid' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <SectionHeader label="Review — exact scope assignments" />
+                <SectionHeader label={labConfigMode ? 'Exact scope assignments' : 'Review — exact scope assignments'} />
                 {(ssid.scopeIds ?? []).length === 0 ? (
                   <span style={{ fontSize: 12.5, color: 'var(--nd-text-muted)' }}>
                     No scope selected yet — pick at least one above before applying.
@@ -2162,11 +2239,26 @@ export default function Configure() {
                     lineHeight: 1.6,
                   }}
                 >
-                  Direct apply — no ticket, no queue. An audit event is still recorded for every attempt.
+                  {labConfigMode
+                    ? 'Scope-aware direct apply. An audit event is recorded for every attempt.'
+                    : 'Direct apply — no ticket, no queue. An audit event is still recorded for every attempt.'}
                 </span>
               </div>
             ) : labConfigMode ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {!genericHasConfiguredProvenance ? (
+                  <Alert tone="info" title="Exact configured target required">
+                    Immediate apply requires a configured Central inventory row; observed or newly entered rows are not a safe write baseline.
+                  </Alert>
+                ) : !genericHasExactIdentity ? (
+                  <Alert tone="info" title="Exact Central identity required">
+                    This row does not carry the complete Central ownership identity required for an immediate write.
+                  </Alert>
+                ) : !genericTargetCanWrite ? (
+                  <Alert tone="info" title="Central configuration writes are unavailable">
+                    The linked Central connector grant is read-only. Apply remains disabled while inventory stays available.
+                  </Alert>
+                ) : null}
                 {valueProblems.length > 0 ? (
                   <Alert tone="warning" title="Apply is disabled — Central would refuse this form">
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
@@ -2180,7 +2272,7 @@ export default function Configure() {
                   <Button
                     variant="primary"
                     size="md"
-                    disabled={directApplying || valueProblems.length > 0}
+                    disabled={directApplying || directReplayBlocked || !directFormComplete || valueProblems.length > 0}
                     onClick={() => void applyDirect()}
                   >
                     {directApplying ? 'Applying…' : 'Apply'}
@@ -2197,7 +2289,9 @@ export default function Configure() {
                   ) : directApply.result ? (
                     <Alert
                       tone={
-                        directApply.result.applied
+                        directApply.result.outcomeUnknown
+                          ? 'warning'
+                          : directApply.result.applied
                           ? directApply.result.cacheRefresh?.attempted && !directApply.result.cacheRefresh.ok
                             ? 'warning'
                             : 'success'
@@ -2206,7 +2300,9 @@ export default function Configure() {
                             : 'danger'
                       }
                       title={
-                        directApply.result.applied
+                        directApply.result.outcomeUnknown
+                          ? 'Outcome unknown'
+                          : directApply.result.applied
                           ? 'Applied'
                           : directApply.result.accepted
                             ? 'Accepted — not yet confirmed'
@@ -2233,7 +2329,7 @@ export default function Configure() {
                     lineHeight: 1.6,
                   }}
                 >
-                  Immediate lab apply — no ticket, queue, lease, or dry run. The result below is the write evidence.
+                  Immediate lab apply. Every attempt remains audited, and the result below is the write evidence.
                 </span>
               </div>
             ) : (
@@ -2264,7 +2360,7 @@ export default function Configure() {
                   <Button
                     variant="primary"
                     size="md"
-                    disabled={!ticket.trim() || valueProblems.length > 0}
+                    disabled={!ticket.trim() || !genericFormComplete || valueProblems.length > 0}
                     onClick={() => void queueIt()}
                   >
                     Queue the change
@@ -2272,7 +2368,7 @@ export default function Configure() {
                   <Button
                     variant="secondary"
                     size="md"
-                    disabled={dryRunning || valueProblems.length > 0}
+                    disabled={dryRunning || !genericFormComplete || valueProblems.length > 0}
                     onClick={() => void doDryRun()}
                   >
                     Dry run

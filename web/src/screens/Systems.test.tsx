@@ -1253,7 +1253,7 @@ describe('Systems connect drawer — credential hygiene', () => {
       name: 'HPE Aruba Networking SSE',
       planeId: 'sse',
       configText:
-        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscope: read only',
+        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscopes: read:config-licences,write:direct\nscope: read only',
     };
     mockGetSystems.mockResolvedValue({
       systems: [sseRow],
@@ -1304,7 +1304,7 @@ describe('Systems connect drawer — credential hygiene', () => {
       name: 'HPE Aruba Networking SSE',
       planeId: 'sse',
       configText:
-        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscope: read only',
+        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscopes: read:config-licences,write:direct\nscope: read only',
     };
     mockGetSystems.mockResolvedValue({
       systems: [sseRow],
@@ -1358,7 +1358,7 @@ describe('Systems connect drawer — credential hygiene', () => {
       name: 'HPE Aruba Networking SSE',
       planeId: 'sse',
       configText:
-        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscopes: read:inventory,read:clients-auth,read:config-licences,write:brokered\nscope: read only',
+        'plane: sse\nlinked: true\nbaseUrl: https://sse.custom.example/api\nscopes: read:config-licences,write:direct\nscope: read only',
     };
     const revokedRow: SystemRow = {
       ...sseRow,

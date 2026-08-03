@@ -64,7 +64,7 @@ export function storedEndpoint(row: SystemRow, id: ConnectorId): string {
 }
 
 /** Read the catalog-owned scope values back without ever making a masked value editable. */
-export function storedScopes(row: SystemRow, id: ConnectorId, live: LivePlaneState | null): string[] {
+export function storedScopes(row: SystemRow, id: ConnectorId, _live: LivePlaneState | null): string[] {
   const entry = connectorCatalogEntry(id);
   const line = row.configText.split('\n').find((candidate) => candidate.startsWith('scopes:'));
   const tokens = (line?.slice('scopes:'.length).trim() ?? '').split(',').map((t) => t.trim());
@@ -72,9 +72,6 @@ export function storedScopes(row: SystemRow, id: ConnectorId, live: LivePlaneSta
   const stored = line === undefined
     ? entry.scopeOptions.filter((scope) => scope.value.startsWith('read:')).map((scope) => scope.value)
     : tokens.filter((token) => allowed.has(token));
-  if (live?.capabilities?.directWrite === true && allowed.has('write:direct')) {
-    return [...new Set([...stored, 'write:direct'])];
-  }
   return stored;
 }
 

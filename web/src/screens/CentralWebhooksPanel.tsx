@@ -237,6 +237,7 @@ export function CentralWebhooksPanel() {
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [listing, setListing] = useState<WebhookListEnvelope | null>(null);
+  const canWrite = listing?.canWrite === true;
   // The mount effect reads the list immediately, so the panel mounts into the
   // spinner rather than flashing a "No webhooks" empty state for one frame.
   const [loading, setLoading] = useState(true);
@@ -701,8 +702,8 @@ export function CentralWebhooksPanel() {
     });
     setDrawerError(
       match
-        ? 'Central now lists the exact reviewed name, endpoint, and authentication method. Treat the webhook as likely created; another POST could duplicate it.'
-        : 'The exact reviewed candidate was not present in the complete unfiltered Central list. Eventual consistency is still possible, so another POST remains blocked until you attest that you refreshed and independently confirmed absence in Central.',
+        ? `Central now lists the exact ${lab ? 'submitted' : 'reviewed'} name, endpoint, and authentication method. Treat the webhook as likely created; another POST could duplicate it.`
+        : `The exact ${lab ? 'submitted' : 'reviewed'} candidate was not present in the complete unfiltered Central list. Eventual consistency is still possible, so another POST remains blocked until you attest that you refreshed and independently confirmed absence in Central.`,
     );
   };
 
@@ -774,7 +775,9 @@ export function CentralWebhooksPanel() {
     setReviewed(false);
     setOneTimeAcknowledged(false);
     setDrawerError(
-      'Absence attested. Build and review a new create request. If Central later reveals the prior operation, this new POST may create a duplicate.',
+      lab
+        ? 'Absence attested. Build a new create request. If Central later reveals the prior operation, this new POST may create a duplicate.'
+        : 'Absence attested. Build and review a new create request. If Central later reveals the prior operation, this new POST may create a duplicate.',
     );
   };
 
@@ -801,7 +804,9 @@ export function CentralWebhooksPanel() {
     if (isApiError(detailResult)) {
       closeDrawer();
       toast(
-        'Created webhook was reconciled. Reopen it from the refreshed list and review an HMAC rotation to issue a replacement key.',
+        lab
+          ? 'Created webhook was reconciled. Reopen it from the refreshed list and start an HMAC rotation to issue a replacement key.'
+          : 'Created webhook was reconciled. Reopen it from the refreshed list and review an HMAC rotation to issue a replacement key.',
         { tone: 'warning' },
       );
       void load(q, page);
@@ -850,7 +855,9 @@ export function CentralWebhooksPanel() {
     setReviewed(false);
     setOneTimeAcknowledged(false);
     setDrawerError(
-      'Reconciliation attested. Any new rotation is a separate operation that will invalidate the receiver’s current key; review it from scratch.',
+      lab
+        ? 'Reconciliation attested. Any new rotation is a separate operation that will invalidate the receiver’s current key; start it from scratch.'
+        : 'Reconciliation attested. Any new rotation is a separate operation that will invalidate the receiver’s current key; review it from scratch.',
     );
   };
 
@@ -891,6 +898,7 @@ export function CentralWebhooksPanel() {
 
   const submitCreate = async () => {
     if (
+      !canWrite ||
       (!lab && !reviewed) ||
       !oneTimeAcknowledged ||
       formErrors.length > 0 ||
@@ -963,6 +971,7 @@ export function CentralWebhooksPanel() {
 
   const submitRotate = async () => {
     if (
+      !canWrite ||
       (!lab && !reviewed) ||
       !oneTimeAcknowledged ||
       !drawerRow ||
@@ -1032,7 +1041,7 @@ export function CentralWebhooksPanel() {
   };
 
   const submitEdit = async () => {
-    if ((!lab && !reviewed) || formErrors.length > 0 || outcomeUnknown || !drawerRow) return;
+    if (!canWrite || (!lab && !reviewed) || formErrors.length > 0 || outcomeUnknown || !drawerRow) return;
     // Bind this PATCH to the identity actually rendered right now — never
     // re-read `drawerRow`/`existing` after the await, since the operator
     // could close this drawer (or it could be superseded) while the request
@@ -1060,7 +1069,9 @@ export function CentralWebhooksPanel() {
     if (!result.ok) {
       if (isWebhookGenerationConflict(result)) {
         await reconcileEdit(
-          'This webhook changed since it was loaded (generation conflict) — refetched the latest version below. Review the new diff before reapplying.',
+          lab
+            ? 'This webhook changed since it was loaded (generation conflict) — refetched the latest version below. Check the new diff before reapplying.'
+            : 'This webhook changed since it was loaded (generation conflict) — refetched the latest version below. Review the new diff before reapplying.',
           token,
           webhookId,
         );
@@ -1075,7 +1086,7 @@ export function CentralWebhooksPanel() {
   };
 
   const submitDelete = async () => {
-    if ((!lab && !reviewed) || !drawerRow || outcomeUnknown) return;
+    if (!canWrite || (!lab && !reviewed) || !drawerRow || outcomeUnknown) return;
     // Same identity binding as submitEdit: capture now, verify on return.
     const token = activeRequestRef.current;
     if (!token) return;
@@ -1150,8 +1161,8 @@ export function CentralWebhooksPanel() {
         <Button
           variant="primary"
           size="sm"
-          title={lab ? 'Create webhook' : 'Create a reviewed webhook'}
-          disabled={anyPendingHandoff !== null}
+          title={!canWrite ? 'The Central connector has no write grant' : lab ? 'Create webhook' : 'Create a reviewed webhook'}
+          disabled={!canWrite || anyPendingHandoff !== null}
           onClick={openCreate}
         >
           New webhook
@@ -1162,6 +1173,13 @@ export function CentralWebhooksPanel() {
         Central returns each HMAC signing key only once. GET cannot retrieve it later. Create and rotate require
         two explicit acknowledgements and show the key in a dedicated one-time modal so it can be copied now.
       </Alert>
+
+      {listing && !canWrite ? (
+        <Alert tone="info" title="Central webhook writes are unavailable">
+          This linked Central plane has a read-only connector grant. Webhook inventory and pending-handoff
+          reconciliation remain available, but vendor mutation controls are disabled.
+        </Alert>
+      ) : null}
 
       {handoffStatusError ? (
         <Alert tone="danger" title="Handoff status unavailable">
@@ -1256,19 +1274,19 @@ export function CentralWebhooksPanel() {
                   <Table.Cell>{fmtTime(row.updatedAt)}</Table.Cell>
                   <Table.Cell>
                     <div style={{ display: 'flex', gap: 6 }}>
-                      <Button variant="secondary" size="sm" onClick={() => void openEdit(row)}>
+                      <Button variant="secondary" size="sm" disabled={!canWrite} onClick={() => void openEdit(row)}>
                         Edit
                       </Button>
                       <Button
                         variant="secondary"
                         size="sm"
                         title="Rotate the one-time HMAC key"
-                        disabled={anyPendingHandoff !== null}
+                        disabled={!canWrite || anyPendingHandoff !== null}
                         onClick={() => openRotate(row)}
                       >
                         Rotate HMAC
                       </Button>
-                      <Button variant="danger" size="sm" onClick={() => openDelete(row)}>
+                      <Button variant="danger" size="sm" disabled={!canWrite} onClick={() => openDelete(row)}>
                         Delete
                       </Button>
                     </div>
@@ -1458,7 +1476,7 @@ export function CentralWebhooksPanel() {
                 onChange={(e) => setReviewed(e.target.checked)}
               />
             ) : null}
-            <Button variant="danger" disabled={(!lab && !reviewed) || applying || outcomeUnknown} onClick={() => void submitDelete()}>
+            <Button variant="danger" disabled={!canWrite || (!lab && !reviewed) || applying || outcomeUnknown} onClick={() => void submitDelete()}>
               {applying ? 'Deleting\u2026' : 'Delete webhook'}
             </Button>
           </div>
@@ -1523,7 +1541,7 @@ export function CentralWebhooksPanel() {
                         }
                         onClick={() => void allowRotateAfterAttestation(pendingRotate)}
                       >
-                        Allow a new reviewed rotation
+                        {lab ? 'Allow a new rotation' : 'Allow a new reviewed rotation'}
                       </Button>
                     </>
                   ) : null}
@@ -1546,7 +1564,7 @@ export function CentralWebhooksPanel() {
             {!outcomeUnknown ? (
               <Button
                 variant="danger"
-                disabled={(!lab && !reviewed) || !oneTimeAcknowledged || applying}
+                disabled={!canWrite || (!lab && !reviewed) || !oneTimeAcknowledged || applying}
                 onClick={() => void submitRotate()}
               >
                 {applying ? 'Rotating\u2026' : 'Rotate HMAC key'}
@@ -1647,11 +1665,15 @@ export function CentralWebhooksPanel() {
                   {pendingCreate.lookup === 'found' ? (
                     <>
                       <Alert tone="danger" title="Webhook likely created">
-                        Central lists the exact reviewed name, endpoint, and authentication method. The one-time HMAC
+                        Central lists the exact {lab ? 'submitted' : 'reviewed'} name, endpoint, and authentication method. The one-time HMAC
                         key cannot be recovered. Do not send the create again; doing so may duplicate the webhook.
                       </Alert>
                       <Checkbox
-                        label="I reviewed the canonical candidate match and attest this is the webhook created by the pending operation."
+                        label={
+                          lab
+                            ? 'I checked the canonical candidate match and attest this is the webhook created by the pending operation.'
+                            : 'I reviewed the canonical candidate match and attest this is the webhook created by the pending operation.'
+                        }
                         checked={pendingCreate.locatedAttested}
                         onChange={(e) =>
                           updateCreateLocatedAttestation(
@@ -1669,7 +1691,7 @@ export function CentralWebhooksPanel() {
                         }
                         onClick={() => void acknowledgeLikelyCreated(pendingCreate)}
                       >
-                        Clear handoff and review replacement rotation
+                        {lab ? 'Clear handoff and open replacement rotation' : 'Clear handoff and review replacement rotation'}
                       </Button>
                     </>
                   ) : pendingCreate.lookup === 'absent' ? (
@@ -1679,7 +1701,7 @@ export function CentralWebhooksPanel() {
                         eventually consistent. A new POST could create a duplicate if the prior request appears later.
                       </Alert>
                       <Checkbox
-                        label="After this refresh, I checked Central and explicitly confirm the exact reviewed webhook is absent."
+                        label={`After this refresh, I checked Central and explicitly confirm the exact ${lab ? 'submitted' : 'reviewed'} webhook is absent.`}
                         checked={pendingCreate.absenceAttested}
                         onChange={(e) =>
                           updateCreateAbsenceAttestation(pendingCreate.operationId, e.target.checked)
@@ -1707,7 +1729,9 @@ export function CentralWebhooksPanel() {
                     const token = activeRequestRef.current;
                     if (!token || !drawerRow) return;
                     void reconcileEdit(
-                      'Refetched the latest webhook \u2014 review the diff and reapply if needed.',
+                      lab
+                        ? 'Refetched the latest webhook \u2014 check the diff and reapply if needed.'
+                        : 'Refetched the latest webhook \u2014 review the diff and reapply if needed.',
                       token,
                       drawerRow.id,
                     );
@@ -1745,6 +1769,7 @@ export function CentralWebhooksPanel() {
                 variant="primary"
                 disabled={
                   (!lab && !reviewed) ||
+                  !canWrite ||
                   (drawerMode === 'create' && !oneTimeAcknowledged) ||
                   formErrors.length > 0 ||
                   applying ||

@@ -20,8 +20,10 @@ import {
  * broker push, it has no ticket, lease, queue, or dry-run fields. */
 export interface ImmediateApplyResult {
   ok: boolean;
-  applied: boolean;
+  /** Omitted when a transport failure leaves the vendor outcome unknowable. */
+  applied?: boolean;
   accepted?: boolean;
+  outcomeUnknown?: boolean;
   changeId: string;
   kind: string;
   httpCode?: number;
@@ -158,8 +160,11 @@ export async function getChangeHistory(limit = 50): Promise<ChangeHistory | ApiE
  */
 export interface PushResult {
   ok: boolean;
-  applied: boolean;
+  /** Omitted when a transport failure leaves the vendor outcome unknowable. */
+  applied?: boolean;
   accepted?: boolean;
+  /** The request may have reached Central; reconcile before any retry. */
+  outcomeUnknown?: boolean;
   changeId: string;
   ticket: string;
   kind: string;

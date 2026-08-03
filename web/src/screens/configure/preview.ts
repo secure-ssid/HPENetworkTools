@@ -45,7 +45,12 @@ function mistSsidPreview(ssid: SsidForm): string {
   return lines.join('\n');
 }
 
-export function livePreview(kind: ConfigKind, form: ConfigForm, capabilities: CapabilityRow[]): string {
+export function livePreview(
+  kind: ConfigKind,
+  form: ConfigForm,
+  capabilities: CapabilityRow[],
+  immediate = false,
+): string {
   if (kind === 'ssid') {
     const ssid = form as SsidForm;
     if (planeKeyOf(ssid.plane as Parameters<typeof planeKeyOf>[0]) === 'mist') return mistSsidPreview(ssid);
@@ -102,19 +107,22 @@ export function livePreview(kind: ConfigKind, form: ConfigForm, capabilities: Ca
   // A 'direct' plane (Mist) takes reviewed SSID writes ONLY — it cannot
   // accept a port/VLAN payload, so it is not a write target for these kinds.
   const writeTargets = capabilities.filter((c) => c.mode === 'brokered' || c.mode === 'ssh').map((c) => c.plane);
-  const writeLine =
-    writeTargets.length > 0
+  const writeLine = immediate
+    ? '# exact write plane → Central'
+    : writeTargets.length > 0
       ? `# planes that can accept it → ${writeTargets.join(', ')}`
       : '# no linked plane can accept this payload — it opens in the plane console';
   return [
     body,
     `# target → ${target}`,
     writeLine,
-    '# exact endpoint and impact are resolved by the broker dry run',
+    immediate
+      ? '# endpoint and observed impact are reported by apply result/read-back when confirmation succeeds'
+      : '# exact endpoint and impact are resolved by the broker dry run',
   ].join('\n');
 }
 
-export function liveRadius(kind: ConfigKind, form: ConfigForm) {
+export function liveRadius(kind: ConfigKind, form: ConfigForm, immediate = false) {
   if (kind === 'ssid') {
     const mist = planeKeyOf((form as SsidForm).plane as Parameters<typeof planeKeyOf>[0]) === 'mist';
     return [
@@ -129,11 +137,14 @@ export function liveRadius(kind: ConfigKind, form: ConfigForm) {
     return [
       { what: 'Interfaces changed', count: (form as PortForm).id ? '1 requested' : 'not entered' },
       { what: 'Clients on this port right now', count: 'requires live read-back' },
-      { what: 'Rollback snapshot', count: 'requested during dry run' },
+      {
+        what: 'Rollback snapshot',
+        count: immediate ? 'not requested by immediate apply' : 'requested during dry run',
+      },
     ];
   }
   return [
-    { what: 'Switches in scope', count: 'requires dry run' },
+    { what: 'Switches in scope', count: immediate ? 'selected Central scope' : 'requires dry run' },
     { what: 'Clients on this VLAN', count: 'not reported by config inventory' },
     { what: 'Configuration drift resolved', count: 'not available' },
   ];
@@ -181,6 +192,7 @@ export function writeSurfaceNote(capabilities: CapabilityRow[]): string {
 
 /** Remaining write lease on a queued change, or null when it carries none. */
 export function leaseNote(entry: QueueEntry, now: number): string | null {
+  if (entry.state === 'applying') return 'write in progress or outcome unresolved — do not retry';
   if (!entry.expiresAt) return entry.id === null ? 'not on the broker — no lease' : null;
   const msLeft = Date.parse(entry.expiresAt) - now;
   if (!Number.isFinite(msLeft)) return null;

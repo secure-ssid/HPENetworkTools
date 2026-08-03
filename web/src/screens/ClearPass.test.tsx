@@ -47,7 +47,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import ClearPass from './ClearPass';
 import { SettingsProvider } from '../app/SettingsContext';
@@ -146,6 +146,7 @@ function liveData(over: Partial<ClearPassData> = {}): ClearPassData {
     authEvents: [],
     syncedAt: null,
     dataSource: 'live',
+    canWrite: true,
     ...over,
   };
 }
@@ -197,7 +198,7 @@ describe('ClearPass', () => {
     renderClearPass();
 
     await waitFor(() => expect(mockGetEndpointPage).toHaveBeenCalledWith(0, 50));
-    expect(screen.getByText('1 of 50 loaded endpoint rows')).toBeTruthy();
+    expect(screen.getByText('1 loaded endpoint row')).toBeTruthy();
     expect(screen.getByLabelText('Filter loaded endpoint page')).toBeTruthy();
     expect(screen.getByText('Filters apply only to the 1 row loaded on this page.')).toBeTruthy();
     expect(screen.getByText('Ward 3E rounds iPad — Dr. Okonjo')).toBeTruthy();
@@ -214,9 +215,39 @@ describe('ClearPass', () => {
     await screen.findByRole('button', { name: 'Next endpoint page' });
     fireEvent.click(screen.getByRole('button', { name: 'Next endpoint page' }));
     await waitFor(() => expect(mockGetEndpointPage).toHaveBeenLastCalledWith(50, 50));
-    fireEvent.change(screen.getByLabelText('Filter loaded endpoint page'), { target: { value: 'ward' } });
+    fireEvent.change(screen.getByLabelText('Filter loaded endpoint page'), { target: { value: CLEARPASS_ENDPOINTS[0].mac } });
     await waitFor(() => expect(mockGetEndpointPage).toHaveBeenLastCalledWith(0, 50));
     expect(screen.getByRole('button', { name: 'Previous endpoint page' })).toBeTruthy();
+  });
+
+  it('does not let a slower older page overwrite a later filter reset', async () => {
+    let resolveNext!: (page: ReturnType<typeof endpointPage>) => void;
+    let resolveReset!: (page: ReturnType<typeof endpointPage>) => void;
+    const next = new Promise<ReturnType<typeof endpointPage>>((resolve) => { resolveNext = resolve; });
+    const reset = new Promise<ReturnType<typeof endpointPage>>((resolve) => { resolveReset = resolve; });
+    mockGetClearPass.mockResolvedValue(liveData({ endpoints: [] }));
+    mockGetEndpointPage
+      .mockResolvedValueOnce(endpointPage({ dataSource: 'live', endpoints: [CLEARPASS_ENDPOINTS[0]], total: 101, nextOffset: 50, more: 'yes' }))
+      .mockReturnValueOnce(next)
+      .mockReturnValueOnce(reset);
+    renderClearPass();
+
+    await screen.findByText(CLEARPASS_ENDPOINTS[0].mac);
+    fireEvent.click(screen.getByRole('button', { name: 'Next endpoint page' }));
+    fireEvent.change(screen.getByLabelText('Filter loaded endpoint page'), { target: { value: CLEARPASS_ENDPOINTS[0].mac } });
+
+    await act(async () => {
+      resolveReset(endpointPage({ dataSource: 'live', endpoints: [CLEARPASS_ENDPOINTS[0]], total: 101, nextOffset: 50, more: 'yes' }));
+      await reset;
+    });
+    expect(await screen.findByText(CLEARPASS_ENDPOINTS[0].mac)).toBeTruthy();
+
+    await act(async () => {
+      resolveNext(endpointPage({ dataSource: 'live', endpoints: [CLEARPASS_ENDPOINTS[1]], offset: 50, total: 101, nextOffset: 100, more: 'yes' }));
+      await next;
+    });
+    expect(screen.getByText(CLEARPASS_ENDPOINTS[0].mac)).toBeTruthy();
+    expect(screen.queryByText(CLEARPASS_ENDPOINTS[1].mac)).toBeNull();
   });
 
   it('keeps unavailable, failed, and empty endpoint pages distinct and never shows fixture rows for a failed live page', async () => {
@@ -228,6 +259,40 @@ describe('ClearPass', () => {
     renderClearPass();
     expect(await screen.findByText('Endpoint page could not be loaded')).toBeTruthy();
     expect(screen.queryByText('Ward 3E rounds iPad — Dr. Okonjo')).toBeNull();
+  });
+
+  it('uses the proven repository total when the requested page is empty', async () => {
+    mockGetClearPass.mockResolvedValue(liveData({ endpointTotal: 101 }));
+    mockGetEndpointPage.mockResolvedValue({
+      dataSource: 'live', state: 'empty', endpoints: [], offset: 100, limit: 50,
+      total: 101, nextOffset: null, more: 'no',
+    });
+    renderClearPass();
+
+    expect(await screen.findByText('ClearPass returned an empty endpoint page')).toBeTruthy();
+    expect(screen.getByText('ClearPass reports 101 total endpoints; this requested page contains no rows.')).toBeTruthy();
+    expect(screen.queryByText(/does not establish a repository-wide total/i)).toBeNull();
+  });
+
+  it('keeps a live read-only connector inventory-only', async () => {
+    mockGetClearPass.mockResolvedValue(liveData({
+      canWrite: false,
+      localUsers: CLEARPASS_LOCAL_USERS,
+    }));
+    mockGetEndpointPage.mockResolvedValue(endpointPage({
+      dataSource: 'live',
+      endpoints: [CLEARPASS_ENDPOINTS[0]],
+      total: 1,
+    }));
+    renderClearPass();
+
+    expect(await screen.findByText(CLEARPASS_ENDPOINTS[0].mac)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Register endpoint' })).toBeNull();
+    expect(screen.queryByRole('button', { name: `Edit endpoint ${CLEARPASS_ENDPOINTS[0].mac}` })).toBeNull();
+    openTab('Local users');
+    expect(screen.queryByRole('button', { name: 'Add local user' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Edit local user/ })).toBeNull();
+    expect(screen.getByText(/read-only connector grant/i)).toBeTruthy();
   });
 
   it('(a) the endpoints tab renders descriptions and Device Insight tags on the rows that carry them', async () => {
@@ -647,7 +712,7 @@ describe('ClearPass reviewed writes', () => {
     mockGetClearPass.mockResolvedValue(demoData());
     mockRegister.mockResolvedValue(DEMO_OK);
     renderClearPass();
-    await screen.findByText('15 of 50 loaded endpoint rows');
+    await screen.findByText('15 loaded endpoint rows');
     fireEvent.click(screen.getByRole('button', { name: 'Register endpoint' }));
     const dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
     fireEvent.change(within(dialog).getByLabelText('MAC address'), { target: { value: 'AABBCCDDEEFF' } });
@@ -660,7 +725,7 @@ describe('ClearPass reviewed writes', () => {
     mockGetClearPass.mockResolvedValue(demoData());
     mockRegister.mockResolvedValue({ ...DEMO_OK, message: 'demo endpoint aa:bb:cc:dd:ee:ff registered — no live CPPM was written' });
     renderClearPass();
-    await waitFor(() => expect(screen.getByText('15 of 50 loaded endpoint rows')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('15 loaded endpoint rows')).toBeTruthy());
 
     fireEvent.click(screen.getByRole('button', { name: 'Register endpoint' }));
     const dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
@@ -680,7 +745,7 @@ describe('ClearPass reviewed writes', () => {
     expect(mockRegister.mock.calls[0][0]).toMatchObject({ mac: 'AABBCCDDEEFF', status: 'Known' });
     expect(mockRegister.mock.calls[0][1]).toBe(true); // reviewConfirmed
     // The demo world gained the row, and the outcome is shown verbatim.
-    await waitFor(() => expect(screen.getByText('16 of 50 loaded endpoint rows')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('16 loaded endpoint rows')).toBeTruthy());
     expect(within(dialog).getByText(/no live CPPM was written/)).toBeTruthy();
   });
 
@@ -693,7 +758,7 @@ describe('ClearPass reviewed writes', () => {
       message: 'ClearPass refused the endpoint registration (HTTP 422)',
     });
     renderClearPass();
-    await waitFor(() => expect(screen.getByText('15 of 50 loaded endpoint rows')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('15 loaded endpoint rows')).toBeTruthy());
 
     fireEvent.click(screen.getByRole('button', { name: 'Register endpoint' }));
     const dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
@@ -704,7 +769,7 @@ describe('ClearPass reviewed writes', () => {
     await waitFor(() => expect(within(dialog).getByText(/refused the endpoint registration/)).toBeTruthy());
     expect(within(dialog).getByText('Not applied')).toBeTruthy();
     // The table did not gain a row for a write the plane refused.
-    expect(screen.getByText('15 of 50 loaded endpoint rows')).toBeTruthy();
+    expect(screen.getByText('15 loaded endpoint rows')).toBeTruthy();
   });
 
   it('(i) edit endpoint: only real changes apply, and the demo row follows', async () => {

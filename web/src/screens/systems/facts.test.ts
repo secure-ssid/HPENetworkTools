@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { CLOCK_SKEW_TOLERANCE_MS } from '@hpe/shared';
-import { callsFactValue, mergedFacts, relTime, retryNote, staleTitle, syncAgeText } from './facts';
+import { callsFactValue, mergedFacts, relTime, retryNote, staleTitle, storedScopes, syncAgeText } from './facts';
 import type { LivePlaneState } from '../../api/client';
 import type { SystemRow } from '@hpe/shared';
 
@@ -129,5 +129,18 @@ describe('the fact strip writes all of its numbers the same way', () => {
     expect(retryNote(live({ consecutiveFailures: 1 }))).toBe('1 consecutive failed poll');
     expect(retryNote(live({ consecutiveFailures: 3 }))).toBe('3 consecutive failed polls');
     expect(retryNote(live({ consecutiveFailures: 0 }))).toBeNull();
+  });
+});
+
+describe('stored connector scopes are the write authority', () => {
+  it('does not invent write:direct from an adapter capability', () => {
+    const row = {
+      configText: 'scopes: read:inventory, read:clients-auth',
+    } as SystemRow;
+
+    expect(storedScopes(row, 'central', live({ capabilities: { directWrite: true } }))).toEqual([
+      'read:inventory',
+      'read:clients-auth',
+    ]);
   });
 });

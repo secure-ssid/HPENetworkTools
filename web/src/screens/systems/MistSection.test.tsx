@@ -13,7 +13,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MistSection } from './MistSection';
 import { ToastProvider } from '../../nightdesk';
 import { MIST_AUDIT_LOG } from '@hpe/shared';
@@ -26,7 +26,7 @@ import type {
 const { mockLabConfigMode } = vi.hoisted(() => ({ mockLabConfigMode: vi.fn(() => ({ lab: false })) }));
 vi.mock('../../hooks/useLabConfigMode', () => ({ useLabConfigMode: mockLabConfigMode }));
 
-const REGISTERED: MistWebhookRegistrationStatus = {
+const REGISTERED = {
   demoMode: false,
   linked: true,
   receiverPath: '/api/hooks/mist',
@@ -42,7 +42,8 @@ const REGISTERED: MistWebhookRegistrationStatus = {
   ],
   totalSubscriptions: 2,
   lastReceivedAt: '2026-08-01T11:42:00.000Z',
-};
+  canWrite: true,
+} as MistWebhookRegistrationStatus & { canWrite: boolean };
 
 const AUDIT: MistAuditLogLive = {
   entries: MIST_AUDIT_LOG,
@@ -124,6 +125,45 @@ describe('MistSection — registration status', () => {
     stubMistFetch({ statusHttp: 500 });
     renderPanel();
     expect(await screen.findByText(/registration status blew up/)).toBeTruthy();
+  });
+
+  it('does not render registration fields for a linked read-only connector', async () => {
+    stubMistFetch({ status: { ...REGISTERED, canWrite: false } as MistWebhookRegistrationStatus });
+    renderPanel();
+
+    expect(await screen.findByText(/read-only connector grant/i)).toBeTruthy();
+    expect(screen.queryByLabelText('Receiver URL')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Update subscription' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Verify' })).toBeTruthy();
+  });
+
+  it('does not let an older writable status overwrite a newer read-only verification', async () => {
+    let resolveOlder!: (value: ReturnType<typeof jsonResponse>) => void;
+    let resolveNewer!: (value: ReturnType<typeof jsonResponse>) => void;
+    let registrationReads = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/systems/mist/audit-log')) {
+        return Promise.resolve(jsonResponse({ auditLog: AUDIT }));
+      }
+      registrationReads += 1;
+      if (registrationReads === 1) return Promise.resolve(jsonResponse(REGISTERED));
+      if (registrationReads === 2) return new Promise(resolve => { resolveOlder = resolve; });
+      return new Promise(resolve => { resolveNewer = resolve; });
+    }));
+    renderPanel();
+    await screen.findByRole('button', { name: 'Update subscription' });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+
+    await act(async () => {
+      resolveNewer(jsonResponse({ ...REGISTERED, canWrite: false }));
+    });
+    expect(await screen.findByText(/read-only connector grant/i)).toBeTruthy();
+    await act(async () => {
+      resolveOlder(jsonResponse(REGISTERED));
+    });
+    expect(screen.queryByRole('button', { name: 'Update subscription' })).toBeNull();
   });
 });
 

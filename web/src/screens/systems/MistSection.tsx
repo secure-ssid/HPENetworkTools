@@ -27,7 +27,7 @@
  * Systems-only.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Badge,
@@ -84,9 +84,14 @@ export function MistSection() {
   const [reviewed, setReviewed] = useState(false);
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<MistWebhookRegistrationResult | null>(null);
+  const loadSequenceRef = useRef(0);
+  const mountedRef = useRef(false);
+  const canWrite = status?.demo === true || status?.canWrite === true;
 
   const load = (): Promise<void> => {
+    const sequence = ++loadSequenceRef.current;
     return Promise.all([getMistRegistration(), getMistAuditLog()]).then(([statusResult, auditResult]) => {
+      if (!mountedRef.current || sequence !== loadSequenceRef.current) return;
       if (isApiError(statusResult)) {
         setStatusError(statusResult.error);
       } else {
@@ -107,7 +112,12 @@ export function MistSection() {
   };
 
   useEffect(() => {
+    mountedRef.current = true;
     void load();
+    return () => {
+      mountedRef.current = false;
+      loadSequenceRef.current += 1;
+    };
   }, []);
 
   /** Any form edit invalidates the review checkbox — the review always
@@ -122,7 +132,7 @@ export function MistSection() {
   };
 
   const apply = async (): Promise<void> => {
-    if ((!lab && !reviewed) || applying) return;
+    if (!canWrite || (!lab && !reviewed) || applying) return;
     setApplying(true);
     const applied = await postMistRegistration({
       url: url.trim(),
@@ -198,7 +208,7 @@ export function MistSection() {
                 </div>
               </div>
             )}
-            {status.linked || status.demo === true ? (
+            {(status.linked || status.demo === true) && canWrite ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 6 }}>
                 <FormField
                   label="Receiver URL"
@@ -247,6 +257,16 @@ export function MistSection() {
                     Verify
                   </Button>
                 </div>
+              </div>
+            ) : status.linked ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8, paddingTop: 6 }}>
+                <div style={noteStyle}>
+                  This linked Mist plane has a read-only connector grant. Registration status can still be verified,
+                  but subscription mutation controls are hidden.
+                </div>
+                <Button variant="secondary" size="sm" onClick={() => void load()}>
+                  Verify
+                </Button>
               </div>
             ) : null}
           </>

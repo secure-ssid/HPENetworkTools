@@ -239,6 +239,8 @@ export interface AuthEventsData extends ScreenEnvelope {
 }
 
 export interface ClearPassData extends ScreenEnvelope {
+  /** Effective server-side write admission for this exact ClearPass connector. */
+  canWrite?: boolean;
   /** A separately proven repository total, when the ClearPass read supplied one. */
   endpointTotal?: number | null;
   /**

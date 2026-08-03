@@ -65,6 +65,17 @@ const mockApplyConfigDirect = vi.mocked(applyConfigDirect);
 
 // -- fixtures ---------------------------------------------------------------
 
+const CENTRAL_ADMITTED_CAPABILITY = {
+  plane: 'HPE Aruba Central',
+  planeId: 'central',
+  mode: 'brokered' as const,
+  note: 'Central writes admitted',
+  tone: 'accent' as const,
+  linked: true,
+  canBrokerWrite: true,
+  canDirectWrite: true,
+};
+
 /** Minimal screen payload — the queue tests only need the sections to exist. */
 const CONFIGURE_DATA: ConfigureData = {
   stats: [],
@@ -73,8 +84,31 @@ const CONFIGURE_DATA: ConfigureData = {
   vlans: [],
   inventoryMode: 'unavailable',
   queued: [],
-  capabilities: [],
+  capabilities: [CENTRAL_ADMITTED_CAPABILITY],
   dataSource: 'live',
+};
+
+const CENTRAL_VLAN_ROW = {
+  kind: 'vlan' as const,
+  origin: 'configured' as const,
+  plane: 'CENTRAL' as const,
+  id: '812',
+  name: 'guest-wifi',
+  detail: 'configured',
+  role: 'Guest',
+};
+
+const CENTRAL_PORT_ROW = {
+  kind: 'port' as const,
+  origin: 'configured' as const,
+  plane: 'CENTRAL' as const,
+  serial: 'CN-CX-001',
+  device: 'cx-core-1',
+  port: '1/1/1',
+  desc: 'uplink',
+  summary: 'access · poe',
+  state: 'up',
+  tone: 'success' as const,
 };
 
 const OFFLINE_ERROR = 'cannot reach the portal backend: network down';
@@ -146,6 +180,7 @@ async function queueLocalVlanWhileOffline() {
   fireEvent.click(screen.getByRole('button', { name: 'New VLAN' }));
   fireEvent.change(screen.getByLabelText('ID'), { target: { value: '999' } });
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'live-test-vlan' } });
+  fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
   fireEvent.change(screen.getByPlaceholderText('NET-4166'), {
     target: { value: LOCAL_VLAN_TICKET },
   });
@@ -225,10 +260,192 @@ describe('Configure — per-entry-source queue semantics', () => {
     mockGetChangeQueue.mockResolvedValue({ error: 'broker queue unavailable' });
     renderConfigure();
 
-    await screen.findByRole('button', { name: 'New VLAN' });
+    await screen.findByRole('button', { name: 'New SSID' });
     expect(mockGetChangeQueue).not.toHaveBeenCalled();
     expect(screen.queryByText('broker queue unavailable')).toBeNull();
     expect(screen.queryByText('Queued changes')).toBeNull();
+    expect(screen.getByText(/No exact configured Central port row is available to apply/i)).toBeTruthy();
+    expect(screen.getByText(/No exact configured Central VLAN row is available to apply/i)).toBeTruthy();
+  });
+
+  it('keeps authored demo configuration controls usable without live admission fields', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: true, pollIntervalSec: 60, configMode: true });
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, dataSource: 'demo', capabilities: [] });
+    renderConfigure();
+
+    await screen.findByRole('button', { name: 'New VLAN' });
+    fireEvent.click(screen.getByRole('button', { name: 'New VLAN' }));
+    fireEvent.change(screen.getByLabelText('ID'), { target: { value: '999' } });
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', false);
+  });
+
+  it('only offers configured live rows and never seeds unknown port/VLAN fields from demo fixtures', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: true });
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      inventoryMode: 'configured',
+      ports: [CENTRAL_PORT_ROW],
+      vlans: [CENTRAL_VLAN_ROW],
+    });
+    renderConfigure();
+    await screen.findByText('guest-wifi');
+
+    expect(screen.queryByRole('button', { name: 'New VLAN' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '+ Configure a port' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '+ Add VLAN' })).toBeNull();
+
+    fireEvent.click(screen.getByText('guest-wifi').closest('button') as HTMLButtonElement);
+    expect(screen.getByLabelText('DHCP helpers')).toHaveProperty('value', '');
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+    expect(document.body.textContent).not.toContain('10.42.0.20');
+    fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', false);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /cx-core-1/i }));
+    fireEvent.click(screen.getByRole('button', { name: /1\/1\/1.*cx-core-1/i }));
+    expect(screen.getByLabelText('VLAN')).toHaveProperty('value', '');
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+    expect(mockApplyConfigDirect).not.toHaveBeenCalled();
+  });
+
+  it('requires exact configured provenance, Central serial identity, and server write admission', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: true });
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      inventoryMode: 'observed',
+      capabilities: [{ ...CENTRAL_ADMITTED_CAPABILITY, canBrokerWrite: false }],
+      ports: [{ ...CENTRAL_PORT_ROW, serial: undefined, summary: 'access · vlan 812' }],
+      vlans: [
+        { ...CENTRAL_VLAN_ROW, origin: 'observed' },
+        { ...CENTRAL_VLAN_ROW, id: '813', name: 'clinical', origin: 'configured' },
+      ],
+    });
+    renderConfigure();
+
+    fireEvent.click((await screen.findByText('guest-wifi')).closest('button') as HTMLButtonElement);
+    fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+    expect(screen.getByText(/configured Central inventory row/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    fireEvent.click(screen.getByText('clinical').closest('button') as HTMLButtonElement);
+    fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+    expect(screen.getByText(/connector grant is read-only/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /cx-core-1/i }));
+    fireEvent.click(screen.getByRole('button', { name: /1\/1\/1.*cx-core-1/i }));
+    expect(screen.getByLabelText('VLAN')).toHaveProperty('value', '812');
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+    expect(screen.getByText(/exact Central identity/i)).toBeTruthy();
+    expect(mockApplyConfigDirect).not.toHaveBeenCalled();
+  });
+
+  it('disables a complete Central SSID when the served target admission is read-only', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: true });
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      capabilities: [{ ...CENTRAL_ADMITTED_CAPABILITY, canDirectWrite: false }],
+    });
+    renderConfigure();
+    await screen.findByRole('button', { name: 'New SSID' });
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await fillReadySsidForm();
+
+    expect(screen.getByText(/Central SSID writes are unavailable/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(mockApplySsidDirect).not.toHaveBeenCalled();
+  });
+
+  it('keeps queue and dry run disabled until the hardened generic form is complete', async () => {
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New VLAN' }));
+    fireEvent.change(screen.getByPlaceholderText('NET-4166'), { target: { value: 'NET-9000' } });
+
+    expect(screen.getByRole('button', { name: 'Queue the change' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Dry run' })).toHaveProperty('disabled', true);
+  });
+
+  it('removes queue and dry-run wording from the complete lab drawer while hardened mode retains it', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: true });
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      inventoryMode: 'configured',
+      vlans: [CENTRAL_VLAN_ROW],
+    });
+    renderConfigure();
+    fireEvent.click((await screen.findByText('guest-wifi')).closest('button') as HTMLButtonElement);
+    const labDialog = screen.getByRole('dialog', { name: 'VLAN' });
+    expect(within(labDialog).getByText('What will be applied')).toBeTruthy();
+    expect(labDialog.textContent).toContain('# exact write plane → Central');
+    expect(labDialog.textContent).toContain('when confirmation succeeds');
+    expect(labDialog.textContent).not.toContain('planes that can accept it');
+    expect(labDialog.textContent?.toLowerCase()).not.toContain('queue');
+    expect(labDialog.textContent?.toLowerCase()).not.toContain('dry run');
+
+    cleanup();
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: false });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New VLAN' }));
+    const hardenedDialog = screen.getByRole('dialog', { name: 'VLAN' });
+    expect(within(hardenedDialog).getByText('What gets pushed')).toBeTruthy();
+    expect(within(hardenedDialog).getByRole('button', { name: 'Dry run' })).toBeTruthy();
+    expect(hardenedDialog.textContent?.toLowerCase()).toContain('queue');
+  });
+
+  it('renders a thrown direct transport outcome as unknown and never as not applied', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: true });
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      inventoryMode: 'configured',
+      vlans: [CENTRAL_VLAN_ROW],
+    });
+    mockApplyConfigDirect.mockResolvedValue({
+      ok: false,
+      outcomeUnknown: true,
+      changeId: 'direct-vlan-unknown',
+      kind: 'vlan',
+      message: 'outcome unknown — reconcile Central before another attempt',
+    });
+    renderConfigure();
+    const vlanRow = await screen.findByText('guest-wifi');
+    fireEvent.click(vlanRow.closest('button') as HTMLButtonElement);
+    fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+    expect(await screen.findByText('Outcome unknown')).toBeTruthy();
+    expect(screen.getAllByText(/reconcile Central before another attempt/).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Not applied')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+  });
+
+  it('blocks replay after Central accepted a generic write without confirming it', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: true });
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      inventoryMode: 'configured',
+      vlans: [CENTRAL_VLAN_ROW],
+    });
+    mockApplyConfigDirect.mockResolvedValue({
+      ok: true,
+      applied: false,
+      accepted: true,
+      changeId: 'direct-vlan-accepted',
+      kind: 'vlan',
+      message: 'accepted by Central, not yet confirmed',
+    });
+    renderConfigure();
+    fireEvent.click((await screen.findByText('guest-wifi')).closest('button') as HTMLButtonElement);
+    fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+    expect(await screen.findByText('Accepted — not yet confirmed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
   });
 
   it('unavailable settings preserve hardened queue, ticket, dry-run, and SSID review controls', async () => {
@@ -257,26 +474,34 @@ describe('Configure — per-entry-source queue semantics', () => {
     // A returned, pre-configMode settings payload means the server will use
     // its lab-direct default. `null` still means unreachable and stays hard.
     mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60 });
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      inventoryMode: 'configured',
+      vlans: [CENTRAL_VLAN_ROW],
+    });
     renderConfigure();
 
-    await screen.findByRole('button', { name: 'New VLAN' });
+    const vlanRow = await screen.findByText('guest-wifi');
     expect(screen.queryByText('Queued changes')).toBeNull();
     expect(screen.queryByText('Push queue')).toBeNull();
     expect(screen.queryByPlaceholderText('NET-4166')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'New VLAN' }));
+    fireEvent.click(vlanRow.closest('button') as HTMLButtonElement);
     fireEvent.change(screen.getByLabelText('ID'), { target: { value: '999' } });
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'lab-vlan' } });
+    fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
     expect(screen.queryByRole('button', { name: 'Dry run' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', false);
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 
     await waitFor(() =>
       expect(mockApplyConfigDirect).toHaveBeenCalledWith(
         'vlan',
-        expect.objectContaining({ id: '999', name: 'lab-vlan' }),
+        expect.objectContaining({ plane: 'CENTRAL', id: '999', name: 'lab-vlan' }),
       ),
     );
     expect(screen.getByText('Applied')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
   });
 
   it('lab SSIDs skip the review checkbox but retain their dedicated apply path', async () => {
@@ -366,6 +591,7 @@ describe('Configure — per-entry-source queue semantics', () => {
     expect((screen.getByRole('button', { name: 'Dry run' }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.change(screen.getByLabelText('ID'), { target: { value: '4094' } });
+    fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
     await waitFor(() =>
       expect((screen.getByRole('button', { name: 'Queue the change' }) as HTMLButtonElement).disabled).toBe(false),
     );
@@ -1376,6 +1602,30 @@ describe('Configure — change history that could not be fully read', () => {
  * go and verify.
  */
 describe('Configure — a push accepted but not confirmed', () => {
+  it('renders a thrown push transport outcome as unknown and never suggests retrying it', async () => {
+    mockGetChangeQueue
+      .mockResolvedValueOnce([serverChange()])
+      .mockResolvedValue([serverChange({ state: 'applying' })]);
+    mockPushChange.mockResolvedValue({
+      ok: false,
+      outcomeUnknown: true,
+      changeId: 'chg-server-1',
+      ticket: 'NET-4100',
+      kind: 'vlan',
+      snapshot: true,
+      message: 'outcome unknown — Central transport confirmation was lost; reconcile before any retry',
+    });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Push queue' }));
+
+    expect(await screen.findByText('Outcome unknown — reconciliation required')).toBeTruthy();
+    expect(screen.getByText(/Central transport confirmation was lost/)).toBeTruthy();
+    expect(screen.queryByText(/push failed|re-queue/i)).toBeNull();
+    await waitFor(() => expect(queueSection().getByText('applying')).toBeTruthy());
+  });
+
   it('does not celebrate a 202 as a completed change', async () => {
     mockPushChange.mockResolvedValue({
       ok: true,
@@ -1527,8 +1777,8 @@ const MIST_CATALOG: SsidCatalog = {
 /** The deployment reports Central brokered + Mist direct — the combination
  *  that makes the drawer offer the plane choice. */
 const MIST_DIRECT_CAPS = [
-  { plane: 'HPE Aruba Central', planeId: 'central', mode: 'brokered' as const, note: 'brokered write, ticket required', tone: 'accent' as const, linked: true },
-  { plane: 'Mist', planeId: 'mist', mode: 'direct' as const, note: 'reviewed SSID writes, no ticket', tone: 'accent' as const, linked: true },
+  { ...CENTRAL_ADMITTED_CAPABILITY, note: 'brokered write, ticket required' },
+  { plane: 'Mist', planeId: 'mist', mode: 'direct' as const, note: 'reviewed SSID writes, no ticket', tone: 'accent' as const, linked: true, canDirectWrite: true },
 ];
 
 /** A configured Mist WLAN row as the live config read maps it — disabled,

@@ -120,6 +120,14 @@ export const LIVE_CONFIG_DESCS: Record<ConfigKind, string> = {
   vlan: 'Build a VLAN payload for the selected broker scope. The dry run resolves actual reachable devices.',
 };
 
+/** Confirmed lab mode applies immediately, so its drawer copy describes only
+ * the write that is actually available there. */
+export const LAB_CONFIG_DESCS: Record<ConfigKind, string> = {
+  ssid: 'Create or update a named WLAN profile, verify it, then assign it to the selected plane-native scopes.',
+  port: 'Apply a switch-port payload to the exact Central device represented by this inventory row.',
+  vlan: 'Apply a VLAN payload to the exact Central-owned configuration represented by this inventory row.',
+};
+
 export const LIVE_PUSH_NOTES: Record<ConfigKind, string> = {
   ssid: 'The broker resolves the live target during dry run; no AP count, client count, Mist hand-off, or authentication trust is assumed.',
   port: 'The broker verifies collector reachability and requests a rollback snapshot during dry run.',

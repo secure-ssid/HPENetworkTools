@@ -73,8 +73,10 @@ function row(overrides: Partial<WebhookSummary> = {}): WebhookSummary {
   };
 }
 
-function envelope(overrides: Partial<WebhookListEnvelope> = {}): WebhookListEnvelope {
-  const result: WebhookListEnvelope = {
+type WritableWebhookListEnvelope = WebhookListEnvelope & { canWrite: boolean };
+
+function envelope(overrides: Partial<WritableWebhookListEnvelope> = {}): WritableWebhookListEnvelope {
+  const result: WritableWebhookListEnvelope = {
     items: [row()],
     totalCount: 1,
     count: 1,
@@ -84,6 +86,7 @@ function envelope(overrides: Partial<WebhookListEnvelope> = {}): WebhookListEnve
     source: 'central live',
     gatewayBaseUrl: 'https://us1.api.central.arubanetworks.com',
     tenantBinding: 'a'.repeat(64),
+    canWrite: true,
     ...overrides,
   };
   if (result.items.length === 0 && !result.error && !Object.prototype.hasOwnProperty.call(overrides, 'note')) {
@@ -172,6 +175,18 @@ describe('list, pagination, and envelope states', () => {
     await waitFor(() => expect(screen.getByText('servicenow-incidents')).toBeTruthy());
     expect(screen.getByText('https://example.service-now.com/hooks')).toBeTruthy();
     expect(screen.getByText('API_KEY')).toBeTruthy();
+  });
+
+  it('keeps list and reconciliation reads available but disables vendor mutations without write scope', async () => {
+    mockList.mockResolvedValue(envelope({ canWrite: false }));
+    renderPanel();
+
+    await screen.findByText('servicenow-incidents');
+    expect(screen.getByText(/read-only connector grant/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'New webhook' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Edit' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Rotate HMAC' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveProperty('disabled', true);
   });
 
   it('shows pagination controls only when more than one page is reported, and requests the right offset', async () => {
@@ -493,6 +508,38 @@ describe('create/rotate unknown outcomes require reconciliation before a new rev
     expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 
+  it('uses lab recovery language without claiming a review after an unknown create', async () => {
+    mockLabConfigMode.mockReturnValue({ lab: true });
+    mockList
+      .mockResolvedValueOnce(envelope())
+      .mockResolvedValueOnce(envelope({ items: [], totalCount: 0, count: 0 }));
+    mockCreate.mockResolvedValue({
+      error: 'create result lost',
+      httpCode: 200,
+      outcome: 'unknown',
+      code: 'WEBHOOK_CREATE_HMAC_OUTCOME_UNKNOWN',
+      operationId: 'create-unknown-lab',
+    });
+    renderPanel();
+    await screen.findByText('servicenow-incidents');
+    fireEvent.click(screen.getByRole('button', { name: 'New webhook' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'new-hook' } });
+    fireEvent.change(screen.getByLabelText('Target URL'), { target: { value: 'https://hooks.example.com/new' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'new-api-key' } });
+    expect(screen.queryByLabelText(/reviewed this exact webhook creation/i)).toBeNull();
+    fireEvent.click(screen.getByLabelText(/returned HMAC key is one-time/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Create webhook' }));
+
+    await screen.findByText('Outcome unknown');
+    fireEvent.click(screen.getByRole('button', { name: 'Run unfiltered reconciliation' }));
+    const attestation = await screen.findByLabelText(/exact submitted webhook is absent/i);
+    expect(screen.queryByLabelText(/exact reviewed webhook is absent/i)).toBeNull();
+    fireEvent.click(attestation);
+    fireEvent.click(screen.getByRole('button', { name: 'Allow a new create despite eventual-consistency risk' }));
+    expect(await screen.findByText(/Build a new create request/)).toBeTruthy();
+    expect(screen.queryByText(/Build and review a new create request/)).toBeNull();
+  });
+
   it('an eventual refresh can change absent to found and removes the absence unlock', async () => {
     const candidate = row({
       id: 'wh-eventual',
@@ -550,6 +597,31 @@ describe('create/rotate unknown outcomes require reconciliation before a new rev
     expect(screen.getByLabelText(/reviewed this exact HMAC rotation/i)).toHaveProperty('checked', false);
     expect(screen.getByLabelText(/returned HMAC key is one-time/i)).toHaveProperty('checked', false);
     expect(mockRotate).toHaveBeenCalledTimes(1);
+  });
+
+  it('labels a reconciled lab rotation as a new rotation without inventing review', async () => {
+    mockLabConfigMode.mockReturnValue({ lab: true });
+    mockList.mockResolvedValue(envelope());
+    mockRotate.mockResolvedValue({
+      error: 'rotate result lost',
+      httpCode: 200,
+      outcome: 'unknown',
+      code: 'WEBHOOK_ROTATE_HMAC_OUTCOME_UNKNOWN',
+      operationId: 'rotate-unknown-lab',
+    });
+    mockGet.mockResolvedValue(detail({ generation: 2 }));
+    renderPanel();
+    await screen.findByText('servicenow-incidents');
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate HMAC' }));
+    expect(screen.queryByLabelText(/reviewed this exact HMAC rotation/i)).toBeNull();
+    fireEvent.click(screen.getByLabelText(/returned HMAC key is one-time/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate HMAC key' }));
+
+    await screen.findByText('Outcome unknown');
+    fireEvent.click(screen.getByRole('button', { name: 'Refetch webhook details' }));
+    await waitFor(() => expect(mockGet).toHaveBeenCalledWith('wh-1'));
+    expect(screen.getByRole('button', { name: 'Allow a new rotation' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Allow a new reviewed rotation' })).toBeNull();
   });
 
   it('blocks overlapping create/rotate and reloads the exact pending rotation after remount', async () => {
