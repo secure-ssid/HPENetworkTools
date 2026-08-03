@@ -290,6 +290,19 @@ describe('lab direct apply', () => {
     }
   });
 
+  it('refuses SSIDs from the generic direct broker so they stay on the scoped profile writer', async () => {
+    const transport = transportWith(200, {});
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: () => false });
+    settings.update({ configMode: true });
+
+    try {
+      await expect(broker.apply('ssid', DEFAULT_SSID_FORM)).rejects.toMatchObject({ status: 400 });
+      expect(transport.calls).toEqual([]);
+    } finally {
+      settings.update({ configMode: false });
+    }
+  });
+
   it('refuses immediate apply when hardened mode is explicitly enabled', async () => {
     const transport = transportWith(200, {});
     const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: () => false });

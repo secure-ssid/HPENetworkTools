@@ -651,8 +651,8 @@ export class WriteBroker {
   // -- immediate lab apply ----------------------------------------------------
 
   /**
-   * Apply one supported Central object immediately in lab mode. This bypasses
-   * only the ticket/queue/lease/dry-run ceremony: validation, target
+   * Apply one supported generic Central object immediately in lab mode. This
+   * bypasses only the ticket/queue/lease/dry-run ceremony: validation, target
    * selection, Central transport, post-write refresh, and audit logging stay
    * on the same paths as the hardened broker workflow.
    */
@@ -661,6 +661,9 @@ export class WriteBroker {
       throw new BrokerError(409, 'immediate apply is disabled — use the ticketed dry-run, queue, and push workflow');
     }
     const k = asConfigKind(kind);
+    if (k === 'ssid') {
+      throw new BrokerError(400, 'SSID writes use the dedicated scoped profile apply service');
+    }
     const f = this.actionForm(k, asForm(k, form));
     if (targetFor(k, f) !== 'central') {
       throw new BrokerError(409, 'read-only plane — open the Mist console with the rendered payload; the portal cannot apply it');
