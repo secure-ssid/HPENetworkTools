@@ -660,4 +660,48 @@ describe('PUT /api/settings assistant registry', () => {
     expect(invalid.status).toBe(400);
     expect(invalid.body.error).toMatch(/unrecognized assistant provider/);
   });
+
+  it('preserves the canonical provider registry while translating legacy assistant patches', async () => {
+    const put = async (body: unknown) => {
+      const res = await fetch(`${base}/api/settings`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      return { status: res.status, body: await res.json() as any };
+    };
+
+    const saved = await put({ assistant: {
+      activeProvider: 'openrouter',
+      mcp: { enabled: true, endpoint: 'https://canonical-mcp.example/mcp', authToken: 'canonical-token' },
+      chatWriteMode: 'confirm',
+      providers: {
+        codex: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+        openrouter: { enabled: true, baseUrl: 'https://canonical-router.example/v1', model: 'canonical-fast', apiKey: 'canonical-key' },
+      },
+    } });
+    expect(saved.status).toBe(200);
+
+    const mcp = await put({ mcp: { url: 'https://legacy-mcp.example/mcp', bearerToken: 'legacy-token' } });
+    expect(mcp.status).toBe(200);
+    expect(mcp.body.mcp).toEqual({ url: 'https://legacy-mcp.example/mcp', bearerToken: '••••••' });
+    expect(mcp.body.assistant.activeProvider).toBe('openrouter');
+    expect(mcp.body.assistant.providers.codex).toMatchObject({ enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' });
+    expect(mcp.body.assistant.providers.openrouter).toMatchObject({ enabled: true, baseUrl: 'https://canonical-router.example/v1', model: 'canonical-fast' });
+    expect(mcp.body.assistant.mcp).toEqual({ enabled: true, endpoint: 'https://legacy-mcp.example/mcp', authToken: '••••••' });
+
+    const llm = await put({ llm: { baseUrl: 'https://legacy-router.example/v1', apiKey: 'legacy-key', model: 'legacy-fast' } });
+    expect(llm.status).toBe(200);
+    expect(llm.body.llm).toEqual({ baseUrl: 'https://legacy-router.example/v1', apiKey: '••••••', model: 'legacy-fast' });
+    expect(llm.body.assistant.activeProvider).toBe('openrouter');
+    expect(llm.body.assistant.providers.codex).toMatchObject({ enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' });
+    expect(llm.body.assistant.providers.openrouter).toMatchObject({ enabled: true, baseUrl: 'https://legacy-router.example/v1', model: 'legacy-fast', apiKey: '••••••' });
+
+    const writeMode = await put({ chatWriteMode: true });
+    expect(writeMode.status).toBe(200);
+    expect(writeMode.body.chatWriteMode).toBe(true);
+    expect(writeMode.body.assistant.activeProvider).toBe('openrouter');
+    expect(writeMode.body.assistant.providers.codex).toMatchObject({ enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' });
+    expect(writeMode.body.assistant.providers.openrouter).toMatchObject({ enabled: true, baseUrl: 'https://legacy-router.example/v1', model: 'legacy-fast', apiKey: '••••••' });
+    expect(writeMode.body.assistant.mcp).toEqual({ enabled: true, endpoint: 'https://legacy-mcp.example/mcp', authToken: '••••••' });
+    expect(writeMode.body.assistant.chatWriteMode).toBe('enabled');
+  });
 });

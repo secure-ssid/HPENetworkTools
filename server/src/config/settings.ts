@@ -242,6 +242,40 @@ function mergeAssistantSettings(current: AssistantSettings, input: unknown): Ass
 }
 
 /**
+ * Translate an old chat-form update into the canonical registry without
+ * treating it as a replacement registry. Legacy MCP and write-mode fields
+ * describe shared assistant state; a legacy LLM updates its matching
+ * compatible provider but never changes the operator's active selection.
+ */
+function mergeLegacyAssistantSettings(
+  current: AssistantSettings,
+  input: Record<string, unknown>,
+  legacy: Pick<Settings, 'mcp' | 'llm' | 'chatWriteMode'>,
+): AssistantSettings {
+  const patch: Record<string, unknown> = {};
+  if (Object.prototype.hasOwnProperty.call(input, 'mcp')) {
+    patch.mcp = legacy.mcp
+      ? { enabled: true, endpoint: legacy.mcp.url, authToken: legacy.mcp.bearerToken }
+      : { enabled: false, authToken: null };
+  }
+  if (typeof input.chatWriteMode === 'boolean') {
+    patch.chatWriteMode = input.chatWriteMode ? 'enabled' : 'read-only';
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'llm') && legacy.llm) {
+    const id: 'ollama' | 'openrouter' = isLocalHttpUrl(legacy.llm.baseUrl) ? 'ollama' : 'openrouter';
+    patch.providers = {
+      [id]: {
+        enabled: true,
+        baseUrl: legacy.llm.baseUrl,
+        model: legacy.llm.model,
+        ...(legacy.llm.apiKey ? { apiKey: legacy.llm.apiKey } : {}),
+      },
+    };
+  }
+  return mergeAssistantSettings(current, patch);
+}
+
+/**
  * OIDC single sign-on (Authentik, or any compliant provider).
  *
  * `issuer` is the provider's base URL — discovery appends
@@ -846,14 +880,10 @@ export class SettingsStore {
       Object.prototype.hasOwnProperty.call(p, 'llm') ||
       Object.prototype.hasOwnProperty.call(p, 'chatWriteMode')
     ) {
-      // Old forms update their historic fields first, then receive a fresh
-      // one-way canonical translation. New canonical writes never let stale
-      // legacy fields overwrite the selected provider.
-      out.assistant = migrateAssistantSettings({
-        mcp: out.mcp,
-        llm: out.llm,
-        chatWriteMode: out.chatWriteMode,
-      });
+      // Old forms still update the compatible legacy fields, but those fields
+      // are not a replacement source for a registry the operator already
+      // configured. Patch only their canonical counterparts instead.
+      out.assistant = mergeLegacyAssistantSettings(base.assistant, p, out);
     }
 
     if ('auth' in p) {
