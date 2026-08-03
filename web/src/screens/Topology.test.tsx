@@ -94,6 +94,7 @@ describe('Topology — the collapsed estate view', () => {
     mockGetTopology.mockResolvedValue(demoPayload());
     renderTopology();
 
+    expect(await screen.findByRole('region', { name: 'Site connections' })).toBeTruthy();
     // the Campus-01 ↔ Campus-02 interconnect, read by BOTH ends' planes
     expect(
       await screen.findByText('sw-core-a 1/1/49 ↔ sw-cam02-1 xe-0/1/0 · 10.0 Gbps · LLDP · LOCAL + MIST'),

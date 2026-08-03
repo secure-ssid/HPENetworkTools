@@ -3,16 +3,15 @@
  *
  * One graph over every plane's REPORTED neighbour facts (shared/topologyGraph.ts
  * builds it; GET /api/topology serves it). A site is a collapse/expand grouping:
- * collapsed, one card per site with only the inter-site hairlines crossing the
- * canvas; expanded, the site's devices open inside the card and its internal
- * links list underneath. Neighbours that resolve to no inventory row sit in the
- * "filed nowhere" strip as ghosts — drawn as reported, never promoted.
+ * collapsed, one compact card per site; expanded, its devices open inside the
+ * card and its internal links list underneath. Cross-site reports are a separate
+ * readable list, never an overlapping line layer. Neighbours that resolve to no
+ * inventory row sit in the "filed nowhere" strip as ghosts — reported, never
+ * promoted.
  *
- * The visual language is SiteTopology's: HTML cards over an SVG hairline layer
- * (preserveAspectRatio="none" + non-scaling stroke so lines stay 1px), text in
- * HTML so it stays crisp, and positions computed from the layout MODEL (two
- * columns of fixed-height cells) rather than measured from the DOM — the lines
- * run centre to centre and the cards paint over their middles.
+ * The visual language is compact responsive cards and plain connection rows:
+ * no absolute positioning, no SVG line routing, and no relationship labels
+ * hidden behind cards when a site grows.
  *
  * Edge labels carry the provenance the graph merged: ports and speed when
  * reported, the evidence words (LLDP/CDP/VSF/recorded uplink), every source
@@ -46,55 +45,7 @@ import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
 
-// ---------------------------------------------------------------------------
-// Layout model — two columns of fixed-height cells, everything computed
-// ---------------------------------------------------------------------------
-
-const COLS = 2;
-const COL_CENTER_PCT = [25, 75];
-const COLLAPSED_H = 148;
-const EXPANDED_H = 372;
-const ROW_GAP = 18;
-const UNFILED_H = 168;
-const CARD_W_PCT = 44;
-
-export interface TopologyCell {
-  /** The site id, or UNFILED_KEY for the ghost/unfiled strip. */
-  key: string;
-  xPct: number;
-  y: number;
-  h: number;
-}
-
 export const UNFILED_KEY = '__filed-nowhere__';
-
-/**
- * Cell positions for the site cards plus the ghost strip. Pure: the SVG layer
- * and the HTML cards read the same numbers, so a hairline always lands where
- * the card says it should. An expanded site makes its whole ROW taller — the
- * grid never overlaps and never measures the DOM.
- */
-export function layoutTopologyCells(
-  sites: readonly TopologyGraphSite[],
-  expanded: ReadonlySet<string>,
-  hasUnfiled: boolean,
-): { cells: TopologyCell[]; height: number } {
-  const cells: TopologyCell[] = [];
-  let y = 0;
-  for (let row = 0; row * COLS < sites.length; row += 1) {
-    const rowSites = sites.slice(row * COLS, row * COLS + COLS);
-    const rowH = Math.max(...rowSites.map((s) => (expanded.has(s.siteId) ? EXPANDED_H : COLLAPSED_H)));
-    rowSites.forEach((site, col) => {
-      cells.push({ key: site.siteId, xPct: COL_CENTER_PCT[col]!, y, h: expanded.has(site.siteId) ? EXPANDED_H : COLLAPSED_H });
-    });
-    y += rowH + ROW_GAP;
-  }
-  if (hasUnfiled) {
-    cells.push({ key: UNFILED_KEY, xPct: 50, y, h: UNFILED_H });
-    y += UNFILED_H + ROW_GAP;
-  }
-  return { cells, height: Math.max(y - ROW_GAP, 0) };
-}
 
 // ---------------------------------------------------------------------------
 // Wording — edge labels, ghost subs, stats
@@ -180,7 +131,6 @@ interface Focus {
 
 function SiteCard({
   site,
-  cell,
   nodes,
   edges,
   expanded,
@@ -196,7 +146,6 @@ function SiteCard({
   onFocus,
 }: {
   site: TopologyGraphSite;
-  cell: TopologyCell;
   nodes: TopologyGraphNode[];
   edges: TopologyGraphEdge[];
   expanded: boolean;
@@ -232,15 +181,10 @@ function SiteCard({
   return (
     <div
       style={{
-        position: 'absolute',
-        left: `${cell.xPct}%`,
-        top: cell.y,
-        transform: 'translateX(-50%)',
-        width: `${CARD_W_PCT}%`,
-        minWidth: 300,
-        height: cell.h,
         display: 'flex',
         flexDirection: 'column',
+        minWidth: 0,
+        minHeight: expanded ? 280 : 84,
         background: 'var(--nd-bg-raised)',
         border: `1px solid ${focused ? 'var(--nd-accent)' : 'var(--nd-border-subtle)'}`,
         borderRadius: 2,
@@ -512,11 +456,9 @@ export function TopologyGraphView({
     return map;
   }, [graph]);
 
-  const { cells, height } = layoutTopologyCells(graph.sites, expanded, unfiled.length > 0);
-  const cellByKey = new Map(cells.map((c) => [c.key, c]));
-  const cellKeys = new Set(cells.map((c) => c.key));
+  const siteIds = new Set(graph.sites.map((site) => site.siteId));
   const cellKeyFor = (node: TopologyGraphNode): string =>
-    node.siteId !== null && cellKeys.has(node.siteId) ? node.siteId : UNFILED_KEY;
+    node.siteId !== null && siteIds.has(node.siteId) ? node.siteId : UNFILED_KEY;
 
   // 1-hop adjacency over the graph's own node ids.
   const adjacency = useMemo(() => {
@@ -584,34 +526,18 @@ export function TopologyGraphView({
       return next;
     });
 
-  // Only edges crossing cell boundaries draw hairlines; internal links live in
-  // the expanded card's own list. Parallel links between one cell pair fan out
-  // so neither hides the other.
+  // Cross-site links are deliberately a readable list instead of a line layer.
+  // The former canvas routed lines through unrelated cards as the grid changed.
   const crossing = graph.edges.filter((edge) => {
     const a = nodeById.get(edge.from);
     const b = nodeById.get(edge.to);
     return a !== undefined && b !== undefined && cellKeyFor(a) !== cellKeyFor(b);
   });
-  const pairGroups = new Map<string, TopologyGraphEdge[]>();
-  for (const edge of crossing) {
-    const ka = cellKeyFor(nodeById.get(edge.from)!);
-    const kb = cellKeyFor(nodeById.get(edge.to)!);
-    const pair = ka < kb ? `${ka}~~${kb}` : `${kb}~~${ka}`;
-    const list = pairGroups.get(pair) ?? [];
-    list.push(edge);
-    pairGroups.set(pair, list);
-  }
-
-  const anchorFor = (edge: TopologyGraphEdge): { x1: number; y1: number; x2: number; y2: number; fan: number } | null => {
-    const a = cellByKey.get(cellKeyFor(nodeById.get(edge.from)!));
-    const b = cellByKey.get(cellKeyFor(nodeById.get(edge.to)!));
-    if (!a || !b) return null;
-    const pair = (a.key < b.key ? `${a.key}~~${b.key}` : `${b.key}~~${a.key}`);
-    const group = pairGroups.get(pair)!;
-    const index = group.indexOf(edge);
-    const fan = (index - (group.length - 1) / 2) * 14;
-    return { x1: a.xPct, y1: a.y + a.h / 2, x2: b.xPct, y2: b.y + b.h / 2, fan };
-  };
+  const edgeIsLit = (edge: TopologyGraphEdge) =>
+    lit === null ||
+    (lit.focusNodeId !== null
+      ? edge.from === lit.focusNodeId || edge.to === lit.focusNodeId
+      : lit.nodes.has(edge.from) || lit.nodes.has(edge.to));
 
   return (
     <div
@@ -646,80 +572,12 @@ export function TopologyGraphView({
           </Button>
         </div>
       ) : null}
-      <div style={{ position: 'relative', height, minWidth: 720, overflowX: 'auto' }}>
-        <svg
-          aria-hidden
-          width="100%"
-          height="100%"
-          viewBox={`0 0 100 ${height}`}
-          preserveAspectRatio="none"
-          style={{ position: 'absolute', inset: 0 }}
-        >
-          {crossing.map((edge) => {
-            const anchor = anchorFor(edge);
-            if (!anchor) return null;
-            const edgeLit =
-              lit === null ||
-              (lit.focusNodeId !== null
-                ? edge.from === lit.focusNodeId || edge.to === lit.focusNodeId
-                : lit.nodes.has(edge.from) || lit.nodes.has(edge.to));
-            return (
-              <line
-                key={edge.id}
-                x1={anchor.x1}
-                y1={anchor.y1 + anchor.fan}
-                x2={anchor.x2}
-                y2={anchor.y2 + anchor.fan}
-                stroke={edge.stale ? 'var(--nd-warning)' : 'var(--nd-border-strong)'}
-                strokeWidth="1"
-                strokeDasharray={edge.stale ? '3 3' : undefined}
-                strokeOpacity={edgeLit ? 1 : 0.15}
-                vectorEffect="non-scaling-stroke"
-              />
-            );
-          })}
-        </svg>
-
-        {/* edge labels — HTML so the provenance text stays crisp */}
-        {crossing.map((edge) => {
-          const anchor = anchorFor(edge);
-          if (!anchor) return null;
-          const edgeLit =
-            lit === null ||
-            (lit.focusNodeId !== null
-              ? edge.from === lit.focusNodeId || edge.to === lit.focusNodeId
-              : lit.nodes.has(edge.from) || lit.nodes.has(edge.to));
-          return (
-            <span
-              key={`label-${edge.id}`}
-              style={{
-                position: 'absolute',
-                left: `${(anchor.x1 + anchor.x2) / 2}%`,
-                top: (anchor.y1 + anchor.y2) / 2 + anchor.fan,
-                transform: 'translate(-50%, -50%)',
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 9.5,
-                letterSpacing: '.04em',
-                color: edge.stale ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
-                background: 'var(--nd-bg-surface)',
-                padding: '0 6px',
-                whiteSpace: 'nowrap',
-                opacity: edgeLit ? 1 : 0.2,
-              }}
-            >
-              {topologyEdgeLabel(edge, nodeById)}
-            </span>
-          );
-        })}
-
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, alignItems: 'start' }}>
         {graph.sites.map((site) => {
-          const cell = cellByKey.get(site.siteId);
-          if (!cell) return null;
           return (
             <SiteCard
               key={site.siteId}
               site={site}
-              cell={cell}
               nodes={nodesBySite.get(site.siteId) ?? []}
               edges={graph.edges}
               expanded={expanded.has(site.siteId)}
@@ -737,15 +595,45 @@ export function TopologyGraphView({
           );
         })}
 
-        {unfiled.length > 0 ? (
-          <div
+        {crossing.length > 0 ? (
+          <section
+            aria-label="Site connections"
             style={{
-              position: 'absolute',
-              left: '50%',
-              top: cellByKey.get(UNFILED_KEY)!.y,
-              transform: 'translateX(-50%)',
-              width: '96%',
-              height: UNFILED_H,
+              gridColumn: '1 / -1',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              background: 'var(--nd-bg-raised)',
+              border: '1px solid var(--nd-border-subtle)',
+              borderRadius: 2,
+              padding: '10px 12px',
+            }}
+          >
+            <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 9.5, letterSpacing: '.12em', color: 'var(--nd-text-muted)' }}>
+              SITE CONNECTIONS — reported links between sites or unfiled neighbours
+            </span>
+            {crossing.map((edge) => (
+              <span
+                key={edge.id}
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 'var(--nd-text-10)',
+                  color: edge.stale ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
+                  opacity: edgeIsLit(edge) ? 1 : 0.2,
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {topologyEdgeLabel(edge, nodeById)}
+              </span>
+            ))}
+          </section>
+        ) : null}
+
+        {unfiled.length > 0 ? (
+          <section
+            aria-label="Reported neighbours without inventory"
+            style={{
+              gridColumn: '1 / -1',
               display: 'flex',
               flexDirection: 'column',
               gap: 8,
@@ -753,7 +641,6 @@ export function TopologyGraphView({
               border: '1px dashed var(--nd-border-subtle)',
               borderRadius: 2,
               padding: '10px 12px',
-              overflowY: 'auto',
               opacity: lit !== null && !lit.cells.has(UNFILED_KEY) ? 0.25 : 1,
             }}
           >
@@ -786,7 +673,7 @@ export function TopologyGraphView({
                 .map((n) => `${n.name} — ${ghostSub(n, graph.edges)}`)
                 .join(' · ')}
             </span>
-          </div>
+          </section>
         ) : null}
       </div>
     </div>
