@@ -97,6 +97,7 @@ export class AssistantProviderRegistry {
       const startedAt = this.now();
       const invocations: ProbeInvocation[] = [];
       const context: ReadOnlyProbeContext = {
+        mcp: { endpoint: settings.mcp.endpoint, authToken: settings.mcp.authToken },
         recordInvocation(invocation) {
           invocations.push({ ...invocation });
         },

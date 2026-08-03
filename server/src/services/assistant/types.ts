@@ -42,6 +42,11 @@ export interface ProbeInvocation {
  * decides whether that transcript proves centralmcp-only read access.
  */
 export interface ReadOnlyProbeContext {
+  /** Registry-owned centralmcp connection details; never sourced from an adapter. */
+  readonly mcp: {
+    endpoint: string;
+    authToken: string | null;
+  };
   recordInvocation(invocation: ProbeInvocation): void;
 }
 

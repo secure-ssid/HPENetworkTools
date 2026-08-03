@@ -1,11 +1,12 @@
 import { mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AssistantSettings } from '../src/config/settings';
+import { ClaudeAdapter, CodexAdapter, CopilotAdapter, KimiAdapter, type NativeCliAdapterDependencies } from '../src/services/assistant/cliAdapters';
 import { createMcpLaunchConfig } from '../src/services/assistant/mcpLaunchConfig';
 import { AssistantProviderRegistry, getAssistantDefaults } from '../src/services/assistant/registry';
-import type { AssistantProviderAdapter, ReadOnlyProbeContext } from '../src/services/assistant/types';
+import type { AssistantProviderAdapter, CommandExecution, ProbeInvocation, ReadOnlyProbeContext } from '../src/services/assistant/types';
 
 const temporaryPaths: string[] = [];
 
@@ -143,5 +144,145 @@ describe('centralmcp launch config', () => {
       },
     )).rejects.toThrow('disk unavailable');
     await expect(stat(madeDirectory)).rejects.toThrow();
+  });
+});
+
+describe('isolated native assistant CLI adapters', () => {
+  const centralMcp = { endpoint: 'http://127.0.0.1:3000/mcp', authToken: 'centralmcp-test-token' };
+
+  function probeContext(): { context: ReadOnlyProbeContext; invocations: ProbeInvocation[] } {
+    const invocations: ProbeInvocation[] = [];
+    return {
+      context: {
+        mcp: centralMcp,
+        recordInvocation(invocation) { invocations.push(invocation); },
+      },
+      invocations,
+    };
+  }
+
+  function nativeDependencies(stdout: string): { dependencies: NativeCliAdapterDependencies; commands: CommandExecution[]; dispose: ReturnType<typeof vi.fn>; launchInputs: Array<Record<string, unknown>> } {
+    const commands: CommandExecution[] = [];
+    const dispose = vi.fn(async () => {});
+    const launchInputs: Array<Record<string, unknown>> = [];
+    return {
+      dependencies: {
+        commandRunner: {
+          run: async (command) => {
+            commands.push(command);
+            return { exitCode: 0, stdout, stderr: '' };
+          },
+        },
+        createMcpLaunchConfig: async (input) => {
+          launchInputs.push(input);
+          return { path: '/private/tmp/centralmcp.json', directory: '/private/tmp', dispose };
+        },
+      },
+      commands,
+      dispose,
+      launchInputs,
+    };
+  }
+
+  it.each([
+    {
+      title: 'Claude',
+      makeAdapter: (dependencies: NativeCliAdapterDependencies) => new ClaudeAdapter(dependencies),
+      config: { enabled: true, model: 'sonnet', reasoningEffort: 'low' } as const,
+      command: 'claude',
+      toolEvent: '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__centralmcp__find_tool"}]}}\n{"type":"result","subtype":"success","result":"catalogue checked"}',
+      expectedArgs: ['-p', '--output-format', 'stream-json', '--mcp-config', '/private/tmp/centralmcp.json', '--strict-mcp-config', '--model', 'sonnet', '--effort', 'low'],
+    },
+    {
+      title: 'Copilot',
+      makeAdapter: (dependencies: NativeCliAdapterDependencies) => new CopilotAdapter(dependencies),
+      config: { enabled: true, model: 'auto', effort: 'adaptive' } as const,
+      command: 'copilot',
+      toolEvent: '{"type":"tool_call","toolName":"centralmcp__find_tool"}\n{"type":"assistant","content":"catalogue checked"}',
+      expectedArgs: ['-p', '--output-format', 'json', '--disable-builtin-mcps', '--additional-mcp-config', '/private/tmp/centralmcp.json', '--model', 'auto'],
+    },
+  ])('$title sends only an isolated read-only centralmcp probe with approved model policy', async ({ makeAdapter, config, command, toolEvent, expectedArgs }) => {
+    const fake = nativeDependencies(toolEvent);
+    const adapter = makeAdapter(fake.dependencies);
+    const { context, invocations } = probeContext();
+
+    const result = await adapter.probeReadOnly(config, context);
+
+    expect(result).toEqual({ authenticated: true, modelReady: true, resolvedModel: config.model });
+    expect(invocations).toEqual([{ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' }]);
+    expect(fake.launchInputs).toEqual([centralMcp]);
+    expect(fake.dispose).toHaveBeenCalledTimes(1);
+    expect(fake.commands).toHaveLength(1);
+    expect(fake.commands[0]).toMatchObject({ command, timeoutMs: expect.any(Number) });
+    expect(fake.commands[0].args).toEqual(expect.arrayContaining(expectedArgs));
+    expect(JSON.stringify(fake.commands[0])).not.toContain('centralmcp-test-token');
+    expect(JSON.stringify(fake.commands[0])).not.toMatch(/central-api-key|mist-api-key|clearpass-password/i);
+  });
+
+  it('keeps Copilot adaptive auto selection free of an effort override and permits the Terra alternate only with a chosen effort', async () => {
+    const adaptive = nativeDependencies('{"type":"tool_call","toolName":"centralmcp__find_tool"}');
+    const { context } = probeContext();
+    await new CopilotAdapter(adaptive.dependencies).probeReadOnly({ enabled: true, model: 'auto', effort: 'adaptive' }, context);
+    expect(adaptive.commands[0].args).not.toContain('--effort');
+
+    const terra = nativeDependencies('{"type":"tool_call","toolName":"centralmcp__find_tool"}');
+    await new CopilotAdapter(terra.dependencies).probeReadOnly({ enabled: true, model: 'gpt-5.6-terra', effort: 'low' }, probeContext().context);
+    expect(terra.commands[0].args).toEqual(expect.arrayContaining(['--model', 'gpt-5.6-terra', '--effort', 'low']));
+  });
+
+  it.each([
+    ['Codex', (dependencies: NativeCliAdapterDependencies) => new CodexAdapter(dependencies), { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' }],
+    ['Kimi', (dependencies: NativeCliAdapterDependencies) => new KimiAdapter(dependencies), { enabled: true, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false }],
+  ] as const)('%s refuses readiness when its installed transport cannot attach only the generated centralmcp config', async (_title, makeAdapter, config) => {
+    const fake = nativeDependencies('{"type":"tool_call","toolName":"centralmcp__find_tool"}');
+    const { context, invocations } = probeContext();
+
+    await expect(makeAdapter(fake.dependencies).probeReadOnly(config, context)).resolves.toEqual({ authenticated: false, modelReady: false });
+
+    expect(invocations).toEqual([]);
+    expect(fake.commands).toEqual([]);
+    expect(fake.launchInputs).toEqual([]);
+  });
+
+  it('blocks readiness and disposes the generated config when authentication, isolation, or tool evidence fails without returning stderr', async () => {
+    const fake = nativeDependencies('{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}');
+    fake.dependencies.commandRunner = {
+      run: async (command) => {
+        fake.commands.push(command);
+        return { exitCode: 1, stdout: '{"type":"tool_call","toolName":"centralmcp__find_tool"}', stderr: 'provider-token=do-not-expose' };
+      },
+    };
+    const { context, invocations } = probeContext();
+
+    await expect(new ClaudeAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'sonnet', reasoningEffort: 'low' }, context))
+      .resolves.toEqual({ authenticated: false, modelReady: false });
+
+    expect(invocations).toEqual([]);
+    expect(fake.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an otherwise successful native output that reports a shell or non-centralmcp tool call', async () => {
+    const fake = nativeDependencies('{"type":"tool_call","toolName":"centralmcp__find_tool"}\n{"type":"tool_call","toolName":"Bash"}');
+    const { context, invocations } = probeContext();
+
+    await expect(new CopilotAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'auto', effort: 'adaptive' }, context))
+      .resolves.toEqual({ authenticated: false, modelReady: false });
+
+    expect(invocations).toEqual([]);
+    expect(fake.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses unsupported model policies without launching a native CLI', async () => {
+    const fake = nativeDependencies('{"type":"tool_call","toolName":"centralmcp__find_tool"}');
+
+    await expect(new ClaudeAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'opus', reasoningEffort: 'low' }, probeContext().context))
+      .resolves.toEqual({ authenticated: false, modelReady: false });
+    await expect(new CodexAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'high' }, probeContext().context))
+      .resolves.toEqual({ authenticated: false, modelReady: false });
+    await expect(new KimiAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'kimi-code/kimi-for-coding-highspeed', thinking: true }, probeContext().context))
+      .resolves.toEqual({ authenticated: false, modelReady: false });
+
+    expect(fake.commands).toEqual([]);
+    expect(fake.launchInputs).toEqual([]);
   });
 });
