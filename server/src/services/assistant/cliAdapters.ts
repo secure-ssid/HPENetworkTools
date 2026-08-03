@@ -20,6 +20,7 @@ const READ_ONLY_PROBE_PROMPT = [
 ].join(' ');
 
 type NativeProviderId = Extract<AssistantProviderId, 'codex' | 'claude' | 'kimi' | 'copilot'>;
+type CodexProviderConfig = Extract<AssistantProviderConfig, { reasoningEffort: string }>;
 
 export interface NativeCliAdapterDependencies {
   commandRunner?: CommandRunner;
@@ -43,6 +44,107 @@ interface ParsedNativeProbe {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+const CLI_TRANSCRIPT_ARGS_CAP = 200;
+const CLI_TRANSCRIPT_RESULT_CAP = 300;
+
+interface CodexToolTranscript {
+  tool: string;
+  args: string;
+  resultPreview: string;
+  ok: boolean;
+}
+
+interface ParsedCodexRun {
+  text: string | null;
+  transcript: CodexToolTranscript[];
+  invalid: boolean;
+}
+
+function compact(value: string, cap: number): string {
+  return value.length <= cap ? value : `${value.slice(0, Math.max(0, cap - 1))}…`;
+}
+
+function compactJson(value: unknown, cap: number): string {
+  try {
+    return compact(JSON.stringify(value ?? {}), cap);
+  } catch {
+    return '{}';
+  }
+}
+
+function compactResult(value: unknown): string {
+  if (typeof value === 'string') return compact(value.trim() || '(tool returned no text)', CLI_TRANSCRIPT_RESULT_CAP);
+  return compactJson(value, CLI_TRANSCRIPT_RESULT_CAP);
+}
+
+/**
+ * Codex `exec --json` is a JSONL transport, not browser data. Keep only the
+ * two item shapes this UI can safely use: final agent text and actual calls to
+ * the one MCP server the portal supplied. Everything else is discarded; bad
+ * JSON, another MCP server, or an unfinished turn means no answer is returned.
+ */
+function parseCodexRun(stdout: string): ParsedCodexRun {
+  const lines = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return { text: null, transcript: [], invalid: true };
+
+  let text: string | null = null;
+  let completed = false;
+  const transcript: CodexToolTranscript[] = [];
+  for (const line of lines) {
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return { text: null, transcript: [], invalid: true };
+    }
+    if (!isRecord(event) || typeof event.type !== 'string') return { text: null, transcript: [], invalid: true };
+
+    if (event.type === 'turn.completed') {
+      if (event.status === 'failed' || event.status === 'error' || event.error !== undefined) {
+        return { text: null, transcript: [], invalid: true };
+      }
+      completed = true;
+      continue;
+    }
+    if (event.type !== 'item.completed') continue;
+    const item = event.item;
+    if (!isRecord(item) || typeof item.type !== 'string') return { text: null, transcript: [], invalid: true };
+    if (item.type === 'agent_message') {
+      if (typeof item.text !== 'string') return { text: null, transcript: [], invalid: true };
+      const next = item.text.trim();
+      if (next) text = next;
+      continue;
+    }
+    if (item.type !== 'mcp_tool_call') continue;
+    if (item.server !== 'centralmcp' || typeof item.tool !== 'string' || item.tool.trim().length === 0) {
+      return { text: null, transcript: [], invalid: true };
+    }
+    transcript.push({
+      tool: item.tool,
+      args: compactJson(item.arguments, CLI_TRANSCRIPT_ARGS_CAP),
+      resultPreview: compactResult(item.result),
+      ok: item.is_error !== true && item.status !== 'failed' && item.status !== 'error',
+    });
+  }
+  return { text, transcript, invalid: !completed || text === null };
+}
+
+function codexPrompt(messages: AssistantChatRequest['messages'], writeEnabled: boolean): string {
+  const conversation = messages
+    .map((message) => `[${message.role.toUpperCase()}]\n${message.content ?? ''}`)
+    .join('\n\n');
+  return [
+    'You are the HPE Network Tools lab assistant.',
+    'Use only the centralmcp MCP server. First call find_tool to learn the exact backend tool and schema; never invent a tool name or arguments.',
+    writeEnabled
+      ? 'This is a lab: centralmcp configuration writes are enabled and apply immediately. Use invoke_tool when the request needs a write, then state exactly what changed.'
+      : 'Write tools are disabled. Use find_tool and invoke_read_tool only.',
+    'Keep the response concise and technical. Do not use shell, filesystem, browser, or unrelated tools.',
+    'Conversation follows:',
+    conversation,
+  ].join('\n\n');
 }
 
 function isToolResultContent(value: unknown): boolean {
@@ -152,10 +254,10 @@ function resultFor(config: { model: string }): ReadOnlyProbeResult {
 
 abstract class NativeCliAdapter<TConfig extends AssistantProviderConfig> implements AssistantProviderAdapter {
   readonly id: NativeProviderId;
-  private readonly runner: CommandRunner;
+  protected readonly runner: CommandRunner;
   private readonly makeLaunchConfig: (input: { endpoint: string; authToken: string | null }) => Promise<McpLaunchConfig>;
-  private readonly timeoutMs: number;
-  private readonly cwd: string | undefined;
+  protected readonly timeoutMs: number;
+  protected readonly cwd: string | undefined;
 
   protected constructor(readonly policy: NativeCliPolicy<TConfig>, id: NativeProviderId, dependencies: NativeCliAdapterDependencies = {}) {
     this.id = id;
@@ -186,7 +288,7 @@ abstract class NativeCliAdapter<TConfig extends AssistantProviderConfig> impleme
   async probeReadOnly(config: AssistantProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
     if (!this.policy.valid(config)) return unavailable();
     if (!this.policy.canAttachGeneratedConfig) return unavailable();
-    const launch = await this.createIsolatedLaunch(context);
+    const launch = await this.createIsolatedLaunch(context.mcp);
     if (!launch) return unavailable();
     try {
       const command = this.policy.buildProbe(config, launch.path);
@@ -211,16 +313,16 @@ abstract class NativeCliAdapter<TConfig extends AssistantProviderConfig> impleme
     throw new Error('Native assistant provider is unavailable.');
   }
 
-  private async createIsolatedLaunch(context: ReadOnlyProbeContext): Promise<McpLaunchConfig | null> {
+  protected async createIsolatedLaunch(mcp: ReadOnlyProbeContext['mcp']): Promise<McpLaunchConfig | null> {
     try {
-      return await this.makeLaunchConfig(context.mcp);
+      return await this.makeLaunchConfig(mcp);
     } catch {
       return null;
     }
   }
 }
 
-function isCodexConfig(config: AssistantProviderConfig): config is Extract<AssistantProviderConfig, { reasoningEffort: 'low' }> {
+function isCodexConfig(config: AssistantProviderConfig): config is CodexProviderConfig {
   return 'reasoningEffort' in config && config.model === 'gpt-5.6-terra' && config.reasoningEffort === 'low';
 }
 
@@ -239,17 +341,104 @@ function isCopilotConfig(config: AssistantProviderConfig): config is Extract<Ass
   );
 }
 
-export class CodexAdapter extends NativeCliAdapter<Extract<AssistantProviderConfig, { reasoningEffort: 'low' }>> {
+export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
   constructor(dependencies: NativeCliAdapterDependencies = {}) {
     super({
       executable: 'codex',
       valid: isCodexConfig,
-      canAttachGeneratedConfig: false,
+      canAttachGeneratedConfig: true,
       parseProbe: () => ({ centralReadOnly: false, invalid: true }),
-      // app-server only accepts TOML config overrides and has no option for the generated JSON MCP file.
-      // Using a user/profile config would broaden MCP access, so this local transport is fail-closed.
+      // Codex receives TOML overrides, never the generated JSON file. The
+      // disposable directory still gives each command an empty working tree.
       buildProbe: () => null,
     }, 'codex', dependencies);
+  }
+
+  override canChat(): boolean {
+    return true;
+  }
+
+  override async probeReadOnly(config: AssistantProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
+    if (!isCodexConfig(config)) return unavailable();
+    const launch = await this.createIsolatedLaunch(context.mcp);
+    if (!launch) return unavailable();
+    try {
+      const result = await this.runner.run(this.commandFor(config, context.mcp, launch.directory, READ_ONLY_PROBE_PROMPT, false, this.timeoutMs));
+      if (result.exitCode !== 0) return unavailable();
+      const parsed = parseCodexRun(result.stdout);
+      if (parsed.invalid
+        || parsed.transcript.length !== 1
+        || parsed.transcript[0]?.tool !== 'find_tool'
+        || !parsed.transcript[0]?.ok) {
+        return unavailable();
+      }
+      context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
+      return resultFor(config);
+    } catch {
+      return unavailable();
+    } finally {
+      await launch.dispose().catch(() => undefined);
+    }
+  }
+
+  override async chat(request: AssistantChatRequest): Promise<AssistantChatResult> {
+    if (!isCodexConfig(request.config)) throw new Error('Codex provider configuration is invalid.');
+    if (!request.mcp) throw new Error('Codex centralmcp connection is unavailable.');
+    const launch = await this.createIsolatedLaunch(request.mcp);
+    if (!launch) throw new Error('Codex launch context is unavailable.');
+    try {
+      const result = await this.runner.run(this.commandFor(
+        request.config,
+        request.mcp,
+        launch.directory,
+        codexPrompt(request.messages, request.mcp.writeEnabled),
+        request.mcp.writeEnabled,
+        request.timeoutMs,
+        request.signal,
+      ));
+      if (result.exitCode !== 0) throw new Error('Codex CLI did not complete the assistant request.');
+      const parsed = parseCodexRun(result.stdout);
+      if (parsed.invalid || !parsed.text) throw new Error('Codex CLI returned an invalid assistant response.');
+      return { text: parsed.text, transcript: parsed.transcript };
+    } finally {
+      await launch.dispose().catch(() => undefined);
+    }
+  }
+
+  private commandFor(
+    config: CodexProviderConfig,
+    mcp: ReadOnlyProbeContext['mcp'],
+    directory: string,
+    prompt: string,
+    writeEnabled: boolean,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): CommandExecution {
+    const enabledTools = writeEnabled
+      ? ['find_tool', 'invoke_read_tool', 'invoke_tool']
+      : ['find_tool', 'invoke_read_tool'];
+    const overrides = [
+      'model_reasoning_effort="low"',
+      `mcp_servers.centralmcp.url=${JSON.stringify(mcp.endpoint)}`,
+      'mcp_servers.centralmcp.enabled=true',
+      'mcp_servers.centralmcp.required=true',
+      `mcp_servers.centralmcp.enabled_tools=[${enabledTools.map((tool) => JSON.stringify(tool)).join(',')}]`,
+      'mcp_servers.centralmcp.default_tools_approval_mode="auto"',
+    ];
+    if (mcp.authToken) overrides.push('mcp_servers.centralmcp.bearer_token_env_var="HPE_ASSISTANT_MCP_TOKEN"');
+    return {
+      command: 'codex',
+      args: [
+        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check',
+        '--cd', directory, '--sandbox', 'read-only', '--model', config.model, '--strict-config',
+        ...overrides.flatMap((override) => ['-c', override]),
+        '--json', prompt,
+      ],
+      cwd: directory,
+      ...(mcp.authToken ? { env: { HPE_ASSISTANT_MCP_TOKEN: mcp.authToken } } : {}),
+      timeoutMs,
+      signal,
+    };
   }
 }
 

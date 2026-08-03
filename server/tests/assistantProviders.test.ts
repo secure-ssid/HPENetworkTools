@@ -210,6 +210,69 @@ describe('isolated native assistant CLI adapters', () => {
     expect(JSON.stringify(fake.commands[0])).not.toMatch(/central-api-key|mist-api-key|clearpass-password/i);
   });
 
+  it('runs Codex chat through the lab centralmcp launch path without leaking the bearer token', async () => {
+    const probeJsonl = [
+      '{"type":"thread.started","thread_id":"thread_1"}',
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{"query":"provider readiness"},"result":"catalogue"}}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"centralmcp ready"}}',
+      '{"type":"turn.completed","status":"completed"}',
+    ].join('\n');
+    const chatJsonl = [
+      '{"type":"thread.started","thread_id":"thread_2"}',
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{"query":"update SSID"},"result":"tool found"}}',
+      '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"invoke_tool","arguments":{"name":"ssid_update","arguments":{"enabled":true}},"result":"SSID updated"}}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"Updated the lab SSID."}}',
+      '{"type":"turn.completed","status":"completed"}',
+    ].join('\n');
+    const commands: CommandExecution[] = [];
+    const dispose = vi.fn(async () => {});
+    const adapter = new CodexAdapter({
+      commandRunner: {
+        run: async (command) => {
+          commands.push(command);
+          if (command.args.includes('--version')) return { exitCode: 0, stdout: 'codex 0.145.0', stderr: '' };
+          return { exitCode: 0, stdout: commands.length === 1 ? probeJsonl : chatJsonl, stderr: '' };
+        },
+      },
+      createMcpLaunchConfig: async () => ({ path: '/private/tmp/centralmcp.json', directory: '/private/tmp/hpe-codex', dispose }),
+    });
+    const { context, invocations } = probeContext();
+
+    expect(adapter.canChat()).toBe(true);
+    await expect(adapter.probeReadOnly({ enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' }, context))
+      .resolves.toEqual({ authenticated: true, modelReady: true, resolvedModel: 'gpt-5.6-terra' });
+    await expect(adapter.chat({
+      config: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+      timeoutMs: 5000,
+      messages: [{ role: 'user', content: 'Update the lab SSID.' }],
+      mcp: { ...centralMcp, writeEnabled: true },
+    } as any)).resolves.toEqual({
+      text: 'Updated the lab SSID.',
+      transcript: [
+        { tool: 'find_tool', args: '{"query":"update SSID"}', resultPreview: 'tool found', ok: true },
+        { tool: 'invoke_tool', args: '{"name":"ssid_update","arguments":{"enabled":true}}', resultPreview: 'SSID updated', ok: true },
+      ],
+    });
+
+    expect(invocations).toEqual([{ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' }]);
+    expect(dispose).toHaveBeenCalledTimes(2);
+    const launch = commands.at(-1)!;
+    expect(launch).toMatchObject({ command: 'codex', cwd: '/private/tmp/hpe-codex', timeoutMs: 5000 });
+    expect(launch.args).toEqual(expect.arrayContaining([
+      'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check',
+      '--cd', '/private/tmp/hpe-codex', '--sandbox', 'read-only', '--model', 'gpt-5.6-terra', '--strict-config', '--json',
+      'mcp_servers.centralmcp.enabled=true',
+      'mcp_servers.centralmcp.required=true',
+      'mcp_servers.centralmcp.default_tools_approval_mode="auto"',
+      'mcp_servers.centralmcp.bearer_token_env_var="HPE_ASSISTANT_MCP_TOKEN"',
+    ]));
+    expect(launch.args.join(' ')).toContain('mcp_servers.centralmcp.enabled_tools=["find_tool","invoke_read_tool","invoke_tool"]');
+    expect(launch.args.join(' ')).not.toContain('centralmcp-test-token');
+    expect(launch.env?.HPE_ASSISTANT_MCP_TOKEN).toBe('centralmcp-test-token');
+  });
+
   it('rejects Copilot Auto with any persisted effort other than adaptive before executable discovery', async () => {
     const fake = nativeDependencies(successfulClaudeProbe);
 
@@ -220,7 +283,6 @@ describe('isolated native assistant CLI adapters', () => {
   });
 
   it.each([
-    ['Codex', (dependencies: NativeCliAdapterDependencies) => new CodexAdapter(dependencies), { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' }],
     ['Kimi', (dependencies: NativeCliAdapterDependencies) => new KimiAdapter(dependencies), { enabled: true, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false }],
     ['Copilot', (dependencies: NativeCliAdapterDependencies) => new CopilotAdapter(dependencies), { enabled: true, model: 'auto', effort: 'adaptive' }],
   ] as const)('%s refuses readiness when its installed transport cannot attach only the generated centralmcp config', async (_title, makeAdapter, config) => {

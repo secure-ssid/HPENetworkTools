@@ -97,6 +97,7 @@ describe('SettingsStore', () => {
     expect(assistant.activeProvider).toBe('ollama');
     expect(assistant.mcp.enabled).toBe(false);
     expect(assistant.providers.ollama.enabled).toBe(false);
+    expect(assistant.chatWriteMode).toBe('enabled');
     expect(assistant.providers.codex).toMatchObject({ model: 'gpt-5.6-terra', reasoningEffort: 'low' });
     expect(assistant.providers.kimi).toMatchObject({ model: 'kimi-code/kimi-for-coding-highspeed', thinking: false });
   });

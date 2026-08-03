@@ -154,7 +154,7 @@ export function AssistantSection() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <SectionHeader label="Assistant" meta="PROVIDER · TOOL ACCESS" />
+      <SectionHeader label="Assistant" meta="PROVIDER · MODEL · TOOLS" />
       {loadError ? <span role="status" style={{ fontSize: 12, color: 'var(--nd-danger)' }}>{loadError}</span> : null}
 
       <div aria-label="Assistant providers" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -174,6 +174,7 @@ export function AssistantSection() {
               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 7px', borderRadius: 4, border: editing ? '1px solid var(--nd-accent)' : '1px solid var(--nd-border)', background: editing ? 'var(--nd-surface-raised)' : 'transparent', color: 'var(--nd-text)', cursor: offline ? 'not-allowed' : 'pointer' }}
             >
               <span style={{ fontSize: 12 }}>{PROVIDERS[id].title}</span>
+              {active ? <Badge tone="neutral">active</Badge> : null}
               <Badge tone={ready ? 'success' : 'neutral'}>{ready ? 'ready' : 'unavailable'}</Badge>
               <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}>{item?.resolvedModel ?? '—'}</span>
             </button>
@@ -191,16 +192,11 @@ export function AssistantSection() {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
           {'baseUrl' in selectedConfig ? <FormField label="Provider endpoint"><Input mono aria-label="Provider endpoint" value={selectedConfig.baseUrl} disabled={offline} onChange={(event) => updateSelected({ baseUrl: event.target.value })} /></FormField> : null}
-          {selected === 'copilot' ? <FormField label="Mode"><Select aria-label="Mode" value={selectedConfig.model} disabled={offline} options={[{ value: 'auto', label: 'Auto · adaptive' }, { value: 'gpt-5.6-terra', label: 'Terra · alternate' }]} onValueChange={(model) => updateSelected({ model, effort: model === 'auto' ? 'adaptive' : 'low' })} /></FormField> : <FormField label="Fast model"><Select aria-label="Fast model" value={PROVIDERS[selected].defaultModel} disabled={offline} options={[{ value: PROVIDERS[selected].defaultModel, label: PROVIDERS[selected].defaultModel }]} onValueChange={(model) => updateSelected({ model })} /></FormField>}
-          {'reasoningEffort' in selectedConfig ? <FormField label="Reasoning"><Select aria-label="Reasoning" value={selectedConfig.reasoningEffort} disabled={offline} options={['low', 'medium', 'high'].map((value) => ({ value, label: value }))} onValueChange={(reasoningEffort) => updateSelected({ reasoningEffort })} /></FormField> : null}
+          {selected === 'copilot' ? <FormField label="Mode"><Select aria-label="Mode" value={selectedConfig.model} disabled={offline} options={[{ value: 'auto', label: 'Auto · adaptive' }, { value: 'gpt-5.6-terra', label: 'Terra · alternate' }]} onValueChange={(model) => updateSelected({ model, effort: model === 'auto' ? 'adaptive' : 'low' })} /></FormField> : <FormField label="Model"><Input mono aria-label="Model" value={selectedConfig.model} disabled={offline} onChange={(event) => updateSelected({ model: event.target.value })} /></FormField>}
+          {'reasoningEffort' in selectedConfig ? <FormField label="Reasoning"><Select aria-label="Reasoning" value={selectedConfig.reasoningEffort} disabled={offline} options={[{ value: 'low', label: 'low · fast' }]} onValueChange={(reasoningEffort) => updateSelected({ reasoningEffort })} /></FormField> : null}
           {'thinking' in selectedConfig ? <Switch checked={selectedConfig.thinking} disabled={offline} label="Thinking" onCheckedChange={(thinking) => updateSelected({ thinking })} /> : null}
           {'apiKey' in selectedConfig || selected === 'ollama' || selected === 'openrouter' ? <FormField label="API key"><Input mono aria-label="API key" type="password" placeholder="Enter replacement key" value={providerKey} disabled={offline} onChange={(event) => updateSelected({ apiKey: event.target.value })} /></FormField> : null}
         </div>
-
-        <details>
-          <summary>Advanced</summary>
-          <div style={{ marginTop: 8 }}><FormField label="Custom model"><Input mono aria-label="Custom model" value={selectedConfig.model} disabled={offline} onChange={(event) => updateSelected({ model: event.target.value })} /></FormField></div>
-        </details>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <Button size="sm" variant="primary" disabled={saving || offline} onClick={() => void save()}>{saving ? 'Saving…' : 'Save assistant'}</Button>
@@ -210,12 +206,15 @@ export function AssistantSection() {
       </> : null}
 
       <div style={{ borderTop: '1px solid var(--nd-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <SectionHeader label="Tool access" meta="CENTRALMCP" />
+        <SectionHeader label="Tool access" meta="CENTRALMCP · LAB" />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
           <FormField label="Endpoint"><Input mono aria-label="centralmcp endpoint" value={settings?.mcp.endpoint ?? ''} disabled={offline} onChange={(event) => setSettings((current) => current ? { ...current, mcp: { ...current.mcp, endpoint: event.target.value } } : current)} /></FormField>
           <FormField label="Auth token"><Input mono aria-label="centralmcp auth token" type="password" placeholder="Enter replacement token" value={mcpToken} disabled={offline} onChange={(event) => setMcpToken(event.target.value)} /></FormField>
         </div>
-        <Switch checked={settings?.chatWriteMode === 'enabled'} disabled={offline} label="Allow write tools" onCheckedChange={(enabled) => setSettings((current) => current ? { ...current, chatWriteMode: enabled ? 'enabled' : 'read-only' } : current)} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Switch checked={settings?.chatWriteMode === 'enabled'} disabled={offline} label="Lab assistant access" onCheckedChange={(enabled) => setSettings((current) => current ? { ...current, chatWriteMode: enabled ? 'enabled' : 'read-only' } : current)} />
+          <Badge tone={settings?.chatWriteMode === 'enabled' ? 'success' : 'neutral'}>{settings?.chatWriteMode === 'enabled' ? 'READ / WRITE' : 'READ ONLY'}</Badge>
+        </div>
       </div>
     </div>
   );

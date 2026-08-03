@@ -5,7 +5,7 @@
  *                          reachability probe (lazy initialize, 3s timeout,
  *                          failure tolerated). The bearer token is never
  *                          returned — mcpUrl only.
- *   POST /api/chat         { messages: [{role, content}], allowWrite? } →
+ *   POST /api/chat         { messages: [{role, content}] } →
  *                          { reply, transcript }. 400 when MCP/LLM are not
  *                          configured (the message points at Connected
  *                          systems → Assistant); 504 for a bounded provider
@@ -114,7 +114,7 @@ export function createChatRouter(dependencies: ChatRouterDependencies = {}): Rou
   '/chat',
   h(async (req, res) => {
     const s = settings.get();
-    const body = req.body as { messages?: unknown; allowWrite?: unknown; providerId?: unknown } | undefined;
+    const body = req.body as { messages?: unknown; providerId?: unknown } | undefined;
     const requestedProvider = body?.providerId;
     if (requestedProvider !== undefined && !isProviderId(requestedProvider)) {
       res.status(400).json({ error: 'unknown assistant provider' });
@@ -160,7 +160,6 @@ export function createChatRouter(dependencies: ChatRouterDependencies = {}): Rou
     res.once('close', cancelOnDisconnect);
     try {
       const { reply, transcript } = await dispatchChat(messages, {
-        allowWrite: body?.allowWrite === true,
         signal: controller.signal,
         providerId,
       });

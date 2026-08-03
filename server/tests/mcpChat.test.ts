@@ -3,8 +3,8 @@
  *
  * Covers: the initialize handshake and Mcp-Session-Id capture, SSE response
  * parsing, the re-init-once-on-session-error retry, the write-tool gating
- * (invoke_tool only offered when settings.chatWriteMode AND per-request
- * allowWrite; a hallucinated write is refused, never executed), and the full
+ * (invoke_tool offered when saved lab write mode is enabled; a hallucinated
+ * write remains refused when it is disabled), and the full
  * chat loop against a scripted fetch (tool_call round, then a final answer).
  *
  * HPE_SETTINGS_PATH points at a tmp dir; global fetch is stubbed per test.
@@ -357,25 +357,53 @@ describe('chatLoop tool gating', () => {
     expect(tools).toEqual(['find_tool', 'invoke_read_tool']);
   });
 
-  it('still hides invoke_tool when the server setting is on but the request did not opt in', async () => {
+  it('offers invoke_tool as soon as the saved lab write mode is on', async () => {
     configureChat(true);
     stubLlm([() => ({ role: 'assistant', content: 'done.' })]);
 
     await chatLoop([{ role: 'user', content: 'hi' }], { client: freshClient() });
     const tools = requests[0].body.tools.map((t: any) => t.function.name);
-    expect(tools).toEqual(['find_tool', 'invoke_read_tool']);
-  });
-
-  it('offers invoke_tool only when setting AND per-request allowWrite are both on', async () => {
-    configureChat(true);
-    stubLlm([() => ({ role: 'assistant', content: 'done.' })]);
-
-    await chatLoop([{ role: 'user', content: 'reboot it' }], { client: freshClient(), allowWrite: true });
-    const tools = requests[0].body.tools.map((t: any) => t.function.name);
     expect(tools).toEqual(['find_tool', 'invoke_read_tool', 'invoke_tool']);
     const system = requests[0].body.messages[0];
     expect(system.role).toBe('system');
     expect(system.content).toContain('invoke_tool');
+  });
+
+  it('passes the saved centralmcp connection and lab write state to a native Codex adapter', async () => {
+    settings.update({
+      assistant: {
+        activeProvider: 'codex',
+        mcp: { enabled: true, endpoint: MCP_URL, authToken: 'centralmcp-secret' },
+        chatWriteMode: 'enabled',
+        providers: {
+          codex: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+          claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' },
+          kimi: { enabled: false, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false },
+          copilot: { enabled: false, model: 'auto', effort: 'adaptive' },
+          ollama: { enabled: false, baseUrl: LLM_URL, model: 'ollama-model' },
+          openrouter: { enabled: false, baseUrl: OPENROUTER_URL, model: 'router-model' },
+        },
+      },
+    });
+    const { assistantProviderRegistry } = await import('../src/services/mcpChat');
+    const nativeChat = vi.fn(async () => ({ text: 'native reply', transcript: [] }));
+    const get = vi.spyOn(assistantProviderRegistry, 'get').mockReturnValue({
+      id: 'codex',
+      canChat: () => true,
+      discover: async () => ({ installed: true, authenticated: true, modelReady: true }),
+      probeReadOnly: async () => ({ authenticated: true, modelReady: true }),
+      chat: nativeChat,
+    });
+    try {
+      await expect(chatLoop([{ role: 'user', content: 'update the lab SSID' }], { client: freshClient() }))
+        .resolves.toMatchObject({ reply: 'native reply' });
+      expect(nativeChat).toHaveBeenCalledWith(expect.objectContaining({
+        mcp: { endpoint: MCP_URL, authToken: 'centralmcp-secret', writeEnabled: true },
+      }));
+    } finally {
+      get.mockRestore();
+      configureCompatibleProvider('ollama');
+    }
   });
 
   it('refuses a hallucinated invoke_tool without touching MCP', async () => {

@@ -118,7 +118,7 @@ describe('assistant provider chat routes', () => {
     expect(response).toMatchObject({ status: 200, body: { reply: 'active provider reply' } });
     expect(chat).toHaveBeenCalledWith(
       [{ role: 'user', content: 'hello' }],
-      expect.objectContaining({ providerId: 'ollama', allowWrite: false }),
+      expect.not.objectContaining({ allowWrite: expect.anything() }),
     );
     expect(settings.get().assistant.activeProvider).toBe('ollama');
   });

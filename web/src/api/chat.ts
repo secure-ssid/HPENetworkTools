@@ -81,7 +81,6 @@ export type ChatResult =
 /** POST /api/chat — surfaces the server's message verbatim on failure. */
 export async function postChat(
   messages: ChatRequestMessage[],
-  allowWrite: boolean,
 ): Promise<ChatResult> {
   // The server-side LLM tool loop can legitimately take minutes, but never
   // forever — cancel at 120s so the composer can't pend indefinitely.
@@ -91,7 +90,7 @@ export async function postChat(
     const r = await apiFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, allowWrite }),
+      body: JSON.stringify({ messages }),
       signal: controller.signal,
     });
     if (r.ok) {

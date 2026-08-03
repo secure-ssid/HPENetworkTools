@@ -119,7 +119,7 @@ describe('Systems assistant providers', () => {
   const settings = {
     activeProvider: 'codex' as const,
     mcp: { enabled: true, endpoint: 'http://centralmcp.test/mcp', authToken: '••••••••' },
-    chatWriteMode: 'read-only' as const,
+    chatWriteMode: 'enabled' as const,
     providers: {
       codex: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' as const },
       claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' as const },
@@ -148,7 +148,7 @@ describe('Systems assistant providers', () => {
     mockGetChatSettings.mockResolvedValue({ assistant: settings });
     mockGetChatStatus.mockResolvedValue({
       configured: { mcp: true, llm: true },
-      writeMode: 'read-only',
+      writeMode: 'enabled',
       mcpReachable: true,
       activeProvider: 'codex',
       providers: [
@@ -166,15 +166,15 @@ describe('Systems assistant providers', () => {
     assistantSetup();
     renderSystems();
 
-    await screen.findByLabelText('Fast model');
-    expect(screen.getByLabelText('Fast model')).toHaveProperty('value', 'gpt-5.6-terra');
+    await screen.findByLabelText('Model');
+    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'gpt-5.6-terra');
     expect(screen.getByLabelText('Reasoning')).toHaveProperty('value', 'low');
     expect(screen.queryByLabelText('Provider endpoint')).toBeNull();
     expect(screen.queryByLabelText('API key')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /OpenRouter/i }));
     expect(screen.getByLabelText('Provider endpoint')).toHaveProperty('value', 'https://openrouter.ai/api/v1');
-    expect(screen.getByLabelText('Fast model')).toHaveProperty('value', 'openai/gpt-4.1-mini');
+    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'openai/gpt-4.1-mini');
     expect(screen.getByLabelText('API key')).toHaveProperty('value', '');
     expect(screen.queryByLabelText('Reasoning')).toBeNull();
   });
@@ -184,7 +184,7 @@ describe('Systems assistant providers', () => {
     mockSaveChatSettings.mockResolvedValue({ ok: false, message: 'save rejected' });
     renderSystems();
 
-    await screen.findByLabelText('Fast model');
+    await screen.findByLabelText('Model');
     fireEvent.click(screen.getByRole('button', { name: /Claude/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Save assistant' }));
 
@@ -197,7 +197,7 @@ describe('Systems assistant providers', () => {
     mockSaveChatSettings.mockResolvedValue({ ok: true, message: 'saved' });
     renderSystems();
 
-    await screen.findByLabelText('Fast model');
+    await screen.findByLabelText('Model');
     fireEvent.click(screen.getByRole('button', { name: 'Save assistant' }));
 
     await waitFor(() => expect(mockSaveChatSettings).toHaveBeenCalledWith(expect.objectContaining({
@@ -209,23 +209,23 @@ describe('Systems assistant providers', () => {
     })));
   });
 
-  it('keeps custom model entry collapsed behind Advanced', async () => {
+  it('keeps the saved model editable in the compact provider form', async () => {
     assistantSetup();
     renderSystems();
 
-    await screen.findByLabelText('Fast model');
-    const advanced = screen.getByText('Advanced').closest('details')!;
-    expect(advanced.open).toBe(false);
-    expect(within(advanced).getByLabelText('Custom model')).toHaveProperty('value', 'gpt-5.6-terra');
-    fireEvent.click(screen.getByText('Advanced'));
-    expect(screen.getByLabelText('Custom model')).toHaveProperty('value', 'gpt-5.6-terra');
+    const model = await screen.findByLabelText('Model');
+    expect(model).toHaveProperty('value', 'gpt-5.6-terra');
+    expect(screen.queryByText('Advanced')).toBeNull();
+    fireEvent.change(model, { target: { value: 'gpt-5.6-terra-custom' } });
+    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'gpt-5.6-terra-custom');
+    expect(screen.getByText('Lab assistant access')).toBeTruthy();
   });
 
   it('shows served readiness rather than claiming configured state', async () => {
     assistantSetup();
     renderSystems();
 
-    await screen.findByLabelText('Fast model');
+    await screen.findByLabelText('Model');
     expect(screen.getAllByText('gpt-5.6-terra').length).toBeGreaterThan(1);
     expect(within(screen.getByRole('button', { name: /Codex.*selected/i })).getByText('gpt-5.6-terra')).toBeTruthy();
   });
@@ -235,7 +235,7 @@ describe('Systems assistant providers', () => {
     mockTestChatProvider.mockResolvedValue(providerStatus);
     renderSystems();
 
-    await screen.findByLabelText('Fast model');
+    await screen.findByLabelText('Model');
     fireEvent.click(screen.getAllByRole('button', { name: /Test provider/i }).at(-1)!);
     await waitFor(() => expect(mockTestChatProvider).toHaveBeenCalledWith('codex'));
     expect(screen.getByText(/18 ms.*gpt-5.6-terra/i)).toBeTruthy();

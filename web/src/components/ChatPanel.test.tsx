@@ -47,7 +47,7 @@ function renderPanel() {
 
 const CONFIGURED_STATUS: ChatStatus = {
   configured: { mcp: true, llm: true },
-  writeMode: 'read-only',
+  writeMode: 'enabled',
   mcpReachable: true,
 };
 
@@ -58,6 +58,9 @@ describe('ChatPanel', () => {
     mockedPostChat.mockReturnValue(pendingChat.promise);
 
     renderPanel();
+
+    expect(screen.queryByLabelText('allow writes this session')).toBeNull();
+    expect(await screen.findByText('LAB R/W')).toBeTruthy();
 
     // Configured → the composer is offered.
     const input = (await screen.findByLabelText('Message the assistant')) as HTMLInputElement;
@@ -98,7 +101,6 @@ describe('ChatPanel', () => {
     expect(mockedPostChat).toHaveBeenCalledTimes(1);
     expect(mockedPostChat).toHaveBeenCalledWith(
       [{ role: 'user', content: 'how many APs are down?' }],
-      false,
     );
 
     // A retry is actually possible: typing re-arms the Send button.
@@ -146,7 +148,6 @@ describe('ChatPanel', () => {
     await waitFor(() => expect(screen.getByText('four')).toBeTruthy());
     expect(mockedPostChat).toHaveBeenLastCalledWith(
       [{ role: 'user', content: 'second question' }],
-      false,
     );
     // The failed turn is gone from the stream once its question is superseded.
     expect(screen.queryByText(/NOT ANSWERED/)).toBeNull();

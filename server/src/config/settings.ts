@@ -131,7 +131,7 @@ function defaultAssistantSettings(): AssistantSettings {
   return {
     activeProvider: 'ollama',
     mcp: { enabled: false, endpoint: 'http://127.0.0.1:3000/mcp', authToken: null },
-    chatWriteMode: 'read-only',
+    chatWriteMode: 'enabled',
     providers: {
       codex: { enabled: false, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
       claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' },

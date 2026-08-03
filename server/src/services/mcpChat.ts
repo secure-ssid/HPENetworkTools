@@ -309,8 +309,6 @@ export interface ChatTranscriptEntry {
 }
 
 export interface ChatLoopOptions {
-  /** Per-request write opt-in; must be paired with settings.chatWriteMode. */
-  allowWrite?: boolean;
   /** Test seam: inject a client instead of the process-wide one. */
   client?: McpClient;
   /** Cancels in-flight LLM and MCP requests when the browser disconnects. */
@@ -395,7 +393,7 @@ function systemPrompt(writeEnabled: boolean): string {
     writeEnabled
       ? 'Write tools are enabled this session — still prefer read-only tools when they answer the question, and report precisely what any write changed.'
       : 'Read-only mode: write/destructive tools are unavailable. If the task needs one, say it requires write mode ' +
-        '(Connected systems → Assistant, plus "allow writes this session" in the chat panel) and stop there.',
+        '(Connected systems → Assistant) and stop there.',
     'Be terse and technical: exact hostnames, IPs, VLANs, counts; no filler, no pleasantries.',
   ].join('\n');
 }
@@ -407,7 +405,7 @@ function gateRefusal(name: string, writeEnabled: boolean): string | null {
     return writeEnabled
       ? null
       : 'refused: invoke_tool runs write/destructive backend tools and write mode is off. ' +
-        'Enable "Allow write tools" in Connected systems → Assistant and "allow writes this session" in the chat panel.';
+        'Enable "Allow write tools" in Connected systems → Assistant.';
   }
   return `unknown tool '${name}' — available tools: find_tool, invoke_read_tool${writeEnabled ? ', invoke_tool' : ''}.`;
 }
@@ -482,8 +480,9 @@ export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = 
     throw new Error('MCP server is not configured — set it in Connected systems → Assistant');
   }
   const client = opts.client ?? chatMcpClient({ url: assistant.mcp.endpoint, bearerToken: assistant.mcp.authToken });
-  // Read-only boundary: writes need BOTH the global setting and this request's opt-in.
-  const writeEnabled = assistant.chatWriteMode === 'enabled' && opts.allowWrite === true;
+  // Lab policy is persisted once. A later hardened deployment can turn this
+  // setting off, but there is no second per-message confirmation gate.
+  const writeEnabled = assistant.chatWriteMode === 'enabled';
   const tools: unknown[] = writeEnabled
     ? [TOOL_FIND, TOOL_INVOKE_READ, TOOL_INVOKE_WRITE]
     : [TOOL_FIND, TOOL_INVOKE_READ];
@@ -497,6 +496,11 @@ export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = 
   }
   const result = await adapter.chat({
     config: provider,
+    mcp: {
+      endpoint: assistant.mcp.endpoint,
+      authToken: assistant.mcp.authToken,
+      writeEnabled,
+    },
     timeoutMs: resolveProviderTimeoutMs('generation'),
     messages: conversation,
     tools,

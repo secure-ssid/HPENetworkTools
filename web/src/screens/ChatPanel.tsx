@@ -7,16 +7,15 @@
  * Connected systems → Assistant. Messages POST to /api/chat; the reply's tool
  * transcript renders as hairline rows ([mono tool | args | preview | ok/fail
  * Badge]) between messages. When the server's chatWriteMode is on, a Switch
- * in the panel header opts the session into writes (sent as allowWrite per
- * request — the server also requires its own setting, so this alone is not
- * sufficient). User messages are right-aligned bg-raised bubbles; assistant
+ * in the panel header shows the persisted lab read/write state. User messages
+ * are right-aligned bg-raised bubbles; assistant
  * replies are plain prose with code-ish lines in mono.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Badge, Button, Drawer, EmptyState, Input, Spinner, Switch, Text } from '../nightdesk';
+import { Alert, Badge, Button, Drawer, EmptyState, Input, Spinner, Text } from '../nightdesk';
 import { getChatStatus, postChat } from '../api/client';
 import type { ChatStatus, ChatTranscriptEntry } from '../api/client';
 
@@ -148,20 +147,18 @@ export default function ChatPanel({
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [allowWrite, setAllowWrite] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
 
-  // On open: probe status; the session write opt-in always resets to off.
+  // On open, discard the prior status/error before the fresh probe returns.
   // The reset runs during render so an already-open panel never commits one
-  // frame of the previous session's status or opt-in; the probe stays an
-  // effect — it is the external read.
+  // frame of the previous session's state; the probe stays an effect — it is
+  // the external read.
   const [prevOpen, setPrevOpen] = useState(open);
   if (prevOpen !== open) {
     setPrevOpen(open);
     if (open) {
       setStatus(undefined);
-      setAllowWrite(false);
       setError(null);
     }
   }
@@ -202,10 +199,7 @@ export default function ChatPanel({
     setMessages(next);
     setDraft('');
     setPending(true);
-    const res = await postChat(
-      next.map((m) => ({ role: m.role, content: m.content })),
-      allowWrite,
-    );
+    const res = await postChat(next.map((m) => ({ role: m.role, content: m.content })));
     setPending(false);
     if (!res.ok) {
       setError(res.error);
@@ -222,13 +216,13 @@ export default function ChatPanel({
 
   const description =
     status?.writeMode != null
-      ? `centralmcp · ${status.writeMode === 'enabled' ? 'read + write tools' : 'read-only tools'}`
+      ? `centralmcp · ${status.writeMode === 'enabled' ? 'lab read/write' : 'read-only'}`
       : 'centralmcp';
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange} width="lg" title="Assistant" description={description}>
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-        {/* panel header: live status + per-session write opt-in */}
+        {/* panel header: live provider/MCP status plus saved lab access. */}
         {status ? (
           <div
             style={{
@@ -252,16 +246,12 @@ export default function ChatPanel({
             <Badge tone={status.configured.llm ? 'success' : 'neutral'} dot>
               {status.configured.llm ? 'llm configured' : 'llm not configured'}
             </Badge>
-            {status.writeMode === 'enabled' ? (
-              <span style={{ marginLeft: 'auto' }}>
-                <Switch
-                  size="sm"
-                  checked={allowWrite}
-                  onCheckedChange={setAllowWrite}
-                  label="allow writes this session"
-                />
-              </span>
-            ) : null}
+            {status.activeProvider ? <Badge tone="neutral">{status.activeProvider}</Badge> : null}
+            <span style={{ marginLeft: 'auto' }}>
+              <Badge tone={status.writeMode === 'enabled' ? 'success' : 'neutral'}>
+                {status.writeMode === 'enabled' ? 'LAB R/W' : 'READ ONLY'}
+              </Badge>
+            </span>
           </div>
         ) : null}
 
