@@ -405,7 +405,7 @@ export class SseObjectsService {
   }
 
   /**
-   * Reviewed journal recovery. Despite the historical route name, this calls
+   * Journal recovery. Despite the historical route name, this calls
    * tenant-wide Commit ONLY for `commit-rejected`, the sole phase proving a
    * successful mutation plus a definite Commit rejection. Accepted records
    * get refresh/cleanup only, rejected mutations get cleanup only, and every
@@ -541,7 +541,7 @@ export class SseObjectsService {
           journalPhase: pending.phase,
           action: 'commit-retry',
           mutationVerified: false,
-          message: 'the journal remains in commit-rejected and requires another explicit review before any further Commit retry',
+          message: 'the journal remains in commit-rejected and requires another authorized Commit retry',
         },
       };
     }
@@ -618,7 +618,7 @@ export class SseObjectsService {
   }
 
   /**
-   * Reviewed recovery for a journal already in the TERMINAL `commit-accepted`
+   * Recovery for a journal already in the TERMINAL `commit-accepted`
    * phase — this is the ONLY path a restarted process (or a cleanup-failure
    * retry within the same process) reaches here through. It never calls
    * Commit: the tenant-wide commit is already known accepted, so all that is

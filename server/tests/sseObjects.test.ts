@@ -148,13 +148,16 @@ describe('SseObjectsService write gates', () => {
         if (method === 'POST' && pathname === SSE_KIND_SPEC.connectorZones.path) return { status: 201, body: { id: 'z' } };
         if (method === 'POST' && pathname === '/api/v1.0/Commit') {
           commitAttempts += 1;
-          return { status: commitAttempts === 1 ? 500 : 204 };
+          return { status: commitAttempts <= 2 ? 500 : 204 };
         }
         return undefined;
       },
       { allowsLabDirectWrites: () => true },
     );
     await expect(service.create('connectorZones', { name: 'z' }, undefined)).resolves.toMatchObject({ staged: true });
+    const rejectedRetry = await service.retryCommit(undefined);
+    if (!rejectedRetry.recovery) throw new Error('commit-rejected retry must return recovery guidance');
+    expect(rejectedRetry.recovery.message).not.toMatch(/review/i);
     await expect(service.retryCommit(undefined)).resolves.toMatchObject({ commit: { ok: true } });
     expect(events.map((event) => event.what).join('\n')).not.toMatch(/review/i);
   });
