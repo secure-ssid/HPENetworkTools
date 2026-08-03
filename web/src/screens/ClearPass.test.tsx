@@ -197,7 +197,7 @@ describe('ClearPass', () => {
     await waitFor(() => expect(mockGetEndpointPage).toHaveBeenCalledWith(0, 50));
     expect(screen.getByText('1 of 50 loaded endpoint rows')).toBeTruthy();
     expect(screen.getByLabelText('Filter loaded endpoint page')).toBeTruthy();
-    expect(screen.getByText('Filters apply only to the 50 rows loaded on this page.')).toBeTruthy();
+    expect(screen.getByText('Filters apply only to the 1 row loaded on this page.')).toBeTruthy();
     expect(screen.getByText('Ward 3E rounds iPad — Dr. Okonjo')).toBeTruthy();
   });
 
@@ -757,8 +757,11 @@ describe('ClearPass reviewed writes', () => {
     });
   });
 
-  it('(l) live mode: a landed write re-fetches the screen instead of trusting the local list', async () => {
+  it('(l) live mode: a landed endpoint write refreshes both the overview and current endpoint page', async () => {
     mockGetClearPass.mockResolvedValue(liveData({ endpoints: [CLEARPASS_ENDPOINTS[0]], roles: CLEARPASS_ROLES }));
+    mockGetEndpointPage.mockResolvedValue(
+      endpointPage({ dataSource: 'live', endpoints: [CLEARPASS_ENDPOINTS[0]], total: 1, nextOffset: null, more: 'no' }),
+    );
     mockRegister.mockResolvedValue({
       ...DEMO_OK,
       message: 'endpoint registered and confirmed in the repository read-back (HTTP 201)',
@@ -767,6 +770,7 @@ describe('ClearPass reviewed writes', () => {
     renderClearPass();
     await waitFor(() => expect(screen.getByText('Endpoint repository')).toBeTruthy());
     expect(mockGetClearPass).toHaveBeenCalledTimes(1);
+    expect(mockGetEndpointPage).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Register endpoint' }));
     const dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
@@ -775,6 +779,7 @@ describe('ClearPass reviewed writes', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Register endpoint' }));
 
     await waitFor(() => expect(mockGetClearPass).toHaveBeenCalledTimes(2)); // the reload
+    await waitFor(() => expect(mockGetEndpointPage).toHaveBeenCalledTimes(2)); // the refreshed endpoint page
     await waitFor(() => expect(within(dialog).getByText(/confirmed in the repository read-back/)).toBeTruthy());
   });
 });

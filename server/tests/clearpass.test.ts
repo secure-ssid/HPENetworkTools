@@ -1275,6 +1275,15 @@ describe('ClearPassAdapter endpoints', () => {
     expect(page).toMatchObject({ kind: 'ok', total: null, nextOffset: null, more: 'unknown' });
   });
 
+  it('makes exactly one endpoint request when ClearPass returns a transient status', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === '/api/endpoint' ? { status: 503, body: { detail: 'temporarily unavailable' } } : undefined,
+    );
+
+    await expect(adapter.endpointPage(0, 50)).resolves.toMatchObject({ kind: 'failed', endpoints: [] });
+    expect(calls).toEqual(['GET /api/endpoint?offset=0&limit=50&calculate_count=true']);
+  });
+
   it('keeps an empty page and a broken read distinct', async () => {
     const empty = makeAdapter((method, pathname) =>
       method === 'GET' && pathname === '/api/endpoint' ? { body: hal([]) } : undefined,
@@ -1287,6 +1296,13 @@ describe('ClearPassAdapter endpoints', () => {
       kind: 'empty',
       endpoints: [],
       total: 0,
+      nextOffset: null,
+      more: 'no',
+    });
+    await expect(empty.adapter.endpointPage(50, 50)).resolves.toMatchObject({
+      kind: 'empty',
+      endpoints: [],
+      total: null,
       nextOffset: null,
       more: 'no',
     });

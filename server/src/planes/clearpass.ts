@@ -868,8 +868,9 @@ function extractTotal(body: unknown, rows: unknown[], pageLimit: number): number
 /**
  * The total for one requested endpoint page. CPPM's `count` can mean the
  * page size, so a full page with count === page length proves nothing. A
- * named total, a count larger than the page, or a short page does prove the
- * answer; anything else stays null rather than becoming a confident lie.
+ * named total or a count larger than the page proves the answer. A short
+ * first page proves the whole repository fit in it; a later short page only
+ * proves there is no following page, not the rows skipped before it.
  */
 function endpointPageTotal(body: unknown, rawRows: unknown[], offset: number, limit: number): number | null {
   const r = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
@@ -877,9 +878,7 @@ function endpointPageTotal(body: unknown, rawRows: unknown[], offset: number, li
   if (named !== null && named >= offset + rawRows.length) return named;
   const count = num(r.count);
   if (count !== null && count > rawRows.length && count >= offset + rawRows.length) return count;
-  // A short vendor page is the end of this unfiltered collection. This is an
-  // exact total even if CPPM omitted calculate_count from its response.
-  if (rawRows.length < limit) return offset + rawRows.length;
+  if (offset === 0 && rawRows.length < limit) return rawRows.length;
   return null;
 }
 
@@ -1185,7 +1184,7 @@ export class ClearPassAdapter implements PlaneAdapter {
   async endpointPage(offset: number, limit: number): Promise<ClearPassEndpointPageRead> {
     const path = `${ENDPOINT_PATH}?offset=${offset}&limit=${limit}&calculate_count=true`;
     try {
-      const res = await this.authedGet(path);
+      const res = await this.authedGetOneShot(path);
       if (res.status < 200 || res.status >= 300) {
         return { kind: 'failed', endpoints: [], total: null, nextOffset: null, more: 'unknown' };
       }
@@ -1767,6 +1766,15 @@ export class ClearPassAdapter implements PlaneAdapter {
       res = await this.http(method, path, { token: await this.authToken(), body });
     }
     return res;
+  }
+
+  /**
+   * One authenticated vendor GET, with neither transient backoff nor a 401
+   * token refresh. Interactive endpoint paging promises exactly one vendor
+   * request per page action; failure is surfaced to the screen for retry.
+   */
+  private async authedGetOneShot(path: string): Promise<HttpResult> {
+    return this.http('GET', path, { token: await this.authToken() });
   }
 
   /**

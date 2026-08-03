@@ -36,3 +36,10 @@ npm run build -w web
 ## Scope
 
 This task intentionally does not change ClearPass write operations or add service-detail/license views; those remain separate work.
+
+## Review correction: round 1
+
+- Endpoint paging now uses a one-shot authenticated GET: it does not retry transient statuses or refresh a token after a 401. The screen receives the failed page state and lets the operator retry explicitly, preserving the one-vendor-request-per-page-action contract.
+- A short page at a nonzero offset now proves only `more: "no"`; it leaves `total: null` unless ClearPass supplied a provable overall count. Empty-page UI wording now makes the same scope clear.
+- A successful live endpoint register or edit refreshes both the ClearPass overview and the current endpoint page. The page-only filter notice uses the actual number of rows currently loaded.
+- Added regressions for a 503 making one endpoint request, later empty pages not inventing a total, dynamic page-only wording, and live write page refresh.

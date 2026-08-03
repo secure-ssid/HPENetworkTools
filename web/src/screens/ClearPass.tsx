@@ -178,6 +178,10 @@ export default function ClearPass() {
       setCategory={setCategory}
       endpointPage={endpointPage}
       loadEndpointPage={async (offset) => setEndpointPage(await getClearPassEndpointPage(offset, 50))}
+      refreshEndpointPage={async () => {
+        const page = endpointPage;
+        setEndpointPage(await getClearPassEndpointPage(page?.offset ?? 0, page?.limit ?? 50));
+      }}
       reload={async () => setData(await getClearPass())}
       mergeDemo={(fn) => setData((current) => (current ? fn(current) : current))}
       mergeDemoEndpointPage={(fn) => setEndpointPage((current) => (current ? fn(current) : current))}
@@ -208,6 +212,7 @@ function ClearPassView({
   setCategory,
   endpointPage,
   loadEndpointPage,
+  refreshEndpointPage,
   reload,
   mergeDemo,
   mergeDemoEndpointPage,
@@ -226,6 +231,7 @@ function ClearPassView({
   setCategory: (v: string) => void;
   endpointPage: ClearPassEndpointPage | null;
   loadEndpointPage: (offset: number) => Promise<void>;
+  refreshEndpointPage: () => Promise<void>;
   /** Live mode: re-fetch the whole envelope after a landed write. */
   reload: () => Promise<void>;
   /** Demo mode: apply the reviewed write to the fixture world on screen. */
@@ -238,6 +244,7 @@ function ClearPassView({
   const demo = data.dataSource === 'demo';
   /** The table only ever sees this one on-demand page, never the screen cache. */
   const endpoints = endpointPage?.endpoints ?? [];
+  const loadedEndpointCount = endpoints.length;
   const authEvents = data.authEvents;
   const missingSources = data.missingSources ?? [];
 
@@ -362,7 +369,7 @@ function ClearPassView({
           </div>
 
           <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
-            Filters apply only to the 50 rows loaded on this page.
+            Filters apply only to the {loadedEndpointCount} {loadedEndpointCount === 1 ? 'row' : 'rows'} loaded on this page.
           </span>
 
           {endpointPage === null ? (
@@ -385,8 +392,8 @@ function ClearPassView({
             </EmptyState>
           ) : endpointPage.state === 'empty' ? (
             <EmptyState
-              title="ClearPass reports no endpoints"
-              description="The requested repository page contains no endpoint rows."
+              title="ClearPass returned an empty endpoint page"
+              description="The requested page contains no endpoint rows; it does not establish a repository-wide total."
             />
           ) : rows.length === 0 ? (
             endpoints.length === 0 ? (
@@ -568,6 +575,7 @@ function ClearPassView({
             }))
           }
           reload={reload}
+          reloadEndpointPage={refreshEndpointPage}
         />
       ) : null}
       {writeDrawer?.kind === 'editEndpoint' ? (
@@ -594,6 +602,7 @@ function ClearPassView({
             }))
           }
           reload={reload}
+          reloadEndpointPage={refreshEndpointPage}
         />
       ) : null}
       {writeDrawer?.kind === 'createUser' ? (
@@ -1619,12 +1628,14 @@ function RegisterEndpointDrawer({
   lab,
   onDemoApplied,
   reload,
+  reloadEndpointPage,
 }: {
   onOpenChange: (open: boolean) => void;
   demo: boolean;
   lab: boolean;
   onDemoApplied: (form: ClearPassEndpointRegisterForm) => void;
   reload: () => Promise<void>;
+  reloadEndpointPage: () => Promise<void>;
 }) {
   const { toast } = useToast();
   const [mac, setMac] = useState('');
@@ -1658,7 +1669,7 @@ function RegisterEndpointDrawer({
     if (r.ok) {
       toastWriteOutcome(toast, normalizeMac(form.mac), r);
       if (demo) onDemoApplied(form);
-      else await reload();
+      else await Promise.all([reload(), reloadEndpointPage()]);
     } else {
       toast(`${normalizeMac(form.mac)} was not registered`, { description: r.message, tone: 'danger' });
     }
@@ -1746,6 +1757,7 @@ function EditEndpointDrawer({
   lab,
   onDemoApplied,
   reload,
+  reloadEndpointPage,
 }: {
   row: EndpointRow;
   onOpenChange: (open: boolean) => void;
@@ -1753,6 +1765,7 @@ function EditEndpointDrawer({
   lab: boolean;
   onDemoApplied: (row: EndpointRow, form: ClearPassEndpointUpdateForm) => void;
   reload: () => Promise<void>;
+  reloadEndpointPage: () => Promise<void>;
 }) {
   const { toast } = useToast();
   const [status, setStatus] = useState<ClearPassEndpointStatus>(() =>
@@ -1791,7 +1804,7 @@ function EditEndpointDrawer({
     if (r.ok) {
       toastWriteOutcome(toast, row.mac, r);
       if (demo) onDemoApplied(row, form);
-      else await reload();
+      else await Promise.all([reload(), reloadEndpointPage()]);
     } else {
       toast(`${row.mac} was not updated`, { description: r.message, tone: 'danger' });
     }
