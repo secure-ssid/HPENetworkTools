@@ -61,28 +61,50 @@ All twelve rollout findings were corrected. Live write affordances and server mu
 - A ClearPass write drawer is removed immediately if refreshed connector state revokes `canWrite`.
 - Capability display facts no longer synthesize writeability from connection mode.
 
+## Scoped re-review corrections
+
+1. **Default demo VLANs no longer imply a real target**
+   - Generic port/VLAN Apply now requires the live Central capability envelope to admit broker writes, even when the portal is displaying authored demo data.
+   - Without that admission the form remains an explicit preview-only surface; no mutation request is sent.
+
+2. **VLAN identity is resolved from current Central inventory**
+   - The broker resolves an exact configured Central VLAN by immutable ID and scope instead of trusting caller-supplied plane, ID, or scope fields.
+   - Observed rows, forged IDs/scopes, and demo-only defaults fail closed before transport I/O. Queue and push paths re-run the same resolver, so a target removed after review cannot be pushed from stale state.
+   - The Configure editor retains the selected row's configured ID/scope identity and disables Apply if either is changed.
+
+3. **ClearPass full-envelope reloads are ordered**
+   - Full ClearPass capability/inventory responses now use a monotonically increasing sequence and unmount guard, matching the endpoint-page protection.
+   - A newer `canWrite: false` response clears an open mutation drawer, and an older writable response can no longer revive it.
+
+4. **Lab history copy describes direct applies**
+   - The history drawer uses configuration-audit and direct-apply language in lab mode, with no broker, ticket, queue, or dry-run claims.
+
 ## Commits
 
 - `a9586e4` — `fix(server): enforce exact write admission and reconciliation`
 - `6d58c97` — `fix(server): keep reconciliation path lint-clean`
 - `875e72e` — `fix(web): enforce live write admission`
+- `28a0230` — `fix: bind direct writes to current inventory`
 
 ## Verification
 
-- Full server suite: **86 files, 2,576 tests passed**.
-- Focused broker suite: **52 tests passed**.
+- Full server suite: **86 files, 2,579 tests passed**.
+- Focused broker suite: **55 tests passed**.
 - Canonical admission suite: **14 tests passed**.
 - Focused affected UI suites (facts, Systems, ClearPass, Configure, ConfigureBulk, Mist, Central webhooks): **230 tests passed**.
+- Final scoped server integration suites (broker, history, routes, auth): **328 tests passed**.
+- Final scoped UI suites (ClearPass and Configure): **106 tests passed**.
 - Server TypeScript: `npm run typecheck -w server` passed.
 - Web TypeScript: `npm run typecheck -w web` passed.
 - Production web build: `npm run build -w web` passed; Vite transformed 171 modules.
 - Patch hygiene: `git diff --check` passed.
+- Targeted lint over every final scoped file: **0 errors**; the same three pre-existing ClearPass/Configure warnings remain.
 
 ## Repository-wide verification exceptions
 
-- Full web suite: **1,366 of 1,368 tests passed**. The two failures are the pre-existing `src/screens/siteDetail/RogueAps.test.tsx` harness cases that render a React Router `Link` without router context (`basename` is read from a null context). Neither the component nor its tests are touched by these commits.
+- Full web suite: **1,368 of 1,370 tests passed**. The two failures are the pre-existing `src/screens/siteDetail/RogueAps.test.tsx` harness cases that render a React Router `Link` without router context (`basename` is read from a null context). Neither the component nor its tests are touched by these commits.
 - Root lint remains red on the reviewed repository baseline: **13 errors and 3 warnings**. The errors are existing unused imports/helpers and two existing regular-expression escape findings outside this rollout. The three warnings are existing hook warnings; comparison with `3f6248c` confirms the flagged ClearPass endpoint expression and Configure deep-link effect predate these corrections. The new write-broker lint finding discovered during this pass was fixed in `6d58c97`.
 
 ## Residual concerns
 
-No remaining correctness concern was found in the corrected write-admission rollout. The portal process still needs to be restarted from this committed tree before visual proof can represent these changes; that runtime restart and Topology/ClearPass visual verification are the next operational step.
+No remaining correctness concern was found in the corrected write-admission rollout. Generic VLAN mutation is intentionally unavailable until the Central contribution supplies configured VLAN rows with exact scope identity; the portal fails closed and keeps those rows preview-only instead of guessing. The portal process still needs to be restarted from this committed tree before visual proof can represent these changes; that runtime restart and Topology/ClearPass visual verification are the next operational step.
