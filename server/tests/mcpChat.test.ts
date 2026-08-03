@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { McpClient as McpClientType, chatLoop as chatLoopType } from '../src/services/mcpChat';
 import type { SettingsStore } from '../src/config/settings';
+import { OpenAICompatibleAdapter, resolveProviderTimeoutMs } from '../src/services/assistant/openaiCompatible';
 
 let tmpDir: string;
 let McpClient: typeof McpClientType;
@@ -24,6 +25,7 @@ let settings: SettingsStore;
 
 const MCP_URL = 'http://mcp.test/mcp';
 const LLM_URL = 'http://llm.test/v1';
+const OPENROUTER_URL = 'https://router.test/v1';
 
 interface CapturedRequest {
   url: string;
@@ -301,6 +303,24 @@ function configureChat(chatWriteMode: boolean): void {
   });
 }
 
+function configureCompatibleProvider(provider: 'ollama' | 'openrouter'): void {
+  settings.update({
+    assistant: {
+      activeProvider: provider,
+      mcp: { enabled: true, endpoint: MCP_URL, authToken: null },
+      chatWriteMode: 'read-only',
+      providers: {
+        codex: { enabled: false, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+        claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' },
+        kimi: { enabled: false, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false },
+        copilot: { enabled: false, model: 'auto', effort: 'adaptive' },
+        ollama: { enabled: provider === 'ollama', baseUrl: LLM_URL, model: 'ollama-model' },
+        openrouter: { enabled: provider === 'openrouter', baseUrl: OPENROUTER_URL, model: 'router-model', apiKey: 'router-secret' },
+      },
+    },
+  });
+}
+
 /** A client that never actually gets used in LLM-only tests. */
 function freshClient(): McpClientType {
   return new McpClient(MCP_URL, null);
@@ -388,6 +408,68 @@ describe('chatLoop tool gating', () => {
     const secondCall = requests[1].body;
     const toolMsg = secondCall.messages.find((m: any) => m.role === 'tool');
     expect(toolMsg.content).toMatch(/refused/);
+  });
+});
+
+describe('chatLoop compatible provider routing', () => {
+  it.each([
+    ['ollama', LLM_URL, 'ollama-model'],
+    ['openrouter', OPENROUTER_URL, 'router-model'],
+  ] as const)('routes %s through the shared compatible adapter', async (provider, baseUrl, model) => {
+    configureCompatibleProvider(provider);
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
+      record(url, init);
+      return llmMessage({ role: 'assistant', content: 'done.' });
+    }));
+
+    await expect(chatLoop([{ role: 'user', content: 'hi' }], { client: freshClient() })).resolves.toMatchObject({ reply: 'done.' });
+    expect(requests[0].url).toBe(`${baseUrl}/chat/completions`);
+    expect(requests[0].body.model).toBe(model);
+  });
+
+  it('forwards find_tool platform unchanged to centralmcp', async () => {
+    configureCompatibleProvider('ollama');
+    let llmCalls = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
+      record(url, init);
+      if (String(url) === `${LLM_URL}/chat/completions`) {
+        llmCalls += 1;
+        return llmMessage(llmCalls === 1
+          ? { role: 'assistant', content: null, tool_calls: [{ id: 'find-1', type: 'function', function: { name: 'find_tool', arguments: '{"query":"APs","platform":"mist"}' } }] }
+          : { role: 'assistant', content: 'done.' });
+      }
+      const method = JSON.parse(String(init?.body)).method;
+      if (method === 'initialize') return jsonResponse(jsonRpc({}, 1), { headers: { 'mcp-session-id': 'sess-platform' } });
+      if (method === 'notifications/initialized') return new Response(null, { status: 202 });
+      return jsonResponse(jsonRpc({ content: [{ type: 'text', text: 'found' }] }, 2));
+    }));
+
+    await chatLoop([{ role: 'user', content: 'find APs' }], { client: freshClient() });
+    const toolCall = requests.find((r) => r.body?.method === 'tools/call');
+    expect(toolCall?.body.params.arguments).toEqual({ query: 'APs', platform: 'mist' });
+  });
+
+  it('uses short interactive and longer bounded generation/startup timeouts', () => {
+    expect(resolveProviderTimeoutMs('interactive')).toBeLessThan(resolveProviderTimeoutMs('generation'));
+    expect(resolveProviderTimeoutMs('generation')).toBe(resolveProviderTimeoutMs('startup'));
+    expect(resolveProviderTimeoutMs('interactive')).not.toBe(30_000);
+  });
+
+  it('returns a clear provider timeout using the explicitly supplied timeout', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    })));
+    const pending = new OpenAICompatibleAdapter('ollama').run({
+      config: { baseUrl: LLM_URL, model: 'test-model', timeoutMs: 7 },
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      executeTool: async () => { throw new Error('not reached'); },
+    });
+    const rejected = expect(pending).rejects.toThrow('assistant provider timed out after 7ms');
+    await vi.advanceTimersByTimeAsync(7);
+    await rejected;
+    vi.useRealTimers();
   });
 });
 

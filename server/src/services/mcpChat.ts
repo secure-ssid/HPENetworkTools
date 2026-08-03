@@ -10,7 +10,8 @@
  * (HTTP 400/404 or a JSON-RPC error mentioning the session) trigger one
  * re-initialize + retry. All requests time out (15s default).
  *
- * chatLoop — an OpenAI-compatible tool loop. The LLM only ever sees three
+ * chatLoop — compatibility façade over the OpenAI-compatible provider adapter.
+ * The LLM only ever sees three
  * meta-tools: find_tool and invoke_read_tool always, invoke_tool (write /
  * destructive) ONLY when settings.chatWriteMode is on AND the request opted
  * in via opts.allowWrite. A hallucinated invoke_tool while writes are off is
@@ -23,7 +24,14 @@
  * in error messages; both travel only in Authorization headers.
  */
 
-import { settings, type LlmSettings, type McpSettings } from '../config/settings';
+import { settings, type McpSettings } from '../config/settings';
+import { AssistantProviderRegistry } from './assistant/registry';
+import {
+  OpenAICompatibleAdapter,
+  resolveProviderTimeoutMs,
+  type OpenAICompatibleMessage,
+  type OpenAICompatibleToolCall,
+} from './assistant/openaiCompatible';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -313,21 +321,6 @@ export interface ChatLoopResult {
   transcript: ChatTranscriptEntry[];
 }
 
-interface LlmToolCall {
-  id: string;
-  type?: string;
-  function?: { name?: string; arguments?: string };
-}
-
-interface LlmMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
-  tool_calls?: LlmToolCall[];
-  tool_call_id?: string;
-}
-
-const LLM_TIMEOUT_MS = 30000;
-const MAX_ITERATIONS = 6;
 const TOOL_RESULT_CAP = 4000;
 const PREVIEW_CAP = 300;
 const ARGS_CAP = 200;
@@ -350,7 +343,10 @@ const TOOL_FIND = {
       'Search the centralmcp backend tool catalogue. Always call this before invoking a backend tool, to learn its exact name and input schema.',
     parameters: {
       type: 'object',
-      properties: { query: { type: 'string', description: 'What you want to do, in a few words' } },
+      properties: {
+        query: { type: 'string', description: 'What you want to do, in a few words' },
+        platform: { type: 'string', enum: ['central', 'mist', 'clearpass'], description: 'Optional product platform to search' },
+      },
       required: ['query'],
       additionalProperties: false,
     },
@@ -407,7 +403,9 @@ function gateRefusal(name: string, writeEnabled: boolean): string | null {
 /** Map the LLM-facing meta-tool arguments to what centralmcp expects. */
 function mcpArgs(name: string, args: Record<string, unknown>): Record<string, unknown> {
   if (name === 'find_tool') {
-    return { query: typeof args.query === 'string' ? args.query : JSON.stringify(args) };
+    const out: Record<string, unknown> = { query: typeof args.query === 'string' ? args.query : JSON.stringify(args) };
+    if (args.platform === 'central' || args.platform === 'mist' || args.platform === 'clearpass') out.platform = args.platform;
+    return out;
   }
   const inner = args.arguments;
   return {
@@ -416,43 +414,12 @@ function mcpArgs(name: string, args: Record<string, unknown>): Record<string, un
   };
 }
 
-async function llmComplete(
-  llm: LlmSettings,
-  messages: LlmMessage[],
-  tools: unknown[],
-  signal?: AbortSignal,
-): Promise<LlmMessage> {
-  const url = `${llm.baseUrl.replace(/\/+$/, '')}/chat/completions`;
-  const payload: Record<string, unknown> = { model: llm.model, messages, tool_choice: 'auto' };
-  if (tools.length > 0) payload.tools = tools;
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
-  if (llm.apiKey) headers.authorization = `Bearer ${llm.apiKey}`;
-
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(
-      url,
-      { method: 'POST', headers, body: JSON.stringify(payload), signal },
-      LLM_TIMEOUT_MS,
-    );
-  } catch (err) {
-    throw new Error(`LLM request to ${url} failed: ${(err as Error).message}`);
-  }
-  if (!res.ok) {
-    throw new Error(`LLM HTTP ${res.status} from ${url}: ${truncate(await res.text(), 200)}`);
-  }
-  const body = (await res.json()) as { choices?: Array<{ message?: LlmMessage }> };
-  const msg = body.choices?.[0]?.message;
-  if (!msg) throw new Error('LLM answered without choices[0].message');
-  return msg;
-}
-
 async function runToolCall(
   client: McpClient,
-  call: LlmToolCall,
+  call: OpenAICompatibleToolCall,
   writeEnabled: boolean,
   signal?: AbortSignal,
-): Promise<{ toolMessage: LlmMessage; entry: ChatTranscriptEntry }> {
+): Promise<{ toolMessage: OpenAICompatibleMessage; transcript: ChatTranscriptEntry }> {
   const name = call.function?.name ?? '';
   let args: Record<string, unknown> = {};
   let argsNote = '';
@@ -475,7 +442,7 @@ async function runToolCall(
   if (refusal) {
     return {
       toolMessage: { role: 'tool', tool_call_id: call.id, content: refusal },
-      entry: { tool: name || '(unknown)', args: argsPreview, resultPreview: truncate(refusal, PREVIEW_CAP), ok: false },
+      transcript: { tool: name || '(unknown)', args: argsPreview, resultPreview: truncate(refusal, PREVIEW_CAP), ok: false },
     };
   }
 
@@ -484,55 +451,52 @@ async function runToolCall(
   const full = text.trim() || '(tool returned no text)';
   return {
     toolMessage: { role: 'tool', tool_call_id: call.id, content: truncate(full, TOOL_RESULT_CAP) },
-    entry: { tool: name, args: argsPreview, resultPreview: truncate(full, PREVIEW_CAP), ok: !isError },
+    transcript: { tool: name, args: argsPreview, resultPreview: truncate(full, PREVIEW_CAP), ok: !isError },
   };
 }
 
 export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = {}): Promise<ChatLoopResult> {
   const s = settings.get();
-  if (!s.llm?.baseUrl || !s.llm.model) {
-    throw new Error('LLM is not configured — set it in Connected systems → Assistant');
+  const assistant = s.assistant;
+  const activeProvider = assistant.activeProvider;
+  if (activeProvider !== 'ollama' && activeProvider !== 'openrouter') {
+    throw new Error('The selected assistant provider is not available for chat yet.');
   }
-  if (!s.mcp?.url) {
+  const provider = assistant.providers[activeProvider];
+  if (!provider.enabled || !provider.baseUrl || !provider.model) {
+    if (!s.llm?.baseUrl || !s.llm.model) {
+      throw new Error('LLM is not configured — set it in Connected systems → Assistant');
+    }
+    throw new Error('Selected assistant provider is not configured — set it in Connected systems → Assistant');
+  }
+  if (!assistant.mcp.enabled || !assistant.mcp.endpoint) {
     throw new Error('MCP server is not configured — set it in Connected systems → Assistant');
   }
-  const client = opts.client ?? chatMcpClient(s.mcp);
+  const client = opts.client ?? chatMcpClient({ url: assistant.mcp.endpoint, bearerToken: assistant.mcp.authToken });
   // Read-only boundary: writes need BOTH the global setting and this request's opt-in.
-  const writeEnabled = s.chatWriteMode && opts.allowWrite === true;
+  const writeEnabled = assistant.chatWriteMode === 'enabled' && opts.allowWrite === true;
   const tools: unknown[] = writeEnabled
     ? [TOOL_FIND, TOOL_INVOKE_READ, TOOL_INVOKE_WRITE]
     : [TOOL_FIND, TOOL_INVOKE_READ];
-
-  const conversation: LlmMessage[] = [
+  const conversation: OpenAICompatibleMessage[] = [
     { role: 'system', content: systemPrompt(writeEnabled) },
     ...messages.map((m) => ({ role: m.role, content: m.content })),
   ];
-  const transcript: ChatTranscriptEntry[] = [];
-
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    const msg = await llmComplete(s.llm, conversation, tools, opts.signal);
-    const calls = (msg.tool_calls ?? []).filter((c) => typeof c.function?.name === 'string');
-    if (calls.length === 0) {
-      const reply = (msg.content ?? '').trim();
-      if (reply) return { reply, transcript };
-      conversation.push({ role: 'assistant', content: '' });
-      conversation.push({ role: 'user', content: 'Empty reply. Answer the question directly, or call a tool.' });
-      continue;
-    }
-    conversation.push({ role: 'assistant', content: msg.content ?? '', tool_calls: calls });
-    for (const call of calls) {
-      const outcome = await runToolCall(client, call, writeEnabled, opts.signal);
-      transcript.push(outcome.entry);
-      conversation.push(outcome.toolMessage);
-    }
+  const adapter = compatibleProviderRegistry.get(activeProvider);
+  if (!(adapter instanceof OpenAICompatibleAdapter)) {
+    throw new Error('The selected assistant provider is not available for chat yet.');
   }
-
-  conversation.push({
-    role: 'user',
-    content: 'Tool-call limit reached. Summarize what you established and what is still unknown — no further tool calls.',
+  return adapter.run({
+    config: { baseUrl: provider.baseUrl, model: provider.model, apiKey: provider.apiKey, timeoutMs: resolveProviderTimeoutMs('interactive') },
+    messages: conversation,
+    tools,
+    executeTool: (call) => runToolCall(client, call, writeEnabled, opts.signal),
+    signal: opts.signal,
   });
-  const finalMsg = await llmComplete(s.llm, conversation, [], opts.signal);
-  const reply =
-    (finalMsg.content ?? '').trim() || 'The assistant reached its tool-call limit without a conclusion.';
-  return { reply, transcript };
 }
+
+/** Registry-backed compatibility boundary; native providers join this registry in later tasks. */
+const compatibleProviderRegistry = new AssistantProviderRegistry([
+  new OpenAICompatibleAdapter('ollama'),
+  new OpenAICompatibleAdapter('openrouter'),
+]);
