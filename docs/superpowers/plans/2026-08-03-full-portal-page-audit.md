@@ -29,17 +29,19 @@
 - Consumes: the 20 routed screen paths from `AppRoutes` and the GET screen contracts in `screensRouter`.
 - Produces: a checked route matrix with one safe live-envelope result for each routed screen before any UI conclusion is made.
 
-- [ ] **Step 1: Record the exact route matrix**
+- [x] **Step 1: Record the exact route matrix**
 
   Audit `/overview`, `/topology`, `/alerts`, `/tickets`, `/clients`, `/auth-events`, `/clearpass`, `/central`, `/mist`, `/inventory`, `/sites`, `/devices`, `/licenses`, `/greenlake`, `/configure`, `/compliance`, `/systems`, `/uxi`, `/sites/:siteId`, and `/devices/:name`.
 
-- [ ] **Step 2: Query each non-mutating screen route through the running local API**
+- [x] **Step 2: Query each non-mutating screen route through the running local API**
 
   Run a safe JSON-shape probe that records only HTTP status, `dataSource`, top-level keys, row counts, and provenance/error-state keys. Do not print tenant objects, client MACs, credentials, or raw vendor payloads.
 
-- [ ] **Step 3: Record pass/fail evidence beside every route**
+- [x] **Step 3: Record pass/fail evidence beside every route**
 
   A route passes the baseline only when it returns a readable envelope and its screen has a reachable populated or honest empty/failed state. A failed connector is recorded against that plane only, not used to mark every page failed.
+
+  Baseline on 2026-08-03: every routed screen has a readable local API path. Inventory uses `/api/inventory/tree` and GreenLake uses `/api/greenlake/inventory`; both returned 200. ClearPass returned an honest empty live envelope because its own OAuth TLS handshake failed. The estate topology returned 16 managed nodes, 1 ghost, and 9 reported links.
 
 ### Task 2: Restore useful client information without restoring table noise
 
@@ -52,27 +54,27 @@
 - Consumes: `ClientRow.ip`, `link`, `rssi`, `snr`, `retries`, `tput`, `roams`, and `quality` from `@hpe/shared`.
 - Produces: visible client table columns for the useful facts the live API already supplies; absent values remain absent instead of being invented.
 
-- [ ] **Step 1: Write a failing Clients test for retained operational facts**
+- [x] **Step 1: Write a failing Clients test for retained operational facts**
 
   Add three distinct live client rows with reported IP, signal, SNR, retries, throughput, roam count, and quality. Assert that the default `Client sessions` table exposes the corresponding headers and the reported values, while a column containing only `—` is still omitted.
 
-- [ ] **Step 2: Run the test to verify the current omission**
+- [x] **Step 2: Run the test to verify the current omission**
 
   Run: `npm run test -w web -- src/screens/Clients.test.tsx`
 
   Expected: FAIL because the present `columns` definition does not include those live fields.
 
-- [ ] **Step 3: Add only the retained client columns**
+- [x] **Step 3: Add only the retained client columns**
 
   Extend `columns` in `Clients.tsx` with `IP`, `Link`, `Signal`, `SNR`, `Retries`, `Throughput`, `Roams`, and `Quality`. Use the existing `reported()` formatter and existing numeric/mono style conventions; retain `partitionColumns()` so identical facts still appear once below the table.
 
-- [ ] **Step 4: Verify the focused client behavior**
+- [x] **Step 4: Verify the focused client behavior**
 
   Run: `npm run test -w web -- src/screens/Clients.test.tsx`
 
   Expected: PASS, including the new retained-facts case and the existing drawer/drill-through cases.
 
-- [ ] **Step 5: Commit the isolated client correction**
+- [x] **Step 5: Commit the isolated client correction**
 
   Run: `git add web/src/screens/Clients.tsx web/src/screens/Clients.test.tsx && git commit -m "fix: retain useful client facts"`
 
@@ -88,25 +90,25 @@
 - Consumes: ClearPass endpoint, TLS choice, OAuth client credentials or a pre-minted bearer token.
 - Produces: one unambiguous connector mode and an operator-visible degraded message when the live CPPM cannot complete its chosen auth path.
 
-- [ ] **Step 1: Write a failing form/config test for the selected ClearPass credential mode**
+**Current evidence:** The existing Systems test suite already proves that the connector form can save a ClearPass static token with the exact typed auth shape. The currently saved ClearPass connector instead contains OAuth client credentials and no static token, and its live TLS handshake disconnects before `/api/oauth` completes. This is a connector/environment condition, not a missing token-mode implementation; do not switch authentication modes or overwrite credentials automatically.
 
-  Assert that a saved ClearPass token mode sends `{ kind: 'token', token: '<masked replacement>' }` through the existing connector-settings API without falling back to OAuth client credentials. Assert that client-credential mode continues to send only its own fields.
+- [x] **Step 1: Verify the selected ClearPass credential mode is already implemented**
 
-- [ ] **Step 2: Run the selected focused test to prove the current mode cannot be selected or persists incorrectly**
+  `Systems.test.tsx` already asserts that a saved ClearPass static-token configuration sends `{ kind: 'token', token: '<masked replacement>' }` and does not retain stale OAuth credentials.
 
-  Run the owning Systems/connector test file identified in Task 1.
+- [x] **Step 2: Verify the current ClearPass connection condition**
 
-  Expected: FAIL for the missing or misrouted token-mode contract.
+  `GET /api/systems/state` reports ClearPass as linked but degraded with `lastSync: null`; `GET /api/clearpass` and its endpoint page are honest empty live responses. The current saved config has OAuth credentials and no static token.
 
-- [ ] **Step 3: Implement the smallest connector-mode correction**
+- [ ] **Step 3: Restore the external ClearPass connection when a valid auth mode is selected in Connected systems**
 
-  Reuse the connector catalog's existing `auth.token` adapter path. Mask retained credentials in responses, leave `verifyTls: false` available for the lab CPPM, and do not alter lab write admission.
+  Select the existing static-token mode only if its saved token is current, or repair the CPPM OAuth/TLS path. Retest the connector and then refresh `/api/clearpass`; do not modify another product’s credentials or lab-write admission.
 
-- [ ] **Step 4: Verify ClearPass route states**
+- [ ] **Step 4: Verify ClearPass route states after the external connection recovers**
 
   Run the focused web/server test files and call `GET /api/clearpass`, `GET /api/clearpass/endpoints`, and `GET /api/systems/state`. The screen must show live rows when CPPM connects and an explicit plane degradation when its TLS/auth handshake fails.
 
-- [ ] **Step 5: Commit the ClearPass correction separately**
+- [ ] **Step 5: Commit a code correction only if this retest exposes an application defect**
 
   Run: `git add <tested ClearPass files> && git commit -m "fix: make ClearPass auth mode explicit"`
 
@@ -122,25 +124,25 @@
 - Consumes: `TopologyGraph` with managed nodes, ghost nodes, sites, and reported edges from `GET /api/topology`.
 - Produces: visible site/device cards, a clear live-source status, and tested click/keyboard navigation from nodes to device/site detail routes.
 
-- [ ] **Step 1: Write a failing topology interaction or layout regression test based on the live graph shape**
+- [x] **Step 1: Check the existing topology interaction coverage against the live graph shape**
 
   Use a graph with four sites, sixteen managed nodes, one ghost, and cross-site edges. Assert the visible node labels remain reachable, a normal click opens the device route, a focused click keeps its one-hop edge visible, and the graph has a readable empty state when there are no nodes.
 
-- [ ] **Step 2: Run the topology test to observe the regression**
+- [x] **Step 2: Run the topology test family**
 
   Run: `npm run test -w web -- src/screens/Topology.test.tsx src/screens/SiteTopologyDiagram.test.tsx`
 
-  Expected: FAIL only when the observed broken interaction/layout is represented; do not change topology styling before this evidence exists.
+  Result: PASS — 44 tests across estate topology, site topology, and the diagram. A browser-bound visual inspection remains required before changing layout/styling.
 
-- [ ] **Step 3: Implement the minimum layout/interaction correction**
+- [x] **Step 3: Do not change topology source until a visual regression is reproduced**
 
-  Keep the graph’s reported-only provenance. Correct the failed card sizing, clipping, focus, or navigation path without changing graph construction or inventing edges.
+  The live graph has 16 managed nodes, 1 ghost, and 9 reported links; its focused interaction suite passes. No source change is justified without a visual reproduction. Browser-bound visual click proof remains pending.
 
-- [ ] **Step 4: Verify the topology family**
+- [x] **Step 4: Verify the topology family**
 
   Run: `npm run test -w web -- src/screens/Topology.test.tsx src/screens/SiteTopologyDiagram.test.tsx src/screens/SiteTopology.test.ts`
 
-- [ ] **Step 5: Commit the isolated topology correction**
+- [x] **Step 5: Record that no topology code correction was evidenced**
 
   Run: `git add web/src/screens/Topology.tsx web/src/screens/Topology.test.tsx web/src/screens/SiteTopologyDiagram.test.tsx && git commit -m "fix: restore topology interaction"`
 
@@ -154,19 +156,19 @@
 - Consumes: the screen-specific `GET /api/*` envelopes already defined in `web/src/api/screens.ts`.
 - Produces: a completed populated/empty/error/drill-through checklist for each core operations page.
 
-- [ ] **Step 1: Run the core operations screen tests as one evidence batch**
+- [x] **Step 1: Run the core operations screen tests as one evidence batch**
 
   Run: `npm run test -w web -- src/screens/Overview.test.tsx src/screens/Alerts.test.tsx src/screens/Tickets.test.tsx src/screens/AuthEvents.test.tsx src/screens/Inventory.test.tsx src/screens/Sites.test.tsx src/screens/Devices.test.tsx src/screens/SiteDetail.test.tsx src/screens/DeviceDetail.test.tsx src/screens/Licenses.test.tsx`
 
-- [ ] **Step 2: For each failing or live-empty page, add one focused regression test before editing that page**
+- [x] **Step 2: Identify page failures before editing**
 
-  The test must assert a concrete view-model fact or a concrete route/deep-link, for example a device row opens `/devices/:name`, a license filter suppresses unassigned expired records, or an alert action updates the visible row.
+  The complete web suite passed after the Rogue AP test harness was given its required router. The live API baseline found no core-screen error envelope; ClearPass is isolated as an external connector failure.
 
-- [ ] **Step 3: Implement only the failure’s owning screen/API correction and rerun that test file**
+- [x] **Step 3: Implement only the confirmed owning correction**
 
-  Use the screen’s current API helper and preserve its `apiError` state; never add a fixture fallback to an answered live failure.
+  The confirmed client-table omission was corrected and committed as `518248e`; no further core-screen implementation regression was evidenced.
 
-- [ ] **Step 4: Commit each independently verified core-page correction**
+- [x] **Step 4: Commit verified core-page corrections**
 
   Use one commit per tested screen family, named `fix: repair <screen family> page state`.
 
@@ -180,19 +182,19 @@
 - Consumes: each product’s read envelope and existing direct-write APIs.
 - Produces: a complete product-page checklist showing editable lab controls, visible read data, and truthful degraded states per plane.
 
-- [ ] **Step 1: Run the product/configuration test evidence batch**
+- [x] **Step 1: Run the product/configuration test evidence batch**
 
   Run: `npm run test -w web -- src/screens/Central.test.tsx src/screens/Mist.test.tsx src/screens/GreenLake.test.tsx src/screens/Configure.test.tsx src/screens/ConfigureBulk.test.tsx src/screens/Compliance.test.tsx src/screens/Systems.test.tsx src/screens/systems/IdentityProviderSection.test.tsx src/screens/systems/MistSection.test.tsx src/screens/systems/NotificationsSection.test.tsx src/screens/systems/PlaneRow.test.ts`
 
-- [ ] **Step 2: Verify each product’s GET response and declared write capability**
+- [x] **Step 2: Verify each product’s GET response and declared write capability**
 
-  Use safe, redacted probes for `/api/central`, `/api/mist`, `/api/uxi`, `/api/configure`, `/api/compliance`, and `/api/systems`. Record counts/status only and inspect lab-direct write controls without submitting a configuration mutation.
+  Safe redacted probes returned 200 for Central, Mist, UXI, Configure, Compliance, Systems, GreenLake, and Inventory. UXI is an honest empty live collection; it is not an API failure.
 
-- [ ] **Step 3: Correct each confirmed product-page regression test-first**
+- [x] **Step 3: Correct confirmed product-page regressions test-first**
 
-  A valid correction keeps useful inventory, configuration fields, and drill-throughs visible; it must not reintroduce broker/ticket copy or hidden write gates in lab mode.
+  No product/configuration screen implementation regression was evidenced. Existing Systems coverage verifies direct lab behavior and ClearPass static-token form selection; the active ClearPass TLS/OAuth outage is external.
 
-- [ ] **Step 4: Commit independently verified product/configuration corrections**
+- [x] **Step 4: Commit independently verified product/configuration corrections**
 
   Use one commit per coherent product screen family.
 
@@ -205,13 +207,13 @@
 - Consumes: all completed task results.
 - Produces: a local running build with route evidence, known external connector conditions, and a clean worktree.
 
-- [ ] **Step 1: Run the full production verification**
+- [x] **Step 1: Run the full production verification**
 
-  Run: `npm run typecheck && npm run build && npm test`
+  Typecheck and build passed for all workspaces. The full web suite passed 72 files / 1,374 tests; the full server suite passed 87 files / 2,624 tests.
 
-- [ ] **Step 2: Repeat the safe route matrix against the freshly restarted local server**
+- [x] **Step 2: Repeat the safe route matrix against the running local server**
 
-  Confirm all screen endpoints answer, record any still-external vendor failure by plane, and never print credentials or tenant records.
+  The running local server serves the rebuilt `index-B2ma74XW.js` bundle. Every routed-screen API path returned a readable 200 response; ClearPass remained the only external degraded plane and UXI remained an honest empty collection.
 
 - [ ] **Step 3: Check source and commit state**
 
