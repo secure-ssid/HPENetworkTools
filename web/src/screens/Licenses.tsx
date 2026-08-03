@@ -69,13 +69,15 @@ function pctValue(pct: string): number | null {
   return /^\d+(\.\d+)?%$/.test(pct) ? Number.parseFloat(pct) : null;
 }
 
-/** A retired entitlement is operational clutter only when GreenLake explicitly
- * marks it expired and reports no assigned seats. Missing or non-numeric
- * assignments stay visible because they are not evidence of unused capacity. */
+/** A lapsed entitlement is operational clutter only when GreenLake reports
+ * both a passed expiry and no assigned seats. The live mapper calls such rows
+ * "retiring", so status text alone cannot distinguish elapsed from future
+ * capacity. Missing or non-numeric assignments stay visible because they are
+ * not evidence of unused capacity. */
 function isOperationalSubscription(row: SubscriptionRow): boolean {
   const assigned = row.assigned.replace(/,/g, '').trim();
   const isNumericZero = assigned !== '' && Number.isFinite(Number(assigned)) && Number(assigned) === 0;
-  return !((row.status as string) === 'expired' && isNumericZero);
+  return !(typeof row.daysLeft === 'number' && row.daysLeft < 0 && isNumericZero);
 }
 
 function operationalSubscriptions(data: LicensesData): SubscriptionRow[] {

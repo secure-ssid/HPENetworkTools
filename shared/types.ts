@@ -2116,6 +2116,8 @@ export interface DeviceClientSet {
 export interface SubscriptionRow extends Subscription {
   planeTone: Tone;
   tone: Tone; // status badge tone
+  /** Calendar days until the reported expiry; negative means the subscription has elapsed. */
+  daysLeft?: number;
 }
 
 export interface RenewalRow {

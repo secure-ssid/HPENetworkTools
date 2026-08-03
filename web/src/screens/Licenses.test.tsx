@@ -261,7 +261,7 @@ describe('Licences table superpowers', () => {
     };
   }
 
-  it('hides an expired subscription with no assigned seats', async () => {
+  it('hides a live-retiring subscription whose expiry has passed and has no assigned seats', async () => {
     const unusedExpired = sub({
       name: 'Retired AP pool',
       sku: 'OLD-AP',
@@ -270,8 +270,11 @@ describe('Licences table superpowers', () => {
       assigned: '0',
       pct: '0%',
       expires: '01 Jan 25',
-      status: 'expired' as SubscriptionRow['status'],
+      // The live GreenLake mapper calls elapsed subscriptions "retiring";
+      // it does not emit an "expired" status value.
+      status: 'retiring',
       tone: 'danger',
+      daysLeft: -1,
     });
     mockGetLicenses.mockResolvedValue({ ...LIVE, subscriptions: [...LIVE.subscriptions, unusedExpired] });
 
@@ -281,16 +284,15 @@ describe('Licences table superpowers', () => {
     expect(screen.queryByText('Retired AP pool')).toBeNull();
   });
 
-  it('retains non-expired, assigned, and unknown-count subscriptions', async () => {
-    const expiredStatus = 'expired' as SubscriptionRow['status'];
+  it('retains future, assigned, and unknown-count subscriptions', async () => {
     mockGetLicenses.mockResolvedValue({
       ...LIVE,
       subscriptions: [
-        sub({ name: 'Expiring capacity', assigned: '0', status: 'expiring', tone: 'warning' }),
-        sub({ name: 'Retiring capacity', assigned: '0', status: 'retiring', tone: 'danger' }),
+        sub({ name: 'Expiring capacity', assigned: '0', status: 'expiring', tone: 'warning', daysLeft: 5 }),
+        sub({ name: 'Retiring capacity', assigned: '0', status: 'retiring', tone: 'danger', daysLeft: 5 }),
         sub({ name: 'Idle capacity', assigned: '0', status: 'idle', tone: 'neutral' }),
-        sub({ name: 'Expired assigned', assigned: '1,000', status: expiredStatus, tone: 'danger' }),
-        sub({ name: 'Expired unknown', assigned: '—', status: expiredStatus, tone: 'danger' }),
+        sub({ name: 'Expired assigned', assigned: '1,000', status: 'retiring', tone: 'danger', daysLeft: -1 }),
+        sub({ name: 'Expired unknown', assigned: '—', status: 'retiring', tone: 'danger', daysLeft: -1 }),
       ],
     });
 
@@ -307,8 +309,9 @@ describe('Licences table superpowers', () => {
     const unusedExpired = sub({
       name: 'Retired AP pool',
       assigned: '0',
-      status: 'expired' as SubscriptionRow['status'],
+      status: 'retiring',
       tone: 'danger',
+      daysLeft: -1,
     });
     const activeUnused = sub({ name: 'Available AP pool', assigned: '0' });
     let csv: Blob | undefined;
