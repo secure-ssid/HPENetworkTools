@@ -383,10 +383,11 @@ export function startServer(
   // API was closed.
   const wss = attachTerminalWs(server, terminalManager, authConfigured ? authenticateUpgrade() : undefined);
 
-  // Order matters. Stop the poller first so nothing new starts; close the
-  // shells before the HTTP server, because server.close() waits for open
-  // connections and an upgraded WebSocket is one — closing them in the other
-  // order would hang until the shutdown timeout every time.
+  // Order matters. Stop the poller first so nothing new starts; retire the
+  // assistant child before HTTP close, because an in-flight portal turn can
+  // otherwise keep server.close() waiting until the global lifecycle deadline.
+  // Close shells before HTTP too, because upgraded WebSockets are also held
+  // open by server.close().
   installLifecycle({
     steps: [
       { name: 'poller', run: () => poller.stop() },
@@ -398,10 +399,10 @@ export function startServer(
       { name: 'alert rules', run: () => alertRulesService.stop() },
       { name: 'report scheduler', run: () => reportService.stop() },
       { name: 'terminal sessions', run: () => closeTerminalWs(wss) },
+      { name: 'assistant providers', run: () => closeAssistantProviders() },
       { name: 'http server', run: () => new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       }) },
-      { name: 'assistant providers', run: () => closeAssistantProviders() },
     ],
   });
   return server;

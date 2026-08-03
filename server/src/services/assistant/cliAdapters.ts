@@ -1,5 +1,5 @@
 import * as fs from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isCodexModel } from '@hpe/shared';
 import type { AssistantProviderConfig, AssistantProviderId, CodexProviderConfig } from '../../config/settings';
@@ -38,6 +38,7 @@ export interface NativeCliAdapterDependencies {
 
 interface DisposableWorkingDirectory {
   directory: string;
+  home: string;
   dispose(): Promise<void>;
 }
 
@@ -91,13 +92,21 @@ function compactResult(value: unknown): string {
   return compactJson(value, CLI_TRANSCRIPT_RESULT_CAP);
 }
 
+function containsSensitiveToken(value: unknown, token: string | null): boolean {
+  if (!token) return false;
+  if (typeof value === 'string') return value.includes(token);
+  if (Array.isArray(value)) return value.some((entry) => containsSensitiveToken(entry, token));
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, entry]) => key.includes(token) || containsSensitiveToken(entry, token));
+}
+
 /**
  * Codex `exec --json` is a JSONL transport, not browser data. Keep only the
  * two item shapes this UI can safely use: final agent text and actual calls to
  * the one MCP server the portal supplied. Everything else is discarded; bad
  * JSON, another MCP server, or an unfinished turn means no answer is returned.
  */
-function parseCodexRun(stdout: string): ParsedCodexRun {
+function parseCodexRun(stdout: string, sensitiveToken: string | null = null): ParsedCodexRun {
   const lines = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (lines.length === 0) return { text: null, transcript: [], invalid: true };
 
@@ -114,7 +123,10 @@ function parseCodexRun(stdout: string): ParsedCodexRun {
     if (!isRecord(event) || typeof event.type !== 'string') return { text: null, transcript: [], invalid: true };
 
     if (event.type === 'turn.completed') {
-      if (event.status === 'failed' || event.status === 'error' || (event.error !== undefined && event.error !== null)) {
+      if (event.status === 'failed'
+        || event.status === 'error'
+        || (event.error !== undefined && event.error !== null)
+        || containsSensitiveToken(event.error, sensitiveToken)) {
         return { text: null, transcript: [], invalid: true };
       }
       completed = true;
@@ -124,13 +136,18 @@ function parseCodexRun(stdout: string): ParsedCodexRun {
     const item = event.item;
     if (!isRecord(item) || typeof item.type !== 'string') return { text: null, transcript: [], invalid: true };
     if (item.type === 'agent_message') {
-      if (typeof item.text !== 'string') return { text: null, transcript: [], invalid: true };
+      if (typeof item.text !== 'string' || containsSensitiveToken(item.text, sensitiveToken)) return { text: null, transcript: [], invalid: true };
       const next = item.text.trim();
       if (next) text = next;
       continue;
     }
     if (item.type !== 'mcp_tool_call') continue;
-    if (item.server !== 'centralmcp' || typeof item.tool !== 'string' || item.tool.trim().length === 0) {
+    if (item.server !== 'centralmcp'
+      || typeof item.tool !== 'string'
+      || item.tool.trim().length === 0
+      || containsSensitiveToken(item.arguments, sensitiveToken)
+      || containsSensitiveToken(item.result, sensitiveToken)
+      || containsSensitiveToken(item.error, sensitiveToken)) {
       return { text: null, transcript: [], invalid: true };
     }
     transcript.push({
@@ -271,16 +288,33 @@ function resultFor(config: { model: string }): ReadOnlyProbeResult {
  * would let the agent inspect an HTTP bearer token.
  */
 async function createEmptyCodexWorkspace(): Promise<DisposableWorkingDirectory> {
-  const directory = await fs.mkdtemp(join(tmpdir(), 'hpe-codex-'));
+  const root = await fs.mkdtemp(join(tmpdir(), 'hpe-codex-'));
+  const home = join(root, 'home');
+  const directory = join(root, 'workspace');
+  const authSource = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json');
   let disposed = false;
-  return {
-    directory,
-    async dispose(): Promise<void> {
-      if (disposed) return;
-      disposed = true;
-      await fs.rm(directory, { recursive: true, force: true });
-    },
-  };
+  try {
+    await fs.chmod(root, 0o700);
+    await fs.mkdir(home, { mode: 0o700 });
+    await fs.chmod(home, 0o700);
+    await fs.mkdir(directory, { mode: 0o700 });
+    await fs.chmod(directory, 0o700);
+    const authDestination = join(home, 'auth.json');
+    await fs.copyFile(authSource, authDestination);
+    await fs.chmod(authDestination, 0o600);
+    return {
+      directory,
+      home,
+      async dispose(): Promise<void> {
+        if (disposed) return;
+        disposed = true;
+        await fs.rm(root, { recursive: true, force: true });
+      },
+    };
+  } catch (error) {
+    await fs.rm(root, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 abstract class NativeCliAdapter<TConfig extends AssistantProviderConfig> implements AssistantProviderAdapter {
@@ -430,9 +464,9 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
     const workspace = await this.createEmptyWorkspace();
     if (!workspace) return unavailable();
     try {
-      const result = await this.runner.run(this.commandFor(config, context.mcp, workspace.directory, READ_ONLY_PROBE_PROMPT, false, this.timeoutMs));
+      const result = await this.runner.run(this.commandFor(config, context.mcp, workspace, READ_ONLY_PROBE_PROMPT, false, this.timeoutMs));
       if (result.exitCode !== 0) return unavailable();
-      const parsed = parseCodexRun(result.stdout);
+      const parsed = parseCodexRun(result.stdout, context.mcp.authToken);
       const successfulFindTool = !parsed.invalid
         && parsed.transcript.length === 1
         && parsed.transcript[0]?.tool === 'find_tool'
@@ -484,14 +518,14 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
       const result = await this.runner.run(this.commandFor(
         request.config,
         request.mcp,
-        workspace.directory,
+        workspace,
         codexPrompt(request.messages, request.mcp.writeEnabled),
         request.mcp.writeEnabled,
         request.timeoutMs,
         request.signal,
       ));
       if (result.exitCode !== 0) throw new Error('Codex CLI did not complete the assistant request.');
-      const parsed = parseCodexRun(result.stdout);
+      const parsed = parseCodexRun(result.stdout, request.mcp.authToken);
       if (parsed.invalid || !parsed.text) throw new Error('Codex CLI returned an invalid assistant response.');
       return { text: parsed.text, transcript: parsed.transcript };
     } finally {
@@ -510,7 +544,7 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
   private commandFor(
     config: CodexProviderConfig,
     mcp: ReadOnlyProbeContext['mcp'],
-    directory: string,
+    workspace: DisposableWorkingDirectory,
     prompt: string,
     writeEnabled: boolean,
     timeoutMs: number,
@@ -532,12 +566,17 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
       command: 'codex',
       args: [
         'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check',
-        '--cd', directory, '--sandbox', 'read-only', '--model', config.model, '--strict-config',
+        '--disable', 'apps', '--disable', 'plugins', '--disable', 'computer_use', '--disable', 'browser_use',
+        '--cd', workspace.directory, '--sandbox', 'read-only', '--model', config.model, '--strict-config',
         ...overrides.flatMap((override) => ['-c', override]),
         '--json', prompt,
       ],
-      cwd: directory,
-      ...(mcp.authToken ? { env: { HPE_ASSISTANT_MCP_TOKEN: mcp.authToken } } : {}),
+      cwd: workspace.directory,
+      env: {
+        HOME: workspace.home,
+        CODEX_HOME: workspace.home,
+        ...(mcp.authToken ? { HPE_ASSISTANT_MCP_TOKEN: mcp.authToken } : {}),
+      },
       timeoutMs,
       signal,
     };

@@ -160,6 +160,7 @@ describe('Systems assistant providers', () => {
         { id: 'openrouter', ...providerStatus, selected: false, resolvedModel: null },
       ],
     });
+    mockSaveChatSettings.mockResolvedValue({ ok: true, message: 'saved' });
   }
 
   it('renders the shared Codex model selector and only the selected provider fields', async () => {
@@ -244,6 +245,41 @@ describe('Systems assistant providers', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /Test provider/i }).at(-1)!);
     await waitFor(() => expect(mockTestChatProvider).toHaveBeenCalledWith('codex'));
     expect(screen.getByText(/18 ms.*gpt-5.3-spark/i)).toBeTruthy();
+  });
+
+  it('saves a changed Codex model before testing that exact persisted selection', async () => {
+    assistantSetup();
+    mockSaveChatSettings.mockResolvedValue({ ok: true, message: 'saved' });
+    mockTestChatProvider.mockResolvedValue({ ...providerStatus, resolvedModel: 'gpt-5.6-luna' });
+    renderSystems();
+
+    const model = await screen.findByLabelText('Model');
+    fireEvent.change(model, { target: { value: 'gpt-5.6-luna' } });
+    fireEvent.click(screen.getAllByRole('button', { name: /Test provider/i }).at(-1)!);
+
+    await waitFor(() => expect(mockSaveChatSettings).toHaveBeenCalledWith(expect.objectContaining({
+      assistant: expect.objectContaining({
+        activeProvider: 'codex',
+        providers: expect.objectContaining({
+          codex: expect.objectContaining({ model: 'gpt-5.6-luna', enabled: true }),
+        }),
+      }),
+    })));
+    await waitFor(() => expect(mockTestChatProvider).toHaveBeenCalledWith('codex'));
+    expect(screen.getByText(/18 ms.*gpt-5.6-luna/i)).toBeTruthy();
+  });
+
+  it('does not test an unsaved selection when saving it fails', async () => {
+    assistantSetup();
+    mockSaveChatSettings.mockResolvedValue({ ok: false, message: 'save rejected' });
+    renderSystems();
+
+    const model = await screen.findByLabelText('Model');
+    fireEvent.change(model, { target: { value: 'gpt-5.6-luna' } });
+    fireEvent.click(screen.getAllByRole('button', { name: /Test provider/i }).at(-1)!);
+
+    await waitFor(() => expect(mockSaveChatSettings).toHaveBeenCalled());
+    expect(mockTestChatProvider).not.toHaveBeenCalled();
   });
 });
 

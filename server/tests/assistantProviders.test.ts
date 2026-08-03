@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,8 +8,24 @@ import { CodexAppServerFailure, type CodexAppServerLike } from '../src/services/
 import { createMcpLaunchConfig } from '../src/services/assistant/mcpLaunchConfig';
 import { AssistantProviderRegistry, getAssistantDefaults } from '../src/services/assistant/registry';
 import { createSpawnCommandRunner, type AssistantProviderAdapter, type CommandExecution, type ProbeInvocation, type ReadOnlyProbeContext } from '../src/services/assistant/types';
+import { CODEX_MODEL_OPTIONS, isCodexModel } from '@hpe/shared';
 
 const temporaryPaths: string[] = [];
+
+interface FallbackObservation {
+  cwd: string;
+  home: string;
+  codexHome: string;
+  homeMode: number | null;
+  authMode: number | null;
+  authBody: string | null;
+  args: readonly string[];
+}
+
+function requireFallbackObservation(value: FallbackObservation | null): FallbackObservation {
+  if (!value) throw new Error('fallback command was not observed');
+  return value;
+}
 
 afterEach(async () => {
   await Promise.all(temporaryPaths.splice(0).map(async (path) => {
@@ -35,6 +51,20 @@ function settings(): AssistantSettings {
 }
 
 describe('assistant provider registry', () => {
+  it('accepts exactly the five Codex model picker values', () => {
+    const supported = [
+      'gpt-5.3-spark',
+      'gpt-5.6-luna',
+      'gpt-5.6-terra',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+    ];
+
+    expect(CODEX_MODEL_OPTIONS.map((model) => model.id)).toEqual(supported);
+    expect(supported.every(isCodexModel)).toBe(true);
+    expect(isCodexModel('gpt-5.6-sol')).toBe(false);
+  });
+
   it('exposes the speed-first defaults and descriptors for every supported provider', () => {
     expect(getAssistantDefaults()).toEqual([
       expect.objectContaining({ id: 'codex', title: 'Codex', executionKind: 'cli', requiredFields: ['model', 'reasoningEffort'], defaultConfig: { enabled: false, model: 'gpt-5.3-spark', reasoningEffort: 'auto' } }),
@@ -250,6 +280,62 @@ describe('isolated native assistant CLI adapters', () => {
     };
   }
 
+  it('runs a before-turn fallback in a private Codex home with copied auth and all local components disabled', async () => {
+    const sourceHome = await mkdtemp(join(tmpdir(), 'hpe-codex-source-'));
+    temporaryPaths.push(sourceHome);
+    await writeFile(join(sourceHome, 'auth.json'), '{"account":"test"}', { mode: 0o600 });
+    const priorCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = sourceHome;
+    let observed: FallbackObservation | null = null;
+    const fallbackJsonl = [
+      '{"type":"item.completed","item":{"type":"agent_message","text":"fallback ready"}}',
+      '{"type":"turn.completed","status":"completed"}',
+    ].join('\n');
+    try {
+      const adapter = new CodexAdapter({
+        codexAppServer: oneShotFallbackTransport,
+        commandRunner: {
+          run: async (command) => {
+            const home = command.env?.HOME;
+            const codexHome = command.env?.CODEX_HOME;
+            observed = {
+              cwd: command.cwd ?? '',
+              home: home ?? '',
+              codexHome: codexHome ?? '',
+              homeMode: home ? (await stat(home)).mode & 0o777 : null,
+              authMode: home ? (await stat(join(home, 'auth.json'))).mode & 0o777 : null,
+              authBody: home ? await readFile(join(home, 'auth.json'), 'utf8') : null,
+              args: command.args,
+            };
+            return { exitCode: 0, stdout: fallbackJsonl, stderr: '' };
+          },
+        },
+      });
+
+      await expect(adapter.chat({
+        config: { enabled: true, model: 'gpt-5.3-spark', reasoningEffort: 'auto' },
+        timeoutMs: 5_000,
+        messages: [{ role: 'user', content: 'Check readiness.' }],
+        mcp: { ...centralMcp, writeEnabled: false },
+      } as any)).resolves.toMatchObject({ text: 'fallback ready' });
+    } finally {
+      if (priorCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = priorCodexHome;
+    }
+
+    const fallback = requireFallbackObservation(observed);
+    expect(fallback.home).toBeTruthy();
+    expect(fallback.home).not.toBe(sourceHome);
+    expect(fallback.codexHome).toBe(fallback.home);
+    expect(fallback.cwd).toBe(`${fallback.home.replace(/\/home$/, '')}/workspace`);
+    expect(fallback.homeMode).toBe(0o700);
+    expect(fallback.authMode).toBe(0o600);
+    expect(fallback.authBody).toBe('{"account":"test"}');
+    expect(fallback.args).toEqual(expect.arrayContaining([
+      '--disable', 'apps', '--disable', 'plugins', '--disable', 'computer_use', '--disable', 'browser_use',
+    ]));
+  });
+
   it('accepts catalogued Codex models and rejects unknown models before discovery', async () => {
     const fake = nativeDependencies('codex 0.145.0');
     const adapter = new CodexAdapter(fake.dependencies);
@@ -306,7 +392,7 @@ describe('isolated native assistant CLI adapters', () => {
     const dispose = vi.fn(async () => {});
     const createMcpLaunchConfig = vi.fn(async () => ({ path: '/private/tmp/centralmcp.json', directory: '/private/tmp/centralmcp', dispose }));
     const workspaceDispose = vi.fn(async () => {});
-    const createEmptyDirectory = vi.fn(async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: workspaceDispose }));
+    const createEmptyDirectory = vi.fn(async () => ({ directory: '/private/tmp/hpe-codex-empty', home: '/private/tmp/hpe-codex-home', dispose: workspaceDispose }));
     const adapter = new CodexAdapter({
       codexAppServer: oneShotFallbackTransport,
       commandRunner: {
@@ -384,7 +470,7 @@ describe('isolated native assistant CLI adapters', () => {
           };
         },
       },
-      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: async () => {} }),
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', home: '/private/tmp/hpe-codex-home', dispose: async () => {} }),
     });
 
     await adapter.chat({
@@ -419,7 +505,7 @@ describe('isolated native assistant CLI adapters', () => {
     const beforeTurn = new CodexAdapter({
       codexAppServer: oneShotFallbackTransport,
       commandRunner: { run: oneShotRunner },
-      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: async () => {} }),
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', home: '/private/tmp/hpe-codex-home', dispose: async () => {} }),
     });
     await expect(beforeTurn.chat(request)).resolves.toMatchObject({ text: 'fallback ready' });
     expect(oneShotRunner).toHaveBeenCalledTimes(1);
@@ -433,7 +519,7 @@ describe('isolated native assistant CLI adapters', () => {
     const afterTurn = new CodexAdapter({
       codexAppServer: afterTurnTransport,
       commandRunner: { run: oneShotRunner },
-      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: async () => {} }),
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', home: '/private/tmp/hpe-codex-home', dispose: async () => {} }),
     });
 
     await expect(afterTurn.chat(request)).rejects.toThrow(/did not complete/i);
@@ -444,6 +530,64 @@ describe('isolated native assistant CLI adapters', () => {
       .resolves.toEqual({ authenticated: false, modelReady: false });
     expect(invocations).toEqual([]);
     expect(oneShotRunner).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['final agent text', '{"type":"item.completed","item":{"type":"agent_message","text":"centralmcp-test-token"}}'],
+    ['MCP arguments', '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{"query":"centralmcp-test-token"},"result":"safe"}}'],
+    ['MCP result', '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{},"result":"centralmcp-test-token"}}'],
+    ['MCP error', '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{},"result":null,"error":{"message":"centralmcp-test-token"},"status":"failed"}}'],
+  ])('fails closed without returning the active bearer token when fallback output echoes it through %s', async (_surface, unsafeItem) => {
+    const adapter = new CodexAdapter({
+      codexAppServer: oneShotFallbackTransport,
+      commandRunner: {
+        run: async () => ({
+          exitCode: 0,
+          stdout: [
+            unsafeItem,
+            '{"type":"item.completed","item":{"type":"agent_message","text":"safe summary"}}',
+            '{"type":"turn.completed","status":"completed"}',
+          ].join('\n'),
+          stderr: '',
+        }),
+      },
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', home: '/private/tmp/hpe-codex-home', dispose: async () => {} }),
+    });
+
+    const error = await adapter.chat({
+      config: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+      timeoutMs: 5_000,
+      messages: [{ role: 'user', content: 'Check readiness.' }],
+      mcp: { ...centralMcp, writeEnabled: false },
+    } as any).catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(JSON.stringify(error)).not.toContain('centralmcp-test-token');
+  });
+
+  it('does not count a bearer echo as one-shot provider readiness evidence', async () => {
+    const adapter = new CodexAdapter({
+      codexAppServer: oneShotFallbackTransport,
+      commandRunner: {
+        run: async () => ({
+          exitCode: 0,
+          stdout: [
+            '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{"query":"centralmcp-test-token"},"result":"catalogue"}}',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"safe summary"}}',
+            '{"type":"turn.completed","status":"completed"}',
+          ].join('\n'),
+          stderr: '',
+        }),
+      },
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', home: '/private/tmp/hpe-codex-home', dispose: async () => {} }),
+    });
+    const { context, invocations } = probeContext();
+
+    await expect(adapter.probeReadOnly(
+      { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+      context,
+    )).resolves.toEqual({ authenticated: false, modelReady: false });
+    expect(invocations).toEqual([]);
   });
 
   it('does not replay a completed persistent probe turn that returned no tool evidence', async () => {
@@ -484,7 +628,7 @@ describe('isolated native assistant CLI adapters', () => {
           };
         },
       },
-      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose }),
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', home: '/private/tmp/hpe-codex-home', dispose }),
     });
     const { context, invocations } = probeContext();
 
@@ -507,7 +651,7 @@ describe('isolated native assistant CLI adapters', () => {
         dispose,
       },
       commandRunner: { run: oneShotRunner },
-      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: async () => {} }),
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', home: '/private/tmp/hpe-codex-home', dispose: async () => {} }),
     });
     const controller = new AbortController();
     controller.abort();

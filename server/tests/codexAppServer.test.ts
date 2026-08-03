@@ -20,8 +20,12 @@ class FakeChild implements CodexAppServerChild {
   killed = false;
   inventory = ['centralmcp'];
   emitRemoteStatus = false;
-  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' | 'streaming' | 'mismatched-stream' | 'incomplete-item' | 'terminal-start-completed' | 'terminal-start-failed' | 'missing-completed-at' | 'unsafe-completed-at' | 'token-arguments' | 'token-result' | 'token-error' | 'token-message' = 'complete';
+  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' | 'streaming' | 'mismatched-stream' | 'incomplete-item' | 'terminal-start-completed' | 'terminal-start-failed' | 'missing-completed-at' | 'unsafe-completed-at' | 'token-arguments' | 'token-result' | 'token-error' | 'token-message' | 'completion-without-start' = 'complete';
   private readonly events = new EventEmitter();
+  private resolveExit!: () => void;
+  private readonly exited = new Promise<void>((resolve) => { this.resolveExit = resolve; });
+  deferExit = false;
+  private exitResolved = false;
   private sequence = 0;
 
   write(line: string): void {
@@ -43,6 +47,18 @@ class FakeChild implements CodexAppServerChild {
 
   kill(): void {
     this.killed = true;
+    if (!this.deferExit) this.completeExit();
+  }
+
+  waitForExit(): Promise<void> {
+    return this.exited;
+  }
+
+  completeExit(): void {
+    if (this.exitResolved) return;
+    this.exitResolved = true;
+    this.resolveExit();
+    this.events.emit('failure', new Error('child exited'));
   }
 
   sentMethods(): string[] {
@@ -104,6 +120,47 @@ class FakeChild implements CodexAppServerChild {
       return;
     }
     const server = this.turnMode === 'foreign-tool' ? 'computer-use' : 'centralmcp';
+    const needsRegularLifecycle = this.turnMode !== 'completion-without-start'
+      && this.turnMode !== 'streaming'
+      && this.turnMode !== 'mismatched-stream'
+      && this.turnMode !== 'terminal-start-completed'
+      && this.turnMode !== 'terminal-start-failed';
+    if (needsRegularLifecycle) {
+      this.emit({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          startedAtMs: 0,
+          item: { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Check the lab inventory.' }] },
+        },
+      });
+      this.emit({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          completedAtMs: 0,
+          item: { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Check the lab inventory.' }] },
+        },
+      });
+      this.emit({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          startedAtMs: 1,
+          item: {
+            id: 'tool-1',
+            type: 'mcpToolCall',
+            server,
+            tool: 'find_tool',
+            arguments: { query: 'switch inventory' },
+            status: 'inProgress',
+          },
+        },
+      });
+    }
     if (this.turnMode === 'streaming' || this.turnMode === 'mismatched-stream') {
       this.emit({
         method: 'item/started',
@@ -250,6 +307,17 @@ class FakeChild implements CodexAppServerChild {
         },
       });
     }
+    if (this.turnMode !== 'completion-without-start' && this.turnMode !== 'streaming') {
+      this.emit({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          startedAtMs: 2,
+          item: { id: 'message-1', type: 'agentMessage', text: '' },
+        },
+      });
+    }
     this.emit({
       method: 'item/completed',
       params: {
@@ -344,7 +412,6 @@ describe('CodexAppServer', () => {
         'thread/tokenUsage/updated',
         'thread/started',
         'turn/started',
-        'item/started',
         'item/agentMessage/delta',
         'item/mcpToolCall/progress',
         'item/reasoning/summaryTextDelta',
@@ -452,6 +519,14 @@ describe('CodexAppServer', () => {
     expect(fake.children[0]?.killed).toBe(true);
   });
 
+  it('rejects a completed item that was never observed as started', async () => {
+    const fake = testHarness({ turnMode: 'completion-without-start' });
+    transports.push(fake.transport);
+
+    await expect(fake.transport.chat(request)).rejects.toMatchObject({ stage: 'after-turn' });
+    expect(fake.children[0]?.killed).toBe(true);
+  });
+
   it.each(['terminal-start-completed', 'terminal-start-failed'] as const)(
     'rejects a started CentralMCP item carrying terminal status via %s',
     async (turnMode) => {
@@ -515,6 +590,20 @@ describe('CodexAppServer', () => {
     expect(fake.children.flatMap((child) => child.rawSent).join('')).not.toContain('rotated-token');
   });
 
+  it('keeps the warm child when only the selected Codex model changes', async () => {
+    const fake = testHarness();
+    transports.push(fake.transport);
+
+    await fake.transport.chat({ ...request, model: 'gpt-5.3-spark', reasoningEffort: 'auto' });
+    await fake.transport.chat({ ...request, model: 'gpt-5.6-luna', reasoningEffort: 'auto' });
+
+    expect(fake.children).toHaveLength(1);
+    const threadStarts = fake.children[0]?.sent.filter((message) => message.method === 'thread/start') ?? [];
+    expect(threadStarts.map((message) => message.params?.model)).toEqual(['gpt-5.3-spark', 'gpt-5.6-luna']);
+    const turnStarts = fake.children[0]?.sent.filter((message) => message.method === 'turn/start') ?? [];
+    expect(turnStarts.map((message) => message.params?.threadId)).toEqual(['thread-1', 'thread-2']);
+  });
+
   it('fails before turn start when already aborted and disposes a running child when aborted during a turn', async () => {
     const fake = testHarness({ turnMode: 'hang' });
     transports.push(fake.transport);
@@ -532,5 +621,63 @@ describe('CodexAppServer', () => {
     activeAbort.abort();
     await expect(pending).rejects.toMatchObject({ stage: 'after-turn' });
     expect(fake.children[0]?.killed).toBe(true);
+  });
+
+  it('waits for the child exit boundary before deleting its private context', async () => {
+    const fake = testHarness();
+    transports.push(fake.transport);
+    await fake.transport.chat(request);
+    const child = fake.children[0]!;
+    child.deferExit = true;
+
+    const disposing = fake.transport.dispose();
+    await Promise.resolve();
+    expect(child.killed).toBe(true);
+    expect(fake.removed).not.toContain('/private/hpe-codex-1');
+
+    child.completeExit();
+    await disposing;
+    expect(fake.removed).toContain('/private/hpe-codex-1');
+  });
+
+  it('starts the request deadline while work is queued and never launches queued work after disposal', async () => {
+    const fake = testHarness({ turnMode: 'hang' });
+    transports.push(fake.transport);
+    const active = fake.transport.chat({ ...request, timeoutMs: 5_000 });
+    const activeSettled = active.catch(() => undefined);
+    await vi.waitFor(() => expect(fake.children[0]?.sentMethods()).toContain('turn/start'));
+    const queued = fake.transport.chat({ ...request, timeoutMs: 5 });
+
+    const queuedOutcome = await Promise.race([
+      queued.then(() => 'settled', () => 'settled'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('still queued'), 25)),
+    ]);
+    expect(queuedOutcome).toBe('settled');
+
+    await fake.transport.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const turnStarts = fake.children.flatMap((child) => child.sent.filter((message) => message.method === 'turn/start'));
+    expect(turnStarts).toHaveLength(1);
+    await activeSettled;
+  });
+
+  it('settles queued work on disposal before it can launch a second turn', async () => {
+    const fake = testHarness({ turnMode: 'hang' });
+    transports.push(fake.transport);
+    const active = fake.transport.chat({ ...request, timeoutMs: 5_000 });
+    const activeSettled = active.catch(() => undefined);
+    await vi.waitFor(() => expect(fake.children[0]?.sentMethods()).toContain('turn/start'));
+    const queued = fake.transport.chat({ ...request, timeoutMs: 5_000 });
+    const queuedSettled = Promise.race([
+      queued.then(() => 'settled', () => 'settled'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('still queued'), 25)),
+    ]);
+
+    await fake.transport.dispose();
+    await expect(queuedSettled).resolves.toBe('settled');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const turnStarts = fake.children.flatMap((child) => child.sent.filter((message) => message.method === 'turn/start'));
+    expect(turnStarts).toHaveLength(1);
+    await activeSettled;
   });
 });

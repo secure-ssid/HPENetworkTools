@@ -24,7 +24,6 @@ const OPT_OUT_NOTIFICATION_METHODS = [
   'thread/tokenUsage/updated',
   'thread/started',
   'turn/started',
-  'item/started',
   'item/agentMessage/delta',
   'item/mcpToolCall/progress',
   'item/reasoning/summaryTextDelta',
@@ -34,6 +33,7 @@ const OPT_OUT_NOTIFICATION_METHODS = [
 const MAX_JSONL_BUFFER = 1_048_576;
 const TRANSCRIPT_ARGS_CAP = 200;
 const TRANSCRIPT_RESULT_CAP = 300;
+const CHILD_EXIT_WAIT_MS = 1_000;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -51,6 +51,8 @@ export interface CodexAppServerChild {
   onStdout(listener: (chunk: string) => void): void;
   onFailure(listener: (error: Error) => void): void;
   kill(): void;
+  /** Resolves when the spawned process has crossed its exit/failure boundary. */
+  waitForExit?(): Promise<void>;
 }
 
 /** Injectable filesystem boundary used to create the private Codex home. */
@@ -130,10 +132,22 @@ interface Session {
   stage: CodexTransportFailureStage;
   activeTurn: ActiveTurn | null;
   disposed: boolean;
+  cleanup: Promise<void> | null;
 }
 
 interface RunGuard {
   cancelled: boolean;
+}
+
+interface QueuedRun {
+  stage: CodexTransportFailureStage;
+  started: boolean;
+  cancelled: boolean;
+  finished: boolean;
+  timeout: ReturnType<typeof setTimeout> | null;
+  rejectDeadline: (error: CodexAppServerFailure) => void;
+  abortActive: (() => void) | null;
+  removeAbortListener: (() => void) | null;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -200,11 +214,14 @@ function defaultSpawnChild(launch: CodexAppServerLaunch): CodexAppServerChild {
   });
   const stdoutListeners: Array<(chunk: string) => void> = [];
   const failureListeners: Array<(error: Error) => void> = [];
+  let resolveExited!: () => void;
+  const exited = new Promise<void>((resolve) => { resolveExited = resolve; });
   let failed = false;
   const safeError = new Error('Codex app-server process ended.');
   const fail = () => {
     if (failed) return;
     failed = true;
+    resolveExited();
     for (const listener of failureListeners) listener(safeError);
   };
   child.stdout.setEncoding('utf8');
@@ -229,6 +246,9 @@ function defaultSpawnChild(launch: CodexAppServerLaunch): CodexAppServerChild {
     kill() {
       if (!child.killed) child.kill();
     },
+    waitForExit() {
+      return exited;
+    },
   };
 }
 
@@ -240,6 +260,9 @@ export class CodexAppServer implements CodexAppServerLike {
   private readonly environment: NodeJS.ProcessEnv;
   private session: Session | null = null;
   private queue: Promise<void> = Promise.resolve();
+  private terminal = false;
+  private readonly queuedRuns = new Set<QueuedRun>();
+  private readonly retiredSessions = new Set<Promise<void>>();
 
   constructor(dependencies: CodexAppServerDependencies = {}) {
     this.spawnChild = dependencies.spawnChild ?? defaultSpawnChild;
@@ -259,16 +282,52 @@ export class CodexAppServer implements CodexAppServerLike {
   }
 
   async dispose(): Promise<void> {
+    this.terminal = true;
+    const failure = new CodexAppServerFailure(this.session?.stage ?? 'before-turn');
+    for (const queued of this.queuedRuns) this.failQueuedRun(queued, failure);
     await this.disposeSession();
+    await Promise.all([...this.retiredSessions]);
   }
 
   private enqueue(input: CodexTransportRequest): Promise<AssistantChatResult> {
-    const result = this.queue.then(() => this.run(input));
+    if (this.terminal) return Promise.reject(new CodexAppServerFailure('before-turn'));
+    let rejectDeadline!: (error: CodexAppServerFailure) => void;
+    const queued: QueuedRun = {
+      stage: 'before-turn',
+      started: false,
+      cancelled: false,
+      finished: false,
+      timeout: null,
+      rejectDeadline: (error) => rejectDeadline(error),
+      abortActive: null,
+      removeAbortListener: null,
+    };
+    const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+    queued.timeout = setTimeout(() => {
+      this.failQueuedRun(queued, new CodexAppServerFailure(queued.stage));
+    }, Math.max(0, input.timeoutMs));
+    const abort = () => this.failQueuedRun(queued, new CodexAppServerFailure(queued.stage));
+    if (input.signal?.aborted) abort();
+    else if (input.signal) {
+      input.signal.addEventListener('abort', abort, { once: true });
+      queued.removeAbortListener = () => input.signal?.removeEventListener('abort', abort);
+    }
+    this.queuedRuns.add(queued);
+    const result = this.queue.then(async () => {
+      if (this.terminal || queued.cancelled) throw new CodexAppServerFailure(queued.stage);
+      queued.started = true;
+      return this.run(input, queued);
+    });
     this.queue = result.then(() => undefined, () => undefined);
-    return result;
+    return Promise.race([result, deadline]).finally(() => {
+      queued.finished = true;
+      if (queued.timeout) clearTimeout(queued.timeout);
+      queued.removeAbortListener?.();
+      this.queuedRuns.delete(queued);
+    });
   }
 
-  private async run(input: CodexTransportRequest): Promise<AssistantChatResult> {
+  private async run(input: CodexTransportRequest, queued: QueuedRun): Promise<AssistantChatResult> {
     let stage: CodexTransportFailureStage = 'before-turn';
     const guard: RunGuard = { cancelled: false };
     let rejectGuard!: (error: CodexAppServerFailure) => void;
@@ -280,10 +339,8 @@ export class CodexAppServer implements CodexAppServerLike {
       if (this.session) this.invalidate(this.session, failure);
       rejectGuard(failure);
     };
-    const timer = setTimeout(failGuard, Math.max(0, input.timeoutMs));
-    const abort = () => failGuard();
-    if (input.signal?.aborted) failGuard();
-    else input.signal?.addEventListener('abort', abort, { once: true });
+    queued.abortActive = failGuard;
+    if (queued.cancelled || input.signal?.aborted) failGuard();
 
     const lifecycle = (async () => {
       if (guard.cancelled) throw new CodexAppServerFailure('before-turn');
@@ -303,6 +360,7 @@ export class CodexAppServer implements CodexAppServerLike {
       }
 
       stage = 'after-turn';
+      queued.stage = stage;
       session.stage = 'after-turn';
       let activeTurn!: ActiveTurn;
       const completion = new Promise<AssistantChatResult>((resolve, reject) => {
@@ -343,8 +401,7 @@ export class CodexAppServer implements CodexAppServerLike {
       if (this.session) this.invalidate(this.session, failure);
       throw failure;
     } finally {
-      clearTimeout(timer);
-      input.signal?.removeEventListener('abort', abort);
+      queued.abortActive = null;
     }
   }
 
@@ -354,6 +411,7 @@ export class CodexAppServer implements CodexAppServerLike {
     scope: string,
     guard: RunGuard,
   ): Promise<Session> {
+    if (this.terminal || guard.cancelled) throw new CodexAppServerFailure('before-turn');
     if (this.session?.scope === scope && !this.session.disposed) return this.session;
     if (this.session) await this.disposeSession();
 
@@ -391,6 +449,7 @@ export class CodexAppServer implements CodexAppServerLike {
       stage: 'before-turn',
       activeTurn: null,
       disposed: false,
+      cleanup: null,
     };
     this.session = session;
     child.onStdout((chunk) => this.onStdout(session, chunk));
@@ -729,7 +788,7 @@ export class CodexAppServer implements CodexAppServerLike {
       return;
     }
     const started = active.items.get(item.id);
-    if (started?.completed || (started && started.type !== item.type)) {
+    if (!started || started.completed || started.type !== item.type) {
       this.invalidate(session, new CodexAppServerFailure('after-turn'));
       return;
     }
@@ -805,22 +864,53 @@ export class CodexAppServer implements CodexAppServerLike {
     session.activeTurn?.reject(failure);
     session.activeTurn = null;
     session.child.kill();
-    void session.context.dispose().catch(() => undefined);
+    session.cleanup = this.cleanupSessionContext(session);
+    this.trackRetiredSession(session.cleanup);
   }
 
   private async disposeSession(): Promise<void> {
     const session = this.session;
     if (!session) return;
     this.session = null;
-    if (!session.disposed) {
-      session.disposed = true;
-      const failure = new CodexAppServerFailure(session.stage);
-      for (const pending of session.pending.values()) pending.reject(failure);
-      session.pending.clear();
-      session.activeTurn?.reject(failure);
-      session.activeTurn = null;
-      session.child.kill();
+    if (!session.disposed) this.invalidate(session, new CodexAppServerFailure(session.stage));
+    await session.cleanup;
+  }
+
+  private failQueuedRun(queued: QueuedRun, failure: CodexAppServerFailure): void {
+    if (queued.finished || queued.cancelled) return;
+    queued.cancelled = true;
+    queued.abortActive?.();
+    queued.rejectDeadline(failure);
+  }
+
+  private async cleanupSessionContext(session: Session): Promise<void> {
+    try {
+      await this.waitForChildExit(session.child);
+    } finally {
       await session.context.dispose().catch(() => undefined);
     }
+  }
+
+  private async waitForChildExit(child: CodexAppServerChild): Promise<void> {
+    if (!child.waitForExit) return;
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, CHILD_EXIT_WAIT_MS);
+      child.waitForExit!().then(finish, finish);
+    });
+  }
+
+  private trackRetiredSession(cleanup: Promise<void>): void {
+    this.retiredSessions.add(cleanup);
+    void cleanup.then(
+      () => this.retiredSessions.delete(cleanup),
+      () => this.retiredSessions.delete(cleanup),
+    );
   }
 }

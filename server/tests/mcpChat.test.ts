@@ -11,12 +11,20 @@
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { McpClient as McpClientType, chatLoop as chatLoopType } from '../src/services/mcpChat';
 import type { SettingsStore } from '../src/config/settings';
 import { OpenAICompatibleAdapter, resolveProviderTimeoutMs } from '../src/services/assistant/openaiCompatible';
+import { CodexAdapter } from '../src/services/assistant/cliAdapters';
+import {
+  CodexAppServer,
+  type CodexAppServerChild,
+  type CodexAppServerFileSystem,
+  type CodexAppServerLaunch,
+} from '../src/services/assistant/codexAppServer';
 
 let tmpDir: string;
 let McpClient: typeof McpClientType;
@@ -328,6 +336,62 @@ function freshClient(): McpClientType {
   return new McpClient(MCP_URL, null);
 }
 
+class PortalCodexChild implements CodexAppServerChild {
+  readonly sent: Array<{ id?: number; method: string; params?: Record<string, unknown> }> = [];
+  private readonly events = new EventEmitter();
+  private sequence = 0;
+
+  write(line: string): void {
+    const message = JSON.parse(line) as { id?: number; method: string; params?: Record<string, unknown> };
+    this.sent.push(message);
+    if (message.id !== undefined) queueMicrotask(() => this.reply(message));
+  }
+
+  onStdout(listener: (chunk: string) => void): void {
+    this.events.on('stdout', listener);
+  }
+
+  onFailure(listener: (error: Error) => void): void {
+    this.events.on('failure', listener);
+  }
+
+  kill(): void {
+    this.events.emit('failure', new Error('child closed'));
+  }
+
+  private emit(message: unknown): void {
+    this.events.emit('stdout', `${JSON.stringify(message)}\n`);
+  }
+
+  private reply(message: { id?: number; method: string; params?: Record<string, unknown> }): void {
+    if (message.method === 'initialize') {
+      this.emit({ id: message.id, result: { userAgent: 'portal-test' } });
+      return;
+    }
+    if (message.method === 'thread/start') {
+      this.sequence += 1;
+      this.emit({ id: message.id, result: { thread: { id: `portal-thread-${this.sequence}`, ephemeral: true, turns: [], status: 'idle' } } });
+      return;
+    }
+    if (message.method === 'mcpServerStatus/list') {
+      this.emit({ id: message.id, result: { data: [{ name: 'centralmcp', authStatus: 'notRequired', resourceTemplates: [], resources: [], tools: {} }], nextCursor: null } });
+      return;
+    }
+    if (message.method !== 'turn/start') throw new Error(`unexpected Codex app-server method ${message.method}`);
+    const threadId = String(message.params?.threadId);
+    const turnId = `portal-turn-${this.sequence}`;
+    const prompt = String((message.params?.input as Array<{ text?: string }> | undefined)?.[0]?.text ?? '');
+    this.emit({ id: message.id, result: { turn: { id: turnId, items: [], status: 'inProgress' } } });
+    this.emit({ method: 'item/started', params: { threadId, turnId, startedAtMs: 0, item: { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: prompt }] } } });
+    this.emit({ method: 'item/completed', params: { threadId, turnId, completedAtMs: 0, item: { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: prompt }] } } });
+    this.emit({ method: 'item/started', params: { threadId, turnId, startedAtMs: 1, item: { id: 'tool-1', type: 'mcpToolCall', server: 'centralmcp', tool: 'find_tool', arguments: { query: 'inventory' }, status: 'inProgress' } } });
+    this.emit({ method: 'item/completed', params: { threadId, turnId, completedAtMs: 1, item: { id: 'tool-1', type: 'mcpToolCall', server: 'centralmcp', tool: 'find_tool', arguments: { query: 'inventory' }, result: 'tool found', status: 'completed', error: null } } });
+    this.emit({ method: 'item/started', params: { threadId, turnId, startedAtMs: 2, item: { id: 'message-1', type: 'agentMessage', text: '' } } });
+    this.emit({ method: 'item/completed', params: { threadId, turnId, completedAtMs: 2, item: { id: 'message-1', type: 'agentMessage', text: `portal reply ${this.sequence}` } } });
+    this.emit({ method: 'turn/completed', params: { threadId, turn: { id: turnId, items: [], status: 'completed', error: null } } });
+  }
+}
+
 /** Stub fetch for LLM-only tests: answers completions, records payloads. */
 function stubLlm(script: Array<(body: any) => unknown>): void {
   let call = 0;
@@ -402,6 +466,64 @@ describe('chatLoop tool gating', () => {
       }));
     } finally {
       get.mockRestore();
+      configureCompatibleProvider('ollama');
+    }
+  });
+
+  it('keeps one real Codex app-server child warm across two sequential portal chats', async () => {
+    const launches: CodexAppServerLaunch[] = [];
+    const children: PortalCodexChild[] = [];
+    const fs: CodexAppServerFileSystem = {
+      mkdtemp: async () => `/private/portal-codex-${children.length + 1}`,
+      mkdir: async () => undefined,
+      chmod: async () => undefined,
+      copyFile: async () => undefined,
+      rm: async () => undefined,
+    };
+    const appServer = new CodexAppServer({
+      fs,
+      authPath: '/private/source/auth.json',
+      temporaryDirectory: '/private',
+      spawnChild: (launch) => {
+        launches.push(launch);
+        const child = new PortalCodexChild();
+        children.push(child);
+        return child;
+      },
+    });
+    const adapter = new CodexAdapter({ codexAppServer: appServer });
+    settings.update({
+      assistant: {
+        activeProvider: 'codex',
+        mcp: { enabled: true, endpoint: MCP_URL, authToken: 'portal-token' },
+        chatWriteMode: 'enabled',
+        providers: {
+          codex: { enabled: true, model: 'gpt-5.3-spark', reasoningEffort: 'auto' },
+          claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' },
+          kimi: { enabled: false, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false },
+          copilot: { enabled: false, model: 'auto', effort: 'adaptive' },
+          ollama: { enabled: false, baseUrl: LLM_URL, model: 'ollama-model' },
+          openrouter: { enabled: false, baseUrl: OPENROUTER_URL, model: 'router-model' },
+        },
+      },
+    });
+    const { assistantProviderRegistry } = await import('../src/services/mcpChat');
+    const get = vi.spyOn(assistantProviderRegistry, 'get').mockReturnValue(adapter);
+    try {
+      await expect(chatLoop([{ role: 'user', content: 'Show inventory.' }], { client: freshClient() }))
+        .resolves.toMatchObject({ reply: 'portal reply 1' });
+      await expect(chatLoop([{ role: 'user', content: 'Show sites.' }], { client: freshClient() }))
+        .resolves.toMatchObject({ reply: 'portal reply 2' });
+
+      expect(launches).toHaveLength(1);
+      expect(children).toHaveLength(1);
+      const threadStarts = children[0]!.sent.filter((message) => message.method === 'thread/start');
+      const turnStarts = children[0]!.sent.filter((message) => message.method === 'turn/start');
+      expect(threadStarts).toHaveLength(2);
+      expect(turnStarts.map((message) => message.params?.threadId)).toEqual(['portal-thread-1', 'portal-thread-2']);
+    } finally {
+      get.mockRestore();
+      await adapter.dispose();
       configureCompatibleProvider('ollama');
     }
   });
