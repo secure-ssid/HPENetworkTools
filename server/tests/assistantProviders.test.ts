@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AssistantSettings } from '../src/config/settings';
 import { createMcpLaunchConfig } from '../src/services/assistant/mcpLaunchConfig';
 import { AssistantProviderRegistry, getAssistantDefaults } from '../src/services/assistant/registry';
-import type { AssistantProviderAdapter } from '../src/services/assistant/types';
+import type { AssistantProviderAdapter, ReadOnlyProbeContext } from '../src/services/assistant/types';
 
 const temporaryPaths: string[] = [];
 
@@ -49,7 +49,7 @@ describe('assistant provider registry', () => {
       id: 'codex',
       discover: async () => ({ installed: false, authenticated: false, modelReady: false, message: 'codex missing' }),
       chat: async () => ({ text: '' }),
-      probeReadOnly: async () => ({ authenticated: true, modelReady: true, centralMcpReadOnlyInvocation: true }),
+      probeReadOnly: async () => ({ authenticated: true, modelReady: true }),
     };
     const result = await new AssistantProviderRegistry([adapter]).status(settings(), 'codex');
     expect(result).toMatchObject({ installed: false, authenticated: false, mcpReady: false, modelReady: false, selected: true, resolvedModel: null });
@@ -62,7 +62,7 @@ describe('assistant provider registry', () => {
       id: 'codex',
       discover: async () => { discovered = true; return { installed: true, authenticated: true, modelReady: true }; },
       chat: async () => ({ text: '' }),
-      probeReadOnly: async () => ({ authenticated: true, modelReady: true, centralMcpReadOnlyInvocation: true }),
+      probeReadOnly: async () => ({ authenticated: true, modelReady: true }),
     };
     const invalid = settings() as unknown as { providers: { codex: { enabled: boolean; model: string; reasoningEffort: string } } };
     invalid.providers.codex.model = ' ';
@@ -76,7 +76,10 @@ describe('assistant provider registry', () => {
       id: 'codex',
       discover: async () => ({ installed: true, authenticated: true, modelReady: true }),
       chat: async () => ({ text: '' }),
-      probeReadOnly: async () => ({ authenticated: true, modelReady: true, resolvedModel: 'gpt-5.6-terra', centralMcpReadOnlyInvocation: true }),
+      probeReadOnly: async (_config, context: ReadOnlyProbeContext) => {
+        context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
+        return { authenticated: true, modelReady: true, resolvedModel: 'gpt-5.6-terra' };
+      },
     };
     let now = 100;
     const result = await new AssistantProviderRegistry([adapter], { now: () => now++ === 100 ? 100 : 143 }).status(settings(), 'codex');
@@ -88,7 +91,27 @@ describe('assistant provider registry', () => {
       id: 'codex',
       discover: async () => ({ installed: true, authenticated: true, modelReady: true }),
       chat: async () => ({ text: '' }),
-      probeReadOnly: async () => ({ authenticated: true, modelReady: true, centralMcpReadOnlyInvocation: false }),
+      probeReadOnly: async () => ({ authenticated: true, modelReady: true }),
+    };
+    const result = await new AssistantProviderRegistry([adapter]).status(settings(), 'codex');
+    expect(result).toMatchObject({ installed: true, authenticated: true, modelReady: true, mcpReady: false });
+  });
+
+  it.each([
+    { boundary: 'browser', tool: 'open' },
+    { boundary: 'filesystem', tool: 'readFile' },
+    { boundary: 'shell', tool: 'exec' },
+    { boundary: 'mcp', server: 'othermcp', tool: 'find_tool', access: 'read-only' },
+  ] as const)('rejects a probe that records a forbidden $boundary invocation', async (forbidden) => {
+    const adapter: AssistantProviderAdapter = {
+      id: 'codex',
+      discover: async () => ({ installed: true, authenticated: true, modelReady: true }),
+      chat: async () => ({ text: '' }),
+      probeReadOnly: async (_config, context: ReadOnlyProbeContext) => {
+        context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
+        context.recordInvocation(forbidden);
+        return { authenticated: true, modelReady: true };
+      },
     };
     const result = await new AssistantProviderRegistry([adapter]).status(settings(), 'codex');
     expect(result).toMatchObject({ installed: true, authenticated: true, modelReady: true, mcpReady: false });

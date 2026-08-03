@@ -26,8 +26,23 @@ export interface ReadOnlyProbeResult {
   authenticated: boolean;
   modelReady: boolean;
   resolvedModel?: string;
-  /** Set only after the adapter records an actual centralmcp read-only call. */
-  centralMcpReadOnlyInvocation: boolean;
+}
+
+/** Observable probe activity. Only one named centralmcp read-only call proves readiness. */
+export interface ProbeInvocation {
+  boundary: 'mcp' | 'browser' | 'filesystem' | 'shell';
+  server?: string;
+  tool: string;
+  access?: 'read-only' | 'write';
+}
+
+/**
+ * Registry-owned transcript boundary for native probes. Adapters may report
+ * every action they attempt, but the registry—not an adapter success flag—
+ * decides whether that transcript proves centralmcp-only read access.
+ */
+export interface ReadOnlyProbeContext {
+  recordInvocation(invocation: ProbeInvocation): void;
 }
 
 export interface AssistantChatRequest {
@@ -42,7 +57,7 @@ export interface AssistantProviderAdapter {
   id: AssistantProviderId;
   discover(config: AssistantProviderConfig): Promise<ProviderDiscovery>;
   chat(request: AssistantChatRequest): Promise<AssistantChatResult>;
-  probeReadOnly(config: AssistantProviderConfig): Promise<ReadOnlyProbeResult>;
+  probeReadOnly(config: AssistantProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult>;
 }
 
 export interface CommandExecution {

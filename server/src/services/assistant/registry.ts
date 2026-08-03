@@ -7,7 +7,9 @@ import {
 import type {
   AssistantProviderAdapter,
   AssistantProviderDescriptor,
+  ProbeInvocation,
   ProviderStatus,
+  ReadOnlyProbeContext,
 } from './types';
 
 const PROVIDER_DEFAULTS: readonly AssistantProviderDescriptor[] = [
@@ -42,6 +44,14 @@ function unavailable(selected: boolean, message: string): ProviderStatus {
     latencyMs: null,
     message,
   };
+}
+
+function isCentralMcpReadOnlyProof(invocations: readonly ProbeInvocation[]): boolean {
+  return invocations.length === 1
+    && invocations[0].boundary === 'mcp'
+    && invocations[0].server === 'centralmcp'
+    && invocations[0].access === 'read-only'
+    && invocations[0].tool.trim().length > 0;
 }
 
 /** Coordinates adapter discovery and proof-based readiness without surfacing adapter output. */
@@ -85,9 +95,15 @@ export class AssistantProviderRegistry {
         };
       }
       const startedAt = this.now();
-      const probe = await adapter.probeReadOnly(config);
+      const invocations: ProbeInvocation[] = [];
+      const context: ReadOnlyProbeContext = {
+        recordInvocation(invocation) {
+          invocations.push({ ...invocation });
+        },
+      };
+      const probe = await adapter.probeReadOnly(config, context);
       const latencyMs = Math.max(0, this.now() - startedAt);
-      const mcpReady = probe.centralMcpReadOnlyInvocation;
+      const mcpReady = isCentralMcpReadOnlyProof(invocations);
       const ready = probe.authenticated && probe.modelReady && mcpReady;
       return {
         installed: true,
