@@ -15,10 +15,12 @@ import {
   getDiagnosticEligibility,
   getCentralWebhookHandoffStatus,
   startDiagnostic,
+  getClearPassServiceDetail,
   getDevices,
   getChatStatus,
   getOverview,
   getSettings,
+  getSiteApplications,
   getSiteDetail,
   getSiteTopology,
   getSseKind,
@@ -26,6 +28,7 @@ import {
   getSystemsState,
   getTerminalSession,
   getTerminalSessions,
+  getTopology,
   isApiError,
   isUnknownWebhookOutcome,
   retrySseCommit,
@@ -40,6 +43,7 @@ import type { Settings } from './client';
 import {
   DEVICES,
   DEVICE_RECONCILIATION,
+  buildDemoTopologyGraph,
   deviceProfile,
   terminalBanner,
   terminalQuickCommands,
@@ -1111,6 +1115,156 @@ describe('on-demand detail payloads', () => {
   });
 });
 
+describe('clearpass service detail read', () => {
+  it('passes a service detail read through with its provenance intact', async () => {
+    const fetchSpy = mockFetchCapture({
+      ok: true,
+      body: {
+        dataSource: 'live',
+        serviceDetail: {
+          service: {
+            id: '4',
+            name: 'Device Admin (TACACS+)',
+            type: 'TACACS',
+            template: 'TACACS+ Enforcement',
+            enabled: true,
+            hitCount: 96,
+            orderNo: 8,
+            description: 'switch shell',
+            monitorMode: false,
+            rulesMatchType: 'MATCHES_ALL',
+            rulesConditions: [{ type: 'Connection', name: 'NAD-IP-Address', operator: 'EQUALS', value: '10.42.8.11' }],
+            authMethods: ['TACACS+'],
+            authSources: ['AD meridian.health'],
+            stripUsername: false,
+            roleMappingPolicy: null,
+            enforcementPolicy: 'Device Admin Enforcement',
+            useCachedPolicyResults: false,
+            postureEnabled: false,
+            auditEnabled: true,
+            profilerEnabled: false,
+            acctProxyEnabled: false,
+          },
+          source: { plane: 'clearpass', at: '2026-07-28T15:58:08.279Z', sections: { service: 'ok' } },
+        },
+      },
+    });
+
+    const result = await getClearPassServiceDetail('4');
+    // The per-service read goes to its own route, never the screen poll.
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/clearpass/services/4');
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.detail.service?.name).toBe('Device Admin (TACACS+)');
+    // A null role-mapping policy is a reported absence, kept distinct from a
+    // field that never crossed.
+    expect(result.detail.service?.roleMappingPolicy).toBeNull();
+    expect(result.detail.source.sections).toEqual({ service: 'ok' });
+  });
+
+  it('words the three not-ok outcomes distinctly, never as an empty drawer', async () => {
+    // The route's own honest "no plane can answer".
+    mockFetch({ ok: true, body: { dataSource: 'live', serviceDetail: null } });
+    expect((await getClearPassServiceDetail('4')).kind).toBe('not-reported');
+
+    // A payload without provenance is unreadable, not empty.
+    mockFetch({ ok: true, body: { dataSource: 'live', serviceDetail: { service: { id: '4' } } } });
+    expect((await getClearPassServiceDetail('4')).kind).toBe('not-reported');
+
+    // An answered 404 is "not reported"; any other answered failure is a failure.
+    mockFetch({ ok: false, status: 404, body: { error: "no service detail recorded for 'svc-9'" } });
+    expect((await getClearPassServiceDetail('svc-9')).kind).toBe('not-reported');
+    mockFetch({ ok: false, status: 500, body: { error: 'detail read failed' } });
+    const failed = await getClearPassServiceDetail('4');
+    expect(failed.kind).toBe('failed');
+    if (failed.kind === 'failed') expect(failed.message).toContain('detail read failed');
+  });
+
+  it('mirrors the demo branch when the backend is unreachable — fixture or not-reported, never fabrication', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+    const authored = await getClearPassServiceDetail('svc-001');
+    expect(authored.kind).toBe('ok');
+    if (authored.kind === 'ok') expect(authored.detail.service?.name).toBe('MRDN Guest 802.1X');
+    expect((await getClearPassServiceDetail('svc-002')).kind).toBe('not-reported');
+  });
+});
+
+describe('site applications read', () => {
+  const APPS_BLOCK = {
+    siteId: 'campus-01',
+    window: { start: '2026-07-27T12:00:00.000Z', end: '2026-07-28T12:00:00.000Z' },
+    apps: [
+      {
+        id: 'app-0365',
+        name: 'Microsoft 365',
+        riskRaw: 'trusted',
+        risk: 'trustworthy',
+        state: 'active',
+        rxBytes: 4_230_000_000,
+        txBytes: 810_000_000,
+        totalBytes: 5_040_000_000,
+        categories: ['Collaboration', 'Web'],
+        applicationHostType: 'cloud',
+        destLocation: ['US'],
+        experience: null,
+        lastUsedAt: null,
+        tlsVersion: null,
+        certificateExpiryAt: null,
+      },
+    ],
+    source: { plane: 'central', at: '2026-07-28T11:59:00.000Z', sections: { apps: 'ok' } },
+  };
+
+  it('asks the per-site route and passes a provenance-carrying payload through untouched', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ dataSource: 'live', applications: APPS_BLOCK }),
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await getSiteApplications('campus-01');
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/sites/campus-01/applications');
+    expect(result).toEqual({ kind: 'ok', applications: APPS_BLOCK });
+  });
+
+  it('words the three no-table outcomes distinctly — null, 404, and a broken read', async () => {
+    // The route's own honest "no linked plane can answer".
+    mockFetch({ ok: true, body: { dataSource: 'live', applications: null } });
+    expect(await getSiteApplications('campus-01')).toEqual({ kind: 'not-reported' });
+
+    // An answered 404 (unknown site, or a demo site without an authored table).
+    mockFetch({ ok: false, status: 404, body: { error: "no application visibility recorded for 'campus-02'" } });
+    expect(await getSiteApplications('campus-02')).toEqual({ kind: 'not-reported' });
+
+    // An HTTP failure on a supplementary read is a failure, never an empty table.
+    mockFetch({ ok: false, status: 500, body: { error: 'applications read failed' } });
+    expect(await getSiteApplications('campus-01')).toEqual({ kind: 'failed', message: 'applications read failed' });
+  });
+
+  it('discards a payload that arrived without provenance', async () => {
+    mockFetch({
+      ok: true,
+      body: { dataSource: 'live', applications: { siteId: 'campus-01', apps: [] } },
+    });
+    expect(await getSiteApplications('campus-01')).toEqual({ kind: 'not-reported' });
+  });
+
+  it('mirrors the demo branch when no backend answered — authored table or honest not-reported', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+    const demo = await getSiteApplications('campus-01');
+    expect(demo.kind).toBe('ok');
+    if (demo.kind === 'ok') {
+      expect(demo.applications.siteId).toBe('campus-01');
+      expect(demo.applications.source.sections).toEqual({ apps: 'ok' });
+      expect(demo.applications.apps?.[0].name).toBe('Microsoft 365');
+    }
+    // The demo world authored no table for campus-02 — the same straight
+    // answer the demo route's 404 gives.
+    expect(await getSiteApplications('campus-02')).toEqual({ kind: 'not-reported' });
+  });
+});
+
 describe('SSE mutation and commit API', () => {
   it('preserves a failed kind read instead of returning an empty-list-shaped success', async () => {
     mockFetch({ ok: false, status: 503, body: { error: 'SSE cache read unavailable' } });
@@ -1896,6 +2050,7 @@ describe('Central webhook PATCH API client', () => {
         reviewConfirmed: true,
       });
     } finally {
+      server.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
         server.close((err) => (err ? reject(err) : resolve())),
       );
@@ -1956,5 +2111,37 @@ describe('shell settings', () => {
       'workspaceName',
     ]);
     expect(body.density).toBe('compact');
+  });
+});
+
+describe('estate topology read', () => {
+  it('serves the API payload when the backend answers', async () => {
+    const graph = { nodes: [], edges: [], sites: [], omissions: [] };
+    mockFetch({ ok: true, body: { dataSource: 'live', syncedAt: null, graph, notes: ['n'] } });
+    const data = await getTopology();
+    expect(data.dataSource).toBe('live');
+    expect(data.graph).toEqual(graph);
+    expect(data.notes).toEqual(['n']);
+  });
+
+  /* An unreachable backend falls back to the demo estate — and to the SAME
+     graph the server's demo branch serves, because both sides call the one
+     shared assembly. */
+  it('falls back to the shared demo graph, byte-identical, when the backend is gone', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+    const a = await getTopology();
+    const b = await getTopology();
+    expect(a.dataSource).toBe('demo');
+    expect(a.graph).toEqual(buildDemoTopologyGraph());
+    expect(a).toEqual(b);
+    expect(a.graph.edges.length).toBeGreaterThan(0);
+  });
+
+  /* An ANSWERED failure is never papered over with fixtures. */
+  it('keeps an HTTP failure an error, never a substituted demo graph', async () => {
+    mockFetch({ ok: false, status: 500, body: { error: 'boom' } });
+    const data = await getTopology();
+    expect(data.apiError).toBeTruthy();
+    expect(data.graph.nodes).toHaveLength(0);
   });
 });

@@ -8,15 +8,25 @@ import {
   fetchDetail,
   fetchScreen,
   readDetail,
+  unwrapDetailPayload,
 } from './core';
 import {
   ALERTS,
+  AP_TRENDS_DEMO,
   AUTH_EVENTS,
   AUTH_FAIL_REASONS,
   AUTH_STATS,
   BASELINE_PROGRESS,
   CAPABILITY_MATRIX,
+  CLEARPASS_AUTH_SOURCES,
   CLEARPASS_ENDPOINTS,
+  CLEARPASS_ENFORCEMENT_POLICIES,
+  CLEARPASS_ENFORCEMENT_PROFILES,
+  CLEARPASS_LOCAL_USERS,
+  CLEARPASS_NETWORK_DEVICES,
+  CLEARPASS_ROLES,
+  CLEARPASS_SERVICES,
+  CLEARPASS_SERVICE_DETAILS,
   CLIENTS,
   CLIENT_STATS,
   COMPLIANCE_DIFF,
@@ -30,6 +40,12 @@ import {
   FINDINGS,
   LANE_META,
   LICENSE_STATS,
+  MIST_AP_STATS,
+  MIST_LICENSE_USAGES,
+  MIST_PLANE_STATUS,
+  MIST_ROGUE_APS,
+  MIST_SITE_MAPS,
+  MIST_SLE_DRILLDOWN,
   ORPHANS,
   OVERVIEW_ALERTS,
   OVERVIEW_CHANGES,
@@ -42,15 +58,23 @@ import {
   RENEWALS,
   SEARCH_INDEX,
   SITES,
+  SITE_APPLICATIONS_DEMO,
   SITE_IDS,
   SITE_PROFILES,
   SITE_SLE,
   SITE_STATS,
   SSIDS,
   SUBSCRIPTIONS,
+  SWITCH_HARDWARE_TRENDS_DEMO,
+  SWITCH_INTERFACE_TRENDS_DEMO,
   TICKETS,
   UXI_SENSORS,
   VLANS,
+  buildDemoTopologyGraph,
+  clientPlaneSections,
+  demoCentralSections,
+  demoClient360World,
+  demoTopologyNotes,
   deriveSiteProfile,
   deviceProfile,
   isRealSiteId,
@@ -58,13 +82,34 @@ import {
   terminalBanner,
   terminalQuickCommands,
   type AlertCorrelation,
+  type AlertGroup,
   type AlertRow,
+  type ApTrendMetric,
+  type ApTrendsLive,
   type AuthEventRow,
   type BaselineProgressRow,
   type CapabilityRow,
+  type CentralDataset,
+  type CentralFleetSummary,
+  type CentralFirmwareRow,
+  type CentralPlaneStatus,
+  type CentralSiteRow,
   type ChangeLogEntry,
   type ClientDetailLive,
+  type ClientPlaneSection,
   type ClientRow,
+  type ClearPassAuthSourceRow,
+  type ClearPassDeviceGroupRow,
+  type ClearPassEnforcementPolicyRow,
+  type ClearPassEnforcementProfileRow,
+  type ClearPassLocalUserRow,
+  type ClearPassNetworkDeviceRow,
+  type ClearPassRoleRow,
+  type ClearPassServiceDetailLive,
+  type ClearPassServiceRow,
+  type ConfigBackupDiff,
+  type ConfigBackupListEnvelope,
+  type ConfigBackupVersionList,
   type DeviceCfg,
   type DeviceCheckRow,
   type DeviceClientSet,
@@ -77,6 +122,12 @@ import {
   type FindingRow,
   type LaneMeta,
   type LaunchpadRow,
+  type MistApStatsRow,
+  type MistLicenseUsageRow,
+  type MistPlaneStatus,
+  type MistRogueApRow,
+  type MistSiteMap,
+  type MistSleMetricDetail,
   type MistSleRow,
   type OrphanRow,
   type OverviewAlert,
@@ -89,17 +140,22 @@ import {
   type RenewalRow,
   type SearchIndexEntry,
   type SiteAlertRow,
+  type SiteApplicationsLive,
   type SiteDeviceRow,
   type SiteId,
   type SiteProfile,
   type SiteReachability,
   type SiteRow,
   type SiteTopologyLive,
+  type SilencedAlertGroup,
   type SsidObject,
   type StatDef,
   type SubscriptionRow,
+  type SwitchHardwareTrendsLive,
+  type SwitchInterfaceTrendsLive,
   type TerminalLine,
   type TicketRow,
+  type TopologyPayload,
   type UxiSensorRow,
   type VlanObject,
 } from '@hpe/shared';
@@ -124,6 +180,17 @@ export interface OverviewData extends ScreenEnvelope {
 export interface AlertsData extends ScreenEnvelope {
   alerts: AlertRow[];
   syncedAt: string | null;
+  /** The deduped queue, when the ROUTE groups it (shared/alertEngine.ts):
+   *  silenced groups are excluded here and carried in `silenced` with their
+   *  reason. Absent (demo fixture fallback, or an older server) = the screen
+   *  groups the flat `alerts` itself with the same shared engine, so the two
+   *  can never disagree about what belongs together. */
+  groups?: AlertGroup[];
+  /** Groups an active silence benched, each WITH the silence and its reason —
+   *  suppression is always visible, never invisible. Absent = the route did
+   *  not say (older server); an empty array means it looked and nothing is
+   *  silenced. */
+  silenced?: SilencedAlertGroup[];
   /** The danger/warning banner over the queue, when the ROUTE correlates it —
    *  the server can cross the worst finding with plane freshness, which a
    *  client-side correlate() over already-pulled rows cannot see. Absent (or
@@ -151,6 +218,13 @@ export interface ClientsData extends ScreenEnvelope {
   client?: ClientRow | null;
   detail?: ClientDetailLive | null;
   topology?: SiteTopologyLive | null;
+  /** Client 360: every registry plane's view of the named client, keyed by
+   *  its normalized MAC — present-with-data or absent-with-an-honest-reason.
+   *  Same one-client rule as the keys above. It is a JOIN over rows the
+   *  poller already pulled, so it costs no plane call; in demo mode the route
+   *  correlates the fixtures themselves. Absent = the route did not say (an
+   *  older server). */
+  clientPlanes?: ClientPlaneSection[] | null;
   /** Linked planes that contributed nothing to this dataset — the list above
    *  is short by whatever they hold. Absent means the route did not say; an
    *  empty array means it looked and every linked plane reported. */
@@ -171,6 +245,25 @@ export interface ClearPassData extends ScreenEnvelope {
    *  dataset — absent means the route did not say; an empty array means it
    *  looked and every linked plane reported. */
   missingSources?: Plane[];
+  /** The CPPM's policy inventories. Each key is present only when the plane
+   *  reported that collection (demo fixtures always carry the six below); an
+   *  ABSENT key is the honest "this CPPM did not report it" — a failed read
+   *  or a build that does not expose the collection — never an implied empty
+   *  list. Present-and-empty is a real answer. */
+  networkDevices?: ClearPassNetworkDeviceRow[];
+  authSources?: ClearPassAuthSourceRow[];
+  roles?: ClearPassRoleRow[];
+  enforcementPolicies?: ClearPassEnforcementPolicyRow[];
+  enforcementProfiles?: ClearPassEnforcementProfileRow[];
+  /** Whitelisted identity fields only — no password material of any kind. */
+  localUsers?: ClearPassLocalUserRow[];
+  /** Served by 6.11 builds (/api/config/service) and by the demo estate;
+   *  absent only when the live box 404s BOTH service paths — the screen
+   *  renders "not available on this CPPM" for that case. */
+  services?: ClearPassServiceRow[];
+  /** Not exposed on every CPPM build (verified 404 on 6.11) — absent in
+   *  demo AND whenever the live box 404s the read. */
+  deviceGroups?: ClearPassDeviceGroupRow[];
 }
 
 export interface UxiData extends ScreenEnvelope {
@@ -180,6 +273,32 @@ export interface UxiData extends ScreenEnvelope {
    *  multi-plane `missingSources` other screens carry. Absent means the
    *  route did not say. */
   missingSources?: Plane[];
+}
+
+export interface MistData extends ScreenEnvelope {
+  /** The plane's own status block — the registry facts live, the authored
+   *  MIST_PLANE_STATUS in demo. Always present; `linked: false` is how an
+   *  unlinked deployment reads. */
+  plane: MistPlaneStatus;
+  /** Per-site SLE rows keyed by SiteId. Absent = the pull did not carry the
+   *  SLE walk this cycle (a failed read), which the screen words differently
+   *  from a site simply absent from the map ("not scored", never 0%). */
+  sleBySiteId?: Partial<Record<string, MistSleRow>>;
+  /** Rogue/neighbor BSSIDs across sites. Absent = the rogues walk was not
+   *  reported this cycle; present-and-empty = Mist heard nothing, a real
+   *  answer. */
+  rogues?: MistRogueApRow[];
+  /** The AP rich-stats walk across sites — same absent/present-empty rule. */
+  apStats?: MistApStatsRow[];
+  /** Per-site licence consumption. null = Mist reported nothing this cycle
+   *  (not linked, or the read failed) — the Licenses screen's own contract. */
+  licenseUsages?: MistLicenseUsageRow[] | null;
+  /** The plane's WLAN inventory (Configure's ssids dataset). null = not read
+   *  this cycle or the plane named it unavailable. */
+  wlans?: SsidObject[] | null;
+  /** Mist-claimed devices (the firmware section's rows). Always present:
+   *  the merge looked, so empty is a real answer. */
+  devices: DeviceRow[];
 }
 
 export interface SitesData extends ScreenEnvelope {
@@ -194,6 +313,30 @@ export interface SitesData extends ScreenEnvelope {
    *  publishes this, so a site absent from the map is "not reported by any
    *  plane", not a score of zero. Absent map entirely = older server. */
   sleBySiteId?: Partial<Record<string, MistSleRow>>;
+}
+
+export interface CentralData extends ScreenEnvelope {
+  /** The plane's own status block — the registry facts live, the authored
+   *  SYSTEMS row's in demo. Always present; `linked: false` is how an
+   *  unlinked deployment reads. */
+  plane: CentralPlaneStatus;
+  stats: StatDef[];
+  /** Devices by type and by verbatim state word, off the plane's own rows. */
+  fleet: CentralFleetSummary;
+  /** Per-site rollup of the plane's own rows (never the cross-plane merge). */
+  sites: CentralSiteRow[];
+  /** Devices behind their recommended train — the plane's own verdict. */
+  firmware: CentralFirmwareRow[];
+  /** The plane's WLAN inventory (Configure's ssids dataset). */
+  wlans: SsidObject[];
+  /** The active alert queue cut to this plane (silences already applied
+   *  server-side; received webhook deliveries included). */
+  alerts: AlertRow[];
+  /** Datasets the pull did not carry this cycle — each words its own section
+   *  ("not reported"), never an implied empty estate. Absent = the route did
+   *  not say (demo fixtures, or an older server); an empty array means it
+   *  looked and every section reported. */
+  notReported?: CentralDataset[];
 }
 
 export interface SiteDetailData extends ScreenEnvelope {
@@ -218,6 +361,32 @@ export interface SiteDetailData extends ScreenEnvelope {
    *  that section was not fetched, present-and-empty = the plane answered with
    *  no graph. This client never fills either in. */
   topology?: SiteTopologyLive;
+  /** The site's floor plans (Mist-published — only Mist has maps). Present
+   *  and EMPTY is a real answer: the site's planes were read and publish no
+   *  map, which renders the honest no-map state — never a fabricated
+   *  placeholder image. Absent = the route did not say (an older server). */
+  maps?: MistSiteMap[];
+  /** The site's Mist SLE row — the scores behind the wireless-experience
+   *  section and the entry into the per-metric drill-down. null = no plane
+   *  reports SLE for this site (rendered "not reported", never a 0% score);
+   *  absent = the route did not say. */
+  sle?: MistSleRow | null;
+  /** Roster clients the plane locates on one of the site's maps, projected to
+   *  exactly what a floor-plan dot renders (the site page has no client
+   *  table). Absent = the route did not say. */
+  mapClients?: SiteMapClientDot[];
+}
+
+/** One located client on a floor plan — the dot's position (map-image pixels
+ *  against `mapId`), label and tone, and nothing else. */
+export interface SiteMapClientDot {
+  name: string;
+  mac: string;
+  x: number;
+  y: number;
+  mapId: string;
+  health: string;
+  healthTone: ClientRow['healthTone'];
 }
 
 export interface DevicesData extends ScreenEnvelope {
@@ -262,6 +431,14 @@ export interface DeviceDetailData extends ScreenEnvelope {
   /** The site graph this device sits in, when the route attaches one — it is
    *  what names the far end of an uplink. Same three states as `detail`. */
   topology?: SiteTopologyLive;
+  /** The Mist AP rich-stats row for THIS device (radios with the full util
+   *  split, CPU/mem, env sensors, power, uplink port + LLDP neighbour), joined
+   *  from the Mist site stats walk — a POLL dataset, so no per-object call
+   *  stands behind it. `null` = the route looked and this device has no Mist
+   *  AP stats row (not a Mist AP, or the walk was not read); absent = the
+   *  route did not say (an older server). The RF/health panel renders only
+   *  when a row is present. */
+  mistAp?: MistApStatsRow | null;
 }
 
 export interface LicensesData extends ScreenEnvelope {
@@ -269,6 +446,11 @@ export interface LicensesData extends ScreenEnvelope {
   subscriptions: SubscriptionRow[];
   renewals: RenewalRow[];
   orphans: OrphanRow[];
+  /** Mist's per-site licence consumption (/orgs/{org}/licenses/usages). Only
+   *  Mist publishes this: `null` means it reported nothing this cycle (not
+   *  linked, or the read failed) — "not reported", never zero consumption.
+   *  Absent key entirely = an older server that does not send the section. */
+  mistLicenseUsages?: MistLicenseUsageRow[] | null;
 }
 
 export interface ConfigureData extends ScreenEnvelope {
@@ -354,19 +536,79 @@ export async function getClients(mac?: string): Promise<ClientsData> {
   if (result.kind === 'http-error') {
     return apiFailure<ClientsData>(result.message, { stats: [], clients: [] });
   }
-  return { stats: CLIENT_STATS, clients: CLIENTS, dataSource: 'demo' };
+  // Unreachable backend: the fixtures stand in for the estate, and a named
+  // client gets the same 360 block the server's demo branch serves — both go
+  // through the one shared correlation, so they cannot disagree.
+  const picked = mac ? (CLIENTS.find((c) => c.mac === mac) ?? null) : undefined;
+  return {
+    stats: CLIENT_STATS,
+    clients: CLIENTS,
+    dataSource: 'demo',
+    ...(mac
+      ? {
+          client: picked,
+          clientPlanes: clientPlaneSections(mac, picked?.siteId ?? null, demoClient360World()),
+        }
+      : {}),
+  };
 }
 
 /**
- * The client's own detail — signal, throughput, roam count, session timeline —
- * for the ONE client whose drawer is open.
+ * The 360 block out of a /api/clients?mac= envelope. It carries no provenance
+ * envelope of its own — no plane call stands behind it, so there is no
+ * `source.sections` to check — so the guard is structural: an array whose
+ * every entry names a plane, a label and a known state. Absent or malformed
+ * is null ("the route did not say"), NEVER []: an empty array would claim
+ * every plane was answered for and reported nothing.
+ */
+export function unwrapClientPlanes(body: unknown): ClientPlaneSection[] | null {
+  if (!body || typeof body !== 'object') return null;
+  const block = (body as Record<string, unknown>).clientPlanes;
+  if (!Array.isArray(block)) return null;
+  const states = new Set(['ok', 'empty', 'not-fetched']);
+  const valid = block.every(
+    (s) =>
+      !!s &&
+      typeof s === 'object' &&
+      typeof (s as { plane?: unknown }).plane === 'string' &&
+      typeof (s as { label?: unknown }).label === 'string' &&
+      states.has((s as { state?: unknown }).state as string),
+  );
+  return valid ? (block as ClientPlaneSection[]) : null;
+}
+
+/** The named-client block: the per-object detail read and the Client 360
+ *  sections, from ONE envelope. */
+export interface ClientDetailBlock {
+  detail: ClientDetailLive | null;
+  clientPlanes: ClientPlaneSection[] | null;
+}
+
+/**
+ * The client's own detail AND its cross-plane 360 sections for the ONE client
+ * whose drawer is open — read off a single `/api/clients?mac=` envelope, so
+ * one drawer open stays one request.
  *
  * It rides `/api/clients?mac=`: the route does the per-object read only when a
  * request names a client, so the plain list poll stays exactly as cheap as it
  * was. Never call this from the polling loop.
  */
+export async function getClientDetailBlock(mac: string): Promise<ClientDetailBlock | null> {
+  const r = await fetchDetail<unknown>(`/api/clients?mac=${encodeURIComponent(mac)}`);
+  if (r.kind !== 'ok') return null;
+  return {
+    detail: unwrapDetailPayload<ClientDetailLive>(r.data, 'detail'),
+    clientPlanes: unwrapClientPlanes(r.data),
+  };
+}
+
+/**
+ * The client's own detail — signal, throughput, roam count, session timeline —
+ * for the ONE client whose drawer is open. The detail-only view of the block
+ * getClientDetailBlock() reads; same one-client rule.
+ */
 export async function getClientDetail(mac: string): Promise<ClientDetailLive | null> {
-  return readDetail<ClientDetailLive>(`/api/clients?mac=${encodeURIComponent(mac)}`, 'detail');
+  return (await getClientDetailBlock(mac))?.detail ?? null;
 }
 
 /**
@@ -411,9 +653,54 @@ export async function getClearPass(): Promise<ClearPassData> {
   return {
     endpoints: CLEARPASS_ENDPOINTS,
     authEvents: AUTH_EVENTS,
+    networkDevices: CLEARPASS_NETWORK_DEVICES,
+    authSources: CLEARPASS_AUTH_SOURCES,
+    roles: CLEARPASS_ROLES,
+    enforcementPolicies: CLEARPASS_ENFORCEMENT_POLICIES,
+    enforcementProfiles: CLEARPASS_ENFORCEMENT_PROFILES,
+    localUsers: CLEARPASS_LOCAL_USERS,
+    services: CLEARPASS_SERVICES,
+    // deviceGroups stays absent — the demo estate's CPPM does not expose it,
+    // and the screen says so rather than implying an empty list.
     dataSource: 'demo',
     syncedAt: DEMO_SYNCED_AT,
   };
+}
+
+/**
+ * The three outcomes of a service detail read, kept distinct because the
+ * drawer words them differently: a payload renders its sections ('ok' the
+ * object mapped, 'empty' the box 404'd, 'failed' the read broke),
+ * 'not-reported' is the portal's straight answer that no detail exists for
+ * this id (the demo world did not author one, or no linked plane can
+ * answer), and 'failed' means the request itself broke — never rendered as
+ * an empty drawer.
+ */
+export type ClearPassServiceDetailResult =
+  | { kind: 'ok'; detail: ClearPassServiceDetailLive }
+  | { kind: 'not-reported' }
+  | { kind: 'failed'; message: string };
+
+/**
+ * ONE service's full definition for the Services-tab drawer. Called ONLY
+ * from an open drawer, never from a poll: the route spends one per-service
+ * GET on the ClearPass plane behind its TTL cache and budget gate. A block
+ * without its provenance envelope is 'not-reported', never rendered (the
+ * same unreadable-block rule as the other detail payloads).
+ */
+export async function getClearPassServiceDetail(id: string): Promise<ClearPassServiceDetailResult> {
+  const r = await fetchDetail<unknown>(`/api/clearpass/services/${encodeURIComponent(id)}`);
+  if (r.kind === 'ok') {
+    const detail = unwrapDetailPayload<ClearPassServiceDetailLive>(r.data, 'serviceDetail');
+    return detail ? { kind: 'ok', detail } : { kind: 'not-reported' };
+  }
+  if (r.kind === 'answered') {
+    return r.status === 404 ? { kind: 'not-reported' } : { kind: 'failed', message: r.message };
+  }
+  // Backend absent: mirror the server's demo branch — the authored detail when
+  // the demo world has one, the same honest 'not reported' when it does not.
+  const demo = CLEARPASS_SERVICE_DETAILS[id];
+  return demo ? { kind: 'ok', detail: demo } : { kind: 'not-reported' };
 }
 
 export async function getUxi(): Promise<UxiData> {
@@ -427,6 +714,66 @@ export async function getUxi(): Promise<UxiData> {
     dataSource: 'demo',
     syncedAt: DEMO_SYNCED_AT,
   };
+}
+
+export async function getMist(): Promise<MistData> {
+  const result = await fetchScreen<MistData>('/api/mist');
+  if (result.kind === 'ok') return result.data;
+  if (result.kind === 'http-error') {
+    return apiFailure<MistData>(result.message, { plane: UNLINKED_MIST_PLANE, devices: [] });
+  }
+  // Unreachable backend: the same authored world the server's demo branch
+  // serves, composed here from the shared fixtures.
+  return {
+    plane: MIST_PLANE_STATUS,
+    sleBySiteId: SITE_SLE,
+    rogues: MIST_ROGUE_APS,
+    apStats: MIST_AP_STATS,
+    licenseUsages: MIST_LICENSE_USAGES,
+    wlans: SSIDS.filter((s) => s.plane.includes('MIST')),
+    devices: DEVICES.filter((d) => d.plane === 'MIST'),
+    dataSource: 'demo',
+    syncedAt: DEMO_SYNCED_AT,
+  };
+}
+
+/** The plane block an http-error fallback carries: never a fabricated
+ *  healthy plane — the apiError banner is what the screen acts on. */
+const UNLINKED_MIST_PLANE: MistPlaneStatus = {
+  linked: false,
+  health: 'unlinked',
+  lastSync: null,
+  deviceCount: null,
+  clientCount: null,
+  note: null,
+};
+
+/** Same rule for the Central screen's http-error fallback. */
+const UNLINKED_CENTRAL_PLANE: CentralPlaneStatus = {
+  linked: false,
+  health: 'unlinked',
+  tone: 'neutral',
+  lastSync: null,
+  note: null,
+};
+
+export async function getCentral(): Promise<CentralData> {
+  const result = await fetchScreen<CentralData>('/api/central');
+  if (result.kind === 'ok') return result.data;
+  if (result.kind === 'http-error') {
+    return apiFailure<CentralData>(result.message, {
+      plane: UNLINKED_CENTRAL_PLANE,
+      stats: [],
+      fleet: { total: 0, byType: {}, byState: {} },
+      sites: [],
+      firmware: [],
+      wlans: [],
+      alerts: [],
+    });
+  }
+  // Unreachable backend: the SAME shared composition the server's demo branch
+  // serves (shared/central.ts), so the standalone demo can never drift from it.
+  return { ...demoCentralSections(), dataSource: 'demo', syncedAt: DEMO_SYNCED_AT };
 }
 
 export async function getSites(): Promise<SitesData> {
@@ -466,8 +813,219 @@ export async function getSiteDetail(param: string): Promise<SiteDetailData> {
   return {
     site: SITES.find((s) => s.id === id) ?? null,
     profile: SITE_PROFILES[id] ?? deriveSiteProfile(id),
+    // Same mirroring for the Mist slices: the authored plans, SLE row and
+    // located-client dots, so the standalone demo renders exactly what the
+    // server's demo branch serves.
+    maps: MIST_SITE_MAPS.filter((m) => m.siteId === id),
+    sle: SITE_SLE[id] ?? null,
+    mapClients: mapClientDots(CLIENTS, id),
     dataSource: 'demo',
   };
+}
+
+export interface TopologyData extends ScreenEnvelope, TopologyPayload {}
+
+/** The estate-level neighbour graph: /api/topology, with the demo fallback
+ *  built by the SAME shared assembly the server's demo branch runs, so the
+ *  two can never drift (fixed stamps — the fallback is byte-stable too). */
+export async function getTopology(): Promise<TopologyData> {
+  const result = await fetchScreen<TopologyData>('/api/topology');
+  if (result.kind === 'ok') return result.data;
+  if (result.kind === 'http-error') {
+    return apiFailure<TopologyData>(result.message, {
+      graph: { nodes: [], edges: [], sites: [], omissions: [] },
+      notes: [],
+    });
+  }
+  return { graph: buildDemoTopologyGraph(), notes: demoTopologyNotes(), dataSource: 'demo' };
+}
+
+/** The located-client dots of one site, off the roster — the same projection
+ *  the server's mapClientDots applies, kept here so the offline demo fallback
+ *  and the demo route cannot disagree about what draws a dot. */
+function mapClientDots(clients: ClientRow[], siteId: SiteId): SiteMapClientDot[] {
+  const dots: SiteMapClientDot[] = [];
+  for (const c of clients) {
+    if (c.siteId !== siteId) continue;
+    if (c.x === undefined || c.y === undefined || c.mapId === undefined) continue;
+    dots.push({ name: c.name, mac: c.mac, x: c.x, y: c.y, mapId: c.mapId, health: c.health, healthTone: c.healthTone });
+  }
+  return dots;
+}
+
+/**
+ * The three outcomes of the per-metric SLE drill read, kept distinct because
+ * the drawer words them differently: a payload renders its sections (each
+ * carrying its own ok/empty/failed), 'not-reported' is the portal's straight
+ * answer that no drill exists for this metric/site, and 'failed' means the
+ * read itself broke — never rendered as an empty drill.
+ */
+export type SleMetricDetailResult =
+  | { kind: 'ok'; detail: MistSleMetricDetail }
+  | { kind: 'not-reported' }
+  | { kind: 'failed'; message: string };
+
+/**
+ * The drill-down behind ONE SLE metric at ONE site — classifiers, impacted
+ * clients/APs, summary trend. Called ONLY from an open drill drawer, never
+ * from a poll: the route spends four per-metric endpoints on the Mist plane
+ * behind its TTL cache and budget gate. A block without its provenance
+ * envelope is 'not-reported', never rendered (same unreadable-block rule as
+ * the other detail payloads).
+ */
+export async function getSleMetricDetail(
+  siteId: string,
+  metric: string,
+): Promise<SleMetricDetailResult> {
+  const r = await fetchDetail<unknown>(
+    `/api/sites/${encodeURIComponent(siteId)}/sle/${encodeURIComponent(metric)}`,
+  );
+  if (r.kind === 'ok') {
+    const detail = unwrapDetailPayload<MistSleMetricDetail>(r.data, 'sleDetail');
+    return detail ? { kind: 'ok', detail } : { kind: 'not-reported' };
+  }
+  if (r.kind === 'answered') {
+    return r.status === 404 ? { kind: 'not-reported' } : { kind: 'failed', message: r.message };
+  }
+  // Backend absent: mirror the server's demo branch — the authored drill when
+  // the demo world has one, the same honest 'not reported' when it does not.
+  const id = (SITE_IDS as readonly string[]).includes(siteId) ? siteId : siteIdFor(siteId);
+  const demo = id ? MIST_SLE_DRILLDOWN[`${id}|${metric}`] : undefined;
+  return demo ? { kind: 'ok', detail: demo } : { kind: 'not-reported' };
+}
+
+/**
+ * The three outcomes of a site's DPI applications read, kept distinct because
+ * the section words them differently: a payload renders its table (carrying
+ * its own ok/empty/failed), 'not-reported' is the portal's straight answer
+ * that no DPI table exists for this site, and 'failed' means the read itself
+ * broke — never rendered as an empty table.
+ */
+export type SiteApplicationsResult =
+  | { kind: 'ok'; applications: SiteApplicationsLive }
+  | { kind: 'not-reported' }
+  | { kind: 'failed'; message: string };
+
+/**
+ * The DPI application table for ONE site — the risk buckets, watchlist, top
+ * talkers and category rollup behind the site page's application-visibility
+ * section (and the Client 360's site-wide line for a Central client). Called
+ * ONLY when that section mounts or that drawer opens, never from a poll: the
+ * route pages the Central endpoint behind its TTL cache and budget gate. A
+ * block without its provenance envelope is 'not-reported', never rendered
+ * (same unreadable-block rule as the other detail payloads).
+ */
+export async function getSiteApplications(siteId: string): Promise<SiteApplicationsResult> {
+  const r = await fetchDetail<unknown>(
+    `/api/sites/${encodeURIComponent(siteId)}/applications`,
+  );
+  if (r.kind === 'ok') {
+    const applications = unwrapDetailPayload<SiteApplicationsLive>(r.data, 'applications');
+    return applications ? { kind: 'ok', applications } : { kind: 'not-reported' };
+  }
+  if (r.kind === 'answered') {
+    return r.status === 404 ? { kind: 'not-reported' } : { kind: 'failed', message: r.message };
+  }
+  // Backend absent: mirror the server's demo branch — the authored table when
+  // the demo world has one, the same honest 'not reported' when it does not.
+  const id = (SITE_IDS as readonly string[]).includes(siteId) ? (siteId as SiteId) : siteIdFor(siteId);
+  const demo = id ? SITE_APPLICATIONS_DEMO[id] : undefined;
+  return demo ? { kind: 'ok', applications: demo } : { kind: 'not-reported' };
+}
+
+// ---------------------------------------------------------------------------
+// Device hardware/telemetry trends — /api/devices/:name/trends/* (on-demand)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three outcomes of a per-device trend read, kept distinct because the
+ * panel words them differently: a payload renders its series (the read's own
+ * `source.sections` still say ok/empty/failed inside it), 'not-reported' is
+ * the portal's straight answer that no plane can serve it (or that the demo
+ * world authored none), and 'failed' means the read itself broke — never
+ * rendered as an empty chart.
+ */
+export type DeviceTrendResult<T> =
+  | { kind: 'ok'; live: T }
+  | { kind: 'not-reported' }
+  | { kind: 'failed'; message: string };
+
+/** The path for one trend read: the device, the window, and the exact
+ *  plane+serial identity the page's own read resolved (two reconciled rows
+ *  can share a display name). */
+function deviceTrendPath(
+  name: string,
+  read: string,
+  window: { start: string; end: string },
+  identity: DeviceDetailIdentity,
+): string {
+  const params = new URLSearchParams({ start: window.start, end: window.end });
+  if (identity.plane) params.set('plane', identity.plane);
+  if (identity.serial) params.set('serial', identity.serial);
+  return `/api/devices/${encodeURIComponent(name)}/trends/${read}?${params.toString()}`;
+}
+
+/**
+ * A switch's hardware gauges (cpu/memory/temperature/PoE/power) for the ONE
+ * device whose page is open, over ONE window. Called from the panel mount and
+ * on a window change, never from a poll — the route spends one Central call
+ * behind its TTL cache and budget gate.
+ */
+export async function getDeviceHardwareTrends(
+  name: string,
+  window: { start: string; end: string },
+  identity: DeviceDetailIdentity = {},
+): Promise<DeviceTrendResult<SwitchHardwareTrendsLive>> {
+  const r = await fetchDetail<unknown>(deviceTrendPath(name, 'hardware', window, identity));
+  if (r.kind === 'ok') {
+    const live = unwrapDetailPayload<SwitchHardwareTrendsLive>(r.data, 'hardwareTrends');
+    return live ? { kind: 'ok', live } : { kind: 'not-reported' };
+  }
+  if (r.kind === 'answered') {
+    return r.status === 404 ? { kind: 'not-reported' } : { kind: 'failed', message: r.message };
+  }
+  // Backend absent: mirror the server's demo branch — the authored read when
+  // the demo world has one, the same honest 'not reported' when it does not.
+  const demo = SWITCH_HARDWARE_TRENDS_DEMO[name];
+  return demo ? { kind: 'ok', live: demo } : { kind: 'not-reported' };
+}
+
+/** A switch's interface byte/error counter trends, same on-demand rule. */
+export async function getDeviceInterfaceTrends(
+  name: string,
+  window: { start: string; end: string },
+  identity: DeviceDetailIdentity = {},
+): Promise<DeviceTrendResult<SwitchInterfaceTrendsLive>> {
+  const r = await fetchDetail<unknown>(deviceTrendPath(name, 'interfaces', window, identity));
+  if (r.kind === 'ok') {
+    const live = unwrapDetailPayload<SwitchInterfaceTrendsLive>(r.data, 'interfaceTrends');
+    return live ? { kind: 'ok', live } : { kind: 'not-reported' };
+  }
+  if (r.kind === 'answered') {
+    return r.status === 404 ? { kind: 'not-reported' } : { kind: 'failed', message: r.message };
+  }
+  const demo = SWITCH_INTERFACE_TRENDS_DEMO[name];
+  return demo ? { kind: 'ok', live: demo } : { kind: 'not-reported' };
+}
+
+/** ONE AP metric trend (cpu | memory | throughput — throughput normalized to
+ *  bit/s by the read), same on-demand rule. */
+export async function getDeviceApTrends(
+  name: string,
+  metric: ApTrendMetric,
+  window: { start: string; end: string },
+  identity: DeviceDetailIdentity = {},
+): Promise<DeviceTrendResult<ApTrendsLive>> {
+  const r = await fetchDetail<unknown>(deviceTrendPath(name, `ap/${encodeURIComponent(metric)}`, window, identity));
+  if (r.kind === 'ok') {
+    const live = unwrapDetailPayload<ApTrendsLive>(r.data, 'apTrends');
+    return live ? { kind: 'ok', live } : { kind: 'not-reported' };
+  }
+  if (r.kind === 'answered') {
+    return r.status === 404 ? { kind: 'not-reported' } : { kind: 'failed', message: r.message };
+  }
+  const demo = AP_TRENDS_DEMO[`${name}|${metric}`];
+  return demo ? { kind: 'ok', live: demo } : { kind: 'not-reported' };
 }
 
 export async function getDevices(): Promise<DevicesData> {
@@ -579,6 +1137,15 @@ export async function getDeviceDetail(
     evidence: { checks: profile.checks, mode: 'demo' },
     config: DEVICE_CONFIGS[profile.kind],
     clients: DEVICE_CLIENT_SETS[profile.kind],
+    // Same join the server's demo branch runs (its mistApStatsFor): serial
+    // beats MAC beats name, so the stats row never lands on the wrong AP.
+    mistAp:
+      MIST_AP_STATS.find((row) => device.serial !== undefined && row.serial === device.serial) ??
+      MIST_AP_STATS.find(
+        (row) => device.mac !== undefined && row.mac?.toLowerCase() === device.mac.toLowerCase(),
+      ) ??
+      MIST_AP_STATS.find((row) => row.deviceName === device.name) ??
+      null,
     dataSource: 'demo',
   };
 }
@@ -592,6 +1159,7 @@ export async function getLicenses(): Promise<LicensesData> {
       subscriptions: [],
       renewals: [],
       orphans: [],
+      mistLicenseUsages: null,
     });
   }
   return {
@@ -599,6 +1167,7 @@ export async function getLicenses(): Promise<LicensesData> {
     subscriptions: SUBSCRIPTIONS,
     renewals: RENEWALS,
     orphans: ORPHANS,
+    mistLicenseUsages: MIST_LICENSE_USAGES,
     dataSource: 'demo',
   };
 }
@@ -656,4 +1225,40 @@ export async function getSearchIndex(): Promise<SearchIndexData> {
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') return apiFailure<SearchIndexData>(result.message, { entries: [] });
   return { entries: SEARCH_INDEX, dataSource: 'demo' };
+}
+
+// ---------------------------------------------------------------------------
+// Config backups — /api/config-backups (versioned running-config snapshots)
+// ---------------------------------------------------------------------------
+
+/**
+ * The estate's backup/drift roster. Additive: there is deliberately NO
+ * fixture fallback here — an unreachable or failing API hides the drift
+ * section rather than painting authored backup data the server never
+ * claimed. (Demo backups are synthesized server-side; they are not part of
+ * the offline fixture set.)
+ */
+export async function getConfigBackups(): Promise<ConfigBackupListEnvelope | null> {
+  const result = await fetchScreen<ConfigBackupListEnvelope>('/api/config-backups');
+  return result.kind === 'ok' ? result.data : null;
+}
+
+/** Version metadata for one device, newest first. */
+export async function getConfigBackupVersions(device: string): Promise<ConfigBackupVersionList | null> {
+  const r = await fetchDetail<ConfigBackupVersionList>(
+    `/api/config-backups/${encodeURIComponent(device)}/versions`,
+  );
+  return r.kind === 'ok' ? r.data : null;
+}
+
+/** The unified line-diff between two stored versions of one device. */
+export async function getConfigBackupDiff(
+  device: string,
+  from: number,
+  to: number,
+): Promise<ConfigBackupDiff | null> {
+  const r = await fetchDetail<ConfigBackupDiff>(
+    `/api/config-backups/${encodeURIComponent(device)}/diff?from=${from}&to=${to}`,
+  );
+  return r.kind === 'ok' ? r.data : null;
 }
