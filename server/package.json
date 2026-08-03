@@ -10,12 +10,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@hpe/shared": "*",
     "express": "^4.21.2",
     "jose": "^5.10.0",
     "ssh2": "^1.17.0",
     "tsx": "^4.19.2",
     "ws": "^8.21.1",
-    "@hpe/shared": "*"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

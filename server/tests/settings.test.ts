@@ -19,7 +19,7 @@ const ROUTE_DIR = vi.hoisted(() => {
 });
 
 import express from 'express';
-import { SettingsStore, settings } from '../src/config/settings';
+import { migrateAssistantSettings, SettingsStore, settings } from '../src/config/settings';
 import { settingsRouter } from '../src/routes/settings';
 import { registry } from '../src/planes/registry';
 import { poller } from '../src/services/poller';
@@ -38,6 +38,72 @@ afterEach(() => {
 });
 
 describe('SettingsStore', () => {
+  it('migrates a local legacy OpenAI-compatible LLM into the Ollama provider and masks its key', () => {
+    const { store } = tmpStore();
+    store.update({
+      mcp: { url: 'http://centralmcp.local/mcp', bearerToken: 'mcp-token' },
+      llm: { baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'ollama-key', model: 'qwen-local' },
+      chatWriteMode: true,
+    });
+
+    const assistant = store.get().assistant;
+    expect(assistant.activeProvider).toBe('ollama');
+    expect(assistant.providers.ollama).toMatchObject({
+      enabled: true, baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen-local', apiKey: 'ollama-key',
+    });
+    expect(assistant.mcp).toEqual({ enabled: true, endpoint: 'http://centralmcp.local/mcp', authToken: 'mcp-token' });
+    expect(assistant.chatWriteMode).toBe('enabled');
+    expect(store.maskedView().assistant.providers.ollama.apiKey).toBe('••••••');
+    expect(store.maskedView().assistant.mcp.authToken).toBe('••••••');
+  });
+
+  it('migrates a non-local legacy OpenAI-compatible LLM into OpenRouter', () => {
+    const assistant = migrateAssistantSettings({
+      llm: { baseUrl: 'https://gateway.example.com/v1', apiKey: 'router-key', model: 'fast-model' },
+    });
+    expect(assistant.activeProvider).toBe('openrouter');
+    expect(assistant.providers.openrouter).toMatchObject({
+      enabled: true, baseUrl: 'https://gateway.example.com/v1', model: 'fast-model', apiKey: 'router-key',
+    });
+  });
+
+  it('uses canonical assistant defaults when legacy settings are blank', () => {
+    const assistant = migrateAssistantSettings({
+      mcp: { url: '', bearerToken: '' },
+      llm: { baseUrl: '', apiKey: '', model: '' },
+    });
+    expect(assistant.activeProvider).toBe('ollama');
+    expect(assistant.mcp.enabled).toBe(false);
+    expect(assistant.providers.ollama.enabled).toBe(false);
+    expect(assistant.providers.codex).toMatchObject({ model: 'gpt-5.6-terra', reasoningEffort: 'low' });
+    expect(assistant.providers.kimi).toMatchObject({ model: 'kimi-code/kimi-for-coding-highspeed', thinking: false });
+  });
+
+  it('keeps an existing canonical assistant object unchanged during migration', () => {
+    const existing = {
+      activeProvider: 'copilot',
+      mcp: { enabled: false, endpoint: 'http://127.0.0.1:3000/mcp', authToken: null },
+      chatWriteMode: 'confirm',
+      providers: {
+        codex: { enabled: false, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+        claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' },
+        kimi: { enabled: false, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false },
+        copilot: { enabled: true, model: 'auto', effort: 'adaptive' },
+        ollama: { enabled: false, baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5-coder:7b' },
+        openrouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4.1-mini' },
+      },
+    } as const;
+    expect(migrateAssistantSettings({ assistant: existing, llm: { baseUrl: 'https://ignored.example/v1', apiKey: 'ignored', model: 'ignored' } })).toEqual(existing);
+  });
+
+  it('rejects invalid canonical provider configuration before saving', () => {
+    const { store } = tmpStore();
+    expect(() => store.update({ assistant: { providers: { unknown: {} } } })).toThrow(/unrecognized assistant provider/);
+    expect(() => store.update({ assistant: { providers: { ollama: { baseUrl: 'file:///tmp/model' } } } })).toThrow(/HTTP\(S\)/);
+    expect(() => store.update({ assistant: { providers: { codex: { model: ' ', reasoningEffort: 'maximum' } } } })).toThrow(/model is required/);
+    expect(() => store.update({ assistant: { providers: { kimi: { thinking: 'sometimes' } } } })).toThrow();
+  });
+
   it('writes defaults on first load with mode 0600', () => {
     const { file, store } = tmpStore();
     const s = store.load();
@@ -557,5 +623,41 @@ describe('PUT /api/settings UI layout keys', () => {
     const unknown = await put({ somethingElse: {} });
     expect(unknown.status).toBe(400);
     expect(unknown.body.error).toBe('settings body contains no supported fields');
+  });
+});
+
+describe('PUT /api/settings assistant registry', () => {
+  let server: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    const app = express();
+    app.use(express.json({ limit: '1mb' }));
+    app.use('/api', settingsRouter);
+    server = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(ROUTE_DIR, { recursive: true, force: true });
+  });
+
+  it('accepts canonical assistant updates and rejects unknown provider ids', async () => {
+    const put = async (body: unknown) => {
+      const res = await fetch(`${base}/api/settings`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      return { status: res.status, body: await res.json() as any };
+    };
+    const saved = await put({ assistant: { activeProvider: 'copilot', providers: { copilot: { enabled: true } } } });
+    expect(saved.status).toBe(200);
+    expect(saved.body.assistant.activeProvider).toBe('copilot');
+    expect(saved.body.assistant.providers.copilot.enabled).toBe(true);
+
+    const invalid = await put({ assistant: { providers: { arbitrary: {} } } });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toMatch(/unrecognized assistant provider/);
   });
 });

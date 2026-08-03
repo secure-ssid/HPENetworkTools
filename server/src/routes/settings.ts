@@ -11,7 +11,8 @@
  */
 
 import { Router } from 'express';
-import { SettingsConflictError, settings, type Settings } from '../config/settings';
+import { ZodError } from 'zod';
+import { SettingsConflictError, SettingsValidationError, settings, type Settings } from '../config/settings';
 import { registry } from '../planes/registry';
 import { normalizeSseBaseUrl, SseEndpointValidationError } from '../planes/sse';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
@@ -32,6 +33,7 @@ const SETTING_KEYS = new Set([
   'workspaceName',
   'pollIntervalSec',
   'planes',
+  'assistant',
   'mcp',
   'llm',
   'auth',
@@ -63,6 +65,7 @@ function settingsBodyError(body: unknown): string | null {
     ['sectionMode', patch.sectionMode === undefined || (!!patch.sectionMode && typeof patch.sectionMode === 'object' && !Array.isArray(patch.sectionMode))],
     ['hiddenDemoDevices', patch.hiddenDemoDevices === undefined || Array.isArray(patch.hiddenDemoDevices)],
     ['planes', patch.planes === undefined || (!!patch.planes && typeof patch.planes === 'object' && !Array.isArray(patch.planes))],
+    ['assistant', patch.assistant === undefined || (!!patch.assistant && typeof patch.assistant === 'object' && !Array.isArray(patch.assistant))],
     ['mcp', patch.mcp === undefined || patch.mcp === null || (typeof patch.mcp === 'object' && !Array.isArray(patch.mcp))],
     ['llm', patch.llm === undefined || patch.llm === null || (typeof patch.llm === 'object' && !Array.isArray(patch.llm))],
     ['auth', patch.auth === undefined || patch.auth === null || (typeof patch.auth === 'object' && !Array.isArray(patch.auth))],
@@ -163,6 +166,14 @@ settingsRouter.put('/settings', (req, res) => {
     // environment-owned identity provider is a conflict, not a 500.
     if (err instanceof SettingsConflictError) {
       res.status(409).json({ error: err.message });
+      return;
+    }
+    if (err instanceof ZodError) {
+      res.status(400).json({ error: `invalid assistant settings: ${err.issues.map((issue) => issue.message).join('; ')}` });
+      return;
+    }
+    if (err instanceof SettingsValidationError) {
+      res.status(400).json({ error: `invalid assistant settings: ${err.message}` });
       return;
     }
     throw err;

@@ -26,6 +26,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { z } from 'zod';
 import {
   CONNECTOR_IDS,
   connectorCatalogEntry,
@@ -50,6 +51,194 @@ export interface LlmSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+}
+
+export const ASSISTANT_PROVIDER_IDS = ['codex', 'claude', 'kimi', 'copilot', 'ollama', 'openrouter'] as const;
+export type AssistantProviderId = typeof ASSISTANT_PROVIDER_IDS[number];
+export type AssistantChatWriteMode = 'read-only' | 'confirm' | 'enabled';
+
+const httpUrlSchema = z.string().trim().url().refine(
+  (value) => {
+    const protocol = new URL(value).protocol;
+    return protocol === 'http:' || protocol === 'https:';
+  },
+  'must be an HTTP(S) URL',
+);
+const modelSchema = z.string().trim().min(1, 'model is required');
+const enabledSchema = z.boolean();
+
+export const codexProviderSchema = z.object({
+  enabled: enabledSchema,
+  model: modelSchema,
+  reasoningEffort: z.enum(['low', 'medium', 'high']),
+}).strict();
+export const claudeProviderSchema = z.object({
+  enabled: enabledSchema,
+  model: modelSchema,
+  reasoningEffort: z.enum(['low', 'medium', 'high']),
+}).strict();
+export const kimiProviderSchema = z.object({
+  enabled: enabledSchema,
+  model: modelSchema,
+  thinking: z.boolean(),
+}).strict();
+export const copilotProviderSchema = z.object({
+  enabled: enabledSchema,
+  model: modelSchema,
+  effort: z.enum(['adaptive', 'low', 'medium', 'high']),
+}).strict();
+export const ollamaProviderSchema = z.object({
+  enabled: enabledSchema,
+  baseUrl: httpUrlSchema,
+  model: modelSchema,
+  apiKey: z.string().optional(),
+}).strict();
+export const openrouterProviderSchema = z.object({
+  enabled: enabledSchema,
+  baseUrl: httpUrlSchema,
+  model: modelSchema,
+  apiKey: z.string().optional(),
+}).strict();
+
+export const assistantSettingsSchema = z.object({
+  activeProvider: z.enum(ASSISTANT_PROVIDER_IDS),
+  mcp: z.object({
+    enabled: z.boolean(),
+    endpoint: httpUrlSchema,
+    authToken: z.string().nullable(),
+  }).strict(),
+  chatWriteMode: z.enum(['read-only', 'confirm', 'enabled']),
+  providers: z.object({
+    codex: codexProviderSchema,
+    claude: claudeProviderSchema,
+    kimi: kimiProviderSchema,
+    copilot: copilotProviderSchema,
+    ollama: ollamaProviderSchema,
+    openrouter: openrouterProviderSchema,
+  }).strict(),
+}).strict();
+
+export type AssistantProviderConfig =
+  | z.infer<typeof codexProviderSchema>
+  | z.infer<typeof claudeProviderSchema>
+  | z.infer<typeof kimiProviderSchema>
+  | z.infer<typeof copilotProviderSchema>
+  | z.infer<typeof ollamaProviderSchema>
+  | z.infer<typeof openrouterProviderSchema>;
+export type AssistantSettings = z.infer<typeof assistantSettingsSchema>;
+
+function defaultAssistantSettings(): AssistantSettings {
+  return {
+    activeProvider: 'ollama',
+    mcp: { enabled: false, endpoint: 'http://127.0.0.1:3000/mcp', authToken: null },
+    chatWriteMode: 'read-only',
+    providers: {
+      codex: { enabled: false, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+      claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' },
+      kimi: { enabled: false, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false },
+      copilot: { enabled: false, model: 'auto', effort: 'adaptive' },
+      ollama: { enabled: false, baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5-coder:7b' },
+      openrouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4.1-mini' },
+    },
+  };
+}
+
+function isLocalHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:'
+      ? url.hostname === 'localhost' || url.hostname === '::1' || /^127(?:\.\d{1,3}){3}$/.test(url.hostname)
+      : false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Convert the pre-registry chat settings into their single canonical shape.
+ * A complete existing assistant block is authoritative and is never changed
+ * by stale legacy fields saved beside it.
+ */
+export function migrateAssistantSettings(input: unknown): AssistantSettings {
+  const raw = input !== null && typeof input === 'object' && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {};
+  if (Object.prototype.hasOwnProperty.call(raw, 'assistant')) {
+    return assistantSettingsSchema.parse(raw.assistant);
+  }
+
+  const assistant = defaultAssistantSettings();
+  const legacyMcp = raw.mcp !== null && typeof raw.mcp === 'object' && !Array.isArray(raw.mcp)
+    ? raw.mcp as Record<string, unknown>
+    : null;
+  const endpoint = typeof legacyMcp?.url === 'string' ? legacyMcp.url.trim() : '';
+  const authToken = typeof legacyMcp?.bearerToken === 'string' && legacyMcp.bearerToken.trim()
+    ? legacyMcp.bearerToken
+    : null;
+  if (endpoint && httpUrlSchema.safeParse(endpoint).success) {
+    assistant.mcp = { enabled: true, endpoint, authToken };
+  }
+
+  if (typeof raw.chatWriteMode === 'boolean') {
+    assistant.chatWriteMode = raw.chatWriteMode ? 'enabled' : 'read-only';
+  }
+  const legacyLlm = raw.llm !== null && typeof raw.llm === 'object' && !Array.isArray(raw.llm)
+    ? raw.llm as Record<string, unknown>
+    : null;
+  const baseUrl = typeof legacyLlm?.baseUrl === 'string' ? legacyLlm.baseUrl.trim() : '';
+  const model = typeof legacyLlm?.model === 'string' ? legacyLlm.model.trim() : '';
+  const apiKey = typeof legacyLlm?.apiKey === 'string' && legacyLlm.apiKey.trim() ? legacyLlm.apiKey : undefined;
+  if (baseUrl && httpUrlSchema.safeParse(baseUrl).success && model) {
+    const id: 'ollama' | 'openrouter' = isLocalHttpUrl(baseUrl) ? 'ollama' : 'openrouter';
+    assistant.activeProvider = id;
+    assistant.providers[id] = { enabled: true, baseUrl, model, ...(apiKey ? { apiKey } : {}) };
+  }
+  return assistantSettingsSchema.parse(assistant);
+}
+
+function mergeAssistantSettings(current: AssistantSettings, input: unknown): AssistantSettings {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('assistant must be an object');
+  }
+  const raw = input as Record<string, unknown>;
+  const hasProviders = Object.prototype.hasOwnProperty.call(raw, 'providers');
+  if (hasProviders && (raw.providers === null || typeof raw.providers !== 'object' || Array.isArray(raw.providers))) {
+    throw new SettingsValidationError('assistant.providers must be an object');
+  }
+  const providers = hasProviders ? raw.providers as Record<string, unknown> : {};
+  for (const id of Object.keys(providers)) {
+    if (!(ASSISTANT_PROVIDER_IDS as readonly string[]).includes(id)) {
+      throw new SettingsValidationError(`unrecognized assistant provider: ${id}`);
+    }
+  }
+  const mergedProviders: Record<string, unknown> = { ...current.providers };
+  for (const id of ASSISTANT_PROVIDER_IDS) {
+    if (!Object.prototype.hasOwnProperty.call(providers, id)) continue;
+    const incoming = providers[id];
+    if (incoming === null || typeof incoming !== 'object' || Array.isArray(incoming)) {
+      mergedProviders[id] = incoming;
+      continue;
+    }
+    const next = { ...(current.providers[id] as Record<string, unknown>), ...(incoming as Record<string, unknown>) };
+    if (next.apiKey === MASK) next.apiKey = (current.providers[id] as { apiKey?: string }).apiKey;
+    mergedProviders[id] = next;
+  }
+  const incomingMcp = raw.mcp === undefined
+    ? {}
+    : raw.mcp !== null && typeof raw.mcp === 'object' && !Array.isArray(raw.mcp)
+      ? raw.mcp as Record<string, unknown>
+      : raw.mcp;
+  if (incomingMcp === null || typeof incomingMcp !== 'object' || Array.isArray(incomingMcp)) {
+    return assistantSettingsSchema.parse({ ...current, ...raw, mcp: incomingMcp, providers: mergedProviders });
+  }
+  const mcp = { ...current.mcp, ...incomingMcp };
+  if (mcp.authToken === MASK) mcp.authToken = current.mcp.authToken;
+  return assistantSettingsSchema.parse({
+    ...current,
+    ...raw,
+    mcp,
+    providers: mergedProviders,
+  });
 }
 
 /**
@@ -97,6 +286,8 @@ export interface Settings {
   connectors: ConnectorRecord;
   /** Derived compatibility view for consumers that have not moved to connectors yet. */
   planes: Record<PlaneId, PlaneCredentials | null>;
+  /** Canonical provider registry; legacy chat fields below remain read-compatible only. */
+  assistant: AssistantSettings;
   mcp: McpSettings | null;
   llm: LlmSettings | null;
   /** OIDC SSO configuration; null = no identity provider configured. */
@@ -140,6 +331,7 @@ function defaultSettings(): Settings {
     pollIntervalSec: 60,
     connectors,
     planes: derivedPlanes(connectors),
+    assistant: defaultAssistantSettings(),
     mcp: null,
     llm: null,
     auth: null,
@@ -315,6 +507,14 @@ export class SettingsConflictError extends Error {
   }
 }
 
+/** Invalid persisted assistant input. Kept distinct from environmental conflicts. */
+export class SettingsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SettingsValidationError';
+  }
+}
+
 /** Do two identity-provider blocks say the same thing? */
 function sameAuth(a: AuthSettings | null, b: AuthSettings | null): boolean {
   if (a === null || b === null) return a === b;
@@ -361,7 +561,11 @@ export class SettingsStore {
     } catch (err) {
       throw new Error(`settings file ${this.filePath} is not valid JSON: ${(err as Error).message}`);
     }
+    // Migrate before default merging so a saved legacy LLM is not obscured by
+    // the new assistant defaults. The legacy fields remain on disk solely for
+    // the old chat surface until its later adapter migration.
     this.current = this.merged(defaultSettings(), parsed, false);
+    this.current.assistant = migrateAssistantSettings(parsed);
     return this.current;
   }
 
@@ -464,6 +668,22 @@ export class SettingsStore {
       ...s,
       connectors,
       planes,
+      assistant: {
+        ...s.assistant,
+        mcp: {
+          ...s.assistant.mcp,
+          authToken: s.assistant.mcp.authToken ? maskSecret() : null,
+        },
+        providers: {
+          ...s.assistant.providers,
+          ollama: s.assistant.providers.ollama.apiKey
+            ? { ...s.assistant.providers.ollama, apiKey: maskSecret() }
+            : { ...s.assistant.providers.ollama },
+          openrouter: s.assistant.providers.openrouter.apiKey
+            ? { ...s.assistant.providers.openrouter, apiKey: maskSecret() }
+            : { ...s.assistant.providers.openrouter },
+        },
+      },
       mcp: s.mcp
         ? { ...s.mcp, bearerToken: s.mcp.bearerToken ? maskSecret() : null }
         : null,
@@ -480,6 +700,7 @@ export class SettingsStore {
       ...base,
       connectors: { ...base.connectors },
       planes: derivedPlanes(base.connectors),
+      assistant: base.assistant,
       mcp: base.mcp ? { ...base.mcp } : null,
       llm: base.llm ? { ...base.llm } : null,
       auth: base.auth ? { ...base.auth } : null,
@@ -616,6 +837,23 @@ export class SettingsStore {
           };
         }
       }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(p, 'assistant')) {
+      out.assistant = mergeAssistantSettings(base.assistant, p.assistant);
+    } else if (
+      Object.prototype.hasOwnProperty.call(p, 'mcp') ||
+      Object.prototype.hasOwnProperty.call(p, 'llm') ||
+      Object.prototype.hasOwnProperty.call(p, 'chatWriteMode')
+    ) {
+      // Old forms update their historic fields first, then receive a fresh
+      // one-way canonical translation. New canonical writes never let stale
+      // legacy fields overwrite the selected provider.
+      out.assistant = migrateAssistantSettings({
+        mcp: out.mcp,
+        llm: out.llm,
+        chatWriteMode: out.chatWriteMode,
+      });
     }
 
     if ('auth' in p) {
