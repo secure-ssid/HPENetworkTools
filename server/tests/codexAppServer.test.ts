@@ -25,6 +25,7 @@ class FakeChild implements CodexAppServerChild {
   private sequence = 0;
 
   write(line: string): void {
+    if (this.killed) throw new Error('write after child shutdown');
     this.rawSent.push(line);
     const message = JSON.parse(line) as SentMessage;
     this.sent.push(message);
@@ -494,6 +495,8 @@ describe('CodexAppServer', () => {
     const threadStarts = fake.children[0]?.sent.filter((message) => message.method === 'thread/start') ?? [];
     expect(threadStarts).toHaveLength(2);
     expect(new Set(threadStarts.map((message) => message.id)).size).toBe(2);
+    const turnStarts = fake.children[0]?.sent.filter((message) => message.method === 'turn/start') ?? [];
+    expect(turnStarts.map((message) => message.params?.threadId)).toEqual(['thread-1', 'thread-2']);
     const firstThreadConfig = fake.children[0]?.sent.find((message) => message.method === 'thread/start')?.params?.config;
     expect(firstThreadConfig).not.toHaveProperty('model_reasoning_effort');
 
