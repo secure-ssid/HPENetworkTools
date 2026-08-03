@@ -19,6 +19,8 @@
  *      device groups read "not available on this CPPM" in both modes;
  *  (f) the local-users tab carries no password material of any kind;
  *  (g) the services tab carries no credential material of any kind.
+ *  (g2) static inventory rows open local, read-only details only; absent
+ *       inventories remain absent and no credential-shaped data crosses.
  *
  * The reviewed-write drawers (api/clearpass mocked at the module boundary):
  *  (h/h2) 'Register endpoint' gates Apply on a valid MAC AND the explicit
@@ -371,6 +373,61 @@ describe('ClearPass', () => {
     expect(container.textContent?.toLowerCase()).not.toContain('password');
     expect(container.textContent?.toLowerCase()).not.toContain('secret');
     expect(container.textContent?.toLowerCase()).not.toContain('hash');
+  });
+
+  it('(g2) static inventory primary rows open and close a local read-only detail drawer without credential-shaped fields', async () => {
+    const networkDeviceWithUntrustedExtra = {
+      ...CLEARPASS_NETWORK_DEVICES[0],
+      secret: 'must-not-render',
+      password: 'must-not-render',
+    };
+    mockGetClearPass.mockResolvedValue(
+      demoData({ networkDevices: [networkDeviceWithUntrustedExtra] as typeof CLEARPASS_NETWORK_DEVICES }),
+    );
+    const { container } = renderClearPass();
+    await waitFor(() => expect(screen.getByText('Endpoint repository')).toBeTruthy());
+
+    openTab('Network devices');
+    fireEvent.click(screen.getByRole('button', { name: 'View network device sw-core-a' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'sw-core-a' });
+    expect(dialog).toBeTruthy();
+    expect(within(dialog).getByText('Read-only inventory detail. No ClearPass changes can be made here.')).toBeTruthy();
+    expect(within(dialog).getByText('10.42.8.11')).toBeTruthy();
+    expect(container.textContent?.toLowerCase()).not.toContain('must-not-render');
+    expect(container.textContent?.toLowerCase()).not.toContain('password');
+    expect(container.textContent).not.toContain('{"');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }));
+    expect(screen.queryByRole('dialog', { name: 'sw-core-a' })).toBeNull();
+  });
+
+  it('(g3) each reported static inventory uses an accessible primary-row detail action while absent collections keep InventoryGate wording', async () => {
+    mockGetClearPass.mockResolvedValue(
+      demoData({
+        deviceGroups: [{ id: 'campus', name: 'Campus devices', description: 'Campus estate' }],
+      }),
+    );
+    renderClearPass();
+    await waitFor(() => expect(screen.getByText('Endpoint repository')).toBeTruthy());
+
+    openTab('Auth sources');
+    expect(screen.getByRole('button', { name: 'View authentication source AD meridian.health' })).toBeTruthy();
+    openTab('Roles');
+    expect(screen.getAllByRole('button', { name: /View role / }).length).toBeGreaterThan(0);
+    openTab('Enforcement');
+    expect(screen.getByRole('button', { name: 'View enforcement policy MRDN Wireless 802.1X Enforcement' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'View enforcement profile Quarantine' })).toBeTruthy();
+    openTab('Services');
+    expect(screen.getByRole('button', { name: 'View device group Campus devices' })).toBeTruthy();
+
+    cleanup();
+    mockGetClearPass.mockResolvedValue(liveData());
+    renderClearPass();
+    await waitFor(() => expect(screen.getByText('Endpoint repository')).toBeTruthy());
+    openTab('Roles');
+    expect(screen.getByText('Not reported by this CPPM')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /View role / })).toBeNull();
   });
 });
 

@@ -69,15 +69,13 @@ function pctValue(pct: string): number | null {
   return /^\d+(\.\d+)?%$/.test(pct) ? Number.parseFloat(pct) : null;
 }
 
-/** A lapsed entitlement is operational clutter only when GreenLake reports
- * both a passed expiry and no assigned seats. The live mapper calls such rows
- * "retiring", so status text alone cannot distinguish elapsed from future
- * capacity. Missing or non-numeric assignments stay visible because they are
- * not evidence of unused capacity. */
+/** Idle capacity is clutter only when GreenLake explicitly reports no
+ * assignments. Active, expiring, and retiring records remain useful even at
+ * zero, while unknown/non-numeric values are never treated as a zero. */
 function isOperationalSubscription(row: SubscriptionRow): boolean {
   const assigned = row.assigned.replace(/,/g, '').trim();
   const isNumericZero = assigned !== '' && Number.isFinite(Number(assigned)) && Number(assigned) === 0;
-  return !(typeof row.daysLeft === 'number' && row.daysLeft < 0 && isNumericZero);
+  return !(row.status === 'idle' && isNumericZero);
 }
 
 function operationalSubscriptions(data: LicensesData): SubscriptionRow[] {
@@ -396,9 +394,11 @@ export default function Licenses() {
       />
       {subscriptions.length === 0 ? (
         <EmptyState
-          title="No subscriptions in the cache"
+          title="No subscriptions to show"
           description={
-            sectionLive
+            data.subscriptions.length > 0
+              ? 'All reported subscriptions are idle with zero assigned seats.'
+              : sectionLive
               ? 'GreenLake has not returned a subscription list yet — check the plane on Connected systems.'
               : 'This payload carries no subscription rows.'
           }

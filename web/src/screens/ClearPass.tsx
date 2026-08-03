@@ -197,6 +197,14 @@ type WriteDrawerState =
   | { kind: 'editUser'; row: ClearPassLocalUserRow }
   | null;
 
+/** A local projection of a static inventory row. It intentionally has no raw
+ * payload object: the drawer can only render the small, already-displayed
+ * whitelist assembled at the table boundary. */
+type StaticInventoryDetail = {
+  title: string;
+  fields: Array<{ label: string; value: string; mono?: boolean }>;
+};
+
 function ClearPassView({
   data,
   navigate,
@@ -239,6 +247,7 @@ function ClearPassView({
   mergeDemoEndpointPage: (fn: (page: ClearPassEndpointPage) => ClearPassEndpointPage) => void;
 }) {
   const [writeDrawer, setWriteDrawer] = useState<WriteDrawerState>(null);
+  const [inventoryView, setInventoryView] = useState<StaticInventoryDetail | null>(null);
   /** The service whose detail drawer is open (null = none). */
   const [serviceView, setServiceView] = useState<ClearPassServiceRow | null>(null);
   const demo = data.dataSource === 'demo';
@@ -525,11 +534,16 @@ function ClearPassView({
         </>
       ) : null}
 
-      {tab === 'network' ? <NetworkDevicesSection rows={data.networkDevices} density={density} /> : null}
-      {tab === 'sources' ? <AuthSourcesSection rows={data.authSources} density={density} /> : null}
-      {tab === 'roles' ? <RolesSection rows={data.roles} density={density} /> : null}
+      {tab === 'network' ? <NetworkDevicesSection rows={data.networkDevices} density={density} onView={setInventoryView} /> : null}
+      {tab === 'sources' ? <AuthSourcesSection rows={data.authSources} density={density} onView={setInventoryView} /> : null}
+      {tab === 'roles' ? <RolesSection rows={data.roles} density={density} onView={setInventoryView} /> : null}
       {tab === 'enforcement' ? (
-        <EnforcementSection policies={data.enforcementPolicies} profiles={data.enforcementProfiles} density={density} />
+        <EnforcementSection
+          policies={data.enforcementPolicies}
+          profiles={data.enforcementProfiles}
+          density={density}
+          onView={setInventoryView}
+        />
       ) : null}
       {tab === 'users' ? (
         <LocalUsersSection
@@ -540,7 +554,22 @@ function ClearPassView({
         />
       ) : null}
       {tab === 'services' ? (
-        <ServicesSection services={data.services} deviceGroups={data.deviceGroups} density={density} onView={setServiceView} />
+        <ServicesSection
+          services={data.services}
+          deviceGroups={data.deviceGroups}
+          density={density}
+          onView={setServiceView}
+          onViewDeviceGroup={setInventoryView}
+        />
+      ) : null}
+
+      {inventoryView ? (
+        <StaticInventoryDetailDrawer
+          row={inventoryView}
+          onOpenChange={(open) => {
+            if (!open) setInventoryView(null);
+          }}
+        />
       ) : null}
 
       {/* The service detail drawer — a READ, mounted only while open (keyed
@@ -767,12 +796,101 @@ function boolText(value: boolean | null): string {
   return value === null ? '—' : value ? 'Yes' : 'No';
 }
 
+function reported(value: string | null): string {
+  return value ?? 'Not reported';
+}
+
+const inventoryDetailButtonStyle = {
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  cursor: 'pointer',
+  font: 'inherit',
+  color: 'var(--nd-accent-text)',
+  textAlign: 'left',
+} as const;
+
+function StaticInventoryDetailDrawer({
+  row,
+  onOpenChange,
+}: {
+  row: StaticInventoryDetail;
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <Drawer
+      open
+      onOpenChange={onOpenChange}
+      width="md"
+      title={row.title}
+      description="Read-only inventory detail. No ClearPass changes can be made here."
+    >
+      {row.fields.map((field) => (
+        <ReviewRow key={field.label} label={field.label} value={field.value} mono={field.mono} />
+      ))}
+    </Drawer>
+  );
+}
+
+function networkDeviceDetail(row: ClearPassNetworkDeviceRow): StaticInventoryDetail {
+  return {
+    title: row.name,
+    fields: [
+      { label: 'IP address', value: reported(row.ipAddress), mono: true },
+      { label: 'Vendor', value: reported(row.vendorName) },
+      { label: 'CoA capable', value: boolText(row.coaCapable) },
+      { label: 'RadSec enabled', value: boolText(row.radsecEnabled) },
+      { label: 'Description', value: reported(row.description) },
+    ],
+  };
+}
+
+function authSourceDetail(row: ClearPassAuthSourceRow): StaticInventoryDetail {
+  return {
+    title: row.name,
+    fields: [
+      { label: 'Type', value: reported(row.type) },
+      { label: 'Description', value: reported(row.description) },
+    ],
+  };
+}
+
+function roleDetail(row: ClearPassRoleRow): StaticInventoryDetail {
+  return { title: row.name, fields: [{ label: 'Description', value: reported(row.description) }] };
+}
+
+function enforcementPolicyDetail(row: ClearPassEnforcementPolicyRow): StaticInventoryDetail {
+  return {
+    title: row.name,
+    fields: [
+      { label: 'Type', value: reported(row.enforcementType) },
+      { label: 'Default profile', value: reported(row.defaultProfile) },
+    ],
+  };
+}
+
+function enforcementProfileDetail(row: ClearPassEnforcementProfileRow): StaticInventoryDetail {
+  return {
+    title: row.name,
+    fields: [
+      { label: 'Type', value: reported(row.type) },
+      { label: 'Description', value: reported(row.description) },
+    ],
+  };
+}
+
+function deviceGroupDetail(row: ClearPassDeviceGroupRow): StaticInventoryDetail {
+  return { title: row.name, fields: [{ label: 'Description', value: reported(row.description) }] };
+}
+
 function NetworkDevicesSection({
   rows,
   density,
+  onView,
 }: {
   rows: ClearPassNetworkDeviceRow[] | undefined;
   density: 'comfortable' | 'compact';
+  onView: (row: StaticInventoryDetail) => void;
 }) {
   return (
     <>
@@ -796,7 +914,11 @@ function NetworkDevicesSection({
           <Table.Body>
             {(rows ?? []).map((d) => (
               <Table.Row key={d.id}>
-                <Table.Cell>{d.name}</Table.Cell>
+                <Table.Cell>
+                  <button type="button" onClick={() => onView(networkDeviceDetail(d))} style={inventoryDetailButtonStyle} aria-label={`View network device ${d.name}`}>
+                    {d.name}
+                  </button>
+                </Table.Cell>
                 <Table.Cell>
                   <span
                     style={{
@@ -824,9 +946,11 @@ function NetworkDevicesSection({
 function AuthSourcesSection({
   rows,
   density,
+  onView,
 }: {
   rows: ClearPassAuthSourceRow[] | undefined;
   density: 'comfortable' | 'compact';
+  onView: (row: StaticInventoryDetail) => void;
 }) {
   return (
     <>
@@ -847,7 +971,11 @@ function AuthSourcesSection({
           <Table.Body>
             {(rows ?? []).map((s) => (
               <Table.Row key={s.id}>
-                <Table.Cell>{s.name}</Table.Cell>
+                <Table.Cell>
+                  <button type="button" onClick={() => onView(authSourceDetail(s))} style={inventoryDetailButtonStyle} aria-label={`View authentication source ${s.name}`}>
+                    {s.name}
+                  </button>
+                </Table.Cell>
                 <Table.Cell>{s.type ?? '—'}</Table.Cell>
                 <Table.Cell>{s.description ?? '—'}</Table.Cell>
               </Table.Row>
@@ -859,7 +987,15 @@ function AuthSourcesSection({
   );
 }
 
-function RolesSection({ rows, density }: { rows: ClearPassRoleRow[] | undefined; density: 'comfortable' | 'compact' }) {
+function RolesSection({
+  rows,
+  density,
+  onView,
+}: {
+  rows: ClearPassRoleRow[] | undefined;
+  density: 'comfortable' | 'compact';
+  onView: (row: StaticInventoryDetail) => void;
+}) {
   return (
     <>
       <SectionHeader label="Roles" meta={inventoryMeta(rows)} />
@@ -878,7 +1014,11 @@ function RolesSection({ rows, density }: { rows: ClearPassRoleRow[] | undefined;
           <Table.Body>
             {(rows ?? []).map((r) => (
               <Table.Row key={r.id}>
-                <Table.Cell>{r.name}</Table.Cell>
+                <Table.Cell>
+                  <button type="button" onClick={() => onView(roleDetail(r))} style={inventoryDetailButtonStyle} aria-label={`View role ${r.name}`}>
+                    {r.name}
+                  </button>
+                </Table.Cell>
                 <Table.Cell>{r.description ?? '—'}</Table.Cell>
               </Table.Row>
             ))}
@@ -893,10 +1033,12 @@ function EnforcementSection({
   policies,
   profiles,
   density,
+  onView,
 }: {
   policies: ClearPassEnforcementPolicyRow[] | undefined;
   profiles: ClearPassEnforcementProfileRow[] | undefined;
   density: 'comfortable' | 'compact';
+  onView: (row: StaticInventoryDetail) => void;
 }) {
   return (
     <>
@@ -917,7 +1059,11 @@ function EnforcementSection({
           <Table.Body>
             {(policies ?? []).map((p) => (
               <Table.Row key={p.id}>
-                <Table.Cell>{p.name}</Table.Cell>
+                <Table.Cell>
+                  <button type="button" onClick={() => onView(enforcementPolicyDetail(p))} style={inventoryDetailButtonStyle} aria-label={`View enforcement policy ${p.name}`}>
+                    {p.name}
+                  </button>
+                </Table.Cell>
                 <Table.Cell>{p.enforcementType ?? '—'}</Table.Cell>
                 <Table.Cell>
                   <DefaultProfileChain policy={p} profiles={profiles} />
@@ -945,7 +1091,11 @@ function EnforcementSection({
           <Table.Body>
             {(profiles ?? []).map((p) => (
               <Table.Row key={p.id}>
-                <Table.Cell>{p.name}</Table.Cell>
+                <Table.Cell>
+                  <button type="button" onClick={() => onView(enforcementProfileDetail(p))} style={inventoryDetailButtonStyle} aria-label={`View enforcement profile ${p.name}`}>
+                    {p.name}
+                  </button>
+                </Table.Cell>
                 <Table.Cell>{p.type ?? '—'}</Table.Cell>
                 <Table.Cell>{p.description ?? '—'}</Table.Cell>
               </Table.Row>
@@ -1074,11 +1224,13 @@ function ServicesSection({
   deviceGroups,
   density,
   onView,
+  onViewDeviceGroup,
 }: {
   services: ClearPassServiceRow[] | undefined;
   deviceGroups: ClearPassDeviceGroupRow[] | undefined;
   density: 'comfortable' | 'compact';
   onView: (row: ClearPassServiceRow) => void;
+  onViewDeviceGroup: (row: StaticInventoryDetail) => void;
 }) {
   return (
     <>
@@ -1182,7 +1334,11 @@ function ServicesSection({
           <Table.Body>
             {deviceGroups.map((g) => (
               <Table.Row key={g.id}>
-                <Table.Cell>{g.name}</Table.Cell>
+                <Table.Cell>
+                  <button type="button" onClick={() => onViewDeviceGroup(deviceGroupDetail(g))} style={inventoryDetailButtonStyle} aria-label={`View device group ${g.name}`}>
+                    {g.name}
+                  </button>
+                </Table.Cell>
                 <Table.Cell>{g.description ?? '—'}</Table.Cell>
               </Table.Row>
             ))}
