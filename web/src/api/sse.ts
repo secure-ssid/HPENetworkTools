@@ -220,32 +220,32 @@ export async function sseMutate(url: string, method: 'POST' | 'PUT' | 'DELETE', 
 }
 
 /** POST /api/sse/objects/:kind — create, review-confirmed. */
-export async function createSseObject(kind: SseObjectKind, fields: Record<string, unknown>): Promise<SseMutationCallResult> {
-  return sseMutate(`/api/sse/objects/${encodeURIComponent(kind)}`, 'POST', { fields, reviewConfirmed: true });
+export async function createSseObject(kind: SseObjectKind, fields: Record<string, unknown>, reviewConfirmed?: boolean): Promise<SseMutationCallResult> {
+  return sseMutate(`/api/sse/objects/${encodeURIComponent(kind)}`, 'POST', { fields, ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }) });
 }
 
 /** PUT /api/sse/objects/:kind/:id — update, review-confirmed. */
-export async function updateSseObject(kind: SseObjectKind, id: string, fields: Record<string, unknown>): Promise<SseMutationCallResult> {
-  return sseMutate(`/api/sse/objects/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, 'PUT', { fields, reviewConfirmed: true });
+export async function updateSseObject(kind: SseObjectKind, id: string, fields: Record<string, unknown>, reviewConfirmed?: boolean): Promise<SseMutationCallResult> {
+  return sseMutate(`/api/sse/objects/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, 'PUT', { fields, ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }) });
 }
 
 /** DELETE /api/sse/objects/:kind/:id — delete, review-confirmed. */
-export async function deleteSseObject(kind: SseObjectKind, id: string): Promise<SseMutationCallResult> {
-  return sseMutate(`/api/sse/objects/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, 'DELETE', { reviewConfirmed: true });
+export async function deleteSseObject(kind: SseObjectKind, id: string, reviewConfirmed?: boolean): Promise<SseMutationCallResult> {
+  return sseMutate(`/api/sse/objects/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, 'DELETE', reviewConfirmed === undefined ? {} : { reviewConfirmed });
 }
 
 /** POST /api/sse/commit/retry — commit-only retry for a staged change; never
  *  replays the mutation that already landed. The caller must supply the
  *  explicit review action rather than this client silently confirming it. */
-export async function retrySseCommit(reviewConfirmed: boolean): Promise<SseCommitRetryCallResult> {
-  if (reviewConfirmed !== true) {
+export async function retrySseCommit(reviewConfirmed?: boolean): Promise<SseCommitRetryCallResult> {
+  if (reviewConfirmed === false) {
     return { ok: false, message: 'review the tenant-wide commit before retrying' };
   }
   try {
     const r = await apiFetch('/api/sse/commit/retry', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reviewConfirmed: true }),
+      body: JSON.stringify(reviewConfirmed === undefined ? {} : { reviewConfirmed }),
     });
     if (r.ok) {
       const result = (await r.json()) as SseCommitRetryResult;
@@ -276,10 +276,10 @@ export async function retrySseCommit(reviewConfirmed: boolean): Promise<SseCommi
  * after separate reviewed-action and manual-reconciliation acknowledgments.
  * The server never calls a mutation or tenant-wide Commit on this path. */
 export async function cleanupSseManualReconciliation(
-  reviewConfirmed: boolean,
+  reviewConfirmed: boolean | undefined,
   manualReconciled: boolean,
 ): Promise<SseManualCleanupCallResult> {
-  if (reviewConfirmed !== true) {
+  if (reviewConfirmed === false) {
     return { ok: false, message: 'review the cleanup-only recovery before continuing' };
   }
   if (manualReconciled !== true) {
@@ -292,7 +292,7 @@ export async function cleanupSseManualReconciliation(
     const r = await apiFetch('/api/sse/recovery/manual-cleanup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reviewConfirmed: true, manualReconciled: true }),
+      body: JSON.stringify({ ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }), manualReconciled: true }),
     });
     if (r.ok) {
       const result = (await r.json()) as SseManualCleanupResult;

@@ -16,6 +16,9 @@ import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import GreenLake from './GreenLake';
 
+const { mockLabConfigMode } = vi.hoisted(() => ({ mockLabConfigMode: vi.fn(() => ({ lab: false })) }));
+vi.mock('../hooks/useLabConfigMode', () => ({ useLabConfigMode: mockLabConfigMode }));
+
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return { ...actual, getGreenLakeInventory: vi.fn(), runGreenLakeAction: vi.fn() };
@@ -27,6 +30,7 @@ const mockAction = vi.mocked(runGreenLakeAction);
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  mockLabConfigMode.mockReturnValue({ lab: false });
 });
 
 const USER = {
@@ -122,6 +126,13 @@ describe('GreenLake screen — post-write freshness', () => {
     fireEvent.change(field, { target: { value: 'new@example.com' } });
     fireEvent.click(screen.getByText('Send invite'));
   }
+
+  it('uses the direct lab request while retaining the server outcome display', async () => {
+    mockLabConfigMode.mockReturnValue({ lab: true });
+    await invite({ ok: true, message: 'invitation sent', outcome: 'applied' });
+    await waitFor(() => expect(mockAction).toHaveBeenCalledWith('inviteUser', expect.any(Object), undefined));
+    expect(await screen.findByText('Applied in GreenLake')).toBeTruthy();
+  });
 
   it('says the lists are behind when the workspace could not be re-read', async () => {
     await invite({

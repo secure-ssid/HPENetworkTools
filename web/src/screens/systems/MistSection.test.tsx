@@ -23,6 +23,9 @@ import type {
   MistWebhookRegistrationStatus,
 } from '@hpe/shared';
 
+const { mockLabConfigMode } = vi.hoisted(() => ({ mockLabConfigMode: vi.fn(() => ({ lab: false })) }));
+vi.mock('../../hooks/useLabConfigMode', () => ({ useLabConfigMode: mockLabConfigMode }));
+
 const REGISTERED: MistWebhookRegistrationStatus = {
   demoMode: false,
   linked: true,
@@ -94,6 +97,7 @@ function renderPanel() {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  mockLabConfigMode.mockReturnValue({ lab: false });
 });
 
 describe('MistSection — registration status', () => {
@@ -124,6 +128,20 @@ describe('MistSection — registration status', () => {
 });
 
 describe('MistSection — the reviewed write', () => {
+  it('in lab mode omits the review gate and request flag while retaining secret handling', async () => {
+    mockLabConfigMode.mockReturnValue({ lab: true });
+    const fetchMock = stubMistFetch();
+    renderPanel();
+    const apply = await screen.findByRole('button', { name: 'Update subscription' });
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('leave blank to keep the existing secret'), { target: { value: 'lab-secret' } });
+    fireEvent.click(apply);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes('/api/hooks/mist/registration') && init?.method === 'POST')).toBe(true));
+    const post = fetchMock.mock.calls.find(([input, init]) => String(input).includes('/api/hooks/mist/registration') && init?.method === 'POST');
+    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ secret: 'lab-secret' });
+    expect(JSON.parse(String(post?.[1]?.body)).reviewConfirmed).toBeUndefined();
+  });
+
   it('keeps the apply disabled until reviewed, then posts reviewConfirmed and the write-only secret', async () => {
     const fetchMock = stubMistFetch();
     renderPanel();

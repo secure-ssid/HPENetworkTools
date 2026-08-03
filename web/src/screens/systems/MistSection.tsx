@@ -48,17 +48,18 @@ import type {
 } from '@hpe/shared';
 import { AuditLogSection, getMistAuditLog, getMistRegistration, stampLabel } from '../mist/audit';
 import { noteStyle } from '../mist/style';
+import { useLabConfigMode } from '../../hooks/useLabConfigMode';
 
 async function postMistRegistration(form: {
   url: string;
   secret?: string;
   topics: string[];
-}): Promise<ApiResult<MistWebhookRegistrationResult>> {
+}, reviewConfirmed?: boolean): Promise<ApiResult<MistWebhookRegistrationResult>> {
   try {
     const r = await apiFetch('/api/hooks/mist/registration', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form, reviewConfirmed: true }),
+      body: JSON.stringify({ ...form, ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }) }),
     });
     const body = (await r.json()) as MistWebhookRegistrationResult;
     // The service's result body is the honest answer even on a non-OK status
@@ -73,6 +74,7 @@ async function postMistRegistration(form: {
 
 export function MistSection() {
   const { toast } = useToast();
+  const { lab } = useLabConfigMode();
   const [status, setStatus] = useState<MistWebhookRegistrationStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [audit, setAudit] = useState<MistAuditLogLive | null | undefined>(undefined);
@@ -120,13 +122,13 @@ export function MistSection() {
   };
 
   const apply = async (): Promise<void> => {
-    if (!reviewed || applying) return;
+    if ((!lab && !reviewed) || applying) return;
     setApplying(true);
     const applied = await postMistRegistration({
       url: url.trim(),
       topics: [...MIST_WEBHOOK_TOPICS],
       ...(secret.trim() !== '' ? { secret: secret.trim() } : {}),
-    });
+    }, lab ? undefined : true);
     setApplying(false);
     if (isApiError(applied)) {
       toast(`Registration failed: ${applied.error}`, { tone: 'danger' });
@@ -222,11 +224,11 @@ export function MistSection() {
                     mono
                   />
                 </FormField>
-                <Checkbox
+                {!lab ? <Checkbox
                   checked={reviewed}
                   onChange={(e) => setReviewed(e.target.checked)}
                   label={`I reviewed this registration — it creates or updates a webhook subscription on the Mist org (${MIST_WEBHOOK_TOPICS.join(', ')})`}
-                />
+                /> : null}
                 {result !== null ? (
                   <Alert tone={result.ok ? 'success' : 'danger'} title={result.ok ? `Registration ${result.action}` : 'Registration failed'}>
                     {result.message}
@@ -236,7 +238,7 @@ export function MistSection() {
                   <Button
                     variant="primary"
                     size="sm"
-                    disabled={!reviewed || applying || url.trim() === ''}
+                    disabled={(!lab && !reviewed) || applying || url.trim() === ''}
                     onClick={() => void apply()}
                   >
                     {applying ? 'Registering…' : registered ? 'Update subscription' : 'Register receiver'}

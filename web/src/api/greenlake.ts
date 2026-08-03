@@ -67,12 +67,13 @@ export interface GreenLakeActionCallResult {
 export async function runGreenLakeAction(
   action: GreenLakeWriteAction,
   fields: Record<string, unknown>,
+  reviewConfirmed?: boolean,
 ): Promise<GreenLakeActionCallResult> {
   try {
     const r = await apiFetch(`/api/greenlake/actions/${encodeURIComponent(action)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields, reviewConfirmed: true }),
+      body: JSON.stringify({ fields, ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }) }),
     });
     if (!r.ok) {
       return { ok: false, message: await serverMessage(r, `${action} failed — HTTP ${r.status}`) };

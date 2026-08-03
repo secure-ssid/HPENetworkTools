@@ -41,6 +41,7 @@ import type { GreenLakeInventoryResponse } from '../api/client';
 import type { GreenLakeSectionKey, GreenLakeWriteAction } from '@hpe/shared';
 import { countOf, shortDateLocal } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
+import { useLabConfigMode } from '../hooks/useLabConfigMode';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 
@@ -110,6 +111,7 @@ function Field({
 
 export default function GreenLake() {
   const { density } = useSettings();
+  const { lab } = useLabConfigMode();
   const { toast } = useToast();
   const [data, setData] = useState<GreenLakeInventoryResponse | null>(null);
   const [failed, setFailed] = useState(false);
@@ -169,7 +171,7 @@ export default function GreenLake() {
     onDone?: () => void,
   ) => {
     setBusy(true);
-    const r = await runGreenLakeAction(action, fields);
+    const r = await runGreenLakeAction(action, fields, lab ? undefined : true);
     setBusy(false);
     if (!r.ok) {
       toast('GreenLake refused the change', { description: r.message, tone: 'danger' });
@@ -229,7 +231,7 @@ export default function GreenLake() {
       <ScreenHeader
         overline="Govern / GreenLake"
         title="GreenLake workspace"
-        subtitle="Workspace members, locations and role grants, plus the reviewed changes this credential may make. Subscriptions are reconciled on Licences."
+        subtitle={`Workspace members, locations and role grants, plus the ${lab ? 'direct' : 'reviewed'} changes this credential may make. Subscriptions are reconciled on Licences.`}
         actions={
           <>
             <span
@@ -243,7 +245,7 @@ export default function GreenLake() {
               {data.source.toUpperCase()}
             </span>
             <Badge tone={readOnly ? 'neutral' : 'accent'}>
-              {readOnly ? 'read only — no write scope' : 'reviewed writes'}
+              {readOnly ? 'read only — no write scope' : lab ? 'direct writes' : 'reviewed writes'}
             </Badge>
             <Button variant="ghost" size="sm" onClick={() => void load()}>
               Refresh

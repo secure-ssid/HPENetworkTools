@@ -41,20 +41,20 @@ async function mutate<T>(path: string, method: 'POST' | 'PUT', body: unknown): P
 /** POST /api/clearpass/endpoints — register one MAC with its attributes. */
 export async function registerClearPassEndpoint(
   form: ClearPassEndpointRegisterForm,
-  reviewConfirmed: boolean,
+  reviewConfirmed?: boolean,
 ): Promise<ApiResult<ClearPassWriteResult>> {
-  return mutate<ClearPassWriteResult>('/api/clearpass/endpoints', 'POST', { form, reviewConfirmed });
+  return mutate<ClearPassWriteResult>('/api/clearpass/endpoints', 'POST', { form, ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }) });
 }
 
 /** PUT /api/clearpass/endpoints/:id — status and/or the operator note. */
 export async function updateClearPassEndpoint(
   id: string,
   form: ClearPassEndpointUpdateForm,
-  reviewConfirmed: boolean,
+  reviewConfirmed?: boolean,
 ): Promise<ApiResult<ClearPassWriteResult>> {
   return mutate<ClearPassWriteResult>(`/api/clearpass/endpoints/${encodeURIComponent(id)}`, 'PUT', {
     form,
-    reviewConfirmed,
+    ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }),
   });
 }
 
@@ -62,9 +62,9 @@ export async function updateClearPassEndpoint(
  *  password is write-only and appears in nothing the server answers. */
 export async function createClearPassLocalUser(
   form: ClearPassLocalUserCreateForm,
-  reviewConfirmed: boolean,
+  reviewConfirmed?: boolean,
 ): Promise<ApiResult<ClearPassWriteResult>> {
-  return mutate<ClearPassWriteResult>('/api/clearpass/local-users', 'POST', { form, reviewConfirmed });
+  return mutate<ClearPassWriteResult>('/api/clearpass/local-users', 'POST', { form, ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }) });
 }
 
 /** PUT /api/clearpass/local-users/:id — any subset of the mutable fields;
@@ -72,10 +72,10 @@ export async function createClearPassLocalUser(
 export async function updateClearPassLocalUser(
   id: string,
   form: ClearPassLocalUserUpdateForm,
-  reviewConfirmed: boolean,
+  reviewConfirmed?: boolean,
 ): Promise<ApiResult<ClearPassWriteResult>> {
   return mutate<ClearPassWriteResult>(`/api/clearpass/local-users/${encodeURIComponent(id)}`, 'PUT', {
     form,
-    reviewConfirmed,
+    ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }),
   });
 }

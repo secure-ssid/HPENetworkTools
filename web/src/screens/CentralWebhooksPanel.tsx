@@ -51,6 +51,7 @@ import {
   useToast,
 } from '../nightdesk';
 import { DiffCode } from '../lib/DiffCode';
+import { useLabConfigMode } from '../hooks/useLabConfigMode';
 import {
   acknowledgeCentralWebhookHandoff,
   apiFetch,
@@ -232,6 +233,7 @@ const RECEIVER_SEV_TONE: Record<Sev, 'danger' | 'warning' | 'info'> = {
 
 export function CentralWebhooksPanel() {
   const { toast } = useToast();
+  const { lab } = useLabConfigMode();
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [listing, setListing] = useState<WebhookListEnvelope | null>(null);
@@ -753,7 +755,7 @@ export function CentralWebhooksPanel() {
     const result = await resolveCentralWebhookHandoff({
       operationId: pending.operationId,
       resolution: 'create-absent',
-      reviewConfirmed: true,
+      ...(lab ? {} : { reviewConfirmed: true }),
       attestations: {
         candidateAbsent: true,
         eventualConsistencyRiskAccepted: true,
@@ -782,7 +784,7 @@ export function CentralWebhooksPanel() {
     const result = await resolveCentralWebhookHandoff({
       operationId: pending.operationId,
       resolution: 'create-located',
-      reviewConfirmed: true,
+      ...(lab ? {} : { reviewConfirmed: true }),
       attestations: { candidateLocated: true },
       matchedWebhookId: pending.matchedWebhookId,
     });
@@ -830,7 +832,7 @@ export function CentralWebhooksPanel() {
     const result = await resolveCentralWebhookHandoff({
       operationId: pending.operationId,
       resolution: 'rotate-reconciled',
-      reviewConfirmed: true,
+      ...(lab ? {} : { reviewConfirmed: true }),
       attestations: {
         receiverReconciled: true,
         centralReconciled: true,
@@ -889,7 +891,7 @@ export function CentralWebhooksPanel() {
 
   const submitCreate = async () => {
     if (
-      !reviewed ||
+      (!lab && !reviewed) ||
       !oneTimeAcknowledged ||
       formErrors.length > 0 ||
       outcomeUnknown
@@ -903,9 +905,9 @@ export function CentralWebhooksPanel() {
     setApplying(true);
     const result = await createCentralWebhook(
       canonicalForm,
+      lab ? undefined : true,
       true,
-      true,
-      reviewedTenantBinding,
+      lab ? listing?.tenantBinding ?? null : reviewedTenantBinding,
     );
     if (!isActiveDrawerRequest(token)) return;
     setApplying(false);
@@ -961,7 +963,7 @@ export function CentralWebhooksPanel() {
 
   const submitRotate = async () => {
     if (
-      !reviewed ||
+      (!lab && !reviewed) ||
       !oneTimeAcknowledged ||
       !drawerRow ||
       outcomeUnknown
@@ -974,9 +976,9 @@ export function CentralWebhooksPanel() {
     setApplying(true);
     const result = await rotateCentralWebhookHmacKey(
       webhookId,
+      lab ? undefined : true,
       true,
-      true,
-      reviewedTenantBinding,
+      lab ? listing?.tenantBinding ?? null : reviewedTenantBinding,
     );
     if (!isActiveDrawerRequest(token)) return;
     setApplying(false);
@@ -1030,7 +1032,7 @@ export function CentralWebhooksPanel() {
   };
 
   const submitEdit = async () => {
-    if (!reviewed || formErrors.length > 0 || outcomeUnknown || !drawerRow) return;
+    if ((!lab && !reviewed) || formErrors.length > 0 || outcomeUnknown || !drawerRow) return;
     // Bind this PATCH to the identity actually rendered right now — never
     // re-read `drawerRow`/`existing` after the await, since the operator
     // could close this drawer (or it could be superseded) while the request
@@ -1040,7 +1042,7 @@ export function CentralWebhooksPanel() {
     const webhookId = drawerRow.id;
     const expectedGeneration = existing?.generation;
     setApplying(true);
-    const result = await updateCentralWebhook(webhookId, form, true, expectedGeneration);
+    const result = await updateCentralWebhook(webhookId, form, lab ? undefined : true, expectedGeneration);
     if (!isActiveDrawerRequest(token)) return;
     setApplying(false);
     if (isApiError(result)) {
@@ -1073,13 +1075,13 @@ export function CentralWebhooksPanel() {
   };
 
   const submitDelete = async () => {
-    if (!reviewed || !drawerRow || outcomeUnknown) return;
+    if ((!lab && !reviewed) || !drawerRow || outcomeUnknown) return;
     // Same identity binding as submitEdit: capture now, verify on return.
     const token = activeRequestRef.current;
     if (!token) return;
     const webhookId = drawerRow.id;
     setApplying(true);
-    const result = await deleteCentralWebhook(webhookId, true);
+    const result = await deleteCentralWebhook(webhookId, lab ? undefined : true);
     if (!isActiveDrawerRequest(token)) return;
     setApplying(false);
     if (isApiError(result)) {
@@ -1148,7 +1150,7 @@ export function CentralWebhooksPanel() {
         <Button
           variant="primary"
           size="sm"
-          title="Create a reviewed webhook"
+          title={lab ? 'Create webhook' : 'Create a reviewed webhook'}
           disabled={anyPendingHandoff !== null}
           onClick={openCreate}
         >
@@ -1449,14 +1451,14 @@ export function CentralWebhooksPanel() {
               >
                 Refetch list
               </Button>
-            ) : (
+            ) : !lab ? (
               <Checkbox
                 label="I reviewed this delete and confirm it should apply now."
                 checked={reviewed}
                 onChange={(e) => setReviewed(e.target.checked)}
               />
-            )}
-            <Button variant="danger" disabled={!reviewed || applying || outcomeUnknown} onClick={() => void submitDelete()}>
+            ) : null}
+            <Button variant="danger" disabled={(!lab && !reviewed) || applying || outcomeUnknown} onClick={() => void submitDelete()}>
               {applying ? 'Deleting\u2026' : 'Delete webhook'}
             </Button>
           </div>
@@ -1529,11 +1531,11 @@ export function CentralWebhooksPanel() {
               ) : null
             ) : (
               <>
-                <Checkbox
+                {!lab ? <Checkbox
                   label="I reviewed this exact HMAC rotation and confirm it should apply now."
                   checked={reviewed}
                   onChange={(e) => updateReviewed(e.target.checked)}
-                />
+                /> : null}
                 <Checkbox
                   label="I understand the returned HMAC key is one-time, shown once, and must be copied now."
                   checked={oneTimeAcknowledged}
@@ -1544,7 +1546,7 @@ export function CentralWebhooksPanel() {
             {!outcomeUnknown ? (
               <Button
                 variant="danger"
-                disabled={!reviewed || !oneTimeAcknowledged || applying}
+                disabled={(!lab && !reviewed) || !oneTimeAcknowledged || applying}
                 onClick={() => void submitRotate()}
               >
                 {applying ? 'Rotating\u2026' : 'Rotate HMAC key'}
@@ -1609,7 +1611,7 @@ export function CentralWebhooksPanel() {
             )}
 
             <SectionHeader
-              label="Review"
+              label={lab ? 'Write summary' : 'Review'}
               meta={drawerMode === 'create' ? 'new webhook' : existing ? `generation ${existing.generation}` : undefined}
             />
             <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>
@@ -1617,7 +1619,7 @@ export function CentralWebhooksPanel() {
             </div>
             <DiffCode text={diffLines.join('\n')} />
             {formErrors.length > 0 ? (
-              <EmptyState title="Fix before reviewing" description={formErrors.join('; ')} />
+              <EmptyState title={lab ? 'Fix before applying' : 'Fix before reviewing'} description={formErrors.join('; ')} />
             ) : null}
             {drawerError ? (
               <EmptyState
@@ -1716,7 +1718,7 @@ export function CentralWebhooksPanel() {
               )
             ) : (
               <>
-                <Checkbox
+                {!lab ? <Checkbox
                   label={
                     drawerMode === 'create'
                       ? 'I reviewed this exact webhook creation and confirm it should apply now.'
@@ -1728,7 +1730,7 @@ export function CentralWebhooksPanel() {
                       ? updateReviewed(e.target.checked)
                       : setReviewed(e.target.checked)
                   }
-                />
+                /> : null}
                 {drawerMode === 'create' ? (
                   <Checkbox
                     label="I understand the returned HMAC key is one-time, shown once, and must be copied now."
@@ -1742,7 +1744,7 @@ export function CentralWebhooksPanel() {
               <Button
                 variant="primary"
                 disabled={
-                  !reviewed ||
+                  (!lab && !reviewed) ||
                   (drawerMode === 'create' && !oneTimeAcknowledged) ||
                   formErrors.length > 0 ||
                   applying ||

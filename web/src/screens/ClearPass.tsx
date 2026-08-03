@@ -73,6 +73,7 @@ import {
 } from '../api/clearpass';
 import { isApiError } from '../api/core';
 import { useSettings } from '../app/SettingsContext';
+import { useLabConfigMode } from '../hooks/useLabConfigMode';
 import { hhmmssLocal, hhmmLocal, formatCount, normalizeMac, detailState } from '@hpe/shared';
 import {
   CLEARPASS_ENDPOINT_STATUSES,
@@ -129,6 +130,7 @@ function uniq(values: Array<string | null>): string[] {
 export default function ClearPass() {
   const navigate = useNavigate();
   const { density } = useSettings();
+  const { lab } = useLabConfigMode();
   const [data, setData] = useState<ClearPassData | null>(null);
   const [tab, setTab] = useState<ClearPassTab>('endpoints');
   const [q, setQ] = useState('');
@@ -159,6 +161,7 @@ export default function ClearPass() {
       data={data}
       navigate={navigate}
       density={density}
+      lab={lab}
       tab={tab}
       setTab={setTab}
       q={q}
@@ -185,6 +188,7 @@ function ClearPassView({
   data,
   navigate,
   density,
+  lab,
   tab,
   setTab,
   q,
@@ -199,6 +203,7 @@ function ClearPassView({
   data: ClearPassData;
   navigate: ReturnType<typeof useNavigate>;
   density: 'comfortable' | 'compact';
+  lab: boolean;
   tab: ClearPassTab;
   setTab: (v: ClearPassTab) => void;
   q: string;
@@ -476,6 +481,7 @@ function ClearPassView({
             if (!v) setWriteDrawer(null);
           }}
           demo={demo}
+          lab={lab}
           onDemoApplied={(form) => mergeDemo((d) => ({ ...d, endpoints: [...d.endpoints, demoEndpointRowFor(form)] }))}
           reload={reload}
         />
@@ -488,6 +494,7 @@ function ClearPassView({
             if (!v) setWriteDrawer(null);
           }}
           demo={demo}
+          lab={lab}
           onDemoApplied={(row, form) =>
             mergeDemo((d) => ({
               ...d,
@@ -513,6 +520,7 @@ function ClearPassView({
           }}
           roles={data.roles}
           demo={demo}
+          lab={lab}
           onDemoCreated={(form) =>
             mergeDemo((d) => ({
               ...d,
@@ -532,6 +540,7 @@ function ClearPassView({
           }}
           roles={data.roles}
           demo={demo}
+          lab={lab}
           onDemoUpdated={(row, form) =>
             mergeDemo((d) => ({
               ...d,
@@ -1439,6 +1448,7 @@ function WriteOutcomeAlert({ outcome }: { outcome: { error?: string; result?: Cl
 /** The review checkbox, the apply/cancel row, the outcome, and the audit note —
  *  one footer every write drawer shares. */
 function ReviewedWriteFooter({
+  lab,
   reviewed,
   onReviewed,
   problems,
@@ -1448,6 +1458,7 @@ function ReviewedWriteFooter({
   onCancel,
   outcome,
 }: {
+  lab: boolean;
   reviewed: boolean;
   onReviewed: (v: boolean) => void;
   problems: string[];
@@ -1459,11 +1470,11 @@ function ReviewedWriteFooter({
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <Checkbox
+      {!lab ? <Checkbox
         label="I have reviewed this write — apply directly, no ticket."
         checked={reviewed}
         onChange={(e) => onReviewed(e.target.checked)}
-      />
+      /> : null}
       {problems.length > 0 ? (
         <Alert tone="warning" title="Apply is disabled — the form would be refused">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
@@ -1477,7 +1488,7 @@ function ReviewedWriteFooter({
         <Button
           variant="primary"
           size="md"
-          disabled={!reviewed || applying || problems.length > 0}
+          disabled={(!lab && !reviewed) || applying || problems.length > 0}
           onClick={() => void onApply()}
         >
           {applying ? 'Applying…' : applyLabel}
@@ -1521,11 +1532,13 @@ function toastWriteOutcome(
 function RegisterEndpointDrawer({
   onOpenChange,
   demo,
+  lab,
   onDemoApplied,
   reload,
 }: {
   onOpenChange: (open: boolean) => void;
   demo: boolean;
+  lab: boolean;
   onDemoApplied: (form: ClearPassEndpointRegisterForm) => void;
   reload: () => Promise<void>;
 }) {
@@ -1542,7 +1555,7 @@ function RegisterEndpointDrawer({
   const problems = [macProblem(mac), parsed.problem ?? null].filter((p): p is string => p !== null);
 
   const apply = async () => {
-    if (!reviewed || applying || problems.length > 0) return;
+    if ((!lab && !reviewed) || applying || problems.length > 0) return;
     const form: ClearPassEndpointRegisterForm = {
       mac: mac.trim(),
       ...(description.trim() ? { description: description.trim() } : {}),
@@ -1550,7 +1563,7 @@ function RegisterEndpointDrawer({
       ...(parsed.attributes ? { attributes: parsed.attributes } : {}),
     };
     setApplying(true);
-    const r = await registerClearPassEndpoint(form, true);
+    const r = await registerClearPassEndpoint(form, lab ? undefined : true);
     setApplying(false);
     if (isApiError(r)) {
       setOutcome({ error: r.error });
@@ -1573,7 +1586,7 @@ function RegisterEndpointDrawer({
       onOpenChange={onOpenChange}
       width="lg"
       title="Register endpoint"
-      description="Add one MAC to the ClearPass endpoint repository, with the profiling attributes you know. The write goes to the linked CPPM only after your explicit review."
+      description={`Add one MAC to the ClearPass endpoint repository, with the profiling attributes you know. ${lab ? 'This lab write applies directly.' : 'The write goes to the linked CPPM only after your explicit review.'}`}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <FormField label="MAC address" help="Any separator — normalised to aa:bb:cc:dd:ee:ff before the write.">
@@ -1601,7 +1614,7 @@ function RegisterEndpointDrawer({
         </FormField>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <SectionHeader label="Review — what gets written" />
+          <SectionHeader label={lab ? 'Write summary' : 'Review — what gets written'} />
           <ReviewRow label="MAC" value={mac.trim() ? normalizeMac(mac) : '—'} mono />
           <ReviewRow label="Status" value={status} />
           <ReviewRow label="Description" value={description.trim() || '—'} />
@@ -1625,6 +1638,7 @@ function RegisterEndpointDrawer({
 
         <ReviewedWriteFooter
           reviewed={reviewed}
+          lab={lab}
           onReviewed={setReviewed}
           problems={problems}
           applying={applying}
@@ -1645,12 +1659,14 @@ function EditEndpointDrawer({
   row,
   onOpenChange,
   demo,
+  lab,
   onDemoApplied,
   reload,
 }: {
   row: EndpointRow;
   onOpenChange: (open: boolean) => void;
   demo: boolean;
+  lab: boolean;
   onDemoApplied: (row: EndpointRow, form: ClearPassEndpointUpdateForm) => void;
   reload: () => Promise<void>;
 }) {
@@ -1674,13 +1690,13 @@ function EditEndpointDrawer({
     : [...CLEARPASS_ENDPOINT_STATUSES.map((s) => ({ value: s, label: s })), { value: row.status, label: `${row.status} (current)` }];
 
   const apply = async () => {
-    if (!reviewed || applying || problems.length > 0) return;
+    if ((!lab && !reviewed) || applying || problems.length > 0) return;
     const form: ClearPassEndpointUpdateForm = {
       ...(statusChanged ? { status } : {}),
       ...(descChanged ? { description } : {}),
     };
     setApplying(true);
-    const r = await updateClearPassEndpoint(row.id, form, true);
+    const r = await updateClearPassEndpoint(row.id, form, lab ? undefined : true);
     setApplying(false);
     if (isApiError(r)) {
       setOutcome({ error: r.error });
@@ -1719,7 +1735,7 @@ function EditEndpointDrawer({
         </FormField>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <SectionHeader label="Review — what gets written" />
+          <SectionHeader label={lab ? 'Write summary' : 'Review — what gets written'} />
           <ReviewRow label="MAC" value={row.mac} mono />
           <ReviewRow label="Status" value={statusChanged ? `${row.status} → ${status}` : `${status} (unchanged)`} />
           <ReviewRow
@@ -1735,6 +1751,7 @@ function EditEndpointDrawer({
 
         <ReviewedWriteFooter
           reviewed={reviewed}
+          lab={lab}
           onReviewed={setReviewed}
           problems={problems}
           applying={applying}
@@ -1758,6 +1775,7 @@ function LocalUserWriteDrawer({
   onOpenChange,
   roles,
   demo,
+  lab,
   onDemoCreated,
   onDemoUpdated,
   reload,
@@ -1767,6 +1785,7 @@ function LocalUserWriteDrawer({
   onOpenChange: (open: boolean) => void;
   roles: ClearPassRoleRow[] | undefined;
   demo: boolean;
+  lab: boolean;
   onDemoCreated?: (form: ClearPassLocalUserCreateForm) => void;
   onDemoUpdated?: (row: ClearPassLocalUserRow, form: ClearPassLocalUserUpdateForm) => void;
   reload: () => Promise<void>;
@@ -1811,7 +1830,7 @@ function LocalUserWriteDrawer({
   }
 
   const apply = async () => {
-    if (!reviewed || applying || problems.length > 0) return;
+    if ((!lab && !reviewed) || applying || problems.length > 0) return;
     if (mode === 'edit' && !row) return;
     setApplying(true);
     let r: Awaited<ReturnType<typeof createClearPassLocalUser>>;
@@ -1823,7 +1842,7 @@ function LocalUserWriteDrawer({
         enabled,
         password,
       };
-      r = await createClearPassLocalUser(form, true);
+      r = await createClearPassLocalUser(form, lab ? undefined : true);
       if (!isApiError(r) && r.ok) {
         if (demo) onDemoCreated?.(form);
         else await reload();
@@ -1835,7 +1854,7 @@ function LocalUserWriteDrawer({
         ...(enabled !== ((row as ClearPassLocalUserRow).enabled ?? true) ? { enabled } : {}),
         ...(password.length > 0 ? { password } : {}),
       };
-      r = await updateClearPassLocalUser((row as ClearPassLocalUserRow).id, form, true);
+      r = await updateClearPassLocalUser((row as ClearPassLocalUserRow).id, form, lab ? undefined : true);
       if (!isApiError(r) && r.ok) {
         if (demo) onDemoUpdated?.(row as ClearPassLocalUserRow, form);
         else await reload();
@@ -1902,7 +1921,7 @@ function LocalUserWriteDrawer({
         </FormField>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <SectionHeader label="Review — what gets written" />
+          <SectionHeader label={lab ? 'Write summary' : 'Review — what gets written'} />
           <ReviewRow label="User ID" value={mode === 'create' ? userId.trim() || '—' : (row?.userId ?? '—')} mono />
           <ReviewRow
             label="Display name"
@@ -1948,6 +1967,7 @@ function LocalUserWriteDrawer({
 
         <ReviewedWriteFooter
           reviewed={reviewed}
+          lab={lab}
           onReviewed={setReviewed}
           problems={problems}
           applying={applying}

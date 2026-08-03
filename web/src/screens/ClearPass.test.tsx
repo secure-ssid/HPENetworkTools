@@ -72,6 +72,9 @@ import {
   type ClearPassServiceDetailLive,
 } from '@hpe/shared';
 
+const { mockLabConfigMode } = vi.hoisted(() => ({ mockLabConfigMode: vi.fn(() => ({ lab: false })) }));
+vi.mock('../hooks/useLabConfigMode', () => ({ useLabConfigMode: mockLabConfigMode }));
+
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -161,6 +164,7 @@ function openTab(name: string) {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  mockLabConfigMode.mockReturnValue({ lab: false });
 });
 
 describe('ClearPass', () => {
@@ -520,6 +524,20 @@ describe('ClearPass reviewed writes', () => {
     httpCode: 200,
     message: 'demo write applied — no live CPPM was written',
   };
+
+  it('in lab mode submits a valid endpoint without a review confirmation', async () => {
+    mockLabConfigMode.mockReturnValue({ lab: true });
+    mockGetClearPass.mockResolvedValue(demoData());
+    mockRegister.mockResolvedValue(DEMO_OK);
+    renderClearPass();
+    await screen.findByText('15 of 15 shown');
+    fireEvent.click(screen.getByRole('button', { name: 'Register endpoint' }));
+    const dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
+    fireEvent.change(within(dialog).getByLabelText('MAC address'), { target: { value: 'AABBCCDDEEFF' } });
+    expect(within(dialog).queryByLabelText(/I have reviewed this write/)).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Register endpoint' }));
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledWith(expect.objectContaining({ mac: 'AABBCCDDEEFF' }), undefined));
+  });
 
   it('(h) register endpoint: the review gate, MAC validation, and the demo fixture-world merge', async () => {
     mockGetClearPass.mockResolvedValue(demoData());

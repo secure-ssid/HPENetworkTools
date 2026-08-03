@@ -31,6 +31,9 @@ import {
 } from '../api/client';
 import type { WebhookDetail, WebhookListEnvelope, WebhookSummary } from '@hpe/shared';
 
+const { mockLabConfigMode } = vi.hoisted(() => ({ mockLabConfigMode: vi.fn(() => ({ lab: false })) }));
+vi.mock('../hooks/useLabConfigMode', () => ({ useLabConfigMode: mockLabConfigMode }));
+
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
@@ -137,6 +140,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  mockLabConfigMode.mockReturnValue({ lab: false });
 });
 
 async function submitReviewedCreate(
@@ -237,6 +241,24 @@ describe('list, pagination, and envelope states', () => {
 });
 
 describe('reviewed one-time HMAC workflow', () => {
+  it('in lab mode omits review confirmation but keeps the one-time HMAC acknowledgement and tenant binding', async () => {
+    mockLabConfigMode.mockReturnValue({ lab: true });
+    mockList.mockResolvedValue(envelope());
+    mockCreate.mockResolvedValue({ ok: true, action: 'created', operationId: 'lab-create', hmacKey: 'one-time', message: 'copy now' });
+    renderPanel();
+    await screen.findByText('servicenow-incidents');
+    fireEvent.click(screen.getByRole('button', { name: 'New webhook' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'lab-hook' } });
+    fireEvent.change(screen.getByLabelText('Target URL'), { target: { value: 'https://hooks.example.com/lab' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'lab-api-key' } });
+    expect(screen.queryByLabelText(/reviewed this exact webhook creation/i)).toBeNull();
+    const submit = screen.getByRole('button', { name: 'Create webhook' });
+    expect(submit).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByLabelText(/returned HMAC key is one-time/i));
+    fireEvent.click(submit);
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ name: 'lab-hook' }), undefined, true, 'a'.repeat(64)));
+  });
+
   it('offers create and rotate without a demo/config-mode gate', async () => {
     mockList.mockResolvedValue(envelope());
     renderPanel();

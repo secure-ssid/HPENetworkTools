@@ -45,6 +45,7 @@ import {
   updateSseObject,
   type SseKindListing,
 } from '../api/client';
+import { useLabConfigMode } from '../hooks/useLabConfigMode';
 import {
   SSE_OBJECT_KINDS,
   SSE_OBJECT_KIND_LABELS,
@@ -193,6 +194,7 @@ export function SseInventoryPanel({
   initialObjectId,
 }: SseInventoryPanelProps) {
   const { toast } = useToast();
+  const { lab } = useLabConfigMode();
   const [kind, setKind] = useState<SseObjectKind>(initialKind);
   const [q, setQ] = useState('');
   const [listingState, setListingState] = useState<ListingState>({
@@ -382,7 +384,7 @@ export function SseInventoryPanel({
       `Delete ${row.name}? The deletion will be staged and becomes effective only after SSE Commit is accepted. Commit is tenant-wide and may include other staged tenant changes. It is not reversible from here once committed.`,
     );
     if (!ok) return;
-    const result = await deleteSseObject(rowKind, row.id);
+    const result = await deleteSseObject(rowKind, row.id, lab ? undefined : true);
     if (!mountedRef.current) return;
     const needsRecovery = Boolean(result.result && (result.result.staged || result.result.outcome === 'unknown'));
     if (result.result) {
@@ -465,7 +467,7 @@ export function SseInventoryPanel({
     const actionQuery = drawerQuery;
     const actionName = form.primaryName.trim();
     const drawerRequest = drawerRequestRef.current;
-    if (!reviewed || !actionKind || !actionMode) return;
+    if ((!lab && !reviewed) || !actionKind || !actionMode) return;
     const extra = parsedExtra();
     if (extra === null) {
       setForm((f) => ({ ...f, extraError: 'Additional fields must be valid JSON for an object' }));
@@ -485,8 +487,8 @@ export function SseInventoryPanel({
     setApplying(true);
     const result =
       actionMode === 'create'
-        ? await createSseObject(actionKind, fields)
-        : await updateSseObject(actionKind, actionId as string, fields);
+        ? await createSseObject(actionKind, fields, lab ? undefined : true)
+        : await updateSseObject(actionKind, actionId as string, fields, lab ? undefined : true);
     if (!mountedRef.current) return;
     const drawerIsCurrent = drawerRequest === drawerRequestRef.current;
     if (drawerIsCurrent) setApplying(false);
@@ -550,11 +552,11 @@ export function SseInventoryPanel({
   };
 
   const retryCommit = async () => {
-    if (!retryReviewed || (unknownRecovery && !manualReconciled)) return;
+    if ((!lab && !retryReviewed) || (unknownRecovery && !manualReconciled)) return;
     setRetrying(true);
     const result = unknownRecovery
-      ? await cleanupSseManualReconciliation(true, true)
-      : await retrySseCommit(true);
+      ? await cleanupSseManualReconciliation(lab ? undefined : true, true)
+      : await retrySseCommit(lab ? undefined : true);
     if (!mountedRef.current) return;
     setRetrying(false);
     setRetryReviewed(false);
@@ -622,7 +624,7 @@ export function SseInventoryPanel({
           !canWrite ? (
             <Badge tone="neutral">read only — no write scope granted</Badge>
           ) : (
-            <Badge tone="accent">reviewed writes · auto-commit</Badge>
+            <Badge tone="accent">{lab ? 'direct writes · auto-commit' : 'reviewed writes · auto-commit'}</Badge>
           )
         }
       />
@@ -636,7 +638,7 @@ export function SseInventoryPanel({
         }}
       >
         <strong>Commit is tenant-wide.</strong> It may apply other changes already staged on this SSE tenant, not only
-        the change reviewed here.
+        the change being applied here.
       </div>
 
       {commitWarning ? (
@@ -687,7 +689,7 @@ export function SseInventoryPanel({
           }}
         >
           <span>{stagedNotice}</span>
-          <Checkbox
+          {!lab ? <Checkbox
             label={
               unknownRecovery
                 ? 'I reviewed this cleanup-only recovery and understand tenant-wide Commit will not be called.'
@@ -696,7 +698,7 @@ export function SseInventoryPanel({
             checked={retryReviewed}
             disabled={retrying}
             onChange={(e) => setRetryReviewed(e.target.checked)}
-          />
+          /> : null}
           {unknownRecovery ? (
             <Checkbox
               label="I attest that I manually reconciled the mutation and Commit outcome in the SSE admin console and authorize durable journal removal."
@@ -708,7 +710,7 @@ export function SseInventoryPanel({
           <Button
             size="sm"
             variant="secondary"
-            disabled={!retryReviewed || (unknownRecovery && !manualReconciled) || retrying}
+            disabled={(!lab && !retryReviewed) || (unknownRecovery && !manualReconciled) || retrying}
             onClick={() => void retryCommit()}
           >
             {retrying
@@ -835,7 +837,7 @@ export function SseInventoryPanel({
         description={
           drawerBuiltIn
             ? 'Built-in / system-defined object — read only.'
-            : 'Review the change before it applies. Commit is tenant-wide and may include other staged tenant changes; a failed commit stages this change for a safe retry.'
+            : `${lab ? 'This direct write applies immediately.' : 'Review the change before it applies.'} Commit is tenant-wide and may include other staged tenant changes; a failed commit stages this change for a safe retry.`
         }
       >
         {drawerLoading ? (
@@ -892,12 +894,12 @@ export function SseInventoryPanel({
 
             {!drawerBuiltIn && canWrite ? (
               <>
-                <Checkbox
+                {!lab ? <Checkbox
                   label={`I have reviewed this ${drawerMode === 'create' ? 'create' : 'update'} and confirm it should apply now. The following tenant-wide Commit may include other staged tenant changes.`}
                   checked={reviewed}
                   onChange={(e) => setReviewed(e.target.checked)}
-                />
-                <Button variant="primary" disabled={!reviewed || applying} onClick={() => void submit()}>
+                /> : null}
+                <Button variant="primary" disabled={(!lab && !reviewed) || applying} onClick={() => void submit()}>
                   {applying ? 'Applying…' : drawerMode === 'create' ? 'Create and commit' : 'Save and commit'}
                 </Button>
               </>

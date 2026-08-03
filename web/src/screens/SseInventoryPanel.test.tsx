@@ -26,6 +26,9 @@ import {
 } from '../api/client';
 import type { SseKindListing } from '../api/client';
 
+const { mockLabConfigMode } = vi.hoisted(() => ({ mockLabConfigMode: vi.fn(() => ({ lab: false })) }));
+vi.mock('../hooks/useLabConfigMode', () => ({ useLabConfigMode: mockLabConfigMode }));
+
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
@@ -194,6 +197,7 @@ function renderPanel(
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  mockLabConfigMode.mockReturnValue({ lab: false });
 });
 
 describe('SseInventoryPanel — listing', () => {
@@ -359,6 +363,22 @@ describe('SseInventoryPanel — listing', () => {
 });
 
 describe('SseInventoryPanel — reviewed create', () => {
+  it('in lab mode removes the create review gate but preserves the tenant-wide commit warning', async () => {
+    mockLabConfigMode.mockReturnValue({ lab: true });
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue({ rows: [], total: 0, truncated: false, unavailable: false } satisfies SseKindListing);
+    mockCreateSseObject.mockResolvedValue(committedMutation);
+
+    renderPanel(true);
+    await screen.findByRole('button', { name: /New Connector Zone/i });
+    fireEvent.click(screen.getByRole('button', { name: /New Connector Zone/i }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Lab zone' } });
+    expect(screen.queryByLabelText(/I have reviewed this create/i)).toBeNull();
+    expect(screen.getAllByText(/Commit is tenant-wide/i).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: /Create and commit/i }));
+    await waitFor(() => expect(mockCreateSseObject).toHaveBeenCalledWith('connectorZones', expect.objectContaining({ name: 'Lab zone' }), undefined));
+  });
+
   it('requires the review checkbox before Create is enabled, then applies and commits', async () => {
     mockGetSseInventory.mockResolvedValue(null);
     mockGetSseKind.mockResolvedValue({ rows: [], total: 0, truncated: false, unavailable: false } satisfies SseKindListing);
@@ -392,7 +412,7 @@ describe('SseInventoryPanel — reviewed create', () => {
     expect(createButton).toHaveProperty('disabled', false);
 
     fireEvent.click(createButton);
-    await waitFor(() => expect(mockCreateSseObject).toHaveBeenCalledWith('connectorZones', expect.objectContaining({ name: 'Branch zone' })));
+    await waitFor(() => expect(mockCreateSseObject).toHaveBeenCalledWith('connectorZones', expect.objectContaining({ name: 'Branch zone' }), true));
   });
 
   /* Same state on the create path, which builds its own wording separately
@@ -1161,6 +1181,7 @@ describe('SseInventoryPanel — reviewed create', () => {
       expect(mockCreateSseObject).toHaveBeenCalledWith(
         'connectorZones',
         expect.objectContaining({ name: 'Anchored zone' }),
+        true,
       ),
     );
   });
@@ -1196,6 +1217,7 @@ describe('SseInventoryPanel — reviewed create', () => {
         'connectorZones',
         'cz-1',
         expect.objectContaining({ name: 'HQ zone updated' }),
+        true,
       ),
     );
   });
@@ -1214,7 +1236,7 @@ describe('SseInventoryPanel — reviewed create', () => {
     renderPanel(true);
     await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    expect(mockDeleteSseObject).toHaveBeenCalledWith('connectorZones', 'cz-1');
+    expect(mockDeleteSseObject).toHaveBeenCalledWith('connectorZones', 'cz-1', true);
     fireEvent.change(screen.getByLabelText('Object kind'), { target: { value: 'users' } });
     await waitFor(() => expect(screen.getByText(/^No users$/i)).toBeTruthy());
 

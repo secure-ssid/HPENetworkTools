@@ -129,7 +129,7 @@ export async function acknowledgeCentralWebhookHandoff(
 export async function resolveCentralWebhookHandoff(input: {
   operationId: string;
   resolution: 'create-located' | 'create-absent' | 'rotate-reconciled';
-  reviewConfirmed: true;
+  reviewConfirmed?: true;
   attestations: Record<string, true>;
   matchedWebhookId?: string;
 }): Promise<ApiResult<WebhookHandoffResolutionResult>> {
@@ -389,7 +389,7 @@ export function webhookPatchForm(form: WebhookForm, expectedGeneration: number):
 export async function updateCentralWebhook(
   id: string,
   form: WebhookForm,
-  reviewConfirmed: boolean,
+  reviewConfirmed: boolean | undefined,
   expectedGeneration?: number,
 ): Promise<ApiResult<WebhookMutationResult>> {
   if (typeof expectedGeneration !== 'number' || !Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) {
@@ -403,7 +403,7 @@ export async function updateCentralWebhook(
   return webhookMutate(
     `/api/central/webhooks/${encodeURIComponent(id)}`,
     'PATCH',
-    { form: patchForm, reviewConfirmed },
+    { form: patchForm, ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }) },
     secrets,
   );
 }
@@ -413,11 +413,11 @@ export async function updateCentralWebhook(
  * soon as its dedicated modal closes. */
 export async function createCentralWebhook(
   form: WebhookForm,
-  reviewConfirmed: boolean,
+  reviewConfirmed: boolean | undefined,
   oneTimeSecretAcknowledged: boolean,
   reviewedTenantBinding: string | null,
 ): Promise<ApiResult<WebhookOneTimeSecretResult>> {
-  if (reviewConfirmed !== true) {
+  if (reviewConfirmed === false) {
     return { error: 'webhook creation requires an explicit review confirmation' };
   }
   if (oneTimeSecretAcknowledged !== true) {
@@ -433,7 +433,7 @@ export async function createCentralWebhook(
   );
   return webhookSecretMutate(
     '/api/central/webhooks',
-    { form: createForm, reviewConfirmed, oneTimeSecretAcknowledged, reviewedTenantBinding },
+    { form: createForm, ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }), oneTimeSecretAcknowledged, reviewedTenantBinding },
     'created',
     secrets,
   );
@@ -443,11 +443,11 @@ export async function createCentralWebhook(
  * rotation with the same one-time-secret acknowledgement. */
 export async function rotateCentralWebhookHmacKey(
   id: string,
-  reviewConfirmed: boolean,
+  reviewConfirmed: boolean | undefined,
   oneTimeSecretAcknowledged: boolean,
   reviewedTenantBinding: string | null,
 ): Promise<ApiResult<WebhookOneTimeSecretResult>> {
-  if (reviewConfirmed !== true) {
+  if (reviewConfirmed === false) {
     return { error: 'HMAC rotation requires an explicit review confirmation' };
   }
   if (oneTimeSecretAcknowledged !== true) {
@@ -458,14 +458,14 @@ export async function rotateCentralWebhookHmacKey(
   }
   return webhookSecretMutate(
     `/api/central/webhooks/${encodeURIComponent(id)}/rotate-hmac-key`,
-    { reviewConfirmed, oneTimeSecretAcknowledged, reviewedTenantBinding },
+    { ...(reviewConfirmed === undefined ? {} : { reviewConfirmed }), oneTimeSecretAcknowledged, reviewedTenantBinding },
     'rotated',
   );
 }
 
 /** DELETE /api/central/webhooks/:id — review-confirmed. */
-export async function deleteCentralWebhook(id: string, reviewConfirmed: boolean): Promise<ApiResult<WebhookMutationResult>> {
-  return webhookMutate(`/api/central/webhooks/${encodeURIComponent(id)}`, 'DELETE', { reviewConfirmed });
+export async function deleteCentralWebhook(id: string, reviewConfirmed?: boolean): Promise<ApiResult<WebhookMutationResult>> {
+  return webhookMutate(`/api/central/webhooks/${encodeURIComponent(id)}`, 'DELETE', reviewConfirmed === undefined ? {} : { reviewConfirmed });
 }
 
 /**
