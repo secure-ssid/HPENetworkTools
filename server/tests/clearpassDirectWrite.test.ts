@@ -19,7 +19,7 @@
  * error the client receives.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -294,6 +294,7 @@ describe('the live flow', () => {
     expect(syncCalls).toEqual(['clearpass']);
     expect(r.cacheRefresh).toEqual({ attempted: true, ok: true });
     expect(auditLines(dataDir)[0]).toMatchObject({ event: 'endpoint-register', result: 'applied', httpCode: 201 });
+    expect(existsSync(join(dataDir, 'tickets.json'))).toBe(false);
   });
 
   it('does not refresh the cache for a write the plane refused', async () => {

@@ -24,7 +24,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { siteIdFor, TICKETS, type AlertRow, type DeviceRow, type SiteId, type TicketEvidence, type TicketNote, type TicketRow, type Tone } from '@hpe/shared';
+import { siteIdFor, TICKETS, type AlertRow, type DeviceRow, type IncidentTicketMetadata, type SiteId, type TicketEvidence, type TicketNote, type TicketRow, type Tone } from '@hpe/shared';
 import { registry } from '../planes/registry';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
 import { poller } from './poller';
@@ -120,6 +120,13 @@ export interface EvidenceSources {
   changeLog?: () => BrokerLogRead;
   sessions?: () => SessionInfo[];
   devices?: () => ReconciledDeviceRow[];
+}
+
+/** A canonical incident episode ready to become a ticket. Its durable key,
+ * not any presentation field on `alert`, owns identity and recovery. */
+export interface IncidentTicketInput extends IncidentTicketMetadata {
+  observedAt: string;
+  alert: AlertRow;
 }
 
 /**
@@ -241,15 +248,66 @@ export class TicketStore {
     return `NET-${max + 1}`;
   }
 
-  /** Raise a ticket from an alert row. Idempotent per alert title+device. */
+  /** Raise a manual ticket from an alert row. Its established title+device
+   * dedupe remains separate from automated incident identity. */
   raiseFromAlert(alert: AlertRow): TicketRow {
     // The device rides on evidence[0] (the alert snapshot written below) — the
     // same title on another device is a different incident, not a duplicate.
     const existing = this.stored().find(
-      (t) => t.state !== 'resolved' && t.title === alert.title && t.evidence[0]?.device === alert.device,
+      (t) => !t.incident && t.state !== 'resolved' && t.title === alert.title && t.evidence[0]?.device === alert.device,
     );
     if (existing) return withDerivedTiming(existing);
 
+    const ticket = this.newTicket(alert, 'portal — raised from the alert queue');
+    this.save([ticket, ...this.stored()]);
+    return withDerivedTiming(ticket);
+  }
+
+  /** Create or associate one exact automated incident episode. Matching a
+   * resolved ticket is intentionally a no-op: a late redelivery cannot
+   * reopen the episode or create a successor after restart. */
+  upsertIncident(input: IncidentTicketInput): TicketRow {
+    const existing = this.stored().find((ticket) => ticket.incident?.key === input.key);
+    if (existing) return withDerivedTiming(existing);
+
+    const ticket = this.newTicket(input.alert, `portal — automated ${input.kind} incident`);
+    ticket.incident = {
+      key: input.key,
+      kind: input.kind,
+      source: input.source,
+      episodeStartedAt: input.episodeStartedAt,
+    };
+    ticket.causeTitle = input.kind === 'device-down' ? 'Detected device-down incident' : 'Detected client-health incident';
+    ticket.evidence[0] = {
+      ...ticket.evidence[0]!,
+      time: input.observedAt,
+      raw: `source=portal.incident key=${input.key}`,
+    };
+    this.save([ticket, ...this.stored()]);
+    return withDerivedTiming(ticket);
+  }
+
+  /** Resolve only the automated ticket carrying this exact incident key. */
+  resolveIncident(key: string, noteText: string): TicketRow | null {
+    const tickets = this.stored();
+    const idx = tickets.findIndex((ticket) => ticket.incident?.key === key);
+    if (idx === -1) return null;
+    const current = tickets[idx];
+    if (!current) return null;
+    if (current.state === 'resolved') return withDerivedTiming(current);
+    const note: TicketNote = { ts: new Date().toISOString(), kind: 'action', text: noteText };
+    const updated: TicketRow = {
+      ...current,
+      state: 'resolved',
+      notes: capNotes([...(current.notes ?? []), note]),
+    };
+    tickets[idx] = updated;
+    this.save(tickets);
+    return withDerivedTiming(updated);
+  }
+
+  /** Build one ticket without applying either manual or incident dedupe. */
+  private newTicket(alert: AlertRow, reporter: string): TicketRow {
     const id = this.nextId();
     const siteId = siteIdFor(alert.siteName) ?? ('multiple' as SiteId);
     const now = new Date();
@@ -266,7 +324,7 @@ export class TicketStore {
       // age/sla are derived from the timestamps below on every read — these are
       // the raise-moment values, not a frozen claim about the present.
       age: 'now',
-      reporter: 'portal — raised from the alert queue',
+      reporter,
       owner: 'unassigned',
       planes: alert.plane,
       sla: formatSla(slaDueAt.getTime() - now.getTime()),
@@ -289,8 +347,7 @@ export class TicketStore {
         ...this.collectEvidence(alert, raisedAt),
       ],
     };
-    this.save([ticket, ...this.stored()]);
-    return withDerivedTiming(ticket);
+    return ticket;
   }
 
   /**

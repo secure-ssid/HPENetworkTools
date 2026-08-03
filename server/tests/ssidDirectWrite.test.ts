@@ -19,7 +19,7 @@
  * live network calls against a real tenant).
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -556,6 +556,7 @@ describe('SsidDirectWriteService — service level (every instance is given an e
     expect(lines[0]).toMatchObject({ event: 'ssid-apply', kind: 'ssid', result: 'applied', httpCode: 201 });
     expect(lines[0].ticket).toMatch(/none/);
     expect(raw).not.toMatch(/super-secret-pw/);
+    expect(existsSync(join(dataDir, 'tickets.json'))).toBe(false);
   });
 
   it('logs "partial" and "failed" outcomes distinctly', async () => {

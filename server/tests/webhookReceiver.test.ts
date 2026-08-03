@@ -155,7 +155,12 @@ async function anyJson(res: Response): Promise<any> {
 
 /** An isolated receiver with its own tmp dir — unit tests never share the
  *  route tests' singleton. */
-function isolatedReceiver(opts: { ringSize?: number; rotationPolicy?: { maxBytes: number; keep: number }; demoMode?: boolean } = {}) {
+function isolatedReceiver(opts: {
+  ringSize?: number;
+  rotationPolicy?: { maxBytes: number; keep: number };
+  demoMode?: boolean;
+  incidentAutomation?: { handleWebhookEvent(event: WebhookReceivedEvent): void };
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'hpe-hooks-unit-'));
   const receiver = new WebhookReceiver({
     dataDir: dir,
@@ -163,6 +168,7 @@ function isolatedReceiver(opts: { ringSize?: number; rotationPolicy?: { maxBytes
     demoMode: () => opts.demoMode ?? true,
     ...(opts.ringSize !== undefined ? { ringSize: opts.ringSize } : {}),
     ...(opts.rotationPolicy ? { rotationPolicy: opts.rotationPolicy } : {}),
+    ...(opts.incidentAutomation ? { incidentAutomation: opts.incidentAutomation } : {}),
   });
   return { dir, receiver };
 }
@@ -339,6 +345,88 @@ describe('malformed deliveries', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalization', () => {
+  it('emits incident automation only for a newly accepted explicit client failure episode', () => {
+    const automated: WebhookReceivedEvent[] = [];
+    const { dir, receiver } = isolatedReceiver({
+      demoMode: false,
+      incidentAutomation: { handleWebhookEvent: (event) => automated.push(event) },
+    });
+    try {
+      receiver.setSecret('mist', WEBHOOK_DEMO_RECEIVER_SECRET);
+      const payload = {
+        topic: 'alarms',
+        events: [{
+          id: 'client-health-1',
+          type: 'client_health',
+          state: 'open',
+          mac: 'AA-BB-CC-DD-EE-FF',
+          failure_class: 'Authentication Failure',
+          episode_start: '2026-08-03T12:00:00.000Z',
+          timestamp: '2026-08-03T12:05:00.000Z',
+          title: 'presentation is not identity',
+          severity: 'critical',
+        }],
+      };
+      const first = ingestMist(receiver, payload);
+      const replay = ingestMist(receiver, payload);
+      const recovered = ingestMist(receiver, {
+        topic: 'alarms',
+        events: [{ ...payload.events[0], id: 'client-health-1-recovered', state: 'Recovered' }],
+      });
+
+      expect(first.body.accepted).toBe(1);
+      expect(replay.body).toMatchObject({ accepted: 0, deduplicated: 1 });
+      expect(recovered.body.accepted).toBe(1);
+      expect(automated).toHaveLength(2);
+      expect(automated[0].clientFailure).toEqual({
+        mac: 'aa:bb:cc:dd:ee:ff',
+        failureClass: 'authentication-failure',
+        episodeStartedAt: '2026-08-03T12:00:00.000Z',
+      });
+      expect(automated[1]).toMatchObject({ state: 'cleared', clientFailure: automated[0].clientFailure });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not canonicalize client sessions or presentation-only warnings as client incidents', () => {
+    const automated: WebhookReceivedEvent[] = [];
+    const { dir, receiver } = isolatedReceiver({
+      incidentAutomation: { handleWebhookEvent: (event) => automated.push(event) },
+    });
+    try {
+      ingestMist(receiver, {
+        topic: 'client-sessions',
+        events: [{
+          id: 'session-disconnect',
+          type: 'disconnect',
+          mac: 'AA-BB-CC-DD-EE-FF',
+          failure_class: 'authentication',
+          episode_start: '2026-08-03T12:00:00.000Z',
+          termination_reason: 'authentication failure',
+          timestamp: '2026-08-03T12:05:00.000Z',
+        }],
+      });
+      ingestMist(receiver, {
+        topic: 'alarms',
+        events: [{
+          id: 'warning-only',
+          type: 'client_warning',
+          state: 'warning',
+          mac: 'AA-BB-CC-DD-EE-FF',
+          title: 'Client health failure',
+          severity: 'critical',
+          timestamp: '2026-08-03T12:05:00.000Z',
+        }],
+      });
+
+      expect(automated).toHaveLength(2); // newly accepted records still reach the automation boundary
+      expect(automated.every((event) => event.clientFailure === undefined)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('maps a Mist alarms event into an honest received event', () => {
     const { dir, receiver } = isolatedReceiver();
     try {

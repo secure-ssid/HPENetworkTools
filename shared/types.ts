@@ -1046,6 +1046,17 @@ export interface TicketRow extends Omit<Ticket, 'site'> {
   raisedAt?: string;
   /** SLA deadline (ISO) the `sla` countdown is rendered from. */
   slaDueAt?: string;
+  /** Durable identity for a ticket created by incident automation. Manual
+   * tickets deliberately omit this metadata. */
+  incident?: IncidentTicketMetadata;
+}
+
+export interface IncidentTicketMetadata {
+  /** Exact episode fingerprint; stable across process restarts. */
+  key: string;
+  kind: 'device-down' | 'client-health';
+  source: 'alert-rules' | 'webhook';
+  episodeStartedAt: string;
 }
 
 // -- Clients (NtClients) --

@@ -721,6 +721,17 @@ export interface WebhookReceivedEvent {
   /** ISO instant the SOURCE stamped on the event, when it gave one — the
    *  queue's age derives from this, falling back to receivedAt. */
   eventAt: string | null;
+  /** Present only for an explicit structured client-failure episode. */
+  clientFailure?: WebhookClientFailureEpisode;
+}
+
+export interface WebhookClientFailureEpisode {
+  /** Canonical colon-separated lowercase MAC. */
+  mac: string;
+  /** Canonical source-supplied failure class (lowercase kebab case). */
+  failureClass: string;
+  /** Canonical ISO start supplied for this exact failure episode. */
+  episodeStartedAt: string;
 }
 
 /** The alert-queue projection of a received event: a full AlertRow (so the
@@ -735,6 +746,14 @@ export interface WebhookAlertRow extends AlertRow {
 export function isWebhookReceivedEvent(value: unknown): value is WebhookReceivedEvent {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const e = value as Partial<WebhookReceivedEvent>;
+  const clientFailure = e.clientFailure;
+  const validClientFailure =
+    clientFailure === undefined ||
+    (typeof clientFailure === 'object' &&
+      clientFailure !== null &&
+      typeof clientFailure.mac === 'string' &&
+      typeof clientFailure.failureClass === 'string' &&
+      typeof clientFailure.episodeStartedAt === 'string');
   return (
     typeof e.id === 'string' &&
     isWebhookReceiverSource(e.source) &&
@@ -742,7 +761,8 @@ export function isWebhookReceivedEvent(value: unknown): value is WebhookReceived
     typeof e.eventType === 'string' &&
     typeof e.demo === 'boolean' &&
     typeof e.title === 'string' &&
-    (e.sev === 'P1' || e.sev === 'P2' || e.sev === 'P3')
+    (e.sev === 'P1' || e.sev === 'P2' || e.sev === 'P3') &&
+    validClientFailure
   );
 }
 

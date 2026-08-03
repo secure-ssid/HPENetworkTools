@@ -13,7 +13,7 @@
  * modules are imported, so imports are dynamic inside beforeAll.
  */
 
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -284,6 +284,7 @@ describe('lab direct apply', () => {
       const audit = JSON.parse(readFileSync(join(dataDir, 'change-log.jsonl'), 'utf8')) as Record<string, unknown>;
       expect(audit).toMatchObject({ event: 'apply', ticket: 'LAB', kind: 'vlan', result: 'applied', httpCode: 200 });
       expect(JSON.stringify(audit)).not.toContain('dhcpHelpers');
+      expect(existsSync(join(dataDir, 'tickets.json'))).toBe(false);
     } finally {
       if (routeServer) await new Promise<void>((resolve) => routeServer!.close(() => resolve()));
       settings.update({ configMode: false });

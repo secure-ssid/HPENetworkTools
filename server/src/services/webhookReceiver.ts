@@ -65,6 +65,7 @@ import {
   type Sev,
   type Tone,
   type WebhookAlertRow,
+  type WebhookClientFailureEpisode,
   type WebhookReceivedEvent,
   type WebhookReceiverSecretState,
   type WebhookReceiverSource,
@@ -74,6 +75,7 @@ import { ageString, num, parseTimestamp, sevFor, siteIdForName, str } from '../p
 import { DEFAULT_POLICY, readJsonlNewestFirst, rotateIfNeeded, type RotationPolicy } from './logRotation';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
 import { settings } from '../config/settings';
+import { incidentAutomation as defaultIncidentAutomation } from './incidentAutomation';
 
 // ---------------------------------------------------------------------------
 // Receiver secret store — data/webhook-receivers.json (0600, write-only)
@@ -394,6 +396,7 @@ interface NormalizedWebhookEvent {
   eventAt: string | null;
   /** The source's own event id, when it sent one — the ring dedupe key. */
   externalId: string | null;
+  clientFailure?: WebhookClientFailureEpisode;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -420,9 +423,48 @@ function humanizeEventType(type: string): string {
 
 function stateFor(raw: string | null): 'open' | 'acked' | 'cleared' {
   const s = (raw ?? '').toLowerCase();
-  if (/clear|resolv|clos/.test(s)) return 'cleared';
+  if (/clear|resolv|clos|recover|healthy/.test(s)) return 'cleared';
   if (s.includes('ack')) return 'acked';
   return 'open';
+}
+
+function canonicalMac(raw: unknown): string | null {
+  const value = str(raw);
+  if (!value) return null;
+  const compact = value.toLowerCase().replace(/[:.\-]/g, '');
+  if (!/^[0-9a-f]{12}$/.test(compact)) return null;
+  return compact.match(/.{2}/g)!.join(':');
+}
+
+function canonicalFailureClass(raw: unknown): string | null {
+  const value = str(raw);
+  if (!value) return null;
+  const canonical = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return canonical && canonical.length <= 80 ? canonical : null;
+}
+
+/** Extract only a structured client-failure episode. Generic event type,
+ * title, detail, severity, and health-presentation fields are never inputs.
+ * Warning/neutral lifecycle values do not qualify. */
+function explicitClientFailure(
+  event: Record<string, unknown>,
+  topic: string | null,
+): WebhookClientFailureEpisode | null {
+  if (topic === 'client-sessions') return null;
+  const lifecycle = str(event.failure_state ?? event.failureState ?? event.state ?? event.status)?.toLowerCase();
+  if (!lifecycle || !/^(open|active|firing|failed|failure|down|cleared|resolved|recovered|healthy|closed)$/.test(lifecycle)) {
+    return null;
+  }
+  const mac = canonicalMac(
+    event.client_mac ?? event.clientMac ?? event.client_mac_address ?? event.clientMacAddress ??
+      event.mac_address ?? event.macAddress ?? event.mac,
+  );
+  const failureClass = canonicalFailureClass(event.failure_class ?? event.failureClass);
+  const episodeMs = parseTimestamp(
+    event.episode_start ?? event.episodeStart ?? event.episode_started_at ?? event.episodeStartedAt,
+  );
+  if (!mac || !failureClass || episodeMs === null) return null;
+  return { mac, failureClass, episodeStartedAt: new Date(episodeMs).toISOString() };
 }
 
 /**
@@ -521,6 +563,7 @@ function normalizeMistGenericEvent(event: Record<string, unknown>, topic: string
   const sev = sevFor(str(event.severity ?? event.level));
   const ts = parseTimestamp(event.timestamp ?? event.last_seen ?? event.ts ?? event.time);
   const site = siteIdForName(str(event.site_name ?? event.site ?? event.siteName));
+  const clientFailure = explicitClientFailure(event, topic);
   return {
     eventType: topic && type ? `${topic}:${type}` : (type ?? topic ?? 'event'),
     sev,
@@ -537,6 +580,7 @@ function normalizeMistGenericEvent(event: Record<string, unknown>, topic: string
     ...(str(event.id) ? { alertId: str(event.id)! } : {}),
     eventAt: ts !== null ? new Date(ts).toISOString() : null,
     externalId: str(event.id),
+    ...(clientFailure ? { clientFailure } : {}),
   };
 }
 
@@ -625,6 +669,7 @@ function normalizeCentralPayload(payload: unknown): NormalizedWebhookEvent[] | n
     const impacted = isRecord(event.impactedEntities) ? event.impactedEntities : null;
     const state = stateFor(str(event.state ?? event.status));
     const alertId = str(event.alertId ?? event.alert_id ?? event.id);
+    const clientFailure = explicitClientFailure(event, null);
     normalized.push({
       eventType: str(event.category ?? event.type) ?? 'alert',
       sev,
@@ -643,6 +688,7 @@ function normalizeCentralPayload(payload: unknown): NormalizedWebhookEvent[] | n
       // The same alert arriving in a new state (Open → Cleared) is a new
       // firing of the same problem — the group, not a duplicate.
       externalId: alertId ? `${alertId}:${state}` : null,
+      ...(clientFailure ? { clientFailure } : {}),
     });
   }
   return normalized.length > 0 ? normalized : null;
@@ -712,6 +758,9 @@ export interface WebhookReceiverOptions {
   /** Demo-mode read, injected so tests do not depend on global settings. */
   demoMode?: () => boolean;
   nowMs?: () => number;
+  /** Test seam; production forwards newly recorded events to the incident
+   * automation singleton after the webhook record is durable. */
+  incidentAutomation?: { handleWebhookEvent(event: WebhookReceivedEvent): void };
 }
 
 const DEFAULT_RING_SIZE = 200;
@@ -725,6 +774,7 @@ export class WebhookReceiver {
   private readonly secrets: ReceiverSecretStore;
   private readonly demoMode: () => boolean;
   private readonly nowMs: () => number;
+  private readonly incidentAutomation: { handleWebhookEvent(event: WebhookReceivedEvent): void };
   /** Newest-first record; null until first read hydrates it from the log. */
   private ring: WebhookReceivedEvent[] | null = null;
 
@@ -735,6 +785,7 @@ export class WebhookReceiver {
     this.secrets = opts.secrets ?? receiverSecretStore;
     this.demoMode = opts.demoMode ?? (() => settings.get().demoMode);
     this.nowMs = opts.nowMs ?? (() => Date.now());
+    this.incidentAutomation = opts.incidentAutomation ?? defaultIncidentAutomation;
   }
 
   private get eventsFile(): string {
@@ -859,7 +910,15 @@ export class WebhookReceiver {
         deduplicated += 1;
         continue;
       }
-      accepted.push(this.record(source, n, demo));
+      const event = this.record(source, n, demo);
+      accepted.push(event);
+      try {
+        this.incidentAutomation.handleWebhookEvent(event);
+      } catch (err) {
+        // The delivery is already accepted and recorded. Do not invite a
+        // vendor retry that could multiply unrelated receiver history.
+        console.error(`incident automation failed for webhook ${event.id}: ${(err as Error).message}`);
+      }
     }
     return {
       status: 202,
@@ -888,6 +947,7 @@ export class WebhookReceiver {
       ...(n.alertId ? { alertId: n.alertId } : {}),
       ...(n.externalId ? { dedupeKey: n.externalId } : {}),
       eventAt: n.eventAt,
+      ...(n.clientFailure ? { clientFailure: n.clientFailure } : {}),
     };
     this.events().unshift(event);
     if (this.ring && this.ring.length > this.ringSize) this.ring.length = this.ringSize;

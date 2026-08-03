@@ -15,7 +15,7 @@
  * editing the poller. The disciplines are the repo's own: unref'd timer, one
  * evaluation at a time, an injected clock and sampler for tests.
  *
- * Every fire/recovery goes three places:
+ * Every fire/recovery goes four places:
  *
  *   - the EXISTING notifier (notifier.dispatch) as a fired/resolved event, so
  *     the configured webhook/Slack/Teams/ntfy endpoints light up through the
@@ -24,6 +24,8 @@
  *   - the notification center (the bell);
  *   - the append-only change log, ticket '—' (a rule fire is not a brokered
  *     write — nothing leaves the portal).
+ *   - incident automation, after the canonical event has emitted; demo
+ *     showcase events are explicitly ignored there.
  *
  * DEMO SHOWCASE. With demo mode on the service additionally evaluates the
  * VIRTUAL demo rule (DEMO_DEVICE_DOWN_RULE) against one scripted demo device
@@ -58,6 +60,7 @@ import { poller } from './poller';
 import { notificationCenter } from './notificationCenter';
 import { notifier } from './notifier';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
+import { incidentAutomation } from './incidentAutomation';
 
 // ---------------------------------------------------------------------------
 // The store
@@ -413,7 +416,7 @@ export function toNotificationEvent(event: DeviceDownEvent, now: number = Date.n
   };
 }
 
-/** One fire/recovery to all three destinations. Never throws into the
+/** One fire/recovery to all four destinations. Never throws into the
  *  evaluation loop — the bell store already degrades on its own failures,
  *  and the notifier swallows per-endpoint failures by design. */
 async function defaultDispatch(event: DeviceDownEvent): Promise<void> {
@@ -449,6 +452,13 @@ async function defaultDispatch(event: DeviceDownEvent): Promise<void> {
     serial: event.device.serial,
     ...(event.device.plane ? { plane: event.device.plane } : {}),
   });
+  try {
+    incidentAutomation.handleDeviceDownEvent(event);
+  } catch (err) {
+    // Bell/notifier/audit already received this canonical event. A ticket
+    // persistence fault is visible but cannot abort future evaluations.
+    console.error(`incident automation failed for device event ${event.dedupKey}: ${(err as Error).message}`);
+  }
 }
 
 /** One audit-log line for a rule create/update/delete. Never a payload body. */
