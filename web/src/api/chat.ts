@@ -14,12 +14,14 @@ import { SystemMutationResult } from './systems';
 
 export interface ChatStatus {
   configured: { mcp: boolean; llm: boolean };
-  writeMode: boolean;
+  writeMode: AssistantChatWriteMode;
   mcpUrl?: string;
   mcpReachable: boolean;
   activeProvider?: AssistantProviderId;
   providers?: Array<AssistantProviderStatus & { id: AssistantProviderId }>;
 }
+
+export type AssistantChatWriteMode = 'read-only' | 'confirm' | 'enabled';
 
 export const ASSISTANT_PROVIDER_IDS = ['codex', 'claude', 'kimi', 'copilot', 'ollama', 'openrouter'] as const;
 export type AssistantProviderId = typeof ASSISTANT_PROVIDER_IDS[number];
@@ -44,7 +46,7 @@ type CompatibleProvider = { enabled: boolean; baseUrl: string; model: string; ap
 export interface AssistantSettings {
   activeProvider: AssistantProviderId;
   mcp: { enabled: boolean; endpoint: string; authToken: string | null };
-  chatWriteMode: 'read-only' | 'confirm' | 'enabled';
+  chatWriteMode: AssistantChatWriteMode;
   providers: {
     codex: NativeProvider;
     claude: NativeProvider;

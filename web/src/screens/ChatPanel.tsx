@@ -222,7 +222,7 @@ export default function ChatPanel({
 
   const description =
     status?.writeMode != null
-      ? `centralmcp · ${status.writeMode ? 'read + write tools' : 'read-only tools'}`
+      ? `centralmcp · ${status.writeMode === 'enabled' ? 'read + write tools' : 'read-only tools'}`
       : 'centralmcp';
 
   return (
@@ -252,7 +252,7 @@ export default function ChatPanel({
             <Badge tone={status.configured.llm ? 'success' : 'neutral'} dot>
               {status.configured.llm ? 'llm configured' : 'llm not configured'}
             </Badge>
-            {status.writeMode ? (
+            {status.writeMode === 'enabled' ? (
               <span style={{ marginLeft: 'auto' }}>
                 <Switch
                   size="sm"

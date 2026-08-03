@@ -33,6 +33,21 @@ function redactedSecret(value: string | null | undefined): string {
   return value?.includes('•') ? '' : value ?? '';
 }
 
+function validHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function providerConfigurationIsValid(id: AssistantProviderId, config: AssistantSettings['providers'][AssistantProviderId], mcpEndpoint: string): boolean {
+  if (!config.model.trim() || !validHttpUrl(mcpEndpoint)) return false;
+  if ('baseUrl' in config && !validHttpUrl(config.baseUrl)) return false;
+  return id !== 'copilot' || !('effort' in config) || (config.model === 'auto' && config.effort === 'adaptive') || (config.model === 'gpt-5.6-terra' && config.effort === 'low');
+}
+
 export function AssistantSection() {
   const { toast } = useToast();
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
@@ -91,13 +106,18 @@ export function AssistantSection() {
 
   const save = async () => {
     if (!settings || !selectedConfig) return;
+    if (!providerConfigurationIsValid(selected, selectedConfig, settings.mcp.endpoint)) {
+      toast('Enter a valid endpoint and provider settings', { tone: 'danger' });
+      return;
+    }
     setSaving(true);
     const providerPatch = { ...selectedConfig } as Record<string, unknown>;
     if ('apiKey' in providerPatch) {
       if (providerKey.trim()) providerPatch.apiKey = providerKey.trim();
       else delete providerPatch.apiKey;
     }
-    const mcp = { ...settings.mcp, authToken: mcpToken.trim() || settings.mcp.authToken };
+    const mcp = { ...settings.mcp, enabled: true, authToken: mcpToken.trim() || settings.mcp.authToken };
+    providerPatch.enabled = true;
     const response = await saveChatSettings({
       assistant: {
         activeProvider: selected,
@@ -108,6 +128,7 @@ export function AssistantSection() {
     });
     setSaving(false);
     if (!response.ok) {
+      setSelected(settings.activeProvider);
       toast(response.message, { tone: 'danger' });
       return;
     }
@@ -139,20 +160,22 @@ export function AssistantSection() {
       <div aria-label="Assistant providers" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {ASSISTANT_PROVIDER_IDS.map((id) => {
           const item = status?.providers?.find((provider) => provider.id === id);
-          const active = selected === id;
+          const active = settings?.activeProvider === id;
+          const editing = selected === id;
           const ready = providerReady(item);
           return (
             <button
               key={id}
               type="button"
-              aria-pressed={active}
-              aria-label={`${PROVIDERS[id].title}${active ? ', selected' : ''}`}
+              aria-pressed={editing}
+              aria-label={`${PROVIDERS[id].title}${active ? ', selected' : editing ? ', editing' : ''}`}
               disabled={offline}
               onClick={() => chooseProvider(id)}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 7px', borderRadius: 4, border: active ? '1px solid var(--nd-accent)' : '1px solid var(--nd-border)', background: active ? 'var(--nd-surface-raised)' : 'transparent', color: 'var(--nd-text)', cursor: offline ? 'not-allowed' : 'pointer' }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 7px', borderRadius: 4, border: editing ? '1px solid var(--nd-accent)' : '1px solid var(--nd-border)', background: editing ? 'var(--nd-surface-raised)' : 'transparent', color: 'var(--nd-text)', cursor: offline ? 'not-allowed' : 'pointer' }}
             >
               <span style={{ fontSize: 12 }}>{PROVIDERS[id].title}</span>
               <Badge tone={ready ? 'success' : 'neutral'}>{ready ? 'ready' : 'unavailable'}</Badge>
+              <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}>{item?.resolvedModel ?? '—'}</span>
             </button>
           );
         })}
@@ -168,16 +191,15 @@ export function AssistantSection() {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
           {'baseUrl' in selectedConfig ? <FormField label="Provider endpoint"><Input mono aria-label="Provider endpoint" value={selectedConfig.baseUrl} disabled={offline} onChange={(event) => updateSelected({ baseUrl: event.target.value })} /></FormField> : null}
-          <FormField label="Model"><Input mono aria-label="Model" value={selectedConfig.model} disabled={offline} onChange={(event) => updateSelected({ model: event.target.value })} /></FormField>
+          {selected === 'copilot' ? <FormField label="Mode"><Select aria-label="Mode" value={selectedConfig.model} disabled={offline} options={[{ value: 'auto', label: 'Auto · adaptive' }, { value: 'gpt-5.6-terra', label: 'Terra · alternate' }]} onValueChange={(model) => updateSelected({ model, effort: model === 'auto' ? 'adaptive' : 'low' })} /></FormField> : <FormField label="Fast model"><Select aria-label="Fast model" value={PROVIDERS[selected].defaultModel} disabled={offline} options={[{ value: PROVIDERS[selected].defaultModel, label: PROVIDERS[selected].defaultModel }]} onValueChange={(model) => updateSelected({ model })} /></FormField>}
           {'reasoningEffort' in selectedConfig ? <FormField label="Reasoning"><Select aria-label="Reasoning" value={selectedConfig.reasoningEffort} disabled={offline} options={['low', 'medium', 'high'].map((value) => ({ value, label: value }))} onValueChange={(reasoningEffort) => updateSelected({ reasoningEffort })} /></FormField> : null}
           {'thinking' in selectedConfig ? <Switch checked={selectedConfig.thinking} disabled={offline} label="Thinking" onCheckedChange={(thinking) => updateSelected({ thinking })} /> : null}
-          {'effort' in selectedConfig ? <FormField label="Mode"><Select aria-label="Mode" value={selectedConfig.model} disabled={offline} options={[{ value: 'auto', label: 'Auto · adaptive' }, { value: 'gpt-5.6-terra', label: 'Terra · alternate' }]} onValueChange={(model) => updateSelected({ model, effort: model === 'auto' ? 'adaptive' : 'low' })} /></FormField> : null}
           {'apiKey' in selectedConfig || selected === 'ollama' || selected === 'openrouter' ? <FormField label="API key"><Input mono aria-label="API key" type="password" placeholder="Enter replacement key" value={providerKey} disabled={offline} onChange={(event) => updateSelected({ apiKey: event.target.value })} /></FormField> : null}
         </div>
 
         <details>
           <summary>Advanced</summary>
-          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--nd-text-muted)' }}>Fast default: {PROVIDERS[selected].defaultModel}</div>
+          <div style={{ marginTop: 8 }}><FormField label="Custom model"><Input mono aria-label="Custom model" value={selectedConfig.model} disabled={offline} onChange={(event) => updateSelected({ model: event.target.value })} /></FormField></div>
         </details>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

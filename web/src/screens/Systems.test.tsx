@@ -148,7 +148,7 @@ describe('Systems assistant providers', () => {
     mockGetChatSettings.mockResolvedValue({ assistant: settings });
     mockGetChatStatus.mockResolvedValue({
       configured: { mcp: true, llm: true },
-      writeMode: false,
+      writeMode: 'read-only',
       mcpReachable: true,
       activeProvider: 'codex',
       providers: [
@@ -166,38 +166,68 @@ describe('Systems assistant providers', () => {
     assistantSetup();
     renderSystems();
 
-    await screen.findByLabelText('Model');
-    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'gpt-5.6-terra');
+    await screen.findByLabelText('Fast model');
+    expect(screen.getByLabelText('Fast model')).toHaveProperty('value', 'gpt-5.6-terra');
     expect(screen.getByLabelText('Reasoning')).toHaveProperty('value', 'low');
     expect(screen.queryByLabelText('Provider endpoint')).toBeNull();
     expect(screen.queryByLabelText('API key')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /OpenRouter/i }));
     expect(screen.getByLabelText('Provider endpoint')).toHaveProperty('value', 'https://openrouter.ai/api/v1');
-    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'openai/gpt-4.1-mini');
+    expect(screen.getByLabelText('Fast model')).toHaveProperty('value', 'openai/gpt-4.1-mini');
     expect(screen.getByLabelText('API key')).toHaveProperty('value', '');
     expect(screen.queryByLabelText('Reasoning')).toBeNull();
   });
 
-  it('keeps the chosen active provider after a failed save', async () => {
+  it('restores the persisted active provider after a failed save', async () => {
     assistantSetup();
     mockSaveChatSettings.mockResolvedValue({ ok: false, message: 'save rejected' });
     renderSystems();
 
-    await screen.findByLabelText('Model');
+    await screen.findByLabelText('Fast model');
     fireEvent.click(screen.getByRole('button', { name: /Claude/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Save assistant' }));
 
     await waitFor(() => expect(mockSaveChatSettings).toHaveBeenCalled());
-    expect(screen.getByRole('button', { name: /Claude.*selected/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Codex.*selected/i })).toBeTruthy();
+  });
+
+  it('enables the selected provider and centralmcp when a valid selection saves', async () => {
+    assistantSetup();
+    mockSaveChatSettings.mockResolvedValue({ ok: true, message: 'saved' });
+    renderSystems();
+
+    await screen.findByLabelText('Fast model');
+    fireEvent.click(screen.getByRole('button', { name: 'Save assistant' }));
+
+    await waitFor(() => expect(mockSaveChatSettings).toHaveBeenCalledWith(expect.objectContaining({
+      assistant: expect.objectContaining({
+        activeProvider: 'codex',
+        mcp: expect.objectContaining({ enabled: true }),
+        providers: expect.objectContaining({ codex: expect.objectContaining({ enabled: true }) }),
+      }),
+    })));
+  });
+
+  it('keeps custom model entry collapsed behind Advanced', async () => {
+    assistantSetup();
+    renderSystems();
+
+    await screen.findByLabelText('Fast model');
+    const advanced = screen.getByText('Advanced').closest('details')!;
+    expect(advanced.open).toBe(false);
+    expect(within(advanced).getByLabelText('Custom model')).toHaveProperty('value', 'gpt-5.6-terra');
+    fireEvent.click(screen.getByText('Advanced'));
+    expect(screen.getByLabelText('Custom model')).toHaveProperty('value', 'gpt-5.6-terra');
   });
 
   it('shows served readiness rather than claiming configured state', async () => {
     assistantSetup();
     renderSystems();
 
-    await screen.findByLabelText('Model');
-    expect(screen.getByText('gpt-5.6-terra')).toBeTruthy();
+    await screen.findByLabelText('Fast model');
+    expect(screen.getAllByText('gpt-5.6-terra').length).toBeGreaterThan(1);
+    expect(within(screen.getByRole('button', { name: /Codex.*selected/i })).getByText('gpt-5.6-terra')).toBeTruthy();
   });
 
   it('runs the read-only provider test and reports its returned result', async () => {
@@ -205,7 +235,7 @@ describe('Systems assistant providers', () => {
     mockTestChatProvider.mockResolvedValue(providerStatus);
     renderSystems();
 
-    await screen.findByLabelText('Model');
+    await screen.findByLabelText('Fast model');
     fireEvent.click(screen.getAllByRole('button', { name: /Test provider/i }).at(-1)!);
     await waitFor(() => expect(mockTestChatProvider).toHaveBeenCalledWith('codex'));
     expect(screen.getByText(/18 ms.*gpt-5.6-terra/i)).toBeTruthy();

@@ -47,7 +47,7 @@ function renderPanel() {
 
 const CONFIGURED_STATUS: ChatStatus = {
   configured: { mcp: true, llm: true },
-  writeMode: false,
+  writeMode: 'read-only',
   mcpReachable: true,
 };
 
@@ -155,7 +155,7 @@ describe('ChatPanel', () => {
   it('shows the not-configured empty state instead of a composer when MCP/LLM are unconfigured', async () => {
     mockedGetChatStatus.mockResolvedValue({
       configured: { mcp: false, llm: false },
-      writeMode: false,
+      writeMode: 'read-only',
       mcpReachable: false,
     });
 
