@@ -497,7 +497,7 @@ export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = 
   }
   const result = await adapter.chat({
     config: provider,
-    timeoutMs: resolveProviderTimeoutMs('interactive'),
+    timeoutMs: resolveProviderTimeoutMs('generation'),
     messages: conversation,
     tools,
     executeTool: (call) => runToolCall(client, call, writeEnabled, opts.signal),

@@ -24,7 +24,9 @@ let chatLoop: typeof chatLoopType;
 let settings: SettingsStore;
 
 const MCP_URL = 'http://mcp.test/mcp';
-const LLM_URL = 'http://llm.test/v1';
+// Legacy LLM updates classify loopback endpoints as Ollama, matching the
+// provider this suite exercises through its compatibility path.
+const LLM_URL = 'http://127.0.0.1:11434/v1';
 const OPENROUTER_URL = 'https://router.test/v1';
 
 interface CapturedRequest {
@@ -453,6 +455,30 @@ describe('chatLoop compatible provider routing', () => {
     expect(resolveProviderTimeoutMs('interactive')).toBeLessThan(resolveProviderTimeoutMs('generation'));
     expect(resolveProviderTimeoutMs('generation')).toBe(resolveProviderTimeoutMs('startup'));
     expect(resolveProviderTimeoutMs('interactive')).not.toBe(30_000);
+  });
+
+  it('allows a tool-capable chat completion to exceed the readiness deadline', async () => {
+    configureCompatibleProvider('ollama');
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn((_url: unknown, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(llmMessage({ role: 'assistant', content: 'completed after tool-capable generation time.' })), 15_001);
+        init?.signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new Error('aborted'));
+        }, { once: true });
+      })));
+
+      const pending = chatLoop([{ role: 'user', content: 'answer with the available network tools' }], { client: freshClient() });
+      const outcome = pending.then(
+        (result) => ({ kind: 'completed' as const, reply: result.reply }),
+        () => ({ kind: 'timed-out' as const }),
+      );
+      await vi.advanceTimersByTimeAsync(15_001);
+      await expect(outcome).resolves.toEqual({ kind: 'completed', reply: 'completed after tool-capable generation time.' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns a clear provider timeout using the explicitly supplied timeout', async () => {
