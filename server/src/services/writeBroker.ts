@@ -1045,7 +1045,7 @@ export class WriteBroker {
     let res: { status: number; body: unknown };
     try {
       res = await transport.request('PUT', pushPathFor(kind, form), pushBodyFor(kind, form));
-    } catch (err) {
+    } catch {
       // Do not restore `ready`: the request may have reached Central. Keeping
       // the durable `applying` marker prevents an unsafe replay after restart.
       this.log({ event: 'push', ...base, result: 'outcome-unknown (reconciliation required)' });
