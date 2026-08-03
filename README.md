@@ -84,6 +84,37 @@ npm start --workspace server
 
 Open [http://localhost:5173](http://localhost:5173).
 
+## Assistant providers
+
+The Assistant is configured in **Connected systems → Assistant**. Its six
+provider choices deliberately start disabled; enable and save the provider you
+intend to use, select it as the active provider, then use **Test provider**.
+The saved active provider is the only provider used for a chat request unless a
+request explicitly selects another configured provider.
+
+| Provider | Speed-first default |
+|---|---|
+| Codex CLI | `gpt-5.6-terra`, low reasoning effort |
+| Claude CLI | `sonnet`, low reasoning effort |
+| Kimi CLI | `kimi-code/kimi-for-coding-highspeed`, thinking off |
+| GitHub Copilot CLI | `auto`, adaptive effort |
+| Ollama | `http://127.0.0.1:11434/v1`, `qwen2.5-coder:7b` |
+| OpenRouter | `https://openrouter.ai/api/v1`, `openai/gpt-4.1-mini` |
+
+Ollama is the default active selection for a new configuration, but it is also
+disabled until configured. A green provider status is meaningful only when the
+provider is installed, authenticated, has a usable model, and its isolated
+test has completed exactly one read-only `centralmcp` invocation. Discovering
+an executable alone is not readiness. A provider that cannot make that
+isolated `centralmcp` read remains unavailable; correct its installation,
+authentication, model configuration, or MCP endpoint and retest it.
+
+The Assistant is read-only by default. Enabling **Allow write tools** in
+Connected systems → Assistant is necessary but not sufficient: each chat
+session must also explicitly allow writes before a destructive `centralmcp`
+tool is exposed. Existing portal write flows retain their own review and
+confirmation gates; enabling Assistant writes never bypasses them.
+
 ## Documentation
 
 | Guide | Purpose |

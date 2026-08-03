@@ -766,7 +766,7 @@ describe('error handling keeps internals server-side', () => {
     }
   });
 
-  it('POST /api/chat returns a generic 502, not the MCP/LLM error text', async () => {
+  it('POST /api/chat refuses an unready provider without exposing MCP/LLM details', async () => {
     const cfg = await putSettings({
       mcp: { url: 'http://127.0.0.1:1/mcp', bearerToken: 'mcp-token' },
       llm: { baseUrl: 'http://127.0.0.1:1', apiKey: 'sk-test', model: 'qwen' },
@@ -774,8 +774,10 @@ describe('error handling keeps internals server-side', () => {
     expect(cfg.status).toBe(200);
 
     const res = await postJson('/api/chat', { messages: [{ role: 'user', content: 'hi' }] });
-    expect(res.status).toBe(502);
-    expect(res.body.error).toBe('assistant request failed upstream — check the MCP/LLM configuration');
+    // Provider readiness now happens before dispatch. A failed isolated
+    // centralmcp probe is an honest conflict, not an upstream-chat failure.
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("assistant provider 'ollama' is unavailable");
     expect(JSON.stringify(res.body)).not.toContain('127.0.0.1:1');
 
     await putSettings({ mcp: null, llm: null }); // restore
