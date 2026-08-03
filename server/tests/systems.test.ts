@@ -658,6 +658,66 @@ describe('manual systems sync', () => {
 });
 
 describe('saving credentials authenticates before indexing', () => {
+  it('accepts a raw typed connector draft for an authenticated connection test', async () => {
+    const draft = {
+      id: 'clearpass',
+      enabled: true,
+      endpoint: mockCppmBase,
+      auth: { kind: 'token', token: 'good-token' },
+      verifyTls: false,
+      pollIntervalSec: 60,
+      callBudget: null,
+      datasets: ['endpoints'],
+      scopes: ['read:inventory'],
+    };
+
+    const tested = await postJson('/api/systems/clearpass/test', draft);
+
+    expect(tested.status).toBe(200);
+    expect(tested.body).toMatchObject({
+      ok: true,
+      authenticated: true,
+      dataset: 'endpoints',
+      source: 'request',
+    });
+    expect(settings.get().connectors.clearpass).toBeNull();
+  });
+
+  it('accepts and persists a raw typed connector draft only after its authenticated probe', async () => {
+    const spy = vi.spyOn(poller, 'syncNowFor').mockResolvedValue('ok');
+    try {
+      const saved = await postJson('/api/systems/clearpass/credentials', {
+        id: 'clearpass',
+        enabled: true,
+        endpoint: mockCppmBase,
+        auth: { kind: 'token', token: 'good-token' },
+        verifyTls: false,
+        pollIntervalSec: 90,
+        callBudget: 1234,
+        datasets: ['endpoints'],
+        scopes: ['read:inventory'],
+      });
+
+      expect(saved.status).toBe(200);
+      expect(saved.body.indexed).toBe('ok');
+      expect(spy).toHaveBeenCalledWith('clearpass');
+      expect(settings.get().connectors.clearpass).toMatchObject({
+        id: 'clearpass',
+        endpoint: mockCppmBase,
+        enabled: true,
+        verifyTls: false,
+        pollIntervalSec: 90,
+        callBudget: 1234,
+        datasets: ['endpoints'],
+        scopes: ['read:inventory'],
+        auth: { kind: 'token', token: 'good-token' },
+      });
+    } finally {
+      spy.mockRestore();
+      await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
+    }
+  });
+
   it('rejects an unreachable credential without persisting or polling it', async () => {
     const spy = vi.spyOn(poller, 'syncNowFor');
     try {

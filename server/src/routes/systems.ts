@@ -19,7 +19,13 @@
  */
 
 import { Router } from 'express';
-import { connectorCatalogEntry, migrateLegacyPlaneRecord, type ConnectorConfig, type ConnectorId } from '@hpe/shared';
+import {
+  connectorCatalogEntry,
+  migrateLegacyPlaneRecord,
+  parseConnectorConfig,
+  type ConnectorConfig,
+  type ConnectorId,
+} from '@hpe/shared';
 import { h } from './handler';
 import { settings } from '../config/settings';
 import { CentralAdapter, GREENLAKE_CCS_TOKEN_URL, isNewCentralGateway } from '../planes/central';
@@ -561,6 +567,25 @@ function connectorFromLegacy(
   }
 }
 
+/**
+ * Typed editor payloads carry nested `auth`; legacy drawers submit only flat
+ * strings. Parse the typed shape before the legacy sanitizer can discard its
+ * booleans, numbers, arrays, and nested credentials. Parser errors stay
+ * generic here so neither credentials nor vendor-specific internals ride back.
+ */
+function typedConnectorFromRequest(plane: PlaneId, input: unknown): ConnectorConfig | undefined {
+  if (plane === 'aos10' || input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(input, 'auth')) return undefined;
+  const id = plane as ConnectorId;
+  try {
+    return parseConnectorConfig(id, input) as ConnectorConfig;
+  } catch {
+    const err = new Error(`the submitted connector configuration for ${id} is incomplete or unsafe`) as Error & { status?: number };
+    err.status = 400;
+    throw err;
+  }
+}
+
 systemsRouter.post(
   '/systems/:plane/test',
   h(async (req, res) => {
@@ -572,10 +597,12 @@ systemsRouter.post(
     // Test-then-save: a complete credential set in the body wins (the connect
     // flow tests before saving); otherwise fall back to the stored set.
     const raw = req.body as Record<string, unknown> | undefined;
-    const bodyCreds = sanitizeCreds(
-      raw && typeof raw === 'object' && raw.credentials !== undefined ? raw.credentials : raw,
-    );
-    const resolved = connectorFromLegacy(plane, bodyCreds);
+    const submitted = raw && typeof raw === 'object' && raw.credentials !== undefined ? raw.credentials : raw;
+    const typed = typedConnectorFromRequest(plane, submitted);
+    const bodyCreds = typed ? null : sanitizeCreds(submitted);
+    const resolved = typed
+      ? { config: typed, source: 'request' as const }
+      : connectorFromLegacy(plane, bodyCreds);
     if (!resolved.config) {
       res
         .status(400)
@@ -651,15 +678,19 @@ systemsRouter.post(
       return;
     }
     const body = req.body as Record<string, unknown> | undefined;
-    const submitted = sanitizeCreds(body && typeof body === 'object' && body.credentials !== undefined
+    const rawSubmitted = body && typeof body === 'object' && body.credentials !== undefined
       ? body.credentials
-      : body);
-    if (!submitted) {
+      : body;
+    const typed = typedConnectorFromRequest(plane, rawSubmitted);
+    const submitted = typed ? null : sanitizeCreds(rawSubmitted);
+    if (!typed && !submitted) {
       res.status(400).json({ error: 'body must be an object with at least one non-empty credential field' });
       return;
     }
 
-    const resolved = connectorFromLegacy(plane, submitted);
+    const resolved = typed
+      ? { config: typed, source: 'request' as const }
+      : connectorFromLegacy(plane, submitted);
     if (!resolved.config) {
       res.status(400).json({ error: `the submitted connector configuration for ${plane} is incomplete` });
       return;
