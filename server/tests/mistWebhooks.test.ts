@@ -29,6 +29,7 @@ let mistWebhookRegistrationStatus: typeof import('../src/services/mistWebhooks')
 let registerMistWebhook: typeof import('../src/services/mistWebhooks').registerMistWebhook;
 let WebhookReceiver: typeof import('../src/services/webhookReceiver').WebhookReceiver;
 let ReceiverSecretStore: typeof import('../src/services/webhookReceiver').ReceiverSecretStore;
+let settings: typeof import('../src/config/settings').settings;
 type MistWebhookPlane = import('../src/services/mistWebhooks').MistWebhookPlane;
 
 const URL = 'https://portal.meridian-health.example/api/hooks/mist';
@@ -42,6 +43,7 @@ beforeAll(async () => {
   const mod = await import('../src/services/mistWebhooks');
   mistWebhookRegistrationStatus = mod.mistWebhookRegistrationStatus;
   registerMistWebhook = mod.registerMistWebhook;
+  ({ settings } = await import('../src/config/settings'));
   const receiverMod = await import('../src/services/webhookReceiver');
   WebhookReceiver = receiverMod.WebhookReceiver;
   ReceiverSecretStore = receiverMod.ReceiverSecretStore;
@@ -316,14 +318,29 @@ describe('registerMistWebhook', () => {
 // ---------------------------------------------------------------------------
 
 describe('the registration routes', () => {
-  it('POST /api/hooks/mist/registration requires the review confirmation', async () => {
+  it('POST /api/hooks/mist/registration admits a lab registration without review confirmation', async () => {
     const res = await fetch(`${base}/api/hooks/mist/registration`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: URL }),
     });
-    expect(res.status).toBe(400);
-    expect((await res.json() as Record<string, unknown>).message).toContain('review confirmation');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, action: 'created', demo: true });
+  });
+
+  it('POST /api/hooks/mist/registration rejects an unconfirmed registration in hardened mode', async () => {
+    settings.update({ configMode: false });
+    try {
+      const res = await fetch(`${base}/api/hooks/mist/registration`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: URL }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json() as Record<string, unknown>).message).toContain('review confirmation');
+    } finally {
+      settings.update({ configMode: true });
+    }
   });
 
   it('POST with the review answers the demo-labelled result in demo mode', async () => {

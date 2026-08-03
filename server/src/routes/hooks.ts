@@ -52,6 +52,7 @@ import {
   type WebhookReceiverStatusEnvelope,
 } from '@hpe/shared';
 import { settings } from '../config/settings';
+import { allowsLabDirectWrites } from '../services/labWritePolicy';
 import {
   WEBHOOK_SECRET_MAX_CHARS,
   WEBHOOK_SECRET_MIN_CHARS,
@@ -279,7 +280,7 @@ export function makeHooksRouter(receiver: WebhookReceiver = webhookReceiver): Ro
         res.status(400).json({ ok: false, action: 'failed', message: 'malformed JSON body' });
         return;
       }
-      if (body.reviewConfirmed !== true) {
+      if (!allowsLabDirectWrites() && body.reviewConfirmed !== true) {
         res.status(400).json({
           ok: false,
           action: 'failed',

@@ -21,6 +21,7 @@ import type {
 let CentralWebhooksService: typeof import('../src/services/centralWebhooks').CentralWebhooksService;
 let CentralWebhooksError: typeof CentralWebhooksErrorType;
 let makeCentralWebhooksRouter: typeof import('../src/routes/centralWebhooks').makeCentralWebhooksRouter;
+let settings: typeof import('../src/config/settings').settings;
 
 let tmpDir: string;
 let dirCounter = 0;
@@ -36,6 +37,7 @@ beforeAll(async () => {
   process.env.HPE_DATA_DIR = join(tmpDir, 'data');
   ({ CentralWebhooksService, CentralWebhooksError } = await import('../src/services/centralWebhooks'));
   ({ makeCentralWebhooksRouter } = await import('../src/routes/centralWebhooks'));
+  ({ settings } = await import('../src/config/settings'));
 });
 
 afterAll(() => {
@@ -371,7 +373,8 @@ describe('safe reads and redaction', () => {
 });
 
 describe('reviewed one-time HMAC-issuing operations', () => {
-  it('requires review and the separate one-time-secret acknowledgement before any Central call', async () => {
+  it('requires review in hardened mode and the separate one-time-secret acknowledgement before any Central call', async () => {
+    settings.update({ configMode: false });
     let called = false;
     const service = new CentralWebhooksService({
       dataDir: freshDataDir(),
@@ -379,11 +382,15 @@ describe('reviewed one-time HMAC-issuing operations', () => {
       plane: okTransport({ request: async () => ((called = true), { status: 200, body: {} }) }),
     });
 
-    await expect(service.create(CREATE_FORM, false, true)).rejects.toMatchObject({ status: 400 });
-    await expect(service.create(CREATE_FORM, true, false)).rejects.toMatchObject({ status: 400 });
-    await expect(service.rotateHmacKey('wh-1', false, true)).rejects.toMatchObject({ status: 400 });
-    await expect(service.rotateHmacKey('wh-1', true, false)).rejects.toMatchObject({ status: 400 });
-    expect(called).toBe(false);
+    try {
+      await expect(service.create(CREATE_FORM, false, true)).rejects.toMatchObject({ status: 400 });
+      await expect(service.create(CREATE_FORM, true, false)).rejects.toMatchObject({ status: 400 });
+      await expect(service.rotateHmacKey('wh-1', false, true)).rejects.toMatchObject({ status: 400 });
+      await expect(service.rotateHmacKey('wh-1', true, false)).rejects.toMatchObject({ status: 400 });
+      expect(called).toBe(false);
+    } finally {
+      settings.update({ configMode: true });
+    }
   });
 
   it('preserves HTTPS and public-DNS callback validation on create before Central', async () => {
@@ -1038,15 +1045,20 @@ describe('documented success flags and durable handoff journal', () => {
     });
     const createUnknown = await createService.create(CREATE_FORM, true, true);
     if (typeof createUnknown.operationId !== 'string') throw new Error('expected operation id');
-    await expect(
-      createService.resolveHandoff(
-        createUnknown.operationId,
-        'create-located',
-        false,
-        { candidateLocated: true },
-        'located-1',
-      ),
-    ).rejects.toMatchObject({ status: 400 });
+    settings.update({ configMode: false });
+    try {
+      await expect(
+        createService.resolveHandoff(
+          createUnknown.operationId,
+          'create-located',
+          false,
+          { candidateLocated: true },
+          'located-1',
+        ),
+      ).rejects.toMatchObject({ status: 400 });
+    } finally {
+      settings.update({ configMode: true });
+    }
     const resolved = await createService.resolveHandoff(
       createUnknown.operationId,
       'create-located',
@@ -1091,19 +1103,24 @@ describe('documented success flags and durable handoff journal', () => {
 });
 
 describe('reviewed PATCH with generation precondition', () => {
-  it('requires review confirmation, expectedGeneration, and at least one reviewed field', async () => {
+  it('requires review confirmation in hardened mode, expectedGeneration, and at least one reviewed field', async () => {
+    settings.update({ configMode: false });
     let called = false;
     const service = new CentralWebhooksService({
       dataDir: freshDataDir(),
       effectiveDemoMode: () => false,
       plane: okTransport({ request: async () => ((called = true), { status: 200, body: {} }) }),
     });
-    await expect(service.patch('wh-1', { expectedGeneration: 1, name: 'renamed' }, false)).rejects.toMatchObject({
-      status: 400,
-    });
-    await expect(service.patch('wh-1', { name: 'renamed' }, true)).rejects.toMatchObject({ status: 400 });
-    await expect(service.patch('wh-1', { expectedGeneration: 1 }, true)).rejects.toMatchObject({ status: 400 });
-    expect(called).toBe(false);
+    try {
+      await expect(service.patch('wh-1', { expectedGeneration: 1, name: 'renamed' }, false)).rejects.toMatchObject({
+        status: 400,
+      });
+      await expect(service.patch('wh-1', { name: 'renamed' }, true)).rejects.toMatchObject({ status: 400 });
+      await expect(service.patch('wh-1', { expectedGeneration: 1 }, true)).rejects.toMatchObject({ status: 400 });
+      expect(called).toBe(false);
+    } finally {
+      settings.update({ configMode: true });
+    }
   });
 
   it.each([
@@ -1577,6 +1594,80 @@ async function sendJson(base: string, method: string, path: string, body: unknow
 }
 
 describe('central webhook routes', () => {
+  it('admits lab create, patch, delete, and rotation without review confirmation while retaining their other write proofs', async () => {
+    const service = new CentralWebhooksService({
+      dataDir: freshDataDir(),
+      effectiveDemoMode: () => false,
+      resolveHostname: publicDns,
+      plane: okTransport({
+        request: async (method, path) => {
+          if (method === 'GET') return { status: 200, body: webhookRow() };
+          if (method === 'POST' && path.endsWith('/rotate-hmac-key')) {
+            return { status: 200, body: { items: { success: true, hmacKey: 'rotation-hmac' } } };
+          }
+          if (method === 'POST') return { status: 200, body: { items: { success: true, hmacKey: 'create-hmac' } } };
+          if (method === 'PATCH') return { status: 200, body: { items: { success: true } } };
+          return { status: 204, body: null };
+        },
+      }),
+    });
+    const tenantBinding = (await service.list(10, 0, '')).tenantBinding;
+    const routed = await startRoutedApp(service);
+    try {
+      const create = await sendJson(routed.base, 'POST', '/api/central/webhooks', {
+        form: CREATE_FORM,
+        oneTimeSecretAcknowledged: true,
+        reviewedTenantBinding: tenantBinding,
+      });
+      expect(create).toMatchObject({ status: 200, body: { ok: true, action: 'created', hmacKey: 'create-hmac' } });
+      await sendJson(routed.base, 'POST', '/api/central/webhooks/handoff/acknowledge', {
+        operationId: (create.body as { operationId: string }).operationId,
+        secretStored: true,
+      });
+      await expect(sendJson(routed.base, 'PATCH', '/api/central/webhooks/wh-1', {
+        form: { expectedGeneration: 1, name: 'renamed' },
+      })).resolves.toMatchObject({ status: 200, body: { ok: true, action: 'patched' } });
+      await expect(sendJson(routed.base, 'DELETE', '/api/central/webhooks/wh-1', {})).resolves.toMatchObject({
+        status: 200,
+        body: { ok: true, action: 'deleted' },
+      });
+      await expect(sendJson(routed.base, 'POST', '/api/central/webhooks/wh-1/rotate-hmac-key', {
+        oneTimeSecretAcknowledged: true,
+        reviewedTenantBinding: tenantBinding,
+      })).resolves.toMatchObject({ status: 200, body: { ok: true, action: 'rotated', hmacKey: 'rotation-hmac' } });
+    } finally {
+      await closeServer(routed.server);
+    }
+  });
+
+  it('rejects unconfirmed central webhook writes in hardened mode', async () => {
+    settings.update({ configMode: false });
+    const service = new CentralWebhooksService({
+      dataDir: freshDataDir(),
+      effectiveDemoMode: () => false,
+      resolveHostname: publicDns,
+      plane: okTransport({ request: async () => ({ status: 200, body: { items: { success: true, hmacKey: 'unused' } } }) }),
+    });
+    const tenantBinding = (await service.list(10, 0, '')).tenantBinding;
+    const routed = await startRoutedApp(service);
+    try {
+      for (const [method, path, body] of [
+        ['POST', '/api/central/webhooks', { form: CREATE_FORM, oneTimeSecretAcknowledged: true, reviewedTenantBinding: tenantBinding }],
+        ['PATCH', '/api/central/webhooks/wh-1', { form: { expectedGeneration: 1, name: 'renamed' } }],
+        ['DELETE', '/api/central/webhooks/wh-1', {}],
+        ['POST', '/api/central/webhooks/wh-1/rotate-hmac-key', { oneTimeSecretAcknowledged: true, reviewedTenantBinding: tenantBinding }],
+      ] as const) {
+        await expect(sendJson(routed.base, method, path, body)).resolves.toMatchObject({
+          status: 400,
+          body: { error: expect.stringContaining('review confirmation') },
+        });
+      }
+    } finally {
+      settings.update({ configMode: true });
+      await closeServer(routed.server);
+    }
+  });
+
   it('keeps full PUT replacement disabled without an outbound call', async () => {
     let called = false;
     const service = new CentralWebhooksService({

@@ -66,6 +66,7 @@ import { CentralAdapter, type CentralHttpBodyParse } from '../planes/central';
 import { normaliseBaseUrlUnchecked } from '../planes/transport';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
+import { allowsLabDirectWrites } from './labWritePolicy';
 import { effectiveSectionSource, settings } from '../config/settings';
 
 export class CentralWebhooksError extends Error {
@@ -1043,7 +1044,7 @@ export class CentralWebhooksService {
   }
 
   private requireReview(reviewConfirmedRaw: unknown): void {
-    if (reviewConfirmedRaw !== true) {
+    if (!allowsLabDirectWrites() && reviewConfirmedRaw !== true) {
       throw new CentralWebhooksError(400, 'webhook writes require an explicit review confirmation');
     }
   }
