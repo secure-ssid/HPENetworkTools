@@ -22,11 +22,11 @@ The server stores an `assistant` configuration with an active provider and indep
 | Codex CLI | local Codex app-server JSON-RPC | `gpt-5.6-terra`, low reasoning | installed and authenticated Codex CLI |
 | Claude Code | local non-interactive/streaming CLI adapter | Sonnet-class, low effort, never Opus | installed and authenticated Claude CLI |
 | Kimi | local ACP adapter | `kimi-code/kimi-for-coding-highspeed`, thinking disabled | installed and authenticated Kimi CLI |
-| GitHub Copilot CLI | local non-interactive/streaming CLI adapter | `gpt-5.3-codex`, low effort, only when entitled | installed and authenticated `copilot` CLI |
+| GitHub Copilot CLI | local non-interactive/streaming CLI adapter | `auto`, low effort; `gpt-5.6-terra` pinned alternative | installed and authenticated `copilot` CLI |
 | Ollama | OpenAI-compatible HTTP | operator-selected local tool-capable model; prefer the smallest verified tool-capable installed model | local Ollama server and selected model |
 | OpenRouter | OpenAI-compatible HTTP | operator-selected low-latency function-capable model | API key and selected model |
 
-`gpt-5.6-terra` at low reasoning is the Codex/OpenAI fast profile: OpenAI positions Terra as the balanced tier and low reasoning for latency-sensitive workloads. The provider registry does not use the bare `gpt-5.6` alias because it routes to Sol. Kimi's documented high-speed coding model is used with thinking disabled. Copilot does not use its `auto` selection; it asks the installed CLI to use `gpt-5.3-codex` at low effort, then reports a clear unavailable-model status if that account cannot use it. No provider substitutes a slower/deeper model silently.
+`gpt-5.6-terra` at low reasoning is the Codex/OpenAI fast profile: OpenAI positions Terra as the balanced tier and low reasoning for latency-sensitive workloads. The provider registry does not use the bare `gpt-5.6` alias because it routes to Sol. Kimi's documented high-speed coding model is used with thinking disabled. Copilot uses its native `auto` model selection at low effort by default and offers `gpt-5.6-terra` as a pinned alternative. When `auto` is selected, the adapter records and displays the resolved provider model; it never silently changes a named model selection. A missing pinned model reports unavailable rather than silently substituting another model.
 
 Each provider record contains only relevant fields: executable path or local endpoint, selected model or alias, optional key, and a `speedProfile` of `fast` or `custom`. The initial default is `fast`; custom explicitly exposes the model and effort fields. A model/test failure is shown as unavailable, never silently rerouted to a different provider.
 
