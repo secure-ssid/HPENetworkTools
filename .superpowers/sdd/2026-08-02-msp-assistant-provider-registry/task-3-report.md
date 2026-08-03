@@ -24,7 +24,7 @@
 
 ## Commit
 
-- `2493ec9 refactor: route compatible chat through provider adapter`
+- `9178e29 refactor: route compatible chat through provider adapter`
 
 ## Concerns
 
