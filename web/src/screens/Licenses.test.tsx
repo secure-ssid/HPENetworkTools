@@ -261,6 +261,80 @@ describe('Licences table superpowers', () => {
     };
   }
 
+  it('hides an expired subscription with no assigned seats', async () => {
+    const unusedExpired = sub({
+      name: 'Retired AP pool',
+      sku: 'OLD-AP',
+      term: 'ended',
+      qty: '20',
+      assigned: '0',
+      pct: '0%',
+      expires: '01 Jan 25',
+      status: 'expired' as SubscriptionRow['status'],
+      tone: 'danger',
+    });
+    mockGetLicenses.mockResolvedValue({ ...LIVE, subscriptions: [...LIVE.subscriptions, unusedExpired] });
+
+    renderLicenses();
+
+    await screen.findByText('Foundation AP');
+    expect(screen.queryByText('Retired AP pool')).toBeNull();
+  });
+
+  it('retains non-expired, assigned, and unknown-count subscriptions', async () => {
+    const expiredStatus = 'expired' as SubscriptionRow['status'];
+    mockGetLicenses.mockResolvedValue({
+      ...LIVE,
+      subscriptions: [
+        sub({ name: 'Expiring capacity', assigned: '0', status: 'expiring', tone: 'warning' }),
+        sub({ name: 'Retiring capacity', assigned: '0', status: 'retiring', tone: 'danger' }),
+        sub({ name: 'Idle capacity', assigned: '0', status: 'idle', tone: 'neutral' }),
+        sub({ name: 'Expired assigned', assigned: '1,000', status: expiredStatus, tone: 'danger' }),
+        sub({ name: 'Expired unknown', assigned: '—', status: expiredStatus, tone: 'danger' }),
+      ],
+    });
+
+    renderLicenses();
+
+    expect(await screen.findByText('Expiring capacity')).toBeTruthy();
+    expect(screen.getByText('Retiring capacity')).toBeTruthy();
+    expect(screen.getByText('Idle capacity')).toBeTruthy();
+    expect(screen.getByText('Expired assigned')).toBeTruthy();
+    expect(screen.getByText('Expired unknown')).toBeTruthy();
+  });
+
+  it('exports the same operational subscriptions shown in the table', async () => {
+    const unusedExpired = sub({
+      name: 'Retired AP pool',
+      assigned: '0',
+      status: 'expired' as SubscriptionRow['status'],
+      tone: 'danger',
+    });
+    const activeUnused = sub({ name: 'Available AP pool', assigned: '0' });
+    let csv: Blob | undefined;
+    vi.stubGlobal('URL', {
+      createObjectURL: (blob: Blob) => {
+        csv = blob;
+        return 'blob:licences';
+      },
+      revokeObjectURL: vi.fn(),
+    });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    mockGetLicenses.mockResolvedValue({
+      ...LIVE,
+      subscriptions: [unusedExpired, activeUnused, ...LIVE.subscriptions],
+    });
+
+    renderLicenses();
+
+    await screen.findByText('Available AP pool');
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+    expect(click).toHaveBeenCalledOnce();
+    const contents = await csv?.text();
+    expect(contents).toContain('Available AP pool');
+    expect(contents).not.toContain('Retired AP pool');
+  });
+
   it('hides and restores a column from View options, persisted to localStorage', async () => {
     mockGetLicenses.mockResolvedValue(LIVE);
     const { container } = renderLicenses();

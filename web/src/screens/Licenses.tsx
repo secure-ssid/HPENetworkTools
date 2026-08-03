@@ -69,6 +69,19 @@ function pctValue(pct: string): number | null {
   return /^\d+(\.\d+)?%$/.test(pct) ? Number.parseFloat(pct) : null;
 }
 
+/** A retired entitlement is operational clutter only when GreenLake explicitly
+ * marks it expired and reports no assigned seats. Missing or non-numeric
+ * assignments stay visible because they are not evidence of unused capacity. */
+function isOperationalSubscription(row: SubscriptionRow): boolean {
+  const assigned = row.assigned.replace(/,/g, '').trim();
+  const isNumericZero = assigned !== '' && Number.isFinite(Number(assigned)) && Number(assigned) === 0;
+  return !((row.status as string) === 'expired' && isNumericZero);
+}
+
+function operationalSubscriptions(data: LicensesData): SubscriptionRow[] {
+  return data.subscriptions.filter(isOperationalSubscription);
+}
+
 /* The utilisation tint cutoffs. The 95% line is the utilisation bar's own
    (the fill paints amber at ≥95%, green below): at 95% the pool is nearly
    exhausted and the next assignment has nowhere to go. Over 100% is a
@@ -151,9 +164,11 @@ export default function Licenses() {
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
+  const subscriptions = operationalSubscriptions(data);
+
   const exportCsv = () => {
     const header = 'name,sku,plane,term,qty,assigned,utilisation,expires,status';
-    const lines = data.subscriptions.map((l) =>
+    const lines = subscriptions.map((l) =>
       [l.name, l.sku, l.plane, l.term, l.qty, l.assigned, l.pct, l.expires, l.status]
         .map((v) => `"${v.replace(/"/g, '""')}"`)
         .join(','),
@@ -286,7 +301,7 @@ export default function Licenses() {
   // DataTable's rowKey sees no index, so the identity the compound Table keyed
   // on — the row's own fields plus its position — is mapped once here.
   const rowIds = new Map<SubscriptionRow, string>(
-    data.subscriptions.map((l, i) => [l, `${l.sku}|${l.name}|${l.expires}|${i}`] as const),
+    subscriptions.map((l, i) => [l, `${l.sku}|${l.name}|${l.expires}|${i}`] as const),
   );
 
   return (
@@ -372,12 +387,12 @@ export default function Licenses() {
         ariaLabel="Subscriptions"
         density={density}
         columns={licenseColumns}
-        rows={data.subscriptions}
+        rows={subscriptions}
         rowKey={(l) => rowIds.get(l) ?? l.name}
         columnsConfig={tableColumns.licenses}
         onColumnsConfigChange={(config) => setTableColumns('licenses', config)}
       />
-      {data.subscriptions.length === 0 ? (
+      {subscriptions.length === 0 ? (
         <EmptyState
           title="No subscriptions in the cache"
           description={
