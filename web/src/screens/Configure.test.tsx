@@ -16,12 +16,14 @@ import Configure from './Configure';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import {
+  applyConfigDirect,
   applySsidDirect,
   discardChange,
   dryRunConfig,
   getChangeHistory,
   getChangeQueue,
   getConfigure,
+  getPortalSettings,
   getSsidCatalog,
   pushChange,
   queueChange,
@@ -43,6 +45,8 @@ vi.mock('../api/client', async (importOriginal) => {
     dryRunConfig: vi.fn(),
     getSsidCatalog: vi.fn(),
     applySsidDirect: vi.fn(),
+    getPortalSettings: vi.fn(),
+    applyConfigDirect: vi.fn(),
   };
 });
 
@@ -55,6 +59,8 @@ const mockDiscardChange = vi.mocked(discardChange);
 const mockDryRunConfig = vi.mocked(dryRunConfig);
 const mockGetSsidCatalog = vi.mocked(getSsidCatalog);
 const mockApplySsidDirect = vi.mocked(applySsidDirect);
+const mockGetPortalSettings = vi.mocked(getPortalSettings);
+const mockApplyConfigDirect = vi.mocked(applyConfigDirect);
 
 // -- fixtures ---------------------------------------------------------------
 
@@ -190,11 +196,68 @@ beforeEach(() => {
   mockGetChangeHistory.mockResolvedValue({ events: [], unreadable: [] });
   mockGetSsidCatalog.mockResolvedValue(SSID_CATALOG);
   mockApplySsidDirect.mockResolvedValue(SSID_APPLIED);
+  // Existing broker tests exercise the explicit hardened fallback. A missing
+  // server setting is intentionally lab-direct and is covered separately.
+  mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: false });
+  mockApplyConfigDirect.mockResolvedValue({
+    ok: true,
+    applied: true,
+    changeId: 'direct-vlan-1',
+    kind: 'vlan',
+    message: 'VLAN applied and confirmed',
+  });
 });
 
 afterEach(cleanup);
 
 describe('Configure — per-entry-source queue semantics', () => {
+  it('a legacy settings response removes broker controls and immediately applies a valid VLAN with result evidence', async () => {
+    // A returned, pre-configMode settings payload means the server will use
+    // its lab-direct default. `null` still means unreachable and stays hard.
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60 });
+    renderConfigure();
+
+    await screen.findByRole('button', { name: 'New VLAN' });
+    expect(screen.queryByText('Queued changes')).toBeNull();
+    expect(screen.queryByText('Push queue')).toBeNull();
+    expect(screen.queryByPlaceholderText('NET-4166')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New VLAN' }));
+    fireEvent.change(screen.getByLabelText('ID'), { target: { value: '999' } });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'lab-vlan' } });
+    expect(screen.queryByRole('button', { name: 'Dry run' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+    await waitFor(() =>
+      expect(mockApplyConfigDirect).toHaveBeenCalledWith(
+        'vlan',
+        expect.objectContaining({ id: '999', name: 'lab-vlan' }),
+      ),
+    );
+    expect(screen.getByText('Applied')).toBeTruthy();
+  });
+
+  it('lab SSIDs skip the review checkbox but retain their dedicated apply path', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: true });
+    renderConfigure();
+    await screen.findByRole('button', { name: 'New SSID' });
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await screen.findByText('Campus-01');
+    await fillReadySsidForm();
+
+    expect(
+      screen.queryByRole('checkbox', {
+        name: 'I have reviewed this profile and these scope assignments — apply directly, no ticket.',
+      }),
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', false);
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+    await waitFor(() => expect(mockApplySsidDirect).toHaveBeenCalledTimes(1));
+    expect(mockApplySsidDirect.mock.calls[0][1]).toBeUndefined();
+    expect(mockApplyConfigDirect).not.toHaveBeenCalled();
+  });
+
   it('opens a blank live SSID form, loads the live scope catalog, and starts with Apply disabled', async () => {
     renderConfigure();
     await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());

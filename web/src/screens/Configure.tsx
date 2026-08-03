@@ -51,18 +51,20 @@ import {
 } from '../nightdesk';
 import type { DataTableColumn } from '../nightdesk';
 import {
+  applyConfigDirect,
   applySsidDirect,
   discardChange,
   dryRunConfig,
   getChangeHistory,
   getChangeQueue,
   getConfigure,
+  getPortalSettings,
   getSsidCatalog,
   isApiError,
   pushChange,
   queueChange,
 } from '../api/client';
-import type { ConfigureData, DryRunResult } from '../api/client';
+import type { ConfigureData, DryRunResult, ImmediateApplyResult } from '../api/client';
 import {
   CONFIG_EDIT_DESCS,
   CONFIG_EDIT_TITLES,
@@ -277,6 +279,9 @@ export default function Configure() {
   const [data, setData] = useState<ConfigureData | null>(null);
   const [queue, setQueue] = useState<QueueEntry[] | null>(null);
   const [queueSource, setQueueSource] = useState<'server' | 'local'>('local');
+  // Until the settings endpoint answers, retain the hardened presentation.
+  // Once it does, omitted configMode means the server's lab-direct default.
+  const [labConfigMode, setLabConfigMode] = useState(false);
   /* Queue-table selection for the bulk action bar: the DataTable's controlled
    * selectedKeys pair (checkbox column + select-all header + the x/Esc
    * keyboard grid). `bulkBusy` serializes a bulk run — one at a time, never
@@ -293,6 +298,8 @@ export default function Configure() {
   const [showDormantTargets, setShowDormantTargets] = useState(false);
   const [dryRun, setDryRun] = useState<{ result?: DryRunResult; error?: string } | null>(null);
   const [dryRunning, setDryRunning] = useState(false);
+  const [directApply, setDirectApply] = useState<{ result?: ImmediateApplyResult; error?: string } | null>(null);
+  const [directApplying, setDirectApplying] = useState(false);
   const [pushing, setPushing] = useState(false);
   // Lease countdowns must not freeze at first paint — a 30s tick is enough
   // resolution for a fifteen-minute lease.
@@ -317,8 +324,9 @@ export default function Configure() {
 
   useEffect(() => {
     let live = true;
-    void Promise.all([getConfigure(), getChangeQueue()]).then(([d, serverQueue]) => {
+    void Promise.all([getConfigure(), getChangeQueue(), getPortalSettings()]).then(([d, serverQueue, portal]) => {
       if (!live) return;
+      setLabConfigMode(portal !== null && portal.configMode !== false);
       if (isApiError(serverQueue)) {
         setData({ ...d, apiError: serverQueue.error });
         setQueue([]);
@@ -374,6 +382,16 @@ export default function Configure() {
     setPrevSsid(ssid);
     setSsidReviewed(false);
     setSsidApplyResult(null);
+  }
+
+  // Direct-apply evidence belongs to precisely the current port/VLAN form.
+  // Editing either field creates a new write candidate, so never leave the
+  // previous result beside it.
+  const directApplyInputs = [kind, port, vlan] as const;
+  const [prevDirectApplyInputs, setPrevDirectApplyInputs] = useState(directApplyInputs);
+  if (prevDirectApplyInputs.some((v, i) => v !== directApplyInputs[i])) {
+    setPrevDirectApplyInputs(directApplyInputs);
+    setDirectApply(null);
   }
 
   // A selection that outlives its rows is a lie about what an Approve would
@@ -482,7 +500,7 @@ export default function Configure() {
     valueProblems.length > 0 ||
     ssidMissingDependencies.length > 0 ||
     mistRefusal !== null ||
-    !ssidReviewed ||
+    (!labConfigMode && !ssidReviewed) ||
     ssidApplying ||
     ssidCatalogLoading ||
     !ssidCatalog;
@@ -953,6 +971,36 @@ export default function Configure() {
     setDryRun({ result: r });
   };
 
+  /** Apply a supported Central port/VLAN immediately in lab mode. The result
+   * stays in the drawer because a returned 202 or failed read-back is evidence
+   * to act on, not a completed change. */
+  const applyDirect = async () => {
+    if (!labConfigMode || !kind || kind === 'ssid' || directApplying) return;
+    setDirectApplying(true);
+    const r = await applyConfigDirect(kind, formFor(kind));
+    setDirectApplying(false);
+    if (isApiError(r)) {
+      setDirectApply({ error: r.error });
+      toast(r.error, { tone: 'danger' });
+      return;
+    }
+    setDirectApply({ result: r });
+    const stale = r.cacheRefresh?.attempted && !r.cacheRefresh.ok;
+    if (r.applied) {
+      toast(r.message, {
+        description: stale
+          ? `The lists below could not be re-read (${r.cacheRefresh?.message ?? 'reason not reported'}), so they do not show this yet. Do not apply it again.`
+          : undefined,
+        tone: stale ? 'warning' : 'success',
+      });
+      setData(await getConfigure());
+    } else if (r.accepted) {
+      toast('Accepted by Central, not yet confirmed', { description: r.message, tone: 'warning' });
+    } else {
+      toast(r.message, { tone: 'danger' });
+    }
+  };
+
   /**
    * Apply a reviewed SSID change directly (no ticket/queue). Whenever the
    * profile actually landed — clean, partial, or accepted-but-unconfirmed —
@@ -962,7 +1010,7 @@ export default function Configure() {
    * every entered value stays exactly as typed so the operator can retry.
    */
   const applySsid = async () => {
-    if (!ssidReviewed || ssidApplying) return;
+    if ((!labConfigMode && !ssidReviewed) || ssidApplying) return;
     const planeLabel = ssidPlaneOf(ssid) === 'mist' ? 'Mist' : 'Central';
     setSsidApplying(true);
     // A multi-plane display label ('CENTRAL + MIST') is not a write target:
@@ -970,7 +1018,10 @@ export default function Configure() {
     // server refuses anything it cannot place. The Mist copy of a dual-plane
     // SSID is a separate, site-scoped write the operator chooses explicitly.
     const wireForm = ssidFormForSecurity(ssid, ssid.security);
-    const r = await applySsidDirect({ ...wireForm, plane: ssidPlaneOf(wireForm) === 'mist' ? 'MIST' : 'CENTRAL' }, true);
+    const r = await applySsidDirect(
+      { ...wireForm, plane: ssidPlaneOf(wireForm) === 'mist' ? 'MIST' : 'CENTRAL' },
+      labConfigMode ? undefined : true,
+    );
     setSsidApplying(false);
     if (isApiError(r)) {
       setSsidApplyResult({ error: r.error });
@@ -1058,15 +1109,20 @@ export default function Configure() {
         ))}
       </div>
 
-      <Alert tone="info" title="Writes are brokered, never standing">
-        <span style={{ fontSize: 13 }}>{writeSurfaceNote(data.capabilities)}</span>
+      <Alert tone="info" title={labConfigMode ? 'Lab writes apply immediately' : 'Writes are brokered, never standing'}>
+        <span style={{ fontSize: 13 }}>
+          {labConfigMode
+            ? 'Supported Central port and VLAN writes apply immediately. SSIDs keep their dedicated scope-aware apply path.'
+            : writeSurfaceNote(data.capabilities)}
+        </span>
       </Alert>
 
       {liveMode && data.inventoryMode === 'unavailable' ? (
         <Alert tone="warning" title="Live configuration inventory is not available">
           <span style={{ fontSize: 13 }}>
-            The broker queue is live, but the linked planes do not currently expose SSID, port, or VLAN inventory through
-            this API. New changes can still be rendered and queued explicitly.
+            {labConfigMode
+              ? 'The linked planes do not currently expose SSID, port, or VLAN inventory through this API. New changes can still be rendered and applied explicitly.'
+              : 'The broker queue is live, but the linked planes do not currently expose SSID, port, or VLAN inventory through this API. New changes can still be rendered and queued explicitly.'}
           </span>
         </Alert>
       ) : null}
@@ -1361,7 +1417,8 @@ export default function Configure() {
 
         {/* ---------------- right: queue + capability matrix ---------------- */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          {!labConfigMode ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
             <SectionHeader label="Queued changes" meta={String(queue.length)} />
             {queue.length > 0 ? (
               <DataTable
@@ -1445,7 +1502,8 @@ export default function Configure() {
                 Discard
               </Button>
             </div>
-          </div>
+            </div>
+          ) : null}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
             <SectionHeader
@@ -1958,11 +2016,13 @@ export default function Configure() {
                     : 'device-function CAMPUS_AP · assigned via /network-config/v1alpha1/config-assignments — no secret value is ever shown here.'}
                 </span>
 
-                <Checkbox
-                  label="I have reviewed this profile and these scope assignments — apply directly, no ticket."
-                  checked={ssidReviewed}
-                  onChange={(e) => setSsidReviewed(e.target.checked)}
-                />
+                {!labConfigMode ? (
+                  <Checkbox
+                    label="I have reviewed this profile and these scope assignments — apply directly, no ticket."
+                    checked={ssidReviewed}
+                    onChange={(e) => setSsidReviewed(e.target.checked)}
+                  />
+                ) : null}
                 {valueProblems.length > 0 ? (
                   <Alert tone="warning" title={`Apply is disabled — ${mistSsid ? 'Mist' : 'Central'} would refuse this form`}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
@@ -1981,7 +2041,7 @@ export default function Configure() {
                 ) : null}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <Button variant="primary" size="md" disabled={ssidApplyDisabled} onClick={() => void applySsid()}>
-                    {ssidApplying ? 'Applying…' : 'Apply directly'}
+                    {ssidApplying ? 'Applying…' : labConfigMode ? 'Apply' : 'Apply directly'}
                   </Button>
                   <Button variant="ghost" size="md" onClick={() => setKind(null)}>
                     Cancel
@@ -2048,6 +2108,77 @@ export default function Configure() {
                   }}
                 >
                   Direct apply — no ticket, no queue. An audit event is still recorded for every attempt.
+                </span>
+              </div>
+            ) : labConfigMode ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {valueProblems.length > 0 ? (
+                  <Alert tone="warning" title="Apply is disabled — Central would refuse this form">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                      {valueProblems.map((problem) => (
+                        <span key={problem}>{problem}</span>
+                      ))}
+                    </div>
+                  </Alert>
+                ) : null}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <Button
+                    variant="primary"
+                    size="md"
+                    disabled={directApplying || valueProblems.length > 0}
+                    onClick={() => void applyDirect()}
+                  >
+                    {directApplying ? 'Applying…' : 'Apply'}
+                  </Button>
+                  <Button variant="ghost" size="md" onClick={() => setKind(null)}>
+                    Cancel
+                  </Button>
+                </div>
+                {directApply ? (
+                  directApply.error ? (
+                    <Alert tone="danger" title="Apply failed">
+                      <span style={{ fontSize: 13 }}>{directApply.error}</span>
+                    </Alert>
+                  ) : directApply.result ? (
+                    <Alert
+                      tone={
+                        directApply.result.applied
+                          ? directApply.result.cacheRefresh?.attempted && !directApply.result.cacheRefresh.ok
+                            ? 'warning'
+                            : 'success'
+                          : directApply.result.accepted
+                            ? 'warning'
+                            : 'danger'
+                      }
+                      title={
+                        directApply.result.applied
+                          ? 'Applied'
+                          : directApply.result.accepted
+                            ? 'Accepted — not yet confirmed'
+                            : 'Not applied'
+                      }
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                        <span>{directApply.result.message}</span>
+                        {directApply.result.cacheRefresh?.attempted && !directApply.result.cacheRefresh.ok ? (
+                          <span>
+                            The inventory could not be re-read ({directApply.result.cacheRefresh.message ?? 'reason not reported'}),
+                            so the list below does not show this change yet.
+                          </span>
+                        ) : null}
+                      </div>
+                    </Alert>
+                  ) : null
+                ) : null}
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 10.5,
+                    color: 'var(--nd-text-muted)',
+                    lineHeight: 1.6,
+                  }}
+                >
+                  Immediate lab apply — no ticket, queue, lease, or dry run. The result below is the write evidence.
                 </span>
               </div>
             ) : (

@@ -16,6 +16,29 @@ import {
   type WriteCacheRefresh,
 } from '@hpe/shared';
 
+/** Result of a direct lab apply for a supported Central object. Unlike a
+ * broker push, it has no ticket, lease, queue, or dry-run fields. */
+export interface ImmediateApplyResult {
+  ok: boolean;
+  applied: boolean;
+  accepted?: boolean;
+  changeId: string;
+  kind: string;
+  httpCode?: number;
+  message: string;
+  cacheRefresh?: WriteCacheRefresh;
+}
+
+/** POST /api/configure/apply — immediate lab write for port or VLAN only.
+ * SSIDs deliberately use applySsidDirect below: their scope-level outcome
+ * evidence cannot be represented by this Central-only result. */
+export async function applyConfigDirect(
+  kind: Exclude<ConfigKind, 'ssid'>,
+  form: ConfigForm,
+): Promise<ApiResult<ImmediateApplyResult>> {
+  return postForResult<ImmediateApplyResult>('/api/configure/apply', { kind, form });
+}
+
 /** POST /api/configure/render — pure render, no ticket needed. */
 export interface RenderedConfig {
   rendered: string;
@@ -188,6 +211,12 @@ export async function getSsidCatalog(plane?: 'mist' | 'central'): Promise<SsidCa
  * `reviewConfirmed` must be `true`; the server logs one audit line per
  * attempt (success, partial, or failure) with no ticket and no payload body.
  */
-export async function applySsidDirect(form: ConfigForm, reviewConfirmed: boolean): Promise<ApiResult<SsidApplyResult>> {
-  return postForResult<SsidApplyResult>('/api/configure/ssids/apply', { form, reviewConfirmed });
+export async function applySsidDirect(
+  form: ConfigForm,
+  reviewConfirmed?: boolean,
+): Promise<ApiResult<SsidApplyResult>> {
+  return postForResult<SsidApplyResult>(
+    '/api/configure/ssids/apply',
+    reviewConfirmed === undefined ? { form } : { form, reviewConfirmed },
+  );
 }

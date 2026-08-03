@@ -29,12 +29,14 @@ import Configure from './Configure';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import {
+  applyConfigDirect,
   applySsidDirect,
   discardChange,
   dryRunConfig,
   getChangeHistory,
   getChangeQueue,
   getConfigure,
+  getPortalSettings,
   getSsidCatalog,
   pushChange,
   queueChange,
@@ -54,6 +56,8 @@ vi.mock('../api/client', async (importOriginal) => {
     dryRunConfig: vi.fn(),
     getSsidCatalog: vi.fn(),
     applySsidDirect: vi.fn(),
+    getPortalSettings: vi.fn(),
+    applyConfigDirect: vi.fn(),
   };
 });
 
@@ -66,6 +70,8 @@ const mockDiscardChange = vi.mocked(discardChange);
 const mockDryRunConfig = vi.mocked(dryRunConfig);
 const mockGetSsidCatalog = vi.mocked(getSsidCatalog);
 const mockApplySsidDirect = vi.mocked(applySsidDirect);
+const mockGetPortalSettings = vi.mocked(getPortalSettings);
+const mockApplyConfigDirect = vi.mocked(applyConfigDirect);
 
 // -- fixtures ---------------------------------------------------------------
 
@@ -155,6 +161,8 @@ beforeEach(() => {
   mockGetChangeHistory.mockResolvedValue({ events: [], unreadable: [] });
   mockGetSsidCatalog.mockResolvedValue(null);
   mockApplySsidDirect.mockResolvedValue({ error: 'not exercised here' });
+  mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: false });
+  mockApplyConfigDirect.mockResolvedValue({ error: 'not exercised here' });
 });
 
 afterEach(cleanup);
