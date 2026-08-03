@@ -236,7 +236,7 @@ describe('assistant provider chat routes', () => {
     const response = await request('/api/chat/providers/ollama/test', { method: 'POST' });
 
     expect(response).toMatchObject({ status: 200, body: ready });
-    expect(status).toHaveBeenCalledWith(settings.get().assistant, 'ollama');
+    expect(status).toHaveBeenCalledWith(settings.get().assistant, 'ollama', { forceProbe: true });
     expect(invocations).toEqual([{ tool: 'find_tool', access: 'read-only' }]);
     expect(invocations.some((invocation) => invocation.access === 'write' || invocation.tool === 'invoke_tool')).toBe(false);
   });

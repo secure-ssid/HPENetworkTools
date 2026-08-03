@@ -87,6 +87,33 @@ describe('assistant provider registry', () => {
     expect(result).toMatchObject({ installed: true, authenticated: true, mcpReady: true, modelReady: true, selected: true, resolvedModel: 'gpt-5.6-terra', latencyMs: 43 });
   });
 
+  it('reuses a recent successful proof for unchanged settings but lets an explicit provider test probe again', async () => {
+    let discoveryCalls = 0;
+    let probeCalls = 0;
+    const adapter: AssistantProviderAdapter = {
+      id: 'codex',
+      discover: async () => {
+        discoveryCalls += 1;
+        return { installed: true, authenticated: true, modelReady: true };
+      },
+      chat: async () => ({ text: '' }),
+      probeReadOnly: async (_config, context: ReadOnlyProbeContext) => {
+        probeCalls += 1;
+        context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
+        return { authenticated: true, modelReady: true };
+      },
+    };
+    const input = settings();
+    const registry = new AssistantProviderRegistry([adapter], { now: () => 1_000 });
+
+    await registry.status(input, 'codex');
+    await registry.status(input, 'codex');
+    expect({ discoveryCalls, probeCalls }).toEqual({ discoveryCalls: 1, probeCalls: 1 });
+
+    await registry.status(input, 'codex', { forceProbe: true });
+    expect({ discoveryCalls, probeCalls }).toEqual({ discoveryCalls: 2, probeCalls: 2 });
+  });
+
   it('does not treat provider discovery as centralmcp readiness', async () => {
     const adapter: AssistantProviderAdapter = {
       id: 'codex',
@@ -210,13 +237,19 @@ describe('isolated native assistant CLI adapters', () => {
     expect(JSON.stringify(fake.commands[0])).not.toMatch(/central-api-key|mist-api-key|clearpass-password/i);
   });
 
-  it('runs Codex chat through the lab centralmcp launch path without leaking the bearer token', async () => {
+  it('runs Codex chat through an empty lab workspace without creating a bearer-token config file', async () => {
+    const noToolProbeJsonl = [
+      '{"type":"thread.started","thread_id":"thread_0"}',
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"I cannot complete that check."}}',
+      '{"type":"turn.completed","status":"completed"}',
+    ].join('\n');
     const probeJsonl = [
       '{"type":"thread.started","thread_id":"thread_1"}',
       '{"type":"turn.started"}',
       '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{"query":"provider readiness"},"result":"catalogue"}}',
       '{"type":"item.completed","item":{"type":"agent_message","text":"centralmcp ready"}}',
-      '{"type":"turn.completed","status":"completed"}',
+      '{"type":"turn.completed","status":"completed","error":null}',
     ].join('\n');
     const chatJsonl = [
       '{"type":"thread.started","thread_id":"thread_2"}',
@@ -228,15 +261,23 @@ describe('isolated native assistant CLI adapters', () => {
     ].join('\n');
     const commands: CommandExecution[] = [];
     const dispose = vi.fn(async () => {});
+    const createMcpLaunchConfig = vi.fn(async () => ({ path: '/private/tmp/centralmcp.json', directory: '/private/tmp/centralmcp', dispose }));
+    const workspaceDispose = vi.fn(async () => {});
+    const createEmptyDirectory = vi.fn(async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: workspaceDispose }));
     const adapter = new CodexAdapter({
       commandRunner: {
         run: async (command) => {
           commands.push(command);
           if (command.args.includes('--version')) return { exitCode: 0, stdout: 'codex 0.145.0', stderr: '' };
-          return { exitCode: 0, stdout: commands.length === 1 ? probeJsonl : chatJsonl, stderr: '' };
+          return {
+            exitCode: 0,
+            stdout: commands.length === 1 ? noToolProbeJsonl : commands.length === 2 ? probeJsonl : chatJsonl,
+            stderr: '',
+          };
         },
       },
-      createMcpLaunchConfig: async () => ({ path: '/private/tmp/centralmcp.json', directory: '/private/tmp/hpe-codex', dispose }),
+      createMcpLaunchConfig,
+      createEmptyDirectory,
     });
     const { context, invocations } = probeContext();
 
@@ -257,12 +298,14 @@ describe('isolated native assistant CLI adapters', () => {
     });
 
     expect(invocations).toEqual([{ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' }]);
-    expect(dispose).toHaveBeenCalledTimes(2);
+    expect(createMcpLaunchConfig).not.toHaveBeenCalled();
+    expect(workspaceDispose).toHaveBeenCalledTimes(3);
+    expect(commands[0]).toMatchObject({ timeoutMs: 30_000 });
     const launch = commands.at(-1)!;
-    expect(launch).toMatchObject({ command: 'codex', cwd: '/private/tmp/hpe-codex', timeoutMs: 5000 });
+    expect(launch).toMatchObject({ command: 'codex', cwd: '/private/tmp/hpe-codex-empty', timeoutMs: 5000 });
     expect(launch.args).toEqual(expect.arrayContaining([
       'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check',
-      '--cd', '/private/tmp/hpe-codex', '--sandbox', 'read-only', '--model', 'gpt-5.6-terra', '--strict-config', '--json',
+      '--cd', '/private/tmp/hpe-codex-empty', '--sandbox', 'read-only', '--model', 'gpt-5.6-terra', '--strict-config', '--json',
       'mcp_servers.centralmcp.enabled=true',
       'mcp_servers.centralmcp.required=true',
       'mcp_servers.centralmcp.default_tools_approval_mode="auto"',

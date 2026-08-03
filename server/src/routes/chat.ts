@@ -105,7 +105,7 @@ export function createChatRouter(dependencies: ChatRouterDependencies = {}): Rou
     }
     // status() performs the adapter's isolated probeReadOnly() and returns only
     // its redacted proof-based result. This route never exposes a write tool.
-    const status = await providerRegistry.status(settings.get().assistant, id);
+    const status = await providerRegistry.status(settings.get().assistant, id, { forceProbe: true });
     res.json(status);
   }),
 );
