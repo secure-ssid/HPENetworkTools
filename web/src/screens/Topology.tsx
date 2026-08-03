@@ -431,11 +431,10 @@ function DeviceChip({
         gap: 7,
         padding: '5px 9px',
         background: 'var(--nd-bg-surface)',
-        border: `1px solid ${
+        border: `1px ${node.ghost ? 'dashed' : 'solid'} ${
           focused ? 'var(--nd-accent)' : node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-border-subtle)'
         }`,
         borderRadius: 2,
-        borderStyle: node.ghost ? 'dashed' : 'solid',
         cursor: 'pointer',
         font: 'inherit',
         opacity: dimmed ? 0.25 : 1,

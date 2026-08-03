@@ -12,6 +12,7 @@
  * rules as the site section (absent = not reported, empty = a real answer).
  */
 
+import { Link } from 'react-router-dom';
 import { Alert, Badge, SectionHeader } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { MistRogueApRow } from '@hpe/shared';
@@ -41,13 +42,16 @@ export function RogueRow({ row, siteLabel = false }: { row: MistRogueApRow; site
     .filter((f): f is string => f !== null)
     .join(' · ');
   return (
-    <div
+    <Link
+      to={`/sites/${encodeURIComponent(row.siteId)}`}
+      aria-label={`Open site ${row.siteName} for rogue ${row.bssid}`}
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: 12,
         padding: '9px 0',
         borderBottom: '1px solid var(--nd-border-subtle)',
+        textDecoration: 'none',
       }}
     >
       <VerdictBadge row={row} />
@@ -63,7 +67,7 @@ export function RogueRow({ row, siteLabel = false }: { row: MistRogueApRow; site
       <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', textAlign: 'right' }}>
         {facts || 'no readings reported'}
       </span>
-    </div>
+    </Link>
   );
 }
 

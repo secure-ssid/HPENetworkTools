@@ -14,17 +14,22 @@ import { Link } from 'react-router-dom';
 import { Badge, SectionHeader } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { SsidObject } from '@hpe/shared';
+import { buildSsidDeepLink } from '../configure/deepLink';
 import { noteStyle } from './style';
 
 function WlanRow({ row }: { row: SsidObject }) {
+  const to = buildSsidDeepLink(row, 'MIST') ?? '/configure';
   return (
-    <div
+    <Link
+      to={to}
+      aria-label={`Edit WLAN ${row.name} in Configure`}
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: 12,
         padding: '9px 0',
         borderBottom: '1px solid var(--nd-border-subtle)',
+        textDecoration: 'none',
       }}
     >
       <span style={{ flex: 1, minWidth: 0 }}>
@@ -42,7 +47,7 @@ function WlanRow({ row }: { row: SsidObject }) {
       <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', textAlign: 'right' }}>
         {row.security} · {row.vlan}
       </span>
-    </div>
+    </Link>
   );
 }
 

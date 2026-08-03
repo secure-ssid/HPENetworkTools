@@ -123,6 +123,9 @@ describe('Central — the demo composition', () => {
     // WLANs: the scope text rides verbatim, edits handed off to Configure.
     expect(screen.getByText('MRDN-Guest')).toBeTruthy();
     expect(screen.getByText(/guest-lobby, northgate-public · 96 APs/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Edit WLAN MRDN-Guest in Configure' }).getAttribute('href')).toBe(
+      '/configure?edit=ssid&plane=CENTRAL&name=MRDN-Guest&vlan=vlan+812&targets=guest-lobby%2C+northgate-public+%C2%B7+96+APs',
+    );
 
     // Recent alerts, cut to Central, with the filtered-queue hand-off.
     expect(screen.getAllByText('DHCP pool 92% used on vlan 812')).toHaveLength(2);

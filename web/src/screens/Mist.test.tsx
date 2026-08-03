@@ -185,6 +185,16 @@ describe('Mist screen — demo payload', () => {
     expect(screen.getByText('3 WLANS · MIST')).toBeTruthy();
     expect(screen.getByText('MRDN-Research')).toBeTruthy();
     expect(screen.queryByText('MRDN-Guest')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Edit WLAN MRDN-Research in Configure' }).getAttribute('href')).toBe(
+      '/configure?edit=ssid&plane=MIST&name=MRDN-Research&vlan=vlan+822&targets=Campus-02+Research+%C2%B7+enabled',
+    );
+
+    // AP rows carry their reported Mist serial identity; rogue rows lead only
+    // to their originating site because a rogue BSSID is not an estate device.
+    expect(screen.getByRole('link', { name: 'Open device ap-3f-14 — Power' }).getAttribute('href')).toBe(
+      '/devices/ap-3f-14?plane=MIST&serial=MST43KF1401',
+    );
+    expect(screen.getByRole('link', { name: 'Open site Campus-02 Research for rogue 5c:5b:35:00:0e:77' }).getAttribute('href')).toBe('/sites/campus-02');
 
     // Firmware: ap-3f-14 behind, the plane's state word verbatim, the unreported count.
     expect(screen.getByText('behind → 0.14.29')).toBeTruthy();

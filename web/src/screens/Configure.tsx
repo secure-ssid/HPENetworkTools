@@ -31,6 +31,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Alert,
   Badge,
@@ -144,6 +145,7 @@ import {
   queueRowKey,
   rowForChange,
 } from './configure/queue';
+import { locateSsidDeepLink, parseSsidDeepLink } from './configure/deepLink';
 import '../app/app.css';
 
 
@@ -276,6 +278,8 @@ function assignmentAppliedTitle(assignments: readonly SsidScopeAssignmentResult[
 export default function Configure() {
   const { showPlatformTags } = useSettings();
   const { toast } = useToast();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [data, setData] = useState<ConfigureData | null>(null);
   const [queue, setQueue] = useState<QueueEntry[] | null>(null);
   const [queueSource, setQueueSource] = useState<'server' | 'local'>('local');
@@ -316,6 +320,8 @@ export default function Configure() {
   const [ssidReviewed, setSsidReviewed] = useState(false);
   const [ssidApplying, setSsidApplying] = useState(false);
   const [ssidApplyResult, setSsidApplyResult] = useState<{ result?: SsidApplyResult; error?: string } | null>(null);
+  const [ssidDeepLinkWarning, setSsidDeepLinkWarning] = useState<string | null>(null);
+  const [handledSsidLocationKey, setHandledSsidLocationKey] = useState<string | null>(null);
   // Blend mode swaps this screen's inventory to observed live rows while the
   // envelope still reads 'demo' (README §blendLive), so every live-flavoured
   // affordance follows the section, not the envelope's overall dataSource.
@@ -537,6 +543,31 @@ export default function Configure() {
       .filter((group) => group.device.toLowerCase().includes(query) || group.ports.length > 0);
   }, [portQuery, switchGroups]);
 
+  /** A WLAN URL is a pointer to an already-loaded inventory row, never a form
+   * payload. Resolve it once after data arrives; a stale or malformed pointer
+   * gets an honest warning rather than query text becoming a writable SSID. */
+  useEffect(() => {
+    // `openSsid` also starts its catalog read, whose helper is initialized
+    // only after the loading return below. Wait for the full screen payload.
+    if (!data || !queue) return;
+    const params = new URLSearchParams(location.search);
+    if (!params.getAll('edit').includes('ssid') || handledSsidLocationKey === location.key) return;
+
+    setHandledSsidLocationKey(location.key);
+    const identity = parseSsidDeepLink(params);
+    const row = identity ? locateSsidDeepLink(data.ssids, identity) : null;
+    if (row) {
+      setSsidDeepLinkWarning(null);
+      openSsid(row);
+    } else {
+      setSsidDeepLinkWarning('The requested WLAN is no longer an exact loaded inventory row. Nothing was opened.');
+    }
+
+    for (const key of ['edit', 'plane', 'name', 'vlan', 'targets']) params.delete(key);
+    const search = params.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : '', hash: location.hash }, { replace: true });
+  }, [data, handledSsidLocationKey, location, navigate, queue]);
+
   const toggleSwitch = (key: string) => {
     setExpandedSwitches((current) => {
       const next = new Set(current);
@@ -645,7 +676,7 @@ export default function Configure() {
   ];
 
   // -- drawer openers: seed the form over its current state ------------------
-  const openSsid = (row?: SsidObject) => {
+  function openSsid(row?: SsidObject) {
     const seeded: SsidForm = {
       ...(liveMode ? LIVE_SSID_FORM : DEFAULT_SSID_FORM),
       ...(row
@@ -666,7 +697,7 @@ export default function Configure() {
     setSsidReviewed(false);
     setSsidApplyResult(null);
     void loadSsidCatalog(ssidPlaneOf(seeded));
-  };
+  }
   /**
    * The drawer's plane choice (offered only when the deployment reported a
    * Mist direct-write path). Switching planes clears every plane-scoped
@@ -1132,6 +1163,12 @@ export default function Configure() {
             : writeSurfaceNote(data.capabilities)}
         </span>
       </Alert>
+
+      {ssidDeepLinkWarning ? (
+        <Alert tone="warning" title="WLAN edit was not opened">
+          {ssidDeepLinkWarning}
+        </Alert>
+      ) : null}
 
       {liveMode && data.inventoryMode === 'unavailable' ? (
         <Alert tone="warning" title="Live configuration inventory is not available">

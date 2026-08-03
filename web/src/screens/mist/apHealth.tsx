@@ -16,9 +16,11 @@
  *  - UPLINKS — every AP's own LLDP report of its wired neighbour, verbatim.
  */
 
+import { Link } from 'react-router-dom';
 import { Badge, SectionHeader } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { MistApStatsRow } from '@hpe/shared';
+import { deviceDetailPath } from '../../app/nav';
 import { noteStyle } from './style';
 
 const rowStyle = {
@@ -44,6 +46,22 @@ function SubGroup({ label, children }: { label: string; children: React.ReactNod
       <span className="nd-micro-label">{label}</span>
       {children}
     </div>
+  );
+}
+
+/** AP rich-stats carry a reported Mist serial, so this is an exact device
+ * hand-off. If a future row omits that identity, leave its name as text rather
+ * than pretending a bare name is safe to resolve. */
+function ApName({ row, context }: { row: MistApStatsRow; context: string }) {
+  if (!row.serial) return <span style={nameStyle}>{row.deviceName}</span>;
+  return (
+    <Link
+      to={deviceDetailPath({ name: row.deviceName, plane: 'MIST', serial: row.serial })}
+      aria-label={`Open device ${row.deviceName} — ${context}`}
+      style={{ ...nameStyle, color: 'var(--nd-accent-text)', textDecoration: 'none' }}
+    >
+      {row.deviceName}
+    </Link>
   );
 }
 
@@ -88,7 +106,7 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
           constrained.map((r) => (
             <div key={r.deviceName} style={rowStyle}>
               <Badge tone="warning">constrained</Badge>
-              <span style={nameStyle}>{r.deviceName}</span>
+              <ApName row={r} context="Power" />
               <span style={factStyle}>
                 {r.powerSrc ?? 'power source not reported'} · {r.siteName}
               </span>
@@ -104,7 +122,7 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
           radios.map(({ ap, radio, util }) => (
             <div key={`${ap.deviceName}:${radio.band}`} style={rowStyle}>
               <span style={nameStyle}>
-                {ap.deviceName}
+                <ApName row={ap} context={`Radio load ${radio.band}`} />
                 <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', marginLeft: 8 }}>
                   {radio.band}
                   {radio.channel !== null ? ` · ch ${radio.channel}` : ''}
@@ -126,7 +144,7 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
         ) : (
           withTemp.map((r) => (
             <div key={r.deviceName} style={rowStyle}>
-              <span style={nameStyle}>{r.deviceName}</span>
+              <ApName row={r} context="Environment" />
               <span style={factStyle}>
                 {r.env!.ambientTempC!.toFixed(1)}°C
                 {r.env!.humidityPct !== null ? ` · ${r.env!.humidityPct}% rh` : ''}
@@ -151,7 +169,7 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
             const speed = uplinkSpeed(r);
             return (
               <div key={r.deviceName} style={rowStyle}>
-                <span style={nameStyle}>{r.deviceName}</span>
+                <ApName row={r} context="Uplink" />
                 <span style={factStyle}>
                   {r.lldpUplink!.systemName}
                   {r.lldpUplink!.portId ? ` ${r.lldpUplink!.portId}` : ''}

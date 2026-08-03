@@ -12,6 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import Configure from './Configure';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -104,13 +105,21 @@ const LOCAL_NOT_PUSHED_TOAST = '1 local change not pushed';
 
 // -- helpers ----------------------------------------------------------------
 
-function renderConfigure() {
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location-probe">{`${location.pathname}${location.search}`}</div>;
+}
+
+function renderConfigure(initialEntry = '/configure') {
   return render(
-    <SettingsProvider>
-      <ToastProvider>
-        <Configure />
-      </ToastProvider>
-    </SettingsProvider>,
+    <MemoryRouter initialEntries={[initialEntry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <SettingsProvider>
+        <ToastProvider>
+          <Configure />
+          <LocationProbe />
+        </ToastProvider>
+      </SettingsProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -1551,6 +1560,46 @@ function mockCatalogsByPlane() {
 }
 
 describe('Configure — Mist SSID direct write', () => {
+  it('consumes one exact WLAN query after loaded inventory selects the real Mist row', async () => {
+    mockCatalogsByPlane();
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      ssids: [MIST_ROW],
+      capabilities: MIST_DIRECT_CAPS,
+      inventoryMode: 'configured',
+    });
+    const query = new URLSearchParams({
+      edit: 'ssid',
+      plane: 'MIST',
+      name: 'MRDN-Research',
+      vlan: 'vlan 822',
+      targets: 'Campus-02 Research · disabled',
+    });
+    renderConfigure(`/configure?${query.toString()}`);
+
+    expect((await screen.findByLabelText('SSID name') as HTMLInputElement).value).toBe('MRDN-Research');
+    await waitFor(() => expect(mockGetSsidCatalog).toHaveBeenCalledTimes(1));
+    expect(mockGetSsidCatalog).toHaveBeenCalledWith('mist');
+    expect(screen.getByTestId('location-probe').textContent).toBe('/configure');
+  });
+
+  it('warns and consumes a missing WLAN query without opening a writable form', async () => {
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, ssids: [MIST_ROW], inventoryMode: 'configured' });
+    const query = new URLSearchParams({
+      edit: 'ssid',
+      plane: 'MIST',
+      name: 'MRDN-Research',
+      vlan: 'vlan 822',
+      targets: 'Other site',
+    });
+    renderConfigure(`/configure?${query.toString()}`);
+
+    expect(await screen.findByText('The requested WLAN is no longer an exact loaded inventory row. Nothing was opened.')).toBeTruthy();
+    expect(mockGetSsidCatalog).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('SSID name')).toBeNull();
+    expect(screen.getByTestId('location-probe').textContent).toBe('/configure');
+  });
+
   it('a Mist SSID row opens the Mist edit flow: Mist catalog, no Central dependencies, admin state seeded from the row', async () => {
     mockCatalogsByPlane();
     mockGetConfigure.mockResolvedValue({
