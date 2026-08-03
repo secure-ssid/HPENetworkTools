@@ -184,57 +184,47 @@ describe('isolated native assistant CLI adapters', () => {
     };
   }
 
-  it.each([
-    {
-      title: 'Claude',
-      makeAdapter: (dependencies: NativeCliAdapterDependencies) => new ClaudeAdapter(dependencies),
-      config: { enabled: true, model: 'sonnet', reasoningEffort: 'low' } as const,
-      command: 'claude',
-      toolEvent: '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__centralmcp__find_tool"}]}}\n{"type":"result","subtype":"success","result":"catalogue checked"}',
-      expectedArgs: ['-p', '--output-format', 'stream-json', '--mcp-config', '/private/tmp/centralmcp.json', '--strict-mcp-config', '--model', 'sonnet', '--effort', 'low'],
-    },
-    {
-      title: 'Copilot',
-      makeAdapter: (dependencies: NativeCliAdapterDependencies) => new CopilotAdapter(dependencies),
-      config: { enabled: true, model: 'auto', effort: 'adaptive' } as const,
-      command: 'copilot',
-      toolEvent: '{"type":"tool_call","toolName":"centralmcp__find_tool"}\n{"type":"assistant","content":"catalogue checked"}',
-      expectedArgs: ['-p', '--output-format', 'json', '--disable-builtin-mcps', '--additional-mcp-config', '/private/tmp/centralmcp.json', '--model', 'auto'],
-    },
-  ])('$title sends only an isolated read-only centralmcp probe with approved model policy', async ({ makeAdapter, config, command, toolEvent, expectedArgs }) => {
-    const fake = nativeDependencies(toolEvent);
-    const adapter = makeAdapter(fake.dependencies);
+  const successfulClaudeProbe = [
+    '{"type":"system","subtype":"init"}',
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_centralmcp","name":"mcp__centralmcp__find_tool","input":{"query":"catalogue"}}]}}',
+    '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_centralmcp","content":"catalogue checked","is_error":false}]}}',
+    '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"catalogue checked"}]}}',
+    '{"type":"result","subtype":"success","is_error":false,"result":"catalogue checked"}',
+  ].join('\n');
+
+  it('Claude sends only an isolated read-only centralmcp probe with approved model policy', async () => {
+    const fake = nativeDependencies(successfulClaudeProbe);
+    const adapter = new ClaudeAdapter(fake.dependencies);
     const { context, invocations } = probeContext();
 
-    const result = await adapter.probeReadOnly(config, context);
+    const result = await adapter.probeReadOnly({ enabled: true, model: 'sonnet', reasoningEffort: 'low' }, context);
 
-    expect(result).toEqual({ authenticated: true, modelReady: true, resolvedModel: config.model });
+    expect(result).toEqual({ authenticated: true, modelReady: true, resolvedModel: 'sonnet' });
     expect(invocations).toEqual([{ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' }]);
     expect(fake.launchInputs).toEqual([centralMcp]);
     expect(fake.dispose).toHaveBeenCalledTimes(1);
     expect(fake.commands).toHaveLength(1);
-    expect(fake.commands[0]).toMatchObject({ command, timeoutMs: expect.any(Number) });
-    expect(fake.commands[0].args).toEqual(expect.arrayContaining(expectedArgs));
+    expect(fake.commands[0]).toMatchObject({ command: 'claude', timeoutMs: expect.any(Number) });
+    expect(fake.commands[0].args).toEqual(expect.arrayContaining(['-p', '--output-format', 'stream-json', '--mcp-config', '/private/tmp/centralmcp.json', '--strict-mcp-config', '--model', 'sonnet', '--effort', 'low']));
     expect(JSON.stringify(fake.commands[0])).not.toContain('centralmcp-test-token');
     expect(JSON.stringify(fake.commands[0])).not.toMatch(/central-api-key|mist-api-key|clearpass-password/i);
   });
 
-  it('keeps Copilot adaptive auto selection free of an effort override and permits the Terra alternate only with a chosen effort', async () => {
-    const adaptive = nativeDependencies('{"type":"tool_call","toolName":"centralmcp__find_tool"}');
-    const { context } = probeContext();
-    await new CopilotAdapter(adaptive.dependencies).probeReadOnly({ enabled: true, model: 'auto', effort: 'adaptive' }, context);
-    expect(adaptive.commands[0].args).not.toContain('--effort');
+  it('rejects Copilot Auto with any persisted effort other than adaptive before executable discovery', async () => {
+    const fake = nativeDependencies(successfulClaudeProbe);
 
-    const terra = nativeDependencies('{"type":"tool_call","toolName":"centralmcp__find_tool"}');
-    await new CopilotAdapter(terra.dependencies).probeReadOnly({ enabled: true, model: 'gpt-5.6-terra', effort: 'low' }, probeContext().context);
-    expect(terra.commands[0].args).toEqual(expect.arrayContaining(['--model', 'gpt-5.6-terra', '--effort', 'low']));
+    await expect(new CopilotAdapter(fake.dependencies).discover({ enabled: true, model: 'auto', effort: 'low' }))
+      .resolves.toEqual({ installed: false, authenticated: false, modelReady: false });
+
+    expect(fake.commands).toEqual([]);
   });
 
   it.each([
     ['Codex', (dependencies: NativeCliAdapterDependencies) => new CodexAdapter(dependencies), { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' }],
     ['Kimi', (dependencies: NativeCliAdapterDependencies) => new KimiAdapter(dependencies), { enabled: true, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false }],
+    ['Copilot', (dependencies: NativeCliAdapterDependencies) => new CopilotAdapter(dependencies), { enabled: true, model: 'auto', effort: 'adaptive' }],
   ] as const)('%s refuses readiness when its installed transport cannot attach only the generated centralmcp config', async (_title, makeAdapter, config) => {
-    const fake = nativeDependencies('{"type":"tool_call","toolName":"centralmcp__find_tool"}');
+    const fake = nativeDependencies(successfulClaudeProbe);
     const { context, invocations } = probeContext();
 
     await expect(makeAdapter(fake.dependencies).probeReadOnly(config, context)).resolves.toEqual({ authenticated: false, modelReady: false });
@@ -261,11 +251,23 @@ describe('isolated native assistant CLI adapters', () => {
     expect(fake.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects an otherwise successful native output that reports a shell or non-centralmcp tool call', async () => {
-    const fake = nativeDependencies('{"type":"tool_call","toolName":"centralmcp__find_tool"}\n{"type":"tool_call","toolName":"Bash"}');
+  it.each([
+    ['malformed output preceding valid evidence', `not-json\n${successfulClaudeProbe}`],
+    ['a fabricated non-tool name', [
+      '{"type":"system","subtype":"init"}',
+      '{"type":"assistant","name":"mcp__centralmcp__find_tool","message":{"role":"assistant","content":[{"type":"text","text":"catalogue checked"}]}}',
+      '{"type":"result","subtype":"success","is_error":false,"result":"catalogue checked"}',
+    ].join('\n')],
+    ['two centralmcp tool calls', successfulClaudeProbe.replace('"content":[{"type":"text","text":"catalogue checked"}]', '"content":[{"type":"tool_use","id":"toolu_second","name":"mcp__centralmcp__find_tool","input":{}}]')],
+    ['centralmcp and shell tool calls in one event', successfulClaudeProbe.replace('"input":{"query":"catalogue"}}]', '"input":{"query":"catalogue"}},{"type":"tool_use","id":"toolu_shell","name":"Bash","input":{}}]')],
+    ['a missing matching successful tool result', successfulClaudeProbe.replace('"type":"tool_result","tool_use_id":"toolu_centralmcp","content":"catalogue checked","is_error":false', '"type":"text","text":"catalogue checked"')],
+    ['a failed matching tool result', successfulClaudeProbe.replace('"is_error":false}]', '"is_error":true}]')],
+    ['a missing final successful result', successfulClaudeProbe.replace('\n{"type":"result","subtype":"success","is_error":false,"result":"catalogue checked"}', '')],
+  ])('rejects $0 rather than manufacturing centralmcp readiness', async (_title, stdout) => {
+    const fake = nativeDependencies(stdout);
     const { context, invocations } = probeContext();
 
-    await expect(new CopilotAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'auto', effort: 'adaptive' }, context))
+    await expect(new ClaudeAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'sonnet', reasoningEffort: 'low' }, context))
       .resolves.toEqual({ authenticated: false, modelReady: false });
 
     expect(invocations).toEqual([]);

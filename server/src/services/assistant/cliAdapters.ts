@@ -33,58 +33,113 @@ interface NativeCliPolicy<TConfig extends AssistantProviderConfig> {
   valid(config: AssistantProviderConfig): config is TConfig;
   canAttachGeneratedConfig: boolean;
   buildProbe(config: TConfig, configPath: string): CommandExecution | null;
+  parseProbe(stdout: string): ParsedNativeProbe;
 }
 
 interface ParsedNativeProbe {
   centralReadOnly: boolean;
-  forbiddenTool: boolean;
+  invalid: boolean;
 }
 
-function parseJsonLines(stdout: string): unknown[] {
-  return stdout.split(/\r?\n/).flatMap((line) => {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isToolResultContent(value: unknown): boolean {
+  if (typeof value === 'string') return true;
+  return Array.isArray(value) && value.every((block) => isRecord(block) && block.type === 'text' && typeof block.text === 'string');
+}
+
+/**
+ * Claude stream-json must describe an actual, successful invocation—not merely
+ * an assistant request or a convenient string in arbitrary JSON. Any unknown
+ * event/block, malformed non-empty line, duplicate, or out-of-order result is
+ * unsafe evidence and leaves the provider unavailable.
+ */
+function parseClaudeProbe(stdout: string): ParsedNativeProbe {
+  const lines = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return { centralReadOnly: false, invalid: true };
+
+  let toolUseId: string | null = null;
+  let successfulToolResult = false;
+  let finalSuccess = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    let event: unknown;
     try {
-      return [JSON.parse(line) as unknown];
+      event = JSON.parse(lines[index]);
     } catch {
-      return [];
+      return { centralReadOnly: false, invalid: true };
     }
-  });
-}
+    if (!isRecord(event) || typeof event.type !== 'string') return { centralReadOnly: false, invalid: true };
 
-function toolNameFrom(value: unknown): string | null {
-  if (value === null || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-  for (const candidate of [record.name, record.toolName, record.tool_name]) {
-    if (typeof candidate === 'string') return candidate;
-  }
-  const item = record.item;
-  if (item !== null && typeof item === 'object') return toolNameFrom(item);
-  const message = record.message;
-  if (message !== null && typeof message === 'object') {
-    const content = (message as { content?: unknown }).content;
-    if (Array.isArray(content)) {
-      for (const block of content) {
-        const name = toolNameFrom(block);
-        if (name) return name;
+    if (event.type === 'system') {
+      if (event.subtype !== 'init') return { centralReadOnly: false, invalid: true };
+      continue;
+    }
+    if (event.type === 'assistant') {
+      if (!isRecord(event.message) || event.message.role !== 'assistant' || !Array.isArray(event.message.content)) {
+        return { centralReadOnly: false, invalid: true };
       }
+      for (const block of event.message.content) {
+        if (!isRecord(block) || typeof block.type !== 'string') return { centralReadOnly: false, invalid: true };
+        if (block.type === 'text') {
+          if (typeof block.text !== 'string') return { centralReadOnly: false, invalid: true };
+          continue;
+        }
+        if (block.type === 'thinking') {
+          if (typeof block.thinking !== 'string') return { centralReadOnly: false, invalid: true };
+          continue;
+        }
+        if (block.type !== 'tool_use'
+          || typeof block.id !== 'string'
+          || block.id.length === 0
+          || block.name !== 'mcp__centralmcp__find_tool'
+          || !isRecord(block.input)
+          || toolUseId !== null) {
+          return { centralReadOnly: false, invalid: true };
+        }
+        toolUseId = block.id;
+      }
+      continue;
     }
-  }
-  return null;
-}
-
-function parseNativeProbe(stdout: string): ParsedNativeProbe {
-  let centralReadOnly = false;
-  let forbiddenTool = false;
-  for (const event of parseJsonLines(stdout)) {
-    const name = toolNameFrom(event);
-    if (!name) continue;
-    const normalized = name.toLowerCase();
-    if (normalized === 'mcp__centralmcp__find_tool' || normalized === 'centralmcp__find_tool' || normalized === 'centralmcp(find_tool)') {
-      centralReadOnly = true;
-    } else {
-      forbiddenTool = true;
+    if (event.type === 'user') {
+      if (!isRecord(event.message) || event.message.role !== 'user' || !Array.isArray(event.message.content)) {
+        return { centralReadOnly: false, invalid: true };
+      }
+      for (const block of event.message.content) {
+        if (!isRecord(block) || typeof block.type !== 'string') return { centralReadOnly: false, invalid: true };
+        if (block.type === 'text') {
+          if (typeof block.text !== 'string') return { centralReadOnly: false, invalid: true };
+          continue;
+        }
+        if (block.type !== 'tool_result'
+          || toolUseId === null
+          || successfulToolResult
+          || block.tool_use_id !== toolUseId
+          || block.is_error !== false
+          || !isToolResultContent(block.content)) {
+          return { centralReadOnly: false, invalid: true };
+        }
+        successfulToolResult = true;
+      }
+      continue;
     }
+    if (event.type === 'result') {
+      if (index !== lines.length - 1
+        || toolUseId === null
+        || !successfulToolResult
+        || event.subtype !== 'success'
+        || event.is_error !== false
+        || typeof event.result !== 'string'
+        || finalSuccess) {
+        return { centralReadOnly: false, invalid: true };
+      }
+      finalSuccess = true;
+      continue;
+    }
+    return { centralReadOnly: false, invalid: true };
   }
-  return { centralReadOnly, forbiddenTool };
+  return { centralReadOnly: toolUseId !== null && successfulToolResult && finalSuccess, invalid: false };
 }
 
 function unavailable(): ReadOnlyProbeResult {
@@ -133,8 +188,8 @@ abstract class NativeCliAdapter<TConfig extends AssistantProviderConfig> impleme
       const result = await this.runner.run({ ...command, cwd: this.cwd, timeoutMs: this.timeoutMs });
       // stderr can include provider diagnostics and must never become a status/chat response or log entry.
       if (result.exitCode !== 0) return unavailable();
-      const parsed = parseNativeProbe(result.stdout);
-      if (!parsed.centralReadOnly || parsed.forbiddenTool) return unavailable();
+      const parsed = this.policy.parseProbe(result.stdout);
+      if (!parsed.centralReadOnly || parsed.invalid) return unavailable();
       context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
       return resultFor(config);
     } catch {
@@ -172,7 +227,10 @@ function isKimiConfig(config: AssistantProviderConfig): config is Extract<Assist
 }
 
 function isCopilotConfig(config: AssistantProviderConfig): config is Extract<AssistantProviderConfig, { effort: string }> {
-  return 'effort' in config && (config.model === 'auto' || config.model === 'gpt-5.6-terra');
+  return 'effort' in config && (
+    (config.model === 'auto' && config.effort === 'adaptive')
+    || config.model === 'gpt-5.6-terra'
+  );
 }
 
 export class CodexAdapter extends NativeCliAdapter<Extract<AssistantProviderConfig, { reasoningEffort: 'low' }>> {
@@ -181,6 +239,7 @@ export class CodexAdapter extends NativeCliAdapter<Extract<AssistantProviderConf
       executable: 'codex',
       valid: isCodexConfig,
       canAttachGeneratedConfig: false,
+      parseProbe: () => ({ centralReadOnly: false, invalid: true }),
       // app-server only accepts TOML config overrides and has no option for the generated JSON MCP file.
       // Using a user/profile config would broaden MCP access, so this local transport is fail-closed.
       buildProbe: () => null,
@@ -194,6 +253,7 @@ export class ClaudeAdapter extends NativeCliAdapter<Extract<AssistantProviderCon
       executable: 'claude',
       valid: isClaudeConfig,
       canAttachGeneratedConfig: true,
+      parseProbe: parseClaudeProbe,
       buildProbe: (config, configPath) => ({
         command: 'claude',
         args: [
@@ -221,6 +281,7 @@ export class KimiAdapter extends NativeCliAdapter<Extract<AssistantProviderConfi
       executable: 'kimi',
       valid: isKimiConfig,
       canAttachGeneratedConfig: false,
+      parseProbe: () => ({ centralReadOnly: false, invalid: true }),
       // The installed Kimi CLI exposes neither an MCP-config flag nor an ACP option for passing one.
       // Do not rely on its user config or invent an undocumented environment variable.
       buildProbe: () => null,
@@ -233,24 +294,11 @@ export class CopilotAdapter extends NativeCliAdapter<Extract<AssistantProviderCo
     super({
       executable: 'copilot',
       valid: isCopilotConfig,
-      canAttachGeneratedConfig: true,
-      buildProbe: (config, configPath) => ({
-        command: 'copilot',
-        args: [
-          '-p', READ_ONLY_PROBE_PROMPT,
-          '--output-format', 'json',
-          '--disable-builtin-mcps',
-          '--additional-mcp-config', configPath,
-          '--available-tools', 'centralmcp(find_tool)',
-          '--no-custom-instructions',
-          '--no-ask-user',
-          '--disallow-temp-dir',
-          '--no-remote',
-          '--no-remote-export',
-          '--model', config.model,
-          ...(config.effort === 'adaptive' ? [] : ['--effort', config.effort]),
-        ],
-      }),
+      canAttachGeneratedConfig: false,
+      // --additional-mcp-config augments user/workspace/plugin MCP sources. This installed CLI
+      // has no documented replacement or strict configuration option, so never launch it here.
+      buildProbe: () => null,
+      parseProbe: () => ({ centralReadOnly: false, invalid: true }),
     }, 'copilot', dependencies);
   }
 }
