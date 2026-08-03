@@ -580,16 +580,25 @@ function livePathFor(client: ClientRow, topo: SiteTopologyLive): LivePath {
 const CLIENT_COLUMN_IDS: Record<string, string> = {
   Type: 'type',
   Model: 'model',
+  IP: 'ip',
   Site: 'site',
   Group: 'group',
   'Connected to': 'connectedTo',
   'Port / SSID': 'where',
+  Link: 'link',
   Plane: 'plane',
+  Sources: 'sources',
   Auth: 'auth',
   'Auth by': 'authBy',
   Role: 'role',
   VLAN: 'vlan',
   Health: 'health',
+  Signal: 'signal',
+  SNR: 'snr',
+  Retries: 'retries',
+  Throughput: 'throughput',
+  Roams: 'roams',
+  Quality: 'quality',
   Session: 'session',
 };
 
@@ -819,6 +828,7 @@ export default function Clients() {
   const columns: Array<DataColumn<ClientRow>> = [
     { key: 'Type', value: (c) => reported(c.type), mono: true, nowrap: true },
     { key: 'Model', value: (c) => reported(c.model) },
+    { key: 'IP', value: (c) => reported(c.ip), mono: true, nowrap: true },
     { key: 'Site', value: (c) => reported(c.siteName) },
     { key: 'Group', value: (c) => reported(c.group), mono: true },
     {
@@ -838,6 +848,7 @@ export default function Clients() {
       ),
     },
     { key: 'Port / SSID', value: (c) => reported(c.where), mono: true },
+    { key: 'Link', value: (c) => reported(c.link), mono: true, nowrap: true },
     ...(showPlatformTags
       ? [
           {
@@ -902,6 +913,17 @@ export default function Clients() {
       ),
     },
     { key: 'Session', value: (c) => reported(c.session), numeric: true, nowrap: true },
+    { key: 'Signal', value: (c) => reported(c.rssi), mono: true, nowrap: true },
+    { key: 'SNR', value: (c) => reported(c.snr), mono: true, nowrap: true },
+    { key: 'Retries', value: (c) => reported(c.retries), mono: true, nowrap: true },
+    { key: 'Throughput', value: (c) => reported(c.tput), mono: true, nowrap: true },
+    { key: 'Roams', value: (c) => reported(c.roams), numeric: true, nowrap: true },
+    {
+      key: 'Quality',
+      value: (c) => (c.quality === null ? null : `${c.quality} / 100`),
+      numeric: true,
+      nowrap: true,
+    },
   ];
   const { shown, shared } = partitionColumns(rows, columns);
 

@@ -1343,6 +1343,64 @@ describe('Clients table superpowers', () => {
     expect(keys[1]).toBe('client');
   });
 
+  it('keeps reported radio and session facts available in the default table', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:11',
+          name: 'alpha-radio',
+          ip: '10.10.0.11',
+          link: '1.0 Gbps',
+          rssi: '-52 dBm',
+          snr: '38 dB',
+          retries: '0.4%',
+          tput: '64 Mbps',
+          roams: '2',
+          quality: 92,
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:12',
+          name: 'beta-radio',
+          ip: '10.10.0.12',
+          link: '2.5 Gbps',
+          rssi: '-61 dBm',
+          snr: '29 dB',
+          retries: '1.1%',
+          tput: '31 Mbps',
+          roams: '0',
+          quality: 76,
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:13',
+          name: 'gamma-radio',
+          ip: '10.10.0.13',
+          link: '1.0 Gbps',
+          rssi: '-68 dBm',
+          snr: '21 dB',
+          retries: '2.3%',
+          tput: '12 Mbps',
+          roams: '5',
+          quality: 54,
+        },
+      ],
+      dataSource: 'live',
+    });
+
+    const { container } = renderClients();
+    await screen.findByText('3 of 3 sampled');
+    const headerKeys = Array.from(container.querySelectorAll('th')).map((th) => th.getAttribute('data-column-key'));
+    expect(headerKeys).toEqual(expect.arrayContaining([
+      'ip', 'link', 'signal', 'snr', 'retries', 'throughput', 'roams', 'quality',
+    ]));
+    expect(screen.getByText('10.10.0.11')).toBeTruthy();
+    expect(screen.getByText('-52 dBm')).toBeTruthy();
+    expect(screen.getByText('64 Mbps')).toBeTruthy();
+  });
+
   it('moves the focused row with j/k and opens the client drawer on Enter', async () => {
     mockGetClients.mockResolvedValue({
       stats: [],
