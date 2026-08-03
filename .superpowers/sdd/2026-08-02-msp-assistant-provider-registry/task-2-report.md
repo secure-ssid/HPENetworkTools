@@ -36,3 +36,11 @@ Implementation commit: `09b1b804df611d159437fc32d7fbcfd00d68c31f` (`feat: add as
 
 - The requested pnpm test command remains unavailable in this npm-lockfile checkout because its linked `vitest` executable is absent; the equivalent npm command passed.
 - Native CLI adapters are intentionally not registered yet. Until Tasks 3–5 supply adapters that perform the real isolated probe, the registry reports them unavailable rather than ready.
+
+## Review-fix report
+
+The review found that readiness had trusted an adapter-supplied boolean. The registry now owns an observable `ReadOnlyProbeContext` transcript. An adapter must record exactly one named invocation with `boundary: "mcp"`, `server: "centralmcp"`, and `access: "read-only"`; any additional browser, filesystem, shell, or non-centralmcp MCP invocation makes `mcpReady` false. The old success boolean was removed from the probe result contract.
+
+Focused tests now include a successful centralmcp read-only fake plus negative fakes for browser, filesystem, shell, and unrelated MCP calls. `npm --prefix server test -- assistantProviders.test.ts` passed (1 file, 11 tests), and `npm --prefix server run typecheck` passed. The requested pnpm form remains environment-blocked by the absent linked Vitest binary.
+
+Review-fix implementation commit: `097470ab8681aafda6281f892d3d07b482b3e8cc` (`fix: enforce centralmcp-only probe evidence`).
