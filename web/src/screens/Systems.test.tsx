@@ -558,19 +558,29 @@ describe('Systems connect drawer', () => {
     for (const entry of CONNECTOR_CATALOG) {
       fireEvent.change(selector, { target: { value: entry.id } });
       await waitFor(() => expect(screen.getByLabelText(entry.endpoint.label)).toBeTruthy());
-      for (const field of entry.auth[0]!.fields) {
-        expect(screen.getByLabelText(field.label)).toBeTruthy();
+      for (const auth of entry.auth) {
+        if (entry.auth.length > 1) {
+          fireEvent.change(screen.getByLabelText('Authentication'), { target: { value: auth.kind } });
+        }
+        for (const field of auth.fields) {
+          expect(screen.getByLabelText(field.label)).toBeTruthy();
+        }
       }
     }
+  });
 
-    fireEvent.change(selector, { target: { value: 'edgeconnect' } });
-    await waitFor(() => expect(screen.getByLabelText('Authentication')).toBeTruthy());
-    fireEvent.change(screen.getByLabelText('Authentication'), {
-      target: { value: 'username_password' },
-    });
-    expect(screen.getByLabelText('Username')).toBeTruthy();
-    expect(screen.getByLabelText('Password')).toBeTruthy();
-    expect(screen.queryByLabelText('API Key')).toBeNull();
+  it('keeps advanced policy collapsed until the operator opens it', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    expect(screen.getByText('Advanced policy').closest('details')?.hasAttribute('open')).toBe(false);
   });
 
   it('tests a typed connector draft and clears a completed probe when policy changes', async () => {
@@ -617,6 +627,56 @@ describe('Systems connect drawer', () => {
     fireEvent.click(screen.getByLabelText('Verify TLS certificate'));
     expect(screen.getByText('Re-test required')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Save and index' })).toHaveProperty('disabled', true);
+  });
+
+  it('requires a new probe when an uncontrolled secret changes after testing', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, authenticated: true, dataset: 'sse', message: 'accepted' });
+    mockSaveSystemCredentials.mockResolvedValue({ ok: true, message: 'saved' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'sse' } });
+    const token = await screen.findByLabelText('Admin API token') as HTMLInputElement;
+    fireEvent.change(token, { target: { value: 'tested-token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save and index' })).not.toHaveProperty('disabled', true));
+
+    token.value = 'different-token-without-react-state';
+    fireEvent.click(screen.getByRole('button', { name: 'Save and index' }));
+
+    await waitFor(() => expect(screen.getAllByText('Re-test required').length).toBeGreaterThan(0));
+    expect(mockSaveSystemCredentials).not.toHaveBeenCalled();
+  });
+
+  it('submits ClearPass static-token authentication as its declared typed auth shape', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, authenticated: true, dataset: 'endpoints', message: 'accepted' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'clearpass' } });
+    fireEvent.change(screen.getByLabelText('Authentication'), { target: { value: 'token' } });
+    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'clearpass-token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
+    expect(mockTestSystem.mock.calls[0]![1]).toMatchObject({
+      id: 'clearpass',
+      auth: { kind: 'token', token: 'clearpass-token' },
+    } satisfies Partial<ConnectorConfig>);
   });
 
   it('saves the exact typed ClearPass connector that passed its authenticated probe', async () => {
@@ -1253,7 +1313,7 @@ describe('Systems connect drawer — credential hygiene', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Save and index' }));
     await waitFor(() => expect(mockSaveSystemCredentials).toHaveBeenCalledTimes(1));
-    expect(mockSaveSystemCredentials.mock.calls[0]![1]).toBe(testedPayload);
+    expect(mockSaveSystemCredentials.mock.calls[0]![1]).toStrictEqual(testedPayload);
 
     await waitFor(() => expect(mockGetSystemsState).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));

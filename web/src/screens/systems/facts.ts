@@ -13,7 +13,6 @@ import {
 } from '../../api/client';
 import {
   connectorCatalogEntry,
-  type ConnectorConfig,
   type ConnectorId,
   CLOCK_SKEW_TOLERANCE_MS,
   hhmmLocal as hhmm,
@@ -52,17 +51,6 @@ export const TAB_OPTIONS: Array<{ value: DetailTab; label: string }> = [
   { value: 'activity', label: 'Activity' },
   { value: 'config', label: 'Configuration' },
 ];
-
-export interface CredentialSnapshot {
-  connector: ConnectorConfig;
-}
-
-export function sameCredentialSnapshot(
-  left: CredentialSnapshot | null,
-  right: CredentialSnapshot | null,
-): boolean {
-  return Boolean(left && right && JSON.stringify(left.connector) === JSON.stringify(right.connector));
-}
 
 export function storedEndpoint(row: SystemRow, id: ConnectorId): string {
   const entry = connectorCatalogEntry(id);

@@ -101,7 +101,6 @@ import {
 } from './systems/PlaneRow';
 import { PortalSection } from './systems/PortalSection';
 import {
-  CredentialSnapshot,
   DetailTab,
   HEALTH_TONE,
   PLANE_ID_BY_NAME,
@@ -109,7 +108,6 @@ import {
   TAB_OPTIONS,
   mergedFacts,
   retryNote,
-  sameCredentialSnapshot,
   staleTitle,
   storedEndpoint,
   storedScopes,
@@ -191,6 +189,32 @@ function readableCapability(value: string): string {
   return value.replace(/^direct_/, '').replace(/^brokered_/, '').replaceAll('_', ' ');
 }
 
+type SuccessfulProbe = {
+  connectorId: ConnectorId;
+  version: number;
+  secretFingerprint: string;
+};
+
+type ConnectorSubmission = {
+  connector: ConnectorConfig;
+  fingerprintSource: string;
+};
+
+function secretFieldName(id: ConnectorId, authKind: ConnectorAuthKind, key: string): string {
+  return `connector-secret-${id}-${authKind}-${key}`;
+}
+
+/**
+ * A passed probe retains a SHA-256 digest, never credentials or the request
+ * body. Save can therefore reject a DOM-only secret edit without secrets
+ * entering React state or a ref.
+ */
+async function fingerprintSecrets(source: string): Promise<string> {
+  if (!globalThis.crypto?.subtle) throw new Error('secure browser cryptography is unavailable');
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export default function Systems() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -218,24 +242,20 @@ export default function Systems() {
   } | null>(null);
   const [syncing, setSyncing] = useState(false);
   const credentialVersionRef = useRef(0);
-  const currentCredentialSnapshotRef = useRef<CredentialSnapshot | null>(null);
-  const successfulTestRef = useRef<CredentialSnapshot | null>(null);
+  const connectorFormRef = useRef<HTMLFormElement | null>(null);
+  const successfulTestRef = useRef<SuccessfulProbe | null>(null);
+  const [secretInputEpoch, setSecretInputEpoch] = useState(0);
   // Set when a field change invalidates a PASSED test — surfaced as a warning
   // so a green-then-edited drawer never looks saved when it cannot be.
   const [retestNeeded, setRetestNeeded] = useState(false);
 
-  const credentialSnapshot = (): CredentialSnapshot => ({
-    connector: draft,
-  });
-  /* The latest-form snapshot an in-flight test connection compares its request
-     against. Mirrored after every commit rather than assigned during render
-     (the compiler's refs rule): the comparison runs in the test's response
-     handler, always post-commit, so it reads the same values either way. The
-     mirror lives up here with the hooks — below the loading early-returns a
-     hook would be conditional, which React forbids outright. */
-  useEffect(() => {
-    currentCredentialSnapshotRef.current = credentialSnapshot();
-  }, [draft]);
+  const selectedEntry = connectorCatalogEntry(draft.id);
+  const selectedAuth = selectedEntry.auth.find((option) => option.kind === draft.auth.kind)
+    ?? selectedEntry.auth[0]!;
+  const authRecord = draft.auth as unknown as Record<string, string | number | undefined>;
+  const selectedEndpointOption = selectedEntry.endpoint.options?.find(
+    (option) => endpointOptionValue(option.value) === draft.endpoint,
+  );
 
   const refresh = async () => {
     const [d, s] = await Promise.all([getSystems(), getSystemsState()]);
@@ -249,8 +269,7 @@ export default function Systems() {
      stacks up behind the interval. One guard the other screens do not need:
      a refresh must never disturb credential entry or a connection test, so
      polling suspends while the connect drawer is open (mirrored into a ref
-     after every commit, the same refs rule currentCredentialSnapshotRef
-     follows — the interval callback below would otherwise close over a stale
+     after every commit so the interval callback cannot close over a stale
      addOpen). A save or retire still re-reads explicitly via refresh(). */
   const addOpenRef = useRef(addOpen);
   useEffect(() => {
@@ -400,6 +419,9 @@ export default function Systems() {
   }) => {
     credentialVersionRef.current += 1;
     successfulTestRef.current = null;
+    // A new drawer session gets new DOM inputs even if it opens the same
+    // product and auth kind as the last one.
+    setSecretInputEpoch((epoch) => epoch + 1);
     const id = prefill?.type ?? 'central';
     const entry = connectorCatalogEntry(id);
     const endpoint = prefill?.endpoint || entry.endpoint.default;
@@ -415,6 +437,17 @@ export default function Systems() {
     setRetestNeeded(false);
     setDetailName(null);
     setAddOpen(true);
+  };
+
+  const closeConnect = () => {
+    credentialVersionRef.current += 1;
+    successfulTestRef.current = null;
+    setSecretInputEpoch((epoch) => epoch + 1);
+    setTesting(false);
+    setTestedOk(false);
+    setTestResult(null);
+    setRetestNeeded(false);
+    setAddOpen(false);
   };
 
   /**
@@ -462,10 +495,52 @@ export default function Systems() {
     setTestResult(null);
   };
 
+  /**
+   * Secret inputs are intentionally uncontrolled. This creates the typed
+   * request only at submit time; the request remains a local value through
+   * the fetch and is never copied into state, refs, or test-result UI.
+   */
+  const connectorSubmission = (): ConnectorSubmission => {
+    const auth = { ...draft.auth } as Record<string, string | number | undefined>;
+    const secretValues = selectedAuth.fields
+      .filter((field) => field.secret)
+      .map((field) => {
+        const input = connectorFormRef.current?.querySelector<HTMLInputElement>(
+          `input[name="${secretFieldName(draft.id, selectedAuth.kind, field.key)}"]`,
+        );
+        const value = input?.value ?? '';
+        if (!value && !field.required) delete auth[field.key];
+        else auth[field.key] = value;
+        return [field.key, value];
+      });
+    return {
+      connector: { ...draft, auth: auth as unknown as ConnectorAuth } as ConnectorConfig,
+      fingerprintSource: JSON.stringify({
+        connectorId: draft.id,
+        authKind: selectedAuth.kind,
+        secretValues,
+      }),
+    };
+  };
+
+  const secureFingerprint = async (submission: ConnectorSubmission): Promise<string | null> => {
+    try {
+      return await fingerprintSecrets(submission.fingerprintSource);
+    } catch {
+      toast('Secure credential check unavailable', {
+        description: 'This browser cannot safely bind the successful test to the current credentials.',
+        tone: 'danger',
+      });
+      return null;
+    }
+  };
+
   const testConnection = async () => {
     if (testing) return;
-    const request = credentialSnapshot();
     const requestVersion = credentialVersionRef.current;
+    const request = connectorSubmission();
+    const requestFingerprint = await secureFingerprint(request);
+    if (!requestFingerprint || requestVersion !== credentialVersionRef.current) return;
     setTesting(true);
     setTestResult(null);
     setTestedOk(false);
@@ -473,9 +548,12 @@ export default function Systems() {
     successfulTestRef.current = null;
     const res = await testSystem(request.connector.id, request.connector as unknown as Record<string, unknown>);
     setTesting(false);
+    const current = connectorSubmission();
+    const currentFingerprint = await secureFingerprint(current);
     if (
       requestVersion !== credentialVersionRef.current ||
-      !sameCredentialSnapshot(request, currentCredentialSnapshotRef.current)
+      request.connector.id !== current.connector.id ||
+      requestFingerprint !== currentFingerprint
     ) {
       setTestResult(null);
       setTestedOk(false);
@@ -485,13 +563,23 @@ export default function Systems() {
     }
     setTestResult(res);
     setTestedOk(res.ok);
-    successfulTestRef.current = res.ok ? request : null;
+    successfulTestRef.current = res.ok
+      ? { connectorId: request.connector.id, version: requestVersion, secretFingerprint: requestFingerprint }
+      : null;
   };
 
   const saveAndIndex = async () => {
     const tested = successfulTestRef.current;
-    const current = credentialSnapshot();
-    if (!tested || !testedOk || !sameCredentialSnapshot(tested, current)) {
+    const current = connectorSubmission();
+    const currentFingerprint = await secureFingerprint(current);
+    if (
+      !tested ||
+      !testedOk ||
+      !currentFingerprint ||
+      tested.connectorId !== current.connector.id ||
+      tested.version !== credentialVersionRef.current ||
+      tested.secretFingerprint !== currentFingerprint
+    ) {
       successfulTestRef.current = null;
       setTestedOk(false);
       setTestResult(null);
@@ -503,8 +591,8 @@ export default function Systems() {
       return;
     }
     const res = await saveSystemCredentials(
-      tested.connector.id,
-      tested.connector as unknown as Record<string, unknown>,
+      current.connector.id,
+      current.connector as unknown as Record<string, unknown>,
     );
     if (!res.ok) {
       toast(res.message, { tone: 'danger' });
@@ -520,17 +608,9 @@ export default function Systems() {
       description: res.message,
       tone: res.indexed === 'error' ? 'warning' : 'success',
     });
-    setAddOpen(false);
+    closeConnect();
     await refresh();
   };
-
-  const selectedEntry = connectorCatalogEntry(draft.id);
-  const selectedAuth = selectedEntry.auth.find((option) => option.kind === draft.auth.kind)
-    ?? selectedEntry.auth[0]!;
-  const authRecord = draft.auth as unknown as Record<string, string | number | undefined>;
-  const selectedEndpointOption = selectedEntry.endpoint.options?.find(
-    (option) => endpointOptionValue(option.value) === draft.endpoint,
-  );
 
   const updateDraft = (next: ConnectorConfig) => {
     setDraft(next);
@@ -538,6 +618,8 @@ export default function Systems() {
   };
 
   const updateAuthField = (field: ConnectorAuthField, value: string) => {
+    // Secrets must never take this controlled-state path.
+    if (field.secret) return;
     const nextAuth = { ...draft.auth } as Record<string, string | number | undefined>;
     if (field.type === 'number') {
       if (!value.trim()) delete nextAuth[field.key];
@@ -1261,11 +1343,18 @@ export default function Systems() {
       {/* ---------------- connect a system drawer ---------------- */}
       <Drawer
         open={addOpen}
-        onOpenChange={setAddOpen}
+        onOpenChange={(open) => {
+          if (open) setAddOpen(true);
+          else closeConnect();
+        }}
         width="lg"
         title={`Configure ${selectedEntry.label}`}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <form
+          ref={connectorFormRef}
+          onSubmit={(event) => event.preventDefault()}
+          style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+        >
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} aria-label="Declared capabilities">
             <Badge tone={selectedEntry.tone}>{selectedEntry.contributesClients ? 'client source' : 'inventory source'}</Badge>
             {selectedEntry.writeCapabilities.length > 0 ? selectedEntry.writeCapabilities.map((capability) => (
@@ -1362,19 +1451,29 @@ export default function Systems() {
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
             {selectedAuth.fields.map((field) => (
-              <FormField key={field.key} label={field.label}>
-                <Input
-                  mono
-                  type={field.secret ? 'password' : field.type === 'number' ? 'number' : undefined}
-                  placeholder={field.secret ? 'Stored secret' : field.required ? field.key : 'Optional'}
-                  value={authRecord[field.key] ?? ''}
-                  onChange={(e) => updateAuthField(field, e.target.value)}
-                />
+              <FormField key={`${secretInputEpoch}-${draft.id}-${selectedAuth.kind}-${field.key}`} label={field.label}>
+                {field.secret ? (
+                  <Input
+                    mono
+                    name={secretFieldName(draft.id, selectedAuth.kind, field.key)}
+                    type="password"
+                    placeholder="Stored secret"
+                    onChange={invalidate}
+                  />
+                ) : (
+                  <Input
+                    mono
+                    type={field.type === 'number' ? 'number' : undefined}
+                    placeholder={field.required ? field.key : 'Optional'}
+                    value={authRecord[field.key] ?? ''}
+                    onChange={(e) => updateAuthField(field, e.target.value)}
+                  />
+                )}
               </FormField>
             ))}
           </div>
 
-          <details open>
+          <details>
             <summary style={{ cursor: 'pointer', fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
               Advanced policy
             </summary>
@@ -1455,11 +1554,11 @@ export default function Systems() {
             >
               Save and index
             </Button>
-            <Button variant="ghost" size="md" onClick={() => setAddOpen(false)}>
+            <Button variant="ghost" size="md" onClick={closeConnect}>
               Cancel
             </Button>
           </div>
-        </div>
+        </form>
       </Drawer>
     </div>
   );
