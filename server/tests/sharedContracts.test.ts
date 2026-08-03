@@ -28,18 +28,52 @@
  *   - Field provenance: planeSupportsClientField / clientFieldProvenance, so a
  *     blank zone on Central says Central has no zone concept instead of
  *     blaming Central for not reporting a field it never modelled.
+ *   - The ClearPass policy inventories (networkDevices…deviceGroups): the new
+ *     PlanePull dataset keys are ClearPass-only (never row-merged), and the
+ *     demo ClearPass world stays internally consistent — NADs are the demo
+ *     estate's own switches, policies resolve to profiles resolve to roles,
+ *     services name real auth sources and real NAD addresses, and no fixture
+ *     carries local-user or service secret material.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
+  AP_TREND_METRICS,
+  AP_TRENDS_DEMO,
+  CLEARPASS_AUTH_SOURCES,
+  CLEARPASS_ENDPOINTS,
+  CLEARPASS_ENFORCEMENT_POLICIES,
+  CLEARPASS_ENFORCEMENT_PROFILES,
+  CLEARPASS_LOCAL_USERS,
+  CLEARPASS_NETWORK_DEVICES,
+  CLEARPASS_ROLES,
+  CLEARPASS_SERVICES,
+  CLEARPASS_SERVICE_DETAILS,
+  CLIENTS,
+  DEVICES,
+  DPI_BYTES_ARE_ESTIMATES,
+  MIST_AP_STATS,
+  MIST_LICENSE_USAGES,
+  MIST_SITE_MAPS,
+  MIST_SLE_DRILLDOWN,
   OVERVIEW_ALERTS,
   PLANE_DATASET_KEYS,
   PLANE_ROW_DATASET_KEYS,
+  RISK_BUCKET_ORDER,
+  SITES,
+  SITE_APPLICATIONS_DEMO,
+  SITE_SLE,
   SSE_LIMITED_RELEASE_KINDS,
   SSE_OBJECT_KINDS,
   SSE_OBJECT_KIND_LABELS,
+  SSIDS,
+  SWITCH_HARDWARE_TRENDS_DEMO,
+  SWITCH_HARDWARE_TREND_KEYS,
+  SWITCH_INTERFACE_TRENDS_DEMO,
+  TREND_WINDOW_MAX_MS,
   UNKNOWN_LANE_META,
   alertAgeMinutes,
+  byBytesDesc,
   clientFieldProvenance,
   compareAlerts,
   correlateAlerts,
@@ -50,11 +84,17 @@ import {
   matchServingRadio,
   isRealSiteId,
   laneSyncStamp,
+  mistSsidSecurityRefusal,
+  normalizeRiskBucket,
+  normalizeTrendSet,
+  normalizeTrendWindow,
   planeKeyOf,
   planeStaleness,
   planeSupportsClientField,
+  rollupAppCategories,
   ssidDependencyRequirementsFor,
   ssidPreview,
+  watchlistSplit,
   hhmmLocal,
   hhmmssLocal,
   localDayKey,
@@ -285,6 +325,172 @@ describe('PlanePull / PlaneState — the new channels are additive and optional'
     };
     expect(state.capabilities?.localShell).toBe(true);
     expect(Object.keys(state.token ?? {})).toEqual(['expiresAt', 'source']);
+  });
+});
+
+describe('ClearPass policy inventories — dataset keys, the pull shape and the demo world', () => {
+  const INVENTORY_KEYS = [
+    'networkDevices',
+    'authSources',
+    'roles',
+    'enforcementPolicies',
+    'enforcementProfiles',
+    'localUsers',
+    'services',
+    'deviceGroups',
+  ] as const;
+
+  it('joins the dataset keys as ClearPass-only datasets, never row-merged', () => {
+    for (const key of INVENTORY_KEYS) {
+      expect(PLANE_DATASET_KEYS).toContain(key);
+      expect(PLANE_ROW_DATASET_KEYS).not.toContain(key as never);
+    }
+  });
+
+  it('a pull can carry every inventory dataset and name an unread one', () => {
+    const pull: PlanePull = {
+      authEvents: [],
+      networkDevices: [
+        {
+          id: '501',
+          name: 'sw-core-a',
+          ipAddress: '10.42.8.11',
+          vendorName: 'Aruba',
+          coaCapable: true,
+          radsecEnabled: false,
+          description: 'Campus-01 core',
+        },
+      ],
+      authSources: [{ id: '7', name: 'AD meridian.health', type: 'Active Directory', description: null }],
+      roles: [{ id: '3', name: 'Clinical staff', description: 'vlan 820' }],
+      enforcementPolicies: [
+        { id: '9', name: 'MRDN Wireless 802.1X Enforcement', enforcementType: 'RADIUS', defaultProfile: 'Quarantine' },
+      ],
+      enforcementProfiles: [{ id: '2', name: 'Guest', type: 'RADIUS', description: 'vlan 812' }],
+      localUsers: [{ id: '21', userId: 'portal-collector', username: null, roleName: 'read-only shell', enabled: true }],
+      // services/deviceGroups absent — this CPPM does not expose them (404,
+      // honest absence, so NOT named in partial either).
+    };
+    expect(pull.networkDevices).toHaveLength(1);
+    expect(pull.services).toBeUndefined();
+    expect(pull.deviceGroups).toBeUndefined();
+    const failing: PlanePull = { authEvents: [], partial: ['roles'] };
+    expect(failing.partial).toEqual(['roles']);
+    expect(pull.localUsers![0]).not.toHaveProperty('password');
+  });
+
+  it('the demo NADs are the demo estate’s own switches, with management IPs', () => {
+    expect(CLEARPASS_NETWORK_DEVICES.map((n) => n.name)).toEqual(['sw-core-a', 'sw-acc-3f-2', 'sw-cam02-1']);
+    expect(DEVICES.map((d) => d.name)).toEqual(expect.arrayContaining(CLEARPASS_NETWORK_DEVICES.map((n) => n.name)));
+    for (const nad of CLEARPASS_NETWORK_DEVICES) {
+      expect(nad.ipAddress).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+      expect(nad.coaCapable).toBe(true); // a NAD that cannot take a CoA breaks the demo's disconnect story
+    }
+    // sw-cam02-1 is the RadSec client the 'RadSec certificate expires' alert is about
+    expect(CLEARPASS_NETWORK_DEVICES.find((n) => n.name === 'sw-cam02-1')?.radsecEnabled).toBe(true);
+  });
+
+  it('the demo auth sources are the two the auth feed’s reasons name', () => {
+    expect(CLEARPASS_AUTH_SOURCES.map((s) => s.name)).toEqual(['AD meridian.health', 'Local User Repository']);
+    expect(CLEARPASS_AUTH_SOURCES.map((s) => s.type)).toEqual(['Active Directory', 'Local']);
+  });
+
+  it('the demo policy chain resolves: policies → default profiles → roles', () => {
+    const profileNames = CLEARPASS_ENFORCEMENT_PROFILES.map((p) => p.name);
+    const roleNames = CLEARPASS_ROLES.map((r) => r.name);
+    expect(CLEARPASS_ENFORCEMENT_POLICIES.map((p) => p.enforcementType)).toEqual(['RADIUS', 'WEBAUTH']);
+    for (const policy of CLEARPASS_ENFORCEMENT_POLICIES) {
+      expect(profileNames).toContain(policy.defaultProfile);
+    }
+    // every demo enforcement profile is a role the box could actually apply
+    for (const profile of profileNames) {
+      expect(roleNames).toContain(profile);
+    }
+  });
+
+  it('the demo local users carry exactly the whitelisted fields — no password lives in this world either', () => {
+    expect(CLEARPASS_LOCAL_USERS.length).toBeGreaterThan(0);
+    for (const u of CLEARPASS_LOCAL_USERS) {
+      expect(Object.keys(u).sort()).toEqual(['enabled', 'id', 'roleName', 'userId', 'username']);
+      expect(JSON.stringify(u)).not.toMatch(/password|hash|secret|\$2[aby]\$/i);
+      expect(u.userId).toBeTruthy();
+    }
+  });
+
+  it('the demo services name real auth sources and NAD addresses — and carry no credential material', () => {
+    const sourceNames = CLEARPASS_AUTH_SOURCES.map((s) => s.name);
+    const nadIps = CLEARPASS_NETWORK_DEVICES.map((n) => n.ipAddress);
+    expect(CLEARPASS_SERVICES.length).toBeGreaterThan(0);
+    for (const s of CLEARPASS_SERVICES) {
+      expect(s.id).toBeTruthy();
+      expect(s.name).toBeTruthy();
+      // auth sources resolve to the box's reported sources (eduroam names
+      // none — it proxies to the home IdP, an honest omission)
+      for (const src of s.authSources ?? []) {
+        expect(sourceNames).toContain(src);
+      }
+      // a NAD-IP match rule points at the demo estate's own NADs
+      for (const m of s.rulesSummary?.matchAll(/NAD-IP-Address \w+ ([\d.]+)/g) ?? []) {
+        expect(nadIps).toContain(m[1]);
+      }
+      // the summary is the readable line the mapper would build — never raw JSON
+      if (s.rulesSummary != null) {
+        expect(s.rulesSummary).not.toMatch(/[{}[\]"]/);
+      }
+      // nothing in a service row is credential material, in this world either
+      expect(JSON.stringify(s)).not.toMatch(/password|hash|secret|\$2[aby]\$/i);
+    }
+    // the one disabled service is the eduroam pilot — a 0-hit row, so the
+    // tab shows an honest Disabled badge next to working services
+    const disabled = CLEARPASS_SERVICES.filter((s) => s.enabled === false);
+    expect(disabled.map((s) => s.name)).toEqual(['eduroam 802.1X']);
+    expect(disabled[0].hitCount).toBe(0);
+  });
+
+  it('the demo service detail deepens its collection row, names real entities, and carries no credential material', () => {
+    // One authored detail per key, keyed by a service the demo CPPM actually
+    // reports — a fixture for an unreported id would be invention.
+    const sourceNames = CLEARPASS_AUTH_SOURCES.map((s) => s.name);
+    const policyNames = CLEARPASS_ENFORCEMENT_POLICIES.map((p) => p.name);
+    expect(Object.keys(CLEARPASS_SERVICE_DETAILS)).toEqual(['svc-001']);
+    for (const [id, detail] of Object.entries(CLEARPASS_SERVICE_DETAILS)) {
+      const row = CLEARPASS_SERVICES.find((s) => s.id === id);
+      expect(row, `detail fixture '${id}' has no collection row`).toBeTruthy();
+      expect(detail.service).not.toBeNull();
+      const s = detail.service!;
+      // the detail is the row's own story, deepened — identity, state, order
+      // and hit count agree, and the drawer never contradicts the tab
+      expect(s.id).toBe(row!.id);
+      expect(s.name).toBe(row!.name);
+      expect(s.enabled).toBe(row!.enabled ?? null);
+      expect(s.hitCount).toBe(row!.hitCount ?? null);
+      expect(s.orderNo).toBe(row!.orderNo ?? null);
+      // auth sources resolve to the box's reported sources; the enforcement
+      // policy resolves to a reported policy — plain text, but REAL text
+      for (const src of s.authSources) expect(sourceNames).toContain(src);
+      if (s.enforcementPolicy !== null) expect(policyNames).toContain(s.enforcementPolicy);
+      // match conditions are the rule editor's rows — never raw JSON
+      for (const c of s.rulesConditions) {
+        for (const field of [c.type, c.name, c.operator, c.value]) {
+          if (field !== null) expect(field).not.toMatch(/[{}[\]"]/);
+        }
+      }
+      // the provenance envelope is present and says the read succeeded
+      expect(detail.source.plane).toBe('clearpass');
+      expect(detail.source.sections.service).toBe('ok');
+      // nothing in a service definition is credential material, in this world either
+      expect(JSON.stringify(detail)).not.toMatch(/password|hash|secret|\$2[aby]\$/i);
+    }
+  });
+
+  it('demo endpoint insightTags are profiler evidence, never a copy of the enforcement profile', () => {
+    const tagged = CLEARPASS_ENDPOINTS.filter((e) => e.insightTags !== undefined);
+    expect(tagged.length).toBeGreaterThan(0); // the demo has profiled devices
+    expect(tagged.length).toBeLessThan(CLEARPASS_ENDPOINTS.length); // …and unprofiled ones
+    for (const e of tagged) {
+      expect(e.insightTags!.length).toBeGreaterThan(0); // present means non-empty
+      expect(e.insightTags).not.toContain(e.profile);
+    }
   });
 });
 
@@ -693,6 +899,36 @@ describe('ssidDependencyRequirementsFor — direct SSID apply dependency gates',
     expect(ssidDependencyRequirementsFor('wpa3-enterprise').passphrase).toBe(false);
     expect(ssidDependencyRequirementsFor('wpa2-enterprise').passphrase).toBe(false);
   });
+
+  it('a Mist-targeted form has NO Central dependency catalogs — only the write-only passphrase remains', () => {
+    // The role/server-group/portal gates are New Central constructs; Mist has
+    // no such catalogs, so nothing can be "required" of them there.
+    expect(ssidDependencyRequirementsFor('wpa2-psk', 'MIST')).toEqual({
+      role: false,
+      authServerGroup: false,
+      captivePortal: false,
+      passphrase: true,
+    });
+    for (const security of ['wpa3-enterprise', 'wpa2-enterprise', 'psk-portal', 'open'] as const) {
+      expect(ssidDependencyRequirementsFor(security, 'MIST')).toEqual({
+        role: false,
+        authServerGroup: false,
+        captivePortal: false,
+        passphrase: false,
+      });
+    }
+    // The Central rules are untouched, and an unplaceable label falls back to them.
+    expect(ssidDependencyRequirementsFor('wpa2-enterprise', 'CENTRAL').authServerGroup).toBe(true);
+    expect(ssidDependencyRequirementsFor('wpa2-psk', 'CENTRAL + MIST').passphrase).toBe(true);
+  });
+
+  it('mistSsidSecurityRefusal names exactly the modes Mist cannot express — and clears the two it can', () => {
+    expect(mistSsidSecurityRefusal('wpa2-psk')).toBeNull();
+    expect(mistSsidSecurityRefusal('open')).toBeNull();
+    expect(mistSsidSecurityRefusal('psk-portal')).toMatch(/portal/i);
+    expect(mistSsidSecurityRefusal('wpa2-enterprise')).toMatch(/RADIUS/);
+    expect(mistSsidSecurityRefusal('wpa3-enterprise')).toMatch(/RADIUS/);
+  });
 });
 
 describe('SSE contracts — object kinds, inventory, and the mutation/commit split', () => {
@@ -966,5 +1202,407 @@ describe('localDayKey', () => {
     const startOfNext = new Date(2026, 6, 27, 0, 0, 0);
     expect(localDayKey(endOfDay)).toBe('2026-07-26');
     expect(localDayKey(startOfNext)).toBe('2026-07-27');
+  });
+});
+
+/**
+ * The demo world's Mist data demonstrates exactly what the live adapter now
+ * reads: per-site SLE with classifiers/impact, at/behind firmware verdicts,
+ * claim codes, per-site licence usage, and the PSK-redaction marker on SSIDs.
+ * These tests pin the invariants that keep the demo honest — the same rules
+ * the adapter's own mapping tests enforce on the live path.
+ */
+describe('demo Mist fixtures — deterministic, honest, and matching the live read', () => {
+  it('SITE_SLE covers exactly the sites the SITES rows badge as MIST', () => {
+    const mistSites = SITES.filter((s) => s.planes.some((p) => p.name === 'MIST')).map((s) => s.id);
+    expect(Object.keys(SITE_SLE).sort()).toEqual(mistSites.sort());
+  });
+
+  it('SITE_SLE headline fractions are the same numbers the metrics derive to', () => {
+    for (const row of Object.values(SITE_SLE)) {
+      expect(row?.metrics?.length).toBeGreaterThan(0);
+      const byMetric = new Map(row?.metrics?.map((m) => [m.name, m.success]));
+      // The headline columns read the matching metric's success fraction.
+      expect(row?.coverage).toBe(byMetric.get('coverage') ?? null);
+      expect(row?.capacity).toBe(byMetric.get('capacity') ?? null);
+      expect(row?.roaming).toBe(byMetric.get('roaming') ?? null);
+      expect(row?.apHealth).toBe(byMetric.get('ap-health') ?? null);
+      // Every fraction is a real 0–1 value or an honest null, and overall is
+      // the mean of the dimensions present (the adapter's own rule).
+      for (const m of row?.metrics ?? []) {
+        if (m.success !== null) {
+          expect(m.success).toBeGreaterThanOrEqual(0);
+          expect(m.success).toBeLessThanOrEqual(1);
+          // success is derived from counts: 1 − degraded/samples (the
+          // authored fractions are 2-dp display values, so the check is to
+          // display precision).
+          if (m.samples !== null && m.degraded !== null && m.samples > 0) {
+            expect(m.success).toBeCloseTo(1 - m.degraded / m.samples, 2);
+          }
+        }
+        for (const c of m.classifiers) expect(c.name.length).toBeGreaterThan(0);
+      }
+      const present = [row?.coverage, row?.capacity, row?.roaming, row?.apHealth, row?.wan].filter(
+        (v): v is number => v !== null && v !== undefined,
+      );
+      expect(row?.overall).toBeCloseTo(present.reduce((a, b) => a + b, 0) / present.length, 10);
+    }
+  });
+
+  it('demo Mist devices carry claim codes and a real at/behind firmware spread', () => {
+    const mist = DEVICES.filter((d) => d.plane === 'MIST');
+    expect(mist.length).toBeGreaterThan(0);
+    for (const d of mist) expect(d.claimCode).toMatch(/^[A-Z0-9]{15}$/);
+    // ap-3f-14 is the authored "behind" row: false is only ever stamped with
+    // the recommended train it is behind, and the plane's own state word.
+    const behind = mist.find((d) => !d.firmwareApproved);
+    expect(behind).toMatchObject({ firmwareTarget: expect.any(String), firmwareUpdate: expect.any(String) });
+    // …and at least one row sits exactly on its recommended train.
+    expect(mist.some((d) => d.firmwareApproved && d.firmware === '0.14.29')).toBe(true);
+  });
+
+  it('MIST_LICENSE_USAGES attributes usage only to real sites, with sane counts', () => {
+    expect(MIST_LICENSE_USAGES.length).toBeGreaterThan(0);
+    for (const row of MIST_LICENSE_USAGES) {
+      expect(isRealSiteId(row.siteId)).toBe(true);
+      expect(row.numAps).not.toBeNull();
+      expect(row.numDevices).not.toBeNull();
+      expect(row.numAps!).toBeLessThanOrEqual(row.numDevices!);
+      expect(row.usages).not.toBeNull();
+      for (const [service, count] of Object.entries(row.usages ?? {})) {
+        expect(service).toMatch(/^SUB-/);
+        expect(count).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  it('every PSK SSID says the key exists and is redacted — and no fixture carries one', () => {
+    const pskRows = SSIDS.filter((s) => /psk/i.test(s.security));
+    expect(pskRows.length).toBeGreaterThan(0);
+    for (const row of pskRows) expect(row.note).toContain('redacted by the portal');
+    // The fixtures must never model the secret itself: no key anywhere on an
+    // SSID row smells like a passphrase (the note/security text aside).
+    for (const row of SSIDS) {
+      for (const [key, value] of Object.entries(row)) {
+        expect(key).not.toMatch(/psk|secret|passphrase|password/i);
+        if (key !== 'note' && key !== 'security') expect(String(value)).not.toMatch(/cleartext/i);
+      }
+    }
+  });
+
+  it('MIST_AP_STATS authors real Mist APs at real sites, with sane readings and a real LLDP edge', () => {
+    expect(MIST_AP_STATS.length).toBeGreaterThan(0);
+    const deviceByName = new Map(DEVICES.map((d) => [d.name, d]));
+    for (const row of MIST_AP_STATS) {
+      expect(isRealSiteId(row.siteId)).toBe(true);
+      // Every authored stats row stands behind a real MIST AP at the same site.
+      const device = deviceByName.get(row.deviceName);
+      expect(device, row.deviceName).toBeDefined();
+      expect(device).toMatchObject({ plane: 'MIST', type: 'ap', siteId: row.siteId });
+      expect(row.radios.length).toBeGreaterThan(0);
+      for (const radio of row.radios) {
+        for (const pct of [radio.utilAllPct, radio.utilTxPct, radio.utilRxInBssPct, radio.utilRxOtherBssPct, radio.utilNonWifiPct]) {
+          if (pct !== null) {
+            expect(pct).toBeGreaterThanOrEqual(0);
+            expect(pct).toBeLessThanOrEqual(100);
+          }
+        }
+      }
+      // The radio client counts never exceed the row's own total.
+      const radioSum = row.radios.reduce((sum, r) => sum + (r.numClients ?? 0), 0);
+      if (row.numClients !== null && row.radios.every((r) => r.numClients !== null)) {
+        expect(radioSum).toBeLessThanOrEqual(row.numClients);
+      }
+    }
+    // The LLDP uplink the topology edges are built from: at least one row
+    // uplinks to a switch that exists in the demo inventory.
+    const uplinks = MIST_AP_STATS.map((r) => r.lldpUplink?.systemName).filter((n): n is string => !!n);
+    expect(uplinks.length).toBeGreaterThan(0);
+    expect(uplinks.some((name) => deviceByName.get(name)?.type === 'switch')).toBe(true);
+  });
+
+  it('MIST_SITE_MAPS authors a renderable plan: real site, placed APs inside the image, an SVG that matches its dims', () => {
+    expect(MIST_SITE_MAPS.length).toBeGreaterThan(0);
+    const deviceByName = new Map(DEVICES.map((d) => [d.name, d]));
+    const mistSites = SITES.filter((s) => s.planes.some((p) => p.name === 'MIST')).map((s) => s.id);
+    for (const map of MIST_SITE_MAPS) {
+      expect(mistSites).toContain(map.siteId);
+      expect(map.imageUrl).toMatch(/^data:image\/svg\+xml/);
+      const svg = decodeURIComponent(map.imageUrl ?? '');
+      expect(svg).toContain('<svg');
+      // The inline image's own viewBox agrees with the stated pixel dims.
+      expect(svg).toContain(`viewBox="0 0 ${map.widthPx} ${map.heightPx}"`);
+      for (const ap of map.aps) {
+        const device = deviceByName.get(ap.deviceName);
+        expect(device, ap.deviceName).toBeDefined();
+        expect(device).toMatchObject({ plane: 'MIST', type: 'ap', siteId: map.siteId });
+        expect(ap.x).toBeGreaterThanOrEqual(0);
+        expect(ap.x).toBeLessThanOrEqual(map.widthPx!);
+        expect(ap.y).toBeGreaterThanOrEqual(0);
+        expect(ap.y).toBeLessThanOrEqual(map.heightPx!);
+      }
+      // Meters and pixels tell the same story (the renderer's scale factor).
+      expect(map.widthM!).toBeGreaterThan(0);
+      expect(map.heightM!).toBeGreaterThan(0);
+    }
+  });
+
+  it('client map dots reference an authored map, inside its image, for the site the client is at', () => {
+    const dotted = CLIENTS.filter((c) => c.mapId !== undefined);
+    expect(dotted.length).toBeGreaterThan(0);
+    for (const c of dotted) {
+      // A dot is all three or nothing — the partial position never ships.
+      expect(c.x).toBeDefined();
+      expect(c.y).toBeDefined();
+      const map = MIST_SITE_MAPS.find((m) => m.mapId === c.mapId);
+      expect(map, `${c.name} → ${c.mapId}`).toBeDefined();
+      expect(map?.siteId).toBe(c.siteId);
+      expect(c.x!).toBeLessThanOrEqual(map!.widthPx!);
+      expect(c.y!).toBeLessThanOrEqual(map!.heightPx!);
+    }
+  });
+
+  it('the demo Mist wired roster is wired-medium rows attached to a real switch at the site', () => {
+    const wired = CLIENTS.filter((c) => c.plane === 'MIST' && c.medium === 'wired');
+    expect(wired.length).toBeGreaterThanOrEqual(2); // the NEW medium must be showcased
+    const deviceByName = new Map(DEVICES.map((d) => [d.name, d]));
+    for (const c of wired) {
+      expect(isRealSiteId(c.siteId)).toBe(true);
+      const sw = deviceByName.get(c.attach);
+      expect(sw, `${c.name} attach`).toBeDefined();
+      expect(sw).toMatchObject({ type: 'switch', siteId: c.siteId });
+      // No wireless readings are authored on a wired row.
+      expect(c.rssi).toBe('—');
+      expect(c.snr).toBe('—');
+      expect(c.roams).toBe('0');
+    }
+  });
+
+  it('MIST_SLE_DRILLDOWN agrees with SITE_SLE, names real clients/APs, and is deterministic', () => {
+    const keys = Object.keys(MIST_SLE_DRILLDOWN);
+    expect(keys.length).toBeGreaterThan(0);
+    const clientMacs = new Set(CLIENTS.map((c) => c.mac));
+    const deviceNames = new Set(DEVICES.map((d) => d.name));
+    for (const [key, detail] of Object.entries(MIST_SLE_DRILLDOWN)) {
+      // The key is `${siteId}|${metric}` — the way the adapter is called.
+      expect(key).toBe(`${detail.siteId}|${detail.metric}`);
+      expect(isRealSiteId(detail.siteId)).toBe(true);
+      const sle = SITE_SLE[detail.siteId];
+      expect(sle, detail.siteId).toBeDefined();
+      // The drill-down's classifiers are the ones the polled summary carries —
+      // a drill that disagreed with the headline would be its own lie.
+      const summaryClassifiers = new Set(
+        (sle?.metrics ?? []).find((m) => m.name === detail.metric)?.classifiers.map((c) => c.name) ?? [],
+      );
+      for (const c of detail.classifiers ?? []) expect(summaryClassifiers, c.name).toContain(c.name);
+      // Impacted clients/APs are the demo world's own rows.
+      for (const u of detail.impactedClients ?? []) {
+        expect(clientMacs, u.mac).toContain(u.mac);
+        if (u.name !== null) expect(CLIENTS.find((c) => c.mac === u.mac)?.name).toBe(u.name);
+      }
+      for (const ap of detail.impactedAps ?? []) {
+        if (ap.name !== null) expect(deviceNames, ap.name).toContain(ap.name);
+      }
+      // Trend series are parallel and bounded by the window they claim.
+      const trend = detail.trend;
+      expect(trend).toBeDefined();
+      expect(trend!.total.length).toBe(trend!.degraded.length);
+      expect(trend!.endSec! - trend!.startSec!).toBe(trend!.intervalSec! * trend!.total.length);
+      // Determinism: the stamp is a fixed authored instant, not a clock read.
+      expect(new Date(detail.source.at).toISOString()).toBe(detail.source.at);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DPI application visibility + hardware trends (shared/appRisk.ts,
+// shared/trends.ts, the demo fixtures behind the Central on-demand readers).
+// ---------------------------------------------------------------------------
+
+describe('DPI + hardware trends contracts', () => {
+  const DPI_NOW = Date.parse('2026-07-26T12:00:00.000Z');
+
+  it('the risk vocabulary is worst-first, alias-folded and idempotent', () => {
+    expect(RISK_BUCKET_ORDER).toEqual(['suspicious', 'moderate', 'low', 'trustworthy', 'unknown']);
+    const aliases: [string, string][] = [
+      ['high', 'suspicious'],
+      ['very_high', 'suspicious'],
+      ['medium', 'moderate'],
+      ['very_low', 'low'],
+      ['trusted', 'trustworthy'],
+      ['safe', 'trustworthy'],
+      ['not_evaluated', 'unknown'],
+    ];
+    for (const [word, bucket] of aliases) {
+      expect(normalizeRiskBucket(word)).toBe(bucket);
+      // Idempotent: normalizing a normalized row changes nothing.
+      expect(normalizeRiskBucket(normalizeRiskBucket(word))).toBe(bucket);
+    }
+    for (const bucket of RISK_BUCKET_ORDER) expect(normalizeRiskBucket(bucket)).toBe(bucket);
+  });
+
+  it('the DPI byte honesty caveat is pinned verbatim', () => {
+    expect(DPI_BYTES_ARE_ESTIMATES).toBe('DPI byte totals are estimates — read as a ranking, not a measurement');
+  });
+
+  it('the window validator enforces the endpoint 7-day cap', () => {
+    expect(normalizeTrendWindow('2026-07-25T12:00:00Z', '2026-07-26T12:00:00Z').ok).toBe(true);
+    expect(normalizeTrendWindow('2026-07-18T12:00:00Z', '2026-07-26T12:00:00Z').ok).toBe(false); // 8 days
+    expect(normalizeTrendWindow('2026-07-26T12:00:00Z', '2026-07-25T12:00:00Z').ok).toBe(false); // inverted
+    expect(normalizeTrendWindow('junk', '2026-07-26T12:00:00Z').ok).toBe(false);
+  });
+
+  it('the trend normalizer is pure — same payload, same TrendSet', () => {
+    const samples = [
+      { timestamp: 1_785_000_000_000, data: ['14', '800'] },
+      { timestamp: 1_785_000_060_000, data: ['15', '1400'] },
+    ];
+    const a = normalizeTrendSet(['cpuUtilization', 'inErrors'], samples, { inErrors: { kind: 'counter' } });
+    const b = normalizeTrendSet(['cpuUtilization', 'inErrors'], samples, { inErrors: { kind: 'counter' } });
+    expect(a).toEqual(b);
+  });
+
+  it('SITE_APPLICATIONS_DEMO is a real site, ranked, with both watchlist kinds and dead fields nulled', () => {
+    const keys = Object.keys(SITE_APPLICATIONS_DEMO);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const [siteId, live] of Object.entries(SITE_APPLICATIONS_DEMO)) {
+      expect(isRealSiteId(siteId)).toBe(true);
+      expect(live).toBeDefined();
+      expect(live!.siteId).toBe(siteId);
+      expect(live!.source.plane).toBe('central');
+      expect(live!.source.sections.apps).toBe('ok');
+      // The window is inside the endpoint's 7-day cap.
+      const span = Date.parse(live!.window.end) - Date.parse(live!.window.start);
+      expect(span).toBeGreaterThan(0);
+      expect(span).toBeLessThanOrEqual(TREND_WINDOW_MAX_MS);
+      const apps = live!.apps ?? [];
+      expect(apps.length).toBeGreaterThan(0);
+      // Ranked by bytes: re-sorting changes nothing.
+      expect(apps.map((a) => a.name)).toEqual(byBytesDesc(apps).map((a) => a.name));
+      // Both watchlist kinds are showcased: flagged-known AND flagged-unclassified.
+      const split = watchlistSplit(apps);
+      expect(split.unclassified.length).toBeGreaterThan(0);
+      expect(split.known.length).toBeGreaterThan(0);
+      for (const a of split.unclassified) expect(['suspicious', 'moderate']).toContain(a.risk);
+      // The verified dead fields are null on every row — the demo never fakes them.
+      for (const a of apps) {
+        expect(a.experience).toBeNull();
+        expect(a.tlsVersion).toBeNull();
+        expect(a.certificateExpiryAt).toBeNull();
+        expect(a.riskRaw.length).toBeGreaterThan(0);
+        if (a.lastUsedAt !== null) expect(Date.parse(a.lastUsedAt)).toBeLessThanOrEqual(DPI_NOW);
+      }
+      // The rollup over the demo table: the largest bar is exactly 1 and no
+      // share exceeds it — share-of-largest, never percent-of-total.
+      const rolled = rollupAppCategories(apps);
+      expect(rolled.length).toBeGreaterThan(0);
+      expect(rolled[0]!.share).toBe(1);
+      for (const r of rolled) {
+        expect(r.share).toBeGreaterThanOrEqual(0);
+        expect(r.share).toBeLessThanOrEqual(1);
+        expect(r.apps).toBeGreaterThan(0);
+      }
+      // Determinism: a fixed authored stamp, not a clock read.
+      expect(new Date(live!.source.at).toISOString()).toBe(live!.source.at);
+    }
+  });
+
+  it('the demo hardware trends belong to a real demo switch and tell its degraded story', () => {
+    const keys = Object.keys(SWITCH_HARDWARE_TRENDS_DEMO);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const [key, live] of Object.entries(SWITCH_HARDWARE_TRENDS_DEMO)) {
+      const device = DEVICES.find((d) => d.name === key);
+      expect(device, key).toBeDefined();
+      expect(device!.type).toBe('switch');
+      expect(live.serial).toBe(key); // demo devices carry no serial — keyed by name
+      expect(live.source.plane).toBe('central');
+      expect(live.source.sections.hardware).toBe('ok');
+      const set = live.trends!;
+      expect(set.ok).toBe(true);
+      expect(set.series.map((s) => s.key)).toEqual([...SWITCH_HARDWARE_TREND_KEYS]);
+      for (const s of set.series) {
+        expect(s.kind).toBe('gauge');
+        expect(s.bucketMs).toBe(3_600_000);
+        for (const p of s.points) expect(new Date(p.t).toISOString()).toBe(p.t);
+      }
+      // The outage is a break, not a bridge: the gap marker exists on every series.
+      const cpu = set.series[0]!;
+      expect(cpu.points.some((p) => p.v === null)).toBe(true);
+      for (const p of cpu.points) {
+        if (p.v !== null) {
+          expect(p.v).toBeGreaterThanOrEqual(0);
+          expect(p.v).toBeLessThanOrEqual(100);
+        }
+      }
+      // PoE bookkeeping: total >= device power + PoE draw on every reported bucket.
+      const byKey = new Map(set.series.map((s) => [s.key, s]));
+      const total = byKey.get('totalPowerConsumption')!;
+      const deviceW = byKey.get('powerConsumption')!;
+      const poeW = byKey.get('poeConsumption')!;
+      for (let i = 0; i < total.points.length; i += 1) {
+        const t = total.points[i]!.v;
+        const dW = deviceW.points[i]!.v;
+        const pW = poeW.points[i]!.v;
+        if (t !== null && dW !== null && pW !== null) expect(t).toBeGreaterThanOrEqual(dW + pW);
+      }
+      // The window is inside the cap and the stamp is fixed.
+      const span = Date.parse(live.window.end) - Date.parse(live.window.start);
+      expect(span).toBeLessThanOrEqual(TREND_WINDOW_MAX_MS);
+      expect(new Date(live.source.at).toISOString()).toBe(live.source.at);
+    }
+  });
+
+  it('the demo AP trends are per-metric, keyed like the adapter call, and throughput is a real bit/s rate', () => {
+    const keys = Object.keys(AP_TRENDS_DEMO);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const [key, live] of Object.entries(AP_TRENDS_DEMO)) {
+      expect(key).toBe(`${live.serial}|${live.metric}`);
+      const device = DEVICES.find((d) => d.name === live.serial);
+      expect(device, live.serial).toBeDefined();
+      expect(device!.type).toBe('ap');
+      expect(device!.plane).toBe('CENTRAL'); // the only plane with this read
+      expect(AP_TREND_METRICS).toContain(live.metric);
+      expect(live.source.sections.trends).toBe('ok');
+      const series = live.trends!.series[0]!;
+      expect(series.bucketMs).toBe(3_600_000);
+      if (live.metric === 'throughput') {
+        expect(series.kind).toBe('bucket-total');
+        expect(series.rate).toBe('bits-per-second');
+        for (const p of series.points) if (p.v !== null) expect(p.v).toBeGreaterThan(0);
+      } else {
+        expect(series.kind).toBe('gauge');
+        expect(series.rate).toBeNull();
+      }
+      expect(new Date(live.source.at).toISOString()).toBe(live.source.at);
+    }
+  });
+
+  it('the demo interface trends convert counters to rates and keep the CRC story', () => {
+    const keys = Object.keys(SWITCH_INTERFACE_TRENDS_DEMO);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const [key, live] of Object.entries(SWITCH_INTERFACE_TRENDS_DEMO)) {
+      const device = DEVICES.find((d) => d.name === key);
+      expect(device, key).toBeDefined();
+      expect(device!.type).toBe('switch');
+      const set = live.trends!;
+      expect(set.ok).toBe(true);
+      const tx = set.series.find((s) => s.key === 'txBytes')!;
+      expect(tx.kind).toBe('counter');
+      expect(tx.rate).toBe('bits-per-second');
+      expect(tx.points[0]!.v).toBeNull(); // the first sample has no predecessor
+      // Rates stay sane for a 10G core uplink (between 1 and 10 Gbit/s).
+      for (const p of tx.points) {
+        if (p.v !== null) {
+          expect(p.v).toBeGreaterThan(1e9);
+          expect(p.v).toBeLessThan(1e10);
+        }
+      }
+      const crc = set.series.find((s) => s.key === 'inCrcErrors')!;
+      expect(crc.kind).toBe('counter');
+      expect(crc.points.some((p) => p.v !== null && p.v > 0)).toBe(true); // the excursion burst exists
+      const span = Date.parse(live.window.end) - Date.parse(live.window.start);
+      expect(span).toBeLessThanOrEqual(TREND_WINDOW_MAX_MS);
+      expect(new Date(live.source.at).toISOString()).toBe(live.source.at);
+    }
   });
 });

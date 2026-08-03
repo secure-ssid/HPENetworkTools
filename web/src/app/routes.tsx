@@ -3,28 +3,40 @@
  * The URL carries view + entity (/sites/:siteId, /devices/:name); / redirects
  * to /overview. The /ds design gallery keeps its own shell, so it stays a
  * standalone route outside the app shell.
+ *
+ * Every screen is a lazy chunk: the shell stays eager, and the Suspense
+ * boundary around <Outlet /> in AppShell keeps the sidebar and topbar on
+ * screen while a screen's chunk loads. /ds sits outside that boundary, so
+ * it carries its own.
  */
 
+import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
-import { AppShellLayout } from './AppShell';
-import Overview from '../screens/Overview';
-import Alerts from '../screens/Alerts';
-import Tickets from '../screens/Tickets';
-import Clients from '../screens/Clients';
-import AuthEvents from '../screens/AuthEvents';
-import ClearPass from '../screens/ClearPass';
-import Inventory from '../screens/Inventory';
-import Sites from '../screens/Sites';
-import SiteDetail from '../screens/SiteDetail';
-import Devices from '../screens/Devices';
-import DeviceDetail from '../screens/DeviceDetail';
-import Licenses from '../screens/Licenses';
-import GreenLake from '../screens/GreenLake';
-import Configure from '../screens/Configure';
-import Compliance from '../screens/Compliance';
-import Systems from '../screens/Systems';
-import Uxi from '../screens/Uxi';
-import { DsGallery } from '../screens/DsGallery';
+import { AppShellLayout, RouteFallback } from './AppShell';
+
+const Overview = lazy(() => import('../screens/Overview'));
+const Topology = lazy(() => import('../screens/Topology'));
+const Alerts = lazy(() => import('../screens/Alerts'));
+const Tickets = lazy(() => import('../screens/Tickets'));
+const Clients = lazy(() => import('../screens/Clients'));
+const AuthEvents = lazy(() => import('../screens/AuthEvents'));
+const ClearPass = lazy(() => import('../screens/ClearPass'));
+const Central = lazy(() => import('../screens/Central'));
+const Mist = lazy(() => import('../screens/Mist'));
+const Inventory = lazy(() => import('../screens/Inventory'));
+const Sites = lazy(() => import('../screens/Sites'));
+const SiteDetail = lazy(() => import('../screens/SiteDetail'));
+const Devices = lazy(() => import('../screens/Devices'));
+const DeviceDetail = lazy(() => import('../screens/DeviceDetail'));
+const Licenses = lazy(() => import('../screens/Licenses'));
+const GreenLake = lazy(() => import('../screens/GreenLake'));
+const Configure = lazy(() => import('../screens/Configure'));
+const Compliance = lazy(() => import('../screens/Compliance'));
+const Systems = lazy(() => import('../screens/Systems'));
+const Uxi = lazy(() => import('../screens/Uxi'));
+const DsGallery = lazy(() =>
+  import('../screens/DsGallery').then((module) => ({ default: module.DsGallery })),
+);
 
 export function AppRoutes() {
   return (
@@ -32,11 +44,14 @@ export function AppRoutes() {
       <Route element={<AppShellLayout />}>
         <Route path="/" element={<Navigate to="/overview" replace />} />
         <Route path="/overview" element={<Overview />} />
+        <Route path="/topology" element={<Topology />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/tickets" element={<Tickets />} />
         <Route path="/clients" element={<Clients />} />
         <Route path="/auth-events" element={<AuthEvents />} />
         <Route path="/clearpass" element={<ClearPass />} />
+        <Route path="/central" element={<Central />} />
+        <Route path="/mist" element={<Mist />} />
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/sites" element={<Sites />} />
         <Route path="/sites/:siteId" element={<SiteDetail />} />
@@ -50,7 +65,14 @@ export function AppRoutes() {
         <Route path="/uxi" element={<Uxi />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />
       </Route>
-      <Route path="/ds" element={<DsGallery />} />
+      <Route
+        path="/ds"
+        element={
+          <Suspense fallback={<RouteFallback />}>
+            <DsGallery />
+          </Suspense>
+        }
+      />
     </Routes>
   );
 }

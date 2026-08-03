@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { InventoryTreeNode } from '@hpe/shared';
+import type { InventoryTreeNode, InventoryTreePage } from '@hpe/shared';
 import { Badge, Spinner } from '../nightdesk';
 import { getInventoryTree } from '../api/client';
 
@@ -23,68 +23,98 @@ export function InventoryTree({
   onSelect?: (node: InventoryTreeNode) => void;
 }) {
   const navigate = useNavigate();
+  const branchKey = (parentId: string | null) => parentId ?? '__root__';
   const [branches, setBranches] = useState<Record<string, BranchPage>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState<Set<string>>(new Set());
+  // The root read starts out marked: the mount effect below owns it, and a
+  // synchronous setState from an effect body is a cascading render. Seeding
+  // the mark here means the first committed frame already shows the spinner
+  // rather than an empty tree waiting on the effect to say it is loading.
+  const [loading, setLoading] = useState<Set<string>>(() => new Set([branchKey(null)]));
   const [error, setError] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const refs = useRef(new Map<string, HTMLDivElement>());
 
-  const branchKey = (parentId: string | null) => parentId ?? '__root__';
-
-  const load = async (parentId: string | null, append = false) => {
+  /** Folds a fetched page into branch state. The root page also expands and
+   *  focuses its first node; that node's own read is kicked off by the
+   *  fetchBranch continuation that revealed it. */
+  const applyPage = (parentId: string | null, page: InventoryTreePage, append: boolean) => {
     const key = branchKey(parentId);
-    if (loading.has(key)) return;
-    const controller = new AbortController();
-    setLoading((current) => new Set(current).add(key));
-    setError(null);
-    try {
-      const page = await getInventoryTree({
-        parent: parentId,
-        cursor: append ? branches[key]?.nextCursor : null,
-        limit: compact ? 25 : 50,
-        signal: controller.signal,
-      });
-      setBranches((current) => ({
-        ...current,
-        [key]: {
-          nodes: append ? [...(current[key]?.nodes ?? []), ...page.nodes] : page.nodes,
-          nextCursor: page.nextCursor,
-          // An empty final page is indistinguishable from a vanished one on
-          // the wire, so this is the server's answer, not an inference. A
-          // fresh (non-append) read starts the branch clean again.
-          moved: append ? (current[key]?.moved ?? false) || page.cursorState === 'past-end' : false,
-        },
-      }));
-      if (parentId === null && page.nodes[0]) {
-        setExpanded((current) => new Set(current).add(page.nodes[0]!.id));
-        setFocusId((current) => current ?? page.nodes[0]!.id);
-      }
-    } catch (cause) {
-      if ((cause as Error).name !== 'AbortError') {
-        setError((cause as Error).message);
-      }
-    } finally {
-      setLoading((current) => {
-        const next = new Set(current);
-        next.delete(key);
-        return next;
-      });
+    setBranches((current) => ({
+      ...current,
+      [key]: {
+        nodes: append ? [...(current[key]?.nodes ?? []), ...page.nodes] : page.nodes,
+        nextCursor: page.nextCursor,
+        // An empty final page is indistinguishable from a vanished one on
+        // the wire, so this is the server's answer, not an inference. A
+        // fresh (non-append) read starts the branch clean again.
+        moved: append ? (current[key]?.moved ?? false) || page.cursorState === 'past-end' : false,
+      },
+    }));
+    if (parentId === null && page.nodes[0]) {
+      setExpanded((current) => new Set(current).add(page.nodes[0]!.id));
+      setFocusId((current) => current ?? page.nodes[0]!.id);
     }
-    return () => controller.abort();
   };
 
+  /** Reads one branch page and folds it in. Every state write happens in a
+   *  continuation, so the mount effect can own the root read with a real
+   *  abort cleanup; event-driven callers go through `load`, which marks the
+   *  branch loading up front. An aborted read leaves no trace — no page, no
+   *  error — and keeps its loading mark for the effect run that replaces it. */
+  const fetchBranch = (parentId: string | null, append: boolean, signal?: AbortSignal): Promise<void> => {
+    const key = branchKey(parentId);
+    return getInventoryTree({
+      parent: parentId,
+      cursor: append ? branches[key]?.nextCursor : null,
+      limit: compact ? 25 : 50,
+      signal,
+    })
+      .then((page) => {
+        if (signal?.aborted) return;
+        applyPage(parentId, page, append);
+        // The tree opens grown one level: the first root node's branch read
+        // starts here, in the continuation that revealed the node.
+        const first = parentId === null ? page.nodes[0] : undefined;
+        if (first && !branches[first.id]) {
+          setLoading((current) => new Set(current).add(first.id));
+          void fetchBranch(first.id, false);
+        }
+      })
+      .catch((cause) => {
+        if (signal?.aborted || (cause as Error).name === 'AbortError') return;
+        setError((cause as Error).message);
+      })
+      .finally(() => {
+        if (signal?.aborted) return;
+        setLoading((current) => {
+          const next = new Set(current);
+          next.delete(key);
+          return next;
+        });
+      });
+  };
+
+  /** Event-driven read (expand, Load more): marks the branch loading up
+   *  front so a second click cannot start the same read twice. */
+  const load = (parentId: string | null, append = false): Promise<void> => {
+    const key = branchKey(parentId);
+    if (loading.has(key)) return Promise.resolve();
+    setLoading((current) => new Set(current).add(key));
+    setError(null);
+    return fetchBranch(parentId, append);
+  };
+
+  // The tree owns its first bounded read, with a real abort cleanup:
+  // StrictMode's mount/cleanup/mount cycle (or a genuine unmount) cancels
+  // the in-flight root read instead of letting it set state into a tree
+  // that is gone. Child reads are event-driven.
   useEffect(() => {
-    void load(null);
-    // The tree owns its first bounded read. Child reads are event-driven.
+    const controller = new AbortController();
+    void fetchBranch(null, false, controller.signal);
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    const root = branches.__root__?.nodes[0];
-    if (root && expanded.has(root.id) && !branches[root.id]) void load(root.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branches.__root__, expanded]);
 
   const visible = useMemo(() => {
     const rows: Array<{ node: InventoryTreeNode; level: number }> = [];

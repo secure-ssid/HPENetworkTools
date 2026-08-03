@@ -11,5 +11,11 @@ data/
 .agent-tmp/
 dev-server.log
 
-# Auto-generated vendor API types (regenerate with openapi-typescript)
+# Vendor API typings generated locally — optional, imported by nothing, and
+# there is no regenerate script in this repo, so the file is not committed.
 shared/vendor/
+
+# Stale Playwright snapshot kept at the repo root for reference. The file
+# itself is committed (this entry does not untrack it); it only keeps any
+# regenerated copy from showing up as a new untracked file.
+drawer-check.yml

@@ -83,7 +83,7 @@ function planeNames(sites: SiteRow[]): string[] {
 
 export default function Sites() {
   const navigate = useNavigate();
-  const { density, showPlatformTags } = useSettings();
+  const { density, showPlatformTags, pollIntervalSec } = useSettings();
   const { toast } = useToast();
   const [data, setData] = useState<SitesData | null>(null);
   const [plane, setPlane] = useState('all');
@@ -93,15 +93,32 @@ export default function Sites() {
   const [newSubnet, setNewSubnet] = useState('');
   const [newPlane, setNewPlane] = useState('CENTRAL');
 
+  /* The footer stamps LIVE · SYNCED hh:mm, so a NOC tab must not sit on a
+     mount-time snapshot under it: poll on the settings cadence, the same
+     pattern Overview.tsx runs. One fetch at a time — a slow response never
+     stacks up behind the interval; fixture reads poll harmlessly. */
   useEffect(() => {
     let live = true;
-    void getSites().then((d) => {
-      if (live) setData(d);
-    });
+    let inFlight = false;
+    const pull = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void getSites()
+        .then((d) => {
+          if (live) setData(d);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    pull();
+    const every = Math.max(pollIntervalSec, 10) * 1000;
+    const id = setInterval(pull, every);
     return () => {
       live = false;
+      clearInterval(id);
     };
-  }, []);
+  }, [pollIntervalSec]);
 
   if (!data) {
     return (
@@ -133,12 +150,18 @@ export default function Sites() {
     planeNames(sites).map((p) => ({ value: p, label: p })),
   );
   const addPlaneOptions = planeNames(sites).map((p) => ({ value: p, label: p }));
+  /* 'CENTRAL' is only a default while the estate actually has one — on a
+     CENTRAL-less estate a Select holding it has no matching option and
+     renders blank, so fall back to the first plane the estate does report. */
+  const newPlaneValue = addPlaneOptions.some((o) => o.value === newPlane)
+    ? newPlane
+    : (addPlaneOptions[0]?.value ?? newPlane);
 
   /* Sites are owned by the managing planes — hand off, never fake-create. */
   const submitAddSite = () => {
     toast('Site creation runs on the managing plane — handed off', {
       description: newName
-        ? `${newName}${newSubnet ? ` · ${newSubnet}` : ''} · ${newPlane}`
+        ? `${newName}${newSubnet ? ` · ${newSubnet}` : ''} · ${newPlaneValue}`
         : undefined,
       tone: 'info',
     });
@@ -183,6 +206,7 @@ export default function Sites() {
                 placeholder="site name…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
+                aria-label="Filter sites"
               />
             </div>
             <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)}>
@@ -443,7 +467,7 @@ export default function Sites() {
             <Select
               id="add-site-plane"
               options={addPlaneOptions}
-              value={newPlane}
+              value={newPlaneValue}
               onValueChange={setNewPlane}
               size="md"
               aria-label="Managing plane"

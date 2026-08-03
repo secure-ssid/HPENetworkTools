@@ -47,6 +47,8 @@
  * `*Configured: boolean` marker in a secret's place, never its value.
  */
 
+import type { AlertRow, Plane, Sev, SiteId } from './types';
+
 export type WebhookAuthMechanism = 'API_KEY' | 'OIDC';
 
 /** Exactly what GET /network-services/v1/webhooks reports per row — no
@@ -91,7 +93,7 @@ export interface WebhookListEnvelope {
   /** The Central gateway base URL a write would target, or null when Central
    *  is not linked / not New Central. NOT a secret (the operator already
    *  chose it from a fixed regional-cluster list when linking Central — see
-   *  Systems.tsx CENTRAL_REGIONS) — carried here purely so the review UI can
+   *  CENTRAL_CLUSTERS in shared/fixtures.ts) — carried here purely so the review UI can
    *  show the exact outbound target URL before a mutation, with no extra
    *  round trip. */
   gatewayBaseUrl: string | null;
@@ -203,22 +205,6 @@ export interface WebhookPatchForm {
   oidcWellKnownUrl?: string;
 }
 
-export interface WebhookPatchRequest {
-  form: WebhookPatchForm;
-  reviewConfirmed: true;
-}
-
-export interface WebhookCreateRequest {
-  form: WebhookForm;
-  reviewConfirmed: true;
-  oneTimeSecretAcknowledged: true;
-}
-
-export interface WebhookRotateHmacRequest {
-  reviewConfirmed: true;
-  oneTimeSecretAcknowledged: true;
-}
-
 export type WebhookMutationAction =
   | 'created'
   | 'updated'
@@ -301,11 +287,6 @@ export const WEBHOOK_AUTH_OPTIONS: { value: WebhookAuthMechanism; label: string 
   { value: 'API_KEY', label: 'API key' },
   { value: 'OIDC', label: 'OIDC' },
 ];
-
-/** getting-started-with-webhooks.md: "you can create up to 10 configured
- *  Webhooks." Used only to phrase an honest "at the limit" message — never
- *  enforced client-side as the authoritative check (Central's own 400 is). */
-export const WEBHOOK_MAX_PER_TENANT = 10;
 
 export const WEBHOOK_LIST_DEFAULT_LIMIT = 10;
 export const WEBHOOK_LIST_MAX_LIMIT = 50;
@@ -645,3 +626,375 @@ export const WEBHOOKS_DEMO: WebhookDetail[] = [
     oidcClientSecretConfigured: true,
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Inbound webhook receiver — Mist + New Central deliveries INTO this portal
+// ---------------------------------------------------------------------------
+//
+// The management half above configures webhooks ON Central. This half is the
+// other direction: Mist and New Central POST signed alert events to this
+// portal, and the receiver verifies, normalizes and queues them.
+//
+// Signature conventions, per the vendors' own docs:
+//
+//   Mist  — when a webhook is configured with a secret, every delivery
+//           carries two hex HMACs of the RAW body
+//           (juniper.net/documentation/us/en/software/mist/automation-integration/topics/task/webhooks-add-portal.html):
+//             X-Mist-Signature:     HMAC-SHA1(secret, body)
+//             X-Mist-Signature-v2:  HMAC-SHA256(secret, body)
+//           The receiver prefers v2 and accepts either.
+//
+//   Central — New Central signs with the HMAC key create/rotate returns
+//           (the one-time key this portal's management UI handles), as an
+//           RFC 9421 HTTP Message Signature over @method, @target-uri,
+//           @authority, @scheme, @path and date
+//           (developer.arubanetworks.com/new-central/docs/webhook-authentication):
+//             Signature-Input: sig1=("@method" ... "date");created=…;keyid=…;alg="hmac-sha256"
+//             Signature:       sig1=:<base64 HMAC-SHA256>:
+//
+// Secrets are RECEIVER-side credentials: an operator pastes the Central
+// one-time HMAC key (or their Mist webhook secret) into the portal once,
+// where it is stored write-only in data/webhook-receivers.json (0600) — the
+// same treatment as every other secret this app holds. The demo secret below
+// is PUBLIC BY DESIGN: it exists so the whole signed path is demonstrable
+// without credentials, it is only ever effective while demo mode is on, and
+// every event verified against it is labelled demo. It is not a credential
+// and protects nothing.
+
+/** The two delivery sources the receiver understands. */
+export type WebhookReceiverSource = 'mist' | 'central';
+
+export const WEBHOOK_RECEIVER_SOURCES: WebhookReceiverSource[] = ['mist', 'central'];
+
+export function isWebhookReceiverSource(value: unknown): value is WebhookReceiverSource {
+  return value === 'mist' || value === 'central';
+}
+
+/** The plane a received event is honestly reported against in the alert
+ *  queue — a Mist delivery is MIST data, a Central delivery is CENTRAL data. */
+export const WEBHOOK_SOURCE_PLANE: Record<WebhookReceiverSource, Plane> = {
+  mist: 'MIST',
+  central: 'CENTRAL',
+};
+
+export const MIST_SIGNATURE_V2_HEADER = 'x-mist-signature-v2';
+export const MIST_SIGNATURE_V1_HEADER = 'x-mist-signature';
+export const CENTRAL_SIGNATURE_HEADER = 'signature';
+export const CENTRAL_SIGNATURE_INPUT_HEADER = 'signature-input';
+
+/** Public demo signing secret — see the section header. Never treated as a
+ *  credential: effective only in demo mode, and only when the operator has
+ *  not stored a real secret for the source. */
+export const WEBHOOK_DEMO_RECEIVER_SECRET = 'demo-webhook-receiver-secret';
+
+/** One verified, normalized inbound event — the unit the receiver stores
+ *  (bounded ring + append-only data/webhook-events.jsonl) and serves.
+ *
+ *  The normalized alert fields are stored RAW (severity enum, ISO stamps),
+ *  never pre-rendered: the alert-queue projection (AlertRow with its frozen
+ *  `age` display string) is derived at read time, so a stored event never
+ *  goes stale in the record. */
+export interface WebhookReceivedEvent {
+  id: string;
+  source: WebhookReceiverSource;
+  /** ISO instant this portal accepted the delivery. */
+  receivedAt: string;
+  /** What the source called it — Mist '<topic>:<type>', Central its category. */
+  eventType: string;
+  /** True for anything that came through the demo path (simulate, or a
+   *  delivery verified against the public demo secret) — demo data stays
+   *  labelled all the way into the alert queue. */
+  demo: boolean;
+  sev: Sev;
+  title: string;
+  detail: string;
+  state: 'open' | 'acked' | 'cleared';
+  device: string;
+  siteId: SiteId;
+  siteName: string;
+  alertId?: string;
+  /** The receiver's dedupe identity for this event — the source's own event
+   *  id when it sent one, the topic mapper's synthesized key (mac + type +
+   *  timestamp) when it did not. Optional: events recorded before the field
+   *  existed derive it from `alertId`, the legacy rule. */
+  dedupeKey?: string;
+  /** ISO instant the SOURCE stamped on the event, when it gave one — the
+   *  queue's age derives from this, falling back to receivedAt. */
+  eventAt: string | null;
+}
+
+/** The alert-queue projection of a received event: a full AlertRow (so the
+ *  fingerprint/group/silence path treats it exactly like a polled row) plus
+ *  the honest `source: 'webhook'` marker. */
+export interface WebhookAlertRow extends AlertRow {
+  source: 'webhook';
+}
+
+/** Structural guard for jsonl reads — retention tombstones and torn lines
+ *  fail this and are skipped by the reader. */
+export function isWebhookReceivedEvent(value: unknown): value is WebhookReceivedEvent {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const e = value as Partial<WebhookReceivedEvent>;
+  return (
+    typeof e.id === 'string' &&
+    isWebhookReceiverSource(e.source) &&
+    typeof e.receivedAt === 'string' &&
+    typeof e.eventType === 'string' &&
+    typeof e.demo === 'boolean' &&
+    typeof e.title === 'string' &&
+    (e.sev === 'P1' || e.sev === 'P2' || e.sev === 'P3')
+  );
+}
+
+/** Where the signing secret a source verifies against came from.
+ *  'operator' — a real secret stored in webhook-receivers.json;
+ *  'demo'     — the public demo secret (demo mode, no operator secret);
+ *  'none'     — nothing to verify against; the receiver refuses deliveries. */
+export type WebhookReceiverSecretState = 'operator' | 'demo' | 'none';
+
+/** Per-source receiver status for the panel. `lastReceivedAt: null` with
+ *  `receivedCount: 0` is the explicit nothing-received-yet state — it means
+ *  exactly that, never "status unavailable". */
+export interface WebhookReceiverSourceStatus {
+  source: WebhookReceiverSource;
+  /** Display label — 'Mist' | 'New Central'. */
+  label: string;
+  /** The path half of the URL to register as the delivery target. */
+  path: string;
+  secret: WebhookReceiverSecretState;
+  lastReceivedAt: string | null;
+  /** Events on record for this source in the bounded received-events record —
+   *  a record size, not an all-time delivery count. */
+  receivedCount: number;
+}
+
+export interface WebhookReceiverStatusEnvelope {
+  demoMode: boolean;
+  receivers: WebhookReceiverSourceStatus[];
+}
+
+export interface WebhookEventsEnvelope {
+  events: WebhookReceivedEvent[];
+  /** Present for an honest successful empty read — why there is nothing to
+   *  show, so an empty record never reads as a broken one. */
+  note?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Receiver demo fixtures — labelled sample deliveries for the simulate path
+// ---------------------------------------------------------------------------
+//
+// These are NOT polled estate fixtures: they are the payload shapes Mist and
+// New Central actually POST (Mist 'alarms' topic envelope; New Central's
+// alert notification, the shape its ServiceNow workflow documents). The
+// simulate route signs one with the effective secret and runs it through the
+// real verification + ingest path, so the demo exercises signature checking,
+// normalization, the ring/jsonl record and the alert queue — not a shortcut.
+// Timestamps are stamped at call time so a simulated event always reads as
+// just-fired.
+
+/** Mist 'alarms' topic delivery: a rogue-AP warning at the demo HQ site. */
+export function mistDemoAlarmPayload(nowMs: number = Date.now()): Record<string, unknown> {
+  return {
+    topic: 'alarms',
+    events: [
+      {
+        id: `demo-mist-${nowMs.toString(36)}`,
+        type: 'rogue_ap',
+        severity: 'warn',
+        timestamp: Math.round(nowMs / 1000),
+        org_id: 'demo-org-0000',
+        site_id: 'campus-01',
+        site_name: 'Campus-01 HQ',
+        aps: ['5c5b35000042'],
+        bssids: ['5c:5b:35:00:00:42'],
+        count: 3,
+      },
+    ],
+  };
+}
+
+/** New Central alert notification: a critical switch-disconnected at the
+ *  demo HQ site, in the exact field vocabulary the ServiceNow workflow reads. */
+export function centralDemoAlertPayload(nowMs: number = Date.now()): Record<string, unknown> {
+  return {
+    alertId: `demo-central-${nowMs.toString(36)}`,
+    name: 'Switch disconnected',
+    summary: 'Device sw-edge-2 disconnected',
+    category: 'device',
+    state: 'Open',
+    deviceType: 'switch',
+    severity: 'Critical',
+    time: new Date(nowMs).toISOString(),
+    impactedEntities: { deviceSerial: ['SG00DEMO042'], clientMac: [] },
+    additionalDetails: [{ site: 'Campus-01 HQ' }],
+  };
+}
+
+/** Mist 'client-sessions' topic delivery: a roaming clinical tablet between
+ *  the demo estate's two Campus-02 APs (next_ap is what makes it a ROAM).
+ *  Matches the demo world's clients roster (m.okonjo on MRDN-Clinical). */
+export function mistDemoClientSessionPayload(nowMs: number = Date.now()): Record<string, unknown> {
+  return {
+    topic: 'client-sessions',
+    events: [
+      {
+        id: `demo-mist-cs-${nowMs.toString(36)}`,
+        type: 'connect',
+        mac: '3c:22:fb:41:0a:19',
+        hostname: 'okonjo-ipad',
+        username: 'm.okonjo',
+        ssid: 'MRDN-Clinical',
+        ap: 'ap-3f-12',
+        next_ap: 'ap-3f-14',
+        band: '5',
+        channel: 36,
+        rssi: -58,
+        timestamp: Math.round(nowMs / 1000),
+        site_id: 'campus-02',
+        site_name: 'Campus-02 Research',
+      },
+    ],
+  };
+}
+
+/** Mist 'device-updowns' topic delivery: the demo estate's DFS-ticket AP
+ *  going down (the up/recovery word maps through the same mapper). */
+export function mistDemoDeviceUpdownPayload(nowMs: number = Date.now()): Record<string, unknown> {
+  return {
+    topic: 'device-updowns',
+    events: [
+      {
+        id: `demo-mist-du-${nowMs.toString(36)}`,
+        type: 'down',
+        device_name: 'ap-3f-14',
+        mac: '3c:52:82:3f:14:01',
+        model: 'AP43',
+        timestamp: Math.round(nowMs / 1000),
+        site_id: 'campus-02',
+        site_name: 'Campus-02 Research',
+      },
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Mist webhook subscription management — auto-registration of the receiver
+// ---------------------------------------------------------------------------
+//
+// The management half for the MIST direction of the receiver (the New
+// Central half lives above). A Mist org webhook subscription is
+// `{ name, url, topics[], enabled, secret? }` — the secret is the signing
+// credential Mist HMACs deliveries with (the same secret the receiver's
+// secret store verifies against). It is write-only here exactly like the
+// Central credentials above: sent on the reviewed write, never logged,
+// never echoed in a response, never displayed; the subscription shape below
+// carries only a `secretConfigured` presence marker.
+//
+// The topics the receiver normalizes — the auto-registration subscribes to
+// exactly these, because a topic the portal cannot normalize would be a
+// subscription that delivers alerts nobody reads:
+
+/** The webhook topics the receiver has mappers for — the registration set. */
+export const MIST_WEBHOOK_TOPICS = ['alarms', 'client-sessions', 'device-updowns'] as const;
+export type MistWebhookTopic = (typeof MIST_WEBHOOK_TOPICS)[number];
+
+export function isMistWebhookTopic(value: unknown): value is MistWebhookTopic {
+  return typeof value === 'string' && (MIST_WEBHOOK_TOPICS as readonly string[]).includes(value);
+}
+
+/** A Mist org webhook subscription as the portal reports it — SECRET-FREE.
+ *  `secretConfigured` reads only the presence of the secret on the GET row,
+ *  never its value. */
+export interface MistWebhookSubscription {
+  id: string;
+  name: string | null;
+  url: string | null;
+  topics: string[];
+  enabled: boolean | null;
+  /** true = the subscription carries a signing secret; null = the row did
+   *  not say (a different fact from "no secret"). */
+  secretConfigured: boolean | null;
+}
+
+/** The receiver-side status the Systems Mist drawer renders: what the org's
+ *  subscriptions look like from here, which of them point at THIS receiver,
+ *  and when a delivery last arrived. */
+export interface MistWebhookRegistrationStatus {
+  demoMode: boolean;
+  /** A Mist plane with complete credentials is linked. */
+  linked: boolean;
+  /** The fixed receiver path a subscription must point at ('/api/hooks/mist'). */
+  receiverPath: string;
+  /** The org subscriptions whose URL path ends with the receiver path —
+   *  usually 0 or 1; more than one means the receiver URL was registered
+   *  under several hosts/spellings, which is said, not hidden. */
+  subscriptions: MistWebhookSubscription[];
+  /** Every subscription on the org, when the list was read — the denominator
+   *  for "2 of 5 org webhooks point here". null = the list was not read. */
+  totalSubscriptions: number | null;
+  /** The receiver's own last-accepted-delivery stamp for the mist source —
+   *  the "verify" half of the story: registered AND delivering. */
+  lastReceivedAt: string | null;
+  /** Honest failure reason when the subscription list could not be read. */
+  error?: string;
+  /** Present for an honest successful read worth a sentence (e.g. the org
+   *  has no subscriptions at all). */
+  note?: string;
+  /** Set when this is the demo fixture, not a live read. */
+  demo?: true;
+}
+
+/** The reviewed registration form. `secret` is write-only. */
+export interface MistWebhookRegistrationForm {
+  url: string;
+  /** The topics to subscribe; must be a subset of MIST_WEBHOOK_TOPICS. */
+  topics: MistWebhookTopic[];
+  /** Present only when the signing secret is being set or rotated. */
+  secret?: string;
+}
+
+export type MistWebhookRegistrationAction = 'created' | 'updated' | 'unchanged' | 'failed';
+
+export interface MistWebhookRegistrationResult {
+  ok: boolean;
+  action: MistWebhookRegistrationAction;
+  message: string;
+  httpCode?: number;
+  /** true = the post-write re-read confirmed the subscription; absent =
+   *  the write answered OK but the re-read could not confirm it (said so in
+   *  `message` — never claimed). */
+  verified?: boolean;
+  /** The secret-free subscription after the write, when known. */
+  subscription?: MistWebhookSubscription;
+  /** Set when this is the canned demo answer — nothing was written. */
+  demo?: true;
+}
+
+/** The demo world's registration status: one subscription pointing at the
+ *  demo portal's receiver URL, all three topics, secret set — and the
+ *  receiver's real last-received stamp riding along (that half is this
+ *  portal's own record, not fixture data). */
+export function mistWebhookRegistrationDemoStatus(
+  demoMode: boolean,
+  lastReceivedAt: string | null,
+): MistWebhookRegistrationStatus {
+  return {
+    demoMode,
+    linked: true,
+    receiverPath: '/api/hooks/mist',
+    subscriptions: [
+      {
+        id: 'wh-demo-mist-0001',
+        name: 'hpe-network-tools receiver',
+        url: 'https://portal.meridian-health.example/api/hooks/mist',
+        topics: [...MIST_WEBHOOK_TOPICS],
+        enabled: true,
+        secretConfigured: true,
+      },
+    ],
+    totalSubscriptions: 2,
+    lastReceivedAt,
+    demo: true,
+  };
+}

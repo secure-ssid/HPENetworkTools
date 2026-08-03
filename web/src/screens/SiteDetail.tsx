@@ -46,8 +46,10 @@ import { getSiteDetail, type SiteDetailData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { Density } from '../app/SettingsContext';
 import { deviceDetailPath } from '../app/nav';
-import { hhmmLocal as hhmm, SITE_CHAIN, buildSiteTopology, detailState } from '@hpe/shared';
+import { hhmmLocal as hhmm, SITE_CHAIN, buildSiteTopology, detailState, planeKeyOf } from '@hpe/shared';
 import type {
+  MistRogueApRow,
+  SilencedSiteAlertRow,
   SiteAlertRow,
   SiteDeviceRow,
   SiteReachability,
@@ -60,6 +62,10 @@ import {
   buildLiveSiteTopology,
   liveTopologyLinkFact,
 } from './SiteTopology';
+import { SiteFloorPlan } from './siteDetail/FloorPlan';
+import { SiteRogueAps } from './siteDetail/RogueAps';
+import { SiteSle } from './siteDetail/Sle';
+import { SiteApplications } from './siteDetail/Applications';
 
 /** The per-site sections the live/blend envelope carries alongside the site
  *  row (server: liveSiteSections). Optional on the wire — a server that does
@@ -69,9 +75,24 @@ import {
 type LiveSiteSections = {
   devices?: SiteDeviceRow[];
   alerts?: SiteAlertRow[];
+  silencedAlerts?: SilencedSiteAlertRow[];
   reachability?: SiteReachability;
   topology?: SiteTopologyLive | null;
+  /** The site's Mist rogue/neighbor report (server: siteMistKeys / the demo
+   *  branch's authored MIST_ROGUE_APS). Absent = the route did not say. */
+  rogues?: MistRogueApRow[];
 };
+
+/** Expiry stamp for a silence: hh:mm when it ends today, else day + time, in
+ *  the reader's own clock — the same rule the Alerts screen's bench follows. */
+function untilLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? hhmm(iso)
+    : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
 
 /** Design rule 1: say which source answered and when it last succeeded. Demo
  *  fixtures carry a synthetic syncedAt, so they are labelled, never timed. */
@@ -257,12 +278,19 @@ function LocalReachabilityPanel({
 }
 
 /** "Open here" (README §7) — the site's open alerts, from whichever source
- *  answered, with the jump-out to the filtered queue. */
+ *  answered, with the jump-out to the filtered queue. A firing an active
+ *  silence benched leaves the active list for the site's own SILENCED (N)
+ *  group below it — reason and expiry attached, the same moved-never-hidden
+ *  story the Alerts screen tells, so the silence-aware 'clear' badge and this
+ *  section never disagree. Silence management itself stays on the Alerts
+ *  screen; the "All alerts →" meta is the hand-off. */
 function OpenHereList({
   alerts,
+  silenced = [],
   onAllAlerts,
 }: {
   alerts: SiteAlertRow[];
+  silenced?: SilencedSiteAlertRow[];
   onAllAlerts: () => void;
 }) {
   return (
@@ -320,7 +348,69 @@ function OpenHereList({
             padding: '10px 0',
           }}
         >
-          nothing open here
+          {silenced.length > 0
+            ? 'hushed, not quiet — everything firing here is silenced below'
+            : 'nothing open here'}
+        </div>
+      ) : null}
+      {silenced.length > 0 ? (
+        <div
+          style={{
+            marginTop: 10,
+            border: '1px solid var(--nd-border-default)',
+            background: 'var(--nd-bg-raised)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 10,
+              flexWrap: 'wrap',
+              padding: '10px 14px',
+              borderBottom: '1px solid var(--nd-border-default)',
+            }}
+          >
+            <span
+              style={{
+                fontFamily: 'var(--nd-font-mono)',
+                fontSize: 'var(--nd-text-11)',
+                color: 'var(--nd-text-secondary)',
+                letterSpacing: '.08em',
+              }}
+            >
+              {`SILENCED (${silenced.length})`}
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+              still firing — benched until the silence expires, never hidden
+            </span>
+          </div>
+          {silenced.map((a) => (
+            <div
+              key={a.title}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                flexWrap: 'wrap',
+                padding: '8px 14px',
+              }}
+            >
+              <Badge tone={a.tone} dot>
+                {a.sev}
+              </Badge>
+              <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{a.title}</span>
+              <span
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 'var(--nd-text-11)',
+                  color: 'var(--nd-text-muted)',
+                }}
+              >
+                {`${a.reason} · until ${untilLabel(a.until)}`}
+              </span>
+            </div>
+          ))}
         </div>
       ) : null}
     </div>
@@ -459,21 +549,48 @@ function LiveTopologyPanel({
 
 export default function SiteDetail() {
   const navigate = useNavigate();
-  const { density, showPlatformTags } = useSettings();
+  const { density, showPlatformTags, pollIntervalSec } = useSettings();
   const { toast } = useToast();
   const { siteId: param = '' } = useParams();
   const [detail, setDetail] = useState<SiteDetailData | null>(null); // null = loading
 
+  /* Navigating site-to-site keeps this screen mounted: the previous site's
+     detail is dropped during render (the spinner is honest — nothing about
+     the new site is known yet), then the effect reads it. */
+  const [prevParam, setPrevParam] = useState(param);
+  if (prevParam !== param) {
+    setPrevParam(param);
+    setDetail(null);
+  }
+
+  /* The header stamps LIVE · SYNCED hh:mm, so a NOC tab must not sit on a
+     mount-time snapshot under it: poll on the settings cadence, the same
+     pattern Overview.tsx runs. One fetch at a time — a slow response never
+     stacks up behind the interval. No drawer, form or edit state lives on
+     this screen (its buttons only navigate or toast), so a refresh landing
+     mid-interaction cannot disturb anything the operator is entering. */
   useEffect(() => {
     let live = true;
-    setDetail(null);
-    void getSiteDetail(param).then((d) => {
-      if (live) setDetail(d);
-    });
+    let inFlight = false;
+    const pull = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void getSiteDetail(param)
+        .then((d) => {
+          if (live) setDetail(d);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    pull();
+    const every = Math.max(pollIntervalSec, 10) * 1000;
+    const id = setInterval(pull, every);
     return () => {
       live = false;
+      clearInterval(id);
     };
-  }, [param]);
+  }, [param, pollIntervalSec]);
 
   if (detail === null) {
     return (
@@ -523,11 +640,19 @@ export default function SiteDetail() {
     ];
     const liveDevices = sections.devices ?? [];
     const liveAlerts = sections.alerts ?? [];
+    // Firings an active silence benched out of "Open here" — listed under the
+    // section's own SILENCED (N) group with their reason, never dropped.
+    const liveSilenced = sections.silencedAlerts ?? [];
     // Derived server-side from the local collector's registry state plus the
     // LOCAL-claimed share of this site's devices. Absent = the route does not
     // compute it, and the panel stays the honest NOT REPORTED note below.
     const reachability = sections.reachability ?? null;
     const liveTopology = sections.topology;
+    // Floor plans and SLE are Mist-published; which honest empty sentence
+    // those sections show depends on whether a Mist badge claims this site.
+    const mistClaimed = site.planes.some((p) => p.name.toUpperCase().includes('MIST'));
+    // DPI application visibility is Central-published — same claim rule.
+    const centralClaimed = site.planes.some((p) => planeKeyOf(p.name) === 'central');
     const liveTopologyReported =
       detailState(liveTopology?.source, 'nodes') === 'ok' &&
       (liveTopology?.nodes?.length ?? 0) > 0;
@@ -623,6 +748,12 @@ export default function SiteDetail() {
           onDevice={(deviceName) => navigate(`/devices/${encodeURIComponent(deviceName)}`)}
         />
 
+        <SiteFloorPlan maps={sections.maps} clients={sections.mapClients} mistClaimed={mistClaimed} />
+
+        <SiteRogueAps rogues={sections.rogues} mistClaimed={mistClaimed} />
+
+        <SiteApplications centralClaimed={centralClaimed} siteKey={String(site.id)} />
+
         {/* Same two columns as the authored branch (README §7): the per-site
             device table on the left, facts / reachability / open alerts on the
             right — the API sends both projections with a live site row. */}
@@ -642,6 +773,12 @@ export default function SiteDetail() {
           />
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
+            <SiteSle
+              sle={sections.sle}
+              mistClaimed={mistClaimed}
+              siteKey={String(site.id)}
+              siteName={name}
+            />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <SectionHeader label="Live site facts" />
               {facts.map((fact) => (
@@ -692,7 +829,11 @@ export default function SiteDetail() {
               </div>
             )}
 
-            <OpenHereList alerts={liveAlerts} onAllAlerts={() => navigate('/alerts')} />
+            <OpenHereList
+              alerts={liveAlerts}
+              silenced={liveSilenced}
+              onAllAlerts={() => navigate('/alerts')}
+            />
           </div>
         </div>
       </div>
@@ -702,6 +843,11 @@ export default function SiteDetail() {
   const topology = profile
     ? buildSiteTopology(profile.siteId, profile.devices, (profile.siteId && SITE_CHAIN[profile.siteId]) || null)
     : null;
+  // Same Mist-published sections as the live branch, fed from the route's demo
+  // keys — one derivation, so the two branches can never word them differently.
+  const mistClaimed = site.planes.some((p) => p.name.toUpperCase().includes('MIST'));
+  // Same Central-published section too — one claim rule in both branches.
+  const centralClaimed = site.planes.some((p) => planeKeyOf(p.name) === 'central');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -820,6 +966,12 @@ export default function SiteDetail() {
             </div>
           ) : null}
 
+          <SiteFloorPlan maps={detail.maps} clients={detail.mapClients} mistClaimed={mistClaimed} />
+
+          <SiteRogueAps rogues={sections.rogues} mistClaimed={mistClaimed} />
+
+          <SiteApplications centralClaimed={centralClaimed} siteKey={String(site.id)} />
+
           <div
             style={{
               display: 'grid',
@@ -838,6 +990,12 @@ export default function SiteDetail() {
 
             {/* ---------------- right column ---------------- */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
+              <SiteSle
+                sle={detail.sle}
+                mistClaimed={mistClaimed}
+                siteKey={String(site.id)}
+                siteName={name}
+              />
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <SectionHeader label="Site facts" />
                 {profile.facts.map((f) => (

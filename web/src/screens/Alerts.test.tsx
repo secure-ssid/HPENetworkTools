@@ -16,18 +16,23 @@
  *  (h) an empty queue says so instead of blaming an unset filter;
  *  (i) rows sharing a title are keyed apart, so both render;
  *  (j) a correlation served by the route wins over the derived one, tone included;
- *  (k) …and its absence leaves the derived banner in place.
+ *  (k) …and its absence leaves the derived banner in place;
+ *  (l) repeat firings collapse into one row with a ×N badge, counted in firings;
+ *  (m) a silenced group is benched from the table and listed WITH its reason,
+ *      never invisible — and an all-silenced queue reads hushed, not quiet;
+ *  (n) Unsilence deletes the silence and refreshes the queue;
+ *  (o) the Silence drawer requires a reason and posts the group's matchers.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import Alerts from './Alerts';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
-import { ackAlert, getAlerts, getTickets } from '../api/client';
+import { ackAlert, createSilence, deleteSilence, getAlerts, getTickets } from '../api/client';
 import type { AlertsData } from '../api/client';
-import type { AlertRow } from '@hpe/shared';
+import type { AlertGroup, AlertRow, SilencedAlertGroup } from '@hpe/shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -53,11 +58,21 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
-  return { ...actual, getAlerts: vi.fn(), getTickets: vi.fn(), ackAlert: vi.fn(), raiseTicket: vi.fn() };
+  return {
+    ...actual,
+    getAlerts: vi.fn(),
+    getTickets: vi.fn(),
+    ackAlert: vi.fn(),
+    raiseTicket: vi.fn(),
+    createSilence: vi.fn(),
+    deleteSilence: vi.fn(),
+  };
 });
 
 const mockGetAlerts = vi.mocked(getAlerts);
 const mockGetTickets = vi.mocked(getTickets);
+const mockCreateSilence = vi.mocked(createSilence);
+const mockDeleteSilence = vi.mocked(deleteSilence);
 
 const WORST: AlertRow = {
   sev: 'P1',
@@ -93,7 +108,7 @@ function liveData(over: Partial<AlertsData> = {}): AlertsData {
 
 function renderAlerts() {
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <ToastProvider>
         <SettingsProvider>
           <Alerts />
@@ -357,5 +372,366 @@ describe('Alerts acknowledge verification', () => {
     await ackWith({ ok: true, applied: true, message: 'accepted', alert: 'a', ticket: 'NET-1' });
 
     expect(screen.getByText(/Accepted, not yet cleared/)).toBeTruthy();
+  });
+});
+
+/* Fingerprint grouping (shared/alertEngine.ts) is the queue's noise control:
+ * a flapping alert is one row with a count, and a time-boxed silence benches
+ * a group WITHOUT hiding it — the Silenced section always says what is hushed,
+ * why, and until when. */
+describe('Alerts grouping and silences', () => {
+  const FLAP_OLD: AlertRow = {
+    ...WORST,
+    sev: 'P2',
+    tone: 'warning',
+    title: 'gw-edge-1 tunnel flap ×14 in an hour',
+    detail: 'ipsec to dc1 · mtu blackhole suspected',
+    plane: 'AOS-10',
+    age: '55m',
+    device: 'gw-edge-1',
+  };
+  const FLAP_NEW: AlertRow = { ...FLAP_OLD, detail: 'ipsec to dc1 · ddos guard throttled ike', age: '12m' };
+
+  const FLAP_GROUP: AlertGroup = {
+    fingerprint: 'aos-10|gw-edge-1|gw-edge-1 tunnel flap ×14 in an hour',
+    latest: FLAP_NEW,
+    count: 2,
+    firstSeen: '55m',
+    lastSeen: '12m',
+  };
+
+  const SILENCED: SilencedAlertGroup = {
+    group: FLAP_GROUP,
+    silence: {
+      id: 'sil-1',
+      device: 'gw-edge-1',
+      reason: 'ISP maintenance window',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      until: new Date(Date.now() + 3_600_000).toISOString(),
+    },
+  };
+
+  it('(l) collapses repeat firings into one row with a ×N badge, counted in firings', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [FLAP_OLD, FLAP_NEW] }));
+    renderAlerts();
+
+    // One row, not two — and the badge carries the noise level.
+    expect(await screen.findByText('×2')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: 'Silence' })).toHaveLength(1),
+    );
+    // The latest firing's detail, with the storm bracket next to it.
+    expect(screen.getByText(/ddos guard throttled ike · 2 firings, first seen 55m ago/)).toBeTruthy();
+    // The count line counts firings, not rows.
+    expect(screen.getByText('2 of 2 alerts · live')).toBeTruthy();
+  });
+
+  it('(m) benches a silenced group WITH its reason — and an all-silenced queue reads hushed, not quiet', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [], groups: [], silenced: [SILENCED] }));
+    renderAlerts();
+
+    expect(await screen.findByText('SILENCED (1)')).toBeTruthy();
+    expect(screen.getByText(/ISP maintenance window · until /)).toBeTruthy();
+    expect(screen.getByText('×2')).toBeTruthy();
+    // The active table holds nothing, and the empty state says why honestly.
+    expect(screen.getByText('Everything firing is silenced')).toBeTruthy();
+    expect(screen.getByText(/hushed, not quiet/)).toBeTruthy();
+    // The benched group is NOT in the active table.
+    expect(screen.queryByRole('button', { name: 'Inspect' })).toBeNull();
+  });
+
+  it('(n) Unsilence deletes the silence and refreshes the queue', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [], groups: [], silenced: [SILENCED] }));
+    mockDeleteSilence.mockResolvedValue({ ok: true });
+    renderAlerts();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Unsilence' }));
+    await waitFor(() => expect(mockDeleteSilence).toHaveBeenCalledWith('sil-1'));
+    await waitFor(() => expect(mockGetAlerts).toHaveBeenCalledTimes(2));
+  });
+
+  it('(o) the Silence drawer requires a reason and posts the group matchers', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [FLAP_OLD, FLAP_NEW] }));
+    mockCreateSilence.mockResolvedValue({ silence: SILENCED.silence });
+    renderAlerts();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Silence' }));
+    const dialog = await screen.findByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: 'Silence' });
+    // A reason is required before anything is filed.
+    expect(confirm).toHaveProperty('disabled', true);
+
+    fireEvent.change(within(dialog).getByLabelText('Silence duration'), { target: { value: '1440' } });
+    fireEvent.change(within(dialog).getByLabelText('Silence reason'), {
+      target: { value: 'ISP maintenance window' },
+    });
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(mockCreateSilence).toHaveBeenCalledWith({
+        plane: 'AOS-10',
+        device: 'gw-edge-1',
+        titleContains: 'gw-edge-1 tunnel flap ×14 in an hour',
+        reason: 'ISP maintenance window',
+        durationMinutes: 1440,
+      }),
+    );
+    await waitFor(() => expect(mockGetAlerts).toHaveBeenCalledTimes(2));
+  });
+
+  it('(p) a failed silence create says so instead of looking filed', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [FLAP_NEW] }));
+    mockCreateSilence.mockResolvedValue({ error: 'backend unreachable', offline: true });
+    renderAlerts();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Silence' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Silence reason'), { target: { value: 'x' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Silence' }));
+
+    expect(await screen.findByText(/Silence not created/)).toBeTruthy();
+    // The queue was not re-read on a failure, and the drawer stays open.
+    expect(mockGetAlerts).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+});
+
+/* The queue table is the nightdesk DataTable's second integration: the column
+ * manager persists through SettingsContext under the 'alerts' table id, the
+ * rows are a keyboard grid (Enter opens the group's timeline drawer) and '?'
+ * lists the commands. These tests pin the wiring, not the mechanics — those
+ * live in nightdesk/DataTable.test.tsx. */
+describe('Alerts DataTable superpowers', () => {
+  beforeEach(() => {
+    // Plain localStorage is not reliable in this environment — stub it the
+    // SettingsContext.test.tsx way, fresh per test so no config leaks.
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function bodyRows(container: HTMLElement): HTMLTableRowElement[] {
+    return Array.from(container.querySelectorAll('tbody tr'));
+  }
+
+  it('hides and restores a column from View options, persisted under the alerts table id', async () => {
+    mockGetAlerts.mockResolvedValue(liveData());
+    const { container } = renderAlerts();
+    await screen.findByText('2 of 2 alerts · live');
+    expect(container.querySelector('th[data-column-key="site"]')).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'View options' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Site' }));
+    expect(container.querySelector('th[data-column-key="site"]')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('nt-table-columns') ?? '{}')).toEqual({
+      alerts: { hidden: ['site'] },
+    });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Site' }));
+    expect(container.querySelector('th[data-column-key="site"]')).not.toBeNull();
+  });
+
+  it('keeps the primary alert column out of the hideable set', async () => {
+    mockGetAlerts.mockResolvedValue(liveData());
+    renderAlerts();
+    await screen.findByText('2 of 2 alerts · live');
+
+    fireEvent.click(screen.getByRole('button', { name: 'View options' }));
+    expect(screen.getByRole('checkbox', { name: 'Alert' })).toHaveProperty('disabled', true);
+  });
+
+  it('moves the focused row with j/k and opens the timeline drawer on Enter', async () => {
+    mockGetAlerts.mockResolvedValue(liveData());
+    const { container } = renderAlerts();
+    await screen.findByText('2 of 2 alerts · live');
+    const [first, second] = bodyRows(container);
+
+    expect(first.getAttribute('tabindex')).toBe('0');
+    fireEvent.keyDown(first, { key: 'j' });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'k' });
+    expect(document.activeElement).toBe(first);
+
+    fireEvent.keyDown(first, { key: 'Enter' });
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Occurrence timeline')).toBeTruthy();
+    expect(within(dialog).getByText(/gw-edge-1 unreachable/)).toBeTruthy();
+  });
+
+  it("lists the row commands on '?'", async () => {
+    mockGetAlerts.mockResolvedValue(liveData());
+    renderAlerts();
+    await screen.findByText('2 of 2 alerts · live');
+
+    fireEvent.keyDown(document.body, { key: '?' });
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+    expect(screen.getByText('Move to the next row')).toBeTruthy();
+    expect(screen.getByText("Run the focused row's primary action")).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
+/* The faceted filters (severity / plane / site): OR within a facet, AND
+ * across facets, counts computed over the OTHER active facets — and always
+ * composed with the free text and switches, never instead of them. */
+describe('Alerts facets', () => {
+  const P3_CENTRAL: AlertRow = {
+    ...WORST,
+    sev: 'P3',
+    tone: 'info',
+    title: 'Config Out of Sync',
+    detail: 'template drift',
+    device: 'sw-acc-3f-1',
+    alertId: 'K9',
+  };
+
+  it('narrows the queue by facet with honest live counts', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [WORST, STALE_PARTNER, P3_CENTRAL] }));
+    renderAlerts();
+    await screen.findByText('3 of 3 alerts · live');
+
+    // Every severity is offered, counted over the whole (unfaceted) queue.
+    fireEvent.click(screen.getByRole('button', { name: 'Severity' }));
+    const sevPanel = screen.getByRole('group', { name: 'Severity filter' });
+    for (const sev of ['P1', 'P2', 'P3']) {
+      expect(within(sevPanel).getByRole('checkbox', { name: sev }).closest('li')!.textContent).toContain('1');
+    }
+
+    // Ticking P1 narrows to exactly the P1 group, counted in firings.
+    fireEvent.click(within(sevPanel).getByRole('checkbox', { name: 'P1' }));
+    expect(screen.getByText('1 of 3 alerts · live')).toBeTruthy();
+    expect(screen.getByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.queryByText('inventory 6h stale')).toBeNull();
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    // The OTHER facet's counts now reflect the severity selection: of the
+    // planes, only CENTRAL still has a row in view — but CLASSIC stays listed
+    // at 0 rather than vanishing with its row.
+    fireEvent.click(screen.getByRole('button', { name: 'Plane' }));
+    const planePanel = screen.getByRole('group', { name: 'Plane filter' });
+    expect(within(planePanel).getByRole('checkbox', { name: 'CENTRAL' }).closest('li')!.textContent).toContain('1');
+    expect(within(planePanel).getByRole('checkbox', { name: 'CLASSIC' }).closest('li')!.textContent).toContain('0');
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    // AND across facets: plane CLASSIC + severity P1 is honestly empty, and
+    // the empty state blames the filter, not the estate.
+    fireEvent.click(screen.getByRole('button', { name: 'Plane' }));
+    fireEvent.click(within(screen.getByRole('group', { name: 'Plane filter' })).getByRole('checkbox', { name: 'CLASSIC' }));
+    expect(screen.getByText('0 of 3 alerts · live')).toBeTruthy();
+    expect(screen.getByText('Nothing matches that filter')).toBeTruthy();
+
+    // The clear-all chip restores the queue.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: '2 facet values — clear' }));
+    expect(screen.getByText('3 of 3 alerts · live')).toBeTruthy();
+  });
+
+  it('facets compose with the free-text filter (AND), counts following the text', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [WORST, STALE_PARTNER, P3_CENTRAL] }));
+    renderAlerts();
+    await screen.findByText('3 of 3 alerts · live');
+
+    fireEvent.change(screen.getByLabelText('Filter alerts'), { target: { value: 'config' } });
+    expect(screen.getByText('1 of 3 alerts · live')).toBeTruthy();
+
+    // The facet universe is the text-filtered set: only P3 remains countable.
+    fireEvent.click(screen.getByRole('button', { name: 'Severity' }));
+    const sevPanel = screen.getByRole('group', { name: 'Severity filter' });
+    expect(within(sevPanel).getByRole('checkbox', { name: 'P3' }).closest('li')!.textContent).toContain('1');
+    expect(within(sevPanel).queryByRole('checkbox', { name: 'P1' })).toBeNull();
+  });
+
+  it('offers the site facet labelled by site name, keyed on the site id', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [WORST, STALE_PARTNER] }));
+    renderAlerts();
+    await screen.findByText('2 of 2 alerts · live');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Site' }));
+    const sitePanel = screen.getByRole('group', { name: 'Site filter' });
+    fireEvent.click(within(sitePanel).getByRole('checkbox', { name: 'Campus-01 HQ' }));
+    // Both fixture rows share the one site — ticking it changes nothing but
+    // proves the facet is wired through siteId.
+    expect(screen.getByText('2 of 2 alerts · live')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: '1 facet value — clear' }));
+    expect(screen.getByText('2 of 2 alerts · live')).toBeTruthy();
+  });
+});
+
+/* A `?plane=` deep link (the Central screen's queue hand-off) seeds the
+ * plane facet once, on mount — after that the selection is the operator's. */
+describe('Alerts ?plane= deep link', () => {
+  it('seeds the plane facet so the queue opens already filtered', async () => {
+    // Two acked rows on different planes: nothing open, so no correlation
+    // banner competes with the assertion.
+    const centralRow = { ...WORST, state: 'acked' } as AlertRow;
+    const classicRow = { ...STALE_PARTNER, state: 'acked', stale: undefined } as AlertRow;
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [centralRow, classicRow] }));
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/alerts?plane=CENTRAL']}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Alerts />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    // The CENTRAL row renders; the CLASSIC row is filtered out on mount.
+    expect(await screen.findByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.queryByText('inventory 6h stale')).toBeNull();
+    expect(screen.getByText('1 of 2 alerts · live')).toBeTruthy();
+  });
+
+  it('no param opens the unfiltered queue, exactly as before', async () => {
+    const centralRow = { ...WORST, state: 'acked' } as AlertRow;
+    const classicRow = { ...STALE_PARTNER, state: 'acked', stale: undefined } as AlertRow;
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [centralRow, classicRow] }));
+    renderAlerts();
+
+    expect(await screen.findByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.getByText('inventory 6h stale')).toBeTruthy();
+    expect(screen.getByText('2 of 2 alerts · live')).toBeTruthy();
+  });
+});
+
+/* A row that arrived through the inbound webhook receiver carries
+ * source:'webhook' (shared/webhooks.ts WebhookAlertRow) — the queue badges it
+ * subtly, next to the dedup count, and only ever when the marker is present. */
+describe('Alerts webhook badge', () => {
+  it('badges a webhook-sourced row and leaves polled rows unbadged', async () => {
+    const WEBHOOK_ROW = {
+      ...WORST,
+      title: 'mist device-down event',
+      detail: 'delivered by the inbound receiver',
+      plane: 'MIST',
+      device: 'ap-3f-12',
+      source: 'webhook',
+    } as AlertRow;
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [WORST, WEBHOOK_ROW] }));
+    renderAlerts();
+
+    await screen.findByText('mist device-down event');
+    const badge = screen.getByText('webhook');
+    expect(badge.closest('span[title]')?.getAttribute('title')).toBe(
+      'received through an inbound webhook, not a plane poll',
+    );
+    // Exactly one badge: the polled row carries no marker.
+    expect(screen.getAllByText('webhook')).toHaveLength(1);
+    // The badge is provenance, not a filter change — both rows still count.
+    expect(screen.getByText('2 of 2 alerts · live')).toBeTruthy();
   });
 });

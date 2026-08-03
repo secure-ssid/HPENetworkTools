@@ -267,3 +267,64 @@ describe('buildLiveSiteTopology — layout without inventing facts', () => {
     ).toBe('1/1/1 ↔ eth0 · 1.0 Gbps · STP discarding · added manually · link fair');
   });
 });
+
+describe('LLDP-derived edges (Mist AP stats uplinks)', () => {
+  /* Mist's AP-stats edges carry edgeType 'LLDP': each is one AP's own report
+     of its uplink neighbour, not a plane-observed full-graph adjacency. The
+     word is the edge's evidence and rides verbatim; 'System' (observed) and
+     'Manual' (asserted) keep their existing handling. */
+  it('words the edge evidence verbatim', () => {
+    expect(liveTopologyLinkFact(link('AP1', 'SW', { edgeType: 'LLDP' }))).toBe(
+      '1/1/1 ↔ eth0 · 1.0 Gbps · LLDP',
+    );
+    expect(liveTopologyLinkFact(link('SW', 'AP1', { edgeType: 'System' }))).toBe('1/1/1 ↔ eth0 · 1.0 Gbps');
+    expect(liveTopologyLinkFact(link('SW', 'AP1', { edgeType: 'Manual' }))).toContain('added manually');
+  });
+
+  it('an all-LLDP graph names its provenance in the note, not the full-graph claim', () => {
+    const diagram = buildLiveSiteTopology(live({ links: [link('SW', 'AP1', { edgeType: 'LLDP' })] }));
+    expect(diagram.note).toContain("one AP's own LLDP report");
+    expect(diagram.note).toContain('not traffic direction');
+    expect(diagram.note).not.toContain('reports these links as physical adjacency');
+  });
+
+  it('a graph with any non-LLDP edge keeps the default note', () => {
+    const mixed = buildLiveSiteTopology(
+      live({ links: [link('SW', 'AP1', { edgeType: 'LLDP' }), link('SW', 'AP1')] }),
+    );
+    expect(mixed.note).toContain('reports these links as physical adjacency');
+    // …and so does a graph that never named its evidence.
+    expect(buildLiveSiteTopology(live()).note).toContain('reports these links as physical adjacency');
+  });
+});
+
+describe('edge enrichment — the carried port fields the label used to drop', () => {
+  /* Central's topology links carry each member port's LAG name, but the label
+     printed only the member names — a bundle read as two unrelated cables. */
+  it('names the bundle when the plane says the member ports are one', () => {
+    expect(
+      liveTopologyLinkFact(
+        link('SW', 'AP1', {
+          fromPorts: [
+            { name: '1/1/1', lag: 'Po2' },
+            { name: '1/1/2', lag: 'Po2' },
+          ],
+        }),
+      ),
+    ).toBe('1/1/1+1/1/2 (Po2) ↔ eth0 · 1.0 Gbps');
+    // No lag reported: the wording is exactly what it was.
+    expect(liveTopologyLinkFact(link('SW', 'AP1'))).toBe('1/1/1 ↔ eth0 · 1.0 Gbps');
+  });
+
+  /* The link-level verdict can read 'Good' over a bundle whose second member
+     is flapping; the carried port health was the only place that said so. */
+  it('words a member port the plane scored as anything but good', () => {
+    expect(
+      liveTopologyLinkFact(link('SW', 'AP1', { toPorts: [{ name: '1/1/9', health: 'Poor' }] })),
+    ).toBe('1/1/1 ↔ 1/1/9 · 1.0 Gbps · port 1/1/9 poor');
+    // A 'Good' member is the ordinary case and earns no words.
+    expect(
+      liveTopologyLinkFact(link('SW', 'AP1', { toPorts: [{ name: '1/1/9', health: 'Good' }] })),
+    ).toBe('1/1/1 ↔ 1/1/9 · 1.0 Gbps');
+  });
+});

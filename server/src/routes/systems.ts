@@ -40,7 +40,7 @@ import { UxiAdapter } from '../planes/uxi';
 import { httpsBase } from '../planes/transport';
 import { GreenLakeAdapter } from '../planes/greenlake';
 import { MistAdapter } from '../planes/mist';
-import { ClearPassAdapter } from '../planes/clearpass';
+import { ClearPassAdapter, httpsFetch as clearpassHttpsFetch } from '../planes/clearpass';
 import { Aos8Adapter } from '../planes/aos8';
 import { registry } from '../planes/registry';
 import { poller, type TickResult } from '../services/poller';
@@ -511,6 +511,69 @@ function buildSseCredentialRecord(
 }
 
 /** Generic planes: reachability only, reported honestly. */
+/**
+ * ClearPass validates the CREDENTIALS, not just reachability: client
+ * credentials mint a real token (POST /api/oauth), a pre-minted token reads
+ * the endpoint repository — and CPPM's own refusal detail is the message.
+ * A lab CPPM's self-signed cert is handled by the adapter's node:https
+ * transport (verifyTls opt-in); plain-http targets (mock servers) use fetch.
+ * Secrets are dialed, never echoed: messages carry status + CPPM detail only.
+ */
+async function testClearPass(creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
+  const target = HOST_KEYS.map((k) => creds[k]).find((v) => typeof v === 'string' && v.length > 0);
+  if (!target) {
+    const err = new Error('no credentials/host for clearpass — pass a complete set in the request body or save credentials first') as Error & { status?: number };
+    err.status = 400;
+    throw err;
+  }
+  const base = (/^https?:\/\//i.test(target) ? target : `https://${target}`).replace(/\/+$/, '');
+  const transport = base.startsWith('https:') ? clearpassHttpsFetch(creds.verifyTls === 'true') : fetch;
+  const call = async (path: string, init: RequestInit): Promise<Response> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      return await transport(`${base}${path}`, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const hasOauth = ClearPassAdapter.hasOauthCreds(creds);
+  try {
+    if (hasOauth) {
+      const res = await call('/api/oauth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ grant_type: 'client_credentials', client_id: creds.clientId, client_secret: creds.clientSecret }),
+      });
+      const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      if (res.status === 200 && typeof body?.access_token === 'string' && body.access_token.length > 0) {
+        const hours = typeof body.expires_in === 'number' ? ` · token lifetime ${Math.round(body.expires_in / 3600)}h` : '';
+        return { ok: true, message: `authenticated — client credentials accepted, token minted${hours}` };
+      }
+      const detail =
+        typeof body?.detail === 'string' ? body.detail : typeof body?.title === 'string' ? body.title : null;
+      return { ok: false, message: `CPPM refused the client — HTTP ${res.status}${detail ? `: ${detail}` : ''}` };
+    }
+    if (typeof creds.token === 'string' && creds.token.trim().length > 0) {
+      const res = await call('/api/endpoint?limit=1', {
+        method: 'GET',
+        headers: { authorization: `Bearer ${creds.token}`, accept: 'application/json' },
+      });
+      if (res.status === 200) return { ok: true, message: 'authenticated — token accepted; endpoint repository readable' };
+      if (res.status === 401) return { ok: false, message: 'CPPM rejected the token — HTTP 401 (expired or revoked)' };
+      if (res.status === 403) {
+        return { ok: false, message: 'token accepted but lacks Endpoint repository privileges (HTTP 403) — check the API client privileges in CPPM' };
+      }
+      return { ok: false, message: `CPPM answered HTTP ${res.status} reading the endpoint repository` };
+    }
+    return { ok: false, message: 'clearpass requires clientId + clientSecret, or a pre-minted API token' };
+  } catch (err) {
+    const e = err as Error;
+    console.error(`clearpass connection test: ${e.message}`);
+    return { ok: false, message: `cannot reach ${base} — ${e.name === 'AbortError' ? 'timed out after 8s' : 'connection failed'}` };
+  }
+}
+
 async function testReachable(plane: PlaneId, creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
   // Only a host-ish field may name a target — any other stored value (token,
   // password, …) must never be dialed, and never echoed back in a message.
@@ -603,7 +666,9 @@ systemsRouter.post(
             ? await testGreenLake(creds)
             : plane === 'sse'
               ? await testSse(creds)
-              : await testReachable(plane, creds);
+              : plane === 'clearpass'
+                ? await testClearPass(creds)
+                : await testReachable(plane, creds);
     const ms = Date.now() - started;
 
     registry.recordCall(plane, {
@@ -614,7 +679,9 @@ systemsRouter.post(
             ? 'POST sso token.oauth2 (connection test)'
             : plane === 'sse'
               ? 'GET /api/v1.0/Connectors?pagenumber=1&pagesize=1 (connection test)'
-              : 'reachability check (connection test)',
+              : plane === 'clearpass'
+                ? 'POST /api/oauth or GET /api/endpoint (connection test)'
+                : 'reachability check (connection test)',
       ms,
       code: outcome.ok ? 'ok' : 'fail',
     });

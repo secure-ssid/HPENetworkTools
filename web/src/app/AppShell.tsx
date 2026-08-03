@@ -16,13 +16,14 @@
  * here that is allowed into localStorage.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
-import { Alert, AppShell as NightdeskAppShell, Avatar, Breadcrumbs, Button, Drawer } from '../nightdesk';
+import { Alert, AppShell as NightdeskAppShell, Avatar, Breadcrumbs, Button, Drawer, Spinner } from '../nightdesk';
 import type { Crumb } from '../nightdesk';
 import { CRUMBS, NAV_GROUPS, SITE_IDS, SYSTEMS, siteDisplayName } from '@hpe/shared';
-import type { SiteId, View } from '@hpe/shared';
+import type { NotificationCenterEntry, NotificationCenterSeverity, NotificationCenterView, SiteId, View } from '@hpe/shared';
 import { getSystemsState } from '../api/client';
+import { getNotificationCenter, markNotificationCenterRead } from '../api/notificationCenter';
 import { isBackendReachable, onBackendReachabilityChange } from '../api/core';
 import { useSettings } from './SettingsContext';
 import { SearchPanel } from './SearchPanel';
@@ -33,6 +34,19 @@ import { useAuth } from './AuthGate';
 import { logout } from '../api/auth';
 
 const RAIL_KEY = 'hpe-nt.nav-rail';
+
+/**
+ * What a lazy screen chunk shows while it loads: the portal's ordinary
+ * spinner, centred in the content area. The shell itself (sidebar, topbar)
+ * is eager and stays put — only the screen is ever pending.
+ */
+export function RouteFallback() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+      <Spinner />
+    </div>
+  );
+}
 
 function readRailPref(): boolean {
   try {
@@ -114,6 +128,236 @@ function BackendUnreachableBanner() {
           the portal responds again.
         </span>
       </Alert>
+    </div>
+  );
+}
+
+/** The tone dot a bell entry's severity maps to. */
+function notificationTone(severity: NotificationCenterSeverity): string {
+  switch (severity) {
+    case 'danger':
+      return 'var(--nd-danger)';
+    case 'warning':
+      return 'var(--nd-warning)';
+    case 'success':
+      return 'var(--nd-success)';
+    default:
+      return 'var(--nd-info)';
+  }
+}
+
+/**
+ * The notification center's topbar presence: a bell with the unread count,
+ * opening the newest entries. Polls on the same cadence as the engine's
+ * evaluation (60s) and refreshes again when opened.
+ *
+ * The failure states are stated, not hidden: a backend that does not answer
+ * leaves the bell badge-less (no fabricated zero) and the dropdown says why,
+ * and a demo entry is labelled demo — the showcase must never read as the
+ * estate. Clicking an entry marks it read and follows its url; the unread
+ * count is always the server's own answer, never a client-side guess.
+ */
+function NotificationBell() {
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState<NotificationCenterView | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let live = true;
+    const load = async () => {
+      const result = await getNotificationCenter();
+      if (!live) return;
+      if ('error' in result) {
+        setUnavailable(true);
+        return;
+      }
+      setUnavailable(false);
+      setView(result);
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 60_000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  // A fresh read when the dropdown opens — the badge may be a minute stale.
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    void getNotificationCenter().then((result) => {
+      if (!live || 'error' in result) return;
+      setUnavailable(false);
+      setView(result);
+    });
+    return () => {
+      live = false;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  const openEntry = (entry: NotificationCenterEntry) => {
+    setOpen(false);
+    if (!entry.read) {
+      void markNotificationCenterRead({ ids: [entry.id] }).then((result) => {
+        if ('error' in result) return;
+        setView((current) =>
+          current
+            ? {
+                entries: current.entries.map((e) => (e.id === entry.id ? { ...e, read: true } : e)),
+                unread: result.unread,
+              }
+            : current,
+        );
+      });
+    }
+    if (entry.url) navigate(entry.url);
+  };
+
+  const markAll = () => {
+    void markNotificationCenterRead({ all: true }).then((result) => {
+      if ('error' in result) return;
+      setView((current) =>
+        current
+          ? { entries: current.entries.map((e) => ({ ...e, read: true })), unread: result.unread }
+          : current,
+      );
+    });
+  };
+
+  const unread = view?.unread ?? 0;
+  return (
+    <div ref={rootRef} style={{ position: 'relative', flex: '0 0 auto' }}>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => setOpen((v) => !v)}
+        aria-label={unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'}
+        aria-expanded={open}
+      >
+        <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" focusable="false" aria-hidden="true">
+          <path d="M8 2.25a4.25 4.25 0 0 0-4.25 4.25v2.5l-1.5 3h11.5l-1.5-3v-2.5A4.25 4.25 0 0 0 8 2.25Z" />
+          <path d="M6.25 12.75a1.75 1.75 0 0 0 3.5 0" />
+        </svg>
+        {unread > 0 ? (
+          <span
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              top: -4,
+              right: -6,
+              minWidth: 16,
+              height: 16,
+              padding: '0 4px',
+              borderRadius: 8,
+              background: 'var(--nd-danger)',
+              color: 'var(--nd-text-inverse, #fff)',
+              fontFamily: 'var(--nd-font-mono)',
+              fontSize: 10,
+              lineHeight: '16px',
+              textAlign: 'center',
+            }}
+          >
+            {unread > 99 ? '99+' : unread}
+          </span>
+        ) : null}
+      </Button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="Notifications"
+          style={{
+            position: 'absolute',
+            top: 38,
+            right: 0,
+            width: 360,
+            maxWidth: '90vw',
+            background: 'var(--nd-bg-raised)',
+            border: '1px solid var(--nd-border-default)',
+            borderRadius: 'var(--nd-radius-md)',
+            boxShadow: 'var(--nd-shadow-overlay)',
+            padding: 6,
+            zIndex: 30,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 6px' }}>
+            <span className="nd-micro-label">Notifications</span>
+            <Button variant="ghost" size="sm" onClick={markAll} disabled={unread === 0}>
+              Mark all read
+            </Button>
+          </div>
+          {unavailable ? (
+            <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--nd-text-muted)' }}>
+              Notifications are unavailable — the portal backend is not answering. The badge returns
+              when it does; nothing here is a statement about your estate.
+            </div>
+          ) : view === null ? (
+            <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--nd-text-muted)' }}>Checking…</div>
+          ) : view.entries.length === 0 ? (
+            <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--nd-text-muted)' }}>
+              No notifications yet — device-down alerts and their recoveries land here.
+            </div>
+          ) : (
+            <div style={{ maxHeight: 380, overflow: 'auto' }}>
+              {view.entries.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  onClick={() => openEntry(entry)}
+                  style={{
+                    display: 'flex',
+                    gap: 8,
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '8px 6px',
+                    border: 'none',
+                    borderRadius: 'var(--nd-radius-sm)',
+                    background: 'transparent',
+                    color: 'var(--nd-text-primary)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      flex: '0 0 auto',
+                      width: 8,
+                      height: 8,
+                      marginTop: 5,
+                      borderRadius: '50%',
+                      background: notificationTone(entry.severity),
+                    }}
+                  />
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 13, fontWeight: entry.read ? 400 : 600 }}>
+                      {entry.title}
+                      {entry.demo ? (
+                        <span style={{ marginLeft: 6, fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)', textTransform: 'uppercase', letterSpacing: '.08em' }}>
+                          demo
+                        </span>
+                      ) : null}
+                    </span>
+                    <span style={{ display: 'block', fontSize: 12, color: 'var(--nd-text-muted)', overflowWrap: 'anywhere' }}>
+                      {entry.body}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -246,7 +490,7 @@ export function AppShellLayout() {
           <span className="nt-shell-workspace__tag">GLK</span>
         </div>
         <span className="nt-shell-workspace__linked">
-          {linkedLabel ?? `${SYSTEMS.length} of ${SYSTEMS.length} systems linked`}
+          {linkedLabel ?? 'checking linked systems…'}
         </span>
         <SignedInAs />
       </div>
@@ -267,6 +511,7 @@ export function AppShellLayout() {
       </Button>
       <Breadcrumbs items={crumbs} />
       <SearchPanel />
+      <NotificationBell />
       {settingsError ? (
         <span
           className="nt-shell-settings-error"
@@ -326,7 +571,9 @@ export function AppShellLayout() {
   return (
     <NightdeskAppShell sidebar={sidebar} topbar={topbar} className={rail ? 'nd-shell--rail' : undefined}>
       <BackendUnreachableBanner />
-      <Outlet />
+      <Suspense fallback={<RouteFallback />}>
+        <Outlet />
+      </Suspense>
       <ChatPanel open={chatOpen} onOpenChange={setChatOpen} />
       <Drawer
         open={navOpen}

@@ -1,11 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import Compliance from './Compliance';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
-import { getCompliance, syncSystems } from '../api/client';
+import { getCompliance, getConfigBackups, getConfigBackupDiff, getConfigBackupVersions, syncSystems } from '../api/client';
 import type { ComplianceData } from '../api/client';
+import type { ConfigBackupListEnvelope } from '@hpe/shared';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -13,11 +14,19 @@ vi.mock('../api/client', async (importOriginal) => {
     ...actual,
     getCompliance: vi.fn(),
     syncSystems: vi.fn(),
+    // Null by default: the drift section is additive and hides itself when the
+    // backup API does not answer, which is what the pre-existing suites assert.
+    getConfigBackups: vi.fn(() => Promise.resolve(null)),
+    getConfigBackupVersions: vi.fn(),
+    getConfigBackupDiff: vi.fn(),
   };
 });
 
 const mockGetCompliance = vi.mocked(getCompliance);
 const mockSyncSystems = vi.mocked(syncSystems);
+const mockGetConfigBackups = vi.mocked(getConfigBackups);
+const mockGetConfigBackupVersions = vi.mocked(getConfigBackupVersions);
+const mockGetConfigBackupDiff = vi.mocked(getConfigBackupDiff);
 
 const LIVE_COVERAGE: ComplianceData = {
   dataSource: 'live',
@@ -78,7 +87,7 @@ const LIVE_UNAVAILABLE: ComplianceData = {
 
 function renderCompliance() {
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <SettingsProvider>
         <ToastProvider>
           <Compliance />
@@ -143,7 +152,7 @@ describe('Compliance finding count link', () => {
 
   function renderWithRouting() {
     return render(
-      <MemoryRouter initialEntries={['/compliance']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/compliance']}>
         <SettingsProvider>
           <ToastProvider>
             <Routes>
@@ -247,7 +256,7 @@ describe('Compliance scan finishing after the operator has left', () => {
      test it. */
   function renderRoutable() {
     return render(
-      <MemoryRouter initialEntries={['/compliance']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/compliance']}>
         <SettingsProvider>
           <ToastProvider>
             <Away />
@@ -339,5 +348,266 @@ describe('Compliance scan scope', () => {
 
     await waitFor(() => expect(mockGetCompliance).toHaveBeenCalled());
     expect(screen.queryByText(/does not cover/)).toBeNull();
+  });
+});
+
+/* The 'Config drift' stat card and the versioned-backup drift section + drawer.
+   The card's numbers come from the server's liveComplianceData (the backup
+   service's rollup); the section lists only DRIFTED devices and opens the
+   unified diff between the two newest snapshots — demo synthesis is labelled. */
+describe('Compliance config drift (running-config backups)', () => {
+  const BACKUPS: ConfigBackupListEnvelope = {
+    dataSource: 'demo',
+    note: 'synthesized demo snapshots — no device was contacted',
+    devices: [
+      {
+        device: 'sw-core-a',
+        plane: 'LOCAL',
+        ip: '10.42.0.10',
+        status: 'ok',
+        versions: 2,
+        drift: true,
+        latest: {
+          version: 2,
+          takenAt: '2026-07-25T12:00:00Z',
+          source: 'demo synthesis',
+          lines: 22,
+          sha256: 'a'.repeat(64),
+          driftFromPrevious: true,
+        },
+      },
+      {
+        device: 'sw-core-b',
+        plane: 'LOCAL',
+        ip: '10.42.0.11',
+        status: 'ok',
+        versions: 1,
+        drift: false,
+        latest: {
+          version: 1,
+          takenAt: '2026-07-25T12:00:00Z',
+          source: 'demo synthesis',
+          lines: 20,
+          sha256: 'b'.repeat(64),
+          driftFromPrevious: false,
+        },
+      },
+      {
+        device: 'ap-1f-04',
+        plane: 'CENTRAL',
+        ip: null,
+        status: 'no-source',
+        note: 'cloud-claimed device class — the portal has no read-only config channel for it',
+        versions: 0,
+        latest: null,
+        drift: false,
+      },
+    ],
+    summary: { total: 3, eligible: 2, backedUp: 2, drift: 1, failed: 0 },
+  };
+
+  const LIT_CARD: ComplianceData = {
+    ...LIVE_COVERAGE,
+    stats: [
+      ...LIVE_COVERAGE.stats,
+      { label: 'Config drift', value: '1', delta: 'of 2 devices with config snapshots', tone: 'negative' },
+    ],
+  };
+
+  it('lights the stat card from the payload instead of the dead em-dash', async () => {
+    mockGetCompliance.mockResolvedValue(LIT_CARD);
+    renderCompliance();
+
+    expect(await screen.findByText('Config drift')).toBeTruthy();
+    expect(screen.getByText('of 2 devices with config snapshots')).toBeTruthy();
+    expect(screen.queryByText('no running-config baseline source')).toBeNull();
+  });
+
+  it('lists only drifted devices, with the demo provenance label', async () => {
+    mockGetCompliance.mockResolvedValue(LIT_CARD);
+    mockGetConfigBackups.mockResolvedValue(BACKUPS);
+    renderCompliance();
+
+    expect(await screen.findByText('Config drift — running-config snapshots')).toBeTruthy();
+    expect(screen.getByText('2 backed up · 1 drifting')).toBeTruthy();
+    expect(screen.getByText('synthesized demo snapshots — no device was contacted')).toBeTruthy();
+    expect(screen.getByText('sw-core-a')).toBeTruthy();
+    // A backed-up device WITHOUT drift is not a finding; neither is a
+    // no-source AP. Only the drifted row is listed.
+    expect(screen.queryByText('sw-core-b')).toBeNull();
+    expect(screen.queryByText('ap-1f-04')).toBeNull();
+  });
+
+  it('says so honestly when nothing drifts', async () => {
+    mockGetCompliance.mockResolvedValue(LIT_CARD);
+    mockGetConfigBackups.mockResolvedValue({
+      ...BACKUPS,
+      devices: BACKUPS.devices.filter((d) => !d.drift),
+      summary: { ...BACKUPS.summary, drift: 0 },
+    });
+    renderCompliance();
+
+    expect(await screen.findByText('No drift across 2 devices with snapshots.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'View diff' })).toBeNull();
+  });
+
+  it('opens the drawer with the unified diff between the two newest versions', async () => {
+    mockGetCompliance.mockResolvedValue(LIT_CARD);
+    mockGetConfigBackups.mockResolvedValue(BACKUPS);
+    mockGetConfigBackupVersions.mockResolvedValue({
+      device: 'sw-core-a',
+      versions: [
+        { version: 2, takenAt: '2026-07-25T12:00:00Z', source: 'demo synthesis', lines: 22, sha256: 'a'.repeat(64), driftFromPrevious: true },
+        { version: 1, takenAt: '2026-07-25T06:00:00Z', source: 'demo synthesis', lines: 20, sha256: 'b'.repeat(64), driftFromPrevious: false },
+      ],
+    });
+    mockGetConfigBackupDiff.mockResolvedValue({
+      device: 'sw-core-a',
+      fromVersion: 1,
+      toVersion: 2,
+      fromTakenAt: '2026-07-25T06:00:00Z',
+      toTakenAt: '2026-07-25T12:00:00Z',
+      added: 2,
+      removed: 1,
+      lines: [
+        { kind: 'same', text: 'hostname sw-core-a' },
+        { kind: 'del', text: 'ntp server 10.42.0.20 iburst' },
+        { kind: 'add', text: 'ntp server 10.42.0.21 iburst' },
+        { kind: 'add', text: 'vlan 99' },
+      ],
+      text: '  hostname sw-core-a\n- ntp server 10.42.0.20 iburst\n+ ntp server 10.42.0.21 iburst\n+ vlan 99',
+    });
+    renderCompliance();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View diff' }));
+
+    // Older first: v1 → v2, never the newest-guess order.
+    await waitFor(() => expect(mockGetConfigBackupDiff).toHaveBeenCalledWith('sw-core-a', 1, 2));
+    expect(await screen.findByText('Config drift — sw-core-a')).toBeTruthy();
+    expect(screen.getByText('v1 → v2 · +2 −1 · demo synthesis')).toBeTruthy();
+    expect(screen.getByText(/- ntp server 10\.42\.0\.20 iburst/)).toBeTruthy();
+    expect(screen.getByText(/\+ ntp server 10\.42\.0\.21 iburst/)).toBeTruthy();
+  });
+
+  it('tells the operator when there are not two snapshots to diff', async () => {
+    mockGetCompliance.mockResolvedValue(LIT_CARD);
+    mockGetConfigBackups.mockResolvedValue(BACKUPS);
+    mockGetConfigBackupVersions.mockResolvedValue({
+      device: 'sw-core-a',
+      versions: [
+        { version: 2, takenAt: '2026-07-25T12:00:00Z', source: 'demo synthesis', lines: 22, sha256: 'a'.repeat(64), driftFromPrevious: true },
+      ],
+    });
+    renderCompliance();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View diff' }));
+
+    expect(await screen.findByText('Diff unavailable')).toBeTruthy();
+    expect(mockGetConfigBackupDiff).not.toHaveBeenCalled();
+  });
+
+  it('hides the section entirely when the backup API does not answer', async () => {
+    mockGetCompliance.mockResolvedValue(LIT_CARD);
+    mockGetConfigBackups.mockResolvedValue(null);
+    renderCompliance();
+
+    await screen.findByText('Firmware evidence not reported');
+    expect(screen.queryByText('Config drift — running-config snapshots')).toBeNull();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The findings table is a nightdesk DataTable: the column manager persists
+// through SettingsContext (localStorage key 'nt-table-columns' under the
+// 'compliance' table id), and Sev is the one tinted column — with the
+// finding's own severity tone, the same field the Sev Badge renders. The rows
+// are deliberately NOT a keyboard grid: a finding row has no primary action
+// (the device count is a nested button, keyboard-reachable on its own), so
+// there is nothing honest for Enter to do. These tests pin the wiring, not
+// the mechanics.
+// ---------------------------------------------------------------------------
+describe('Compliance findings table superpowers', () => {
+  beforeEach(() => {
+    // Plain localStorage is not reliable in this environment — stub it the
+    // SettingsContext.test.tsx way, fresh per test so no config leaks.
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('hides and restores a column from View options, persisted to localStorage', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    const { container } = renderCompliance();
+    await screen.findByText('Firmware evidence not reported');
+    expect(container.querySelector('th[data-column-key="rule"]')).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'View options' }));
+    // The primary identifier is not offered for hiding.
+    expect(screen.getByRole('checkbox', { name: 'Finding' }).hasAttribute('disabled')).toBe(true);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Rule' }));
+    expect(container.querySelector('th[data-column-key="rule"]')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('nt-table-columns') ?? '{}')).toEqual({
+      compliance: { hidden: ['rule'] },
+    });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Rule' }));
+    expect(container.querySelector('th[data-column-key="rule"]')).not.toBeNull();
+  });
+
+  it('seeds the table from the persisted column config on mount', async () => {
+    localStorage.setItem('nt-table-columns', JSON.stringify({ compliance: { hidden: ['rule'] } }));
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    const { container } = renderCompliance();
+    await screen.findByText('Firmware evidence not reported');
+    expect(container.querySelector('th[data-column-key="rule"]')).toBeNull();
+    expect(container.querySelector('th[data-column-key="fix"]')).not.toBeNull();
+  });
+
+  /* Severity is the one value on the row that is itself a threshold
+     judgement, and the payload already computed it: high → danger,
+     med → warning, low → info, cell wash and Badge off the same field. */
+  it('tints the Sev cell with the finding’s own severity tone', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        { ...LIVE_COVERAGE.findings[0], sev: 'high', tone: 'danger', title: 'sev-high', device: 'd-1' },
+        { ...LIVE_COVERAGE.findings[0], sev: 'med', tone: 'warning', title: 'sev-med', device: 'd-2' },
+        { ...LIVE_COVERAGE.findings[0], sev: 'low', tone: 'info', title: 'sev-low', device: 'd-3' },
+      ],
+    });
+    const { container } = renderCompliance();
+    await screen.findByText('sev-high');
+
+    const rows = Array.from(container.querySelectorAll('tbody tr'));
+    expect(rows).toHaveLength(3);
+    const sevClass = (row: Element) => (row.querySelector('td') as HTMLElement).className;
+    expect(sevClass(rows[0])).toContain('nd-table__td--tint-danger');
+    expect(sevClass(rows[1])).toContain('nd-table__td--tint-warning');
+    expect(sevClass(rows[2])).toContain('nd-table__td--tint-info');
+    // …and only Sev: no other cell on the row carries a threshold.
+    expect((rows[0].querySelectorAll('td')[1] as HTMLElement).className).not.toContain('tint');
+  });
+
+  it('is not a keyboard grid — a finding row has no primary action to offer Enter', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    const { container } = renderCompliance();
+    await screen.findByText('Firmware evidence not reported');
+
+    expect(container.querySelector('table')?.getAttribute('role')).toBeNull();
+    const rows = Array.from(container.querySelectorAll('tbody tr'));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((tr) => tr.getAttribute('tabindex') === null)).toBe(true);
+    // …and no shortcuts overlay advertises row commands that do not exist.
+    expect(screen.queryByRole('button', { name: 'Keyboard shortcuts' })).toBeNull();
   });
 });

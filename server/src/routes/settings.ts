@@ -4,16 +4,22 @@
  * GET returns the masked view; PUT applies a partial update and returns the
  * masked view. Secrets are never sent unmasked, and masked values written
  * back are ignored by the store (see config/settings.ts).
+ *
+ * A PUT may carry an auth block (the settings screen round-trips the masked
+ * one). It is validated exactly as PUT /api/auth/config validates it — this
+ * route is not a weaker path onto the identity provider.
  */
 
 import { Router } from 'express';
-import { settings } from '../config/settings';
+import { SettingsConflictError, settings, type Settings } from '../config/settings';
 import { registry } from '../planes/registry';
 import { normalizeSseBaseUrl, SseEndpointValidationError } from '../planes/sse';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
 import { poller } from '../services/poller';
+import { resetDiscoveryCache } from '../services/auth';
 import { SseObjectsError, sseObjects, sseObjectsErrorBody } from '../services/sseObjects';
 import { CentralWebhooksError, centralWebhooks } from '../services/centralWebhooks';
+import { missingAuthFields } from './auth';
 
 export const settingsRouter = Router();
 
@@ -28,10 +34,13 @@ const SETTING_KEYS = new Set([
   'planes',
   'mcp',
   'llm',
+  'auth',
   'chatWriteMode',
   'density',
   'inventoryView',
   'showPlatformTags',
+  'tableColumns',
+  'savedViews',
 ]);
 
 function settingsBodyError(body: unknown): string | null {
@@ -56,6 +65,9 @@ function settingsBodyError(body: unknown): string | null {
     ['planes', patch.planes === undefined || (!!patch.planes && typeof patch.planes === 'object' && !Array.isArray(patch.planes))],
     ['mcp', patch.mcp === undefined || patch.mcp === null || (typeof patch.mcp === 'object' && !Array.isArray(patch.mcp))],
     ['llm', patch.llm === undefined || patch.llm === null || (typeof patch.llm === 'object' && !Array.isArray(patch.llm))],
+    ['auth', patch.auth === undefined || patch.auth === null || (typeof patch.auth === 'object' && !Array.isArray(patch.auth))],
+    ['tableColumns', patch.tableColumns === undefined || (!!patch.tableColumns && typeof patch.tableColumns === 'object' && !Array.isArray(patch.tableColumns))],
+    ['savedViews', patch.savedViews === undefined || (!!patch.savedViews && typeof patch.savedViews === 'object' && !Array.isArray(patch.savedViews))],
   ];
   const invalid = checks.filter(([, valid]) => !valid).map(([key]) => key);
   return invalid.length > 0 ? `invalid settings fields: ${invalid.join(', ')}` : null;
@@ -121,6 +133,21 @@ settingsRouter.put('/settings', (req, res) => {
       throw err;
     }
   }
+  // An auth block gets exactly the validation PUT /api/auth/config applies —
+  // this route writes the one system that guards all the others, so it must
+  // not be a weaker path onto it. The settings screen round-trips the masked
+  // block, and a masked clientSecret means "keep the stored one": it satisfies
+  // the required-field check and the merge keeps the stored secret, exactly as
+  // on the auth route. (settingsBodyError has already confined this to an
+  // object or null; null removes the provider.)
+  const requestedAuth = (req.body as Record<string, unknown>).auth;
+  if (requestedAuth !== undefined && requestedAuth !== null) {
+    const invalid = missingAuthFields(requestedAuth as Record<string, unknown>, settings.get().auth);
+    if (invalid) {
+      res.status(400).json({ error: invalid });
+      return;
+    }
+  }
   const previous = settings.get();
   const before = previous.pollIntervalSec;
   // Snapshot each plane's stored record so we can tell a real credential save
@@ -128,7 +155,21 @@ settingsRouter.put('/settings', (req, res) => {
   const wasCreds = new Map<PlaneId, string>();
   for (const id of PLANE_IDS) wasCreds.set(id, JSON.stringify(previous.planes[id] ?? null));
 
-  const updated = settings.update(req.body);
+  let updated: Settings;
+  try {
+    updated = settings.update(req.body);
+  } catch (err) {
+    // Same shape as PUT /api/auth/config: a write that contradicts the
+    // environment-owned identity provider is a conflict, not a 500.
+    if (err instanceof SettingsConflictError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+  // An identity-provider write must not keep serving the old discovery
+  // document — the same rule the auth route follows after a save.
+  if (requestedAuth !== undefined) resetDiscoveryCache();
   // Keep the registry and cache in sync when plane credentials change through
   // here. Clear first so old rows cannot be attributed to the rebuilt adapter.
   // Only for planes whose record ACTUALLY changed — a density or workspace-name

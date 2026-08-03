@@ -27,19 +27,28 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import Overview from './Overview';
 import { SettingsProvider } from '../app/SettingsContext';
-import { getOverview } from '../api/client';
+import { getMetricsHistory, getOverview } from '../api/client';
 import type { OverviewData } from '../api/client';
+import { OVERVIEW_PLANES } from '@hpe/shared';
+import type { AnomalyFlag, MetricPoint, MetricsEnvelopeWithAnomalies, MetricsHistoryEnvelope } from '@hpe/shared';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
-  return { ...actual, getOverview: vi.fn() };
+  // getMetricsHistory defaults to null (API unreachable/older server): plane
+  // rows then carry no series rather than invented history.
+  return { ...actual, getOverview: vi.fn(), getMetricsHistory: vi.fn(() => Promise.resolve(null)) };
 });
 
 const mockGetOverview = vi.mocked(getOverview);
+const mockGetMetrics = vi.mocked(getMetricsHistory);
 
 afterEach(() => {
   cleanup();
   mockGetOverview.mockReset();
+  mockGetMetrics.mockReset();
+  // mockReset strips the factory default too — restore it so tests that never
+  // touch metrics still get a resolved null instead of `undefined`.
+  mockGetMetrics.mockImplementation(() => Promise.resolve(null));
 });
 
 /** Minimal live-mode view model; per-test overrides go in `over`. */
@@ -117,7 +126,7 @@ function PathProbe() {
 
 function renderOverview() {
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <SettingsProvider>
         <Overview />
         <PathProbe />
@@ -386,6 +395,60 @@ describe('Overview', () => {
   });
 });
 
+/* The stat tiles are the landing screen's counts, and every count is a
+ * promise that a list exists behind it. Each known tile links to the screen
+ * whose list its number summarises (the LibreNMS availability-map pattern);
+ * a stat whose label nobody mapped stays plain text rather than guessing. */
+describe('Overview stat tiles as links', () => {
+  const TILE_STATS: OverviewData['stats'] = [
+    { label: 'Devices reachable', value: '404 / 418', delta: '▼ 3 down', tone: 'negative' },
+    { label: 'Open alerts', value: '7', delta: '▲ 2 critical', tone: 'negative' },
+    { label: 'Config drift', value: '12', delta: '▼ 4 this week', tone: 'positive' },
+    { label: 'Licences ≤60d', value: '34', delta: '▲ 12 renewals due', tone: 'neutral' },
+    { label: 'Planes linked', value: '6 / 7', delta: 'Classic degraded', tone: 'negative' },
+  ];
+
+  it('links each known tile to the screen that lists what it counts', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ stats: TILE_STATS }));
+    renderOverview();
+
+    expect((await screen.findByText('Devices reachable')).closest('a')?.getAttribute('href')).toBe('/devices');
+    expect(screen.getByText('Open alerts').closest('a')?.getAttribute('href')).toBe('/alerts');
+    expect(screen.getByText('Config drift').closest('a')?.getAttribute('href')).toBe('/compliance');
+    expect(screen.getByText('Licences ≤60d').closest('a')?.getAttribute('href')).toBe('/licenses');
+    expect(screen.getByText('Planes linked').closest('a')?.getAttribute('href')).toBe('/systems');
+  });
+
+  it('navigates when a tile is clicked', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ stats: TILE_STATS }));
+    renderOverview();
+
+    fireEvent.click(await screen.findByText('Open alerts'));
+    expect(screen.getByTestId('path').textContent).toBe('/alerts');
+  });
+
+  /* The labels are the same in demo and live (the fixtures and the server's
+     liveOverviewStats share them), so the demo tiles link identically — the
+     demo/live labelling around them is untouched. */
+  it('links the demo tiles the same way', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ dataSource: 'demo', stats: TILE_STATS }));
+    renderOverview();
+
+    expect((await screen.findByText('Planes linked')).closest('a')?.getAttribute('href')).toBe('/systems');
+  });
+
+  it('leaves a stat it has no destination for as plain text', async () => {
+    // A label no mapping claims ('Devices' alone would also match the Sites
+    // table's column header, so the stat gets a name of its own).
+    mockGetOverview.mockResolvedValue(
+      liveData({ stats: [{ label: 'Mystery stat', value: '1', delta: '', tone: 'neutral' }] }),
+    );
+    renderOverview();
+
+    expect((await screen.findByText('Mystery stat')).closest('a')).toBeNull();
+  });
+});
+
 /* The Change log panel is a render of the write broker's audit tail. Its
  * empty state describes a blank log as "No brokered changes yet" — a claim
  * that nothing has happened. When a rotated generation cannot be opened the
@@ -436,5 +499,200 @@ describe('Overview change log completeness', () => {
 
     await waitFor(() => expect(screen.getByText('No brokered changes yet')).toBeTruthy());
     expect(screen.queryByText(/could not be/)).toBeNull();
+  });
+});
+
+/* The Management-planes sparklines render the metrics-history envelope's
+ * per-plane device series: the demo rows' long names resolve through the
+ * planeMetricsKey bridge, a plane with no device inventory gets nothing
+ * rather than a flat zero, and the caption under the panel states the
+ * metric, window and cadence. A null envelope leaves the panel spark-free. */
+describe('Overview plane sparklines', () => {
+  const TWO_HOURS_AGO = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+  const LIVE_METRICS: MetricsHistoryEnvelope = {
+    dataSource: 'live',
+    since: TWO_HOURS_AGO,
+    sampleMs: 300_000,
+    retentionMs: 86_400_000,
+    planes: {
+      Central: {
+        devices: [
+          { t: '2026-07-25T11:50:00.000Z', v: 8 },
+          { t: '2026-07-25T11:55:00.000Z', v: 9 },
+          { t: '2026-07-25T12:00:00.000Z', v: 9 },
+        ],
+        devicesDown: [],
+        clients: [],
+        alerts: [],
+      },
+    },
+    deviceClients: {},
+  };
+
+  it('draws the series a linked plane has, and says what window it covers', async () => {
+    mockGetOverview.mockResolvedValue(liveData());
+    mockGetMetrics.mockResolvedValue(LIVE_METRICS);
+    renderOverview();
+
+    expect(
+      await screen.findByRole('img', { name: /9 devices reported · since \d{2}:\d{2} · sampled every 5m/ }),
+    ).toBeTruthy();
+    expect(screen.getByText(/devices reported per plane · since \d{2}:\d{2} · sampled every 5m/)).toBeTruthy();
+  });
+
+  it('resolves the demo rows’ long names through the label bridge', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ dataSource: 'demo', planes: OVERVIEW_PLANES }));
+    mockGetMetrics.mockResolvedValue({
+      ...LIVE_METRICS,
+      dataSource: 'demo',
+      planes: { CENTRAL: LIVE_METRICS.planes.Central! },
+      note: 'synthesized demo history — no plane was sampled',
+    });
+    renderOverview();
+
+    // Exactly one row has a series: 'HPE Aruba Central' → CENTRAL.
+    expect(
+      await screen.findAllByRole('img', {
+        name: '9 devices reported · last 24h · sampled every 5m · synthesized demo',
+      }),
+    ).toHaveLength(1);
+    expect(screen.getByText(/devices reported per plane · last 24h · sampled every 5m · synthesized demo/)).toBeTruthy();
+  });
+
+  it('gives a plane without a device series nothing, and one sample honest text', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        planes: [
+          { name: 'Central', scope: 'GLOBAL', state: 'linked', tone: 'success', sync: '09:38', linked: true },
+          { name: 'Mist', scope: 'cloud', state: 'linked', tone: 'success', sync: '09:39', linked: true },
+          { name: 'GreenLake', scope: 'workspace', state: 'linked', tone: 'success', sync: '09:39', linked: true },
+        ],
+      }),
+    );
+    mockGetMetrics.mockResolvedValue({
+      ...LIVE_METRICS,
+      planes: {
+        ...LIVE_METRICS.planes,
+        // The row name 'Mist' resolves to MIST through the label bridge.
+        MIST: { devices: [{ t: '2026-07-25T12:00:00.000Z', v: 3 }], devicesDown: [], clients: [], alerts: [] },
+      },
+    });
+    renderOverview();
+
+    await screen.findByText('1 sample');
+    // Central's polyline is the only role=img on the panel: Mist renders its
+    // one-sample text, GreenLake (no device inventory) renders nothing.
+    expect(screen.getAllByRole('img')).toHaveLength(1);
+  });
+
+  it('leaves the panel alone when the server sends no metrics envelope', async () => {
+    mockGetOverview.mockResolvedValue(liveData());
+    mockGetMetrics.mockResolvedValue(null);
+    renderOverview();
+
+    await screen.findByText('Central');
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(screen.queryByText(/devices reported per plane/)).toBeNull();
+  });
+});
+
+/* The anomaly markers ride the additive `anomalies` block of the metrics
+ * envelope: the server flags samples unusual for their own series (robust
+ * z-score, shared/anomaly.ts), the rows dot them in the warning tone, and
+ * the panel caption says what the dots are — only when there is one to
+ * explain. An older server sends no block and renders exactly as before. */
+describe('Overview plane anomaly markers', () => {
+  const TWO_HOURS_AGO = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+  /** A 13-sample series with one spike at index 9, and the flag for it. */
+  const SPIKE_T = '2026-07-25T10:45:00.000Z';
+  const FLAGGED_SERIES: MetricPoint[] = Array.from({ length: 13 }, (_, i) => ({
+    t: new Date(Date.parse('2026-07-25T12:00:00.000Z') - (12 - i) * 300_000).toISOString(),
+    v: i === 9 ? 42 : 10,
+  }));
+  const FLAG: AnomalyFlag = { index: 9, t: SPIKE_T, v: 42, direction: 'high', z: 31.9 };
+
+  const FLAGGED_METRICS: MetricsEnvelopeWithAnomalies = {
+    dataSource: 'demo',
+    since: FLAGGED_SERIES[0]!.t,
+    sampleMs: 300_000,
+    retentionMs: 86_400_000,
+    planes: {
+      CENTRAL: { devices: FLAGGED_SERIES, devicesDown: [], clients: [], alerts: [] },
+    },
+    deviceClients: {},
+    note: 'synthesized demo history — no plane was sampled',
+    anomalies: { planes: { CENTRAL: { devices: [FLAG] } }, deviceClients: {} },
+  };
+
+  /** The same series and flag served live (ring still filling) under the
+   *  row's short name, which the label bridge passes through unchanged. */
+  const LIVE_FLAGGED: MetricsEnvelopeWithAnomalies = {
+    ...FLAGGED_METRICS,
+    dataSource: 'live',
+    since: TWO_HOURS_AGO,
+    note: undefined,
+    planes: { Central: FLAGGED_METRICS.planes.CENTRAL! },
+    anomalies: { planes: { Central: { devices: [FLAG] } }, deviceClients: {} },
+  };
+
+  /** Same live series, but the server found nothing unusual in it. */
+  const LIVE_CALM: MetricsEnvelopeWithAnomalies = {
+    ...LIVE_FLAGGED,
+    anomalies: { planes: {}, deviceClients: {} },
+  };
+
+  it('dots the flagged sample, says so in the aria label, and explains the dots once', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ dataSource: 'demo', planes: OVERVIEW_PLANES }));
+    mockGetMetrics.mockResolvedValue(FLAGGED_METRICS);
+    renderOverview();
+
+    // Exactly one row has a series (HPE Aruba Central → CENTRAL), and its
+    // accessible name carries the flag mention the server sent.
+    const imgs = await screen.findAllByRole('img', {
+      name: '10 devices reported · last 24h · sampled every 5m · synthesized demo · 1 point flagged unusual',
+    });
+    expect(imgs).toHaveLength(1);
+    // The dot sits in the warning tone inside the decorative svg.
+    const dots = [...imgs[0]!.querySelectorAll('circle')];
+    expect(dots).toHaveLength(1);
+    expect(dots[0]!.getAttribute('fill')).toBe('var(--nd-warning)');
+    // The panel states what the dots are and the window they were judged
+    // against — statistics over retained samples, never a prediction.
+    expect(
+      screen.getByText(/dots mark samples unusual vs the last 24h this portal retained/),
+    ).toBeTruthy();
+  });
+
+  it('a filling live ring names the shorter window it actually compares against', async () => {
+    mockGetOverview.mockResolvedValue(liveData());
+    mockGetMetrics.mockResolvedValue(LIVE_FLAGGED);
+    renderOverview();
+
+    expect(
+      await screen.findByText(/dots mark samples unusual vs what this portal has retained so far/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/the last 24h this portal retained/)).toBeNull();
+  });
+
+  it('no flags and no block both render as silence — no dots, no note', async () => {
+    // A server that computed the block but found nothing unusual…
+    mockGetOverview.mockResolvedValue(liveData());
+    mockGetMetrics.mockResolvedValue(LIVE_CALM);
+    renderOverview();
+    expect(await screen.findByRole('img', { name: /10 devices reported/ })).toBeTruthy();
+    expect(document.querySelector('circle[fill="var(--nd-warning)"]')).toBeNull();
+    expect(screen.queryByText(/dots mark samples unusual/)).toBeNull();
+    cleanup();
+
+    // …and an older server that sends no anomalies block at all.
+    const { anomalies: _dropped, ...olderServer } = LIVE_CALM;
+    mockGetOverview.mockResolvedValue(liveData());
+    mockGetMetrics.mockResolvedValue(olderServer);
+    renderOverview();
+    expect(await screen.findByRole('img', { name: /10 devices reported/ })).toBeTruthy();
+    expect(document.querySelector('circle[fill="var(--nd-warning)"]')).toBeNull();
+    expect(screen.queryByText(/dots mark samples unusual/)).toBeNull();
   });
 });

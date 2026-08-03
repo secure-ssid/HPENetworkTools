@@ -42,6 +42,20 @@ import type { AuthSettings } from '../config/settings';
 /** How long a signed-in session lasts before the operator must sign in again. */
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
 
+const SESSION_TTL_MIN_MS = 15 * 60 * 1000; // 15m floor — shorter is a lockout risk, not security
+const SESSION_TTL_MAX_MS = 30 * 24 * 60 * 60 * 1000; // 30d cap
+
+/**
+ * Session lifetime in ms: `HPE_SESSION_TTL_MS` when it parses inside
+ * [15m, 30d], else the 12h default. Read at session creation, so a change
+ * needs a restart — which clears in-memory sessions anyway.
+ */
+export function sessionTtlMs(): number {
+  const raw = Number(process.env.HPE_SESSION_TTL_MS);
+  if (Number.isFinite(raw) && raw >= SESSION_TTL_MIN_MS && raw <= SESSION_TTL_MAX_MS) return raw;
+  return SESSION_TTL_MS;
+}
+
 /** How long a started-but-uncompleted login may sit before it is abandoned. */
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10m
 
@@ -235,7 +249,7 @@ export class SessionStore {
     this.sweep();
     const id = crypto.randomBytes(32).toString('base64url');
     const createdAt = this.now();
-    const session: Session = { id, principal, createdAt, expiresAt: createdAt + SESSION_TTL_MS };
+    const session: Session = { id, principal, createdAt, expiresAt: createdAt + sessionTtlMs() };
     this.sessions.set(id, session);
     return session;
   }

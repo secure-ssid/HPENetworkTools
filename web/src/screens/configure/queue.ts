@@ -63,6 +63,13 @@ export type HistoryState =
  *  run out cannot be pushed (the broker answers 409), so the row has to say so. */
 export type QueueEntry = QueuedChangeRow & { id: string | null; expiresAt?: string | null };
 
+/** The row's stable identity: the broker id when there is one, else the same
+ *  ticket+what pair the list keyed on before the table grew selection. Drives
+ *  the DataTable row keys and the bulk-actions selection set. */
+export function queueRowKey(q: QueueEntry): string {
+  return q.id ?? `${q.ticket}-${q.what}`;
+}
+
 export const STATE_TONE: Record<QueuedChangeRow['state'], QueuedChangeRow['tone']> = {
   ready: 'success',
   applying: 'info',

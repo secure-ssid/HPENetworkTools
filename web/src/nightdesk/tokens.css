@@ -34,6 +34,9 @@
   --nd-danger-subtle: rgba(255, 107, 107, 0.12);
   --nd-info: #58b7ff;
   --nd-info-subtle: rgba(88, 183, 255, 0.12);
+  /* neutral member of the -subtle family (threshold-tint cells; the Badge's
+     neutral tone uses --nd-bg-raised instead, so the family had a gap here) */
+  --nd-neutral-subtle: rgba(139, 147, 167, 0.12);
 
   /* focus / overlay */
   --nd-ring-color: rgba(217, 119, 87, 0.4);

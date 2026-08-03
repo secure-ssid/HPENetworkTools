@@ -8,13 +8,20 @@
  * width, with dense live layers scrolling rather than overlapping. Recorded
  * AP groups open in place. Device cards click through to Device detail.
  *
+ * Focus mode: shift+click any card (or plain-click a card with no other
+ * action) to isolate it with its 1-hop neighbours — everything else dims,
+ * cards and edges alike. While a focus is active every card click moves it
+ * (navigation is suspended, never triggered); the exit chip, Esc or a click
+ * on the diagram background restores the full graph.
+ *
  * Text stays in HTML (crisp at any width); only the hairlines are SVG, with
  * non-scaling stroke so they stay 1px under preserveAspectRatio="none".
  * Honest by construction: the builder emits no edge without recorded data,
+ * edge labels carry the plane's own port/speed/bundle/health words verbatim,
  * and the note under the diagram says where the wiring comes from.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type {
   SiteDeviceRow,
   SiteTopology,
@@ -23,10 +30,12 @@ import type {
   TopologyDeviceNode,
   TopologyLayerKey,
   TopologyLink,
+  TopologyLinkPort,
   TopologyNode,
 } from '@hpe/shared';
 import { countOf } from '@hpe/shared';
 import { relativeAge } from '@hpe/shared';
+import { Badge, Button } from '../nightdesk';
 
 const ROW_H = 96;
 const CARD_H = 56;
@@ -132,6 +141,31 @@ function formatBps(bps: number | null): string | null {
 }
 
 /**
+ * One end of a link, worded: member ports joined by '+', with the bundle
+ * named when the plane says they are one ('1/1/1+1/1/2 (Po2)') — a LAG reads
+ * as a single logical port, not as two cables doing one job.
+ */
+function portSideText(ports: TopologyLinkPort[]): string {
+  const names = ports.map((p) => p.name).filter(Boolean);
+  const lags = [...new Set(ports.map((p) => (p.lag ?? '').trim()).filter((lag) => lag !== ''))];
+  const joined = names.join('+');
+  return lags.length > 0 && joined !== '' ? `${joined} (${lags.join('+')})` : joined;
+}
+
+/**
+ * A member port the plane scored as anything but good, worded with its name.
+ * The link-level verdict can read 'Good' over a bundle whose second member is
+ * flapping — the carried port health is the only place that says so, and the
+ * adapter already parsed it.
+ */
+function portHealthFacts(link: TopologyLink): string[] {
+  return [...link.fromPorts, ...link.toPorts]
+    .map((p) => ({ name: p.name, health: (p.health ?? '').trim() }))
+    .filter((p) => p.health !== '' && p.health.toLowerCase() !== 'good')
+    .map((p) => `port ${p.name} ${p.health.toLowerCase()}`);
+}
+
+/**
  * Port-to-port wording for an undirected physical link.
  *
  * Only the exceptions are worded. A forwarding, plane-discovered, healthy
@@ -139,12 +173,13 @@ function formatBps(bps: number | null): string | null {
  * every phrase added here is one an operator has to act on.
  */
 export function liveTopologyLinkFact(link: TopologyLink, forward = true): string {
-  const near = (forward ? link.fromPorts : link.toPorts).map((p) => p.name).filter(Boolean);
-  const far = (forward ? link.toPorts : link.fromPorts).map((p) => p.name).filter(Boolean);
+  const near = portSideText(forward ? link.fromPorts : link.toPorts);
+  const far = portSideText(forward ? link.toPorts : link.fromPorts);
   const stp = (link.stpState ?? '').trim();
-  const manual = (link.edgeType ?? '').trim().toLowerCase() === 'manual';
+  const edgeType = (link.edgeType ?? '').trim();
+  const manual = edgeType.toLowerCase() === 'manual';
   return [
-    near.length || far.length ? `${near.join('+') || '?'} ↔ ${far.join('+') || '?'}` : null,
+    near !== '' || far !== '' ? `${near || '?'} ↔ ${far || '?'}` : null,
     formatBps(link.speedBps),
     // A link STP has blocked is up, healthy, at full speed and carrying
     // nothing. Drawn without this it is the twin of the link beside it that
@@ -154,6 +189,10 @@ export function liveTopologyLinkFact(link: TopologyLink, forward = true): string
     // plane observed it. A diagram is read as what the plane can see, so an
     // asserted edge has to say that it is one.
     manual ? 'added manually' : null,
+    // Any other edge-type word is the edge's evidence and rides verbatim:
+    // Mist's AP-stats edges carry 'LLDP' — each is one AP's own report of
+    // its uplink neighbour, not a plane-observed full-graph adjacency.
+    !manual && edgeType !== '' && edgeType.toLowerCase() !== 'system' ? edgeType : null,
     // Two members of one stack joined by their stacking cable. It looks like
     // an uplink and is not one: it carries no user traffic, cannot be
     // re-patched, and losing it splits a device rather than a path.
@@ -161,6 +200,7 @@ export function liveTopologyLinkFact(link: TopologyLink, forward = true): string
     link.health && link.health.toLowerCase() !== 'good'
       ? `link ${link.health.toLowerCase()}`
       : null,
+    ...portHealthFacts(link),
   ]
     .filter((part): part is string => Boolean(part))
     .join(' · ');
@@ -250,6 +290,13 @@ export function buildLiveSiteTopology(
   });
   const layers = LAYER_ORDER.filter((layer) => nodes.some((node) => node.layer === layer));
   const plane = topology.source.plane.toUpperCase();
+  const drawnLinks = topology.links ?? [];
+  // An all-LLDP graph is the Mist AP-stats fallback (server mistLldpTopology):
+  // every edge one AP's own report of its uplink neighbour. The note has to
+  // say that — reading it as the plane's observed full graph overstates both
+  // its reach and its evidence.
+  const allLldp =
+    drawnLinks.length > 0 && drawnLinks.every((link) => (link.edgeType ?? '').trim().toLowerCase() === 'lldp');
   const omissions: string[] = [];
   if (undrawable.length > 0) {
     const ends = [
@@ -286,7 +333,10 @@ export function buildLiveSiteTopology(
     layers,
     nodes,
     edges,
-    note: `${plane} reports these links as physical adjacency, not traffic direction or internet routing. No Internet hop is inferred, and unmanaged neighbors keep the names the plane supplied.`,
+    note: allLldp
+      ? `Each edge is one AP's own LLDP report of its uplink neighbour, read by ${plane} from the AP stats walk — ` +
+        'physical adjacency only, not traffic direction, internet routing, or a full site graph.'
+      : `${plane} reports these links as physical adjacency, not traffic direction or internet routing. No Internet hop is inferred, and unmanaged neighbors keep the names the plane supplied.`,
     omissions,
   };
 }
@@ -306,14 +356,22 @@ function Card({
   placed,
   onDevice,
   onToggleGroup,
+  onFocus,
+  dimmed,
+  focused,
+  focusActive,
 }: {
   placed: Placed;
   onDevice?: (name: string) => void;
   onToggleGroup?: (id: string) => void;
+  onFocus: (id: string) => void;
+  dimmed: boolean;
+  focused: boolean;
+  focusActive: boolean;
 }) {
   const { node, xPct, layerIdx } = placed;
   const isGroup = node.members !== null;
-  const clickable = node.device !== null || isGroup;
+  const navigable = node.device !== null || isGroup;
   const shownState = stateWorthDrawing(node.state);
   const inner = (
     <>
@@ -387,27 +445,42 @@ function Card({
     height: CARD_H,
     padding: '0 12px',
     background: 'var(--nd-bg-raised)',
-    border: `1px solid ${node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-border-subtle)'}`,
+    border: `1px solid ${
+      focused ? 'var(--nd-accent)' : node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-border-subtle)'
+    }`,
     borderRadius: 2,
-    cursor: clickable ? 'pointer' : 'default',
+    cursor: 'pointer',
+    opacity: dimmed ? 0.25 : 1,
   };
-  if (!clickable) {
-    return (
-      <div key={node.id} style={style}>
-        {inner}
-      </div>
-    );
-  }
+  /* Focus mode's pointer rules, kept beside the only click handler: a plain
+     click keeps its existing meaning (open the device, expand the group)
+     while no focus is active; shift+click always focuses; and once a focus
+     IS active every card click moves the focus — navigation resumes on
+     exit, so a browse through a busy graph never leaves the page. A card
+     with no device and no group (an unmanaged neighbour, the exit node)
+     had no action before; its click now focuses it. */
+  const handleClick = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (event.shiftKey || focusActive || !navigable) {
+      onFocus(node.id);
+      return;
+    }
+    if (node.device) onDevice?.(node.device);
+    else onToggleGroup?.(node.id);
+  };
   return (
     <button
       key={node.id}
       type="button"
       className="nt-rowlink"
       aria-label={
-        (node.device ? `Open device ${node.device}` : `Expand ${node.label} ${node.sub}`) +
-        (shownState !== null ? `, ${shownState}` : '')
+        (focusActive || !navigable
+          ? `Focus ${node.label}`
+          : node.device
+            ? `Open device ${node.device}`
+            : `Expand ${node.label} ${node.sub}`) + (shownState !== null ? `, ${shownState}` : '')
       }
-      onClick={() => (node.device ? onDevice?.(node.device) : onToggleGroup?.(node.id))}
+      onClick={handleClick}
       style={{ ...style, font: 'inherit' }}
     >
       {inner}
@@ -423,6 +496,10 @@ export function SiteTopologyDiagram({
   onDevice?: (name: string) => void;
 }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  // Focus mode: one node plus its 1-hop neighbours stay lit, everything else
+  // dims. Entered by shift+click on any card (or a plain click on a card with
+  // no other action); left via the exit chip, Esc, or a background click.
+  const [focusId, setFocusId] = useState<string | null>(null);
 
   const toggleGroup = (id: string) =>
     setExpanded((prev) => {
@@ -431,6 +508,64 @@ export function SiteTopologyDiagram({
       else next.add(id);
       return next;
     });
+
+  // 1-hop adjacency on the view model's own ids (group chips included — an
+  // expanded member is focused THROUGH its chip, the id its edges carry).
+  const adjacency = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    const link = (a: string, b: string) => {
+      const set = map.get(a) ?? new Set<string>();
+      set.add(b);
+      map.set(a, set);
+    };
+    for (const edge of topology.edges) {
+      link(edge.from, edge.to);
+      link(edge.to, edge.from);
+    }
+    return map;
+  }, [topology.edges]);
+
+  /* What stays lit. `core` is the focused entity itself (plus its group chip
+     when an expanded member was picked); `lit` adds the 1-hop neighbours;
+     `neighbours` counts just the hop. A focus target a refresh dropped from
+     the model reads as no focus at all rather than dimming everything. */
+  const focus = useMemo(() => {
+    if (focusId === null) return null;
+    const focused = topology.nodes.find(
+      (n) => n.id === focusId || (n.members?.some((m) => `dev:${m.name}` === focusId) ?? false),
+    );
+    if (!focused) return null;
+    const core = new Set<string>([focusId]);
+    if (focused.id !== focusId) core.add(focused.id);
+    const lit = new Set<string>(core);
+    // A focused GROUP lights its members; a focused member does not light its
+    // siblings — the hop reaches the parent through the chip's edges instead.
+    if (focusId === focused.id && focused.members) {
+      for (const m of focused.members) lit.add(`dev:${m.name}`);
+    }
+    const neighbours = new Set<string>();
+    for (const key of core) {
+      for (const next of adjacency.get(key) ?? []) {
+        lit.add(next);
+        neighbours.add(next);
+      }
+    }
+    const label =
+      topology.nodes.find((n) => n.id === focusId)?.label ??
+      (focusId.startsWith('dev:') ? focusId.slice(4) : focusId);
+    return { core, lit, neighbours, label };
+  }, [focusId, adjacency, topology.nodes]);
+
+  // Esc leaves focus mode; the listener exists only while there is a focus to
+  // leave, so the diagram never swallows the key for anything else.
+  useEffect(() => {
+    if (focusId === null) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFocusId(null);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [focusId]);
 
   // Visible cards per layer: group chips swap for their members when expanded.
   const { placed, posOf } = useMemo(() => {
@@ -467,88 +602,136 @@ export function SiteTopologyDiagram({
   };
 
   return (
-    <div style={{ display: 'flex', gap: 12, overflowX: 'auto' }}>
-      {/* layer micro-labels */}
-      <div style={{ width: 64, flex: '0 0 64px', position: 'relative', height }}>
-        {topology.layers.map((layer, i) => (
+    <div
+      style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+      onClick={() => {
+        if (focusId !== null) setFocusId(null);
+      }}
+    >
+      {focus !== null ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <Badge tone="accent">focus</Badge>
           <span
-            key={layer}
             style={{
-              position: 'absolute',
-              top: i * ROW_H + ROW_H / 2,
-              transform: 'translateY(-50%)',
+              flex: 1,
+              minWidth: 0,
               fontFamily: 'var(--nd-font-mono)',
-              fontSize: 9.5,
-              letterSpacing: '.12em',
+              fontSize: 'var(--nd-text-10)',
               color: 'var(--nd-text-muted)',
             }}
           >
-            {LAYER_LABEL[layer]}
+            {`${focus.label} · ${countOf(focus.neighbours.size, 'neighbour')} in view · click another node to move the focus · Esc or click the background to leave`}
           </span>
-        ))}
-      </div>
-
-      {/* diagram area */}
-      <div style={{ position: 'relative', flex: '1 0 auto', minWidth: diagramMinWidth, height }}>
-        <svg
-          aria-hidden
-          width="100%"
-          height="100%"
-          viewBox={`0 0 100 ${height}`}
-          preserveAspectRatio="none"
-          style={{ position: 'absolute', inset: 0 }}
-        >
-          {topology.edges.flatMap((e, i) => {
-            const froms = targetsFor(e.from);
-            const tos = targetsFor(e.to);
-            return froms.flatMap((f) =>
-              tos.map((t) => (
-                <line
-                  key={`${i}-${f.node.id}-${t.node.id}`}
-                  x1={f.xPct}
-                  y1={f.layerIdx * ROW_H + ROW_H / 2 + CARD_H / 2}
-                  x2={t.xPct}
-                  y2={t.layerIdx * ROW_H + ROW_H / 2 - CARD_H / 2}
-                  stroke="var(--nd-border-strong)"
-                  strokeWidth="1"
-                  vectorEffect="non-scaling-stroke"
-                />
-              )),
-            );
-          })}
-        </svg>
-
-        {/* edge labels (only where the data carries one) — HTML so text stays crisp */}
-        {topology.edges.map((e, i) => {
-          if (!e.label) return null;
-          const f = targetsFor(e.from)[0];
-          const t = targetsFor(e.to)[0];
-          if (!f || !t) return null;
-          return (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(event) => {
+              event.stopPropagation();
+              setFocusId(null);
+            }}
+          >
+            Exit focus
+          </Button>
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', gap: 12, overflowX: 'auto' }}>
+        {/* layer micro-labels */}
+        <div style={{ width: 64, flex: '0 0 64px', position: 'relative', height }}>
+          {topology.layers.map((layer, i) => (
             <span
-              key={`label-${i}`}
+              key={layer}
               style={{
                 position: 'absolute',
-                left: `${(f.xPct + t.xPct) / 2}%`,
-                top: (f.layerIdx + t.layerIdx + 1) * ROW_H - 7,
-                transform: 'translate(-50%, -50%)',
+                top: i * ROW_H + ROW_H / 2,
+                transform: 'translateY(-50%)',
                 fontFamily: 'var(--nd-font-mono)',
                 fontSize: 9.5,
-                letterSpacing: '.04em',
+                letterSpacing: '.12em',
                 color: 'var(--nd-text-muted)',
-                background: 'var(--nd-bg-surface)',
-                padding: '0 6px',
-                whiteSpace: 'nowrap',
               }}
             >
-              {e.label}
+              {LAYER_LABEL[layer]}
             </span>
-          );
-        })}
+          ))}
+        </div>
 
-        {placed.map((p) => (
-          <Card key={p.node.id} placed={p} onDevice={onDevice} onToggleGroup={toggleGroup} />
-        ))}
+        {/* diagram area */}
+        <div style={{ position: 'relative', flex: '1 0 auto', minWidth: diagramMinWidth, height }}>
+          <svg
+            aria-hidden
+            width="100%"
+            height="100%"
+            viewBox={`0 0 100 ${height}`}
+            preserveAspectRatio="none"
+            style={{ position: 'absolute', inset: 0 }}
+          >
+            {topology.edges.flatMap((e, i) => {
+              const froms = targetsFor(e.from);
+              const tos = targetsFor(e.to);
+              // Focus mode: an edge is lit when it is incident to the focused
+              // node itself — the hop, not everything between two lit cards.
+              const edgeLit = focus === null || focus.core.has(e.from) || focus.core.has(e.to);
+              return froms.flatMap((f) =>
+                tos.map((t) => (
+                  <line
+                    key={`${i}-${f.node.id}-${t.node.id}`}
+                    x1={f.xPct}
+                    y1={f.layerIdx * ROW_H + ROW_H / 2 + CARD_H / 2}
+                    x2={t.xPct}
+                    y2={t.layerIdx * ROW_H + ROW_H / 2 - CARD_H / 2}
+                    stroke="var(--nd-border-strong)"
+                    strokeWidth="1"
+                    strokeOpacity={edgeLit ? 1 : 0.15}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )),
+              );
+            })}
+          </svg>
+
+          {/* edge labels (only where the data carries one) — HTML so text stays crisp */}
+          {topology.edges.map((e, i) => {
+            if (!e.label) return null;
+            const f = targetsFor(e.from)[0];
+            const t = targetsFor(e.to)[0];
+            if (!f || !t) return null;
+            const edgeLit = focus === null || focus.core.has(e.from) || focus.core.has(e.to);
+            return (
+              <span
+                key={`label-${i}`}
+                style={{
+                  position: 'absolute',
+                  left: `${(f.xPct + t.xPct) / 2}%`,
+                  top: (f.layerIdx + t.layerIdx + 1) * ROW_H - 7,
+                  transform: 'translate(-50%, -50%)',
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 9.5,
+                  letterSpacing: '.04em',
+                  color: 'var(--nd-text-muted)',
+                  background: 'var(--nd-bg-surface)',
+                  padding: '0 6px',
+                  whiteSpace: 'nowrap',
+                  opacity: edgeLit ? 1 : 0.2,
+                }}
+              >
+                {e.label}
+              </span>
+            );
+          })}
+
+          {placed.map((p) => (
+            <Card
+              key={p.node.id}
+              placed={p}
+              onDevice={onDevice}
+              onToggleGroup={toggleGroup}
+              onFocus={setFocusId}
+              dimmed={focus !== null && !focus.lit.has(p.node.id)}
+              focused={focus !== null && focus.core.has(p.node.id)}
+              focusActive={focus !== null}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );

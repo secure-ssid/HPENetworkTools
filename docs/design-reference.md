@@ -450,7 +450,8 @@ result `Badge`) and **Permissions model** (prose + four mode rows).
   `Code block` of the credential/connection record (vault reference, scopes, rate limit,
   retention, write-broker policy), and Sync now / Re-key credentials / Open console / Retire
   plane (danger).
-- **Connect a system drawer** — type `Select` (7 planes), display name, a
+- **Connect a system drawer** — type `Select` (7 planes in the prototype; the implemented
+  drawer offers 11 system types), display name, a
   **type-dependent endpoint field** (label, help and placeholder all change with the plane:
   Central API gateway, Mist host + org UUID, Classic tenant URL, GreenLake workspace id, AOS-8
   master address, collector agent address, ClearPass publisher), client id, client secret
@@ -626,7 +627,7 @@ Design rules that follow from this and must survive the build:
                        --nd-danger:#ff6b6b;  --nd-danger-subtle:rgba(255,107,107,.12);
                        --nd-info:#58b7ff;    --nd-info-subtle:rgba(88,183,255,.12);
 /* focus/overlay */    --nd-ring-color:rgba(217,119,87,.4); --nd-overlay-scrim:rgba(5,6,9,.66);
-/* type families */    --nd-font-display:"Newsreader",Georgia,"Times New Roman",serif;
+/* type families */    --nd-font-display:"Inter",-apple-system,system-ui,sans-serif;
                        --nd-font-body:"Inter",-apple-system,system-ui,sans-serif;
                        --nd-font-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
 /* type sizes */       10, 11, 12.5, 14, 16, 18, 22, 26, 34, 44 px
@@ -640,16 +641,17 @@ Design rules that follow from this and must survive the build:
 /* z-index */          overlay 100, dropdown 120, toast 140
 ```
 
-Heading levels: 1 = 44px, 2 = 26px (page titles), 3 = 18px, 4 = 16px — all in the serif face.
+Heading levels: 1 = 44px, 2 = 26px (page titles), 3 = 18px, 4 = 16px — all in the display face
+(Inter since the serif was retired; see the note at the top).
 Button heights: sm 26px, md 32px, lg 38px. Input/Select heights match.
 
 ## Assets
 
 None. No images, icons, logos or illustrations are used anywhere — deliberately. The only
 graphics are CSS: hairline rules, 3px progress/health bars, 6–9px status dots, and the copper
-`flair` divider. Fonts are Newsreader, Inter and JetBrains Mono (Google Fonts / self-host).
+`flair` divider. Fonts are Inter and JetBrains Mono (Google Fonts / self-host).
 
-The wordmark is text ("HPE" mono kicker + serif italic "Network Tools") and is an original
+The wordmark is text ("HPE" mono kicker + semibold sans "Network Tools") and is an original
 placeholder, not HPE's brand mark. Replace with the real licensed asset if you have rights to it.
 
 ## Files in this bundle
@@ -671,6 +673,7 @@ placeholder, not HPE's brand mark. Replace with the real licensed asset if you h
 | `design/NtCompliance.dc.html` | Compliance |
 | `design/NtSystems.dc.html` | Connected systems + plane detail drawer + connect drawer |
 | `design/ds-base.js` | How the prototypes load the design system (reference only) |
+| `design/research-notes.md` | Continuous-improvement research log — findings and banked follow-ups (not a screen) |
 
 Reading a `.dc.html`: the markup between `<x-dc>` and `</x-dc>` is the layout; `{{ name }}` are
 value holes; `<sc-for list="{{ xs }}" as="x">` is a list; `<sc-if value="{{ flag }}">` is a
@@ -741,9 +744,10 @@ answers (Ctrl+C in that window stops everything).
   jump `host`/`port`). Device detail flips the terminal to `LIVE · recorded` when a
   session opens; commands pass a read-only allow-list and every session is recorded to
   `data/shell-logs/`. Without reachable SSH the pane runs the faithful canned shell.
-- **Assistant (⌘J)**: configure MCP (centralmcp streamable HTTP, default
-  `http://127.0.0.1:8010/mcp`) and an OpenAI-compatible LLM in Connected systems →
+- **Assistant (⌘J)**: configure MCP (centralmcp streamable HTTP — no default; the form
+  shows `http://127.0.0.1:8010/mcp` as a placeholder only, and the assistant refuses to
+  run until a URL is saved) and an OpenAI-compatible LLM in Connected systems →
   Assistant. Read-only tools by default; write tools need the server-side write-mode
   switch plus a per-session toggle in the panel.
-- **Verification**: `npm run typecheck` · `npm test` · `npm run build` ·
-  `bash scripts/smoke.sh` (every API route + SPA route).
+- **Verification**: `npm run typecheck` · `npm run lint` · `npm test` ·
+  `npm run build` · `bash scripts/smoke.sh` (every API route + SPA route).

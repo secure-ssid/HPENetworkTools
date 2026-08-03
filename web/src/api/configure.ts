@@ -171,9 +171,13 @@ export async function discardChange(changeId: string): Promise<ApiResult<{ ok: b
  * Classic-only Central answers 200 with every section named in
  * `unavailable` so the drawer can disable what it cannot offer instead of
  * guessing. `null` means the backend itself did not answer at all.
+ * `plane` selects the target plane's catalog ('mist' → the site-scoped WLAN
+ * walk); absent is Central, exactly as before.
  */
-export async function getSsidCatalog(): Promise<SsidCatalog | ApiError | null> {
-  const result = await fetchScreen<SsidCatalog>('/api/configure/ssids/catalog');
+export async function getSsidCatalog(plane?: 'mist' | 'central'): Promise<SsidCatalog | ApiError | null> {
+  const result = await fetchScreen<SsidCatalog>(
+    `/api/configure/ssids/catalog${plane ? `?plane=${encodeURIComponent(plane)}` : ''}`,
+  );
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') return { error: result.message };
   return null;

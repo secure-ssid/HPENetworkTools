@@ -14,6 +14,7 @@ import {
   type ReconciledDeviceRow,
 } from '../../services/reconcile';
 import { writeBroker } from '../../services/writeBroker';
+import { silenceStore } from '../../services/silences';
 import { liveComplianceData } from './complianceModel';
 import { reportedValue } from './context';
 import { canOpenShell } from './deviceAccess';
@@ -27,7 +28,10 @@ import {
 } from './liveCore';
 import {
   PLANE_MARK,
+  OVERVIEW_ALERTS,
+  OVERVIEW_STATS,
   isRealSiteId,
+  silenceMatches,
   type AlertRow,
   type ChangeLogEntry,
   type LaneMeta,
@@ -440,6 +444,44 @@ export function needsYouNowAlerts(alerts: AlertRow[]): OverviewAlert[] {
         ageMinutes(b.age) - ageMinutes(a.age),
     )
     .map(liveOverviewAlert);
+}
+
+/**
+ * The demo Overview through the SAME silences the Alerts screen benches.
+ *
+ * Silences are real operator data and apply in both modes (silences.ts), so a
+ * hushed firing must not headline the landing screen while its row is benched
+ * on Alerts. The authored rows are already one-per-problem, so matching each
+ * against the active silences IS the partitionAlertGroups split for this
+ * list. The 'Open alerts' tile keeps the authored estate narrative minus
+ * exactly what was hushed — each panel row is one of the open alerts the
+ * tile counts, and the two panel P1s are its '2 critical' — and names the
+ * hushed count, so the estate never reads quieter than it is. Nothing
+ * hushed → the fixtures come back untouched, byte for byte.
+ */
+export function demoOverviewQueue(now: number = Date.now()): { stats: StatDef[]; alerts: OverviewAlert[] } {
+  const silences = silenceStore.active(now);
+  const hushed =
+    silences.length === 0 ? [] : OVERVIEW_ALERTS.filter((row) => silences.some((s) => silenceMatches(s, row)));
+  if (hushed.length === 0) return { stats: OVERVIEW_STATS, alerts: OVERVIEW_ALERTS };
+  const hushedP1 = hushed.filter((row) => row.sev === 'P1').length;
+  const authoredP1 = OVERVIEW_ALERTS.filter((row) => row.sev === 'P1').length;
+  const stats = OVERVIEW_STATS.map((tile) => {
+    if (tile.label !== 'Open alerts') return tile;
+    const authoredOpen = Number(tile.value);
+    // A tile whose authored count will not parse is left exactly as authored —
+    // adjusting a number we cannot read would be its own kind of invention.
+    if (!Number.isFinite(authoredOpen)) return tile;
+    const open = Math.max(0, authoredOpen - hushed.length);
+    const p1 = Math.max(0, authoredP1 - hushedP1);
+    return {
+      ...tile,
+      value: String(open),
+      delta: [p1 > 0 ? `▲ ${p1} critical` : 'none critical', `${hushed.length} silenced`].join(' · '),
+      tone: open > 0 ? ('negative' as const) : ('neutral' as const),
+    };
+  });
+  return { stats, alerts: OVERVIEW_ALERTS.filter((row) => !hushed.includes(row)) };
 }
 
 /** Live site row → the Overview Sites-table view model (badges → a prose plane label). */

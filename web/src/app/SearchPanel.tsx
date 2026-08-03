@@ -43,13 +43,20 @@ export function SearchPanel() {
     };
   }, []);
 
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
+  /* Query edits that drop below the searchable length retire the remote
+   * results immediately, here in the event path — clearing them from the
+   * effect below would be a synchronous setState in an effect body. */
+  const applyQuery = (value: string) => {
+    setQuery(value);
+    if (value.trim().length < 2) {
       setInventoryResults([]);
       setUnsearched([]);
-      return;
     }
+  };
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void searchInventory(q, { limit: 20, signal: controller.signal })
@@ -120,7 +127,7 @@ export function SearchPanel() {
 
   const openHit = (r: SearchResult) => {
     setOpen(false);
-    setQuery('');
+    applyQuery('');
     navigate(r.path ?? pathForSearchHit(r));
   };
 
@@ -159,7 +166,7 @@ export function SearchPanel() {
         }
         style={{ paddingRight: 74 }}
         onChange={(e) => {
-          setQuery(e.target.value);
+          applyQuery(e.target.value);
           setOpen(true);
           setActiveIndex(0);
         }}
@@ -170,8 +177,6 @@ export function SearchPanel() {
         onKeyDown={onKeyDown}
       />
       <div
-        id={listboxId}
-        role="listbox"
         style={{
           position: 'absolute',
           right: 8,
@@ -187,6 +192,8 @@ export function SearchPanel() {
       </div>
       {open ? (
         <div
+          id={listboxId}
+          role="listbox"
           style={{
             position: 'absolute',
             top: 38,

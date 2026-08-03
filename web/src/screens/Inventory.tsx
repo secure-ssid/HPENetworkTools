@@ -47,11 +47,17 @@ export default function Inventory() {
     };
   }, []);
 
+  /* Clearing the ?node= param clears the panel — adjusted during render so a
+     stale node never commits against an address that no longer names it. A
+     node-to-node navigation keeps the old node until the new read lands. */
+  const [prevSelectedId, setPrevSelectedId] = useState(selectedId);
+  if (prevSelectedId !== selectedId) {
+    setPrevSelectedId(selectedId);
+    if (!selectedId) setSelected(null);
+  }
+
   useEffect(() => {
-    if (!selectedId) {
-      setSelected(null);
-      return;
-    }
+    if (!selectedId) return;
     const controller = new AbortController();
     void getInventoryNode(selectedId, controller.signal)
       .then(setSelected)
@@ -61,10 +67,16 @@ export default function Inventory() {
     return () => controller.abort();
   }, [selectedId]);
 
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      activeSearchRef.current = '';
+  /* Dropping below two characters abandons the search: the result state is
+     cleared during render (it is invisible behind the tree view anyway, and a
+     later query must not resurrect it), while the in-flight invalidation stays
+     in the effect — the abort and the ref write are what stop a late page. */
+  const trimmedQuery = query.trim();
+  const queryTooShort = trimmedQuery.length < 2;
+  const [prevTooShort, setPrevTooShort] = useState(queryTooShort);
+  if (prevTooShort !== queryTooShort) {
+    setPrevTooShort(queryTooShort);
+    if (queryTooShort) {
       setResults([]);
       setSearching(false);
       setLoadingMore(false);
@@ -73,6 +85,13 @@ export default function Inventory() {
       setSearchTotal(null);
       setUnsearched([]);
       setListMoved(false);
+    }
+  }
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      activeSearchRef.current = '';
       return;
     }
     activeSearchRef.current = q;

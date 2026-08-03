@@ -2,10 +2,14 @@
  * server/src/planes/clearpass.ts — HPE ClearPass (CPPM) adapter.
  *
  * The policy plane (README integration table: auth/accounting events,
- * endpoints, policy; read-only — policy is edited in ClearPass itself, the
- * portal never fakes an edit form). Auth logs are mapped into the shared
- * AuthEventRow so the poller cache and /api/auth-events can consume them, and
- * the endpoint repository total rides on the plane state as its device count.
+ * endpoints, policy). Policy itself is edited in ClearPass itself — the
+ * portal never fakes an edit form — but the endpoint repository and the
+ * local-user list take REVIEWED direct writes (endpoint register/update,
+ * local-user create/update) through services/clearpassDirectWrite.ts, audited
+ * like every other write and carrying password material nowhere but the
+ * outbound request body. Auth logs are mapped into the shared AuthEventRow so
+ * the poller cache and /api/auth-events can consume them, and the endpoint
+ * repository total rides on the plane state as its device count.
  *
  * Auth (documented CPPM 6.x surface — "API Authorization / OAuth2" on
  * developer.arubanetworks.com/cppm): API clients mint their own token with
@@ -31,6 +35,31 @@
  *                                                   epoch start/end window
  *   endpoints   /api/endpoint?limit=500             count only (the fact on
  *                                                   the Systems plane row)
+ *   services    /api/config/service, then           offset/limit 100 HAL walk
+ *               /api/service (pre-6.11 builds)
+ *
+ * One service's FULL object (GET {service path}/{id}, same candidate order)
+ * is the Services-tab drawer's on-demand read — serviceDetail(), TTL-cached
+ * and never poller work, per the PlaneAdapter on-demand contract.
+ *
+ * Policy inventories (the plane's remaining datasets — NADs, auth sources,
+ * roles, enforcement policies/profiles, local users, services and device
+ * groups off /api/network-device, /api/auth-source, /api/role,
+ * /api/enforcement-policy, /api/enforcement-profile, /api/local-user, the
+ * service candidates above and /api/device-group) each get the same paged
+ * HAL walk as the endpoint detail rows, on the same 5-minute cadence. Every
+ * dataset is independently fault-tolerant: a failure omits its PlanePull key
+ * and names it in `partial`, never sinks the pull. Verified against a live
+ * CPPM 6.11.12 (Super Admin client): /api/config/service answers 200 (and
+ * /api/config/service/{id} a full service object) while /api/service 404s —
+ * so the config namespace is tried first, the legacy path is the fallback,
+ * and only a box that 404s BOTH reports services as "not available on this
+ * CPPM" (the key absent with NO partial flag). /api/device-group 404s even
+ * on 6.11, so it keeps the same both-404-honest rule on its single path.
+ * Every other failure, and any failure on the resources CPPM does serve, IS
+ * a partial read. The local-user read is strictly whitelisted — no password
+ * hash may ride a row the portal serves, and the service read is whitelisted
+ * the same way: nothing in a service definition is credential material.
  *
  * ASSUMPTION (unverifiable without a live CPPM): the Insight variant's window
  * parameters are `start_time`/`end_time` in epoch seconds, and /api/session
@@ -97,8 +126,32 @@
  * records method + path + ms + status, never headers and never a body.
  */
 
-import type { AuthEvent, AuthEventRow, EndpointRow, Tone } from '@hpe/shared';
+import type {
+  AuthEvent,
+  AuthEventRow,
+  ClearPassAuthSourceRow,
+  ClearPassDeviceGroupRow,
+  ClearPassEndpointRegisterForm,
+  ClearPassEndpointUpdateForm,
+  ClearPassEnforcementPolicyRow,
+  ClearPassEnforcementProfileRow,
+  ClearPassLocalUserCreateForm,
+  ClearPassLocalUserRow,
+  ClearPassLocalUserUpdateForm,
+  ClearPassNetworkDeviceRow,
+  ClearPassRoleRow,
+  ClearPassServiceDetail,
+  ClearPassServiceDetailLive,
+  ClearPassServiceDetailSection,
+  ClearPassServiceRow,
+  ClearPassWriteResult,
+  DetailFetchState,
+  EndpointRow,
+  PlaneDatasetKey,
+  Tone,
+} from '@hpe/shared';
 import { formatCount } from '@hpe/shared';
+import * as https from 'node:https';
 import type { PlaneCredentials } from '../config/settings';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
@@ -115,6 +168,62 @@ import {
 } from './transport';
 
 const OUTBOUND_TIMEOUT_MS = 10_000;
+
+// ---------------------------------------------------------------------------
+// Default transport: node:https so per-connection TLS verification can be
+// relaxed for a lab CPPM's self-signed cert (global fetch/undici offers no
+// per-call switch without an undici Agent dependency) — identical to
+// aoscx.ts's copy, duplicated rather than shared because each adapter owns its
+// own transport choice. Set creds.verifyTls = 'true' to enforce chain
+// verification; default OFF matches every other device adapter.
+// Exported so the connection test (routes/systems.ts) validates credentials
+// down the exact path the adapter dials.
+// ---------------------------------------------------------------------------
+
+export function httpsFetch(verifyTls: boolean): FetchLike {
+  return (url, init) =>
+    new Promise<Response>((resolve, reject) => {
+      const u = new URL(url);
+      const req = https.request(
+        {
+          hostname: u.hostname,
+          port: u.port || 443,
+          path: u.pathname + u.search,
+          method: init?.method ?? 'GET',
+          headers: init?.headers as Record<string, string> | undefined,
+          rejectUnauthorized: verifyTls,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => {
+            const code = res.statusCode ?? 502;
+            const status = code >= 200 && code <= 599 ? code : 502;
+            const headers = new Headers();
+            for (let i = 0; i + 1 < res.rawHeaders.length; i += 2) {
+              try {
+                headers.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+              } catch {
+                /* a header this runtime refuses is dropped, never fatal */
+              }
+            }
+            resolve(new Response(Buffer.concat(chunks), { status, headers }));
+          });
+        },
+      );
+      req.on('error', reject);
+      const signal = init?.signal ?? null;
+      if (signal) {
+        if (signal.aborted) {
+          req.destroy(new Error('request aborted'));
+          return;
+        }
+        signal.addEventListener('abort', () => req.destroy(new Error('request aborted')));
+      }
+      if (typeof init?.body === 'string') req.write(init.body);
+      req.end();
+    });
+}
 
 /** 429/5xx backoff: attempts after the first, exponential floor, hard cap. */
 const RATE_LIMIT_RETRIES = 2;
@@ -163,11 +272,39 @@ const ENDPOINT_PATH = '/api/endpoint';
 const ENDPOINT_PAGE_LIMIT = 500;
 const ENDPOINT_REFRESH_MS = 5 * 60 * 1000;
 
+/** Local-user collection: the reviewed-write surface alongside /api/endpoint. */
+const LOCAL_USER_PATH = '/api/local-user';
+
 /** Endpoint DETAIL rows for the ClearPass screen: paged at 100/call, capped at
  *  500 total — a best-effort read (README second dataset), never fatal to the
  *  auth feed pull() otherwise returns. */
 export const MAX_ENDPOINTS = 500;
 const ENDPOINT_DETAIL_PAGE_LIMIT = 100;
+
+/** Policy-inventory reads: the same paged HAL walk as the endpoint detail
+ *  read (100/page, capped at 500) on the same 5-minute cadence
+ *  (ENDPOINT_REFRESH_MS) — roles, policies and NADs are the repository's
+ *  slow-moving neighbours, not a 60-second dataset. */
+const INVENTORY_PAGE_LIMIT = 100;
+const INVENTORY_MAX_ROWS = 500;
+
+/**
+ * Service-collection candidates, tried in order. Verified against a live
+ * CPPM 6.11.12 (Super Admin client): the config namespace answers 200 while
+ * the legacy path 404s with the guest portal's HTML page; older 6.x builds
+ * answer the legacy path, so it stays as the fallback. A box that 404s BOTH
+ * does not expose the collection at all.
+ */
+const SERVICE_PATHS = ['/api/config/service', '/api/service'] as const;
+
+/**
+ * The on-demand service DETAIL read (drawer path, not the poller): TTL +
+ * cache cap, the same shape central's detail cache keeps. Long enough that
+ * re-opening a drawer costs no CPPM call; small enough that a service
+ * edited in CPPM is not stale for long.
+ */
+const SERVICE_DETAIL_TTL_MS = 45_000;
+const SERVICE_DETAIL_CACHE_MAX = 64;
 
 /** One auth-log resource: its path and the query string for one page. */
 interface AuthCandidate {
@@ -216,6 +353,16 @@ function num(v: unknown): number | null {
   return null;
 }
 
+function bool(v: unknown): boolean | null {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === 'true') return true;
+    if (s === 'false') return false;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Time hint — what the display row flattens away but the screen needs
 // ---------------------------------------------------------------------------
@@ -231,12 +378,14 @@ export type ClearPassAuthEventRow = AuthEventRow & AuthEventTimeHint;
 // Row mapping (pure, exported for tests)
 // ---------------------------------------------------------------------------
 
-/** Any-separator MAC → aa:bb:cc:dd:ee:ff; non-12-hex values pass through lowercased. */
-export function normalizeMac(v: string): string {
-  const hex = v.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
-  if (hex.length === 12) return hex.replace(/(..)/g, '$1:').slice(0, -1);
-  return v.trim().toLowerCase();
-}
+/**
+ * The canonical MAC normalizer lives in shared/logic.ts: the roster's client
+ * dedupe, the auth-event join and the Client 360 correlation must agree on
+ * what "the same endpoint" means, so there is exactly one implementation.
+ * Re-exported here so this module's existing importers keep working.
+ */
+export { normalizeMac } from '@hpe/shared';
+import { normalizeMac } from '@hpe/shared';
 
 /**
  * Local wall-clock 'HH:MM:SS' — the fixtures' and the design's display style
@@ -328,7 +477,13 @@ export function mapClearPassAuthEvent(raw: unknown): ClearPassAuthEventRow | nul
  * One /api/endpoint row → EndpointRow. CPPM's endpoint object nests profiling
  * facts under `attributes` (Category/Family/OS/'Device Name'/'IP Address'/
  * 'Updated At') rather than as top-level fields — a build that omits one
- * leaves the corresponding column null rather than guessing.
+ * leaves the corresponding column null rather than guessing. Three facts are
+ * NOT in attributes: `description` (the operator's own note) and `updated_at`
+ * (the repository's change stamp — CPPM's 'Aug 06, 2025 11:32:01 CDT'
+ * display string, kept verbatim as the updatedAt fallback so a row that
+ * carries it never reports null) are top-level, and `device_insight_tags` is
+ * Device Insight's free-text categorisation — the profiler's evidence list,
+ * kept separate from the enforcement `profile` it often echoes.
  */
 export function mapClearPassEndpoint(raw: unknown): EndpointRow | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -338,9 +493,13 @@ export function mapClearPassEndpoint(raw: unknown): EndpointRow | null {
   if (!id) return null; // no identity at all — not a real row
   const attrs = r.attributes && typeof r.attributes === 'object' ? (r.attributes as Record<string, unknown>) : {};
   const status = str(r.status) ?? 'Unknown';
+  const insightTags = Array.isArray(r.device_insight_tags)
+    ? r.device_insight_tags.map(str).filter((t): t is string => t !== null)
+    : [];
   return {
     id,
     mac: macRaw ? normalizeMac(macRaw) : '—',
+    description: str(r.description),
     ip: str(attrs['IP Address']),
     hostname: str(attrs['Device Name']),
     status: status as EndpointRow['status'],
@@ -348,7 +507,255 @@ export function mapClearPassEndpoint(raw: unknown): EndpointRow | null {
     family: str(attrs.Family),
     os: str(attrs.OS),
     profile: str(r.enforcement_profile ?? r.enforcement_profiles ?? attrs.Profile ?? attrs['Enforcement Profile']),
-    updatedAt: str(attrs['Updated At']),
+    updatedAt: str(attrs['Updated At']) ?? str(r.updated_at),
+    ...(insightTags.length > 0 ? { insightTags } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Policy-inventory row mapping — the plane's smaller collections, same
+// defensive reading as the endpoint mapper (pure, exported for tests)
+// ---------------------------------------------------------------------------
+
+/** One /api/network-device row → a NAD. A device with no name is junk. */
+export function mapClearPassNetworkDevice(raw: unknown): ClearPassNetworkDeviceRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name ?? r.nad_name ?? r.hostname);
+  if (!name) return null;
+  return {
+    id: str(r.id) ?? name,
+    name,
+    ipAddress: str(r.ip_address ?? r.ip ?? r.ipaddr),
+    vendorName: str(r.vendor_name ?? r.vendor),
+    coaCapable: bool(r.coa_capable),
+    radsecEnabled: bool(r.radsec_enabled),
+    description: str(r.description),
+  };
+}
+
+/** One /api/auth-source row. A source with no name is junk. */
+export function mapClearPassAuthSource(raw: unknown): ClearPassAuthSourceRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name ?? r.source_name);
+  if (!name) return null;
+  return {
+    id: str(r.id) ?? name,
+    name,
+    type: str(r.type),
+    description: str(r.description),
+  };
+}
+
+/** One /api/role row. A role with no name is junk. */
+export function mapClearPassRole(raw: unknown): ClearPassRoleRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name ?? r.role_name);
+  if (!name) return null;
+  return {
+    id: str(r.id) ?? name,
+    name,
+    description: str(r.description),
+  };
+}
+
+/** One /api/enforcement-policy row. A policy with no name is junk. */
+export function mapClearPassEnforcementPolicy(raw: unknown): ClearPassEnforcementPolicyRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name ?? r.policy_name);
+  if (!name) return null;
+  return {
+    id: str(r.id) ?? name,
+    name,
+    enforcementType: str(r.enforcement_type),
+    defaultProfile: str(r.default_profile ?? r.default_enforcement_profile),
+  };
+}
+
+/** One /api/enforcement-profile row. A profile with no name is junk. */
+export function mapClearPassEnforcementProfile(raw: unknown): ClearPassEnforcementProfileRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name ?? r.profile_name);
+  if (!name) return null;
+  return {
+    id: str(r.id) ?? name,
+    name,
+    type: str(r.type),
+    description: str(r.description),
+  };
+}
+
+/**
+ * One /api/local-user row → ClearPassLocalUserRow. STRICTLY whitelisted —
+ * the fields above are read by name and nothing else crosses, so no
+ * password hash or secret of any kind can ride a row the poller cache and
+ * the screens will serve. A row without user_id is junk.
+ */
+export function mapClearPassLocalUser(raw: unknown): ClearPassLocalUserRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const userId = str(r.user_id);
+  if (!userId) return null;
+  return {
+    id: str(r.id) ?? userId,
+    userId,
+    username: str(r.username ?? r.name),
+    roleName: str(r.role_name ?? r.role),
+    enabled: bool(r.enabled),
+  };
+}
+
+/**
+ * rules_conditions → one readable line: each condition as
+ * 'Type:Name OPERATOR value' ('Connection:NAD-IP-Address EQUALS 127.0.0.1'),
+ * conditions joined ' · '. A condition with nothing readable is skipped;
+ * nothing readable at all degrades the FIELD to null — the screen never gets
+ * raw JSON, and the row never dies over a summary.
+ */
+export function summarizeServiceRules(rules: unknown): string | null {
+  if (!Array.isArray(rules)) return null;
+  const parts = rules
+    .map((c) => {
+      if (!c || typeof c !== 'object') return null;
+      const cond = c as Record<string, unknown>;
+      const target = [str(cond.type), str(cond.name)].filter((v): v is string => v !== null).join(':');
+      const clause = [target || null, str(cond.operator), ruleValue(cond.value)]
+        .filter((v): v is string => v !== null)
+        .join(' ');
+      return clause.length > 0 ? clause : null;
+    })
+    .filter((v): v is string => v !== null);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/** A condition value: a scalar, or a list joined readably. */
+function ruleValue(v: unknown): string | null {
+  if (Array.isArray(v)) {
+    const parts = v.map(str).filter((x): x is string => x !== null);
+    return parts.length > 0 ? parts.join(', ') : null;
+  }
+  return str(v);
+}
+
+/** Names out of a list of plain strings or {name} objects — [] when nothing
+ *  is readable (auth_sources and auth_methods share the wire shape). */
+function serviceNameList(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((s) => (s && typeof s === 'object' ? str((s as Record<string, unknown>).name) : str(s)))
+    .filter((x): x is string => x !== null);
+}
+
+/** auth_sources names — present only when the row names them readably. */
+function serviceAuthSources(v: unknown): string[] | undefined {
+  const names = serviceNameList(v);
+  return names.length > 0 ? names : undefined;
+}
+
+/**
+ * One /api/config/service (6.11+) or /api/service (older 6.x) row. The base
+ * shape every build answers is { id, name, type, description }; the 6.11
+ * fields ride along only when the row carries them — present-but-unreadable
+ * degrades that field to null, absent omits the key entirely, so an older
+ * build's row keeps its exact older shape. Read by name, the same whitelist
+ * discipline as the local-user row: a service definition holds no credential
+ * material, and no future field can cross uninvited. A service with no name
+ * is junk.
+ */
+export function mapClearPassService(raw: unknown): ClearPassServiceRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name ?? r.service_name);
+  if (!name) return null;
+  const authSources = serviceAuthSources(r.auth_sources ?? r.authSources);
+  return {
+    id: str(r.id) ?? name,
+    name,
+    type: str(r.type),
+    description: str(r.description),
+    ...('template' in r ? { template: str(r.template) } : {}),
+    ...('enabled' in r ? { enabled: bool(r.enabled) } : {}),
+    ...('hit_count' in r ? { hitCount: num(r.hit_count) } : {}),
+    ...('order_no' in r ? { orderNo: num(r.order_no) } : {}),
+    ...(authSources ? { authSources } : {}),
+    ...('rules_conditions' in r ? { rulesSummary: summarizeServiceRules(r.rules_conditions) } : {}),
+  };
+}
+
+/**
+ * One rules_conditions entry → the rule editor's row. Every field degrades
+ * to null independently; a condition with NOTHING readable is junk and
+ * dropped, so the drawer's table only ever shows rows that say something.
+ */
+function mapServiceRuleCondition(raw: unknown): ClearPassServiceDetail['rulesConditions'][number] | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const c = raw as Record<string, unknown>;
+  const out = {
+    type: str(c.type),
+    name: str(c.name),
+    operator: str(c.operator),
+    value: ruleValue(c.value),
+  };
+  return out.type !== null || out.name !== null || out.operator !== null || out.value !== null ? out : null;
+}
+
+/**
+ * The full service object from GET /api/config/service/{id} (verified
+ * against a live CPPM 6.11.12: every field of ClearPassServiceDetail plus
+ * `_links`, which the whitelist drops). The on-demand read behind the
+ * Services-tab drawer — one object, so where the collection row omits
+ * absent keys this shape reports every field it knows by name, with null
+ * for the ones the box did not carry (absence ≠ false for the booleans).
+ * The same strict whitelist as the collection row: nothing in a service
+ * definition is credential material, and no future field crosses uninvited.
+ * A service with no name is junk.
+ */
+export function mapClearPassServiceDetail(raw: unknown): ClearPassServiceDetail | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name ?? r.service_name);
+  if (!name) return null;
+  return {
+    id: str(r.id) ?? name,
+    name,
+    type: str(r.type),
+    template: str(r.template),
+    enabled: bool(r.enabled),
+    hitCount: num(r.hit_count),
+    orderNo: num(r.order_no),
+    description: str(r.description),
+    monitorMode: bool(r.monitor_mode),
+    rulesMatchType: str(r.rules_match_type),
+    rulesConditions: Array.isArray(r.rules_conditions)
+      ? r.rules_conditions.map(mapServiceRuleCondition).filter((c): c is NonNullable<typeof c> => c !== null)
+      : [],
+    authMethods: serviceNameList(r.auth_methods ?? r.authMethods),
+    authSources: serviceNameList(r.auth_sources ?? r.authSources),
+    stripUsername: bool(r.strip_username),
+    roleMappingPolicy: str(r.role_mapping_policy),
+    enforcementPolicy: str(r.enf_policy ?? r.enforcement_policy),
+    useCachedPolicyResults: bool(r.use_cached_policy_results),
+    postureEnabled: bool(r.posture_enabled),
+    auditEnabled: bool(r.audit_enabled),
+    profilerEnabled: bool(r.profiler_enabled),
+    acctProxyEnabled: bool(r.acct_proxy_enabled),
+  };
+}
+
+/** One /api/device-group row. A group with no name is junk. */
+export function mapClearPassDeviceGroup(raw: unknown): ClearPassDeviceGroupRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const name = str(r.name ?? r.group_name);
+  if (!name) return null;
+  return {
+    id: str(r.id) ?? name,
+    name,
+    description: str(r.description),
   };
 }
 
@@ -455,6 +862,54 @@ function filled(v: unknown): boolean {
   return typeof v === 'string' && v.trim().length > 0;
 }
 
+/**
+ * What one policy-inventory read came back with. `{ rows }` ships the dataset
+ * (even a genuinely empty one — that is a real answer); `{ partial: true }`
+ * omits the key AND names it in PlanePull.partial; `{ partial: false }`
+ * omits the key WITHOUT the flag — the 404-honest answer for a resource this
+ * CPPM does not expose (verified on 6.11.12: /api/device-group, and
+ * /api/service on pre-6.11 builds where /api/config/service also 404s).
+ */
+type InventoryOutcome<T> = { rows: T[] } | { partial: boolean };
+
+/** One cached inventory read — rows, or a proven-absent (404) marker. A
+ *  FAILURE is never cached: the next pull retries. */
+interface InventorySlot {
+  atMs: number;
+  /** null = the resource 404d at last check (not exposed on this CPPM). */
+  rows: unknown[] | null;
+}
+
+/**
+ * The read-back half of a reviewed write. `rows` null means the confirming
+ * read itself could not be made → undefined (NOT false — an unreadable answer
+ * is not an absent object, and reporting one as the other is its own lie).
+ * A readable answer with no matching row is false: the write was accepted
+ * but the state is not there.
+ */
+function verifyReadBack<T>(rows: T[] | null, match: (row: T) => boolean): boolean | undefined {
+  if (rows === null) return undefined;
+  return rows.some(match);
+}
+
+/** Fixed, secret-free endpoint-write message — an HTTP code at most. */
+function endpointWriteMessage(did: 'registered' | 'updated', httpCode: number, verified: boolean | undefined): string {
+  if (verified === true) return `endpoint ${did} and confirmed in the repository read-back (HTTP ${httpCode})`;
+  if (verified === false) {
+    return `ClearPass accepted the write (HTTP ${httpCode}) but the endpoint read-back does not show it — check the repository before relying on it`;
+  }
+  return `endpoint ${did} (HTTP ${httpCode}); the confirming read-back could not be made`;
+}
+
+/** Fixed, secret-free local-user message — the password is never in scope here. */
+function localUserWriteMessage(did: 'created' | 'updated', httpCode: number, verified: boolean | undefined): string {
+  if (verified === true) return `local user ${did} and confirmed in the read-back (HTTP ${httpCode})`;
+  if (verified === false) {
+    return `ClearPass accepted the write (HTTP ${httpCode}) but the local-user read-back does not show it — check the user list before relying on it`;
+  }
+  return `local user ${did} (HTTP ${httpCode}); the confirming read-back could not be made`;
+}
+
 export class ClearPassAdapter implements PlaneAdapter {
   readonly id = 'clearpass' as const;
 
@@ -472,12 +927,17 @@ export class ClearPassAdapter implements PlaneAdapter {
   private endpointCountAtMs = 0;
   private endpointRows: EndpointRow[] | null = null;
   private endpointRowsAtMs = 0;
+  /** Policy-inventory reads on the same 5m cadence, keyed by dataset. */
+  private readonly inventorySlots: Partial<Record<string, InventorySlot>> = {};
+  /** The on-demand service detail read's TTL cache + single-flight. */
+  private readonly serviceDetailCache = new Map<string, { expiresAtMs: number; value: ClearPassServiceDetailLive }>();
+  private readonly serviceDetailInflight = new Map<string, Promise<ClearPassServiceDetailLive>>();
 
   constructor(
     creds: PlaneCredentials,
     private readonly stateRef: PlaneState,
     private readonly recordCall: RecordCallFn,
-    private readonly fetchImpl: FetchLike = (url, init) => fetch(url, init),
+    private readonly fetchImpl: FetchLike = httpsFetch(creds.verifyTls === 'true'),
     /** Injectable so tests exercise the backoff without real wall time. */
     private readonly sleep: SleepFn = realSleep,
   ) {
@@ -515,7 +975,7 @@ export class ClearPassAdapter implements PlaneAdapter {
   }
 
   /** API-client credentials — the path a real CPPM expects (POST /api/oauth). */
-  private static hasOauthCreds(creds: PlaneCredentials): boolean {
+  static hasOauthCreds(creds: PlaneCredentials): boolean {
     return filled(creds.clientId) && filled(creds.clientSecret);
   }
 
@@ -531,13 +991,23 @@ export class ClearPassAdapter implements PlaneAdapter {
 
   /**
    * ClearPass is a policy plane, not a transport: it gives the portal no shell
-   * to any device, the write broker cannot push configuration to it (policy is
-   * edited in ClearPass itself — README integration table), and it publishes
-   * no SSID/VLAN/port inventory. The one sanctioned write is coaDisconnect(),
-   * which is a session action, not a configuration push.
+   * to any device, the ticketed write broker cannot push configuration to it
+   * (policy is edited in ClearPass itself — README integration table), and it
+   * publishes no SSID/VLAN/port inventory. The sanctioned writes are
+   * coaDisconnect() (a session action, not a configuration push) and the
+   * reviewed direct writes behind `directWrite`: endpoint register/update and
+   * local-user create/update via services/clearpassDirectWrite.ts — NEVER
+   * policy editing, which stays in CPPM.
    */
   capabilities(): PlaneCapabilities {
-    return { localShell: false, brokeredWrite: false, configRead: false };
+    return {
+      localShell: false,
+      brokeredWrite: false,
+      configRead: false,
+      // Endpoint register/update + local-user create/update — only ever
+      // through the reviewed flow in services/clearpassDirectWrite.ts.
+      directWrite: true,
+    };
   }
 
   async pull(): Promise<PlanePull> {
@@ -578,6 +1048,43 @@ export class ClearPassAdapter implements PlaneAdapter {
     // own `truncated` note follows.
     const endpointsRead = await this.fetchEndpoints();
 
+    // The policy inventories — the plane's remaining datasets, each an
+    // independent best-effort read on the endpoint repository's 5-minute
+    // cadence. A failure omits its key and names it in `partial`; a 404 on
+    // EVERY service candidate (or on /api/device-group) omits the key with
+    // NO flag (that resource is not exposed on this CPPM — absence, not a
+    // broken read).
+    const networkDevices = await this.fetchInventory('networkDevices', '/api/network-device', mapClearPassNetworkDevice);
+    const authSources = await this.fetchInventory('authSources', '/api/auth-source', mapClearPassAuthSource);
+    const roles = await this.fetchInventory('roles', '/api/role', mapClearPassRole);
+    const enforcementPolicies = await this.fetchInventory(
+      'enforcementPolicies',
+      '/api/enforcement-policy',
+      mapClearPassEnforcementPolicy,
+    );
+    const enforcementProfiles = await this.fetchInventory(
+      'enforcementProfiles',
+      '/api/enforcement-profile',
+      mapClearPassEnforcementProfile,
+    );
+    const localUsers = await this.fetchInventory('localUsers', '/api/local-user', mapClearPassLocalUser);
+    const services = await this.fetchInventory('services', SERVICE_PATHS, mapClearPassService, {
+      notFoundIsAbsent: true,
+    });
+    const deviceGroups = await this.fetchInventory('deviceGroups', '/api/device-group', mapClearPassDeviceGroup, {
+      notFoundIsAbsent: true,
+    });
+    const inventoryReads: [PlaneDatasetKey, InventoryOutcome<unknown>][] = [
+      ['networkDevices', networkDevices],
+      ['authSources', authSources],
+      ['roles', roles],
+      ['enforcementPolicies', enforcementPolicies],
+      ['enforcementProfiles', enforcementProfiles],
+      ['localUsers', localUsers],
+      ['services', services],
+      ['deviceGroups', deviceGroups],
+    ];
+
     const rejects = authEvents.filter((e) => e.result === 'reject').length;
     const parts = [
       ...(this.endpointCount !== null ? [`${formatCount(this.endpointCount)} endpoints`] : []),
@@ -594,13 +1101,22 @@ export class ClearPassAdapter implements PlaneAdapter {
     this.stateRef.note = parts.join(' · ');
     if (this.stateRef.health === 'warning') this.stateRef.health = 'healthy'; // first sync done
 
-    const partial = [
+    const partial: PlaneDatasetKey[] = [
       ...(truncated !== null ? (['authEvents'] as const) : []),
       ...(endpointsRead === null ? (['endpoints'] as const) : []),
+      ...inventoryReads.filter(([, outcome]) => 'partial' in outcome && outcome.partial).map(([key]) => key),
     ];
     return {
       authEvents,
       ...(endpointsRead !== null ? { endpoints: endpointsRead } : {}),
+      ...('rows' in networkDevices ? { networkDevices: networkDevices.rows } : {}),
+      ...('rows' in authSources ? { authSources: authSources.rows } : {}),
+      ...('rows' in roles ? { roles: roles.rows } : {}),
+      ...('rows' in enforcementPolicies ? { enforcementPolicies: enforcementPolicies.rows } : {}),
+      ...('rows' in enforcementProfiles ? { enforcementProfiles: enforcementProfiles.rows } : {}),
+      ...('rows' in localUsers ? { localUsers: localUsers.rows } : {}),
+      ...('rows' in services ? { services: services.rows } : {}),
+      ...('rows' in deviceGroups ? { deviceGroups: deviceGroups.rows } : {}),
       ...(partial.length > 0 ? { partial } : {}),
     };
   }
@@ -620,39 +1136,105 @@ export class ClearPassAdapter implements PlaneAdapter {
     if (this.endpointRows !== null && now - this.endpointRowsAtMs < ENDPOINT_REFRESH_MS) {
       return this.endpointRows;
     }
-    const rows: EndpointRow[] = [];
-    // A read that never even completed page one has nothing to report; a
-    // read that completed at least one page — even a genuinely empty one —
-    // is a real answer and must be cached/returned as [], not confused with
-    // "never asked".
+    const walk = await this.walkHal(ENDPOINT_PATH, ENDPOINT_DETAIL_PAGE_LIMIT, MAX_ENDPOINTS, mapClearPassEndpoint);
+    if (!walk.ok) return null;
+    this.endpointRows = walk.rows;
+    this.endpointRowsAtMs = now;
+    return walk.rows;
+  }
+
+  /**
+   * One paged HAL collection walk at `pageLimit` rows per call, capped at
+   * `rowCap`. `{ ok, rows }` when page one completed — a read that completed
+   * at least one page, even a genuinely empty one, is a real answer (an
+   * empty collection is not "never asked"). `{ ok: false, status }` when
+   * page one never completed: the HTTP status page one answered with, or
+   * null for a network error or an unreadable body — the caller decides what
+   * that failure MEANS for its dataset (a 404 on /api/service is absence;
+   * on /api/role it is a broken read).
+   */
+  private async walkHal<T>(
+    path: string,
+    pageLimit: number,
+    rowCap: number,
+    map: (raw: unknown) => T | null,
+  ): Promise<{ ok: true; rows: T[] } | { ok: false; status: number | null }> {
+    const rows: T[] = [];
     let readOk = false;
+    let firstStatus: number | null = null;
     try {
-      for (let offset = 0; rows.length < MAX_ENDPOINTS; offset += ENDPOINT_DETAIL_PAGE_LIMIT) {
-        const limit = Math.min(ENDPOINT_DETAIL_PAGE_LIMIT, MAX_ENDPOINTS - rows.length);
-        const path = `${ENDPOINT_PATH}?limit=${limit}&offset=${offset}`;
-        const res = await this.authedGet(path);
-        if (res.status < 200 || res.status >= 300) break;
+      for (let offset = 0; rows.length < rowCap; offset += pageLimit) {
+        const limit = Math.min(pageLimit, rowCap - rows.length);
+        const res = await this.authedGet(`${path}?limit=${limit}&offset=${offset}`);
+        if (res.status < 200 || res.status >= 300) {
+          if (offset === 0) firstStatus = res.status;
+          break;
+        }
         const raw = extractRows(res.body);
         if (raw === null) break;
         readOk = true;
-        const mapped = raw.map(mapClearPassEndpoint).filter((e): e is EndpointRow => e !== null);
-        rows.push(...mapped);
-        if (raw.length < limit) break; // short page — no more rows to read
+        rows.push(...raw.map(map).filter((r): r is T => r !== null));
+        if (raw.length < limit) break; // short page — the collection is read
       }
     } catch {
       // A network error mid-walk still leaves whatever pages read ok.
     }
-    if (!readOk) return null;
-    const capped = rows.slice(0, MAX_ENDPOINTS);
-    this.endpointRows = capped;
-    this.endpointRowsAtMs = now;
-    return capped;
+    if (!readOk) return { ok: false, status: firstStatus };
+    return { ok: true, rows: rows.slice(0, rowCap) };
+  }
+
+  /**
+   * One policy-inventory collection (NADs, auth sources, roles, enforcement
+   * policies/profiles, local users, services, device groups) — the same
+   * paged HAL walk as the endpoint detail read, on the same 5-minute
+   * cadence. `paths` is one path or an ordered candidate list (services:
+   * the 6.11 config namespace first, the pre-6.11 path as fallback); a 404
+   * releases the walk to the next candidate, exactly like the auth feed's
+   * own release-variance rule. Every dataset is independently
+   * fault-tolerant:
+   *   - read ok (even genuinely empty) → { rows }; the pull carries the key
+   *   - 404 on EVERY candidate with notFoundIsAbsent → { partial: false }:
+   *     the resource is not exposed on this CPPM (verified against 6.11.12
+   *     for /api/device-group, and for services on boxes where neither
+   *     candidate answers) — the key is omitted with NO partial flag,
+   *     honest absence rather than a partial-failure alarm. The absence is
+   *     cached for the cadence window so a 60s poll does not re-probe it.
+   *   - any other failure → { partial: true }: the key is omitted AND named
+   *     in PlanePull.partial — never sunk, never silent. A non-404 on an
+   *     earlier candidate does NOT fall through to the next one (a 500 is a
+   *     broken read, not absence). Failures are never cached: the next pull
+   *     retries.
+   */
+  private async fetchInventory<T>(
+    key: PlaneDatasetKey,
+    paths: string | readonly string[],
+    map: (raw: unknown) => T | null,
+    opts: { notFoundIsAbsent?: boolean } = {},
+  ): Promise<InventoryOutcome<T>> {
+    const now = Date.now();
+    const slot = this.inventorySlots[key];
+    if (slot && now - slot.atMs < ENDPOINT_REFRESH_MS) {
+      return slot.rows === null ? { partial: false } : { rows: slot.rows as T[] };
+    }
+    for (const path of [paths].flat()) {
+      const walk = await this.walkHal(path, INVENTORY_PAGE_LIMIT, INVENTORY_MAX_ROWS, map);
+      if (walk.ok) {
+        this.inventorySlots[key] = { atMs: now, rows: walk.rows };
+        return { rows: walk.rows };
+      }
+      if (walk.status !== 404) return { partial: true };
+    }
+    if (opts.notFoundIsAbsent) {
+      this.inventorySlots[key] = { atMs: now, rows: null };
+      return { partial: false };
+    }
+    return { partial: true };
   }
 
 
   /**
-   * Trigger a CoA Disconnect-Request for an active session, by MAC — the one
-   * sanctioned write on this read-only plane (CPPM SessionAction API, 6.8.7+):
+   * Trigger a CoA Disconnect-Request for an active session, by MAC — a session
+   * action, not a configuration push (CPPM SessionAction API, 6.8.7+):
    *   POST /api/session-action/disconnect/mac/{mac}
    * The vendor operation requires `async` in the body; `enforcement_profile`
    * is only sent when the operator configured one (an unknown profile name
@@ -664,6 +1246,341 @@ export class ClearPassAdapter implements PlaneAdapter {
     const body: Record<string, unknown> = { async: false };
     if (this.coaEnforcementProfile) body.enforcement_profile = this.coaEnforcementProfile;
     return this.authed('POST', `/api/session-action/disconnect/mac/${encodeURIComponent(normalizeMac(mac))}`, body);
+  }
+
+  // -- on-demand service detail ------------------------------------------------
+  //
+  // ONE service's full definition for the Services-tab drawer. NOT poller
+  // work (the PlaneAdapter contract): the collection walk already serves the
+  // summary rows on the 5-minute cadence, and fetching every service's full
+  // object per cycle would multiply the call cost for data nobody opened.
+  // This runs only for the ONE service whose drawer is opening, behind the
+  // TTL cache below — never from pull(), never fanned out over the list.
+
+  /**
+   * ONE service's full definition — GET {service path}/{id} on the same
+   * candidate order the collection walk uses (the 6.11 config namespace
+   * first, the legacy path as fallback). Never throws: a 404 on EVERY
+   * candidate is 'empty' (no such service — or a build that exposes neither
+   * path), any other failure is 'failed' with a short, secret-free note.
+   * null means the caller asked about nothing (an empty id), never a CPPM
+   * answer.
+   */
+  async serviceDetail(id: string): Promise<ClearPassServiceDetailLive | null> {
+    const key = (id ?? '').trim();
+    if (!key) return null;
+    return this.cachedServiceDetail(key, () => this.readServiceDetail(key));
+  }
+
+  /**
+   * TTL cache + single-flight around one service detail read. A cache HIT
+   * re-stamps `source.cached = true` so the drawer can say the read is up to
+   * 45s old rather than implying a fresh call; a FAILED read is cached too —
+   * without that, a drawer that re-renders turns one unhappy CPPM into a
+   * call storm against the exact box already failing (the rule central's
+   * detail cache documents).
+   */
+  private async cachedServiceDetail(
+    id: string,
+    load: () => Promise<ClearPassServiceDetailLive>,
+  ): Promise<ClearPassServiceDetailLive> {
+    const hit = this.serviceDetailCache.get(id);
+    if (hit && hit.expiresAtMs > Date.now()) {
+      return { ...hit.value, source: { ...hit.value.source, cached: true } };
+    }
+    const inflight = this.serviceDetailInflight.get(id);
+    if (inflight) return inflight;
+    const promise = load()
+      .then((value) => {
+        this.serviceDetailCache.set(id, { expiresAtMs: Date.now() + SERVICE_DETAIL_TTL_MS, value });
+        // Insertion order = oldest first, so a long-lived process that opens
+        // hundreds of drawers cannot grow this map without bound.
+        while (this.serviceDetailCache.size > SERVICE_DETAIL_CACHE_MAX) {
+          const oldest = this.serviceDetailCache.keys().next();
+          if (oldest.done) break;
+          this.serviceDetailCache.delete(oldest.value);
+        }
+        return value;
+      })
+      .finally(() => {
+        this.serviceDetailInflight.delete(id);
+      });
+    this.serviceDetailInflight.set(id, promise);
+    return promise;
+  }
+
+  /**
+   * The read itself, once per TTL window. One call, one section: 'ok' the
+   * body mapped, 'empty' every candidate 404'd, 'failed' anything else —
+   * including a 200 with no service object in it, which is a broken read,
+   * never an absent service.
+   */
+  private async readServiceDetail(id: string): Promise<ClearPassServiceDetailLive> {
+    const sections: Partial<Record<ClearPassServiceDetailSection, DetailFetchState>> = {};
+    const out: ClearPassServiceDetailLive = {
+      service: null,
+      source: { plane: 'clearpass', at: new Date().toISOString(), sections },
+    };
+    const seg = encodeURIComponent(id);
+    for (const base of SERVICE_PATHS) {
+      const res = await this.detailGet(`${base}/${seg}`);
+      if (!res.ok) {
+        if (res.status === 404) continue; // release variance — the legacy path may still answer
+        sections.service = 'failed';
+        out.source.note = res.note;
+        return out;
+      }
+      const service = mapClearPassServiceDetail(res.body);
+      if (service === null) {
+        sections.service = 'failed';
+        out.source.note = `200 from ${base}/${seg} but no service object in the payload`;
+        return out;
+      }
+      out.service = service;
+      sections.service = 'ok';
+      return out;
+    }
+    sections.service = 'empty';
+    out.source.note = `this CPPM answered 404 for service '${id}' — no such service`;
+    return out;
+  }
+
+  /**
+   * One detail GET with authed()'s 401 invalidate-and-retry for a minted
+   * token but WITHOUT authedGet's 429 backoff: those sleeps exist so a poll
+   * cycle survives, and on a drawer's request path they would only turn a
+   * rate limit into a multi-second stall (the split central's detailGet
+   * documents). Never throws — a transport failure comes back as
+   * { ok:false } with a short, secret-free reason.
+   */
+  private async detailGet(
+    path: string,
+  ): Promise<{ ok: true; status: number; body: unknown } | { ok: false; status: number | null; note: string }> {
+    try {
+      const res = await this.authed('GET', path);
+      if (res.status < 200 || res.status >= 300) return { ok: false, status: res.status, note: `HTTP ${res.status}` };
+      return { ok: true, status: res.status, body: res.body };
+    } catch (err) {
+      // authed() prefixes 'GET <path> failed: '; keep only the cause so the
+      // note stays one sentence, and never a URL or a credential.
+      const raw = (err as Error).message;
+      const cause = raw.includes('failed: ') ? raw.slice(raw.indexOf('failed: ') + 8) : raw;
+      return { ok: false, status: null, note: cause || 'request failed' };
+    }
+  }
+
+  // -- reviewed direct writes ------------------------------------------------
+  //
+  // The plane-facing half of the reviewed flow (services/clearpassDirectWrite.ts
+  // owns the review gate, the audit line and the cache refresh — the same
+  // split CentralAdapter.applySsidProfile() keeps). Each method does the write
+  // and then a READ-BACK of the object it just wrote, reporting ok / verified
+  // separately and never echoing a vendor body into a message. A successful
+  // write also drops the poller-facing caches it just made stale, so the
+  // service's forced re-read cannot come back with the pre-write rows.
+  //
+  // The local-user methods take password material in exactly one place — the
+  // outbound request body. It is never read back (the verify maps rows through
+  // the same strict whitelist pull() uses), never logged, and never echoed in
+  // a result message.
+
+  /** POST /api/endpoint — register one MAC with its attributes. */
+  async registerEndpoint(form: ClearPassEndpointRegisterForm): Promise<ClearPassWriteResult> {
+    const body: Record<string, unknown> = { mac_address: form.mac, status: form.status ?? 'Known' };
+    if (form.description) body.description = form.description;
+    if (form.attributes && Object.keys(form.attributes).length > 0) body.attributes = form.attributes;
+    const res = await this.authed('POST', ENDPOINT_PATH, body);
+    if (res.status < 200 || res.status >= 300) {
+      return {
+        ok: false,
+        action: 'failed',
+        httpCode: res.status,
+        message: `ClearPass refused the endpoint registration (HTTP ${res.status})`,
+      };
+    }
+    this.invalidateEndpointCaches();
+    const createdId = res.body && typeof res.body === 'object' ? str((res.body as Record<string, unknown>).id) : null;
+    const rows = await this.readBackEndpoint(createdId, form.mac);
+    const verified = verifyReadBack(rows, (row) => normalizeMac(row.mac) === form.mac);
+    return {
+      ok: true,
+      action: 'created',
+      httpCode: res.status,
+      ...(verified !== undefined ? { verified } : {}),
+      message: endpointWriteMessage('registered', res.status, verified),
+    };
+  }
+
+  /** PATCH /api/endpoint/{id} — status and/or the operator note, nothing else. */
+  async updateEndpoint(id: string, form: ClearPassEndpointUpdateForm): Promise<ClearPassWriteResult> {
+    const body: Record<string, unknown> = {};
+    if (form.status !== undefined) body.status = form.status;
+    if (form.description !== undefined) body.description = form.description;
+    const path = `${ENDPOINT_PATH}/${encodeURIComponent(id)}`;
+    const res = await this.authed('PATCH', path, body);
+    if (res.status < 200 || res.status >= 300) {
+      return {
+        ok: false,
+        action: 'failed',
+        httpCode: res.status,
+        message: `ClearPass refused the endpoint update (HTTP ${res.status})`,
+      };
+    }
+    this.invalidateEndpointCaches();
+    const rows = await this.readBackEndpoint(id, null);
+    const verified = verifyReadBack(
+      rows,
+      (row) =>
+        (form.status === undefined || row.status === form.status) &&
+        (form.description === undefined || (row.description ?? '') === form.description),
+    );
+    return {
+      ok: true,
+      action: 'updated',
+      httpCode: res.status,
+      ...(verified !== undefined ? { verified } : {}),
+      message: endpointWriteMessage('updated', res.status, verified),
+    };
+  }
+
+  /**
+   * POST /api/local-user — create one local account. `password` crosses in
+   * the request body and NOWHERE else: the read-back whitelists rows through
+   * mapClearPassLocalUser, so no hash can come back either.
+   */
+  async createLocalUser(form: ClearPassLocalUserCreateForm): Promise<ClearPassWriteResult> {
+    const body: Record<string, unknown> = {
+      user_id: form.userId,
+      role_name: form.roleName,
+      enabled: form.enabled,
+      password: form.password,
+    };
+    if (form.username) body.username = form.username;
+    const res = await this.authed('POST', LOCAL_USER_PATH, body);
+    if (res.status < 200 || res.status >= 300) {
+      return {
+        ok: false,
+        action: 'failed',
+        httpCode: res.status,
+        message: `ClearPass refused the local-user create (HTTP ${res.status})`,
+      };
+    }
+    this.invalidateLocalUserCache();
+    const createdId = res.body && typeof res.body === 'object' ? str((res.body as Record<string, unknown>).id) : null;
+    const rows = await this.readBackLocalUser(createdId, form.userId);
+    const verified = verifyReadBack(
+      rows,
+      (row) => row.userId === form.userId && row.roleName === form.roleName && row.enabled === form.enabled,
+    );
+    return {
+      ok: true,
+      action: 'created',
+      httpCode: res.status,
+      ...(verified !== undefined ? { verified } : {}),
+      message: localUserWriteMessage('created', res.status, verified),
+    };
+  }
+
+  /**
+   * PUT /api/local-user/{id} — every field optional; an absent password
+   * leaves the current one alone (it is only ever SENT, never read).
+   */
+  async updateLocalUser(id: string, form: ClearPassLocalUserUpdateForm): Promise<ClearPassWriteResult> {
+    const body: Record<string, unknown> = {};
+    if (form.username !== undefined) body.username = form.username;
+    if (form.roleName !== undefined) body.role_name = form.roleName;
+    if (form.enabled !== undefined) body.enabled = form.enabled;
+    if (form.password !== undefined) body.password = form.password;
+    const path = `${LOCAL_USER_PATH}/${encodeURIComponent(id)}`;
+    const res = await this.authed('PUT', path, body);
+    if (res.status < 200 || res.status >= 300) {
+      return {
+        ok: false,
+        action: 'failed',
+        httpCode: res.status,
+        message: `ClearPass refused the local-user update (HTTP ${res.status})`,
+      };
+    }
+    this.invalidateLocalUserCache();
+    const rows = await this.readBackLocalUser(id, null);
+    const verified = verifyReadBack(
+      rows,
+      (row) =>
+        (form.username === undefined || row.username === form.username) &&
+        (form.roleName === undefined || row.roleName === form.roleName) &&
+        (form.enabled === undefined || row.enabled === form.enabled),
+    );
+    return {
+      ok: true,
+      action: 'updated',
+      httpCode: res.status,
+      ...(verified !== undefined ? { verified } : {}),
+      message: localUserWriteMessage('updated', res.status, verified),
+    };
+  }
+
+  /** A write just changed what the cached endpoint reads would answer. */
+  private invalidateEndpointCaches(): void {
+    this.endpointCount = null;
+    this.endpointRows = null;
+  }
+
+  /** A write just changed what the cached local-user read would answer. */
+  private invalidateLocalUserCache(): void {
+    delete this.inventorySlots.localUsers;
+  }
+
+  /**
+   * Re-read the endpoint a write just touched: by id when the write's answer
+   * carried one, otherwise through the collection filter on the MAC (the same
+   * JSON filter vocabulary /api/session already accepts — a build that rejects
+   * it answers 4xx and the read-back reports undefined, never a guess).
+   * null = the confirming read could not be made.
+   */
+  private async readBackEndpoint(id: string | null, mac: string | null): Promise<EndpointRow[] | null> {
+    try {
+      if (id) {
+        const res = await this.authed('GET', `${ENDPOINT_PATH}/${encodeURIComponent(id)}`);
+        if (res.status < 200 || res.status >= 300) return null;
+        const row = mapClearPassEndpoint(res.body);
+        return row ? [row] : [];
+      }
+      if (!mac) return null;
+      const filter = encodeURIComponent(JSON.stringify({ mac_address: { $eq: mac } }));
+      const res = await this.authed('GET', `${ENDPOINT_PATH}?filter=${filter}&limit=5`);
+      if (res.status < 200 || res.status >= 300) return null;
+      const raw = extractRows(res.body);
+      if (raw === null) return null;
+      return raw.map(mapClearPassEndpoint).filter((r): r is EndpointRow => r !== null);
+    } catch {
+      return null; // a transport fault on the CONFIRMING read is not the write's verdict
+    }
+  }
+
+  /**
+   * Re-read the local user a write just touched — by id when known, otherwise
+   * through the collection filter on user_id. STRICTLY whitelisted through
+   * mapClearPassLocalUser: this path is how the portal proves a password
+   * never comes back. null = the confirming read could not be made.
+   */
+  private async readBackLocalUser(id: string | null, userId: string | null): Promise<ClearPassLocalUserRow[] | null> {
+    try {
+      if (id) {
+        const res = await this.authed('GET', `${LOCAL_USER_PATH}/${encodeURIComponent(id)}`);
+        if (res.status < 200 || res.status >= 300) return null;
+        const row = mapClearPassLocalUser(res.body);
+        return row ? [row] : [];
+      }
+      if (!userId) return null;
+      const filter = encodeURIComponent(JSON.stringify({ user_id: { $eq: userId } }));
+      const res = await this.authed('GET', `${LOCAL_USER_PATH}?filter=${filter}&limit=5`);
+      if (res.status < 200 || res.status >= 300) return null;
+      const raw = extractRows(res.body);
+      if (raw === null) return null;
+      return raw.map(mapClearPassLocalUser).filter((r): r is ClearPassLocalUserRow => r !== null);
+    } catch {
+      return null; // a transport fault on the CONFIRMING read is not the write's verdict
+    }
   }
 
   // -- internals -------------------------------------------------------------
@@ -776,7 +1693,7 @@ export class ClearPassAdapter implements PlaneAdapter {
    * 401 (CPPM tokens expire after 8 hours); a static token is NOT retried —
    * it cannot self-heal, so the plane must degrade and say so.
    */
-  private async authed(method: 'GET' | 'POST', path: string, body?: unknown): Promise<HttpResult> {
+  private async authed(method: 'GET' | 'POST' | 'PATCH' | 'PUT', path: string, body?: unknown): Promise<HttpResult> {
     let res = await this.http(method, path, { token: await this.authToken(), body });
     if (res.status === 401 && this.tokens) {
       this.tokens.invalidate();
@@ -807,7 +1724,7 @@ export class ClearPassAdapter implements PlaneAdapter {
    * the client secret) never.
    */
   private async http(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PATCH' | 'PUT',
     path: string,
     opts: { token?: string; body?: unknown } = {},
   ): Promise<HttpResult> {

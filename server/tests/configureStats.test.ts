@@ -62,11 +62,6 @@ function push(result: string, id = 'c1'): Record<string, unknown> {
   };
 }
 
-/** An instant N hours before now — today, and clear of any midnight. */
-function hoursAgo(n: number): string {
-  return new Date(Date.now() - n * 3_600_000).toISOString();
-}
-
 function pushAt(ts: string, result: string, id = 'c1'): Record<string, unknown> {
   return { ...push(result, id), ts };
 }
@@ -181,7 +176,7 @@ describe('Configure "Pushed today" tile', () => {
   it('does not call a count short when the window reached back past midnight', () => {
     // Newest-first, and the window's furthest reach is yesterday: every push
     // today is inside it, so the count is exact however long the log is.
-    stubLog([pushAt(hoursAgo(2), 'applied', 'c1'), eventAt(middayLocal(-1), 'queue')], [], true);
+    stubLog([pushAt(middayLocal(), 'applied', 'c1'), eventAt(middayLocal(-1), 'queue')], [], true);
 
     const tile = pushedTile();
     expect(tile.value).toBe('1');
@@ -195,7 +190,7 @@ describe('Configure "Pushed today" tile', () => {
    * count that is exactly right. */
   it('keeps quiet on a long log and a quiet day', () => {
     stubLog(
-      [pushAt(hoursAgo(1), 'applied', 'c1'), ...[3, 9, 40].map((d) => eventAt(middayLocal(-d), 'push'))],
+      [pushAt(middayLocal(), 'applied', 'c1'), ...[3, 9, 40].map((d) => eventAt(middayLocal(-d), 'push'))],
       [],
       true,
     );
@@ -206,7 +201,7 @@ describe('Configure "Pushed today" tile', () => {
 
   /* …and it must still speak when the window really does end inside today. */
   it('still says the count may be short when the window stopped inside today', () => {
-    stubLog([pushAt(hoursAgo(1), 'applied', 'c1'), pushAt(hoursAgo(2), 'applied', 'c2')], [], true);
+    stubLog([pushAt(middayLocal(), 'applied', 'c1'), pushAt(middayLocal(), 'applied', 'c2')], [], true);
 
     expect(pushOutcomesToday()).toMatchObject({ applied: 2, truncated: true });
     expect(pushedTile().delta).toContain('count may be short');
@@ -216,7 +211,7 @@ describe('Configure "Pushed today" tile', () => {
    * forwards is. With nothing truncated, a window ending inside today is just
    * a portal that started this morning. */
   it('is silent when the read never hit its limit, wherever the window ends', () => {
-    stubLog([pushAt(hoursAgo(1), 'applied', 'c1')], [], false);
+    stubLog([pushAt(middayLocal(), 'applied', 'c1')], [], false);
 
     expect(pushOutcomesToday().truncated).toBe(false);
     expect(pushedTile().delta).not.toContain('may be short');

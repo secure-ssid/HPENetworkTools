@@ -15,6 +15,7 @@ import {
   type DeviceDetailLive,
   type DeviceDetailSection,
   type DevicePort,
+  type DevicePortCounters,
   type DeviceType,
   type Tone,
 } from '@hpe/shared';
@@ -138,6 +139,60 @@ export function speedText(bps: number | null | undefined): string | null {
     return `${Number.isInteger(mb) ? mb : Number(mb.toFixed(1))} Mb`;
   }
   return `${bps} b`;
+}
+
+/** A cumulative byte counter as an engineer writes it: 412000000000 → `412 GB`. */
+export function byteText(bytes: number | null | undefined): string | null {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return null;
+  if (bytes >= 1e12) {
+    const tb = bytes / 1e12;
+    return `${Number.isInteger(tb) ? tb : Number(tb.toFixed(1))} TB`;
+  }
+  if (bytes >= 1e9) {
+    const gb = bytes / 1e9;
+    return `${Number.isInteger(gb) ? gb : Number(gb.toFixed(1))} GB`;
+  }
+  if (bytes >= 1e6) {
+    const mb = bytes / 1e6;
+    return `${Number.isInteger(mb) ? mb : Number(mb.toFixed(1))} MB`;
+  }
+  if (bytes >= 1e3) {
+    const kb = bytes / 1e3;
+    return `${Number.isInteger(kb) ? kb : Number(kb.toFixed(1))} kB`;
+  }
+  return `${bytes} B`;
+}
+
+/**
+ * The traffic half of a port's counters: `rx 412 GB · tx 1.28 TB`. Each side
+ * prints on its own — an unreported side contributes no segment, and a block
+ * with neither returns null, which the caller renders as "not reported".
+ */
+export function portTrafficText(counters: DevicePortCounters): string | null {
+  return (
+    joinFacts([
+      counters.rxBytes == null ? null : `rx ${byteText(counters.rxBytes)}`,
+      counters.txBytes == null ? null : `tx ${byteText(counters.txBytes)}`,
+    ]) || null
+  );
+}
+
+/**
+ * The fault half: `3 err · 27 drop`. A family total is only summed when BOTH
+ * directions were reported — a missing half summed as zero would understate
+ * the count the switch never gave, so that family contributes no segment.
+ */
+export function portErrorText(counters: DevicePortCounters): string | null {
+  const err =
+    counters.rxErrors == null || counters.txErrors == null ? null : counters.rxErrors + counters.txErrors;
+  const drop =
+    counters.rxDropped == null || counters.txDropped == null ? null : counters.rxDropped + counters.txDropped;
+  return joinFacts([err === null ? null : `${err} err`, drop === null ? null : `${drop} drop`]) || null;
+}
+
+/** Both halves as one line, for the authored demo port rows. */
+export function portCountersText(counters: DevicePortCounters): string | null {
+  return joinFacts([portTrafficText(counters), portErrorText(counters)]) || null;
 }
 
 /** Segments joined with the mono middot the rest of the screen uses. */

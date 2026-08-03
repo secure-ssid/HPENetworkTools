@@ -1,10 +1,10 @@
 /**
  * sharedShapes.test.ts — the shared/ shapes and helpers the live code paths
  * depend on: relative ages and SLA countdowns (so a raised ticket is never
- * frozen at "now"), per-plane freshness and sync outcomes (design rule 1 —
- * never present stale or missing data as current), the derived site profile
- * (so an unauthored site never renders another site's numbers), and the
- * reconciliation / lane / connect constants the live branches emit.
+ * frozen at "now"), per-plane freshness (design rule 1 — never present stale
+ * or missing data as current), the derived site profile (so an unauthored
+ * site never renders another site's numbers), and the reconciliation / lane /
+ * connect constants the live branches emit.
  *
  * Pure data and pure functions — no DOM.
  */
@@ -32,7 +32,6 @@ import {
   scopeForPlane,
   seedFormFromRow,
   slaCountdown,
-  syncOutcomeFor,
   toSiteAlertRow,
   toSiteDeviceRow,
 } from '@hpe/shared';
@@ -46,6 +45,7 @@ import type {
   PortObject,
   QueuedChangeRow,
   SiteReachability,
+  SsidObject,
   VlanObject,
 } from '@hpe/shared';
 
@@ -120,16 +120,6 @@ describe('planeFreshness — staleness expires (design rule 1)', () => {
     // stamp already was.
     const ahead = ago(-3 * 86_400_000);
     expect(planeFreshness(ahead, 90, NOW)).toEqual({ lastSync: ahead, ageSec: null, stale: true });
-  });
-});
-
-describe('syncOutcomeFor — "answered with nothing" is not a healthy sync', () => {
-  it('separates ok / empty / partial / failed', () => {
-    expect(syncOutcomeFor({ ok: true, reported: ['devices'], rows: 24 })).toBe('ok');
-    expect(syncOutcomeFor({ ok: true, reported: ['devices'], rows: 0 })).toBe('empty');
-    expect(syncOutcomeFor({ ok: true, reported: [], rows: 0 })).toBe('empty');
-    expect(syncOutcomeFor({ ok: true, reported: ['devices'], missing: ['clients'], rows: 24 })).toBe('partial');
-    expect(syncOutcomeFor({ ok: false, reported: [], rows: 0 })).toBe('failed');
   });
 });
 
@@ -328,6 +318,25 @@ describe('seedFormFromRow — live rows never inherit fixture values', () => {
     const seeded = seedFormFromRow('port', withVlan, { live: true });
     expect(seeded.vlan).toBe('440');
     expect(seeded.dot1x).toBe(true);
+  });
+
+  it('seeds the WLAN admin state only when the plane reported one', () => {
+    const mistRow: SsidObject = {
+      kind: 'ssid',
+      origin: 'configured',
+      name: 'MRDN-Research',
+      vlan: 'vlan 822',
+      security: 'WPA2-PSK',
+      targets: 'Campus-02 Research · disabled',
+      plane: 'MIST',
+      tone: 'info',
+      enabled: false,
+    };
+    expect(seedFormFromRow('ssid', mistRow)).toMatchObject({ name: 'MRDN-Research', vlan: '822', plane: 'MIST', enabled: false });
+    const { enabled, ...withoutState } = mistRow;
+    void enabled;
+    const seeded = seedFormFromRow('ssid', withoutState);
+    expect(seeded).not.toHaveProperty('enabled');
   });
 });
 

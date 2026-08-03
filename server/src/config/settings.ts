@@ -13,9 +13,13 @@
  *                     Known key shapes: central { gatewayBaseUrl, clientId,
  *                     clientSecret, approvedFirmware? }, greenlake
  *                     { workspaceId, clientId, clientSecret, baseUrl? },
- *                     clearpass { host, token }
+ *                     clearpass { publisher (or host), clientId,
+ *                     clientSecret } or legacy { publisher (or host), token }
  *   mcp / llm       — optional chat backend configuration
  *   chatWriteMode   — allow brokered writes from the chat surface
+ *   tableColumns /  — the web shell's per-table column configs and per-screen
+ *   savedViews        saved views: opaque object maps the server does not
+ *                     interpret, stored and served so layout and views sync
  *
  * maskedView() returns a deep copy with every secret-ish value (keys matching
  * /secret|token|key|password|passphrase/i) replaced by a fixed mask — no
@@ -92,6 +96,12 @@ export interface Settings {
   density?: 'comfortable' | 'compact';
   inventoryView?: 'Unified table' | 'Platform lanes';
   showPlatformTags?: boolean;
+  /** Web-shell per-table column-manager configs, keyed by the screen's table
+   *  id. Opaque to the server: validated as an object map, passed through. */
+  tableColumns?: Record<string, unknown>;
+  /** Web-shell per-screen saved views, keyed by the screen's id. Opaque to
+   *  the server: validated as an object map, passed through. */
+  savedViews?: Record<string, unknown>;
 }
 
 export type SectionSource = 'demo' | 'live';
@@ -370,6 +380,15 @@ export class SettingsStore {
       out.inventoryView = p.inventoryView;
     }
     if (typeof p.showPlatformTags === 'boolean') out.showPlatformTags = p.showPlatformTags;
+    /* The web shell's table column configs and saved views: opaque maps the
+       server does not interpret — validate the shape and pass them through
+       (whole-map replace; the client always sends its full map). */
+    if (p.tableColumns !== null && typeof p.tableColumns === 'object' && !Array.isArray(p.tableColumns)) {
+      out.tableColumns = { ...(p.tableColumns as Record<string, unknown>) };
+    }
+    if (p.savedViews !== null && typeof p.savedViews === 'object' && !Array.isArray(p.savedViews)) {
+      out.savedViews = { ...(p.savedViews as Record<string, unknown>) };
+    }
 
     if (p.planes !== null && typeof p.planes === 'object' && !Array.isArray(p.planes)) {
       for (const [id, value] of Object.entries(p.planes as Record<string, unknown>)) {

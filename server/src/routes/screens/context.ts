@@ -24,12 +24,13 @@ import { poller } from '../../services/poller';
 import { planeIdForLabel } from '../../services/reconcile';
 import {
   SITE_IDS,
+  type DataSource,
   type Plane,
   type ScreenSection,
   type SiteId,
 } from '@hpe/shared';
 
-export type DataSource = 'demo' | 'live';
+export type { DataSource };
 
 export function dataSource(): DataSource {
   return settings.get().demoMode ? 'demo' : 'live';

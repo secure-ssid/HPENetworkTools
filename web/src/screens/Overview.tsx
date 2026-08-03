@@ -7,6 +7,11 @@
  * with the 64×3px health bar. Right: Management planes, Launchpad, Change log.
  * A live section that reported nothing keeps its named empty state and drops its
  * "all N →" link rather than pointing at an empty screen.
+ * The stat tiles are links (LibreNMS availability-map pattern): each one leads
+ * to the screen that lists what it counts — devices to the inventory, alerts
+ * to the queue, drift to Compliance, licences to Licences, plane health to
+ * Connected systems — so a figure is never a dead end the operator has to
+ * re-navigate to.
  * Data: getOverview() — live /api/overview when the server is up, shared
  * fixtures otherwise (header then shows the demo SYNCED stamp).
  */
@@ -20,15 +25,16 @@ import {
   Divider,
   EmptyState,
   SectionHeader,
+  Sparkline,
   Spinner,
   Table,
 } from '../nightdesk';
-import { getOverview } from '../api/client';
+import { getMetricsHistory, getOverview, metricsWindowLabel } from '../api/client';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
-import { pathForView } from '../app/nav';
-import { hhmmLocal as hhmm, countOf } from '@hpe/shared';
-import type { LaunchpadRow, OverviewAlert, SiteHealthTone, SiteId } from '@hpe/shared';
+import { deviceDetailPath, pathForView } from '../app/nav';
+import { hhmmLocal as hhmm, countOf, envelopeAnomalies, planeMetricsKey } from '@hpe/shared';
+import type { LaunchpadRow, MetricsHistoryEnvelope, OverviewAlert, SiteHealthTone, SiteId } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import '../app/app.css';
@@ -43,6 +49,41 @@ const HEALTH_COLORS: Record<SiteHealthTone, string> = {
 
 /** Rows of the Sites preview — the design lists six of the estate. */
 const SITES_PREVIEW = 6;
+
+/**
+ * Where a stat tile leads: the screen whose list the tile's number summarises.
+ * Keyed by the label the server and the fixtures both use ('Devices reachable'
+ * counts the whole estate, so it opens the unfiltered inventory — a figure
+ * must land on the list it actually counts, not on a filtered slice of it).
+ * The licences label carries its horizon (`Licences ≤60d`), so it matches on
+ * the prefix. A label nobody mapped — a stat this screen has never heard of —
+ * stays plain text rather than guessing a destination.
+ */
+const STAT_LINKS: Record<string, string> = {
+  'Devices reachable': '/devices',
+  'Open alerts': '/alerts',
+  'Config drift': '/compliance',
+  'Planes linked': '/systems',
+};
+
+function statLinkFor(label: string): string | null {
+  if (label.startsWith('Licences')) return '/licenses';
+  return STAT_LINKS[label] ?? null;
+}
+
+/**
+ * The honest comparison window for a plane row's anomaly flags: the full
+ * retention when the ring covers it (a demo window always does), what the
+ * portal has kept so far while the ring still fills after a server start —
+ * the same 95%-of-retention rule metricsWindowLabel words its window by.
+ * Module scope keeps the render body pure (the Date.now lives here).
+ */
+function retainedWindowPhrase(m: MetricsHistoryEnvelope): string {
+  const covered =
+    m.dataSource === 'demo' ||
+    (m.since !== null && Date.now() - Date.parse(m.since) >= m.retentionMs * 0.95);
+  return covered ? 'the last 24h this portal retained' : 'what this portal has retained so far';
+}
 
 /**
  * Where an alert is, and what is left of its meta line once the site has been
@@ -70,6 +111,10 @@ export default function Overview() {
   const navigate = useNavigate();
   const { density, showPlatformTags, workspaceName, pollIntervalSec } = useSettings();
   const [data, setData] = useState<OverviewData | null>(null);
+  /* Per-plane device-count sparklines ride the metrics-history envelope, not
+   * the overview payload; null (older server, unreachable API) simply leaves
+   * the rows without a series rather than painting invented history. */
+  const [metrics, setMetrics] = useState<MetricsHistoryEnvelope | null>(null);
 
   /* The header states a cadence ("AUTO 60s") that the server poller really runs
    * at, so the screen has to honour it — a NOC-wall tab left open must not sit
@@ -81,9 +126,12 @@ export default function Overview() {
     const pull = () => {
       if (inFlight) return;
       inFlight = true;
-      void getOverview()
-        .then((d) => {
-          if (live) setData(d);
+      void Promise.all([getOverview(), getMetricsHistory()])
+        .then(([d, m]) => {
+          if (live) {
+            setData(d);
+            setMetrics(m);
+          }
         })
         .finally(() => {
           inFlight = false;
@@ -129,6 +177,57 @@ export default function Overview() {
      leads to Connected systems rather than filling the column. */
   const linkedPlanes = data.planes.filter((p) => p.linked);
   const dormantPlanes = data.planes.filter((p) => !p.linked);
+  /* A linked plane's device-count series, keyed by the same display label the
+   * metrics envelope uses (the demo rows' long names resolve through
+   * planeMetricsKey). No series = this plane reports no device inventory, so
+   * the row shows nothing rather than a flat invented zero. The envelope's
+   * additive anomaly block dots the samples the server flagged as unusual
+   * for that series; an older server sends no block, and a series with too
+   * few samples has no entry — both render exactly as before, no dots. */
+  const planeSpark = (name: string) => {
+    if (metrics === null) return null;
+    const key = planeMetricsKey(name);
+    const series = metrics.planes[key]?.devices ?? [];
+    const flags = envelopeAnomalies(metrics)?.planes[key]?.devices ?? [];
+    if (series.length >= 2) {
+      const latest = series[series.length - 1]!.v;
+      return (
+        <Sparkline
+          points={series}
+          width={64}
+          height={16}
+          label={`${latest} device${latest === 1 ? '' : 's'} reported · ${metricsWindowLabel(metrics)}`}
+          markers={flags.length > 0 ? flags : undefined}
+        />
+      );
+    }
+    if (series.length === 1) {
+      return (
+        <span
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 'var(--nd-text-10)',
+            color: 'var(--nd-text-muted)',
+          }}
+        >
+          1 sample
+        </span>
+      );
+    }
+    return null;
+  };
+  /* Anomaly markers on the rows above: only when at least one linked plane's
+   * device series carries a flag does the panel explain the dots, and the
+   * note names the comparison window honestly — the full retention when the
+   * ring covers it (a demo window always does), what the portal has kept so
+   * far while the ring still fills after a server start (the
+   * metricsWindowLabel rule). Statistics over kept samples, never a
+   * prediction or an ML claim. */
+  const servedAnomalies = metrics !== null ? envelopeAnomalies(metrics) : null;
+  const anyPlaneAnomaly =
+    servedAnomalies !== null &&
+    linkedPlanes.some((p) => (servedAnomalies.planes[planeMetricsKey(p.name)]?.devices?.length ?? 0) > 0);
+  const retainedPhrase = metrics !== null ? retainedWindowPhrase(metrics) : 'what this portal has retained so far';
   /* A count-bearing link has to lead somewhere. A live section that reported
    * nothing gets no link at all — "All 0 alerts →" advertises a queue that is
    * not there, and the named empty state below already says what is true
@@ -209,7 +308,7 @@ export default function Overview() {
         }
       />
 
-      <StatRow stats={data.stats} />
+      <StatRow stats={data.stats} linkForStat={statLinkFor} />
 
       <Divider variant="flair" />
 
@@ -328,7 +427,7 @@ export default function Overview() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => navigate(`/devices/${encodeURIComponent(a.device)}`)}
+                          onClick={() => navigate(deviceDetailPath({ name: a.device, plane: a.plane }))}
                         >
                           Inspect
                         </Button>
@@ -477,6 +576,7 @@ export default function Overview() {
                 <Badge tone={p.tone} dot>
                   {p.state}
                 </Badge>
+                {planeSpark(p.name)}
                 <span className="nt-plane-mini__sync">{p.sync}</span>
               </div>
             ))}
@@ -495,6 +595,24 @@ export default function Overview() {
                 </div>
                 <span className="nt-plane-mini__sync">Connect ▸</span>
               </button>
+            ) : null}
+            {/* What the sparklines above actually are, stated once for the
+                whole panel — the metric, the window, the cadence, and (in the
+                demo envelope) that the history is synthesized. When a row
+                carries anomaly dots the note says what they are and what
+                window they were judged against; no dots, no note. */}
+            {metrics !== null && data.planes.length > 0 ? (
+              <div
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 'var(--nd-text-10)',
+                  color: 'var(--nd-text-muted)',
+                  padding: '6px 0 2px',
+                }}
+              >
+                {`devices reported per plane · ${metricsWindowLabel(metrics)}`}
+                {anyPlaneAnomaly ? ` · dots mark samples unusual vs ${retainedPhrase}` : null}
+              </div>
             ) : null}
           </div>
 

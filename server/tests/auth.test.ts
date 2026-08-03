@@ -593,6 +593,25 @@ describe('session store', () => {
     expect(store.get(s.id)).toBeNull();
   });
 
+  it('honours HPE_SESSION_TTL_MS within bounds and falls back outside them', () => {
+    const prev = process.env.HPE_SESSION_TTL_MS;
+    try {
+      const store = new auth.SessionStore();
+      process.env.HPE_SESSION_TTL_MS = String(48 * 60 * 60 * 1000);
+      const s = store.create({ sub: 'u', name: 'u', email: null, groups: [] });
+      expect(s.expiresAt - s.createdAt).toBe(48 * 60 * 60 * 1000);
+      process.env.HPE_SESSION_TTL_MS = '60000'; // below the 15m floor
+      const tooShort = store.create({ sub: 'u', name: 'u', email: null, groups: [] });
+      expect(tooShort.expiresAt - tooShort.createdAt).toBe(12 * 60 * 60 * 1000);
+      process.env.HPE_SESSION_TTL_MS = 'not-a-number';
+      const junk = store.create({ sub: 'u', name: 'u', email: null, groups: [] });
+      expect(junk.expiresAt - junk.createdAt).toBe(12 * 60 * 60 * 1000);
+    } finally {
+      if (prev === undefined) delete process.env.HPE_SESSION_TTL_MS;
+      else process.env.HPE_SESSION_TTL_MS = prev;
+    }
+  });
+
   it('abandons a login that was never completed', () => {
     let now = 1_000_000;
     const store = new auth.SessionStore(() => now);

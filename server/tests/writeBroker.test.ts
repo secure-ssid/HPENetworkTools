@@ -246,7 +246,7 @@ describe('queue state by plane link status', () => {
 
     const consoleChange = broker.queue('ssid', { ...DEFAULT_SSID_FORM, plane: 'MIST' }, 'NET-1');
     expect(consoleChange.state).toBe('console');
-    expect(consoleChange.where).toMatch(/Mist · read-only/);
+    expect(consoleChange.where).toMatch(/Mist · SSIDs write via the reviewed direct editor/);
     expect(consoleChange.expiresAt).toBeNull();
 
     store.update({

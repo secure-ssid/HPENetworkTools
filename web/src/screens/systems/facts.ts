@@ -44,31 +44,6 @@ export const HEALTH_TONE: Record<LivePlaneState['health'], Tone> = {
   unlinked: 'neutral',
 };
 
-/**
- * Current Central API-gateway clusters — devhub.arubanetworks.com/new-central
- * ("Getting Started with REST APIs" base-URL table, incl. the internal
- * cluster). The account's own base URL shows under Central → API Gateway →
- * REST API; a gateway not in the list can be typed directly.
- */
-export const CENTRAL_REGIONS: Array<{ value: string; label: string }> = [
-  { value: 'https://us1.api.central.arubanetworks.com', label: 'US-1' },
-  { value: 'https://us2.api.central.arubanetworks.com', label: 'US-2' },
-  { value: 'https://us6.api.central.arubanetworks.com', label: 'US-East1' },
-  { value: 'https://us4.api.central.arubanetworks.com', label: 'US-West4' },
-  { value: 'https://us5.api.central.arubanetworks.com', label: 'US-West5' },
-  { value: 'https://de1.api.central.arubanetworks.com', label: 'EU-1' },
-  { value: 'https://de2.api.central.arubanetworks.com', label: 'EU-Central2' },
-  { value: 'https://de3.api.central.arubanetworks.com', label: 'EU-Central3' },
-  { value: 'https://gb1.api.central.arubanetworks.com', label: 'UK' },
-  { value: 'https://ca1.api.central.arubanetworks.com', label: 'Canada-1' },
-  { value: 'https://in1.api.central.arubanetworks.com', label: 'APAC-1' },
-  { value: 'https://jp1.api.central.arubanetworks.com', label: 'APAC-East1' },
-  { value: 'https://au1.api.central.arubanetworks.com', label: 'APAC-South1' },
-  { value: 'https://ae1.api.central.arubanetworks.com', label: 'UAE' },
-  { value: 'https://cn1.api.central.arubanetworks.com.cn', label: 'China-1' },
-  { value: 'https://internal.api.central.arubanetworks.com', label: 'Internal' },
-];
-
 export type DetailTab = 'summary' | 'activity' | 'config';
 
 export const TAB_OPTIONS: Array<{ value: DetailTab; label: string }> = [
@@ -143,6 +118,22 @@ export const BROKERED_WRITE_SCOPE_LABEL =
 
 export const SSE_WRITE_SCOPE_LABEL =
   'Direct write — reviewed SSE object mutations followed by tenant-wide Commit';
+
+export const MIST_WRITE_SCOPE_LABEL =
+  'Direct write — reviewed SSID changes, no ticket';
+
+/**
+ * The write scope the connect drawer may offer per plane, or null when the
+ * plane has NO write path at all — offering a checkbox that stores a grant no
+ * adapter can exercise is how operators end up believing GreenLake or
+ * ClearPass are writable when nothing can push to them.
+ */
+export function writeScopeLabelFor(plane: SystemTypeKey): string | null {
+  if (plane === 'central') return BROKERED_WRITE_SCOPE_LABEL;
+  if (plane === 'mist') return MIST_WRITE_SCOPE_LABEL;
+  if (plane === 'sse') return SSE_WRITE_SCOPE_LABEL;
+  return null;
+}
 
 /**
  * The scopes a linked plane actually has, read back for re-key so rotating a

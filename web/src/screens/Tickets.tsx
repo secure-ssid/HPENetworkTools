@@ -23,6 +23,8 @@ import { addTicketNote, getTickets, resolveTicket } from '../api/client';
 import type { TicketsData } from '../api/client';
 import { hhmmLocal as hhmm, MAX_NOTE_CHARS, relativeAge, slaCountdown } from '@hpe/shared';
 import type { TicketRow } from '@hpe/shared';
+import { useSettings } from '../app/SettingsContext';
+import { deviceDetailPath } from '../app/nav';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 
@@ -53,21 +55,47 @@ function priTone(t: TicketRow): TicketRow['tone'] {
 export default function Tickets() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { pollIntervalSec } = useSettings();
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<TicketsData | null>(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [notesByTicket, setNotesByTicket] = useState<Record<string, TicketNote[]>>({});
+  /* Ages and SLA countdowns are measured against `now`, captured in state
+     rather than recomputed per render (a bare Date.now() in render trips the
+     compiler's purity rule) and refreshed with every poll below. */
+  const [now, setNow] = useState(() => Date.now());
 
+  /* The queue is a NOC artifact: poll on the settings cadence (the pattern
+     Overview.tsx runs) so the open count, state badges and age/SLA countdowns
+     cannot sit on a mount-time snapshot while the tab stays open. One fetch
+     at a time — a slow response never stacks up behind the interval; fixture
+     reads poll harmlessly. */
   useEffect(() => {
     let live = true;
-    void getTickets().then((d) => {
-      if (live) setData(d);
-    });
+    let inFlight = false;
+    const pull = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void getTickets()
+        .then((d) => {
+          if (live) {
+            setData(d);
+            setNow(Date.now());
+          }
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    pull();
+    const every = Math.max(pollIntervalSec, 10) * 1000;
+    const id = setInterval(pull, every);
     return () => {
       live = false;
+      clearInterval(id);
     };
-  }, []);
+  }, [pollIntervalSec]);
 
   if (!data) {
     return (
@@ -95,7 +123,6 @@ export default function Tickets() {
   }
 
   const openCount = tickets.filter((t) => t.state !== 'resolved').length;
-  const now = Date.now();
   const notes = notesByTicket[cur.id] ?? cur.notes ?? [];
   const overLimit = note.trim().length > MAX_NOTE_CHARS;
   const firstDevice = cur.evidence.find((e) => e.device)?.device ?? null;
@@ -356,7 +383,7 @@ export default function Tickets() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => navigate(`/devices/${encodeURIComponent(e.device as string)}`)}
+                    onClick={() => navigate(deviceDetailPath({ name: e.device as string, plane: e.plane }))}
                   >
                     {e.device}
                   </Button>

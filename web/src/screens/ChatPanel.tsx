@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Alert, Badge, Button, Drawer, EmptyState, Input, Spinner, Switch, Text } from '../nightdesk';
 import { getChatStatus, postChat } from '../api/client';
@@ -43,30 +44,36 @@ function codeish(line: string): boolean {
 }
 
 function AssistantText({ content }: { content: string }) {
+  /* Fenced blocks render in mono. The fence is walking state over the lines,
+     so the rows are built in a plain loop — reassigning a captured variable
+     inside a .map callback trips the compiler's immutability rule. */
+  const rows: ReactNode[] = [];
   let fence = false;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      {content.split('\n').map((line, i) => {
-        if (line.trim().startsWith('```')) {
-          fence = !fence;
-          return null;
-        }
-        if (line.trim() === '') return <div key={i} style={{ height: 6 }} />;
-        const mono = fence || codeish(line);
-        return (
-          <Text
-            key={i}
-            size={mono ? 11 : 12}
-            mono={mono}
-            tone={mono ? 'secondary' : 'primary'}
-            style={{ lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-          >
-            {line}
-          </Text>
-        );
-      })}
-    </div>
-  );
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.trim().startsWith('```')) {
+      fence = !fence;
+      continue;
+    }
+    if (line.trim() === '') {
+      rows.push(<div key={i} style={{ height: 6 }} />);
+      continue;
+    }
+    const mono = fence || codeish(line);
+    rows.push(
+      <Text
+        key={i}
+        size={mono ? 11 : 12}
+        mono={mono}
+        tone={mono ? 'secondary' : 'primary'}
+        style={{ lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+      >
+        {line}
+      </Text>,
+    );
+  }
+  return <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>{rows}</div>;
 }
 
 function TranscriptRow({ entry }: { entry: ChatTranscriptEntry }) {
@@ -146,12 +153,21 @@ export default function ChatPanel({
   const composerRef = useRef<HTMLDivElement>(null);
 
   // On open: probe status; the session write opt-in always resets to off.
+  // The reset runs during render so an already-open panel never commits one
+  // frame of the previous session's status or opt-in; the probe stays an
+  // effect — it is the external read.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (prevOpen !== open) {
+    setPrevOpen(open);
+    if (open) {
+      setStatus(undefined);
+      setAllowWrite(false);
+      setError(null);
+    }
+  }
   useEffect(() => {
     if (!open) return;
     let live = true;
-    setStatus(undefined);
-    setAllowWrite(false);
-    setError(null);
     void getChatStatus()
       .then((s) => {
         if (live) setStatus(s);

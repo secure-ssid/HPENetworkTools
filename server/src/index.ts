@@ -14,6 +14,12 @@ import { poller } from './services/poller';
 import { registry } from './planes/registry';
 import { PLANE_IDS } from './planes/types';
 import { attachTerminalWs, closeTerminalWs, terminalManager } from './services/terminal';
+import { configBackups } from './services/configBackup';
+import { metricsHistory } from './services/metricsHistory';
+import { notifier } from './services/notifier';
+import { reportService } from './services/reports';
+import { maintenance } from './services/maintenance';
+import { alertRulesService } from './services/alertRules';
 import { installLifecycle } from './services/lifecycle';
 import { chatRouter } from './routes/chat';
 import { alertsRouter } from './routes/alerts';
@@ -22,13 +28,21 @@ import { configureRouter } from './routes/configure';
 import { centralWebhooksRouter } from './routes/centralWebhooks';
 import { devicesRouter } from './routes/devices';
 import { diagnosticsRouter } from './routes/diagnostics';
+import { configBackupsRouter } from './routes/configBackups';
+import { metricsRouter } from './routes/metrics';
+import { notificationsRouter } from './routes/notifications';
 import { screensRouter } from './routes/screens';
 import { settingsRouter } from './routes/settings';
+import { silencesRouter } from './routes/silences';
+import { maintenanceRouter } from './routes/maintenance';
+import { alertRulesRouter, notificationCenterRouter } from './routes/alertRules';
 import { sseRouter } from './routes/sse';
 import { greenlakeRouter } from './routes/greenlake';
+import { hooksReceiverRouter, hooksRouter } from './routes/hooks';
 import { systemsRouter } from './routes/systems';
 import { inventoryRouter } from './routes/inventory';
 import { authConfigRouter, authRouter } from './routes/auth';
+import { clearpassDirectWriteRouter } from './routes/clearpassDirectWrite';
 import { actorContext, authenticateUpgrade, requireAuth, requireSameOrigin, setAuthGuardInstalled, type AuthGuard } from './services/auth';
 import { SsidDirectWriteError } from './services/ssidDirectWrite';
 
@@ -48,13 +62,19 @@ export interface AppOptions {
 export function createApp(opts: AppOptions = {}): express.Express {
   const app = express();
 
+  // Inbound webhook deliveries are verified over the exact bytes Mist/Central
+  // sent, so just these two paths get the raw body — scoped this narrowly
+  // (and ahead of the global JSON parser), nothing else changes.
+  app.use(['/api/hooks/mist', '/api/hooks/central'], express.raw({ type: () => true, limit: '1mb' }));
   app.use(express.json({ limit: '1mb' }));
 
-  // Request log: METHOD path status ms
+  // Request log: METHOD path status ms. req.path, never req.originalUrl — the
+  // query string carries the OIDC authorization code and state through
+  // /api/auth/callback on every sign-in, and those must not persist to logs.
   app.use((req, res, next) => {
     const started = Date.now();
     res.on('finish', () => {
-      console.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - started}ms`);
+      console.log(`${req.method} ${req.path} ${res.statusCode} ${Date.now() - started}ms`);
     });
     next();
   });
@@ -73,6 +93,10 @@ export function createApp(opts: AppOptions = {}): express.Express {
   // signing in impossible, and /api/auth/me has to answer before the client
   // knows whether it is signed in.
   app.use('/api', authRouter);
+  // Inbound webhook receiver: the per-source HMAC signature IS the
+  // authentication — a delivery from Mist or Central holds no operator
+  // session, the same reason /api/auth mounts ahead of the guard.
+  app.use('/api', hooksReceiverRouter);
   if (opts.auth) app.use('/api', opts.auth);
   // Recorded so /api/auth/config can report whether the guard is genuinely in
   // force in this process, rather than inferring it from settings that may
@@ -207,6 +231,15 @@ export function createApp(opts: AppOptions = {}): express.Express {
   app.use('/api', diagnosticsRouter);
   app.use('/api', clientsRouter);
   app.use('/api', alertsRouter);
+  app.use('/api', silencesRouter);
+  app.use('/api', maintenanceRouter);
+  app.use('/api', configBackupsRouter);
+  app.use('/api', metricsRouter);
+  app.use('/api', notificationsRouter);
+  app.use('/api', alertRulesRouter);
+  app.use('/api', notificationCenterRouter);
+  app.use('/api', hooksRouter);
+  app.use('/api', clearpassDirectWriteRouter);
 
   // Unknown API route → consistent JSON 404
   app.use('/api', (_req, res) => {
@@ -217,8 +250,22 @@ export function createApp(opts: AppOptions = {}): express.Express {
   const webDist = path.resolve(__dirname, '..', '..', 'web', 'dist');
   const indexHtml = path.join(webDist, 'index.html');
   if (fs.existsSync(indexHtml)) {
-    app.use(express.static(webDist));
+    // index.html is the entry point into every build — it must be re-fetched
+    // every load, never cached, or tabs keep running bundles that no longer
+    // match the server's dist. Hashed chunks are safe to cache; the html isn't.
+    app.use(express.static(webDist, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
+      },
+    }));
+    // A missing chunk is a 404, never the html shell — serving html as
+    // JS/CSS turns a stale-tab chunk request into a MIME-confusion that
+    // breaks styling/script parsing instead of failing visibly.
+    app.use('/assets', (_req, res) => {
+      res.status(404).end();
+    });
     app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
       res.sendFile(indexHtml);
     });
   } else {
@@ -297,6 +344,12 @@ export function startServer(
   }
 
   poller.start();
+  configBackups.start();
+  metricsHistory.start();
+  notifier.start();
+  maintenance.start();
+  alertRulesService.start();
+  reportService.start();
   const app = createApp(authConfigured ? { auth: requireAuth() } : {});
   const server = app.listen(port, host, () => {
     console.log(
@@ -312,6 +365,14 @@ export function startServer(
     if (!loopback) {
       console.warn(`WARNING: bound to ${host}, which is reachable from the network.`);
     }
+    if (authConfigured && !loopback) {
+      console.warn(
+        `WARNING: sign-in needs HTTPS in this configuration. Off-loopback the session cookie is marked Secure ` +
+          `(needsSecureCookie), so a browser reaching the portal over plain HTTP drops it and sign-in silently ` +
+          `loops back to the login page. Terminate TLS in front of this portal — a reverse proxy that sets ` +
+          `X-Forwarded-Proto counts — before having anyone sign in from the network.`,
+      );
+    }
   });
   // Recorded SSH shell bridge: /api/terminal/:name (see services/terminal.ts).
   // The upgrade never passes through Express middleware, so the guard has to
@@ -326,6 +387,12 @@ export function startServer(
   installLifecycle({
     steps: [
       { name: 'poller', run: () => poller.stop() },
+      { name: 'config backups', run: () => configBackups.stop() },
+      { name: 'metrics history', run: () => metricsHistory.stop() },
+      { name: 'notifier', run: () => notifier.stop() },
+      { name: 'maintenance windows', run: () => maintenance.stop() },
+      { name: 'alert rules', run: () => alertRulesService.stop() },
+      { name: 'report scheduler', run: () => reportService.stop() },
       { name: 'terminal sessions', run: () => closeTerminalWs(wss) },
       { name: 'http server', run: () => new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));

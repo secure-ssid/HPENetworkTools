@@ -28,10 +28,15 @@
  * helpers otherwise; the titlebar names the session from the bridge's own
  * 'ready' frame — user, dialled target and jump host — falling back to the
  * recorded-transcript match only for a bridge that names none)
- * and Configuration (SegmentedControl
- * Running | Drift vs. baseline | History; drift rendered via DiffCode with
+ * and Configuration (the Running | Drift vs. baseline | History tabs —
+ * deviceDetail/panels.tsx ConfigTabs; drift rendered via DiffCode with
  * danger/success line colouring; Snapshot stores a local history row, Download
- * saves the running config as a file). Rail: Identity facts and Compliance.
+ * saves the running config as a file). The route joins the config-backup
+ * store into `config` in every mode: snapshots on file for the device replace
+ * the authored fixture block (demo) or the honest null (live), and the block
+ * carries a `provenance` caption naming the collection channel so a real
+ * snapshot is never mistaken for the fixture config. Rail: Identity facts and
+ * Compliance.
  * The class block (Ports of interest / Cluster members / Radios & SSIDs /
  * Tunnels / Services) is chosen by the device CLASS, not hardcoded:
  * an AP renders Radios + SSIDs broadcast (Central /aps/{serial}/radios and
@@ -48,12 +53,14 @@
  * for identity in both modes, so the header can never contradict the Devices
  * table it was opened from; a row the reconciler flagged carries a warning
  * Alert naming its claiming planes. Live mode carries only the
- * reconciled inventory row: the authored profile/config/clients are demo
+ * reconciled inventory row: the authored profile/clients are demo
  * data, so the live view renders the real row (header + console hand-off,
  * five Stats derived only from fields the poller returned, Identity stamped
  * with the envelope's syncedAt and carrying the firmware-vs-approved
  * verdict), its recorded shell sessions, plus honest "not available in
- * live mode" sections (a live 404 renders an EmptyState, never fixtures; an
+ * live mode" sections — the Configuration one only while no config-backup
+ * snapshots are on file, since those render the same three tabs here (a live
+ * 404 renders an EmptyState, never fixtures; an
  * OFFLINE 404 says the portal is on fixtures rather than blaming a plane).
  */
 
@@ -70,7 +77,6 @@ import {
   FormField,
   Heading,
   SectionHeader,
-  SegmentedControl,
   Select,
   Spinner,
   Stat,
@@ -92,21 +98,23 @@ import { TerminalPane, createCannedTransport } from '../lib/TerminalPane';
 import { createWsTransport } from '../lib/wsTerminal';
 import type { AsyncTerminalTransport, TerminalSessionIdentity } from '../lib/wsTerminal';
 import { DiagnosticsPanel } from '../components/DiagnosticsPanel';
-import { DiffCode } from '../lib/DiffCode';
 import { ApiErrorState } from './ApiErrorState';
 import { RecordedSessions } from './deviceDetail/RecordedSessions';
 import {
-  CFG_TABS,
   CfgTab,
+  portCountersText,
   sectionsToRender,
   servedDeviceDetail,
 } from './deviceDetail/facts';
 import {
   CompliancePanel,
+  ConfigTabs,
   PortsPanel,
   RadiosPanel,
   WlansPanel,
 } from './deviceDetail/panels';
+import { MistApPanel } from './deviceDetail/mistAp';
+import { HardwareTrendsPanel } from './deviceDetail/trends';
 import {
   ClientTable,
   LiveFact,
@@ -160,7 +168,6 @@ export default function DeviceDetail() {
 
   useEffect(() => {
     let live = true;
-    setData(null);
     void getDeviceDetail(name, { plane: linkPlane, serial: linkSerial }).then((d) => {
       if (live) setData(d);
     });
@@ -168,12 +175,6 @@ export default function DeviceDetail() {
       live = false;
     };
   }, [name, linkPlane, linkSerial]);
-
-  // Config tab and locally-snapshotted rows are per-device state.
-  useEffect(() => {
-    setCfgTab('running');
-    setExtraHistory([]);
-  }, [routeIdentity]);
 
   const kind = data?.profile?.kind ?? 'sw';
   // The route computes the shell banner and the quick-command chips for the
@@ -210,11 +211,19 @@ export default function DeviceDetail() {
   const [expanded, setExpanded] = useState<{ file: string; events: TerminalSessionEvent[]; truncated: boolean } | null>(null);
   // Latest requested transcript — stale resolutions (clicked A then B) are ignored.
   const transcriptReq = useRef<string | null>(null);
-  useEffect(() => {
-    let live = true;
+  /* A new device (or a refresh of the recordings list) closes the expanded
+     transcript and clears the list during render — an effect would commit one
+     frame of the previous device's recordings under the new name first. */
+  const sessionsKey = `${routeIdentity} ${sessionsRefresh}`;
+  const [prevSessionsKey, setPrevSessionsKey] = useState(sessionsKey);
+  if (prevSessionsKey !== sessionsKey) {
+    setPrevSessionsKey(sessionsKey);
     setExpanded(null);
     setSessions([]);
     setSessionsError(null);
+  }
+  useEffect(() => {
+    let live = true;
     transcriptReq.current = null;
     void getTerminalSessions(name, { plane: linkPlane, serial: linkSerial })
       .then((s) => {
@@ -232,24 +241,28 @@ export default function DeviceDetail() {
   // (web/src/lib/wsTerminal.ts → /api/terminal/:name?plane=&serial=). On any failure the
   // canned transport below renders exactly as before — the fallback is the
   // demo path, untouched.
-  useEffect(() => {
+  // Live mode: only devices the collector can shell into get the WS
+  // attempt; the canned demo transport never stands in for a live device.
+  const shellWorthy = data ? (data.profile ? kind !== 'none' : (data.device?.localShell ?? false)) : false;
+  /* A new device, a retry, or the detail read arriving (a shell-worthy device
+     becoming known) restarts the pane's session state during render — an
+     effect would commit one frame of the old session against the new attempt
+     first. The socket itself opens in the effect below. */
+  const terminalKey = `${routeIdentity} ${terminalAttempt} ${shellWorthy}`;
+  const [prevTerminalKey, setPrevTerminalKey] = useState(terminalKey);
+  if (prevTerminalKey !== terminalKey) {
+    setPrevTerminalKey(terminalKey);
     setLiveTransport(null);
     setLivePrompt(null);
     setLiveSince(null);
     setLiveSession(null);
-    if (!data) {
-      setTerminalState('idle');
-      return;
-    }
-    // Live mode: only devices the collector can shell into get the WS
-    // attempt; the canned demo transport never stands in for a live device.
-    const shellWorthy = data.profile ? kind !== 'none' : (data.device?.localShell ?? false);
-    if (!shellWorthy) {
-      setTerminalState('idle');
-      return;
-    }
+    setTerminalState(shellWorthy ? 'connecting' : 'idle');
+  }
+  useEffect(() => {
+    if (!data) return;
+    const worthy = data.profile ? kind !== 'none' : (data.device?.localShell ?? false);
+    if (!worthy) return;
     let live = true;
-    setTerminalState('connecting');
     const session = createWsTransport(
       data.device?.name ?? name,
       data.device?.serial ? { plane: data.device.plane, serial: data.device.serial } : {},
@@ -317,12 +330,24 @@ export default function DeviceDetail() {
   const [rebooting, setRebooting] = useState(false);
   const actionGeneration = useRef(0);
 
-  useEffect(() => {
-    actionGeneration.current += 1;
+  /* Navigating device-to-device keeps this screen mounted. Everything that
+     describes the previous device — the detail payload, the config tab and its
+     locally-snapshotted history rows, the reboot drawer — is dropped during
+     render, so none of it can commit under the new device's name; the reads
+     that repopulate it stay in the effects above and below. */
+  const [prevRouteIdentity, setPrevRouteIdentity] = useState(routeIdentity);
+  if (prevRouteIdentity !== routeIdentity) {
+    setPrevRouteIdentity(routeIdentity);
+    setData(null);
+    setCfgTab('running');
+    setExtraHistory([]);
     setRebootOpen(false);
     setRebootTickets([]);
     setRebootTicket('');
     setRebooting(false);
+  }
+  useEffect(() => {
+    actionGeneration.current += 1;
   }, [routeIdentity]);
 
   // Ticket options load when the drawer opens; open tickets first.
@@ -522,10 +547,17 @@ export default function DeviceDetail() {
     // normal state until the read lands (and after a failed one), and every
     // class block below renders its own honest sentence for that.
     const liveDetail = servedDeviceDetail(data);
+    // The Mist AP rich-stats row (poll dataset) outranks the generic class
+    // panels for radios and ports: it carries the SAME radios/uplink with the
+    // fuller airtime split, plus CPU/mem/env/power the lazy read cannot map.
+    // Rendering both would list every radio twice.
+    const mistAp = data.mistAp ?? null;
     // Who to name in a gap sentence: the plane the read was issued against
     // when the payload says, else the plane that claims the row.
     const detailPlane = (liveDetail?.source.plane ?? device.plane).toString().toUpperCase();
-    const liveSections = sectionsToRender(device.type, liveDetail);
+    const liveSections = sectionsToRender(device.type, liveDetail).filter(
+      (section) => mistAp === null || (section !== 'radios' && section !== 'ports'),
+    );
 
     const reported = (value: string) =>
       value && value !== '—' && value.toLowerCase() !== 'unknown' ? value : 'Not reported';
@@ -548,6 +580,10 @@ export default function DeviceDetail() {
       { k: 'Mgmt IP', v: reported(device.ip ?? '') },
       { k: 'Managed by', v: claimants.join(' + ') },
       { k: 'Identity', v: device.serial ?? device.mac ?? 'name match only' },
+      // The plane's claim/activation code, when it published one. It is a
+      // claim secret and rides only here — an operator reading this page
+      // already holds device-read access; it never goes to logs or lists.
+      ...(device.claimCode ? [{ k: 'Claim code', v: device.claimCode }] : []),
       { k: 'State', v: reported(device.state) },
       {
         k: 'Firmware',
@@ -669,6 +705,10 @@ export default function DeviceDetail() {
         <div className="nt-device-layout">
           {/* ---------------- main column ---------------- */}
           <div className="nt-device-layout__main">
+            {/* The Mist AP health/RF panel leads the telemetry when the
+                payload carried the stats row — it is the fuller RF story, so
+                the generic radios/ports panels below stay away for it. */}
+            {mistAp !== null ? <MistApPanel row={mistAp} /> : null}
             {/* The class block, chosen by the device's CLASS rather than
                 hardcoded: an AP gets Radios + SSIDs, a switch gets Ports, and
                 a class Central serves no subresource for gets whatever the
@@ -683,6 +723,19 @@ export default function DeviceDetail() {
                 <PortsPanel key={section} detail={liveDetail} plane={detailPlane} />
               ),
             )}
+
+            {/* Central's per-device telemetry, fetched on demand for the one
+                device being viewed — mounted only when a claiming plane can
+                answer for the class (a switch's gauges/counters, an AP's
+                cpu/mem/throughput), so a LOCAL- or Mist-only row never grows
+                a panel that can only ever say 'not reported'. */}
+            {(device.type === 'switch' || device.type === 'ap') && claimants.includes('CENTRAL') ? (
+              <HardwareTrendsPanel
+                name={device.name}
+                type={device.type}
+                identity={{ plane: device.plane, serial: device.serial }}
+              />
+            ) : null}
 
             <div>
               <SectionHeader label="Active diagnostics" meta="NEW CENTRAL · REVIEWED" />
@@ -767,10 +820,18 @@ export default function DeviceDetail() {
             ) : null}
 
             <div style={{ paddingTop: 14 }}>
-              <SectionHeader label="Configuration" />
-              <LiveGapNote>
-                Not available in live mode — no linked plane reports a running config for this device.
-              </LiveGapNote>
+              <SectionHeader label="Configuration" meta={cfg?.meta} />
+              {/* The route joins the config-backup store into `config`: real
+                  snapshots on file for this device render the same three tabs
+                  the authored view uses, with their provenance named. Nothing
+                  on file keeps the honest gap note. */}
+              {cfg ? (
+                <ConfigTabs cfg={cfg} cfgTab={cfgTab} onTabChange={setCfgTab} historyRows={cfg.history} />
+              ) : (
+                <LiveGapNote>
+                  Not available in live mode — no linked plane reports a running config for this device.
+                </LiveGapNote>
+              )}
             </div>
           </div>
 
@@ -870,6 +931,10 @@ export default function DeviceDetail() {
     }
     return f;
   });
+  // The plane's claim/activation code, when the row carries one — a claim
+  // secret shown only on the device page itself (operator already holds
+  // device-read access), never in a list or a log.
+  if (device?.claimCode) facts.push({ k: 'Claim code', v: device.claimCode });
 
   const snapshotNow = () => {
     toast('Recorded locally — not persisted', {
@@ -971,6 +1036,9 @@ export default function DeviceDetail() {
       <div className="nt-device-layout">
         {/* ---------------- main column ---------------- */}
         <div className="nt-device-layout__main">
+          {/* A Mist AP's live health/RF row leads the telemetry, ahead of the
+              authored class list — the same panel the live branch renders. */}
+          {data.mistAp ? <MistApPanel row={data.mistAp} /> : null}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <SectionHeader label={profile.listTitle} meta={profile.listMeta} />
             <Table density="compact" className="nt-port-table">
@@ -985,7 +1053,25 @@ export default function DeviceDetail() {
                 {profile.ports.map((p) => (
                   <Table.Row key={p.id}>
                     <Table.Cell className="nt-cell-mono nt-cell-nowrap">{p.id}</Table.Cell>
-                    <Table.Cell>{p.what}</Table.Cell>
+                    <Table.Cell>
+                      {p.what}
+                      {/* Authored counters ride the same contract as the live
+                          AOS-CX read (DevicePort.counters): a row with a block
+                          says it in one mono line, a row without one (psu2 is
+                          not an interface) gets no line — never an invented 0. */}
+                      {p.counters ? (
+                        <div
+                          style={{
+                            fontFamily: 'var(--nd-font-mono)',
+                            fontSize: 'var(--nd-text-10)',
+                            color: 'var(--nd-text-muted)',
+                            paddingTop: 2,
+                          }}
+                        >
+                          {portCountersText(p.counters)}
+                        </div>
+                      ) : null}
+                    </Table.Cell>
                     <Table.Cell>
                       <Badge tone={p.tone}>{p.state}</Badge>
                     </Table.Cell>
@@ -994,6 +1080,19 @@ export default function DeviceDetail() {
               </Table.Body>
             </Table>
           </div>
+
+          {/* Central's per-device telemetry for the demo estate's switches and
+              APs: the demo reads are addressed by device NAME (the rows carry
+              no serial), so every switch/AP page asks and the route answers
+              with the authored read or an honest 'no read recorded' — the
+              panel words either outcome. The row is authoritative for class. */}
+          {device?.type === 'switch' || device?.type === 'ap' ? (
+            <HardwareTrendsPanel
+              name={device.name}
+              type={device.type}
+              identity={{ plane: device.plane, serial: device.serial }}
+            />
+          ) : null}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <SectionHeader label="Clients on this device" meta={clients.meta} />
@@ -1054,65 +1153,7 @@ export default function DeviceDetail() {
           <div style={{ paddingTop: 14 }}>
             <SectionHeader label="Configuration" meta={cfg.meta} />
           </div>
-          <div style={{ alignSelf: 'flex-start' }}>
-            <SegmentedControl
-              options={CFG_TABS}
-              value={cfgTab}
-              onValueChange={(v) => setCfgTab(v as CfgTab)}
-              ariaLabel="Configuration view"
-            />
-          </div>
-
-          {cfgTab === 'running' ? <Code block>{cfg.running}</Code> : null}
-          {cfgTab === 'diff' ? <DiffCode text={cfg.diff} /> : null}
-          {cfgTab === 'history' ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-              {historyRows.map((h, i) => (
-                <div
-                  key={`${h.when}-${i}`}
-                  style={{
-                    display: 'flex',
-                    gap: 14,
-                    padding: '11px 0',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10.5,
-                      color: 'var(--nd-text-muted)',
-                      width: 88,
-                      flex: '0 0 88px',
-                    }}
-                  >
-                    {h.when}
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: 'var(--nd-text-12)',
-                        color: 'var(--nd-text-primary)',
-                        lineHeight: 1.4,
-                      }}
-                    >
-                      {h.what}
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-10)',
-                        color: 'var(--nd-text-muted)',
-                      }}
-                    >
-                      {h.who}
-                    </div>
-                  </div>
-                  <Badge tone={h.tone}>{h.tag}</Badge>
-                </div>
-              ))}
-            </div>
-          ) : null}
+          <ConfigTabs cfg={cfg} cfgTab={cfgTab} onTabChange={setCfgTab} historyRows={historyRows} />
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 4 }}>
             <Button variant="secondary" size="sm" onClick={snapshotNow}>

@@ -12,6 +12,8 @@ import {
 import {
   healthTone,
   portAdminDown,
+  portErrorText,
+  portTrafficText,
   joinFacts,
   sameMac,
   speedText,
@@ -152,6 +154,24 @@ export function PortTable({ rows }: { rows: DevicePort[] }) {
           speedText(p.speedBps),
           p.duplex && p.duplex !== '-' ? p.duplex.toLowerCase() : null,
         ]) || null,
+      nowrap: true,
+    },
+    /* Counters only exist on rows whose plane reports an interface
+       statistics map (the local AOS-CX collector; Central's interface list
+       carries none). On rows without a block the column reads null, and a
+       table where NO row carries counters drops both columns entirely —
+       the collapse rule already encodes "the plane did not say". On a
+       healthy switch the Errors column then collapses the other way: every
+       port answers '0 err · 0 drop', so the fact is stated once underneath
+       and only a port with real faults keeps the column on screen. */
+    {
+      key: 'Traffic',
+      value: (p: DevicePort) => (p.counters ? portTrafficText(p.counters) : null),
+      nowrap: true,
+    },
+    {
+      key: 'Errors',
+      value: (p: DevicePort) => (p.counters ? portErrorText(p.counters) : null),
       nowrap: true,
     },
     {

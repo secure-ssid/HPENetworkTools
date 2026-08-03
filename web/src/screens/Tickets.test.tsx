@@ -32,7 +32,7 @@ const FIRST: TicketRow = TICKETS[0];
 function renderTickets() {
   mockGetTickets.mockResolvedValue({ tickets: TICKETS, dataSource: 'demo' });
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <SettingsProvider>
         <ToastProvider>
           <Tickets />
@@ -228,7 +228,7 @@ describe('Tickets — the retention marker', () => {
       dataSource: 'demo',
     });
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <SettingsProvider>
           <ToastProvider>
             <Tickets />

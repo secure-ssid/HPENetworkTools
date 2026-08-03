@@ -14,7 +14,16 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { PLANE_IDS } from '../src/planes/types';
-import { MAX_NOTE_CHARS } from '@hpe/shared';
+import {
+  CLEARPASS_AUTH_SOURCES,
+  CLEARPASS_ENFORCEMENT_POLICIES,
+  CLEARPASS_ENFORCEMENT_PROFILES,
+  CLEARPASS_LOCAL_USERS,
+  CLEARPASS_NETWORK_DEVICES,
+  CLEARPASS_ROLES,
+  CLEARPASS_SERVICES,
+  MAX_NOTE_CHARS,
+} from '@hpe/shared';
 
 let server: Server;
 let base: string;
@@ -39,7 +48,9 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   // A tiny fake Central gateway for the connection-test paths: OAuth token
-  // endpoint + a device sample query, nothing else.
+  // endpoint + a device sample query, nothing else. It also answers
+  // /api/endpoint so the ClearPass connection test (a pre-minted token
+  // reading the endpoint repository) has a CPPM to validate against.
   mockCentral = createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
     if (req.method === 'POST' && req.url === '/oauth2/token') {
@@ -48,6 +59,10 @@ beforeAll(async () => {
     }
     if (req.method === 'GET' && req.url?.startsWith('/monitoring/v1/aps')) {
       res.end(JSON.stringify({ aps: [], count: 0 }));
+      return;
+    }
+    if (req.method === 'GET' && req.url?.startsWith('/api/endpoint')) {
+      res.end(JSON.stringify({ count: 0, _links: { self: { href: '/api/endpoint' } } }));
       return;
     }
     res.statusCode = 404;
@@ -270,10 +285,13 @@ describe('routes', () => {
   });
 
   it('falls back to stored credentials when the body carries none', async () => {
+    // ClearPass validates credentials (testClearPass): a host alone is not a
+    // testable set, so the stored record carries a pre-minted token — the
+    // mock answers /api/endpoint for it.
     const save = await fetch(`${base}/api/systems/clearpass/credentials`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ host: mockCentralBase }),
+      body: JSON.stringify({ host: mockCentralBase, token: 'cppm-token-1234' }),
     });
     expect(save.status).toBe(200);
 
@@ -1488,6 +1506,39 @@ describe('live-mode screen contracts', () => {
     expect((cleared.body.stats as any[]).find((s) => s.label === 'Open alerts').value).toBe('0');
   });
 
+  it("live overview benches silenced firings from the panel AND the tile, and unsilencing restores them", async () => {
+    contributions.clear();
+    contributions.set('central', {
+      alerts: [
+        alertRow({ alertId: 'p1', sev: 'P1', tone: 'danger', title: 'Core switch down', device: 'sw-core-9', state: 'open', age: '4m' }),
+        alertRow({ alertId: 'p2', title: 'AP flapping', device: 'ap-9', state: 'open', age: '9m' }),
+      ],
+    });
+    const created = await fetch(`${base}/api/silences`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'sw-core-9', reason: 'planned power work', durationMinutes: 60 }),
+    });
+    expect(created.status).toBe(201);
+    const silenceId = ((await created.json()) as any).silence.id as string;
+    try {
+      const { body } = await getJson('/api/overview');
+      // A silenced P1 cannot headline the landing screen while its row is
+      // benched on Alerts — the two screens derive from the same partition.
+      expect((body.alerts as any[]).map((a) => a.title)).toEqual(['AP flapping']);
+      const open = (body.stats as any[]).find((s) => s.label === 'Open alerts');
+      expect(open.value).toBe('1');
+      expect(open.delta).toBe('none critical');
+    } finally {
+      await fetch(`${base}/api/silences/${silenceId}`, { method: 'DELETE' });
+    }
+    const restored = await getJson('/api/overview');
+    expect((restored.body.alerts as any[]).map((a) => a.title)).toEqual(['Core switch down', 'AP flapping']);
+    const open = (restored.body.stats as any[]).find((s) => s.label === 'Open alerts');
+    expect(open.value).toBe('2');
+    expect(open.delta).toBe('▲ 1 critical');
+  });
+
   it('live system rows carry a console URL only for a plane whose stored endpoint IS its console', async () => {
     const saved = await saveCreds('clearpass', { publisher: 'cppm-01.meridian.health', token: 'cppm-token-1234' });
     expect(saved.status).toBe(200);
@@ -1550,6 +1601,36 @@ describe('live-mode screen contracts', () => {
     const missing = await getJson('/api/devices/no-such-device');
     expect(missing.status).toBe(404);
     expect(missing.body.error).toBeDefined();
+  });
+
+  it('live /api/devices/:name joins config-backup snapshots into config, with provenance', async () => {
+    const { configBackups } = await import('../src/services/configBackup');
+    // A device no other test looks at, so the snapshots on file here cannot
+    // leak into their payloads.
+    const BACKUP_DEVICE = { ...DEVICE, name: 'sw-backup-1' };
+    contributions.set('central', { devices: [BACKUP_DEVICE] });
+    // Nothing on file yet: the branch keeps its honest null.
+    const bare = await getJson('/api/devices/sw-backup-1');
+    expect(bare.status).toBe(200);
+    expect(bare.body.config).toBeNull();
+
+    configBackups.recordSnapshot('sw-backup-1', 'hostname sw-backup-1\nntp server 10.42.0.20', 'ssh show running-config', '2026-07-25T06:00:00Z');
+    configBackups.recordSnapshot('sw-backup-1', 'hostname sw-backup-1\nntp server 10.42.0.21', 'ssh show running-config', '2026-07-25T12:04:00Z');
+    const joined = await getJson('/api/devices/sw-backup-1');
+    expect(joined.status).toBe(200);
+    expect(joined.body.profile).toBeNull(); // the authored profile stays demo data
+    expect(joined.body.config.meta).toBe('SNAPSHOT v2 · 2 VERSIONS ON FILE');
+    expect(joined.body.config.running).toBe('hostname sw-backup-1\nntp server 10.42.0.21');
+    expect(joined.body.config.diff).toContain('- ntp server 10.42.0.20');
+    expect(joined.body.config.diff).toContain('+ ntp server 10.42.0.21');
+    expect(joined.body.config.history).toHaveLength(2);
+    expect(joined.body.config.history[0]).toMatchObject({ tag: 'drift', who: 'ssh show running-config' });
+    expect(joined.body.config.provenance).toEqual({
+      version: 2,
+      versions: 2,
+      source: 'ssh show running-config',
+      takenAt: '2026-07-25T12:04:00Z',
+    });
   });
 
   it('live configure exposes the broker queue and computed stats; compliance stays honest', async () => {
@@ -1753,6 +1834,114 @@ describe('live-mode screen contracts', () => {
     expect(full.body.stats[3]).toMatchObject({ value: '1', tone: 'negative' });
   });
 
+  it('a silenced firing stops counting as open on the site badge — and the Stat agrees', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      devices: [DEVICE],
+      sites: [SITE],
+      alerts: [
+        alertRow({ alertId: 'a-1', device: 'ap-1' }),
+        alertRow({ alertId: 'a-2', device: 'ap-2' }),
+        alertRow({ alertId: 'a-3', device: 'ap-3' }),
+      ],
+    });
+    const badge = (body: any) => (body.sites as any[]).find((s) => s.id === 'campus-01');
+    const sitesWithAlerts = (body: any) => (body.stats as any[]).find((s) => s.label === 'Sites with alerts');
+    const silenceIds: string[] = [];
+    const hush = async (payload: Record<string, unknown>) => {
+      const res = await fetch(`${base}/api/silences`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      expect(res.status).toBe(201);
+      silenceIds.push(((await res.json()) as any).silence.id as string);
+    };
+    try {
+      const before = await getJson('/api/sites');
+      expect(badge(before.body).alerts).toBe('3 open');
+      expect(badge(before.body).alertTone).toBe('warning');
+      expect(sitesWithAlerts(before.body)).toMatchObject({ value: '1', delta: 'open now', tone: 'negative' });
+
+      // Hush one device: the badge drops to the two firings that still need someone.
+      await hush({ device: 'ap-1', reason: 'RMA in flight', durationMinutes: 60 });
+      expect(badge((await getJson('/api/sites')).body).alerts).toBe('2 open');
+
+      // Hush the whole flap: the site reads clear on every surface the merge
+      // feeds — the /api/sites badge, its headline Stat, and the Overview's
+      // sites table (liveOverviewSite reads the same merged row).
+      await hush({ titleContains: 'AP flapping', reason: 'known controller bug', durationMinutes: 60 });
+      const all = await getJson('/api/sites');
+      expect(badge(all.body).alerts).toBe('clear');
+      expect(badge(all.body).alertTone).toBe('success');
+      expect(sitesWithAlerts(all.body)).toMatchObject({ value: '0', delta: 'none open', tone: 'neutral' });
+      const overview = await getJson('/api/overview');
+      expect((overview.body.sites as any[]).find((s) => s.siteId === 'campus-01').alerts).toBe('clear');
+
+      // The Alerts screen tells the same story: nothing active, all three
+      // firings on the bench WITH their silences — moved, never hidden.
+      const queue = await getJson('/api/alerts');
+      expect((queue.body.alerts as any[]).some((a) => a.title.includes('AP flapping'))).toBe(false);
+      expect(queue.body.silenced).toHaveLength(3);
+    } finally {
+      for (const id of silenceIds) await fetch(`${base}/api/silences/${id}`, { method: 'DELETE' });
+    }
+  });
+
+  it('an unsilence restores the per-site open count exactly', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      devices: [DEVICE],
+      sites: [SITE],
+      alerts: [alertRow({ alertId: 'a-1', device: 'ap-1' })],
+    });
+    const res = await fetch(`${base}/api/silences`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'ap-1', reason: 'reboot window', durationMinutes: 60 }),
+    });
+    const silenceId = ((await res.json()) as any).silence.id as string;
+    try {
+      const hushed = await getJson('/api/sites');
+      expect((hushed.body.sites as any[])[0].alerts).toBe('clear');
+      expect((hushed.body.stats as any[]).find((s) => s.label === 'Sites with alerts').value).toBe('0');
+    } finally {
+      await fetch(`${base}/api/silences/${silenceId}`, { method: 'DELETE' });
+    }
+    const restored = await getJson('/api/sites');
+    expect((restored.body.sites as any[])[0].alerts).toBe('1 open');
+    expect((restored.body.sites as any[])[0].alertTone).toBe('warning');
+    expect((restored.body.stats as any[]).find((s) => s.label === 'Sites with alerts').value).toBe('1');
+  });
+
+  it('a silence never launders a stale alert feed into a clear badge', async () => {
+    const { registry } = await import('../src/planes/registry');
+    contributions.clear();
+    contributions.set('central', {
+      devices: [DEVICE],
+      sites: [SITE],
+      alerts: [alertRow({ alertId: 'a-1', device: 'ap-1' })],
+    });
+    const res = await fetch(`${base}/api/silences`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'ap-1', reason: 'x', durationMinutes: 60 }),
+    });
+    const silenceId = ((await res.json()) as any).silence.id as string;
+    registry.markSyncResult('central', false, { note: 'poll failed — showing last good data' });
+    try {
+      const { body } = await getJson('/api/sites');
+      // The hushed firing no longer counts, but the feed the 'clear' badge
+      // would be read off is last-good, not current — the row says 'stale',
+      // the same answer it gives without any silence.
+      expect((body.sites as any[])[0].alerts).toBe('stale');
+      expect((body.sites as any[])[0].alertTone).toBe('neutral');
+    } finally {
+      await fetch(`${base}/api/silences/${silenceId}`, { method: 'DELETE' });
+      registry.reinitPlane('central');
+    }
+  });
+
   it('unassigned inventory stays on Devices without becoming a fake site', async () => {
     contributions.clear();
     contributions.set('central', {
@@ -1813,6 +2002,55 @@ describe('live-mode screen contracts', () => {
       },
     ]);
     expect(body.alerts).toEqual([{ sev: 'P2', tone: 'warning', title: 'AP flapping', meta: 'central · 5m' }]);
+  });
+
+  it('live site detail benches silenced firings out of "Open here" WITH their reason — and unsilence restores them', async () => {
+    contributions.clear();
+    contributions.set('central', {
+      devices: [DEVICE],
+      sites: [SITE],
+      alerts: [
+        alertRow({ alertId: 'a-1', device: 'ap-1' }),
+        alertRow({ alertId: 'a-2', device: 'ap-2', title: 'Radio down' }),
+      ],
+    });
+    // Nothing hushed yet: both firings are active, the bench is an empty list,
+    // and the badge and the section already agree.
+    const before = await getJson('/api/sites/campus-01');
+    expect(before.body.site.alerts).toBe('2 open');
+    expect(before.body.alerts).toHaveLength(2);
+    expect(before.body.silencedAlerts).toEqual([]);
+
+    const res = await fetch(`${base}/api/silences`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'ap-1', reason: 'RMA in flight', durationMinutes: 60 }),
+    });
+    expect(res.status).toBe(201);
+    const silenceId = ((await res.json()) as any).silence.id as string;
+    try {
+      const { body } = await getJson('/api/sites/campus-01');
+      // One story across the payload: the badge counts only what still needs
+      // someone, and the section cannot list the hushed firing as open.
+      expect(body.site.alerts).toBe('1 open');
+      expect((body.alerts as any[]).map((a) => a.title)).toEqual(['Radio down']);
+      // Moved, never hidden: the benched firing keeps its sev/title AND
+      // carries the reason and expiry that hushed it.
+      expect(body.silencedAlerts).toHaveLength(1);
+      expect(body.silencedAlerts[0]).toMatchObject({
+        sev: 'P2',
+        title: 'AP flapping',
+        reason: 'RMA in flight',
+      });
+      expect(typeof body.silencedAlerts[0].until).toBe('string');
+    } finally {
+      await fetch(`${base}/api/silences/${silenceId}`, { method: 'DELETE' });
+    }
+    // Lifting the silence returns the firing to the active section exactly.
+    const restored = await getJson('/api/sites/campus-01');
+    expect(restored.body.site.alerts).toBe('2 open');
+    expect(restored.body.alerts).toHaveLength(2);
+    expect(restored.body.silencedAlerts).toEqual([]);
   });
 
   it('live site detail derives the "Local reachability" panel instead of leaving it NOT REPORTED', async () => {
@@ -1913,6 +2151,46 @@ describe('live-mode screen contracts', () => {
       const ap = await getJson('/api/devices/ap-test-1');
       expect(ap.body.device.localShell).toBe(false);
       expect(ap.body.terminal).toBeUndefined(); // cloud-claimed class has no shell at all
+    } finally {
+      await fetch(`${base}/api/systems/local`, { method: 'DELETE' });
+      contributions.clear();
+    }
+  });
+
+  it('live local-switch detail says WHY there are no ports — unlinked plane vs unreachable switch', async () => {
+    contributions.clear();
+    const LOCAL_SWITCH = {
+      ...DEVICE,
+      name: 'sw-local-1',
+      plane: 'LOCAL',
+      planeTone: 'neutral',
+      serial: 'SG-LOCAL-1',
+      ip: '10.42.8.11',
+      localShell: true,
+    };
+    // Plane NOT linked: no adapter can answer a per-object read at all, so
+    // the route attaches no detail block — 'not-fetched' on screen, which is
+    // a different sentence from "the switch has no interfaces".
+    await fetch(`${base}/api/systems/local`, { method: 'DELETE' });
+    contributions.set('local', { devices: [LOCAL_SWITCH] });
+    const unlinked = await getJson('/api/devices/sw-local-1');
+    expect(unlinked.status).toBe(200);
+    expect(unlinked.body.device.plane).toBe('LOCAL');
+    expect(unlinked.body.detail).toBeNull();
+
+    // Linked, but the switch is unreachable (nothing listens on 127.0.0.1:9):
+    // the read was issued and failed, so the envelope carries the failed
+    // section with the reason named — never an empty port table.
+    const saved = await saveCreds('local', { baseUrl: 'https://127.0.0.1:9', username: 'svc-portal', password: 'pw-12345678' });
+    expect(saved.status).toBe(200);
+    try {
+      contributions.set('local', { devices: [LOCAL_SWITCH] });
+      const failed = await getJson('/api/devices/sw-local-1');
+      expect(failed.status).toBe(200);
+      expect(failed.body.detail.source.plane).toBe('local');
+      expect(failed.body.detail.source.sections.ports).toBe('failed');
+      expect(typeof failed.body.detail.source.note).toBe('string');
+      expect(failed.body.detail.ports).toBeUndefined();
     } finally {
       await fetch(`${base}/api/systems/local`, { method: 'DELETE' });
       contributions.clear();
@@ -2394,6 +2672,29 @@ describe('live-mode screen contracts', () => {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ planes: { central: { scopes: '' } } }),
+      });
+    }
+  });
+
+  it('a linked Mist with a write scope reports the reviewed direct SSID path on BOTH screens — never the ticketed broker', async () => {
+    await fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ planes: { mist: { apiHost: 'api.mist.com', orgId: 'org-1', token: 'scope-test-token', scopes: 'read write' } } }),
+    });
+    try {
+      const configure = await getJson('/api/configure');
+      const row = (configure.body.capabilities as any[]).find((r) => r.planeId === 'mist');
+      expect(row).toMatchObject({ mode: 'direct', tone: 'accent', note: 'reviewed SSID writes, no ticket' });
+
+      const systems = await getJson('/api/systems');
+      const mist = (systems.body.systems as any[]).find((s) => s.planeId === 'mist');
+      expect(mist.scope).toBe('read + direct');
+    } finally {
+      await fetch(`${base}/api/settings`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ planes: { mist: null } }),
       });
     }
   });
@@ -4198,14 +4499,464 @@ describe('on-demand per-object detail reads', () => {
       expect(status).toBe(200);
       expect(body.dataSource).toBe('demo');
       // Demo rows are authored and complete; there is no live object behind a
-      // fixture MAC to read, and the payload is exactly what it always was.
+      // fixture MAC to read, so the per-object detail read stays off. The
+      // Client 360 block is not a read — it is a join over the fixtures
+      // themselves — so a named client gets it, and the picked row (null
+      // here: the MAC is not on the demo roster) rides along as it does live.
       expect(calls).toBe(0);
       expect(body.detail).toBeUndefined();
-      expect(body.client).toBeUndefined();
+      expect(body.client).toBeNull();
+      expect(Array.isArray(body.clientPlanes)).toBe(true);
+      expect((body.clientPlanes as any[]).every((s) => s.state !== 'ok')).toBe(true);
       expect((body.clients as any[]).length).toBeGreaterThan(0);
     } finally {
       await setDemoMode(false);
     }
+  });
+});
+
+/**
+ * Client 360 — the cross-plane sections a named client's envelope carries.
+ *
+ * The correlation is a JOIN over rows the poller already pulled (and, in demo
+ * mode, over the fixtures): no per-plane call is ever issued for it. These
+ * tests pin the envelope shape and the present/absent-with-reason wording;
+ * the join itself is unit-tested in client360.test.ts.
+ */
+describe('client 360 cross-plane sections', () => {
+  let contributions: Map<string, unknown>;
+  let planes: { get(id: string): Record<string, unknown> };
+  let registryState: (id: string) => Record<string, unknown>;
+
+  const DEMO_MAC = '3c:22:fb:41:0a:19'; // the fixture's m.okonjo
+  const LIVE_MAC = '3C:A9:AB:7C:A9:51';
+
+  const setDemoMode = (demoMode: boolean) =>
+    fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ demoMode }),
+    });
+
+  const saveCreds = (plane: string, creds: Record<string, string>) =>
+    fetch(`${base}/api/systems/${plane}/credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(creds),
+    });
+
+  const clientVia = (mac: string, plane: string, over: Record<string, unknown> = {}) => ({
+    name: `client-via-${plane.toLowerCase()}`,
+    model: 'ThinkPad X1',
+    type: 'laptop',
+    group: 'default',
+    mac,
+    ip: '10.1.4.55',
+    attach: 'ap-1',
+    where: 'radio 1',
+    plane,
+    planeTone: 'neutral',
+    auth: '802.1X',
+    authBy: 'clearpass',
+    role: 'employee',
+    vlan: '110',
+    health: 'good',
+    healthTone: 'success',
+    session: '2h',
+    medium: 'wireless',
+    siteId: 'campus-01',
+    siteName: 'Campus-01 — Meridian HQ',
+    problem: false,
+    link: '5 GHz · ch 36',
+    rssi: '−52 dBm',
+    snr: '38 dB',
+    retries: '2%',
+    tput: '120 Mbps',
+    roams: '1',
+    quality: 88,
+    zone: '3rd floor',
+    closet: 'IDF-3',
+    ...over,
+  });
+
+  /** The section answering for one plane label. */
+  const sectionOf = (body: any, plane: string) =>
+    (body.clientPlanes as any[]).find((s) => s.plane === plane);
+
+  beforeAll(async () => {
+    const { poller } = await import('../src/services/poller');
+    const { registry } = await import('../src/planes/registry');
+    contributions = (poller as unknown as { contributions: Map<string, unknown> }).contributions;
+    planes = registry as unknown as { get(id: string): Record<string, unknown> };
+    registryState = (id: string) => (planes.get(id).state as () => Record<string, unknown>)();
+    // Link Central against an unroutable gateway: a real adapter (so the
+    // stub/unconfigured wording is not what these tests exercise), a poll
+    // that fails instantly (connection refused — nothing lands late), and no
+    // dependence on whichever earlier test happened to leave it linked.
+    await saveCreds('central', { gatewayBaseUrl: 'http://127.0.0.1:1', clientId: 'cid', clientSecret: 'csecret' });
+    // The 360 block never issues a per-object call, but naming a client opens
+    // the detail path too — keep Central's adapter from spending a real call
+    // against that gateway on every one of these requests. Restored by the
+    // credential DELETE in afterAll, which replaces the adapter instance.
+    planes.get('central').clientDetail = async () => null;
+  });
+
+  afterEach(() => {
+    contributions.clear();
+  });
+
+  afterAll(async () => {
+    contributions.clear();
+    await fetch(`${base}/api/systems/central`, { method: 'DELETE' });
+    await setDemoMode(true);
+  });
+
+  it('the polled clients list carries no 360 block, in either mode', async () => {
+    await setDemoMode(true);
+    const demo = await getJson('/api/clients');
+    expect(demo.body.clientPlanes).toBeUndefined();
+    expect(demo.body.client).toBeUndefined();
+
+    await setDemoMode(false);
+    try {
+      contributions.set('central', { clients: [clientVia(LIVE_MAC, 'CENTRAL')] });
+      const live = await getJson('/api/clients');
+      // Naming no client opens nothing: the screen's own 60s refresh must stay
+      // byte-for-byte what it always was.
+      expect(live.body.clientPlanes).toBeUndefined();
+      expect(live.body.client).toBeUndefined();
+    } finally {
+      await setDemoMode(true);
+    }
+  });
+
+  it('demo correlates a fixture client across the fixture planes, keyed by its MAC', async () => {
+    await setDemoMode(true);
+    const { status, body } = await getJson(`/api/clients?mac=${encodeURIComponent(DEMO_MAC)}`);
+    expect(status).toBe(200);
+    expect(body.dataSource).toBe('demo');
+    expect(body.client.mac).toBe(DEMO_MAC);
+    expect(body.detail).toBeUndefined(); // demo issues no per-object read
+    expect(body.clientPlanes).toHaveLength(12);
+
+    // m.okonjo: a Mist session, Mist's SLE for her site, her ClearPass
+    // endpoint record and TWO recent decisions — visible from three feeds.
+    const mist = sectionOf(body, 'mist');
+    expect(mist).toMatchObject({ state: 'ok', label: 'MIST' });
+    expect(mist.session.mac).toBe(DEMO_MAC);
+    expect(mist.siteSle.siteId).toBe('campus-02');
+
+    const clearpass = sectionOf(body, 'clearpass');
+    expect(clearpass.state).toBe('ok');
+    expect(clearpass.endpoint.id).toBe('ep-001');
+    expect(clearpass.authEvents.map((e: any) => e.time)).toEqual(['09:41:22', '08:12:03']);
+
+    // Absent planes say why, in their own words.
+    expect(sectionOf(body, 'central')).toMatchObject({
+      state: 'empty',
+      reason: 'no session reported for this MAC',
+    });
+    expect(sectionOf(body, 'uxi').state).toBe('not-fetched');
+    expect(sectionOf(body, 'uxi').reason).toContain('synthetically');
+    expect(sectionOf(body, 'greenlake').reason).toContain('licences');
+    // Present sections read first.
+    expect(body.clientPlanes[0].state).toBe('ok');
+  });
+
+  it('demo joins a MAC written in any notation onto the same sections', async () => {
+    await setDemoMode(true);
+    const { status, body } = await getJson('/api/clients?mac=3C22.FB41.0A19');
+    expect(status).toBe(200);
+    expect(body.client.mac).toBe(DEMO_MAC);
+    expect(sectionOf(body, 'mist').state).toBe('ok');
+    expect(sectionOf(body, 'clearpass').authEvents).toHaveLength(2);
+  });
+
+  it('demo: an unknown MAC answers the roster with every section accounted for', async () => {
+    await setDemoMode(true);
+    const { status, body } = await getJson('/api/clients/aa:bb:cc:dd:ee:ff');
+    expect(status).toBe(200);
+    // Not a 404 (see the route's own note): the roster is current and this MAC
+    // is not on it — and every plane's section still says what it holds.
+    expect(body.client).toBeNull();
+    expect(body.clientPlanes).toHaveLength(12);
+    expect((body.clientPlanes as any[]).filter((s) => s.state === 'ok')).toHaveLength(0);
+  });
+
+  it('live joins sessions, decisions and the endpoint record across planes by normalized MAC', async () => {
+    await setDemoMode(false);
+    try {
+      const savedMist = await saveCreds('mist', { apiHost: 'api.mist.example.com', orgId: 'org-1', token: 'mist-token-1234' });
+      expect(savedMist.status).toBe(200);
+      const savedCp = await saveCreds('clearpass', { publisher: 'cppm-01.meridian.health', token: 'cppm-token-1234' });
+      expect(savedCp.status).toBe(200);
+      try {
+        // Saved credentials clear the plane's contributions, so seed after.
+        contributions.set('central', { clients: [clientVia(LIVE_MAC, 'CENTRAL')] });
+        contributions.set('mist', {
+          clients: [clientVia('3ca9.ab7c.a951', 'MIST')], // same endpoint, other notation
+          mistSle: [
+            {
+              siteId: 'campus-01',
+              siteName: 'Campus-01 — Meridian HQ',
+              coverage: 0.97,
+              capacity: 0.95,
+              roaming: 0.96,
+              apHealth: 0.98,
+              wan: null,
+              overall: 0.96,
+            },
+          ],
+        });
+        contributions.set('clearpass', {
+          authEvents: [
+            {
+              time: '09:41:22',
+              who: 'cam-front-door',
+              mac: '3c:a9:ab:7c:a9:51',
+              service: 'MRDN Wireless 802.1X',
+              method: 'EAP-TLS',
+              result: 'accept',
+              tone: 'success',
+              reason: 'Certificate valid',
+              role: 'role employee · vlan 110',
+              nas: 'ap-1',
+              plane: 'CLEARPASS',
+            },
+          ],
+          endpoints: [
+            {
+              id: 'ep-live-1',
+              mac: '3CA9AB7CA951', // yet another notation — same join key
+              ip: '10.1.4.55',
+              hostname: 'cam-front-door',
+              status: 'Known',
+              category: 'IoT',
+              family: 'Embedded',
+              os: null,
+              profile: 'Cameras',
+              updatedAt: '2 minutes ago',
+            },
+          ],
+        });
+
+        const { status, body } = await getJson('/api/clients?mac=3ca9ab7ca951');
+        expect(status).toBe(200);
+        expect(body.dataSource).toBe('live');
+        // The roster still dedupes to one row; the 360 is where both
+        // sightings live — that difference is the feature.
+        expect(body.clients).toHaveLength(1);
+        expect(body.clientPlanes).toHaveLength(12);
+
+        expect(sectionOf(body, 'central')).toMatchObject({ state: 'ok', label: 'CENTRAL' });
+        expect(sectionOf(body, 'central').session.mac).toBe(LIVE_MAC);
+        const mist = sectionOf(body, 'mist');
+        expect(mist.state).toBe('ok');
+        expect(mist.session.plane).toBe('MIST');
+        expect(mist.siteSle.overall).toBe(0.96);
+        expect(mist.reason).toContain('site-level');
+
+        const clearpass = sectionOf(body, 'clearpass');
+        expect(clearpass.state).toBe('ok');
+        expect(clearpass.endpoint.id).toBe('ep-live-1');
+        expect(clearpass.authEvents).toHaveLength(1);
+
+        // Linked planes with nothing for this MAC, unlinked planes, and
+        // structurally clientless planes each say their own sentence.
+        expect(sectionOf(body, 'aos8')).toMatchObject({ state: 'not-fetched', reason: 'plane not linked' });
+        expect(sectionOf(body, 'uxi').state).toBe('not-fetched');
+        expect(sectionOf(body, 'greenlake').reason).toContain('licences');
+      } finally {
+        await fetch(`${base}/api/systems/mist`, { method: 'DELETE' });
+        await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
+      }
+    } finally {
+      await setDemoMode(true);
+    }
+  });
+
+  it('live words a linked plane with no roster yet as unread, and a stub adapter as unimplemented', async () => {
+    await setDemoMode(false);
+    try {
+      // central answered its device read but has never reported a client
+      // roster — "not read" and "nobody associated" must not read the same.
+      contributions.set('central', { devices: [] });
+      const saved = await saveCreds('aos8', { master: 'https://10.48.0.10:4343' }); // partial: StubAdapter
+      expect(saved.status).toBe(200);
+      try {
+        const { status, body } = await getJson(`/api/clients?mac=${encodeURIComponent(LIVE_MAC)}`);
+        expect(status).toBe(200);
+        expect(sectionOf(body, 'central')).toMatchObject({
+          state: 'not-fetched',
+          reason: 'CENTRAL has not reported a client roster',
+        });
+        expect(sectionOf(body, 'aos8')).toMatchObject({
+          state: 'not-fetched',
+          reason: 'sync adapter not yet implemented',
+        });
+        // A roster that does not contain the MAC still answers with
+        // client: null — the sections are the point of the ask.
+        expect(body.client).toBeNull();
+      } finally {
+        await fetch(`${base}/api/systems/aos8`, { method: 'DELETE' });
+      }
+    } finally {
+      await setDemoMode(true);
+    }
+  });
+
+  it("live marks a stale plane's sighting unverified rather than current", async () => {
+    await setDemoMode(false);
+    const state = registryState('central');
+    const previous = { ...state };
+    try {
+      contributions.set('central', { clients: [clientVia(LIVE_MAC, 'CENTRAL')] });
+      // A plane the registry considers behind: its last-good session is
+      // evidence, not a current fact (design rule 1, same as liveClients()).
+      Object.assign(state, { health: 'degraded' });
+      const { status, body } = await getJson(`/api/clients?mac=${encodeURIComponent(LIVE_MAC)}`);
+      expect(status).toBe(200);
+      expect(sectionOf(body, 'central').state).toBe('ok');
+      expect(sectionOf(body, 'central').session.health).toBe('unverified');
+      expect(sectionOf(body, 'central').session.problem).toBe(false);
+    } finally {
+      Object.assign(state, previous);
+      await setDemoMode(true);
+    }
+  });
+
+  it('live says which half of a partial ClearPass read was not read', async () => {
+    await setDemoMode(false);
+    try {
+      const saved = await saveCreds('clearpass', { publisher: 'cppm-01.meridian.health', token: 'cppm-token-1234' });
+      expect(saved.status).toBe(200);
+      try {
+        contributions.set('central', { clients: [clientVia(LIVE_MAC, 'CENTRAL')] });
+        // Endpoint repository read (the MAC is in it); the auth log was not.
+        contributions.set('clearpass', {
+          endpoints: [
+            {
+              id: 'ep-live-2',
+              mac: LIVE_MAC,
+              ip: '10.1.4.55',
+              hostname: 'cam-front-door',
+              status: 'Known',
+              category: 'IoT',
+              family: 'Embedded',
+              os: null,
+              profile: 'Cameras',
+              updatedAt: '2 minutes ago',
+            },
+          ],
+        });
+        const { status, body } = await getJson(`/api/clients?mac=${encodeURIComponent(LIVE_MAC)}`);
+        expect(status).toBe(200);
+        const clearpass = sectionOf(body, 'clearpass');
+        expect(clearpass.state).toBe('ok');
+        expect(clearpass.endpoint.id).toBe('ep-live-2');
+        expect(clearpass.authEvents).toBeUndefined();
+        expect(clearpass.reason).toBe('the auth log was not read this cycle');
+      } finally {
+        await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
+      }
+    } finally {
+      await setDemoMode(true);
+    }
+  });
+});
+
+/**
+ * ClearPass screen payload wiring (GET /api/clearpass). The endpoint
+ * repository and auth feed have their own contracts above; these cover the
+ * seven policy inventories the route serves alongside them — fixtures in
+ * demo mode, the clearpass contribution in live — and the one collection
+ * (device groups) the demo estate's 6.11 CPPM deliberately does not expose:
+ * the key stays ABSENT in both modes, because absent-is-honest is the whole
+ * contract. Services ARE served in demo — the demo CPPM answers
+ * /api/config/service like the verified 6.11.12 box.
+ */
+describe('ClearPass policy inventories', () => {
+  let contributions: Map<string, unknown>;
+
+  const setDemoMode = (demoMode: boolean) =>
+    fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ demoMode }),
+    });
+
+  beforeAll(async () => {
+    const { poller } = await import('../src/services/poller');
+    contributions = (poller as unknown as { contributions: Map<string, unknown> }).contributions;
+    await setDemoMode(true);
+  });
+
+  afterEach(async () => {
+    contributions.clear();
+    await setDemoMode(true);
+  });
+
+  it('demo mode serves the seven fixture inventories, and omits deviceGroups outright', async () => {
+    const { status, body } = await getJson('/api/clearpass');
+    expect(status).toBe(200);
+    expect(body.dataSource).toBe('demo');
+    expect(body.networkDevices).toEqual(CLEARPASS_NETWORK_DEVICES);
+    expect(body.authSources).toEqual(CLEARPASS_AUTH_SOURCES);
+    expect(body.roles).toEqual(CLEARPASS_ROLES);
+    expect(body.enforcementPolicies).toEqual(CLEARPASS_ENFORCEMENT_POLICIES);
+    expect(body.enforcementProfiles).toEqual(CLEARPASS_ENFORCEMENT_PROFILES);
+    expect(body.localUsers).toEqual(CLEARPASS_LOCAL_USERS);
+    expect(body.services).toEqual(CLEARPASS_SERVICES);
+    // Nothing in a service row is credential material — the route serves the
+    // same whitelist the mapper enforces.
+    expect(JSON.stringify(body.services)).not.toMatch(/password|secret|hash/i);
+    // Not exposed on the demo CPPM — an absent key, never an empty array.
+    expect('deviceGroups' in body).toBe(false);
+  });
+
+  it('demo endpoint rows carry description + insight tags; local users carry exactly the whitelisted fields', async () => {
+    const { body } = await getJson('/api/clearpass');
+    expect(body.endpoints.some((e: { description: string | null }) => e.description !== null)).toBe(true);
+    expect(body.endpoints.some((e: { insightTags?: string[] }) => Array.isArray(e.insightTags))).toBe(true);
+    // No-secret proof: nothing but id/userId/username/roleName/enabled may
+    // ride a local-user row, in any mode.
+    for (const u of body.localUsers as Record<string, unknown>[]) {
+      expect(Object.keys(u).sort()).toEqual(['enabled', 'id', 'roleName', 'userId', 'username']);
+    }
+    expect(JSON.stringify(body.localUsers)).not.toMatch(/password|secret|hash/i);
+  });
+
+  it('live mode carries exactly the inventories the pull reported — absent keys stay absent', async () => {
+    await setDemoMode(false);
+    contributions.set('clearpass', {
+      authEvents: [],
+      networkDevices: [
+        { id: 'nad-1', name: 'sw-test-1', ipAddress: '10.42.8.11', vendorName: 'Aruba', coaCapable: true, radsecEnabled: false, description: null },
+      ],
+      roles: [{ id: 'role-1', name: 'Employee', description: null }],
+      localUsers: [{ id: 'lu-1', userId: 'svc-portal', username: null, roleName: 'ops', enabled: true }],
+    });
+    const { body } = await getJson('/api/clearpass');
+    expect(body.dataSource).toBe('live');
+    expect(body.networkDevices).toHaveLength(1);
+    expect(body.networkDevices[0].name).toBe('sw-test-1');
+    expect(body.roles).toEqual([{ id: 'role-1', name: 'Employee', description: null }]);
+    expect(body.localUsers[0].userId).toBe('svc-portal');
+    for (const key of ['authSources', 'enforcementPolicies', 'enforcementProfiles', 'services', 'deviceGroups']) {
+      expect(key in body).toBe(false);
+    }
+  });
+
+  it('live mode keeps a real empty answer distinct from an unread collection', async () => {
+    await setDemoMode(false);
+    contributions.set('clearpass', { authEvents: [], services: [], deviceGroups: [] });
+    const { body } = await getJson('/api/clearpass');
+    // The CPPM answered these two with zero rows — a fact, served as [].
+    expect(body.services).toEqual([]);
+    expect(body.deviceGroups).toEqual([]);
+    // …while the collections it never reported stay absent.
+    expect('roles' in body).toBe(false);
+    expect('networkDevices' in body).toBe(false);
   });
 });
 

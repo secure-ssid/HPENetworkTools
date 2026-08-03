@@ -3,6 +3,12 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // Hashed chunk names never collide, so old builds may stay on disk: a tab
+    // open across a rebuild (watch mode or a deploy) can still fetch the
+    // chunks its html references instead of hitting a 404 mid-session.
+    emptyOutDir: false,
+  },
   test: {
     environment: 'jsdom',
     include: ['src/**/*.test.{ts,tsx}'],

@@ -73,7 +73,9 @@ an identity provider of their own.
 ### What is guarded
 
 With an identity provider configured, every `/api` route requires a session
-except `/api/health` and the four `/api/auth/*` endpoints. The SSH WebSocket
+except `/api/health`, the four `/api/auth/*` endpoints, and the two inbound
+webhook receiver posts (`/api/hooks/mist`, `/api/hooks/central`), which
+authenticate by HMAC signature instead — see below. The SSH WebSocket
 upgrade is authenticated separately, from the same session cookie, because an
 upgrade never passes through Express middleware — closing the API while leaving
 the shell bridge open would guard the lesser surface.
@@ -135,6 +137,16 @@ operator changing production by accident.
 Protect the host account, settings file, runtime data directory, and backups.
 The portal does not replace operating-system or deployment secret management.
 
+### Running-config backups
+
+Snapshots under `data/config-backups/` are full device running-configs, and a
+running-config can hold secrets of its own — RADIUS shared secrets, SNMP
+communities, local accounts. They are stored owner-only (0600), capped at ten
+versions per device, and the audit log records one metadata line per snapshot,
+never the config body. The directory lives under `data/`, which is git-ignored:
+snapshots must never be committed or copied into source-controlled files, and
+the directory deserves the same protection as `data/settings.json`.
+
 ### Credentials in transit
 
 A connected system's base URL must be `https://`. A bare hostname is assumed to
@@ -191,6 +203,21 @@ Webhook callback endpoints:
 - Are rejected if any resolved address is private, loopback, link-local, or
   reserved.
 - Are revalidated immediately before create.
+
+## Webhook receivers and notification endpoints
+
+The inbound receiver routes mount ahead of the session guard because a
+delivery from Mist or New Central holds no operator session: the per-source
+HMAC signature over the raw request bytes is the authentication, and a source
+with no stored secret refuses deliveries (503) rather than accept input it
+cannot verify. Signing secrets persist write-only in
+`data/webhook-receivers.json` (0600) and are never returned by any API or
+written to any log. Outbound notification endpoints are the reverse direction
+and follow the callback-validation rule above — HTTPS only, never a private,
+loopback, or reserved destination — validated when the endpoint is saved and
+again before every send. Treat the receiver secrets file and the
+accepted-events journal `data/webhook-events.jsonl` like `data/settings.json`:
+owner-only, backed up deliberately, never committed.
 
 ## Unknown provider outcomes
 

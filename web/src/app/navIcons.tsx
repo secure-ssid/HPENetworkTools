@@ -37,6 +37,14 @@ export const NAV_ICONS: Partial<Record<View, ReactNode>> = {
       <rect x="9" y="9" width="5" height="5" rx="1" />
     </Svg>
   ),
+  topology: (
+    <Svg>
+      <circle cx="3.5" cy="8" r="1.7" />
+      <circle cx="12.5" cy="3.5" r="1.7" />
+      <circle cx="12.5" cy="12.5" r="1.7" />
+      <path d="M5 7l6-2.7M5 9l6 2.7" />
+    </Svg>
+  ),
   alerts: (
     <Svg>
       <path d="M8 2 1.5 13.5h13L8 2Z" />
@@ -63,6 +71,27 @@ export const NAV_ICONS: Partial<Record<View, ReactNode>> = {
       <rect x="2.5" y="7" width="11" height="7" rx="1.5" />
       <path d="M5 7V5a3 3 0 0 1 6 0v2" />
       <path d="M8 10v1.5" />
+    </Svg>
+  ),
+  clearpass: (
+    <Svg>
+      <path d="M8 1.8 13.5 4v4.2c0 3-2.3 5.2-5.5 6-3.2-.8-5.5-3-5.5-6V4L8 1.8Z" />
+      <circle cx="8" cy="6.8" r="1.5" />
+      <path d="M8 8.3v2.4" />
+    </Svg>
+  ),
+  central: (
+    <Svg>
+      <path d="M4.5 12.5h7a3 3 0 0 0 .6-5.9 4.2 4.2 0 0 0-8.2 1.9 2.6 2.6 0 0 0 .6 4Z" />
+      <path d="M8 9.5v3" />
+    </Svg>
+  ),
+  mist: (
+    <Svg>
+      <path d="M8 13h.01" />
+      <path d="M5.2 10.4a4 4 0 0 1 5.6 0" />
+      <path d="M2.6 7.8a7.6 7.6 0 0 1 10.8 0" />
+      <path d="M1 5a10.5 10.5 0 0 1 14 0" />
     </Svg>
   ),
   uxi: (

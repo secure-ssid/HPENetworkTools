@@ -12,17 +12,29 @@ HPE Aruba Networking SSE in one interface.
 
 - Unified devices, sites, clients, alerts, licences, and topology across 12 planes.
 - Lazy Inventory Explorer for systems, sites, devices, and SSE objects.
+- Estate-wide Topology screen merging every plane's reported neighbour facts — per-edge provenance, ghosts for unresolved neighbours.
 - Responsive desktop navigation and a focus-managed mobile drawer.
 - Collapsed switch groups that keep large port inventories out of the initial DOM.
 - Exact device targeting by management plane and serial number.
 - SSID creation, editing, and scope assignment (Central and AOS-8 config drift).
 - Mist SLE scores surfaced per-site alongside device and client counts.
+- Mist rogue and neighbour AP detection per site — the on-your-wire finding leads.
 - ClearPass endpoint repository with auth-events feed.
+- Reviewed ClearPass direct writes — endpoint register/edit and local-user create/edit, passwords write-only.
 - UXI sensor fleet with inline issue detail.
 - AP and AOS-CX traceroute diagnostics with bounded background polling.
 - HPE Aruba Networking SSE inventory and reviewed CRUD with Commit handling.
 - Central webhook management with one-time HMAC-key handoff.
 - Recorded, allow-listed SSH terminal sessions for locally managed devices.
+- Versioned running-config backups with drift diffs on Compliance.
+- Alert dedup with ×N grouping and time-boxed, reason-required silences.
+- Outbound alert notifications to Slack, Teams, ntfy, or a generic webhook — HMAC-signed, with a demo outbox that never dials.
+- Device-down alert rules (baseline-seeded, cooldown-gated, managed on the Alerts screen) feeding an in-app notification bell with unread badge and mark-read.
+- Scheduled fleet summary reports by email (SMTP with STARTTLS) plus a 90/60/30/15-day expiry ladder over subscriptions and watched TLS certificates.
+- Central DPI application visibility per site: risk watchlist, top talkers, and category rollup, with byte totals honestly labelled as estimates.
+- Scheduled maintenance windows plus HMAC-verified inbound Mist/Central webhook receivers feeding the same deduped queue.
+- Faceted filters, saved views, per-table column manager, and keyboard-driven rows on the big tables.
+- Clickable overview stat tiles and quick time ranges on the auth-events feed.
 - Central and Mist region pickers with full cluster/region lists.
 - EdgeConnect Orchestrator API key support (preferred for automation).
 - SSO via OpenID Connect (Authentik or any OIDC provider).
@@ -104,7 +116,9 @@ Open [http://localhost:5173](http://localhost:5173).
 
 ```text
 HPENetworkTools/
+├── design/               Archived HTML design prototypes and research notes
 ├── docs/                 Installation, configuration, usage, and screenshots
+├── scripts/              Smoke-test runner
 ├── server/               Express API, adapters, services, routes, and tests
 ├── shared/               Shared contracts, fixtures, and domain logic
 ├── web/                  React application, components, screens, and tests
@@ -117,6 +131,7 @@ HPENetworkTools/
 
 ```bash
 npm run typecheck
+npm run lint
 npm test
 npm run build
 bash scripts/smoke.sh

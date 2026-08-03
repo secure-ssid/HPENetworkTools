@@ -58,7 +58,6 @@ import { poller as defaultPoller, type Poller } from './poller';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { settings } from '../config/settings';
 import { knownTicketId } from './tickets';
-import { poller } from './poller';
 import { resolveDeviceIdentity, safeDeviceCandidates } from './deviceIdentity';
 import { currentActor } from './auth';
 
@@ -339,8 +338,10 @@ type WriteTarget = 'central' | 'console';
 
 /**
  * Where a change can go, per the shared capability matrix: an SSID whose
- * owning plane label is Mist-only is read-only from here → console hand-off.
- * Everything else brokers through Central in this build.
+ * owning plane label is Mist-only is not writable THROUGH THIS BROKER — Mist
+ * SSIDs write via the reviewed direct editor (ssidDirectWrite.ts), so the
+ * ticketed queue hands off to the console. Everything else brokers through
+ * Central in this build.
  */
 function targetFor(kind: ConfigKind, form: ConfigForm): WriteTarget {
   if (kind === 'ssid') {
@@ -449,7 +450,7 @@ function whatFor(kind: ConfigKind, form: ConfigForm): string {
 }
 
 function whereFor(kind: ConfigKind, form: ConfigForm, target: WriteTarget): string {
-  if (target === 'console') return 'Mist · read-only, opens in console';
+  if (target === 'console') return 'Mist · SSIDs write via the reviewed direct editor — this payload opens in console';
   if (kind === 'ssid') {
     const f = form as SsidForm;
     return `${f.plane || 'CENTRAL'} · target group ${f.group}`;
@@ -578,7 +579,7 @@ export class WriteBroker {
     this.nowMs = opts.nowMs ?? (() => Date.now());
     this.knownTicket = opts.knownTicket ?? ((id) => knownTicketId(id, settings.get().demoMode));
     this.listDevices = opts.listDevices ?? (() => {
-      const devices = settings.get().demoMode ? DEVICES : poller.getCache().devices;
+      const devices = settings.get().demoMode ? DEVICES : defaultPoller.getCache().devices;
       return devices.map((device) => ({
         name: device.name,
         plane: device.plane,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 import Systems from './Systems';
 import { SettingsProvider } from '../app/SettingsContext';
@@ -14,7 +14,7 @@ import {
   testSystem,
 } from '../api/client';
 import type { LivePlaneState, SystemsData, SystemsState } from '../api/client';
-import { PERMISSIONS, SYNC_HISTORY, SYSTEMS } from '@hpe/shared';
+import { hhmmLocal, PERMISSIONS, SYNC_HISTORY, SYSTEMS } from '@hpe/shared';
 import type { SystemRow } from '@hpe/shared';
 
 if (!window.matchMedia) {
@@ -84,7 +84,7 @@ const DEMO_PAYLOAD: SystemsData = {
 
 function renderSystems(initialEntry = '/') {
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[initialEntry]}>
       <ToastProvider>
         <SettingsProvider>
           <Routes>
@@ -788,6 +788,41 @@ describe('Systems connect drawer — SSE (token-only plane)', () => {
     expect(creds.clientSecret).toBeUndefined();
   });
 
+  it('hides the shared Client ID/secret pair for Mist and saves apiHost + orgId + token', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({ ok: true, message: 'authenticated' });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'mist' } });
+
+    // Mist auth is a static API token (Authorization: Token) — the generic
+    // Client ID/secret pair the adapter never reads must not render.
+    await waitFor(() => expect(screen.getByLabelText('Org ID')).toBeTruthy());
+    expect(screen.queryByLabelText('Client ID')).toBeNull();
+    expect(screen.queryByLabelText('Client secret')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Mist cloud region'), { target: { value: 'api.mist.com' } });
+    fireEvent.change(screen.getByLabelText('Org ID'), { target: { value: 'org-uuid-1' } });
+    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'mist-tok-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
+    const [plane, creds] = mockTestSystem.mock.calls[0]!;
+    expect(plane).toBe('mist');
+    expect(creds.apiHost).toBe('api.mist.com');
+    expect(creds.orgId).toBe('org-uuid-1');
+    expect(creds.token).toBe('mist-tok-1');
+    expect(creds.clientId).toBeUndefined();
+    expect(creds.clientSecret).toBeUndefined();
+  });
+
   it('re-keys against the stored custom base URL and saves the tested snapshot', async () => {
     const sseRow: SystemRow = {
       ...SYSTEMS[0]!,
@@ -904,7 +939,7 @@ describe('Systems connect drawer — credential hygiene', () => {
     // Central: set an endpoint, uncheck a default-on read scope, and check the
     // write scope — all of this belongs to Central and must not survive.
     fireEvent.change(screen.getByLabelText('Central region / base URL'), {
-      target: { value: 'us4.api.central.arubanetworks.com' },
+      target: { value: 'https://us4.api.central.arubanetworks.com' },
     });
     fireEvent.click(
       screen.getByLabelText('Read configuration and licences'),
@@ -921,13 +956,10 @@ describe('Systems connect drawer — credential hygiene', () => {
 
     // Endpoint is the clearpass variant, blank — not Central's leftover value.
     expect(screen.getByLabelText('ClearPass publisher URL')).toHaveProperty('value', '');
-    // Scopes reset to the connect-drawer defaults: read flags back on, write off.
-    expect(
-      screen.getByLabelText('Read configuration and licences'),
-    ).toHaveProperty('checked', true);
-    expect(
-      screen.getByLabelText('Brokered write — config push, requires a ticket reference'),
-    ).toHaveProperty('checked', false);
+    // ClearPass has no write path — the write checkbox is gone, replaced by an
+    // honest note instead of a grant nothing can exercise.
+    expect(screen.queryByLabelText(/write —/)).toBeNull();
+    expect(screen.getByText('No write path for this plane — read scopes only.')).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
       target: { value: 'cppm-01.meridian.health' },
@@ -938,6 +970,27 @@ describe('Systems connect drawer — credential hygiene', () => {
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
     const [, creds] = mockTestSystem.mock.calls[0]!;
     expect(creds.scopes).toEqual(['read:inventory', 'read:clients-auth', 'read:config-licences']);
+  });
+
+  it('offers Mist its real write scope — direct SSID writes, no ticket', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'mist' } });
+
+    // Mist's write path is reviewed direct SSID writes — the label says exactly
+    // that, never the brokered ticketed phrasing.
+    await waitFor(() =>
+      expect(screen.getByLabelText('Direct write — reviewed SSID changes, no ticket')).toBeTruthy(),
+    );
+    expect(screen.queryByLabelText(/Brokered write/)).toBeNull();
   });
 
   it('re-keys a writable SSE plane with its write scope prefilled and preserved', async () => {
@@ -1360,5 +1413,142 @@ describe('Systems Configuration tab — SSE object inventory', () => {
     // The not-linked message renders instead of the panel's own controls.
     expect(screen.queryByText('reviewed writes · auto-commit')).toBeNull();
     expect(screen.queryByLabelText('Object kind')).toBeNull();
+  });
+});
+
+describe('Systems polling', () => {
+  /* The header stamps LIVE · SYNCED hh:mm, so the screen must re-read on the
+     settings cadence — a NOC tab cannot sit on a mount-time snapshot under a
+     freshness claim (design rule 1). */
+  const LIVE_EMPTY: SystemsData = {
+    systems: [],
+    syncHistory: [],
+    permissions: PERMISSIONS,
+    dataSource: 'live',
+    syncedAt: '2026-03-04T09:41:00.000Z',
+  };
+
+  function mockLiveApis() {
+    mockGetSystems.mockResolvedValue(LIVE_EMPTY);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+  }
+
+  it('re-reads the systems envelope on the settings cadence', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockLiveApis();
+      renderSystems();
+      await waitFor(() => expect(screen.getByText(/^LIVE · SYNCED /)).toBeTruthy());
+      expect(mockGetSystems).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(mockGetSystems).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(mockGetSystems).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never stacks a second read behind a slow one', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let resolveSlow: ((d: SystemsData) => void) | null = null;
+      mockGetSystems.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSlow = resolve;
+          }),
+      );
+      mockGetSystems.mockResolvedValue(LIVE_EMPTY);
+      mockGetSystemsState.mockResolvedValue(registry());
+      mockGetPortalSettings.mockResolvedValue(null);
+      mockGetChatStatus.mockResolvedValue(null);
+      mockGetChatSettings.mockResolvedValue(null);
+      renderSystems();
+      // The mount read is still out when two interval ticks pass: neither
+      // may queue another read behind it.
+      await act(async () => {
+        vi.advanceTimersByTime(120_000);
+      });
+      expect(mockGetSystems).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveSlow?.(LIVE_EMPTY);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(mockGetSystems).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('suspends polling while the connect drawer is open, and resumes when it closes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockLiveApis();
+      renderSystems();
+      await waitFor(() => expect(screen.getByText(/^LIVE · SYNCED /)).toBeTruthy());
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(mockGetSystems).toHaveBeenCalledTimes(2);
+
+      // A refresh landing mid-entry could tear down credential input or a
+      // connection test — while the drawer is open, no tick may fire one.
+      fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
+      await act(async () => {
+        vi.advanceTimersByTime(180_000);
+      });
+      expect(mockGetSystems).toHaveBeenCalledTimes(2);
+
+      fireEvent.click(screen.getByLabelText('Close dialog'));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(mockGetSystems).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('moves the LIVE · SYNCED stamp when a poll returns a newer sync', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockGetSystems
+        .mockResolvedValueOnce(LIVE_EMPTY)
+        .mockResolvedValue({ ...LIVE_EMPTY, syncedAt: '2026-03-04T10:05:00.000Z' });
+      mockGetSystemsState.mockResolvedValue(registry());
+      mockGetPortalSettings.mockResolvedValue(null);
+      mockGetChatStatus.mockResolvedValue(null);
+      mockGetChatSettings.mockResolvedValue(null);
+      renderSystems();
+      await waitFor(() =>
+        expect(
+          screen.getByText(`LIVE · SYNCED ${hhmmLocal('2026-03-04T09:41:00.000Z')}`),
+        ).toBeTruthy(),
+      );
+
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(
+        screen.getByText(`LIVE · SYNCED ${hhmmLocal('2026-03-04T10:05:00.000Z')}`),
+      ).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

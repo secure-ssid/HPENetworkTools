@@ -1,11 +1,14 @@
-/** Device detail panels: radios, WLANs, ports and compliance. */
+/** Device detail panels: radios, WLANs, ports, compliance and the config tabs. */
 
 import {
   Badge,
+  Code,
   EmptyState,
   SectionHeader,
+  SegmentedControl,
 } from '../../nightdesk';
 import {
+  CFG_TABS,
   bandRank,
   detailGapSentence,
   healthTone,
@@ -15,15 +18,20 @@ import {
   portAdminDown,
   portIsUp,
   statusTone,
+  type CfgTab,
 } from './facts';
 import {
   DetailRow,
   LiveGapNote,
   PortTable,
 } from './tables';
+import { DiffCode } from '../../lib/DiffCode';
 import {
   detailHasRows,
   detailState,
+  hhmmLocal as hhmm,
+  type CfgHistoryRow,
+  type DeviceCfg,
   type DeviceDetailLive,
   type DeviceEvidence,
   type DevicePort,
@@ -271,5 +279,113 @@ export function CompliancePanel({
       )}
       {children}
     </div>
+  );
+}
+
+/**
+ * The Running | Drift vs. baseline | History tabs, one component shared by the
+ * authored-profile view and the live view (which renders them only when the
+ * route joined real config-backup snapshots for the device).
+ *
+ * A block carrying `provenance` IS a collected snapshot and says so in the
+ * caption under the control — channel and collection time named, never
+ * implied; a block without it is the authored fixture and keeps its authored
+ * labelling alone. Snapshot history rows carry ISO instants the browser
+ * stamps in the reader's own clock (hhmm passes through text it cannot
+ * parse, so a locally-added row like 'just now' survives the same path);
+ * fixture rows render their authored text verbatim.
+ */
+export function ConfigTabs({
+  cfg,
+  cfgTab,
+  onTabChange,
+  historyRows,
+}: {
+  cfg: DeviceCfg;
+  cfgTab: CfgTab;
+  onTabChange: (tab: CfgTab) => void;
+  historyRows: CfgHistoryRow[];
+}) {
+  const provenance = cfg.provenance;
+  return (
+    <>
+      <div style={{ alignSelf: 'flex-start' }}>
+        <SegmentedControl
+          options={CFG_TABS}
+          value={cfgTab}
+          onValueChange={(v) => onTabChange(v as CfgTab)}
+          ariaLabel="Configuration view"
+        />
+      </div>
+      {provenance ? (
+        <span
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 'var(--nd-text-10)',
+            color: 'var(--nd-text-muted)',
+          }}
+        >
+          {`snapshot v${provenance.version} · ${provenance.source} · ${hhmm(provenance.takenAt)}`}
+        </span>
+      ) : null}
+      {cfgTab === 'running' ? <Code block>{cfg.running}</Code> : null}
+      {cfgTab === 'diff' ? (
+        cfg.diff === '' ? (
+          // One snapshot is a fact, not a comparison — an empty diff pane
+          // would read as "no drift" when nothing has been compared yet.
+          <LiveGapNote>Only one snapshot on file — drift appears once a second collection lands.</LiveGapNote>
+        ) : (
+          <DiffCode text={cfg.diff} />
+        )
+      ) : null}
+      {cfgTab === 'history' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          {historyRows.map((h, i) => (
+            <div
+              key={`${h.when}-${i}`}
+              style={{
+                display: 'flex',
+                gap: 14,
+                padding: '11px 0',
+                borderBottom: '1px solid var(--nd-border-subtle)',
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 10.5,
+                  color: 'var(--nd-text-muted)',
+                  width: 88,
+                  flex: '0 0 88px',
+                }}
+              >
+                {provenance ? hhmm(h.when) : h.when}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 'var(--nd-text-12)',
+                    color: 'var(--nd-text-primary)',
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {h.what}
+                </div>
+                <div
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-10)',
+                    color: 'var(--nd-text-muted)',
+                  }}
+                >
+                  {h.who}
+                </div>
+              </div>
+              <Badge tone={h.tone}>{h.tag}</Badge>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }

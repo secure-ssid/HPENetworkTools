@@ -18,7 +18,18 @@
 
 import type {
   AlertRow,
+  ApTrendMetric,
+  ApTrendsLive,
   AuthEventRow,
+  ClearPassAuthSourceRow,
+  ClearPassDeviceGroupRow,
+  ClearPassEnforcementPolicyRow,
+  ClearPassEnforcementProfileRow,
+  ClearPassLocalUserRow,
+  ClearPassNetworkDeviceRow,
+  ClearPassRoleRow,
+  ClearPassServiceDetailLive,
+  ClearPassServiceRow,
   ClientDetailLive,
   ClientRow,
   ConfigInventory,
@@ -27,14 +38,23 @@ import type {
   DeviceRow,
   EndpointRow,
   GreenLakeInventory,
+  MistLicenseUsageRow,
   MistSleRow,
+  MistApStatsRow,
+  MistRogueApRow,
+  MistSiteMap,
+  MistSleMetricDetail,
   PlaneDatasetKey,
   PlaneScope,
+  SiteApplicationsLive,
   SiteRow,
   SiteTopologyLive,
   SseInventory,
   SubscriptionAssignment,
   SubscriptionRow,
+  SwitchHardwareTrendsLive,
+  SwitchInterfaceTrendsLive,
+  TrendWindow,
   UxiSensorRow,
 } from '@hpe/shared';
 
@@ -79,11 +99,13 @@ export interface PlaneCapabilities {
   configRead?: boolean;
   /** This plane accepts REVIEWED direct writes outside the ticketed broker
    *  queue — New Central's WLAN-profile upsert + scope-map assignment
-   *  (server/src/services/ssidDirectWrite.ts) and HPE Aruba Networking SSE's
-   *  object CRUD + automatic commit (server/src/planes/sse.ts). false/absent
-   *  on Classic Central and every other plane: Classic is not writable via
-   *  this path, and an SSE token whose granted scope excludes write reports
-   *  false here too — see SseAdapter.capabilities(). */
+   *  (server/src/services/ssidDirectWrite.ts), Mist's site-scoped WLAN
+   *  create/update, ClearPass endpoint/local-user writes
+   *  (server/src/services/clearpassDirectWrite.ts), and HPE Aruba Networking
+   *  SSE's object CRUD + automatic commit (server/src/planes/sse.ts).
+   *  false/absent on Classic Central and every other plane: Classic is not
+   *  writable via this path, and an SSE token whose granted scope excludes
+   *  write reports false here too — see SseAdapter.capabilities(). */
   directWrite?: boolean;
   /** New Central's network-troubleshooting API can run reviewed operational
    *  diagnostics. This is an action/write, but not a configuration mutation.
@@ -181,15 +203,56 @@ export interface PlanePull {
    *  their own dedicated fields: those feed the Licences screen, this does
    *  not. */
   greenlake?: GreenLakeInventory;
-  /** Mist per-site Service Level Expectations (org insights) — a structured
-   *  dataset, not a row array, same pattern as `config`/`sse`/`greenlake`. */
+  /** Mist per-site Service Level Expectations (site SLE summaries) — a
+   *  structured dataset, not a row array, same pattern as `config`/`sse`. */
   mistSle?: MistSleRow[];
+  /** Mist per-site licence consumption (/orgs/{org}/licenses/usages) —
+   *  Mist-only (no other plane populates it), same pattern as `mistSle`. */
+  mistLicenseUsages?: MistLicenseUsageRow[];
+  /** Mist per-AP rich live stats (site stats/devices?type=ap): radios, ports,
+   *  env, LLDP uplink, cpu/mem and the per-device client count. Mist-only,
+   *  same pattern as `mistSle`. */
+  mistApStats?: MistApStatsRow[];
+  /** Mist floor plans per site (maps + AP config positions) — Mist-only,
+   *  same pattern as `mistSle`. Present-and-empty is a REAL answer: the
+   *  sites were read and publish no maps. */
+  mistMaps?: MistSiteMap[];
+  /** Mist per-site rogue/neighbor BSSID report (insights/rogues) — Mist-only,
+   *  same pattern as `mistSle`. The on-your-wire flag is the alarm. */
+  mistRogues?: MistRogueApRow[];
   /** UXI's richer per-sensor view (identity + live status + issues) for the
    *  dedicated UXI screen — built from the SAME sensors list + status reads
    *  pull() already fetches for `devices`/`alerts`, no extra API calls. A
    *  row array, but not merged through PLANE_ROW_DATASET_KEYS: it is UXI-only
    *  (no other plane populates it), same pattern as `mistSle`. */
   uxiSensors?: UxiSensorRow[];
+  /** ClearPass NAD inventory (/api/network-device) — ClearPass-only (no
+   *  other plane populates it), same pattern as `mistSle`. A best-effort
+   *  read on the endpoint repository's 5-minute cadence: a failure omits
+   *  the key and names it in `partial`, never sinks the pull. */
+  networkDevices?: ClearPassNetworkDeviceRow[];
+  /** ClearPass authentication sources (/api/auth-source) — ClearPass-only,
+   *  same best-effort pattern as `networkDevices`. */
+  authSources?: ClearPassAuthSourceRow[];
+  /** ClearPass roles (/api/role) — ClearPass-only, same pattern. */
+  roles?: ClearPassRoleRow[];
+  /** ClearPass enforcement policies (/api/enforcement-policy) —
+   *  ClearPass-only, same pattern. */
+  enforcementPolicies?: ClearPassEnforcementPolicyRow[];
+  /** ClearPass enforcement profiles (/api/enforcement-profile) —
+   *  ClearPass-only, same pattern. */
+  enforcementProfiles?: ClearPassEnforcementProfileRow[];
+  /** ClearPass local users (/api/local-user) — ClearPass-only, same pattern,
+   *  with STRICTLY whitelisted fields (never a password hash). */
+  localUsers?: ClearPassLocalUserRow[];
+  /** ClearPass services (/api/config/service on 6.11+, /api/service on older
+   *  6.x — the first candidate that answers) — ClearPass-only, same pattern,
+   *  plus the 404-honest rule: a box that 404s BOTH paths does not expose
+   *  the resource, so only then is the key omitted WITHOUT a partial flag. */
+  services?: ClearPassServiceRow[];
+  /** ClearPass device groups (/api/device-group) — ClearPass-only, same
+   *  404-honest rule as `services`. */
+  deviceGroups?: ClearPassDeviceGroupRow[];
   /** Datasets this pull could NOT read (404, truncated page, no permission).
    *  The registry holds health at 'warning' for a pull that names any, so a
    *  half-read plane is never stamped as a complete sync; the poller must not
@@ -252,6 +315,61 @@ export interface PlaneAdapter {
    * portal's SiteId.
    */
   siteTopology?(siteId: string): Promise<SiteTopologyLive | null>;
+
+  /**
+   * Mist-only: the drill-down behind ONE SLE metric at ONE site —
+   * classifiers, impacted clients/APs, summary trend. Same on-demand rules
+   * as the detail reads above: the headline MistSleRow is polled, this is
+   * fetched only when an operator opens the metric, behind a TTL cache.
+   * `siteId` is the portal's site key (the adapter owns the native-uuid
+   * join, same as siteTopology). null = this plane cannot answer.
+   */
+  mistSleMetricDetail?(siteId: string, metric: string): Promise<MistSleMetricDetail | null>;
+
+  /**
+   * Central-only: the DPI application table for ONE site over ONE window
+   * (GET /network-monitoring/v1/applications — requires site_id + start/end
+   * ISO, the window capped at 7 days, paged). Same on-demand rules as the
+   * detail reads above: fetched when an operator opens the site's
+   * applications view, behind a TTL cache, never from the poller. `siteId`
+   * is the PLANE's site id, not the portal's SiteId. null = this plane
+   * cannot answer.
+   */
+  siteApplications?(siteId: string, window: TrendWindow): Promise<SiteApplicationsLive | null>;
+
+  /**
+   * Central-only: a switch's hardware gauges (cpu/memory/temperature/PoE/
+   * power) for ONE serial over ONE window — ONE call to
+   * /network-monitoring/v1/switches/{serial}/hardware-trends. On-demand, TTL
+   * cached, never polled. null = this plane cannot answer.
+   */
+  switchHardwareTrends?(serial: string, window: TrendWindow): Promise<SwitchHardwareTrendsLive | null>;
+
+  /**
+   * Central-only: ONE AP metric trend (cpu | memory | throughput) for ONE
+   * serial — /network-monitoring/v1/aps/{serial}/{metric}-trends. On-demand,
+   * TTL cached, never polled. null = this plane cannot answer (including a
+   * metric outside the vocabulary).
+   */
+  apTrends?(serial: string, metric: ApTrendMetric, window: TrendWindow): Promise<ApTrendsLive | null>;
+
+  /**
+   * Central-only: a switch's interface byte/error counter trends for ONE
+   * serial — /network-monitoring/v1/switches/{serial}/interface-trends.
+   * On-demand, TTL cached, never polled. null = this plane cannot answer.
+   */
+  switchInterfaceTrends?(serial: string, window: TrendWindow): Promise<SwitchInterfaceTrendsLive | null>;
+
+  /**
+   * ClearPass-only: ONE service's full definition for the Services-tab
+   * drawer — GET {service path}/{id} (the 6.11 config namespace first, the
+   * legacy path as fallback, same candidates as the collection walk). Same
+   * on-demand rules as the detail reads above: fetched when an operator
+   * opens the service, behind a TTL cache, never from the poller. A 404 on
+   * every candidate is an 'empty' section (no such service), never a thrown
+   * error. null = this plane cannot answer.
+   */
+  serviceDetail?(id: string): Promise<ClearPassServiceDetailLive | null>;
 
   /**
    * Release anything held on the far side before this adapter is dropped —

@@ -17,7 +17,10 @@
  * Backend unreachable → fixture-only plus a small mono "backend offline —
  * fixture state" note. The header carries the envelope's own provenance stamp
  * (DEMO FIXTURE vs LIVE · SYNCED hh:mm) and the Planes meta counts what is
- * actually on screen, never a literal. A drawer site row that names a real
+ * actually on screen, never a literal. The stamp is kept honest by polling on
+ * the settings cadence (the Overview pattern, one fetch at a time) — suspended
+ * while the connect drawer is open, because a refresh must never disturb
+ * in-flight credential entry or a connection test. A drawer site row that names a real
  * site drills into it (closing the drawer first).
  * The connect drawer renders the endpoint variant plus the per-plane
  * credential fields the chosen adapter needs (shared CONNECT_FIELDS) and
@@ -77,10 +80,13 @@ import {
 import type { SystemRow, SystemTypeKey } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
+import { useSettings } from '../app/SettingsContext';
 import { SseInventoryPanel } from './SseInventoryPanel';
 import { CentralWebhooksPanel } from './CentralWebhooksPanel';
+import { MistSection } from './systems/MistSection';
 import { AssistantSection } from './systems/AssistantSection';
 import { IdentityProviderSection } from './systems/IdentityProviderSection';
+import { NotificationsSection } from './systems/NotificationsSection';
 import {
   NothingReported,
   PlaneRow,
@@ -91,20 +97,18 @@ import {
 } from './systems/PlaneRow';
 import { PortalSection } from './systems/PortalSection';
 import {
-  BROKERED_WRITE_SCOPE_LABEL,
-  CENTRAL_REGIONS,
   CredentialSnapshot,
   DEFAULT_SCOPES,
   DetailTab,
   HEALTH_TONE,
   PLANE_ID_BY_NAME,
   PlaneView,
-  SSE_WRITE_SCOPE_LABEL,
   ScopeFlags,
   TAB_OPTIONS,
   mergedFacts,
   retryNote,
   sameCredentialSnapshot,
+  writeScopeLabelFor,
   staleTitle,
   storedEndpoint,
   storedScopes,
@@ -155,6 +159,7 @@ export default function Systems() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
+  const { pollIntervalSec } = useSettings();
 
   const [data, setData] = useState<SystemsData | null>(null);
   const [liveState, setLiveState] = useState<SystemsState | null>(null);
@@ -186,41 +191,135 @@ export default function Systems() {
   // so a green-then-edited drawer never looks saved when it cannot be.
   const [retestNeeded, setRetestNeeded] = useState(false);
 
+  const selectedScopes = (): string[] => {
+    const out: string[] = [];
+    if (scopes.inventory) out.push('read:inventory');
+    if (scopes.clientsAuth) out.push('read:clients-auth');
+    if (scopes.configLicences) out.push('read:config-licences');
+    // A write grant is only stored when the selected plane actually has a
+    // write path — a tick left over from another type must not ride along.
+    if (scopes.write && writeScopeLabelFor(newType) !== null) out.push('write:brokered');
+    return out;
+  };
+
+  /* Saved under the exact keys each adapter's isComplete() reads (shared
+   * CONNECT_ENDPOINT_KEY / CONNECT_FIELDS) — a record written under any other
+   * key links the plane to a stub that never syncs. */
+  const credPayload = (): SystemCredentialPayload => {
+    const out: SystemCredentialPayload = {};
+    if (displayName.trim()) out.displayName = displayName.trim();
+    if (endpoint.trim()) out[CONNECT_ENDPOINT_KEY[newType]] = endpoint.trim();
+    // Token-only planes (CONNECT_HIDE_CLIENT_CREDENTIALS, e.g. SSE) never
+    // render this pair, so it must never be serialized for them either — a
+    // stale clientId/clientSecret left over from an earlier type selection
+    // is invisible in the drawer but would otherwise still ride along in the
+    // saved/tested payload.
+    if (!CONNECT_HIDE_CLIENT_CREDENTIALS.includes(newType)) {
+      if (clientId.trim()) out.clientId = clientId.trim();
+      if (clientSecret.trim()) out.clientSecret = clientSecret.trim();
+    }
+    CONNECT_FIELDS[newType].forEach((f) => {
+      const v = (extraCreds[f.key] ?? '').trim();
+      if (v) out[f.key] = v;
+    });
+    // Unlike optional credential fields, the scope controls are an explicit
+    // complete selection. Always serialize their exact array, including [],
+    // so test/save binding can distinguish full revocation from omission.
+    out.scopes = selectedScopes();
+    return out;
+  };
+
+  const credentialSnapshot = (): CredentialSnapshot => ({
+    plane: newType,
+    credentials: credPayload(),
+  });
+  /* The latest-form snapshot an in-flight test connection compares its request
+     against. Mirrored after every commit rather than assigned during render
+     (the compiler's refs rule): the comparison runs in the test's response
+     handler, always post-commit, so it reads the same values either way. The
+     mirror lives up here with the hooks — below the loading early-returns a
+     hook would be conditional, which React forbids outright. */
+  useEffect(() => {
+    currentCredentialSnapshotRef.current = credentialSnapshot();
+  });
+
   const refresh = async () => {
     const [d, s] = await Promise.all([getSystems(), getSystemsState()]);
     setData(d);
     setLiveState(s);
   };
 
+  /* The header stamps LIVE · SYNCED hh:mm, so a NOC tab must not sit on a
+     mount-time snapshot under it: poll on the settings cadence, the same
+     pattern Overview.tsx runs. One fetch at a time — a slow response never
+     stacks up behind the interval. One guard the other screens do not need:
+     a refresh must never disturb credential entry or a connection test, so
+     polling suspends while the connect drawer is open (mirrored into a ref
+     after every commit, the same refs rule currentCredentialSnapshotRef
+     follows — the interval callback below would otherwise close over a stale
+     addOpen). A save or retire still re-reads explicitly via refresh(). */
+  const addOpenRef = useRef(addOpen);
+  useEffect(() => {
+    addOpenRef.current = addOpen;
+  }, [addOpen]);
   useEffect(() => {
     let live = true;
-    void (async () => {
-      const [d, s] = await Promise.all([getSystems(), getSystemsState()]);
-      if (live) {
-        setData(d);
-        setLiveState(s);
-      }
-    })();
+    let inFlight = false;
+    const pull = () => {
+      if (inFlight || addOpenRef.current) return;
+      inFlight = true;
+      void Promise.all([getSystems(), getSystemsState()])
+        .then(([d, s]) => {
+          if (live) {
+            setData(d);
+            setLiveState(s);
+          }
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    pull();
+    const every = Math.max(pollIntervalSec, 10) * 1000;
+    const id = setInterval(pull, every);
     return () => {
       live = false;
+      clearInterval(id);
     };
-  }, []);
+  }, [pollIntervalSec]);
 
+  /* Deep link: /systems?plane=<registryId> (a plane drawer's "open in
+     Systems"). The drawer opens during render — an effect would commit one
+     frame of the plane-less screen first — and the param strip stays an
+     effect: navigation is router state, not this screen's. */
   const requestedPlane = searchParams.get('plane');
-  useEffect(() => {
-    if (!data || !requestedPlane) return;
+  const [handledPlaneLink, setHandledPlaneLink] = useState<string | null>(null);
+  /* The strip turns ?plane=x into no param, and a later identical deep link
+     must open the drawer again — so "handled" survives only while the param
+     does. */
+  const [prevRequestedPlane, setPrevRequestedPlane] = useState(requestedPlane);
+  if (prevRequestedPlane !== requestedPlane) {
+    setPrevRequestedPlane(requestedPlane);
+    if (requestedPlane === null && handledPlaneLink !== null) setHandledPlaneLink(null);
+  }
+  if (data && requestedPlane && handledPlaneLink !== requestedPlane) {
     const row = data.systems.find(
       (system) =>
         system.planeId === requestedPlane ||
         PLANE_ID_BY_NAME[system.name] === requestedPlane,
     );
-    if (!row) return;
-    setDetailName(row.name);
-    setTab(requestedPlane === 'sse' ? 'config' : 'summary');
+    if (row) {
+      setHandledPlaneLink(requestedPlane);
+      setDetailName(row.name);
+      setTab(requestedPlane === 'sse' ? 'config' : 'summary');
+    }
+  }
+  useEffect(() => {
+    if (!requestedPlane || handledPlaneLink !== requestedPlane) return;
     const next = new URLSearchParams(searchParams);
     next.delete('plane');
     setSearchParams(next, { replace: true });
-  }, [data, requestedPlane, searchParams, setSearchParams]);
+  }, [requestedPlane, handledPlaneLink, searchParams, setSearchParams]);
 
   if (!data) {
     return (
@@ -372,48 +471,6 @@ export default function Systems() {
     setTestedOk(false);
     setTestResult(null);
   };
-
-  const selectedScopes = (): string[] => {
-    const out: string[] = [];
-    if (scopes.inventory) out.push('read:inventory');
-    if (scopes.clientsAuth) out.push('read:clients-auth');
-    if (scopes.configLicences) out.push('read:config-licences');
-    if (scopes.write) out.push('write:brokered');
-    return out;
-  };
-
-  /* Saved under the exact keys each adapter's isComplete() reads (shared
-   * CONNECT_ENDPOINT_KEY / CONNECT_FIELDS) — a record written under any other
-   * key links the plane to a stub that never syncs. */
-  const credPayload = (): SystemCredentialPayload => {
-    const out: SystemCredentialPayload = {};
-    if (displayName.trim()) out.displayName = displayName.trim();
-    if (endpoint.trim()) out[CONNECT_ENDPOINT_KEY[newType]] = endpoint.trim();
-    // Token-only planes (CONNECT_HIDE_CLIENT_CREDENTIALS, e.g. SSE) never
-    // render this pair, so it must never be serialized for them either — a
-    // stale clientId/clientSecret left over from an earlier type selection
-    // is invisible in the drawer but would otherwise still ride along in the
-    // saved/tested payload.
-    if (!CONNECT_HIDE_CLIENT_CREDENTIALS.includes(newType)) {
-      if (clientId.trim()) out.clientId = clientId.trim();
-      if (clientSecret.trim()) out.clientSecret = clientSecret.trim();
-    }
-    CONNECT_FIELDS[newType].forEach((f) => {
-      const v = (extraCreds[f.key] ?? '').trim();
-      if (v) out[f.key] = v;
-    });
-    // Unlike optional credential fields, the scope controls are an explicit
-    // complete selection. Always serialize their exact array, including [],
-    // so test/save binding can distinguish full revocation from omission.
-    out.scopes = selectedScopes();
-    return out;
-  };
-
-  const credentialSnapshot = (): CredentialSnapshot => ({
-    plane: newType,
-    credentials: credPayload(),
-  });
-  currentCredentialSnapshotRef.current = credentialSnapshot();
 
   const testConnection = async () => {
     if (testing) return;
@@ -718,6 +775,11 @@ export default function Systems() {
 
       {/* ---------------- assistant (chat) ---------------- */}
       <AssistantSection />
+
+      <Divider variant="flair" />
+
+      {/* ---------------- notifications (outbound alert webhooks) ---------------- */}
+      <NotificationsSection />
 
       {/* ---------------- plane detail drawer ---------------- */}
       <Drawer
@@ -1069,6 +1131,13 @@ export default function Systems() {
                   // reports — see CentralWebhooksPanel / centralWebhooks.ts.
                   <CentralWebhooksPanel />
                 ) : null}
+                {curView?.planeId === 'mist' ? (
+                  // Same unconditional mount as Central's panel: demo serves
+                  // the authored registration + audit fixtures, and a
+                  // not-linked live plane is an honest state the section
+                  // reports itself — see systems/MistSection.tsx.
+                  <MistSection />
+                ) : null}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <SectionHeader label="What the portal pulls" />
                   {cur.pulls.map((p) => (
@@ -1213,21 +1282,6 @@ export default function Systems() {
               }}
             />
           </FormField>
-
-          {newType === 'central' && (
-            <FormField label="Region" help="Fills the gateway URL; choose Custom to paste your own.">
-              <Select
-                aria-label="Central region"
-                size="md"
-                options={[...CENTRAL_REGIONS, { value: 'custom', label: 'Custom gateway…' }]}
-                value={CENTRAL_REGIONS.some((r) => r.value === endpoint) ? endpoint : 'custom'}
-                onValueChange={(v) => {
-                  if (v !== 'custom') setEndpoint(v);
-                  invalidate();
-                }}
-              />
-            </FormField>
-          )}
 
           <FormField label={endpointVariant.label} help={endpointVariant.help}>
             {endpointVariant.options ? (
@@ -1387,18 +1441,20 @@ export default function Systems() {
                 invalidate();
               }}
             />
-            <Checkbox
-              label={
-                newType === 'sse'
-                  ? SSE_WRITE_SCOPE_LABEL
-                  : BROKERED_WRITE_SCOPE_LABEL
-              }
-              checked={scopes.write}
-              onChange={(e) => {
-                setScopes({ ...scopes, write: e.target.checked });
-                invalidate();
-              }}
-            />
+            {writeScopeLabelFor(newType) !== null ? (
+              <Checkbox
+                label={writeScopeLabelFor(newType) as string}
+                checked={scopes.write}
+                onChange={(e) => {
+                  setScopes({ ...scopes, write: e.target.checked });
+                  invalidate();
+                }}
+              />
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+                No write path for this plane — read scopes only.
+              </span>
+            )}
             {newType === 'sse' ? (
               <span
                 style={{

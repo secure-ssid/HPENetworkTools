@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import Clients from './Clients';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
-import { getClientDetail, getClients, getSettings, getSiteTopology, getTickets } from '../api/client';
-import type { ClientDetailLive, ClientRow, SiteTopologyLive } from '@hpe/shared';
+import { getClientDetailBlock, getClients, getSettings, getSiteApplications, getSiteTopology, getTickets } from '../api/client';
+import type { ClientDetailBlock } from '../api/client';
+import { CLIENTS, SITE_APPLICATIONS_DEMO } from '@hpe/shared';
+import type { ClientDetailLive, ClientPlaneSection, ClientRow, SiteApplicationsLive, SiteTopologyLive } from '@hpe/shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -39,16 +41,30 @@ vi.mock('../api/client', async (importOriginal) => {
     blockClient: vi.fn(),
     disconnectClient: vi.fn(),
     /* The on-demand per-object reads the drawer issues while it is open. */
-    getClientDetail: vi.fn(),
+    getClientDetailBlock: vi.fn(),
     getSiteTopology: vi.fn(),
+    getSiteApplications: vi.fn(),
   };
 });
 
 const mockGetClients = vi.mocked(getClients);
 const mockGetSettings = vi.mocked(getSettings);
 const mockGetTickets = vi.mocked(getTickets);
-const mockGetClientDetail = vi.mocked(getClientDetail);
+const mockGetClientDetailBlock = vi.mocked(getClientDetailBlock);
 const mockGetSiteTopology = vi.mocked(getSiteTopology);
+const mockGetSiteApplications = vi.mocked(getSiteApplications);
+
+/**
+ * Resolve the block mock as though the route attached only this detail
+ * payload (or planes block) — the 360 sections a test does not exercise read
+ * as "the route did not say", never as an empty array.
+ */
+function mockBlock(
+  detail: ClientDetailLive | null,
+  clientPlanes: ClientDetailBlock['clientPlanes'] = null,
+): void {
+  mockGetClientDetailBlock.mockResolvedValue(detail === null && clientPlanes === null ? null : { detail, clientPlanes });
+}
 
 const SPARSE_LIVE_CLIENT: ClientRow = {
   name: '3c:a9:ab:7c:a9:51',
@@ -176,7 +192,7 @@ function metricNoteFor(label: string): string {
 
 function renderDrawer(mac = '3c:a9:ab:7c:a9:51') {
   return render(
-    <MemoryRouter initialEntries={[`/clients?mac=${encodeURIComponent(mac)}`]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[`/clients?mac=${encodeURIComponent(mac)}`]}>
       <ToastProvider>
         <SettingsProvider>
           <Clients />
@@ -189,8 +205,11 @@ function renderDrawer(mac = '3c:a9:ab:7c:a9:51') {
 beforeEach(() => {
   /* Nothing fetched unless a test says so — the drawer must be honest about
      an absent detail read, not silently blank. */
-  mockGetClientDetail.mockResolvedValue(null);
+  mockBlock(null);
   mockGetSiteTopology.mockResolvedValue(null);
+  /* The 360's Central site-DPI line: a test that does not exercise it gets
+     the straight "not reported" answer, never a fabricated table. */
+  mockGetSiteApplications.mockResolvedValue({ kind: 'not-reported' });
   mockGetSettings.mockResolvedValue({
     density: 'compact',
     inventoryView: 'Unified table',
@@ -218,7 +237,7 @@ afterEach(async () => {
 describe('Clients live sparse detail', () => {
   it('shows unavailable metrics honestly instead of a zero failure score or demo derivations', async () => {
     render(
-      <MemoryRouter initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -228,7 +247,9 @@ describe('Clients live sparse detail', () => {
     );
 
     await waitFor(() => expect(screen.getByText('PARTIAL PLANE METRICS')).toBeTruthy());
-    expect(screen.getByText('NOT REPORTED')).toBeTruthy();
+    // The quality score AND the 360 panel (whose read this mock leaves
+    // unanswered) both honestly say NOT REPORTED here.
+    expect(screen.getAllByText('NOT REPORTED').length).toBeGreaterThan(0);
     expect(screen.getByText(/CENTRAL reports health as “good” but did not provide a numeric experience score/)).toBeTruthy();
     expect(screen.queryByText('0 / 100')).toBeNull();
     expect(screen.queryByText(/effectively unusable/)).toBeNull();
@@ -239,7 +260,7 @@ describe('Clients live sparse detail', () => {
 
   it('counts only the sessions the poller returned — no fixture estate total', async () => {
     render(
-      <MemoryRouter initialEntries={['/clients']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -260,7 +281,7 @@ describe('Clients live sparse detail', () => {
       dataSource: 'live',
     });
     render(
-      <MemoryRouter initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -291,7 +312,7 @@ describe('Clients live sparse detail', () => {
       dataSource: 'live',
     });
     const { unmount } = render(
-      <MemoryRouter initialEntries={['/clients']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -318,7 +339,7 @@ describe('Clients live sparse detail', () => {
       dataSource: 'live',
     });
     render(
-      <MemoryRouter initialEntries={['/clients']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -328,7 +349,11 @@ describe('Clients live sparse detail', () => {
     );
 
     await waitFor(() => expect(screen.getByText('3 of 3 sampled')).toBeTruthy());
-    expect(screen.queryAllByRole('columnheader').map((el) => el.textContent)).toContain('Site');
+    // Sortable headers carry the sort mark — strip it for the label check.
+    const headerLabels = screen
+      .queryAllByRole('columnheader')
+      .map((el) => (el.textContent ?? '').replace(/[↕▲▼]/g, ''));
+    expect(headerLabels).toContain('Site');
     expect(screen.queryByText(/Site SecureSSID ·/)).toBeNull();
   });
 
@@ -339,7 +364,7 @@ describe('Clients live sparse detail', () => {
       dataSource: 'demo',
     });
     render(
-      <MemoryRouter initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -359,7 +384,7 @@ describe('Clients live sparse detail', () => {
       dataSource: 'demo',
     });
     render(
-      <MemoryRouter initialEntries={['/clients']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -486,7 +511,7 @@ describe('Clients drawer — plane field support', () => {
 
 describe('Clients drawer — on-demand detail read', () => {
   it('renders signal, throughput and roams from the detail read, labelled as the plane means them', async () => {
-    mockGetClientDetail.mockResolvedValue(FULL_DETAIL);
+    mockBlock(FULL_DETAIL);
     renderDrawer();
 
     await waitFor(() => expect(screen.getByText('−58 dBm')).toBeTruthy());
@@ -507,7 +532,7 @@ describe('Clients drawer — on-demand detail read', () => {
      the whole 24h window — a client that roamed 340 times read `100`, which is
      the page size and looks exactly like a real count of 100. */
   it('writes a roam count the plane never stated as the floor it is', async () => {
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...FULL_DETAIL,
       roams: 100,
       roamsAtLeast: true,
@@ -526,7 +551,7 @@ describe('Clients drawer — on-demand detail read', () => {
     // The two claims are independent: a stated total fixes the count and still
     // proves the list is missing rows. Qualifying the count here would be its
     // own dishonesty.
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...FULL_DETAIL,
       roams: 340,
       roamsAtLeast: false,
@@ -541,7 +566,7 @@ describe('Clients drawer — on-demand detail read', () => {
   });
 
   it('says nothing extra when nothing was cut off', async () => {
-    mockGetClientDetail.mockResolvedValue(FULL_DETAIL);
+    mockBlock(FULL_DETAIL);
     renderDrawer();
 
     await waitFor(() => expect(screen.getByText('3')).toBeTruthy());
@@ -551,7 +576,7 @@ describe('Clients drawer — on-demand detail read', () => {
 
   it('labels the window the plane actually sampled, not a rounded fiction', async () => {
     // The live tenant returns 37 five-minute samples = 11,100s of usage.
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...FULL_DETAIL,
       tput: 26.757_477_477_477_476,
       tputWindowSec: 11_100,
@@ -567,7 +592,7 @@ describe('Clients drawer — on-demand detail read', () => {
      for five minutes and did nothing for the next three hours averages out to
      almost nothing. Central sends the buckets; only the average was drawn. */
   it('says how busy the busiest sample was, not only the average', async () => {
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...FULL_DETAIL,
       tputWindowSec: 900, // three 5-minute buckets
       usageSeries: [
@@ -590,7 +615,7 @@ describe('Clients drawer — on-demand detail read', () => {
   /* A bucket the plane reported with neither figure is a reading that is not
      there, and counting it as a zero would drag the busiest sample down. */
   it('skips a bucket the plane put no numbers in rather than reading it as idle', async () => {
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...FULL_DETAIL,
       tputWindowSec: 600,
       usageSeries: [
@@ -605,7 +630,7 @@ describe('Clients drawer — on-demand detail read', () => {
   });
 
   it('adds nothing to the average when the plane sent no buckets at all', async () => {
-    mockGetClientDetail.mockResolvedValue(FULL_DETAIL);
+    mockBlock(FULL_DETAIL);
     renderDrawer();
 
     await waitFor(() => expect(screen.getByText('avg over 3h')).toBeTruthy());
@@ -613,7 +638,7 @@ describe('Clients drawer — on-demand detail read', () => {
   });
 
   it('says an empty trail is empty, not that no source reported events', async () => {
-    mockGetClientDetail.mockResolvedValue(EMPTY_TRAIL_DETAIL);
+    mockBlock(EMPTY_TRAIL_DETAIL);
     renderDrawer();
 
     await waitFor(() => expect(screen.getByText('NO EVENTS IN 24H')).toBeTruthy());
@@ -630,7 +655,7 @@ describe('Clients drawer — on-demand detail read', () => {
   });
 
   it('keeps the honest empty state when the read fails', async () => {
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       mac: '3c:a9:ab:7c:a9:51',
       source: {
         plane: 'central',
@@ -692,12 +717,12 @@ describe('Clients drawer — on-demand detail read', () => {
     renderDrawer();
 
     await waitFor(() => expect(screen.getByText('Where it is')).toBeTruthy());
-    expect(mockGetClientDetail).not.toHaveBeenCalled();
+    expect(mockGetClientDetailBlock).not.toHaveBeenCalled();
     expect(mockGetSiteTopology).not.toHaveBeenCalled();
   });
 
   it('labels a roam-event signal as the plane’s own reading, not as derived', async () => {
-    mockGetClientDetail.mockResolvedValue(FULL_DETAIL);
+    mockBlock(FULL_DETAIL);
     renderDrawer();
 
     await waitFor(() => expect(screen.getByText('−58 dBm')).toBeTruthy());
@@ -705,15 +730,15 @@ describe('Clients drawer — on-demand detail read', () => {
   });
 
   it('reads each object once per drawer visit, not once per render', async () => {
-    mockGetClientDetail.mockResolvedValue(FULL_DETAIL);
+    mockBlock(FULL_DETAIL);
     mockGetSiteTopology.mockResolvedValue(SITE_TOPOLOGY);
     renderDrawer();
 
     await waitFor(() => expect(screen.getByText('12.4 Mbps')).toBeTruthy());
     await waitFor(() => expect(drawer().getByText('CX6300-CORE')).toBeTruthy());
     // One read per object per drawer visit — never on the 60s poll timer.
-    expect(mockGetClientDetail).toHaveBeenCalledTimes(1);
-    expect(mockGetClientDetail).toHaveBeenCalledWith('3c:a9:ab:7c:a9:51');
+    expect(mockGetClientDetailBlock).toHaveBeenCalledTimes(1);
+    expect(mockGetClientDetailBlock).toHaveBeenCalledWith('3c:a9:ab:7c:a9:51');
     expect(mockGetSiteTopology).toHaveBeenCalledTimes(1);
     expect(mockGetSiteTopology).toHaveBeenCalledWith('multiple');
   });
@@ -778,7 +803,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
   });
 
   it('renders the derived signal and says it is derived, not a plane reading', async () => {
-    mockGetClientDetail.mockResolvedValue(JOINED_DETAIL);
+    mockBlock(JOINED_DETAIL);
     renderDrawer(KINDLE);
 
     await waitFor(() => expect(drawer().getByText('−49 dBm')).toBeTruthy());
@@ -795,7 +820,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
    * that question.
    */
   it('renders the uplink speed and the plane’s verdict on the AP link', async () => {
-    mockGetClientDetail.mockResolvedValue(JOINED_DETAIL);
+    mockBlock(JOINED_DETAIL);
     renderDrawer(KINDLE);
 
     await waitFor(() => expect(drawer().getByText('CX6300-CORE · 1/1/8')).toBeTruthy());
@@ -805,7 +830,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
   // A verdict without its reason sends the operator hunting for a fault the
   // plane had already named.
   it('names the plane’s own reason for a degraded uplink', async () => {
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...JOINED_DETAIL,
       wiring: {
         ...JOINED_DETAIL.wiring!,
@@ -824,7 +849,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
   // Silence would read as "the link is fine". The plane said nothing, and the
   // row says that instead of implying a verdict nobody gave.
   it('says the plane reported no uplink figures rather than leaving the row blank', async () => {
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...JOINED_DETAIL,
       wiring: { ...JOINED_DETAIL.wiring!, speedBps: null, linkHealth: null },
     });
@@ -836,7 +861,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
   });
 
   it('renders retries as the serving radio’s figure, never as the client’s', async () => {
-    mockGetClientDetail.mockResolvedValue(JOINED_DETAIL);
+    mockBlock(JOINED_DETAIL);
     renderDrawer(KINDLE);
 
     await waitFor(() => expect(drawer().getByText('0.51%')).toBeTruthy());
@@ -846,7 +871,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
   });
 
   it('renders the AP’s uplink switch and port as the wiring', async () => {
-    mockGetClientDetail.mockResolvedValue(JOINED_DETAIL);
+    mockBlock(JOINED_DETAIL);
     renderDrawer(KINDLE);
 
     await waitFor(() => expect(drawer().getByText('CX6300-CORE · 1/1/8')).toBeTruthy());
@@ -855,7 +880,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
   /* One member of a four-member bundle is a quarter of the link. Shutting it
      drops nothing, which reads as the diagnosis being wrong. */
   it('names every member of a bundled uplink and the LAG it belongs to', async () => {
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...JOINED_DETAIL,
       wiring: { ...JOINED_DETAIL.wiring!, ports: ['1/1/8', '1/1/9'], lag: 'lag24' },
     });
@@ -867,7 +892,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
   });
 
   it('says an AP has a second uplink rather than describing the first as the cable', async () => {
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...JOINED_DETAIL,
       wiring: { ...JOINED_DETAIL.wiring!, otherUplinks: 1 },
     });
@@ -882,7 +907,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
 
   it('keeps the honest blank rows when the joins found nothing', async () => {
     // Same client, but no radio matched and no topology link for the AP.
-    mockGetClientDetail.mockResolvedValue({
+    mockBlock({
       ...JOINED_DETAIL,
       rssi: null,
       servingRadio: undefined,
@@ -913,7 +938,7 @@ describe('Clients drawer — the serving-radio and topology joins', () => {
 describe('Clients missing sources', () => {
   const renderClients = () =>
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -967,5 +992,483 @@ describe('Clients missing sources', () => {
 
     await waitFor(() => expect(screen.getByText('No sessions from any linked plane')).toBeTruthy());
     expect(screen.queryByText(/contributed no sessions/)).toBeNull();
+  });
+});
+
+
+/**
+ * Client 360 — the cross-plane panel. Live sections ride the same ?mac=
+ * envelope as the detail read; in demo mode the drawer derives them from the
+ * fixtures through the SAME shared correlation the server runs, so both modes
+ * are exercised here against the one implementation.
+ */
+describe('Clients drawer — Client 360', () => {
+  const CLEARPASS_OK: ClientPlaneSection = {
+    plane: 'clearpass',
+    label: 'CLEARPASS',
+    state: 'ok',
+    endpoint: {
+      id: 'ep-live-1',
+      mac: '3c:a9:ab:7c:a9:51',
+      description: 'Front door camera',
+      ip: '192.168.1.89',
+      hostname: 'cam-front-door',
+      status: 'Known',
+      category: 'IoT',
+      family: 'Embedded',
+      os: null,
+      profile: 'Cameras',
+      updatedAt: '2 minutes ago',
+    },
+    authEvents: [
+      {
+        time: '09:41:22',
+        who: 'cam-front-door',
+        mac: '3c:a9:ab:7c:a9:51',
+        service: 'MRDN Wireless 802.1X',
+        method: 'EAP-TLS',
+        result: 'accept',
+        tone: 'success',
+        reason: 'Certificate valid',
+        role: 'role employee',
+        nas: 'LR655',
+        plane: 'CLEARPASS',
+      },
+    ],
+  };
+
+  const LIVE_SECTIONS: ClientPlaneSection[] = [
+    { plane: 'central', label: 'CENTRAL', state: 'ok', session: SPARSE_LIVE_CLIENT },
+    CLEARPASS_OK,
+    { plane: 'mist', label: 'MIST', state: 'empty', reason: 'no session reported for this MAC' },
+    { plane: 'aos8', label: 'AOS-8', state: 'not-fetched', reason: 'plane not linked' },
+    {
+      plane: 'uxi',
+      label: 'UXI',
+      state: 'not-fetched',
+      reason: 'UXI tests experience synthetically from its own sensors — it has no per-client session view',
+    },
+  ];
+
+  it('renders each plane’s own answer, present sections and honest reasons alike', async () => {
+    mockGetClientDetailBlock.mockResolvedValue({ detail: null, clientPlanes: LIVE_SECTIONS });
+    renderDrawer();
+
+    await waitFor(() => expect(drawer().getByText('Client 360')).toBeTruthy());
+    const d = drawer();
+    /* The per-plane read lands after the drawer shell does — while it is in
+       flight the header says so (meta "CONTACTING PLANES…"), never a false
+       NOT REPORTED. Wait for the answer itself; the remaining assertions
+       read the same settled render. */
+    expect(await d.findByText('2 OF 5 PLANES REPORT THIS MAC')).toBeTruthy();
+    // The reporting plane's session, in its own words.
+    expect(d.getByText('good · on LR655 · aruba-home · session 99h 59m')).toBeTruthy();
+    // The ClearPass pair: endpoint profile, then the recent decisions list.
+    expect(d.getByText(/endpoint known · cam-front-door · Embedded · profile Cameras/)).toBeTruthy();
+    expect(d.getByText('recent auth decisions')).toBeTruthy();
+    expect(d.getByText('09:41:22')).toBeTruthy();
+    expect(d.getByText('accept')).toBeTruthy();
+    expect(d.getByText(/EAP-TLS · Certificate valid/)).toBeTruthy();
+    // Absent planes say why — each in its own sentence, muted rather than missing.
+    expect(d.getAllByText('no session reported for this MAC').length).toBeGreaterThan(0);
+    expect(d.getByText('plane not linked')).toBeTruthy();
+    expect(d.getByText(/tests experience synthetically/)).toBeTruthy();
+  });
+
+  it('says the cross-plane read is in flight instead of flashing NOT REPORTED, then settles honestly', async () => {
+    let resolveBlock: ((block: ClientDetailBlock | null) => void) | null = null;
+    mockGetClientDetailBlock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveBlock = resolve;
+        }),
+    );
+    renderDrawer();
+
+    await waitFor(() => expect(drawer().getByText('Client 360')).toBeTruthy());
+    const d = drawer();
+    // While the read is out the header says the planes are being asked — a
+    // verdict (NOT REPORTED, or a plane count) would be a claim nobody made.
+    expect(d.getByText('CONTACTING PLANES…')).toBeTruthy();
+    expect(d.queryByText(/No cross-plane read came back/)).toBeNull();
+    expect(d.queryByText(/PLANES REPORT THIS MAC/)).toBeNull();
+
+    // A read that comes back with nothing settles into the honest NOT
+    // REPORTED — and stays there; the loading label is gone.
+    await act(async () => {
+      resolveBlock?.(null);
+    });
+    await waitFor(() => expect(d.getByText(/No cross-plane read came back/)).toBeTruthy());
+    expect(d.queryByText('CONTACTING PLANES…')).toBeNull();
+  });
+
+  it('says the cross-plane read is missing when the route attached none — the rest of the drawer stands', async () => {
+    // An older server (or a failed block read) attaches no clientPlanes: that
+    // is "not reported", never an empty estate.
+    mockGetClientDetailBlock.mockResolvedValue({ detail: null, clientPlanes: null });
+    renderDrawer();
+
+    await waitFor(() => expect(drawer().getByText('Client 360')).toBeTruthy());
+    const d = drawer();
+    expect(d.getAllByText('NOT REPORTED').length).toBeGreaterThan(0);
+    // The block read lands a tick after the shell (the sister test above
+    // waits for exactly this message) — assert the settled state, not a
+    // lucky instant.
+    await waitFor(() => expect(d.getByText(/No cross-plane read came back for this client/)).toBeTruthy());
+    // The panel's absence does not take the rest of the drawer with it.
+    expect(d.getByText('Where it is')).toBeTruthy();
+    expect(d.getAllByText('SecureSSID').length).toBeGreaterThan(0);
+  });
+
+  it('demonstrates fully in demo mode from the fixtures themselves — no detail read issued', async () => {
+    mockGetClients.mockResolvedValue({ stats: [], clients: CLIENTS, dataSource: 'demo' });
+    renderDrawer('3c:22:fb:41:0a:19'); // the fixtures' m.okonjo
+
+    await waitFor(() => expect(drawer().getByText('Client 360')).toBeTruthy());
+    const d = drawer();
+    // m.okonjo is visible from three feeds: her Mist session, Mist's SLE for
+    // Campus-02, and ClearPass (endpoint record + two recent decisions).
+    expect(d.getByText('2 OF 12 PLANES REPORT THIS MAC · DEMO FEED')).toBeTruthy();
+    expect(d.getByText(/endpoint known · m-okonjo-ipad · iOS 17\.5 · profile Clinical staff/)).toBeTruthy();
+    expect(d.getByText('site SLE 96% · Campus-02 Research')).toBeTruthy();
+    expect(d.getByText(/coverage 97% · capacity 95% · roaming 96% · AP health 98% · WAN 94%/)).toBeTruthy();
+    expect(d.getByText('09:41:22')).toBeTruthy();
+    expect(d.getByText('08:12:03')).toBeTruthy();
+    // The absent planes carry their reasons in demo too.
+    expect(d.getAllByText('no session reported for this MAC').length).toBeGreaterThan(0);
+    expect(d.getByText(/tests experience synthetically/)).toBeTruthy();
+    // Demo fixtures are authored and complete — the 360 is derived from them,
+    // never fetched.
+    expect(mockGetClientDetailBlock).not.toHaveBeenCalled();
+    expect(mockGetSiteTopology).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The 360's Central applications line: for a Central client the drawer lazily
+ * reads the SITE's DPI table (the same on-demand route the site page uses)
+ * and shows its top applications inside the Central section — labelled
+ * site-wide, because Central's table is not filtered to one MAC and
+ * attributing it would be fabrication. Every read outcome words its own
+ * sentence; a non-Central client gets no line and spends no call.
+ */
+describe('Clients drawer — Client 360 site applications line', () => {
+  const CENTRAL_ONLY: ClientPlaneSection[] = [
+    { plane: 'central', label: 'CENTRAL', state: 'ok', session: SPARSE_LIVE_CLIENT },
+  ];
+
+  async function render360() {
+    mockGetClientDetailBlock.mockResolvedValue({ detail: null, clientPlanes: CENTRAL_ONLY });
+    renderDrawer();
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
+    return drawer();
+  }
+
+  it('shows the site table’s top applications for a Central client — site-wide, and says so', async () => {
+    mockGetSiteApplications.mockResolvedValue({ kind: 'ok', applications: SITE_APPLICATIONS_DEMO['campus-01']! });
+    const d = await render360();
+    expect(
+      await d.findByText(/top applications at SecureSSID: Microsoft 365 · Epic Hyperspace · YouTube · \+9 more/),
+    ).toBeTruthy();
+    expect(d.getByText('site-wide DPI — Central does not filter this table to one client')).toBeTruthy();
+    // Lazy on drawer open, once, keyed by the client's site.
+    expect(mockGetSiteApplications).toHaveBeenCalledTimes(1);
+    expect(mockGetSiteApplications).toHaveBeenCalledWith('multiple');
+  });
+
+  it('an empty site table is an honest empty, not a failure', async () => {
+    const empty: SiteApplicationsLive = {
+      siteId: 'multiple',
+      window: { start: '2026-07-27T12:00:00.000Z', end: '2026-07-28T12:00:00.000Z' },
+      apps: [],
+      source: { plane: 'central', at: '2026-07-28T12:00:00.000Z', sections: { apps: 'empty' } },
+    };
+    mockGetSiteApplications.mockResolvedValue({ kind: 'ok', applications: empty });
+    const d = await render360();
+    expect(
+      await d.findByText('Central reported no application traffic at SecureSSID in the window'),
+    ).toBeTruthy();
+    expect(d.queryByText(/top applications/)).toBeNull();
+  });
+
+  it('a failed read says so — never an empty table', async () => {
+    mockGetSiteApplications.mockResolvedValue({ kind: 'failed', message: 'HTTP 500' });
+    const d = await render360();
+    expect(await d.findByText('the application read failed — HTTP 500')).toBeTruthy();
+  });
+
+  it('a 404 words the line as "not reported"', async () => {
+    const d = await render360(); // the beforeEach default: kind 'not-reported'
+    expect(await d.findByText('no application table reported for SecureSSID')).toBeTruthy();
+  });
+
+  it('a non-Central client has no line and spends no call', async () => {
+    const mistClient: ClientRow = { ...SPARSE_LIVE_CLIENT, plane: 'MIST', planeTone: 'info' };
+    mockGetClients.mockResolvedValue({ stats: [], clients: [mistClient], dataSource: 'live' });
+    mockGetClientDetailBlock.mockResolvedValue({
+      detail: null,
+      clientPlanes: [{ plane: 'mist', label: 'MIST', state: 'ok', session: mistClient }],
+    });
+    renderDrawer();
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
+    const d = drawer();
+    await waitFor(() => expect(d.getByText('1 OF 1 PLANES REPORT THIS MAC')).toBeTruthy());
+    expect(d.queryByText(/top applications/)).toBeNull();
+    expect(mockGetSiteApplications).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The sessions table is a nightdesk DataTable: the column manager persists
+// through SettingsContext (localStorage key 'nt-table-columns' under the
+// 'clients' table id) and the rows are a keyboard grid — j/k move, Enter
+// opens the client drawer (the row's one primary action), x selects, Esc
+// clears, '?' lists the commands. These tests pin the wiring, not the
+// mechanics — the mechanics live in nightdesk/DataTable.test.tsx.
+// ---------------------------------------------------------------------------
+describe('Clients table superpowers', () => {
+  beforeEach(() => {
+    // Plain localStorage is not reliable in this environment — stub it the
+    // SettingsContext.test.tsx way, fresh per test so no config leaks.
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+  });
+
+  function renderClients() {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients']}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  function bodyRows(container: HTMLElement): HTMLTableRowElement[] {
+    return Array.from(container.querySelectorAll('tbody tr'));
+  }
+
+  it('hides and restores a column from View options, persisted to localStorage', async () => {
+    const { container } = renderClients();
+    await screen.findByText('1 of 1 sampled');
+    expect(container.querySelector('th[data-column-key="model"]')).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'View options' }));
+    // The primary identifier is not offered for hiding.
+    expect(screen.getByRole('checkbox', { name: 'Client' }).hasAttribute('disabled')).toBe(true);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Model' }));
+    expect(container.querySelector('th[data-column-key="model"]')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('nt-table-columns') ?? '{}')).toEqual({
+      clients: { hidden: ['model'] },
+    });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Model' }));
+    expect(container.querySelector('th[data-column-key="model"]')).not.toBeNull();
+    expect(JSON.parse(localStorage.getItem('nt-table-columns') ?? '{}')).toEqual({
+      clients: { hidden: [] },
+    });
+  });
+
+  it('seeds the table from the persisted column config on mount', async () => {
+    localStorage.setItem(
+      'nt-table-columns',
+      JSON.stringify({ clients: { hidden: ['model'], order: ['health', 'client', 'model', 'type'] } }),
+    );
+    const { container } = renderClients();
+    await screen.findByText('1 of 1 sampled');
+    expect(container.querySelector('th[data-column-key="model"]')).toBeNull();
+    const keys = Array.from(container.querySelectorAll('th')).map((th) => th.getAttribute('data-column-key'));
+    expect(keys[0]).toBe('health');
+    expect(keys[1]).toBe('client');
+  });
+
+  it('moves the focused row with j/k and opens the client drawer on Enter', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:01', name: 'alpha-one' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:02', name: 'beta-two' },
+      ],
+      dataSource: 'live',
+    });
+    const { container } = renderClients();
+    await screen.findByText('2 of 2 sampled');
+    const [first, second] = bodyRows(container);
+
+    expect(first.getAttribute('tabindex')).toBe('0');
+    fireEvent.keyDown(first, { key: 'j' });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'k' });
+    expect(document.activeElement).toBe(first);
+
+    // Enter runs the row's primary action: the Client 360 drawer, addressed
+    // by the row's MAC — the same ?mac= deep link a row click sets.
+    fireEvent.keyDown(first, { key: 'Enter' });
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('alpha-one')).toBeTruthy();
+  });
+
+  it('sorts by any header — Session by real duration, Type alphabetically', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:01', name: 'c-one', type: 'laptop', session: '19m' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:02', name: 'c-two', type: 'phone', session: '2h 14m' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:03', name: 'c-three', type: 'tablet', session: '41d' },
+      ],
+      dataSource: 'live',
+    });
+    const { container } = renderClients();
+    await screen.findByText('3 of 3 sampled');
+    const firstNames = () => bodyRows(container).map((tr) => tr.textContent ?? '');
+
+    fireEvent.click(screen.getByRole('button', { name: /Session/ })); // asc: 19m < 2h < 41d
+    expect(firstNames()[0]).toContain('c-one');
+    fireEvent.click(screen.getByRole('button', { name: /Session/ })); // desc: real duration, never alphabetical
+    expect(firstNames()[0]).toContain('c-three');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Type/ })); // asc: laptop < phone < tablet
+    expect(firstNames()[0]).toContain('c-one');
+    expect(firstNames()[2]).toContain('c-three');
+  });
+
+  it('toggles row selection with x and clears it with Escape', async () => {
+    const { container } = renderClients();
+    await screen.findByText('1 of 1 sampled');
+    const [first] = bodyRows(container);
+
+    fireEvent.keyDown(first, { key: 'x' });
+    expect(first.getAttribute('aria-selected')).toBe('true');
+    fireEvent.keyDown(first, { key: 'x' });
+    expect(first.getAttribute('aria-selected')).toBe('false');
+
+    fireEvent.keyDown(first, { key: 'x' });
+    fireEvent.keyDown(first, { key: 'Escape' });
+    expect(first.getAttribute('aria-selected')).toBe('false');
+  });
+
+  it("lists the row commands on '?'", async () => {
+    renderClients();
+    await screen.findByText('1 of 1 sampled');
+
+    fireEvent.keyDown(document.body, { key: '?' });
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+    expect(screen.getByText('Move to the next row')).toBeTruthy();
+    expect(screen.getByText("Run the focused row's primary action")).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  /* Deliberate, and pinned so it stays deliberate: a session's health already
+     wears its tone as a Badge and no other column has an honest threshold, so
+     nothing on this table tints (the same call Devices made). */
+  it('tints no cell', async () => {
+    const { container } = renderClients();
+    await screen.findByText('1 of 1 sampled');
+    expect(container.querySelector('td[class*="nd-table__td--tint"]')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two wired MIST clients (rsch-ws-07, bench-daq-02 — the demo answer to
+// the adapter's wired_clients/search read). A wired Mist row is switch+port
+// attachment, not radio telemetry: the table carries it like any session, and
+// the drawer renders the Ethernet metric set with no wireless Experience
+// block, no roam timeline, and the wired path out of the site chain.
+// ---------------------------------------------------------------------------
+describe('Clients — wired Mist rows', () => {
+  const DEMO_ROSTER = { stats: [], clients: CLIENTS, dataSource: 'demo' as const };
+
+  function renderTable() {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients']}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('lists the wired Mist sessions with their switch and port', async () => {
+    mockGetClients.mockResolvedValue(DEMO_ROSTER);
+    renderTable();
+
+    expect(await screen.findByText('rsch-ws-07')).toBeTruthy();
+    expect(screen.getByText('bench-daq-02')).toBeTruthy();
+    expect(screen.getByText('port ge-0/0/8')).toBeTruthy();
+    expect(screen.getByText('port ge-0/0/11')).toBeTruthy();
+    // Both rows wear the Mist badge and name the switch they attach to.
+    expect(screen.getAllByText('MIST').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('sw-cam02-1').length).toBeGreaterThan(0);
+    // The medium filter offers the wired slice these rows belong to.
+    expect(screen.getByLabelText('Medium')).toBeTruthy();
+  });
+
+  it('opens the demo drawer on the Ethernet facts, with nothing wireless drawn', async () => {
+    mockGetClients.mockResolvedValue(DEMO_ROSTER);
+    renderDrawer('3c:52:82:1e:07:a1');
+
+    await waitFor(() => expect(drawer().getByText('Switch port')).toBeTruthy());
+    const d = drawer();
+    expect(d.getByText('port ge-0/0/8')).toBeTruthy();
+    expect(d.getByText('VLAN')).toBeTruthy();
+    expect(d.getByText('822')).toBeTruthy();
+    expect(d.getByText('Authentication')).toBeTruthy();
+    expect(d.getByText('802.1X')).toBeTruthy();
+    // No wireless Experience block when there is nothing wireless to report.
+    expect(d.queryByText('Signal')).toBeNull();
+    expect(d.queryByText('SNR')).toBeNull();
+    expect(d.queryByText('Retries')).toBeNull();
+    expect(d.queryByText('Roams')).toBeNull();
+    expect(d.queryByText('Session timeline')).toBeNull();
+    expect(d.getByText('WIRED · sw-cam02-1 · port ge-0/0/8')).toBeTruthy();
+    expect(d.getByText('Wired session health is within target.')).toBeTruthy();
+    // The wired path leaves from the attaching switch (campus-02's core), and
+    // the Client 360 panel reports Mist's own session line for this MAC.
+    expect(d.getByText('Path to the internet')).toBeTruthy();
+    expect(d.getByText('DC1 border')).toBeTruthy();
+    expect(d.getByText('good · on sw-cam02-1 · port ge-0/0/8 · session 6d 4h')).toBeTruthy();
+    // Demo mode issues no per-object reads — the fixtures ARE the estate.
+    expect(mockGetClientDetailBlock).not.toHaveBeenCalled();
+    expect(mockGetSiteTopology).not.toHaveBeenCalled();
+  });
+
+  it('keeps a live wired Mist row on the same honesty rules as any wired session', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [{
+        ...SPARSE_LIVE_CLIENT,
+        medium: 'wired',
+        plane: 'MIST',
+        planeTone: 'info',
+        attach: 'sw-cam02-1',
+        where: 'port ge-0/0/8',
+        link: '1 Gb full duplex',
+        auth: '802.1X',
+      }],
+      dataSource: 'live',
+    });
+    renderDrawer();
+
+    await waitFor(() => expect(drawer().getByText('Switch port')).toBeTruthy());
+    const d = drawer();
+    expect(d.getByText('port ge-0/0/8')).toBeTruthy();
+    expect(d.getByText('802.1X')).toBeTruthy();
+    expect(d.queryByText('Signal')).toBeNull();
+    expect(d.queryByText('Roams')).toBeNull();
+    // Mist published no usage figure for this session — said, never zeroed.
+    expect(metricNoteFor('Throughput')).toBe('not reported by MIST');
   });
 });

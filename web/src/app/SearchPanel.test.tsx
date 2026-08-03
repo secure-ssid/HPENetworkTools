@@ -61,7 +61,7 @@ describe('SearchPanel exact inventory priority', () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <SearchPanel />
         <LocationProbe />
       </MemoryRouter>,
@@ -86,7 +86,7 @@ describe('SearchPanel exact inventory priority', () => {
 describe('SearchPanel search completeness', () => {
   const renderPanel = () =>
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <SearchPanel />
         <LocationProbe />
       </MemoryRouter>,

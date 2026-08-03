@@ -7,7 +7,19 @@
  * fake `fetch` (FetchLike injection) to cover OAuth token minting and the 401
  * refresh, the HAL (_embedded.items) envelope, the windowed/paged request,
  * candidate-path fallback with a remembered working path, the newest-200 cap,
- * the endpoint-count fact, error naming and the secret-free call log.
+ * the endpoint-count fact, error naming and the secret-free call log. The
+ * endpoint-repository mapper (attributes nesting, updated_at fallback,
+ * description, device_insight_tags) and the policy-inventory datasets (NADs,
+ * auth sources, roles, enforcement policies/profiles, local users, services,
+ * device groups) are covered the same way — including per-dataset failure
+ * isolation, the services path candidates (/api/config/service first on
+ * 6.11+, /api/service as the pre-6.11 fallback — only BOTH 404ing is honest
+ * absence, the rule /api/device-group keeps on its single path), and the
+ * local-user whitelist (no password hash crosses). The reviewed direct writes
+ * (endpoint register/update, local-user create/update) are covered at the
+ * adapter level too — payload shape, the read-back verify tri-state, refusal
+ * reporting, write-triggered cache invalidation, and the password discipline
+ * (the outbound request body and nowhere else).
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -21,7 +33,18 @@ import {
   authMethodFor,
   authResultFor,
   mapClearPassAuthEvent,
+  mapClearPassAuthSource,
+  mapClearPassDeviceGroup,
+  mapClearPassEndpoint,
+  mapClearPassEnforcementPolicy,
+  mapClearPassEnforcementProfile,
+  mapClearPassLocalUser,
+  mapClearPassNetworkDevice,
+  mapClearPassRole,
+  mapClearPassService,
+  mapClearPassServiceDetail,
   normalizeMac,
+  summarizeServiceRules,
 } from '../src/planes/clearpass';
 import {
   type FetchLike,
@@ -224,6 +247,459 @@ describe('mapClearPassAuthEvent', () => {
   });
 });
 
+// -- Endpoint repository row mapping -----------------------------------------------------
+
+/** A recorded CPPM 6.x /api/endpoint row (verbatim date strings on purpose). */
+const ENDPOINT_ROW = {
+  id: 3114,
+  mac_address: '00:1B:C5:09:7F:22',
+  description: 'Infusion pump, room 4A-12',
+  status: 'Known',
+  randomized_mac: false,
+  device_insight_tags: ['Medical Device', 'IoT'],
+  attributes: {
+    'IP Address': '10.42.30.44',
+    'Device Name': 'infusion-4a-12',
+    Category: 'Computer',
+    Family: 'Embedded',
+    OS: 'RTOS 4.2',
+    Profile: 'Medical device',
+    'Updated At': 'Aug 06, 2025 09:12:44 CDT',
+  },
+  added_at: 'Jun 02, 2025 08:00:11 CDT',
+  updated_at: 'Aug 06, 2025 11:32:01 CDT',
+};
+
+describe('mapClearPassEndpoint', () => {
+  it('maps a recorded CPPM row — profiling facts out of attributes', () => {
+    const e = mapClearPassEndpoint(ENDPOINT_ROW);
+    expect(e).not.toBeNull();
+    expect(e!.id).toBe('3114');
+    expect(e!.mac).toBe('00:1b:c5:09:7f:22');
+    expect(e!.description).toBe('Infusion pump, room 4A-12');
+    expect(e!.ip).toBe('10.42.30.44');
+    expect(e!.hostname).toBe('infusion-4a-12');
+    expect(e!.status).toBe('Known');
+    expect(e!.category).toBe('Computer');
+    expect(e!.family).toBe('Embedded');
+    expect(e!.os).toBe('RTOS 4.2');
+    expect(e!.profile).toBe('Medical device');
+    // the profiled stamp wins when attributes carry one…
+    expect(e!.updatedAt).toBe('Aug 06, 2025 09:12:44 CDT');
+    expect(e!.insightTags).toEqual(['Medical Device', 'IoT']);
+  });
+
+  it('falls back to the top-level updated_at verbatim — never null when the row carries it', () => {
+    const noProfiled = { ...ENDPOINT_ROW, attributes: { Category: 'Computer' } };
+    expect(mapClearPassEndpoint(noProfiled)!.updatedAt).toBe('Aug 06, 2025 11:32:01 CDT');
+    const noAttrs = { ...ENDPOINT_ROW };
+    delete (noAttrs as Record<string, unknown>).attributes;
+    expect(mapClearPassEndpoint(noAttrs)!.updatedAt).toBe('Aug 06, 2025 11:32:01 CDT');
+  });
+
+  it('maps description, and leaves it null when the row does not carry one', () => {
+    const bare = { ...ENDPOINT_ROW };
+    delete (bare as Record<string, unknown>).description;
+    expect(mapClearPassEndpoint(bare)!.description).toBeNull();
+  });
+
+  it('omits insightTags when the row carries none, and drops non-string tags', () => {
+    const noTags = { ...ENDPOINT_ROW };
+    delete (noTags as Record<string, unknown>).device_insight_tags;
+    expect(mapClearPassEndpoint(noTags)!.insightTags).toBeUndefined();
+    expect(mapClearPassEndpoint({ ...ENDPOINT_ROW, device_insight_tags: [] })!.insightTags).toBeUndefined();
+    expect(
+      mapClearPassEndpoint({ ...ENDPOINT_ROW, device_insight_tags: ['IoT', null, ' ', false, { x: 1 }] })!.insightTags,
+    ).toEqual(['IoT']);
+  });
+
+  it('keeps device_insight_tags OUT of profile — the profiler evidence is not the enforcement answer', () => {
+    const e = mapClearPassEndpoint({ ...ENDPOINT_ROW, attributes: {} });
+    expect(e!.profile).toBeNull(); // no attributes.Profile, no top-level enforcement_profile
+    expect(e!.insightTags).toEqual(['Medical Device', 'IoT']);
+  });
+});
+
+// -- Policy-inventory row mapping ---------------------------------------------------------
+
+describe('policy-inventory mappers', () => {
+  it('mapClearPassNetworkDevice maps a NAD row, defensively', () => {
+    const nad = mapClearPassNetworkDevice({
+      id: 501,
+      name: 'sw-core-a',
+      ip_address: '10.42.8.11',
+      vendor_name: 'Aruba',
+      coa_capable: true,
+      radsec_enabled: false,
+      description: 'Campus-01 core',
+    });
+    expect(nad).toEqual({
+      id: '501',
+      name: 'sw-core-a',
+      ipAddress: '10.42.8.11',
+      vendorName: 'Aruba',
+      coaCapable: true,
+      radsecEnabled: false,
+      description: 'Campus-01 core',
+    });
+    // partial row: absent facts are null, never assumed
+    const partial = mapClearPassNetworkDevice({ name: 'sw-acc-3f-2', radsec_enabled: 'true' });
+    expect(partial).toEqual({
+      id: 'sw-acc-3f-2',
+      name: 'sw-acc-3f-2',
+      ipAddress: null,
+      vendorName: null,
+      coaCapable: null,
+      radsecEnabled: true, // string form tolerated
+      description: null,
+    });
+    // a NAD with no name is junk
+    expect(mapClearPassNetworkDevice({ ip_address: '10.42.8.11' })).toBeNull();
+    expect(mapClearPassNetworkDevice(null)).toBeNull();
+    expect(mapClearPassNetworkDevice('sw-core-a')).toBeNull();
+  });
+
+  it('mapClearPassAuthSource maps name/type/description, null without a name', () => {
+    expect(mapClearPassAuthSource({ id: 7, name: 'AD meridian.health', type: 'Active Directory', description: 'dc-01' })).toEqual({
+      id: '7',
+      name: 'AD meridian.health',
+      type: 'Active Directory',
+      description: 'dc-01',
+    });
+    expect(mapClearPassAuthSource({ name: 'Local User Repository' })).toEqual({
+      id: 'Local User Repository',
+      name: 'Local User Repository',
+      type: null,
+      description: null,
+    });
+    expect(mapClearPassAuthSource({ type: 'Local' })).toBeNull();
+  });
+
+  it('mapClearPassRole maps name/description, null without a name', () => {
+    expect(mapClearPassRole({ id: 3, name: 'Clinical staff', description: 'vlan 820' })).toEqual({
+      id: '3',
+      name: 'Clinical staff',
+      description: 'vlan 820',
+    });
+    expect(mapClearPassRole({ name: 'Quarantine' })).toEqual({ id: 'Quarantine', name: 'Quarantine', description: null });
+    expect(mapClearPassRole({ description: 'no name' })).toBeNull();
+  });
+
+  it('mapClearPassEnforcementPolicy maps type + default profile', () => {
+    expect(
+      mapClearPassEnforcementPolicy({
+        id: 9,
+        name: 'MRDN Wireless 802.1X Enforcement',
+        enforcement_type: 'RADIUS',
+        default_profile: 'Quarantine',
+      }),
+    ).toEqual({
+      id: '9',
+      name: 'MRDN Wireless 802.1X Enforcement',
+      enforcementType: 'RADIUS',
+      defaultProfile: 'Quarantine',
+    });
+    expect(mapClearPassEnforcementPolicy({ name: 'Guest', default_enforcement_profile: 'Guest' })!.defaultProfile).toBe(
+      'Guest',
+    );
+    expect(mapClearPassEnforcementPolicy({ enforcement_type: 'RADIUS' })).toBeNull();
+  });
+
+  it('mapClearPassEnforcementProfile maps name/type/description, null without a name', () => {
+    expect(mapClearPassEnforcementProfile({ id: 2, name: 'Guest', type: 'RADIUS', description: 'vlan 812' })).toEqual({
+      id: '2',
+      name: 'Guest',
+      type: 'RADIUS',
+      description: 'vlan 812',
+    });
+    expect(mapClearPassEnforcementProfile({ name: 'Quarantine' })).toEqual({
+      id: 'Quarantine',
+      name: 'Quarantine',
+      type: null,
+      description: null,
+    });
+    expect(mapClearPassEnforcementProfile({ type: 'RADIUS' })).toBeNull();
+  });
+
+  it('mapClearPassLocalUser is a strict whitelist — no password material crosses', () => {
+    const u = mapClearPassLocalUser({
+      id: 21,
+      user_id: 'portal-collector',
+      username: 'Portal Collector Service',
+      role_name: 'read-only shell',
+      enabled: true,
+      password: 's3cr3t-hash',
+      password_hash: '$2y$10$abcdef',
+      verify_password: 's3cr3t-hash',
+      some_future_field: 'unexpected',
+    });
+    expect(u).toEqual({
+      id: '21',
+      userId: 'portal-collector',
+      username: 'Portal Collector Service',
+      roleName: 'read-only shell',
+      enabled: true,
+    });
+    expect(Object.keys(u!)).toEqual(['id', 'userId', 'username', 'roleName', 'enabled']);
+    expect(JSON.stringify(u)).not.toContain('s3cr3t');
+    expect(JSON.stringify(u)).not.toContain('$2y$');
+    // user_id is the identity — a row without it is junk
+    expect(mapClearPassLocalUser({ username: 'ghost' })).toBeNull();
+    expect(mapClearPassLocalUser({ user_id: 'svc', enabled: 'false' })).toEqual({
+      id: 'svc',
+      userId: 'svc',
+      username: null,
+      roleName: null,
+      enabled: false,
+    });
+  });
+
+  it('mapClearPassService maps name/type/description, null without a name', () => {
+    expect(mapClearPassService({ id: 4, name: 'MRDN Wireless 802.1X', type: '1X', description: 'EAP-TLS' })).toEqual({
+      id: '4',
+      name: 'MRDN Wireless 802.1X',
+      type: '1X',
+      description: 'EAP-TLS',
+    });
+    expect(mapClearPassService({ name: 'Guest' })).toEqual({ id: 'Guest', name: 'Guest', type: null, description: null });
+    expect(mapClearPassService({ type: '1X' })).toBeNull();
+  });
+
+  it('mapClearPassService maps the 6.11 /api/config/service shape', () => {
+    // Verified against a live CPPM 6.11.12: /api/config/service/{id} answers
+    // this object (fields not on the row contract — monitor_mode,
+    // rules_match_type — are ignored, like every unknown field).
+    expect(
+      mapClearPassService({
+        id: 1,
+        name: 'Device Admin (TACACS+)',
+        type: 'TACACS',
+        template: 'TACACS+ Enforcement',
+        enabled: false,
+        hit_count: 0,
+        order_no: 11,
+        description: 'switch shell',
+        monitor_mode: false,
+        rules_match_type: 'MATCH_ALL',
+        rules_conditions: [{ type: 'Connection', name: 'NAD-IP-Address', operator: 'EQUALS', value: '127.0.0.1' }],
+        auth_sources: ['AD meridian.health', 'Local User Repository'],
+      }),
+    ).toEqual({
+      id: '1',
+      name: 'Device Admin (TACACS+)',
+      type: 'TACACS',
+      description: 'switch shell',
+      template: 'TACACS+ Enforcement',
+      enabled: false,
+      hitCount: 0,
+      orderNo: 11,
+      authSources: ['AD meridian.health', 'Local User Repository'],
+      rulesSummary: 'Connection:NAD-IP-Address EQUALS 127.0.0.1',
+    });
+  });
+
+  it('mapClearPassService degrades present-but-unreadable fields to null, never the row', () => {
+    expect(
+      mapClearPassService({ name: 'S', enabled: 'perhaps', hit_count: 'lots', order_no: {}, rules_conditions: 'yes' }),
+    ).toEqual({
+      id: 'S',
+      name: 'S',
+      type: null,
+      description: null,
+      enabled: null,
+      hitCount: null,
+      orderNo: null,
+      rulesSummary: null,
+    });
+    // auth_sources ride along only when the row names them readably
+    expect(mapClearPassService({ name: 'S2', auth_sources: [{ name: 'AD meridian.health' }] })!.authSources).toEqual([
+      'AD meridian.health',
+    ]);
+    expect(mapClearPassService({ name: 'S3', auth_sources: 'AD' })).not.toHaveProperty('authSources');
+  });
+
+  it('mapClearPassService lets no credential material cross — the row is a whitelist', () => {
+    const s = mapClearPassService({
+      id: 9,
+      name: 'MRDN Wired MAB',
+      type: 'MAC_AUTH',
+      shared_secret: 's3cr3t',
+      tacacs_secret: 'hunter2',
+      some_future_field: 'unexpected',
+    });
+    expect(Object.keys(s!)).toEqual(['id', 'name', 'type', 'description']);
+    expect(JSON.stringify(s)).not.toMatch(/s3cr3t|hunter2|unexpected/);
+  });
+
+  it('mapClearPassServiceDetail maps the verified 6.11 /api/config/service/{id} object, whole', () => {
+    // Verified against a live CPPM 6.11.12 — every field of the detail shape,
+    // plus the _links block and an unknown future field the whitelist drops.
+    const detail = mapClearPassServiceDetail({
+      id: 4,
+      name: 'MRDN Guest 802.1X',
+      type: 'RADIUS',
+      template: '802.1X Wireless',
+      enabled: true,
+      hit_count: 412,
+      order_no: 3,
+      description: 'guest SSID · sponsor-approved accounts',
+      monitor_mode: false,
+      rules_match_type: 'MATCHES_ALL',
+      rules_conditions: [
+        { type: 'Radius', name: 'Called-Station-Id', operator: 'CONTAINS', value: 'MRDN-Guest' },
+        { operator: 'BELONGS_TO', value: ['10.42.8.11', '10.42.8.32'] },
+      ],
+      auth_methods: [{ name: 'PEAP' }, 'MSCHAPv2'],
+      auth_sources: [{ name: 'Local User Repository' }],
+      strip_username: false,
+      role_mapping_policy: 'MRDN Guest Role Mapping',
+      enf_policy: 'MRDN Guest Portal Enforcement',
+      use_cached_policy_results: true,
+      posture_enabled: false,
+      audit_enabled: false,
+      profiler_enabled: true,
+      acct_proxy_enabled: false,
+      _links: { self: { href: '/api/config/service/4' } },
+      some_future_field: 'unexpected',
+    });
+    expect(detail).toEqual({
+      id: '4',
+      name: 'MRDN Guest 802.1X',
+      type: 'RADIUS',
+      template: '802.1X Wireless',
+      enabled: true,
+      hitCount: 412,
+      orderNo: 3,
+      description: 'guest SSID · sponsor-approved accounts',
+      monitorMode: false,
+      rulesMatchType: 'MATCHES_ALL',
+      rulesConditions: [
+        { type: 'Radius', name: 'Called-Station-Id', operator: 'CONTAINS', value: 'MRDN-Guest' },
+        // a partial condition keeps its readable fields; a list value joins
+        { type: null, name: null, operator: 'BELONGS_TO', value: '10.42.8.11, 10.42.8.32' },
+      ],
+      authMethods: ['PEAP', 'MSCHAPv2'],
+      authSources: ['Local User Repository'],
+      stripUsername: false,
+      roleMappingPolicy: 'MRDN Guest Role Mapping',
+      enforcementPolicy: 'MRDN Guest Portal Enforcement',
+      useCachedPolicyResults: true,
+      postureEnabled: false,
+      auditEnabled: false,
+      profilerEnabled: true,
+      acctProxyEnabled: false,
+    });
+    // the whitelist holds: nothing but the named fields crossed
+    expect(JSON.stringify(detail)).not.toMatch(/unexpected|_links/);
+  });
+
+  it('mapClearPassServiceDetail keeps absent booleans null (absence is not false) and drops junk', () => {
+    const detail = mapClearPassServiceDetail({ name: 'Bare' });
+    expect(detail).toEqual({
+      id: 'Bare',
+      name: 'Bare',
+      type: null,
+      template: null,
+      enabled: null, // absent — NOT false
+      hitCount: null,
+      orderNo: null,
+      description: null,
+      monitorMode: null,
+      rulesMatchType: null,
+      rulesConditions: [],
+      authMethods: [],
+      authSources: [],
+      stripUsername: null,
+      roleMappingPolicy: null,
+      enforcementPolicy: null,
+      useCachedPolicyResults: null,
+      postureEnabled: null,
+      auditEnabled: null,
+      profilerEnabled: null,
+      acctProxyEnabled: null,
+    });
+    // present-but-unreadable degrades the field, never the object; a
+    // condition with nothing readable is dropped; string booleans read
+    const mixed = mapClearPassServiceDetail({
+      name: 'Mixed',
+      enabled: 'false',
+      rules_conditions: [{}, { type: 'Connection' }, 'junk'],
+      auth_methods: 'PEAP',
+      enf_policy: 42,
+    });
+    expect(mixed!.enabled).toBe(false);
+    expect(mixed!.rulesConditions).toEqual([{ type: 'Connection', name: null, operator: null, value: null }]);
+    expect(mixed!.authMethods).toEqual([]);
+    expect(mixed!.enforcementPolicy).toBe('42'); // numeric policy ids read as their string
+    // a service with no name is junk
+    expect(mapClearPassServiceDetail({ type: 'RADIUS' })).toBeNull();
+    expect(mapClearPassServiceDetail(null)).toBeNull();
+  });
+
+  it('mapClearPassServiceDetail lets no credential material cross — the same whitelist as the row', () => {
+    const s = mapClearPassServiceDetail({
+      id: 9,
+      name: 'Device Admin (TACACS+)',
+      type: 'TACACS',
+      shared_secret: 's3cr3t',
+      tacacs_secret: 'hunter2',
+      password: 'p@ss',
+    });
+    expect(JSON.stringify(s)).not.toMatch(/s3cr3t|hunter2|p@ss/);
+    expect(Object.keys(s!).sort()).toEqual([
+      'acctProxyEnabled',
+      'auditEnabled',
+      'authMethods',
+      'authSources',
+      'description',
+      'enabled',
+      'enforcementPolicy',
+      'hitCount',
+      'id',
+      'monitorMode',
+      'name',
+      'orderNo',
+      'postureEnabled',
+      'profilerEnabled',
+      'roleMappingPolicy',
+      'rulesConditions',
+      'rulesMatchType',
+      'stripUsername',
+      'template',
+      'type',
+      'useCachedPolicyResults',
+    ]);
+  });
+
+  it('summarizeServiceRules renders one readable line and degrades to null', () => {
+    expect(
+      summarizeServiceRules([{ type: 'Connection', name: 'NAD-IP-Address', operator: 'EQUALS', value: '127.0.0.1' }]),
+    ).toBe('Connection:NAD-IP-Address EQUALS 127.0.0.1');
+    // multiple conditions join ' · '; unreadable entries are skipped, a list
+    // value reads as a list, and a condition may name only an operator/value
+    expect(
+      summarizeServiceRules([
+        { type: 'Radius', name: 'Called-Station-Id', operator: 'CONTAINS', value: 'MRDN-Guest' },
+        'junk',
+        { operator: 'BELONGS_TO', value: ['10.42.8.11', '10.42.8.32'] },
+      ]),
+    ).toBe('Radius:Called-Station-Id CONTAINS MRDN-Guest · BELONGS_TO 10.42.8.11, 10.42.8.32');
+    expect(summarizeServiceRules('not-an-array')).toBeNull();
+    expect(summarizeServiceRules([])).toBeNull();
+    expect(summarizeServiceRules([42, null])).toBeNull();
+  });
+
+  it('mapClearPassDeviceGroup maps name/description, null without a name', () => {
+    expect(mapClearPassDeviceGroup({ id: 8, name: 'CX switches', description: 'Campus-01 access' })).toEqual({
+      id: '8',
+      name: 'CX switches',
+      description: 'Campus-01 access',
+    });
+    expect(mapClearPassDeviceGroup({ name: 'APs' })).toEqual({ id: 'APs', name: 'APs', description: null });
+    expect(mapClearPassDeviceGroup({ description: 'no name' })).toBeNull();
+  });
+});
+
 // -- pull() with an in-memory fake fetch (no network) ---------------------------------
 
 type HandlerResult = { status?: number; body?: unknown; headers?: Record<string, string> };
@@ -235,6 +711,25 @@ interface FakeFetch {
   authHeaders: (string | null)[];
   bodies: (string | null)[];
 }
+
+/**
+ * The inventory resources a live CPPM answers 200 (verified against a real
+ * 6.11.12 box with an OAuth client-credentials token) — an empty HAL page
+ * here, unless the test's own handler routes the path. /api/config/service
+ * answers 200 on 6.11 too, but it stays unrouted by default like /api/service
+ * and /api/device-group (both 404 on that box's older siblings), so the
+ * default fake models the pre-6.11 box where every service candidate 404s;
+ * a test wanting different behaviour returns an explicit result for the path
+ * from its handler.
+ */
+const INVENTORY_PATHS = new Set([
+  '/api/network-device',
+  '/api/auth-source',
+  '/api/role',
+  '/api/enforcement-policy',
+  '/api/enforcement-profile',
+  '/api/local-user',
+]);
 
 function fakeFetch(handler: Handler): FakeFetch {
   const calls: string[] = [];
@@ -249,6 +744,10 @@ function fakeFetch(handler: Handler): FakeFetch {
     const raw = typeof init?.body === 'string' ? init.body : null;
     bodies.push(raw);
     const result = handler(method, u.pathname, u.searchParams, raw === null ? undefined : JSON.parse(raw));
+    if (!result && method === 'GET' && INVENTORY_PATHS.has(u.pathname)) {
+      const empty = { count: 0, _links: { self: { href: u.pathname } }, _embedded: { items: [] } };
+      return new Response(JSON.stringify(empty), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     if (!result) {
       return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
     }
@@ -564,9 +1063,10 @@ describe('ClearPassAdapter.pull()', () => {
   });
 
   // ClearPass describes policy, not a transport: no shell, no brokered push.
+  // The reviewed direct writes (endpoint/local-user) are the one write claim.
   it('claims no shell, no brokered write and no config read', () => {
     const { adapter } = makeAdapter(routeHandler(HAPPY_ROUTES));
-    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: false, configRead: false });
+    expect(adapter.capabilities()).toEqual({ localShell: false, brokeredWrite: false, configRead: false, directWrite: true });
   });
 
   it('fails the pull naming the section on a non-404 error (a static token cannot self-heal on 401)', async () => {
@@ -714,6 +1214,383 @@ describe('ClearPassAdapter endpoints', () => {
   });
 });
 
+// -- The policy inventories (the plane's remaining datasets) ----------------------------
+
+describe('ClearPassAdapter policy inventories', () => {
+  const NAD = {
+    id: 501,
+    name: 'sw-core-a',
+    ip_address: '10.42.8.11',
+    vendor_name: 'Aruba',
+    coa_capable: true,
+    radsec_enabled: false,
+    description: 'Campus-01 core',
+  };
+  const AUTH_SOURCE = { id: 7, name: 'AD meridian.health', type: 'Active Directory', description: 'dc-01' };
+  const ROLE = { id: 3, name: 'Clinical staff', description: 'vlan 820' };
+  const POLICY = { id: 9, name: 'MRDN Wireless 802.1X Enforcement', enforcement_type: 'RADIUS', default_profile: 'Quarantine' };
+  const PROFILE = { id: 2, name: 'Guest', type: 'RADIUS', description: 'vlan 812' };
+  const LOCAL_USER = {
+    id: 21,
+    user_id: 'portal-collector',
+    username: 'Portal Collector Service',
+    role_name: 'read-only shell',
+    enabled: true,
+    password: 's3cr3t-hash', // the wire carries it; the row must never
+  };
+  // The 6.11 shape, as /api/config/service/{id} answers it (verified live).
+  const SERVICE = {
+    id: 4,
+    name: 'MRDN Wireless 802.1X',
+    type: '1X',
+    template: '802.1X Wireless',
+    enabled: true,
+    hit_count: 8910,
+    order_no: 1,
+    auth_sources: ['AD meridian.health'],
+    rules_conditions: [{ type: 'Radius', name: 'Called-Station-Id', operator: 'CONTAINS', value: 'MRDN' }],
+  };
+  const GROUP = { id: 8, name: 'CX switches', description: 'Campus-01 access' };
+
+  /** The full inventory surface, one row per resource. */
+  const FULL_INVENTORY_ROUTES: Record<string, unknown> = {
+    'GET /api/network-device': hal([NAD]),
+    'GET /api/auth-source': hal([AUTH_SOURCE]),
+    'GET /api/role': hal([ROLE]),
+    'GET /api/enforcement-policy': hal([POLICY]),
+    'GET /api/enforcement-profile': hal([PROFILE]),
+    'GET /api/local-user': hal([LOCAL_USER]),
+    'GET /api/config/service': hal([SERVICE]), // 6.11+: the config namespace answers
+    'GET /api/device-group': hal([GROUP]),
+  };
+
+  /** Auth feed + endpoint repo + full inventory; `overrides` wins over the inventory routes. */
+  function inventoryHandler(overrides: Handler): Handler {
+    const inventory = routeHandler(FULL_INVENTORY_ROUTES);
+    return (method, pathname, query, body) => {
+      if (method === 'GET' && pathname === AUTH_PATH) return { body: hal([ROW_ACCEPT]) };
+      if (method === 'GET' && pathname === '/api/endpoint') return { body: hal([]) };
+      return overrides(method, pathname, query, body) ?? inventory(method, pathname, query, body);
+    };
+  }
+
+  it('ships every inventory dataset the box serves, mapped, with no partial', async () => {
+    const { adapter, calls } = makeAdapter(inventoryHandler(() => undefined));
+    const pull = await adapter.pull();
+    expect(pull.networkDevices).toEqual([
+      {
+        id: '501',
+        name: 'sw-core-a',
+        ipAddress: '10.42.8.11',
+        vendorName: 'Aruba',
+        coaCapable: true,
+        radsecEnabled: false,
+        description: 'Campus-01 core',
+      },
+    ]);
+    expect(pull.authSources).toEqual([
+      { id: '7', name: 'AD meridian.health', type: 'Active Directory', description: 'dc-01' },
+    ]);
+    expect(pull.roles).toEqual([{ id: '3', name: 'Clinical staff', description: 'vlan 820' }]);
+    expect(pull.enforcementPolicies).toEqual([
+      { id: '9', name: 'MRDN Wireless 802.1X Enforcement', enforcementType: 'RADIUS', defaultProfile: 'Quarantine' },
+    ]);
+    expect(pull.enforcementProfiles).toEqual([{ id: '2', name: 'Guest', type: 'RADIUS', description: 'vlan 812' }]);
+    expect(pull.localUsers).toHaveLength(1);
+    expect(pull.services).toEqual([
+      {
+        id: '4',
+        name: 'MRDN Wireless 802.1X',
+        type: '1X',
+        description: null,
+        template: '802.1X Wireless',
+        enabled: true,
+        hitCount: 8910,
+        orderNo: 1,
+        authSources: ['AD meridian.health'],
+        rulesSummary: 'Radius:Called-Station-Id CONTAINS MRDN',
+      },
+    ]);
+    expect(pull.deviceGroups).toEqual([{ id: '8', name: 'CX switches', description: 'Campus-01 access' }]);
+    expect(pull.partial).toBeUndefined();
+    // the config namespace answered, so the legacy path was never probed
+    expect(calls.filter((c) => c.startsWith('GET /api/config/service?'))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith('GET /api/service?'))).toHaveLength(0);
+  });
+
+  it('never lets local-user secret material into a pull — the whitelist holds on the wire too', async () => {
+    const { adapter } = makeAdapter(inventoryHandler(() => undefined));
+    const pull = await adapter.pull();
+    expect(Object.keys(pull.localUsers![0])).toEqual(['id', 'userId', 'username', 'roleName', 'enabled']);
+    expect(JSON.stringify(pull.localUsers)).not.toContain('s3cr3t');
+  });
+
+  // Verified against a live CPPM 6.11.12: /api/config/service is served
+  // there while /api/service and /api/device-group 404; on older 6.x builds
+  // BOTH service paths 404. Only a 404 on every candidate is "not available
+  // on this CPPM" — the keys go absent with NO partial flag, or every lab
+  // box would sit at warning.
+  it('treats a 404 on every services/deviceGroups candidate as honest absence, not a partial read', async () => {
+    const { adapter, calls } = makeAdapter(
+      inventoryHandler((method, pathname) =>
+        method === 'GET' &&
+        (pathname === '/api/config/service' || pathname === '/api/service' || pathname === '/api/device-group')
+          ? { status: 404, body: { detail: 'not found' } }
+          : undefined,
+      ),
+    );
+    const pull = await adapter.pull();
+    expect(pull.services).toBeUndefined();
+    expect(pull.deviceGroups).toBeUndefined();
+    expect(pull.partial).toBeUndefined();
+    expect(pull.roles).toHaveLength(1); // the rest of the plane still ships
+    // the config namespace was tried first, the legacy path as the fallback
+    const probes = calls.filter((c) => c.startsWith('GET /api/config/service?') || c.startsWith('GET /api/service?'));
+    expect(probes.map((c) => c.split('?')[0])).toEqual(['GET /api/config/service', 'GET /api/service']);
+    // …and the absence is cached for the cadence window, not re-probed per poll
+    await adapter.pull();
+    expect(calls.filter((c) => c.startsWith('GET /api/config/service?'))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith('GET /api/service?'))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith('GET /api/device-group?'))).toHaveLength(1);
+  });
+
+  it('falls back to /api/service when the config namespace 404s (a pre-6.11 build)', async () => {
+    const { adapter, calls } = makeAdapter(
+      inventoryHandler((method, pathname) => {
+        if (method === 'GET' && pathname === '/api/config/service') return { status: 404, body: {} };
+        if (method === 'GET' && pathname === '/api/service') {
+          return { body: hal([{ id: 4, name: 'MRDN Wireless 802.1X', type: '1X' }]) };
+        }
+        return undefined;
+      }),
+    );
+    const pull = await adapter.pull();
+    // the older shape still maps to exactly the older row
+    expect(pull.services).toEqual([{ id: '4', name: 'MRDN Wireless 802.1X', type: '1X', description: null }]);
+    expect(pull.partial).toBeUndefined();
+    const probes = calls.filter((c) => c.startsWith('GET /api/config/service?') || c.startsWith('GET /api/service?'));
+    expect(probes.map((c) => c.split('?')[0])).toEqual(['GET /api/config/service', 'GET /api/service']);
+  });
+
+  it('keeps the partial-failure rule on a non-404 services error — no fallback, the key is named', async () => {
+    const { adapter, calls } = makeAdapter(
+      inventoryHandler((method, pathname) =>
+        method === 'GET' && pathname === '/api/config/service' ? { status: 500, body: {} } : undefined,
+      ),
+    );
+    const pull = await adapter.pull();
+    expect(pull.services).toBeUndefined();
+    expect(pull.partial).toEqual(['services']);
+    // a 500 is a broken read, not absence — the legacy path is never probed
+    expect(calls.filter((c) => c.startsWith('GET /api/service?'))).toHaveLength(0);
+  });
+
+  it('never lets credential material ride a service row off the wire either', async () => {
+    const { adapter } = makeAdapter(
+      inventoryHandler((method, pathname) =>
+        method === 'GET' && pathname === '/api/config/service'
+          ? { body: hal([{ id: 4, name: 'MRDN Wired MAB', type: 'MAC_AUTH', shared_secret: 's3cr3t', tacacs_secret: 'hunter2' }]) }
+          : undefined,
+      ),
+    );
+    const pull = await adapter.pull();
+    expect(Object.keys(pull.services![0])).toEqual(['id', 'name', 'type', 'description']);
+    expect(JSON.stringify(pull.services)).not.toMatch(/s3cr3t|hunter2|secret/i);
+  });
+
+  it('names a failed inventory dataset in partial and never sinks the pull', async () => {
+    const { adapter } = makeAdapter(
+      inventoryHandler((method, pathname) =>
+        method === 'GET' && pathname === '/api/role' ? { status: 500, body: { detail: 'boom' } } : undefined,
+      ),
+    );
+    const pull = await adapter.pull();
+    expect(pull.authEvents).toHaveLength(1); // the auth feed is untouched
+    expect(pull.roles).toBeUndefined(); // the failed key is omitted…
+    expect(pull.partial).toEqual(['roles']); // …and named
+    expect(pull.networkDevices).toHaveLength(1); // its neighbours are unaffected
+  });
+
+  it('treats a 404 on a resource CPPM DOES serve as a broken read, not absence', async () => {
+    const { adapter } = makeAdapter(
+      inventoryHandler((method, pathname) =>
+        method === 'GET' && pathname === '/api/auth-source' ? { status: 404, body: {} } : undefined,
+      ),
+    );
+    const pull = await adapter.pull();
+    expect(pull.authSources).toBeUndefined();
+    expect(pull.partial).toEqual(['authSources']);
+  });
+
+  it('names every failed dataset, in dataset order', async () => {
+    const { adapter } = makeAdapter(
+      inventoryHandler((method, pathname) => {
+        if (method === 'GET' && pathname === '/api/role') return { status: 500, body: {} };
+        if (method === 'GET' && pathname === '/api/enforcement-profile') return { status: 404, body: {} };
+        return undefined;
+      }),
+    );
+    const pull = await adapter.pull();
+    expect(pull.partial).toEqual(['roles', 'enforcementProfiles']);
+  });
+
+  it('reads empty inventory collections as real answers — and unrouted ones as the lab box does', async () => {
+    // No inventory routes at all: the fake answers the six served resources
+    // with empty HAL pages (a real CPPM 6.x) and 404s every service
+    // candidate plus device-group, like the pre-6.11 box does.
+    const { adapter } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === AUTH_PATH) return { body: hal([ROW_ACCEPT]) };
+      if (method === 'GET' && pathname === '/api/endpoint') return { body: hal([]) };
+      return undefined;
+    });
+    const pull = await adapter.pull();
+    expect(pull.networkDevices).toEqual([]);
+    expect(pull.authSources).toEqual([]);
+    expect(pull.roles).toEqual([]);
+    expect(pull.localUsers).toEqual([]);
+    expect(pull.services).toBeUndefined();
+    expect(pull.deviceGroups).toBeUndefined();
+    expect(pull.partial).toBeUndefined(); // empty ≠ partial; absent ≠ partial
+  });
+
+  it('rides the endpoint repository 5-minute cadence, not the 60s poll', async () => {
+    const { adapter, calls } = makeAdapter(inventoryHandler(() => undefined));
+    await adapter.pull();
+    await adapter.pull();
+    expect(calls.filter((c) => c.startsWith('GET /api/role?'))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith('GET /api/network-device?'))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith('GET /api/local-user?'))).toHaveLength(1);
+  });
+});
+
+// -- On-demand service detail (the drawer's read, never the poller's) ------------------
+
+describe('ClearPassAdapter.serviceDetail()', () => {
+  /** The verified 6.11.12 detail object (a trimmed copy — the mapper tests
+   *  above hold the whole shape). */
+  const SERVICE_DETAIL = {
+    id: 4,
+    name: 'MRDN Guest 802.1X',
+    type: 'RADIUS',
+    template: '802.1X Wireless',
+    enabled: true,
+    hit_count: 412,
+    order_no: 3,
+    description: 'guest SSID · sponsor-approved accounts',
+    monitor_mode: false,
+    rules_match_type: 'MATCHES_ALL',
+    rules_conditions: [{ type: 'Radius', name: 'Called-Station-Id', operator: 'CONTAINS', value: 'MRDN-Guest' }],
+    auth_methods: ['PEAP', 'MSCHAPv2'],
+    auth_sources: ['Local User Repository'],
+    strip_username: false,
+    role_mapping_policy: 'MRDN Guest Role Mapping',
+    enf_policy: 'MRDN Guest Portal Enforcement',
+    use_cached_policy_results: true,
+    posture_enabled: false,
+    audit_enabled: false,
+    profiler_enabled: true,
+    acct_proxy_enabled: false,
+    _links: { self: { href: '/api/config/service/4' } },
+  };
+
+  it('reads and maps ONE service from the config namespace, sections ok', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === '/api/config/service/4' ? { body: SERVICE_DETAIL } : undefined,
+    );
+    const detail = await adapter.serviceDetail('4');
+    expect(detail).not.toBeNull();
+    expect(detail!.source.plane).toBe('clearpass');
+    expect(detail!.source.sections).toEqual({ service: 'ok' });
+    expect(detail!.service).toMatchObject({
+      id: '4',
+      name: 'MRDN Guest 802.1X',
+      type: 'RADIUS',
+      rulesMatchType: 'MATCHES_ALL',
+      rulesConditions: [{ type: 'Radius', name: 'Called-Station-Id', operator: 'CONTAINS', value: 'MRDN-Guest' }],
+      authMethods: ['PEAP', 'MSCHAPv2'],
+      enforcementPolicy: 'MRDN Guest Portal Enforcement',
+      profilerEnabled: true,
+      postureEnabled: false,
+    });
+    // the whitelist held end to end — no credential-shaped key crossed
+    expect(JSON.stringify(detail)).not.toMatch(/password|secret|hash/i);
+    // one call, to the 6.11 path — the legacy path is never probed on a 200
+    expect(calls).toEqual(['GET /api/config/service/4']);
+  });
+
+  it('a 404 on every candidate is an honest empty, never a failure', async () => {
+    const { adapter, calls } = makeAdapter(() => undefined); // every path 404s
+    const detail = await adapter.serviceDetail('no-such-service');
+    expect(detail!.service).toBeNull();
+    expect(detail!.source.sections).toEqual({ service: 'empty' });
+    expect(detail!.source.note).toContain('404');
+    // both candidates were tried, in the collection walk's order
+    expect(calls).toEqual(['GET /api/config/service/no-such-service', 'GET /api/service/no-such-service']);
+  });
+
+  it('falls back to the legacy path when the config namespace 404s', async () => {
+    const { adapter } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === '/api/service/7' ? { body: { id: 7, name: 'Legacy MAB', type: 'RADIUS' } } : undefined,
+    );
+    const detail = await adapter.serviceDetail('7');
+    expect(detail!.source.sections).toEqual({ service: 'ok' });
+    expect(detail!.service).toMatchObject({ id: '7', name: 'Legacy MAB', enabled: null });
+  });
+
+  it('a non-404 failure is a failed section with the status, and does NOT fall through', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === '/api/config/service/4' ? { status: 500 } : undefined,
+    );
+    const detail = await adapter.serviceDetail('4');
+    expect(detail!.service).toBeNull();
+    expect(detail!.source.sections).toEqual({ service: 'failed' });
+    expect(detail!.source.note).toBe('HTTP 500');
+    // a 500 is a broken read, not absence — the legacy path is not probed
+    expect(calls).toEqual(['GET /api/config/service/4']);
+  });
+
+  it('a 200 with no service object in it is a broken read, not an absent service', async () => {
+    const { adapter } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === '/api/config/service/4' ? { body: { count: 0 } } : undefined,
+    );
+    const detail = await adapter.serviceDetail('4');
+    expect(detail!.source.sections).toEqual({ service: 'failed' });
+    expect(detail!.source.note).toContain('no service object');
+  });
+
+  it('a transport error never throws — the section fails with the cause', async () => {
+    const failing: FetchLike = async () => {
+      throw new Error('socket hang up');
+    };
+    const adapter = new ClearPassAdapter(CREDS, makeState(), () => {}, failing);
+    const detail = await adapter.serviceDetail('4');
+    expect(detail!.source.sections).toEqual({ service: 'failed' });
+    expect(detail!.source.note).toBe('socket hang up');
+  });
+
+  it('serves a reopen from the TTL cache and stamps it cached', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === '/api/config/service/4' ? { body: SERVICE_DETAIL } : undefined,
+    );
+    const first = await adapter.serviceDetail('4');
+    expect(first!.source.cached).toBeFalsy();
+    const second = await adapter.serviceDetail('4');
+    expect(second!.source.cached).toBe(true);
+    // …and a FAILING read is cached too, so a broken CPPM is not hammered
+    expect(calls).toEqual(['GET /api/config/service/4']);
+    const { adapter: broken, calls: brokenCalls } = makeAdapter(() => ({ status: 500 }));
+    await broken.serviceDetail('9');
+    await broken.serviceDetail('9');
+    expect(brokenCalls).toEqual(['GET /api/config/service/9']);
+  });
+
+  it('an empty id is the cannot-answer null, and costs no call', async () => {
+    const { adapter, calls } = makeAdapter(() => undefined);
+    expect(await adapter.serviceDetail('   ')).toBeNull();
+    expect(calls).toEqual([]);
+  });
+});
+
 // -- The one sanctioned write ----------------------------------------------------------
 
 describe('ClearPassAdapter.coaDisconnect()', () => {
@@ -773,5 +1650,260 @@ describe('registry wiring', () => {
     });
     expect(adapter).toBeInstanceOf(ClearPassAdapter);
     expect(state.note).toBe('credentials saved — first sync pending');
+  });
+});
+
+// -- Reviewed direct writes (endpoint register/update, local-user create/update) --
+//
+// The plane-facing half of services/clearpassDirectWrite.ts: the exact CPPM
+// payload shape, the read-back verify (tri-state — found / absent / unreadable),
+// the refusal path that reports instead of throwing, the cache invalidation a
+// landed write owes the poller, and the password discipline — a local-user
+// password crosses in the outbound request body and NOWHERE else.
+
+describe('ClearPassAdapter reviewed writes', () => {
+  /** The endpoint row the fake CPPM serves on read-back. */
+  const EP_ROW = {
+    id: '301',
+    mac_address: '3c:22:fb:41:0a:19',
+    status: 'Known',
+    description: 'Ward 3E infusion pump',
+    attributes: { Category: 'Computer', 'Device Name': 'pump-3e-01' },
+  };
+
+  it('capabilities() claims the reviewed direct writes (never policy editing)', () => {
+    const { adapter } = makeAdapter(() => undefined);
+    expect(adapter.capabilities()).toEqual({
+      localShell: false,
+      brokeredWrite: false,
+      configRead: false,
+      directWrite: true,
+    });
+  });
+
+  it('registerEndpoint POSTs the CPPM shape and confirms with a read-back by id', async () => {
+    const { adapter, calls, bodies, recorded } = makeAdapter((method, pathname, _q, body) => {
+      if (method === 'POST' && pathname === '/api/endpoint') {
+        expect(body).toEqual({
+          mac_address: '3c:22:fb:41:0a:19',
+          status: 'Known',
+          description: 'Ward 3E infusion pump',
+          attributes: { Category: 'Computer' },
+        });
+        return { status: 201, body: { ...EP_ROW } };
+      }
+      if (method === 'GET' && pathname === '/api/endpoint/301') return { body: { ...EP_ROW } };
+      return undefined;
+    });
+    const r = await adapter.registerEndpoint({
+      mac: '3c:22:fb:41:0a:19',
+      description: 'Ward 3E infusion pump',
+      status: 'Known',
+      attributes: { Category: 'Computer' },
+    });
+    expect(r).toMatchObject({ ok: true, action: 'created', verified: true, httpCode: 201 });
+    expect(r.message).toContain('confirmed');
+    expect(calls.some((c) => c.startsWith('GET /api/endpoint/301'))).toBe(true);
+    expect(bodies.filter((b) => b !== null)).toHaveLength(1); // the POST, nothing else carries a body
+    // The call log keeps its method+path+ms+status discipline on writes too.
+    expect(recorded.some((c) => c.path === 'POST /api/endpoint' && c.code === '201')).toBe(true);
+    expect(JSON.stringify(recorded)).not.toContain('cppm-token-shh');
+  });
+
+  it('registerEndpoint defaults the status and falls back to a MAC filter read-back', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/api/endpoint') return { status: 200, body: {} }; // no id in the answer
+      if (method === 'GET' && pathname === '/api/endpoint') {
+        return { body: { count: 1, _links: {}, _embedded: { items: [{ ...EP_ROW }] } } };
+      }
+      return undefined;
+    });
+    const r = await adapter.registerEndpoint({ mac: '3c:22:fb:41:0a:19' });
+    expect(r).toMatchObject({ ok: true, action: 'created', verified: true });
+    const filterCall = calls.find((c) => c.startsWith('GET /api/endpoint?filter='));
+    expect(filterCall).toBeDefined();
+    expect(decodeURIComponent(filterCall as string)).toContain('"mac_address":{"$eq":"3c:22:fb:41:0a:19"}');
+  });
+
+  it('registerEndpoint reports a refusal as a failed outcome, never thrown', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/api/endpoint') {
+        return { status: 422, body: { error: 'duplicate mac — a vendor body that must not be echoed' } };
+      }
+      return undefined;
+    });
+    const r = await adapter.registerEndpoint({ mac: '3c:22:fb:41:0a:19', status: 'Known' });
+    expect(r).toEqual({
+      ok: false,
+      action: 'failed',
+      httpCode: 422,
+      message: 'ClearPass refused the endpoint registration (HTTP 422)',
+    });
+    expect(JSON.stringify(r)).not.toContain('vendor body');
+    expect(calls.filter((c) => c.startsWith('GET /api/endpoint'))).toHaveLength(0); // no read-back after a refusal
+  });
+
+  it('registerEndpoint reports an unmakeable read-back as verified:undefined — never a guess', async () => {
+    const { adapter } = makeAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/api/endpoint') return { status: 201, body: { id: '301' } };
+      if (method === 'GET' && pathname === '/api/endpoint/301') return { status: 500, body: {} };
+      return undefined;
+    });
+    const r = await adapter.registerEndpoint({ mac: '3c:22:fb:41:0a:19' });
+    expect(r.ok).toBe(true);
+    expect(r.verified).toBeUndefined();
+    expect(r.message).toContain('read-back could not be made');
+  });
+
+  it('updateEndpoint PATCHes only the changed fields and verifies them', async () => {
+    const { adapter, bodies } = makeAdapter((method, pathname, _q, body) => {
+      if (method === 'PATCH' && pathname === '/api/endpoint/301') {
+        expect(body).toEqual({ status: 'Disabled', description: 'access revoked' });
+        return { status: 200, body: {} };
+      }
+      if (method === 'GET' && pathname === '/api/endpoint/301') {
+        return { body: { ...EP_ROW, status: 'Disabled', description: 'access revoked' } };
+      }
+      return undefined;
+    });
+    const r = await adapter.updateEndpoint('301', { status: 'Disabled', description: 'access revoked' });
+    expect(r).toMatchObject({ ok: true, action: 'updated', verified: true, httpCode: 200 });
+    expect(bodies.filter((b) => b !== null)).toHaveLength(1);
+  });
+
+  it('updateEndpoint flags a read-back that does not show the write (accepted, not landed)', async () => {
+    const { adapter } = makeAdapter((method, pathname) => {
+      if (method === 'PATCH' && pathname === '/api/endpoint/301') return { status: 200, body: {} };
+      if (method === 'GET' && pathname === '/api/endpoint/301') return { body: { ...EP_ROW } }; // still Known
+      return undefined;
+    });
+    const r = await adapter.updateEndpoint('301', { status: 'Disabled' });
+    expect(r.ok).toBe(true);
+    expect(r.verified).toBe(false);
+    expect(r.message).toContain('read-back does not show it');
+  });
+
+  it('a landed endpoint write drops the cached repository reads, so the next pull re-reads', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/api/session') return { body: hal([]) };
+      if (method === 'GET' && pathname === '/api/endpoint') {
+        return { body: { count: 1, _links: {}, _embedded: { items: [{ ...EP_ROW }] } } };
+      }
+      if (method === 'POST' && pathname === '/api/endpoint') return { status: 201, body: { ...EP_ROW } };
+      if (method === 'GET' && pathname === '/api/endpoint/301') return { body: { ...EP_ROW } };
+      return undefined;
+    });
+    const collectionReads = () => calls.filter((c) => c.startsWith('GET /api/endpoint?')).length;
+    await adapter.pull();
+    expect(collectionReads()).toBeGreaterThan(0);
+    const before = collectionReads();
+    await adapter.registerEndpoint({ mac: '3c:22:fb:41:0a:19' });
+    // The write's own filter read-back does not apply here (id was in the
+    // answer) — any NEW collection read can only come from a re-pull.
+    const afterWrite = collectionReads();
+    await adapter.pull();
+    expect(collectionReads()).toBeGreaterThan(afterWrite);
+    expect(afterWrite).toBe(before); // the write itself read back by id, not the collection
+  });
+
+  it('createLocalUser sends the password in the request body and NOWHERE else', async () => {
+    const PASSWORD = 'c4nary-password-never-echoed';
+    const { adapter, bodies, recorded } = makeAdapter((method, pathname, _q, body) => {
+      if (method === 'POST' && pathname === '/api/local-user') {
+        expect(body).toEqual({
+          user_id: 'noc-operator',
+          role_name: 'IT admin',
+          enabled: true,
+          password: PASSWORD,
+          username: 'NOC Operator',
+        });
+        return { status: 201, body: { id: '77' } };
+      }
+      if (method === 'GET' && pathname === '/api/local-user/77') {
+        // A poisoned read-back: CPPM must never send this, but the whitelist
+        // is what PROVES a hash cannot ride the row even if one arrives.
+        return {
+          body: { id: '77', user_id: 'noc-operator', role_name: 'IT admin', enabled: true, password: 'hash-material-shh' },
+        };
+      }
+      return undefined;
+    });
+    const r = await adapter.createLocalUser({
+      userId: 'noc-operator',
+      username: 'NOC Operator',
+      roleName: 'IT admin',
+      enabled: true,
+      password: PASSWORD,
+    });
+    expect(r).toMatchObject({ ok: true, action: 'created', verified: true });
+    // Sent: exactly one body carries it — the POST.
+    expect(bodies.filter((b) => b !== null && b.includes(PASSWORD))).toHaveLength(1);
+    // Never logged, never in the result, and the poisoned hash never crossed.
+    expect(JSON.stringify(recorded)).not.toContain(PASSWORD);
+    expect(JSON.stringify(r)).not.toContain(PASSWORD);
+    expect(JSON.stringify(r)).not.toContain('hash-material-shh');
+    expect(JSON.stringify(recorded)).not.toContain('hash-material-shh');
+  });
+
+  it('createLocalUser flags a read-back whose role does not match the write', async () => {
+    const { adapter } = makeAdapter((method, pathname) => {
+      if (method === 'POST' && pathname === '/api/local-user') return { status: 201, body: { id: '77' } };
+      if (method === 'GET' && pathname === '/api/local-user/77') {
+        return { body: { id: '77', user_id: 'noc-operator', role_name: 'Guest Sponsor', enabled: true } };
+      }
+      return undefined;
+    });
+    const r = await adapter.createLocalUser({
+      userId: 'noc-operator',
+      roleName: 'IT admin',
+      enabled: true,
+      password: 'x'.repeat(8),
+    });
+    expect(r.ok).toBe(true);
+    expect(r.verified).toBe(false);
+  });
+
+  it('updateLocalUser sends only the changing fields — the password only when it changes', async () => {
+    const seen: unknown[] = [];
+    const { adapter } = makeAdapter((method, pathname, _q, body) => {
+      if (method === 'PUT' && pathname === '/api/local-user/77') {
+        seen.push(body);
+        return { status: 200, body: {} };
+      }
+      if (method === 'GET' && pathname === '/api/local-user/77') {
+        return { body: { id: '77', user_id: 'noc-operator', role_name: 'Guest Sponsor', enabled: false } };
+      }
+      return undefined;
+    });
+    const r1 = await adapter.updateLocalUser('77', { enabled: false });
+    expect(seen[0]).toEqual({ enabled: false }); // no password key at all
+    expect(r1).toMatchObject({ ok: true, action: 'updated', verified: true });
+
+    const r2 = await adapter.updateLocalUser('77', { roleName: 'Guest Sponsor', password: 'n3w-password-shh' });
+    expect(seen[1]).toEqual({ role_name: 'Guest Sponsor', password: 'n3w-password-shh' });
+    expect(r2.ok).toBe(true);
+    expect(JSON.stringify(r2)).not.toContain('n3w-password-shh');
+  });
+
+  it('a landed local-user write drops the cached inventory read', async () => {
+    const { adapter, calls } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/api/session') return { body: hal([]) };
+      if (method === 'GET' && pathname === '/api/local-user' && method === 'GET') {
+        return { body: { count: 0, _links: {}, _embedded: { items: [] } } };
+      }
+      if (method === 'POST' && pathname === '/api/local-user') return { status: 201, body: { id: '77' } };
+      if (method === 'GET' && pathname === '/api/local-user/77') {
+        return { body: { id: '77', user_id: 'noc-operator', role_name: 'IT admin', enabled: true } };
+      }
+      return undefined;
+    });
+    const collectionReads = () => calls.filter((c) => c.startsWith('GET /api/local-user?')).length;
+    await adapter.pull();
+    const before = collectionReads();
+    expect(before).toBeGreaterThan(0);
+    await adapter.createLocalUser({ userId: 'noc-operator', roleName: 'IT admin', enabled: true, password: 'x'.repeat(8) });
+    const afterWrite = collectionReads();
+    await adapter.pull();
+    expect(collectionReads()).toBeGreaterThan(afterWrite); // re-read, not the cache
   });
 });

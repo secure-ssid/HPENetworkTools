@@ -76,14 +76,27 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'checking' });
   const [lapsed, setLapsed] = useState(false);
 
-  const check = useCallback(() => {
-    setPhase({ kind: 'checking' });
+  /**
+   * Asks the server where the session stands and settles the gate on the
+   * answer. The mount effect runs this directly; the "Try again" button on
+   * the unreachable panel wraps it in `check`, which first drops the gate
+   * back to the quiet checking placeholder. That setState lives in the
+   * click handler, not the effect: a synchronous setState from an effect
+   * body is a cascading render, and on mount the placeholder is already
+   * the initial state.
+   */
+  const ask = useCallback(() => {
     void getAuthState().then((state) => {
       setPhase(state ? { kind: 'ready', state } : { kind: 'unreachable' });
     });
   }, []);
 
-  useEffect(check, [check]);
+  const check = useCallback(() => {
+    setPhase({ kind: 'checking' });
+    ask();
+  }, [ask]);
+
+  useEffect(ask, [ask]);
 
   /**
    * Catch a session that ends while the portal is open.

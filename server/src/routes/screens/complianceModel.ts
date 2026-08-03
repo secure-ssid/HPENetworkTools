@@ -4,6 +4,7 @@ import { type ReconciledDeviceRow } from '../../services/reconcile';
 import { reportedValue } from './context';
 import {
   type BaselineProgressRow,
+  type ConfigBackupSummary,
   type DeviceCheckRow,
   type DeviceType,
   type FindingRow,
@@ -117,6 +118,44 @@ export function evidenceChecksFor(device: ReconciledDeviceRow): DeviceCheckRow[]
 }
 
 /**
+ * The 'Config drift' card, fed by the config-backup service's rollup.
+ *
+ * Three honest states, in order of what the portal actually knows:
+ *   undefined        — the caller does not track config backups (the card's
+ *                      original dead state, kept for callers that only want
+ *                      the findings engine);
+ *   backedUp === 0   — collection is wired but no snapshot has landed yet,
+ *                      which is a different fact from "no drift";
+ *   otherwise        — real numbers: devices whose latest snapshot differs
+ *                      from its predecessor, out of the devices that have one.
+ */
+export function configDriftStat(summary: ConfigBackupSummary | null | undefined): StatDef {
+  if (summary === undefined || summary === null) {
+    return { label: 'Config drift', value: '—', delta: 'no running-config baseline source', tone: 'neutral' };
+  }
+  if (summary.backedUp === 0) {
+    return { label: 'Config drift', value: '—', delta: 'no config snapshots collected yet', tone: 'neutral' };
+  }
+  return {
+    label: 'Config drift',
+    value: String(summary.drift),
+    delta: `of ${countOf(summary.backedUp, 'device')} with config snapshots`,
+    tone: summary.drift > 0 ? 'negative' : 'positive',
+  };
+}
+
+/** The evidence text's drift line — the old "cannot be evaluated" admission
+ *  is only true while there are no snapshots to evaluate. */
+function configDriftEvidenceLine(summary: ConfigBackupSummary | null | undefined): string {
+  if (!summary || summary.backedUp === 0) {
+    return '- Running configuration drift cannot be evaluated from inventory-only plane responses';
+  }
+  return summary.drift > 0
+    ? `- Config drift: ${summary.drift} of ${summary.backedUp} devices with config snapshots differ from their previous snapshot`
+    : `+ Config drift: none across ${countOf(summary.backedUp, 'device')} with config snapshots`;
+}
+
+/**
  * `missingInventories` names linked planes that contributed no device list to
  * this run. The route's only guard was datasetReported('devices'), which is
  * true as soon as ANY plane answers — so a run over the two devices Mist
@@ -127,10 +166,14 @@ export function evidenceChecksFor(device: ReconciledDeviceRow): DeviceCheckRow[]
  * the estate. A green scorecard derived from a fraction of it is the worst
  * version of the mistake this codebase keeps guarding against, because it is
  * the screen an operator would screenshot for an audit.
+ *
+ * `configBackup` is the backup service's rollup (see configDriftStat); omit
+ * it only where the findings engine alone is wanted.
  */
 export function liveComplianceData(
   devices: ReconciledDeviceRow[],
   missingInventories: readonly string[] = [],
+  configBackup?: ConfigBackupSummary | null,
 ): LiveComplianceData {
   if (devices.length === 0) return { stats: [], findings: [], baselines: [], diff: '' };
 
@@ -228,7 +271,7 @@ export function liveComplianceData(
         delta: partial ? `${missingInventories.join(', ')} not in this run` : 'for available evidence fields',
         tone: cleanSites === sites.size && !partial ? 'positive' : 'neutral',
       },
-      { label: 'Config drift', value: '—', delta: 'no running-config baseline source', tone: 'neutral' },
+      configDriftStat(configBackup),
     ],
     findings,
     baselines,
@@ -240,7 +283,7 @@ export function liveComplianceData(
         ? [`! Scope: ${missingInventories.join(', ')} contributed no inventory — this run does not cover them`]
         : []),
       ...baselines.map((baseline) => `${baseline.value === 100 ? '+' : '-'} ${baseline.label}: ${baseline.note}`),
-      '- Running configuration drift cannot be evaluated from inventory-only plane responses',
+      configDriftEvidenceLine(configBackup),
     ].join('\n'),
   };
 }

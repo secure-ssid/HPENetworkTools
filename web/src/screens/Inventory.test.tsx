@@ -67,7 +67,7 @@ describe('Inventory Explorer search', () => {
       });
 
     render(
-      <MemoryRouter initialEntries={['/inventory']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>
@@ -118,7 +118,7 @@ describe('Inventory Explorer search', () => {
       .mockResolvedValueOnce({ nodes: [], total: 0, nextCursor: null, cursorState: 'past-end', query: 'switch' });
 
     render(
-      <MemoryRouter initialEntries={['/inventory']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>
@@ -179,7 +179,7 @@ describe('Inventory Explorer search', () => {
       });
 
     render(
-      <MemoryRouter initialEntries={['/inventory']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>
@@ -225,7 +225,7 @@ describe('Inventory Explorer search', () => {
     });
 
     render(
-      <MemoryRouter initialEntries={['/inventory']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>
@@ -248,7 +248,7 @@ describe('Inventory Explorer search', () => {
 describe('Inventory search completeness', () => {
   const renderInventory = () =>
     render(
-      <MemoryRouter initialEntries={['/inventory']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>

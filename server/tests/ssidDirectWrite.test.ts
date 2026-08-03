@@ -36,6 +36,7 @@ let createApp: typeof import('../src/index').createApp;
 let makeConfigureRouter: typeof import('../src/routes/configure').makeConfigureRouter;
 let WriteBroker: typeof import('../src/services/writeBroker').WriteBroker;
 let settings: typeof import('../src/config/settings').settings;
+let MistAdapter: typeof import('../src/planes/mist').MistAdapter;
 
 let tmpDir: string;
 let server: Server;
@@ -55,6 +56,7 @@ beforeAll(async () => {
   ({ makeConfigureRouter } = await import('../src/routes/configure'));
   ({ WriteBroker } = await import('../src/services/writeBroker'));
   ({ settings } = await import('../src/config/settings'));
+  ({ MistAdapter } = await import('../src/planes/mist'));
   ({ createApp } = await import('../src/index'));
   server = createApp().listen(0, '127.0.0.1');
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -70,6 +72,7 @@ afterAll(async () => {
 
 const READY_FORM: SsidForm = {
   ...DEFAULT_SSID_FORM,
+  plane: 'CENTRAL', // the direct apply targets ONE plane — the fixture's dual-plane display label is not a write target
   security: 'wpa2-psk',
   scopeIds: ['site-1'],
   defaultRole: 'guest',
@@ -867,5 +870,249 @@ describe('SSID direct-write route integration with an injected plane', () => {
     } finally {
       await closeServer(route.server);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mist dispatch — the same reviewed flow, routed by the form's plane label.
+// The Mist side is exercised through a REAL MistAdapter over an in-memory
+// fake fetch (the adapter's own mapping tests live in mist.test.ts); the
+// registry is a minimal structural stand-in returning it for 'mist'.
+// ---------------------------------------------------------------------------
+
+const MIST_FORM: SsidForm = {
+  ...READY_FORM,
+  name: 'MRDN-Research',
+  plane: 'MIST',
+  defaultRole: undefined, // Mist has no role catalog — the form must not carry one
+  scopeIds: ['site-uuid-a'],
+};
+
+function mistState(): import('../src/planes/types').PlaneState {
+  return { id: 'mist', linked: true, health: 'warning', lastSync: null, deviceCount: null, callsToday: 0, note: null };
+}
+
+/** Fake fetch for the dispatch tests: the org sites read, the per-site WLAN
+ *  list, and write verbs (recorded). Everything else 404s. */
+function mistFakeFetch(writes: { method: string; url: string; body: unknown }[]): import('../src/planes/mist').FetchLike {
+  return async (url, init) => {
+    const u = String(url);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (method !== 'GET') {
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      writes.push({ method, url: u, body });
+      return new Response(JSON.stringify(body ?? {}), { status: 200 });
+    }
+    if (u.includes('/orgs/org-123/sites')) {
+      return new Response(JSON.stringify([{ id: 'site-uuid-a', name: 'Campus A' }]), { status: 200 });
+    }
+    if (u.includes('/wlans')) return new Response(JSON.stringify([]), { status: 200 });
+    return new Response('{}', { status: 404 });
+  };
+}
+
+function mistRegistry(mistAdapter: unknown): import('../src/planes/registry').PlaneRegistry {
+  return { get: (id: string) => (id === 'mist' ? mistAdapter : undefined) } as unknown as import('../src/planes/registry').PlaneRegistry;
+}
+
+/** Poller stand-in for the Mist path — records the plane it was asked to re-read. */
+function fakeMistPoller(opts: { tick?: string; ssids?: unknown[] } = {}): {
+  poller: import('../src/services/poller').Poller;
+  syncCalls: string[];
+} {
+  const syncCalls: string[] = [];
+  const poller = {
+    syncNowFor: async (plane: string) => {
+      syncCalls.push(plane);
+      return opts.tick ?? 'ok';
+    },
+    contributionsByPlane: () =>
+      new Map([['mist', opts.ssids === undefined ? { config: {} } : { config: { ssids: opts.ssids } }]]),
+  } as unknown as import('../src/services/poller').Poller;
+  return { poller, syncCalls };
+}
+
+function mistBackedService(opts: { dataDir?: string; writes?: { method: string; url: string; body: unknown }[]; tick?: string } = {}) {
+  const writes = opts.writes ?? [];
+  const adapter = new MistAdapter(
+    { apiHost: 'api.mist.com', orgId: 'org-123', token: 'mist-token' },
+    mistState(),
+    () => {},
+    mistFakeFetch(writes),
+    async () => {},
+  );
+  const { poller, syncCalls } = fakeMistPoller({ tick: opts.tick, ssids: [{ name: 'MRDN-Research' }] });
+  const service = new SsidDirectWriteService({
+    dataDir: opts.dataDir ?? freshDataDir(),
+    demoMode: () => false,
+    registry: mistRegistry(adapter),
+    pollerRef: poller,
+  });
+  return { service, writes, syncCalls };
+}
+
+describe('SsidDirectWriteService — Mist dispatch', () => {
+  it('routes a MIST form to the Mist adapter from the registry and re-reads MIST afterwards', async () => {
+    const { service, writes, syncCalls } = mistBackedService();
+    const result = await service.apply(MIST_FORM, true);
+    expect(result.ok).toBe(true);
+    expect(result.profile.action).toBe('created');
+    expect(writes.some((w) => w.method === 'POST' && w.url.includes('/api/v1/sites/site-uuid-a/wlans'))).toBe(true);
+    expect(result.assignments[0].label).toBe('Campus A'); // catalog label, not the bare uuid
+    expect(syncCalls).toEqual(['mist']);
+    expect(result.cacheRefresh).toEqual({ attempted: true, ok: true });
+  });
+
+  it('a Mist cache refresh that cannot re-read says MIST, honestly', async () => {
+    const { service } = mistBackedService({ tick: 'error' });
+    const result = await service.apply(MIST_FORM, true);
+    expect(result.cacheRefresh).toEqual({ attempted: true, ok: false, message: 'Mist could not be re-read (poll error)' });
+  });
+
+  it('refuses a plane with no SSID write path instead of silently targeting Central', async () => {
+    const { service } = mistBackedService();
+    await expect(service.apply({ ...MIST_FORM, plane: 'AOS-8' }, true)).rejects.toThrow(/no direct SSID write path/);
+    // A multi-plane display label is not a write target either.
+    await expect(service.apply({ ...MIST_FORM, plane: 'CENTRAL + MIST' }, true)).rejects.toThrow(
+      /no direct SSID write path/,
+    );
+    // …and the review gate still runs before any of it.
+    await expect(service.apply(MIST_FORM, false)).rejects.toThrow(/explicit review confirmation/);
+  });
+
+  it('requires NO role/server-group/portal for Mist — and still requires the passphrase, write-only', async () => {
+    const { service } = mistBackedService();
+    // wpa2-psk without a passphrase is refused by validation, same as Central.
+    await expect(service.apply({ ...MIST_FORM, passphrase: undefined }, true)).rejects.toThrow(/passphrase is required/);
+    // …while a role is NOT required (Mist_FORM carries none and applies above).
+    // Enterprise validation also passes — the ADAPTER is what refuses, with the reason.
+    const refusal = await service.apply({ ...MIST_FORM, security: 'wpa2-enterprise', passphrase: undefined }, true);
+    expect(refusal.ok).toBe(false);
+    expect(refusal.profile.action).toBe('failed');
+    expect(refusal.profile.message).toMatch(/RADIUS/);
+  });
+
+  it('refuses DFS exclusion on the Mist path too — an RF-profile change, not a WLAN field', async () => {
+    const { service, writes } = mistBackedService();
+    await expect(service.apply({ ...MIST_FORM, noDfs: true }, true)).rejects.toThrow(/DFS exclusion/);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('answers 409 and an honest catalog when Mist is not linked', async () => {
+    const service = new SsidDirectWriteService({
+      dataDir: freshDataDir(),
+      demoMode: () => false,
+      registry: mistRegistry(undefined),
+      pollerRef: fakeMistPoller().poller,
+    });
+    await expect(service.apply(MIST_FORM, true)).rejects.toThrow(/mist is not linked/);
+    const catalog = await service.catalog('mist');
+    expect(catalog.source).toBe('Mist is not linked');
+    expect(catalog.unavailable).toContain('sites');
+  });
+
+  it('logs ONE audit line for the Mist apply — mist change id, no ticket, NO PASSPHRASE', async () => {
+    const dataDir = freshDataDir();
+    const { service } = mistBackedService({ dataDir });
+    await service.apply(MIST_FORM, true);
+    const raw = readFileSync(join(dataDir, 'change-log.jsonl'), 'utf8').trim();
+    const lines = raw.split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ event: 'ssid-apply', kind: 'ssid', result: 'applied' });
+    expect(String(lines[0].changeId)).toMatch(/^direct-ssid-mist-/);
+    expect(raw).not.toMatch(/super-secret-pw/);
+  });
+
+  it('a Mist transport failure propagates the fixed, secret-free 502 and one audit line', async () => {
+    const dataDir = freshDataDir();
+    const adapter = new MistAdapter(
+      { apiHost: 'api.mist.com', orgId: 'org-123', token: 'mist-token' },
+      mistState(),
+      () => {},
+      // The org-sites read (the catalog pre-check) succeeds; the transport
+      // dies on the WLAN write path — the 502 "outcome unknown" case.
+      (async (url: unknown) => {
+        const u = String(url);
+        if (u.includes('/wlans')) throw new Error('socket hang up at https://api.mist.com/api/v1/sites/x/wlans?token=abc123');
+        if (u.includes('/orgs/org-123/sites')) {
+          return new Response(JSON.stringify([{ id: 'site-uuid-a', name: 'Campus A' }]), { status: 200 });
+        }
+        return new Response('{}', { status: 404 });
+      }) as import('../src/planes/mist').FetchLike,
+      async () => {},
+    );
+    const service = new SsidDirectWriteService({
+      dataDir,
+      demoMode: () => false,
+      registry: mistRegistry(adapter),
+      pollerRef: fakeMistPoller().poller,
+    });
+    let caught: unknown;
+    try {
+      await service.apply(MIST_FORM, true);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SsidDirectWriteError);
+    expect((caught as InstanceType<typeof SsidDirectWriteError>).status).toBe(502);
+    expect((caught as Error).message).toBe('Mist did not answer the SSID write; the outcome is unknown');
+    expect((caught as Error).message).not.toMatch(/token=|socket hang up/);
+    const raw = readFileSync(join(dataDir, 'change-log.jsonl'), 'utf8').trim();
+    expect(raw).not.toMatch(/super-secret-pw|token=abc123/);
+    expect(raw).toContain('direct-ssid-mist-');
+  });
+
+  it('demo mode answers the Mist demo catalog and a Mist canned apply', async () => {
+    const service = new SsidDirectWriteService({ dataDir: freshDataDir(), demoMode: () => true, plane: null });
+    const catalog = await service.catalog('mist');
+    expect(catalog.source).toMatch(/Mist demo catalog/);
+    expect(catalog.scopes.length).toBeGreaterThan(0);
+    expect(catalog.scopes.every((s) => s.category === 'site')).toBe(true);
+    // The default (no plane) catalog stays Central's.
+    expect((await service.catalog()).source).toMatch(/Central demo catalog/);
+
+    const result = await service.apply({ ...MIST_FORM, scopeIds: ['campus-02'] }, true);
+    expect(result.ok).toBe(true);
+    expect(result.profile.message).toBe('demo WLAN "MRDN-Research" created — no live org was written');
+    expect(result.assignments[0]).toMatchObject({ scopeId: 'campus-02', verified: true, message: 'written (demo)' });
+  });
+});
+
+describe('SSID direct-write routes — the plane query', () => {
+  async function postJson(path: string, payload: unknown): Promise<{ status: number; body: any }> {
+    const res = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return { status: res.status, body: await res.json() };
+  }
+
+  it('GET /api/configure/ssids/catalog?plane=mist answers the Mist demo catalog', async () => {
+    const res = await fetch(`${base}/api/configure/ssids/catalog?plane=mist`);
+    expect(res.status).toBe(200);
+    const catalog = (await res.json()) as SsidCatalog;
+    expect(catalog.source).toMatch(/Mist demo catalog/);
+    expect(catalog.scopes.map((s) => s.id)).toEqual(['campus-02', 'northgate']);
+    // The default catalog is untouched — Central's, as before.
+    const central = (await (await fetch(`${base}/api/configure/ssids/catalog`)).json()) as SsidCatalog;
+    expect(central.source).toMatch(/Central demo catalog/);
+  });
+
+  it('GET /api/configure/ssids/catalog?plane=<unsupported> answers 400, not a silent Central catalog', async () => {
+    const res = await fetch(`${base}/api/configure/ssids/catalog?plane=classic`);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/central or mist/);
+  });
+
+  it('POST /api/configure/ssids/apply with a MIST form rides the demo canned outcome, passphrase never riding back', async () => {
+    const applied = await postJson('/api/configure/ssids/apply', {
+      form: { ...MIST_FORM, scopeIds: ['campus-02'] },
+      reviewConfirmed: true,
+    });
+    expect(applied.status).toBe(200);
+    expect(applied.body.ok).toBe(true);
+    expect(applied.body.profile.message).toMatch(/demo WLAN/);
+    expect(JSON.stringify(applied.body)).not.toMatch(/super-secret-pw/);
   });
 });

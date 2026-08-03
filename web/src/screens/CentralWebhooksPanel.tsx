@@ -53,6 +53,7 @@ import {
 import { DiffCode } from '../lib/DiffCode';
 import {
   acknowledgeCentralWebhookHandoff,
+  apiFetch,
   createCentralWebhook,
   deleteCentralWebhook,
   getCentralWebhook,
@@ -63,7 +64,9 @@ import {
   isWebhookGenerationConflict,
   rotateCentralWebhookHmacKey,
   resolveCentralWebhookHandoff,
+  serverMessage,
   updateCentralWebhook,
+  type ApiResult,
 } from '../api/client';
 import {
   WEBHOOK_AUTH_OPTIONS,
@@ -76,12 +79,17 @@ import {
   validateWebhookForm,
   webhookTargetUrl,
   type CanonicalWebhookCreateCandidate,
+  type Sev,
   type WebhookAuthMechanism,
   type WebhookDetail,
+  type WebhookEventsEnvelope,
   type WebhookForm,
   type WebhookHandoffOperation,
   type WebhookListEnvelope,
   type WebhookOneTimeSecretResult,
+  type WebhookReceivedEvent,
+  type WebhookReceiverSource,
+  type WebhookReceiverStatusEnvelope,
   type WebhookSummary,
 } from '@hpe/shared';
 
@@ -170,12 +178,66 @@ function fmtTime(iso: string | null): string {
   return d.toISOString().replace('T', ' ').slice(0, 16) + 'Z';
 }
 
+// ---------------------------------------------------------------------------
+// Inbound receiver calls — /api/hooks/* (this panel is their only surface,
+// so the helpers live here rather than in the shared api modules). Same
+// rules as the management calls above: a non-OK answer yields the server's
+// own message, an unreachable backend yields `offline` — never a fabricated
+// empty state.
+// ---------------------------------------------------------------------------
+
+const RECEIVER_EVENTS_PAGE = 25;
+
+async function getWebhookReceivers(): Promise<ApiResult<WebhookReceiverStatusEnvelope>> {
+  try {
+    const r = await apiFetch('/api/hooks/receivers');
+    if (r.ok) return (await r.json()) as WebhookReceiverStatusEnvelope;
+    return { error: await serverMessage(r, `request failed — HTTP ${r.status}`), httpCode: r.status };
+  } catch (err) {
+    return { error: `cannot reach the portal backend: ${(err as Error).message}`, offline: true };
+  }
+}
+
+async function getWebhookEvents(): Promise<ApiResult<WebhookEventsEnvelope>> {
+  try {
+    const r = await apiFetch(`/api/hooks/events?limit=${RECEIVER_EVENTS_PAGE}`);
+    if (r.ok) return (await r.json()) as WebhookEventsEnvelope;
+    return { error: await serverMessage(r, `request failed — HTTP ${r.status}`), httpCode: r.status };
+  } catch (err) {
+    return { error: `cannot reach the portal backend: ${(err as Error).message}`, offline: true };
+  }
+}
+
+async function simulateWebhookEvent(
+  source: WebhookReceiverSource,
+): Promise<ApiResult<{ accepted: number; demo: boolean }>> {
+  try {
+    const r = await apiFetch('/api/hooks/simulate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source }),
+    });
+    if (r.ok) return (await r.json()) as { accepted: number; demo: boolean };
+    return { error: await serverMessage(r, `request failed — HTTP ${r.status}`), httpCode: r.status };
+  } catch (err) {
+    return { error: `cannot reach the portal backend: ${(err as Error).message}`, offline: true };
+  }
+}
+
+const RECEIVER_SEV_TONE: Record<Sev, 'danger' | 'warning' | 'info'> = {
+  P1: 'danger',
+  P2: 'warning',
+  P3: 'info',
+};
+
 export function CentralWebhooksPanel() {
   const { toast } = useToast();
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [listing, setListing] = useState<WebhookListEnvelope | null>(null);
-  const [loading, setLoading] = useState(false);
+  // The mount effect reads the list immediately, so the panel mounts into the
+  // spinner rather than flashing a "No webhooks" empty state for one frame.
+  const [loading, setLoading] = useState(true);
 
   const [drawerMode, setDrawerMode] = useState<DrawerMode>(null);
   const [drawerRow, setDrawerRow] = useState<WebhookSummary | null>(null);
@@ -217,6 +279,11 @@ export function CentralWebhooksPanel() {
   const listRequestSeqRef = useRef(0);
   const handoffRequestSeqRef = useRef(0);
   const oneTimeSecretRef = useRef<string | null>(null);
+  /* The same secret, mirrored in state for the render path — the ref stays
+     for the post-await staleness checks in copyOneTimeSecret (a clipboard
+     write that outlives the modal must not report success), and rendering
+     reads this committed copy instead of the ref. */
+  const [oneTimeSecret, setOneTimeSecret] = useState<string | null>(null);
   const [oneTimeSecretOpen, setOneTimeSecretOpen] = useState(false);
   const [oneTimeSecretAction, setOneTimeSecretAction] =
     useState<WebhookOneTimeSecretResult['action'] | null>(null);
@@ -271,16 +338,17 @@ export function CentralWebhooksPanel() {
     }
   };
 
-  const loadPendingHandoff = async () => {
+  const loadPendingHandoff = (): Promise<void> => {
     const seq = ++handoffRequestSeqRef.current;
-    const result = await getCentralWebhookHandoffStatus();
-    if (!mountedRef.current || seq !== handoffRequestSeqRef.current) return;
-    if (isApiError(result)) {
-      setHandoffStatusError(result.error);
-      return;
-    }
-    setHandoffStatusError(null);
-    applyPendingHandoff(result.pending ? (result.operation ?? null) : null);
+    return getCentralWebhookHandoffStatus().then((result) => {
+      if (!mountedRef.current || seq !== handoffRequestSeqRef.current) return;
+      if (isApiError(result)) {
+        setHandoffStatusError(result.error);
+        return;
+      }
+      setHandoffStatusError(null);
+      applyPendingHandoff(result.pending ? (result.operation ?? null) : null);
+    });
   };
 
   const beginDrawerRequest = (id: string): { id: string; seq: number } => {
@@ -295,9 +363,8 @@ export function CentralWebhooksPanel() {
     activeRequestRef.current.id === token.id &&
     activeRequestRef.current.seq === token.seq;
 
-  const load = async (nextQ = q, nextPage = page): Promise<WebhookListEnvelope | null> => {
+  const fetchList = async (nextQ = q, nextPage = page): Promise<WebhookListEnvelope | null> => {
     const seq = ++listRequestSeqRef.current;
-    setLoading(true);
     const result = await getCentralWebhooks({ limit: PAGE_SIZE, offset: (nextPage - 1) * PAGE_SIZE, q: nextQ.trim() });
     // A newer load (search, pagination, or a post-mutation refresh) may
     // have started and already resolved while this one was in flight —
@@ -308,11 +375,74 @@ export function CentralWebhooksPanel() {
     return result;
   };
 
+  const load = async (nextQ = q, nextPage = page): Promise<WebhookListEnvelope | null> => {
+    setLoading(true);
+    return fetchList(nextQ, nextPage);
+  };
+
+  /* Turning a page swaps the table for the spinner at once (adjusted during
+     render — an effect would commit one frame of the old page's rows under
+     the new page number first); the read itself stays an effect. */
+  const [prevPage, setPrevPage] = useState(page);
+  if (prevPage !== page) {
+    setPrevPage(page);
+    setLoading(true);
+  }
+
   useEffect(() => {
-    void load(q, page);
+    void fetchList(q, page);
     void loadPendingHandoff();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
+
+  // -- Inbound receivers ---------------------------------------------------
+  // Receiver status and the recent-events record load once on mount and
+  // after every simulate; they are this portal's own received data, so they
+  // render in demo and live mode alike.
+  const [receivers, setReceivers] = useState<WebhookReceiverStatusEnvelope | null>(null);
+  const [receiverEvents, setReceiverEvents] = useState<WebhookReceivedEvent[] | null>(null);
+  const [receiverEventsNote, setReceiverEventsNote] = useState<string | null>(null);
+  const [receiverError, setReceiverError] = useState<string | null>(null);
+  const [simulating, setSimulating] = useState<WebhookReceiverSource | null>(null);
+  const receiverRequestSeqRef = useRef(0);
+
+  const loadReceivers = (): Promise<void> => {
+    const seq = ++receiverRequestSeqRef.current;
+    return Promise.all([getWebhookReceivers(), getWebhookEvents()]).then(([statusResult, eventsResult]) => {
+      if (!mountedRef.current || seq !== receiverRequestSeqRef.current) return;
+      if (isApiError(statusResult)) {
+        setReceiverError(statusResult.error);
+        setReceivers(null);
+      } else {
+        setReceiverError(null);
+        setReceivers(statusResult);
+      }
+      if (isApiError(eventsResult)) {
+        setReceiverEvents([]);
+        setReceiverEventsNote(eventsResult.error);
+      } else {
+        setReceiverEvents(eventsResult.events);
+        setReceiverEventsNote(eventsResult.note ?? null);
+      }
+    });
+  };
+
+  useEffect(() => {
+    void loadReceivers();
+  }, []);
+
+  const simulate = async (source: WebhookReceiverSource): Promise<void> => {
+    setSimulating(source);
+    const result = await simulateWebhookEvent(source);
+    if (!mountedRef.current) return;
+    setSimulating(null);
+    if (isApiError(result)) {
+      toast(`Demo event failed: ${result.error}`, { tone: 'danger' });
+    } else {
+      toast(`Demo ${source} event accepted through the signed receiver path`, { tone: 'success' });
+    }
+    void loadReceivers();
+  };
 
   const totalPages = listing ? Math.max(1, Math.ceil(listing.totalCount / PAGE_SIZE)) : 1;
 
@@ -335,6 +465,7 @@ export function CentralWebhooksPanel() {
 
   const clearOneTimeSecret = () => {
     oneTimeSecretRef.current = null;
+    setOneTimeSecret(null);
     setOneTimeSecretOpen(false);
     setOneTimeSecretAction(null);
     setOneTimeOperationId(null);
@@ -345,6 +476,7 @@ export function CentralWebhooksPanel() {
 
   const showOneTimeSecret = (result: WebhookOneTimeSecretResult) => {
     oneTimeSecretRef.current = result.hmacKey;
+    setOneTimeSecret(result.hmacKey);
     setOneTimeSecretAction(result.action);
     setOneTimeOperationId(result.operationId);
     setOneTimeSecretRevealed(false);
@@ -1147,6 +1279,131 @@ export function CentralWebhooksPanel() {
         </>
       )}
 
+      <SectionHeader label="Receivers" meta="INBOUND · /API/HOOKS" />
+      {receiverError ? (
+        <EmptyState title="Receiver status unavailable" description={receiverError} />
+      ) : receivers === null ? (
+        <Spinner />
+      ) : (
+        <>
+          <Table density="compact">
+            <Table.Head>
+              <Table.Row>
+                <Table.HeaderCell>Source</Table.HeaderCell>
+                <Table.HeaderCell>Register this URL</Table.HeaderCell>
+                <Table.HeaderCell>Signing secret</Table.HeaderCell>
+                <Table.HeaderCell>Last received</Table.HeaderCell>
+                <Table.HeaderCell>Events</Table.HeaderCell>
+              </Table.Row>
+            </Table.Head>
+            <Table.Body>
+              {receivers.receivers.map((receiver) => (
+                <Table.Row key={receiver.source}>
+                  <Table.Cell>{receiver.label}</Table.Cell>
+                  <Table.Cell>
+                    <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11.5 }}>
+                      {`${window.location.origin}${receiver.path}`}
+                    </span>
+                  </Table.Cell>
+                  <Table.Cell>
+                    <Badge
+                      tone={
+                        receiver.secret === 'operator'
+                          ? 'success'
+                          : receiver.secret === 'demo'
+                            ? 'warning'
+                            : 'danger'
+                      }
+                    >
+                      {receiver.secret === 'operator'
+                        ? 'configured'
+                        : receiver.secret === 'demo'
+                          ? 'demo secret'
+                          : 'not configured'}
+                    </Badge>
+                  </Table.Cell>
+                  <Table.Cell>
+                    {receiver.lastReceivedAt ? fmtTime(receiver.lastReceivedAt) : 'Nothing received yet'}
+                  </Table.Cell>
+                  <Table.Cell>{receiver.receivedCount}</Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+          {receivers.demoMode ? (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={simulating !== null}
+                title="Post a labelled fixture payload through the real signed receiver path"
+                onClick={() => void simulate('mist')}
+              >
+                {simulating === 'mist' ? 'Simulating…' : 'Simulate Mist event'}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={simulating !== null}
+                title="Post a labelled fixture payload through the real signed receiver path"
+                onClick={() => void simulate('central')}
+              >
+                {simulating === 'central' ? 'Simulating…' : 'Simulate Central event'}
+              </Button>
+              <span style={{ fontSize: 11.5, color: 'var(--nd-text-muted)' }}>
+                Signed with the demo secret, then verified, normalized and queued exactly like a real delivery.
+              </span>
+            </div>
+          ) : null}
+        </>
+      )}
+
+      <SectionHeader
+        label="Received events"
+        meta={receiverEvents !== null && receiverEvents.length > 0 ? String(receiverEvents.length) : undefined}
+      />
+      {receiverEvents === null ? (
+        <Spinner />
+      ) : receiverEvents.length === 0 ? (
+        <EmptyState
+          title="No events received yet"
+          description={
+            receiverEventsNote ??
+            'Nothing has been delivered to either receiver yet — register one of the URLs above as a webhook target.'
+          }
+        />
+      ) : (
+        <Table density="compact">
+          <Table.Head>
+            <Table.Row>
+              <Table.HeaderCell>Received</Table.HeaderCell>
+              <Table.HeaderCell>Source</Table.HeaderCell>
+              <Table.HeaderCell>Severity</Table.HeaderCell>
+              <Table.HeaderCell>Event</Table.HeaderCell>
+              <Table.HeaderCell>Device</Table.HeaderCell>
+            </Table.Row>
+          </Table.Head>
+          <Table.Body>
+            {receiverEvents.map((event) => (
+              <Table.Row key={event.id}>
+                <Table.Cell>{fmtTime(event.receivedAt)}</Table.Cell>
+                <Table.Cell>
+                  <span style={{ display: 'inline-flex', gap: 4 }}>
+                    <Badge tone="neutral">{event.source === 'mist' ? 'Mist' : 'New Central'}</Badge>
+                    {event.demo ? <Badge tone="warning">demo</Badge> : null}
+                  </span>
+                </Table.Cell>
+                <Table.Cell>
+                  <Badge tone={RECEIVER_SEV_TONE[event.sev]}>{event.sev}</Badge>
+                </Table.Cell>
+                <Table.Cell>{event.title}</Table.Cell>
+                <Table.Cell>{event.device || '—'}</Table.Cell>
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table>
+      )}
+
       <Drawer
         open={drawerMode !== null}
         onOpenChange={(open) => {
@@ -1524,7 +1781,7 @@ export function CentralWebhooksPanel() {
             }}
           >
             {oneTimeSecretRevealed
-              ? oneTimeSecretRef.current
+              ? oneTimeSecret
               : '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

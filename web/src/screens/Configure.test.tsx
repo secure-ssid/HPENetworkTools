@@ -27,7 +27,8 @@ import {
   queueChange,
 } from '../api/client';
 import type { BrokeredChange, ConfigureData } from '../api/client';
-import type { SsidApplyResult, SsidCatalog } from '@hpe/shared';
+import { SSIDS } from '@hpe/shared';
+import type { SsidApplyResult, SsidCatalog, SsidObject } from '@hpe/shared';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -1340,5 +1341,274 @@ describe('Configure — a push accepted but not confirmed', () => {
 
     await waitFor(() => expect(mockPushChange).toHaveBeenCalledWith('chg-server-1'));
     expect(screen.queryByText('Accepted by Central, not yet confirmed')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The SSID inventory list renders each row's own facts: the site attribution
+// the adapter merged into `targets` ('Site A + Site B · enabled') and the
+// redaction note a secret-bearing row carries — the marker, never the secret.
+// ---------------------------------------------------------------------------
+describe('Configure SSID rows — site attribution and the redaction note', () => {
+  it('renders the merged multi-site targets and the note, never a PSK value', async () => {
+    const CANARY = 'sup3r-s3cret-canary';
+    // The row as the Mist site-WLAN walk maps it, PLUS a canary no SsidObject
+    // should ever carry: if a secret ever rode the payload, the screen must
+    // still not render it (the adapter whitelist is the real guard — this
+    // pins the screen as the second fence).
+    const mistRow = Object.assign(
+      {
+        kind: 'ssid',
+        origin: 'configured',
+        name: 'MRDN-IoT',
+        vlan: '830',
+        security: 'WPA2-PSK',
+        targets: 'Campus-02 Research + Northgate Clinic · enabled',
+        plane: 'MIST',
+        tone: 'accent',
+        note: 'PSK set — redacted by the portal',
+      } as SsidObject,
+      { psk: CANARY, auth: { psk: CANARY } },
+    );
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, ssids: [mistRow] });
+
+    renderConfigure();
+
+    expect(await screen.findByText('MRDN-IoT')).toBeTruthy();
+    expect(screen.getByText('Campus-02 Research + Northgate Clinic · enabled')).toBeTruthy();
+    expect(screen.getByText('PSK set — redacted by the portal')).toBeTruthy();
+    expect(document.body.textContent).not.toContain(CANARY);
+  });
+
+  it('renders the authored demo notes on the fixture path', async () => {
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      ssids: SSIDS,
+      inventoryMode: 'configured',
+      dataSource: 'demo',
+    });
+
+    renderConfigure();
+
+    // The three authored PSK rows carry the same marker the live adapter
+    // stamps — including MRDN-Research, the demo's purely-Mist WLAN.
+    expect((await screen.findAllByText('PSK set — redacted by the portal')).length).toBe(3);
+    expect(screen.getByText('guest-lobby, northgate-public · 96 APs')).toBeTruthy();
+    expect(screen.getByText('all groups · 268 APs')).toBeTruthy();
+    expect(screen.getByText('Campus-02 Research · enabled')).toBeTruthy();
+    // The note marks a redaction; no fixture field holds a passphrase to leak.
+    expect(document.body.textContent).not.toMatch(/passphrase/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mist SSID direct write — the drawer rides the same reviewed flow, targeted
+// at Mist. The catalog mock answers per plane so the suite proves which
+// catalog the drawer asked for.
+// ---------------------------------------------------------------------------
+
+const MIST_CATALOG: SsidCatalog = {
+  scopes: [
+    { id: 'campus-02', label: 'Campus-02 Research', category: 'site' },
+    { id: 'northgate', label: 'Northgate Clinic', category: 'site' },
+  ],
+  roles: [],
+  authServerGroups: [],
+  captivePortalProfiles: [],
+  unavailable: [],
+  source: 'Mist /api/v1/sites/{site}/wlans · 2 sites',
+};
+
+/** The deployment reports Central brokered + Mist direct — the combination
+ *  that makes the drawer offer the plane choice. */
+const MIST_DIRECT_CAPS = [
+  { plane: 'HPE Aruba Central', planeId: 'central', mode: 'brokered' as const, note: 'brokered write, ticket required', tone: 'accent' as const, linked: true },
+  { plane: 'Mist', planeId: 'mist', mode: 'direct' as const, note: 'reviewed SSID writes, no ticket', tone: 'accent' as const, linked: true },
+];
+
+/** A configured Mist WLAN row as the live config read maps it — disabled,
+ *  with the redaction note its cleartext-PSK payload earned. */
+const MIST_ROW: SsidObject = {
+  kind: 'ssid',
+  origin: 'configured',
+  name: 'MRDN-Research',
+  vlan: 'vlan 822',
+  security: 'WPA2-PSK',
+  targets: 'Campus-02 Research · disabled',
+  plane: 'MIST',
+  tone: 'info',
+  note: 'PSK set — redacted by the portal',
+  enabled: false,
+};
+
+const MIST_APPLIED: SsidApplyResult = {
+  ok: true,
+  partial: false,
+  profile: { ok: true, action: 'updated', verified: true, message: 'site-scoped WLAN · updated at 1 site' },
+  assignments: [
+    { scopeId: 'campus-02', label: 'Campus-02 Research', ok: true, verified: true, httpCode: 200, message: 'WLAN updated — HTTP 200' },
+  ],
+};
+
+function mockCatalogsByPlane() {
+  mockGetSsidCatalog.mockImplementation(async (plane) => (plane === 'mist' ? MIST_CATALOG : SSID_CATALOG));
+}
+
+describe('Configure — Mist SSID direct write', () => {
+  it('a Mist SSID row opens the Mist edit flow: Mist catalog, no Central dependencies, admin state seeded from the row', async () => {
+    mockCatalogsByPlane();
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      ssids: [MIST_ROW],
+      capabilities: MIST_DIRECT_CAPS,
+      inventoryMode: 'configured',
+    });
+    renderConfigure();
+    fireEvent.click(await screen.findByRole('button', { name: /MRDN-Research/ }));
+
+    // The Mist catalog was asked for BY NAME — the Central one would be the
+    // wrong scopes for a site-scoped write.
+    await waitFor(() => expect(mockGetSsidCatalog).toHaveBeenCalledWith('mist'));
+    await screen.findByRole('checkbox', { name: 'Campus-02 Research' });
+    expect(screen.getByRole('checkbox', { name: 'Northgate Clinic' })).toBeTruthy();
+
+    // Plane reads MIST; Central's role/server-group/portal selects are gone.
+    expect(screen.getByRole('combobox', { name: 'Plane' })).toHaveProperty('value', 'MIST');
+    expect(screen.queryByText('Default role')).toBeNull();
+    expect(screen.queryByText('Authentication server group')).toBeNull();
+    expect(screen.queryByText('Captive-portal profile')).toBeNull();
+
+    // The row said disabled — the switch is seeded off, never assumed on.
+    expect(screen.getByRole('switch', { name: 'WLAN enabled' }).getAttribute('aria-checked')).toBe('false');
+    // wpa2-psk: the write-only passphrase field is the one dependency Mist has.
+    expect(screen.getByPlaceholderText('Enter the PSK passphrase')).toBeTruthy();
+    // Name/VLAN seeded from the row.
+    expect(screen.getByPlaceholderText('Enter SSID name')).toHaveProperty('value', 'MRDN-Research');
+    expect(screen.getByPlaceholderText('1-4094')).toHaveProperty('value', '822');
+  });
+
+  it('refuses enterprise/portal modes in the drawer with the shared sentence — Apply disabled', async () => {
+    mockCatalogsByPlane();
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      ssids: [MIST_ROW],
+      capabilities: MIST_DIRECT_CAPS,
+      inventoryMode: 'configured',
+    });
+    renderConfigure();
+    fireEvent.click(await screen.findByRole('button', { name: /MRDN-Research/ }));
+    await screen.findByRole('checkbox', { name: 'Campus-02 Research' });
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Security' }), { target: { value: 'wpa3-enterprise' } });
+    await screen.findByText('Apply is disabled — Mist cannot express this security mode');
+    expect(document.body.textContent).toMatch(/RADIUS servers/);
+    expect(screen.getByRole('button', { name: 'Apply directly' })).toHaveProperty('disabled', true);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Security' }), { target: { value: 'psk-portal' } });
+    // The refusal renders in the alert AND on the preview's refused auth line.
+    expect((await screen.findAllByText(/a Mist captive portal is the WLAN/)).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Apply directly' })).toHaveProperty('disabled', true);
+
+    // Back to a representable mode: the refusal clears.
+    fireEvent.change(screen.getByRole('combobox', { name: 'Security' }), { target: { value: 'wpa2-psk' } });
+    await waitFor(() => expect(screen.queryByText('Apply is disabled — Mist cannot express this security mode')).toBeNull());
+    expect(mockApplySsidDirect).not.toHaveBeenCalled();
+  });
+
+  it('applies the Mist edit end-to-end: plane MIST, site scope, enabled state, write-only passphrase', async () => {
+    mockCatalogsByPlane();
+    mockApplySsidDirect.mockResolvedValue(MIST_APPLIED);
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      ssids: [MIST_ROW],
+      capabilities: MIST_DIRECT_CAPS,
+      inventoryMode: 'configured',
+    });
+    renderConfigure();
+    fireEvent.click(await screen.findByRole('button', { name: /MRDN-Research/ }));
+    await screen.findByRole('checkbox', { name: 'Campus-02 Research' });
+
+    fireEvent.change(screen.getByPlaceholderText('Enter the PSK passphrase'), { target: { value: 'sup3r-secret-psk' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Campus-02 Research' }));
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'I have reviewed this profile and these scope assignments — apply directly, no ticket.' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Apply directly' }));
+
+    await waitFor(() => expect(mockApplySsidDirect).toHaveBeenCalledTimes(1));
+    const [form, reviewConfirmed] = mockApplySsidDirect.mock.calls[0];
+    expect(reviewConfirmed).toBe(true);
+    expect(form).toMatchObject({
+      plane: 'MIST',
+      name: 'MRDN-Research',
+      vlan: '822',
+      security: 'wpa2-psk',
+      scopeIds: ['campus-02'],
+      passphrase: 'sup3r-secret-psk',
+      enabled: false, // the row's admin state rides through — not silently re-enabled
+    });
+    // Central constructs must not leak into a Mist write. The base form seeds
+    // these keys with explicit `undefined` (JSON drops them), so assert the
+    // VALUE is undefined rather than the key's absence.
+    expect((form as Partial<{ defaultRole: string }>).defaultRole).toBeUndefined();
+    expect((form as Partial<{ authServerGroupId: string }>).authServerGroupId).toBeUndefined();
+    expect((form as Partial<{ captivePortalProfileId: string }>).captivePortalProfileId).toBeUndefined();
+
+    // The result panel names the per-site write (toast AND panel render it),
+    // and the passphrase never renders anywhere.
+    expect((await screen.findAllByText(/site-scoped WLAN · updated at 1 site/)).length).toBeGreaterThan(0);
+    expect(document.body.textContent).not.toContain('sup3r-secret-psk');
+  });
+
+  it('New SSID offers the plane choice — switching to Mist reloads the Mist catalog and drops Central dependencies', async () => {
+    mockCatalogsByPlane();
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, capabilities: MIST_DIRECT_CAPS });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+
+    // Default is Central, with the Central catalog and the role dependency.
+    await waitFor(() => expect(mockGetSsidCatalog).toHaveBeenCalledWith('central'));
+    await screen.findByRole('checkbox', { name: 'Campus-01' });
+    expect(screen.getByText('Default role')).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'WLAN enabled' })).toBeNull();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Plane' }), { target: { value: 'MIST' } });
+    await waitFor(() => expect(mockGetSsidCatalog).toHaveBeenCalledWith('mist'));
+    await screen.findByRole('checkbox', { name: 'Campus-02 Research' });
+    expect(screen.queryByText('Default role')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Campus-01' })).toBeNull(); // Central scopes cleared with the plane
+    // A new Mist WLAN starts enabled — the operator can say otherwise.
+    expect(screen.getByRole('switch', { name: 'WLAN enabled' }).getAttribute('aria-checked')).toBe('true');
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Plane' }), { target: { value: 'CENTRAL' } });
+    await waitFor(() => expect(screen.getByText('Default role')).toBeTruthy());
+    expect(screen.queryByRole('switch', { name: 'WLAN enabled' })).toBeNull();
+  });
+
+  it('no reported Mist write path → no plane choice, and the read-only sentence stands', async () => {
+    mockCatalogsByPlane();
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      capabilities: [{ plane: 'Mist', planeId: 'mist', mode: 'read only' as const, note: 'no write path', tone: 'neutral' as const, linked: true }],
+    });
+    renderConfigure();
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await waitFor(() => expect(mockGetSsidCatalog).toHaveBeenCalledWith('central'));
+    expect(screen.queryByRole('combobox', { name: 'Plane' })).toBeNull();
+    // The capability matrix row keeps its honest read-only badge.
+    expect(screen.getByText('read only')).toBeTruthy();
+  });
+
+  it('the brokered-write sentence names reviewed SSID writes for a direct plane — never a push it cannot take', async () => {
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, capabilities: MIST_DIRECT_CAPS });
+    renderConfigure();
+    await waitFor(() => expect(screen.getByText('Writes are brokered, never standing')).toBeTruthy());
+    expect(
+      screen.getByText(
+        `${LEASE_SENTENCE} HPE Aruba Central accepts pushes from here; Mist takes reviewed SSID writes without a ticket.`,
+      ),
+    ).toBeTruthy();
   });
 });

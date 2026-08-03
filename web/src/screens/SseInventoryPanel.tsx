@@ -216,12 +216,15 @@ export function SseInventoryPanel({
   const [retrying, setRetrying] = useState(false);
   const [unknownRecovery, setUnknownRecovery] = useState(false);
 
-  const [drawerMode, setDrawerMode] = useState<DrawerMode>(null);
-  const [drawerKind, setDrawerKind] = useState<SseObjectKind | null>(null);
+  /* The Inventory Explorer deep-links into the edit drawer (initialObjectId)
+     and remounts the panel per stable node, so the drawer's open state is
+     initial state; the object read below fills the form when it lands. */
+  const [drawerMode, setDrawerMode] = useState<DrawerMode>(initialObjectId ? 'edit' : null);
+  const [drawerKind, setDrawerKind] = useState<SseObjectKind | null>(initialObjectId ? initialKind : null);
   const [drawerQuery, setDrawerQuery] = useState('');
-  const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [drawerId, setDrawerId] = useState<string | null>(initialObjectId ?? null);
   const [drawerBuiltIn, setDrawerBuiltIn] = useState(false);
-  const [drawerLoading, setDrawerLoading] = useState(false);
+  const [drawerLoading, setDrawerLoading] = useState(Boolean(initialObjectId));
   const [form, setForm] = useState<FormState>(emptyForm());
   const [reviewed, setReviewed] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -232,12 +235,18 @@ export function SseInventoryPanel({
   const listingRequestRef = useRef(0);
   const drawerRequestRef = useRef(0);
   const outcomeRequestRef = useRef(0);
-  kindRef.current = kind;
-  listingStateRef.current = listingState;
 
-  const load = async (k: SseObjectKind, query: string) => {
+  /* Latest-value mirrors for the async handlers below — a commit can land
+     while a plane call is in flight. Written in an effect (the compiler's
+     refs rule forbids writing refs during render), so they hold the last
+     committed values, which is all a post-commit reader can ask for. */
+  useEffect(() => {
+    kindRef.current = kind;
+    listingStateRef.current = listingState;
+  });
+
+  const fetchListing = async (k: SseObjectKind, query: string) => {
     const request = ++listingRequestRef.current;
-    setListingState({ kind: k, query, listing: null, loading: true });
     let result: SseKindListing;
     try {
       result = await getSseKind(k, query || undefined);
@@ -261,6 +270,11 @@ export function SseInventoryPanel({
     return !result.readError;
   };
 
+  const load = async (k: SseObjectKind, query: string) => {
+    setListingState({ kind: k, query, listing: null, loading: true });
+    return fetchListing(k, query);
+  };
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -270,8 +284,17 @@ export function SseInventoryPanel({
     };
   }, []);
 
+  /* Switching kinds shows the new kind's loading state at once (adjusted
+     during render — an effect would commit one frame of the old kind's list
+     under the new tab first); the read itself stays an effect. */
+  const [prevKind, setPrevKind] = useState(kind);
+  if (prevKind !== kind) {
+    setPrevKind(kind);
+    setListingState({ kind, query: q, listing: null, loading: true });
+  }
+
   useEffect(() => {
-    void load(kind, q);
+    void fetchListing(kind, q);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind]);
 
@@ -310,6 +333,18 @@ export function SseInventoryPanel({
     setApplying(false);
   };
 
+  const fetchDrawerObject = async (rowKind: SseObjectKind, id: string, name: string, request: number) => {
+    const res = await getSseObject(rowKind, id);
+    if (!mountedRef.current || request !== drawerRequestRef.current) return;
+    setDrawerLoading(false);
+    if (!res.ok || !res.object) {
+      toast(res.message ?? `could not read ${name}`, { tone: 'danger' });
+      closeDrawer();
+      return;
+    }
+    setForm(formFromRaw(rowKind, res.object));
+  };
+
   const openEditById = async (
     id: string,
     name: string,
@@ -326,15 +361,7 @@ export function SseInventoryPanel({
     setReviewed(false);
     setApplying(false);
     setDrawerLoading(true);
-    const res = await getSseObject(rowKind, id);
-    if (!mountedRef.current || request !== drawerRequestRef.current) return;
-    setDrawerLoading(false);
-    if (!res.ok || !res.object) {
-      toast(res.message ?? `could not read ${name}`, { tone: 'danger' });
-      closeDrawer();
-      return;
-    }
-    setForm(formFromRaw(rowKind, res.object));
+    await fetchDrawerObject(rowKind, id, name, request);
   };
 
   const openEdit = async (row: SseObjectSummary, rowKind: SseObjectKind, query: string) => {
@@ -343,7 +370,8 @@ export function SseInventoryPanel({
 
   useEffect(() => {
     if (initialObjectId) {
-      void openEditById(initialObjectId, initialObjectId, false, initialKind, '');
+      const request = ++drawerRequestRef.current;
+      void fetchDrawerObject(initialKind, initialObjectId, initialObjectId, request);
     }
     // The Inventory Explorer remounts the panel for each stable selected node.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -419,8 +419,14 @@ function authConfigView(): Record<string, unknown> {
   };
 }
 
-/** Which required field, if any, is still missing once the body is merged in. */
-function missingAuthFields(body: Record<string, unknown>, stored: AuthSettings | null): string | null {
+/**
+ * Which required field, if any, is still missing once the body is merged in.
+ *
+ * Exported for PUT /api/settings, which accepts an auth block as part of a
+ * whole-store write and must apply exactly this validation — a settings write
+ * must not be a weaker path onto the identity provider than this route is.
+ */
+export function missingAuthFields(body: Record<string, unknown>, stored: AuthSettings | null): string | null {
   const has = (key: keyof AuthSettings): boolean => {
     const v = body[key];
     if (typeof v === 'string' && v.trim()) return true;

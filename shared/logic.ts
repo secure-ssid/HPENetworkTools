@@ -13,7 +13,10 @@ import type {
   AlertCorrelation,
   AlertRow,
   ApUplinkMap,
+  AuthEventRow,
   BlastRadiusRow,
+  Client360Dataset,
+  ClientPlaneSection,
   ClientRow,
   ConfigForm,
   ConfigKind,
@@ -22,10 +25,11 @@ import type {
   DeviceType,
   DetailFetchState,
   DetailSource,
+  EndpointRow,
+  MistSleRow,
   PathHop,
   PathHopView,
   Plane,
-  PlaneDatasetKey,
   PlaneFreshness,
   PlaneHealthKey,
   PlaneKey,
@@ -43,7 +47,6 @@ import type {
   SsidForm,
   SsidObject,
   SsidSecurity,
-  SyncOutcome,
   TerminalKind,
   TerminalLine,
   TimelineStep,
@@ -57,11 +60,15 @@ import type {
 import {
   AOS_TERMINAL_RESPONSES,
   AP_UPLINK,
+  AUTH_EVENTS,
+  CLEARPASS_ENDPOINTS,
+  CLIENTS,
   DEVICE_PROFILE_BUILDERS,
   FALLBACK_CHAIN,
   PLANE_KEY_BY_LABEL,
   PLANE_WRITE_MODE,
   SITE_CHAIN,
+  SITE_SLE,
   SW_TERMINAL_RESPONSES,
   TIMELINES,
   UNKNOWN_LANE_META,
@@ -267,14 +274,48 @@ const BANDS: Record<SsidBands, string> = {
  * profile, and
  * PSK/portal modes need a passphrase. Open omits credentials but still needs
  * the role.
+ *
+ * `plane` is the form's target plane label. Those dependencies are New
+ * Central constructs; a Mist-targeted form has no role/server-group/portal
+ * catalog to satisfy — the modes that would need them are refused outright
+ * (mistSsidSecurityRefusal below), so only the write-only PSK passphrase
+ * remains a requirement there.
  */
-export function ssidDependencyRequirementsFor(security: SsidSecurity): SsidDependencyRequirement {
+export function ssidDependencyRequirementsFor(security: SsidSecurity, plane?: string): SsidDependencyRequirement {
+  if (plane !== undefined && planeKeyOf(plane as Plane) === 'mist') {
+    return {
+      role: false,
+      authServerGroup: false,
+      captivePortal: false,
+      passphrase: security === 'wpa2-psk',
+    };
+  }
   return {
     role: true,
     authServerGroup: security === 'wpa3-enterprise' || security === 'wpa2-enterprise',
     captivePortal: security === 'psk-portal',
     passphrase: security === 'wpa2-psk' || security === 'psk-portal',
   };
+}
+
+/**
+ * What a Mist direct SSID write cannot express from the Central-vocabulary
+ * form — the refusal reason, or null when the mode maps cleanly (wpa2-psk,
+ * open). Verified against the Mist OpenAPI spec (mistsys/mist_openapi):
+ * auth.type is eap|eap192|open|psk|psk-tkip|psk-wpa2-tkip|wep; 802.1X rides
+ * the org's RADIUS `auth_servers` and a captive portal is the WLAN's own
+ * `portal` object — neither can be named by a Central server-group or
+ * portal-profile id, so approximating them would be a silent edit.
+ *
+ * The drawer disables Apply on this sentence and the Mist adapter refuses
+ * with the same words, so the two can never disagree.
+ */
+export function mistSsidSecurityRefusal(security: SsidSecurity): string | null {
+  if (security === 'wpa2-psk' || security === 'open') return null;
+  if (security === 'psk-portal') {
+    return 'a Mist captive portal is the WLAN’s own portal configuration — a Central captive-portal profile id cannot express one; configure the portal in the Mist dashboard';
+  }
+  return 'a Mist enterprise WLAN authenticates against the org’s RADIUS servers — a Central authentication-server-group id cannot name them; configure enterprise auth in the Mist dashboard';
 }
 
 /**
@@ -469,7 +510,14 @@ export function seedFormFromRow(
 ): Partial<ConfigForm> {
   if (kind === 'ssid') {
     const w = row as SsidObject;
-    return { name: w.name, vlan: w.vlan.replace('vlan ', ''), plane: w.plane };
+    // `enabled` rides only when the plane reported it (Mist WLANs) — an
+    // unreported admin state must seed nothing rather than invent one.
+    return {
+      name: w.name,
+      vlan: w.vlan.replace('vlan ', ''),
+      plane: w.plane,
+      ...(typeof w.enabled === 'boolean' ? { enabled: w.enabled } : {}),
+    };
   }
   if (kind === 'port') {
     const p = row as PortObject;
@@ -1035,24 +1083,6 @@ export function laneSyncStamp(lastSync: string | null | undefined, now: number =
   return `synced ${relativeAge(lastSync, now)}`;
 }
 
-/**
- * Classify one pull so the registry can stamp what actually happened rather
- * than a binary ok/fail. The case the honesty rules exist for is `empty`: the
- * plane answered and reported nothing, which must not be recorded as a
- * healthy sync carrying data, nor be presented as an authoritative zero.
- */
-export function syncOutcomeFor(pull: {
-  ok: boolean;
-  reported: readonly PlaneDatasetKey[];
-  missing?: readonly PlaneDatasetKey[];
-  rows: number;
-}): SyncOutcome {
-  if (!pull.ok) return 'failed';
-  if (pull.missing && pull.missing.length > 0) return 'partial';
-  if (pull.reported.length === 0 || pull.rows === 0) return 'empty';
-  return 'ok';
-}
-
 // ---------------------------------------------------------------------------
 // Device identity — the inventory row is authoritative over the profile
 // ---------------------------------------------------------------------------
@@ -1377,4 +1407,228 @@ function toneRank(t: Tone): number {
     default:
       return 2;
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Client 360 — ONE client correlated across every registry plane by MAC
+// ---------------------------------------------------------------------------
+
+/**
+ * Any-separator MAC → aa:bb:cc:dd:ee:ff; non-12-hex values pass through
+ * lowercased.
+ *
+ * THE one normalizer. The client roster's cross-plane dedupe, the auth-event
+ * join and the 360 correlation must agree on what "the same endpoint" means,
+ * so this lives here rather than with any one consumer. (It moved from
+ * server/src/planes/clearpass.ts, which re-exports it for its existing
+ * importers.)
+ */
+export function normalizeMac(v: string): string {
+  const hex = v.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  if (hex.length === 12) return hex.replace(/(..)/g, '$1:').slice(0, -1);
+  return v.trim().toLowerCase();
+}
+
+/**
+ * Every registry plane, in the order the Systems screen lists them. The 360
+ * block answers for ALL of them — an absent plane is a stated fact with a
+ * reason, never a row that is simply missing. Keep in sync with the server's
+ * PLANE_IDS (server/src/planes/types.ts).
+ */
+export const CLIENT_360_PLANES: readonly PlaneKey[] = [
+  'central',
+  'classic',
+  'mist',
+  'greenlake',
+  'aos8',
+  'aos10',
+  'local',
+  'clearpass',
+  'uxi',
+  'sse',
+  'opsramp',
+  'edgeconnect',
+];
+
+/** The most auth decisions one 360 section carries. The full log belongs to
+ *  the Auth events screen (the drawer links to it); this is the recent
+ *  summary, newest first. */
+export const CLIENT_360_AUTH_EVENT_LIMIT = 5;
+
+/**
+ * Planes that never hold per-client data, with the sentence that says why.
+ * These hold in EVERY mode: they are statements about the plane's data model,
+ * not about whether it happens to be linked. A plane absent from this map is
+ * a DATA plane — it can carry a session (or, for ClearPass, the auth-event
+ * and endpoint pair) and is answered from the world's rows.
+ */
+const CLIENT_360_STRUCTURAL: Partial<Record<PlaneKey, string>> = {
+  greenlake: 'GreenLake reports licences and subscriptions, not client sessions',
+  uxi: 'UXI tests experience synthetically from its own sensors — it has no per-client session view',
+  sse: 'SSE secures edges and tunnels — it carries no per-client session feed',
+  opsramp: 'OpsRamp reports device health and alerts, not client sessions',
+  edgeconnect: 'EdgeConnect reports SD-WAN devices and tunnels, not client sessions',
+};
+
+/**
+ * Everything the 360 correlation reads, already pulled. The server builds
+ * this from the poller's last-good contributions (live) or the fixtures
+ * (demo); the browser builds the demo form itself when no backend answered.
+ * No outbound call is ever made for a 360 block — that is the whole budget
+ * story: this is a JOIN over data the poll already paid for.
+ */
+export interface Client360World {
+  /** Session rows across EVERY plane, pre-dedupe — each row's `plane` label
+   *  names its plane. The roster's cross-plane dedupe must NOT be applied
+   *  first: the block exists to show each plane's own sighting. */
+  sessions: readonly ClientRow[];
+  /** ClearPass auth decisions (every MAC). */
+  authEvents: readonly AuthEventRow[];
+  /** ClearPass endpoint repository rows. */
+  endpoints: readonly EndpointRow[];
+  /** Mist per-site SLE rows (empty when Mist carries none). */
+  mistSle: readonly MistSleRow[];
+  /** Planes the correlation must not claim it asked at all, with why
+   *  ('plane not linked', 'sync adapter not yet implemented'). */
+  unavailable?: Partial<Record<PlaneKey, string>>;
+  /** Row datasets a plane did NOT report this cycle, so an absence is worded
+   *  "not read" rather than "none" — the omitted/zero distinction the rest of
+   *  the portal keeps. */
+  unread?: Partial<Record<PlaneKey, readonly Client360Dataset[]>>;
+}
+
+/**
+ * The 360 block for ONE client: one section per registry plane, each either
+ * present-with-data or absent-with-an-honest-reason, ordered ok → empty →
+ * not-fetched (stable within a state by CLIENT_360_PLANES order) so the
+ * planes that see the client read first.
+ *
+ * Pure — every input rides in `world`. `siteId` is the client row's site; it
+ * is the only key a site-level dataset (Mist SLE) can join on, and null means
+ * no site-level join is attempted.
+ */
+export function clientPlaneSections(
+  mac: string,
+  siteId: SiteId | null,
+  world: Client360World,
+): ClientPlaneSection[] {
+  const wanted = normalizeMac(mac);
+  const matches = (value: string | null | undefined): boolean =>
+    !!value && value !== '—' && normalizeMac(value) === wanted;
+
+  // First sighting per plane wins — the same ordering the roster's dedupe
+  // applies (liveCore.ts dedupeClients), so the 360 and the table never
+  // disagree about which row a plane reported.
+  const sessionByPlane = new Map<PlaneKey, ClientRow>();
+  for (const row of world.sessions) {
+    if (!matches(row.mac)) continue;
+    const key = planeKeyOf(row.plane);
+    if (key && !sessionByPlane.has(key)) sessionByPlane.set(key, row);
+  }
+  const authEvents = world.authEvents
+    .filter((event) => matches(event.mac))
+    .slice(0, CLIENT_360_AUTH_EVENT_LIMIT);
+  const endpoint = world.endpoints.find((row) => matches(row.mac));
+  const siteSle = siteId ? world.mistSle.find((row) => row.siteId === siteId) : undefined;
+
+  const sections: ClientPlaneSection[] = [];
+  for (const plane of CLIENT_360_PLANES) {
+    const label = PLANE_LABEL_BY_KEY[plane];
+    if (!label) continue;
+    const structural = CLIENT_360_STRUCTURAL[plane];
+    if (structural) {
+      sections.push({ plane, label, state: 'not-fetched', reason: structural });
+      continue;
+    }
+    const blocked = world.unavailable?.[plane];
+    if (blocked) {
+      sections.push({ plane, label, state: 'not-fetched', reason: blocked });
+      continue;
+    }
+    const unread = new Set<Client360Dataset>(world.unread?.[plane] ?? []);
+
+    if (plane === 'clearpass') {
+      const authRead = !unread.has('authEvents');
+      const endpointsRead = !unread.has('endpoints');
+      if (!authRead && !endpointsRead) {
+        sections.push({
+          plane,
+          label,
+          state: 'not-fetched',
+          reason: 'its auth and endpoint reads have not come back',
+        });
+        continue;
+      }
+      const has = authEvents.length > 0 || endpoint !== undefined;
+      // Word only what was actually read: "no events" from an unread log would
+      // be a fabricated zero, and "not in the repository" from an unread
+      // repository would be the same lie wearing the other dataset.
+      const parts: string[] = [];
+      if (!has) {
+        if (authRead) parts.push('no auth events for this MAC');
+        if (endpointsRead) parts.push('not in the endpoint repository');
+      }
+      if (!authRead) parts.push('the auth log was not read this cycle');
+      if (!endpointsRead) parts.push('the endpoint repository was not read this cycle');
+      sections.push({
+        plane,
+        label,
+        state: has ? 'ok' : 'empty',
+        ...(parts.length > 0 ? { reason: parts.join(' · ') } : {}),
+        ...(endpoint ? { endpoint } : {}),
+        ...(authEvents.length > 0 ? { authEvents } : {}),
+      });
+      continue;
+    }
+
+    // Session planes.
+    if (unread.has('clients')) {
+      sections.push({
+        plane,
+        label,
+        state: 'not-fetched',
+        reason: `${label} has not reported a client roster`,
+      });
+      continue;
+    }
+    const session = sessionByPlane.get(plane);
+    const sle = plane === 'mist' ? siteSle : undefined;
+    if (session || sle) {
+      sections.push({
+        plane,
+        label,
+        state: 'ok',
+        // An SLE beside a session still needs the label; an SLE INSTEAD of a
+        // session needs the absence said first.
+        ...(sle
+          ? {
+              reason: `${session ? '' : 'no session for this MAC — '}site-level SLE: Mist scores the site, not this client`,
+            }
+          : {}),
+        ...(session ? { session } : {}),
+        ...(sle ? { siteSle: sle } : {}),
+      });
+    } else {
+      sections.push({ plane, label, state: 'empty', reason: 'no session reported for this MAC' });
+    }
+  }
+
+  const rank: Record<ClientPlaneSection['state'], number> = { ok: 0, empty: 1, 'not-fetched': 2 };
+  return sections.sort((a, b) => rank[a.state] - rank[b.state]);
+}
+
+/**
+ * The 360 world for demo mode: the fixtures ARE the estate, so every data
+ * plane answers from them and the structural reasons still apply. Used by the
+ * server's demo branch and by the browser when no backend answered — the two
+ * can never disagree, because this is the only implementation.
+ */
+export function demoClient360World(): Client360World {
+  return {
+    sessions: CLIENTS,
+    authEvents: AUTH_EVENTS,
+    endpoints: CLEARPASS_ENDPOINTS,
+    mistSle: Object.values(SITE_SLE),
+  };
 }

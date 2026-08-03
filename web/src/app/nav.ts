@@ -16,6 +16,8 @@ export function viewForPath(pathname: string): View | null {
     case undefined:
     case 'overview':
       return 'overview';
+    case 'topology':
+      return 'topology';
     case 'alerts':
       return 'alerts';
     case 'tickets':
@@ -26,6 +28,10 @@ export function viewForPath(pathname: string): View | null {
       return 'auth';
     case 'clearpass':
       return 'clearpass';
+    case 'central':
+      return 'central';
+    case 'mist':
+      return 'mist';
     case 'uxi':
       return 'uxi';
     case 'inventory':
@@ -36,6 +42,8 @@ export function viewForPath(pathname: string): View | null {
       return seg[1] ? 'device' : 'devices';
     case 'licenses':
       return 'licenses';
+    case 'greenlake':
+      return 'greenlake';
     case 'configure':
       return 'configure';
     case 'compliance':
@@ -107,8 +115,9 @@ export interface DeviceLinkIdentity {
  * this helper, never a bare `/devices/${name}` — the server resolves the
  * query pair first and only falls back to the bare name when it stays
  * unambiguous (an honest 409 otherwise, never a picked-first guess). Rows
- * from data with no identity hint (alerts, tickets, auth events, …) still
- * call this with just a name — the same legacy fallback the server honours.
+ * whose data carries a plane hint (alerts, tickets, auth events, overview)
+ * pass it through; only rows with no identity hint at all call this with
+ * just a name — the same legacy fallback the server honours.
  */
 export function deviceDetailPath(identity: DeviceLinkIdentity): string {
   const path = `/devices/${encodeURIComponent(identity.name)}`;
@@ -145,6 +154,20 @@ export function namesFilterForParam(param: string | null): string[] | null {
   return names.length > 0 ? names : null;
 }
 
+/**
+ * Device state carried by a `?state=` deep link (an availability tile's
+ * "down", a shareable filtered view); null when there is no filter. Matched
+ * against the row's state verbatim — the states a feed can carry are its own
+ * vocabulary ('up', 'degraded', 'no heartbeat', 'double-claimed', …), so an
+ * umbrella mapping would hide states the payload actually named. An empty or
+ * blank param is not a filter at all: it would hide every row and let the
+ * estate take the blame for it.
+ */
+export function stateFilterForParam(param: string | null): string | null {
+  const state = param?.trim();
+  return state ? state : null;
+}
+
 /** Registry plane id (Systems drawer deep links) → inventory Plane label. */
 const PLANE_LABEL_BY_ID: Record<string, Plane> = {
   central: 'CENTRAL',
@@ -155,6 +178,7 @@ const PLANE_LABEL_BY_ID: Record<string, Plane> = {
   local: 'LOCAL',
   clearpass: 'CLEARPASS',
   uxi: 'UXI',
+  sse: 'SSE',
   edgeconnect: 'EDGECONNECT',
   opsramp: 'OPSRAMP',
 };

@@ -31,6 +31,7 @@ import {
 } from '@hpe/shared';
 import {
   useEffect,
+  useRef,
   useState,
 } from 'react';
 
@@ -57,6 +58,17 @@ export function PortalSection() {
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState(workspaceName);
+  /* The context value can change after mount — the server settings replace
+     the localStorage seed when they land (SettingsContext). Re-seed the input
+     from it, but never over text the operator typed and has not committed:
+     the input only follows the context value while it still shows the
+     previous one. */
+  const seededNameRef = useRef(workspaceName);
+  useEffect(() => {
+    if (workspaceName === seededNameRef.current) return;
+    setName((current) => (current === seededNameRef.current ? workspaceName : current));
+    seededNameRef.current = workspaceName;
+  }, [workspaceName]);
 
   useEffect(() => {
     let live = true;

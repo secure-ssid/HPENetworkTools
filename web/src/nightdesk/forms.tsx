@@ -6,6 +6,7 @@ import type {
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from 'react';
+import type { SelectOption } from '@hpe/shared';
 import { cx } from './utils';
 
 /* ---------- Button ---------- */
@@ -67,7 +68,7 @@ export function Textarea({
 
 /* ---------- Select ---------- */
 
-export type SelectOption = { value: string; label: string };
+export type { SelectOption };
 
 type SelectProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, 'size'> & {
   size?: 'sm' | 'md' | 'lg';

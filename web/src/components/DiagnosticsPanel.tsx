@@ -98,9 +98,9 @@ const RETRY_MAX_ELAPSED_MS = 100_000;
  * safe error: it leaves the last known state on screen and says the status
  * CHECKS failed. It never claims anything about the diagnostic itself.
  */
-export function retryElapsedMs(job: DiagnosticJob, watchedSinceMs: number, now: number): number {
+export function retryElapsedMs(startedAt: string, watchedSinceMs: number, now: number): number {
   const sinceWatching = now - watchedSinceMs;
-  const startedAtMs = new Date(job.startedAt).getTime();
+  const startedAtMs = new Date(startedAt).getTime();
   if (!Number.isFinite(startedAtMs)) return sinceWatching;
   const sinceStarted = now - startedAtMs;
   return sinceStarted > sinceWatching ? sinceStarted : sinceWatching;
@@ -213,8 +213,10 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
   const [nowMs, setNowMs] = useState(() => Date.now());
   /** The only writer for `job`: every job the panel adopts re-stamps the
    *  clock its age is measured against, so a terminal state that arrives
-   *  after the ticker has stopped is still aged from the right instant. */
-  const adoptJob = (next: DiagnosticJob | null) => {
+   *  after the ticker has stopped is still aged from the right instant.
+   *  Clearing the job on an identity switch is the render-phase reset below,
+   *  which deliberately does NOT restamp — see it for why. */
+  const adoptJob = (next: DiagnosticJob) => {
     setJob(next);
     setNowMs(Date.now());
   };
@@ -228,6 +230,34 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Identity change: clear every device-scoped bit of state — review, job,
+  // selected inputs, errors — during render, before the new identity is ever
+  // committed. Nothing carried over from a previous device is shown against
+  // this one, even for a tick. This is React's adjust-state-during-render
+  // pattern: these setStates re-render this component immediately, ahead of
+  // the commit, so the reset lands before paint rather than in an effect
+  // after it (where it is also a synchronous-setState cascading render).
+  const [previousIdentity, setPreviousIdentity] = useState(identity);
+  if (previousIdentity !== identity) {
+    setPreviousIdentity(identity);
+    setDevice(null);
+    setHistory([]);
+    setReview(null);
+    // Not adoptJob(null): restamping the age clock would read Date.now()
+    // during render, and the stamp is unobservable here anyway — the age is
+    // only ever drawn for a live job, and adopting one restamps the clock.
+    setJob(null);
+    setTarget('');
+    setSourceInterface('');
+    setVrfName('');
+    setUseIpv6(false);
+    setUseManagementInterface(false);
+    setBusy(false);
+    setError(null);
+    setHistoryGaps({ discarded: 0, unreadable: 0 });
+    setLoading(true);
+  }
 
   // Bumped every time the device identity changes (checked against a mounted
   // flag too), so any in-flight request started for a previous device can
@@ -256,26 +286,13 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
   const formVersionRef = useRef(0);
   const reviewFormVersionRef = useRef<number | null>(null);
 
-  // Identity change (or first mount): clear every device-scoped bit of state
-  // immediately — review, job, selected inputs, errors — before the fresh
-  // eligibility/history read lands. Nothing carried over from a previous
-  // device is ever shown against this one, even for a tick.
+  // Identity change (or first mount): start the fresh eligibility/history
+  // read. The generation bump retires any request still in flight for the
+  // previous device; the state reset itself already happened during render,
+  // above.
   useEffect(() => {
     generationRef.current += 1;
     const generation = generationRef.current;
-    setDevice(null);
-    setHistory([]);
-    setReview(null);
-    adoptJob(null);
-    setTarget('');
-    setSourceInterface('');
-    setVrfName('');
-    setUseIpv6(false);
-    setUseManagementInterface(false);
-    setBusy(false);
-    setError(null);
-    setHistoryGaps({ discarded: 0, unreadable: 0 });
-    setLoading(true);
 
     Promise.all([getDiagnosticEligibility(), getDiagnosticHistory()])
       .then(([eligibility, read]) => {
@@ -301,17 +318,25 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
   // (network error, 5xx — retry), an honest stop on an answered terminal
   // failure (401/403 auth, 404 job gone — no amount of retrying fixes that),
   // and a client-side ceiling consistent with the server's own job deadline.
+  //
+  // The effect reads exactly these three scalars off the job: it re-keys on
+  // the job's identity and state transitions, and `startedAt` feeds the
+  // retry ceiling (see retryElapsedMs). Depending on the whole `job` object
+  // would re-key the effect on every poll response — each adopted job is a
+  // fresh object — restarting the poll cadence and the age ticker every time.
+  const jobId = job?.id ?? null;
+  const jobState = job?.state ?? null;
+  const jobStartedAt = job?.startedAt ?? null;
   useEffect(() => {
-    if (!job || TERMINAL.has(job.state)) return;
+    if (jobId === null || jobState === null || jobStartedAt === null || TERMINAL.has(jobState)) return;
     let live = true;
     let polling = false;
     let failureCount = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const jobId = job.id;
     const watchedSinceMs = Date.now();
     // Captured once: the effect is re-keyed on the job's state, and the
     // ceiling must survive that (see retryElapsedMs).
-    const watched = job;
+    const watchedStartedAt = jobStartedAt;
 
     const schedule = (delay: number) => {
       if (!live) return;
@@ -340,7 +365,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
           return;
         }
         failureCount += 1;
-        const elapsed = retryElapsedMs(watched, watchedSinceMs, Date.now());
+        const elapsed = retryElapsedMs(watchedStartedAt, watchedSinceMs, Date.now());
         const message = err instanceof Error ? err.message : String(err);
         if (elapsed >= RETRY_MAX_ELAPSED_MS) {
           setError(`Diagnostic status checks kept failing (${message}); giving up after the plane's own job deadline.`);
@@ -364,7 +389,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
       clearInterval(tick);
       if (timer) clearTimeout(timer);
     };
-  }, [job?.id, job?.state]);
+  }, [jobId, jobState, jobStartedAt]);
 
   const options = useMemo<DiagnosticTracerouteOptions>(() => {
     if (device?.deviceClass === 'ap') {

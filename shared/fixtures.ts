@@ -20,6 +20,14 @@ import type {
   BaselineProgressRow,
   CapabilityRow,
   ChangeLogEntry,
+  ClearPassAuthSourceRow,
+  ClearPassEnforcementPolicyRow,
+  ClearPassEnforcementProfileRow,
+  ClearPassLocalUserRow,
+  ClearPassNetworkDeviceRow,
+  ClearPassRoleRow,
+  ClearPassServiceDetailLive,
+  ClearPassServiceRow,
   ClientRow,
   ConnectField,
   CrumbMap,
@@ -34,6 +42,13 @@ import type {
   FindingRow,
   LaneMeta,
   LaunchpadRow,
+  MistLicenseUsageRow,
+  MistApStatsRow,
+  MistAuditLogRow,
+  MistPlaneStatus,
+  MistRogueApRow,
+  MistSiteMap,
+  MistSleMetricDetail,
   MistSleRow,
   NavGroup,
   OrphanRow,
@@ -74,6 +89,21 @@ import type {
   SelectOption,
   WriteMode,
 } from './types';
+import {
+  byBytesDesc,
+  normalizeSiteApp,
+  type SiteAppRow,
+  type SiteApplicationsLive,
+} from './appRisk';
+import {
+  apTrendSpecs,
+  interfaceTrendSpecs,
+  normalizeTrendSet,
+  type ApTrendsLive,
+  type SwitchHardwareTrendsLive,
+  type SwitchInterfaceTrendsLive,
+} from './trends';
+import type { TopologyEdgeReportInput } from './topologyGraph';
 
 // ---------------------------------------------------------------------------
 // Canonical site map
@@ -137,11 +167,14 @@ export const NAV_GROUPS: NavGroup[] = [
     label: 'Operate',
     items: [
       { label: 'Overview', view: 'overview' },
+      { label: 'Topology', view: 'topology' },
       { label: 'Alerts', view: 'alerts' },
       { label: 'Tickets', view: 'tickets' },
       { label: 'Clients', view: 'clients' },
       { label: 'Auth events', view: 'auth' },
       { label: 'ClearPass', view: 'clearpass' },
+      { label: 'Central', view: 'central' },
+      { label: 'Mist', view: 'mist' },
       { label: 'UXI', view: 'uxi' },
     ],
   },
@@ -190,11 +223,14 @@ export const SEARCH_INDEX: SearchIndexEntry[] = [
 /** Breadcrumb trails per view — NT_CRUMBS (workspace crumb is prepended at runtime). */
 export const CRUMBS: CrumbMap = {
   overview: [{ label: 'Overview' }],
+  topology: [{ label: 'Operate' }, { label: 'Topology' }],
   alerts: [{ label: 'Operate' }, { label: 'Alerts' }],
   tickets: [{ label: 'Operate' }, { label: 'Tickets' }],
   clients: [{ label: 'Operate' }, { label: 'Clients' }],
   auth: [{ label: 'Operate' }, { label: 'Auth & policy events' }],
   clearpass: [{ label: 'Operate' }, { label: 'ClearPass' }],
+  central: [{ label: 'Operate' }, { label: 'Central' }],
+  mist: [{ label: 'Operate' }, { label: 'Mist' }],
   uxi: [{ label: 'Operate' }, { label: 'UXI' }],
   inventory: [{ label: 'Inventory' }, { label: 'Explorer' }],
   sites: [{ label: 'Inventory' }, { label: 'Sites' }],
@@ -281,7 +317,9 @@ export const OVERVIEW_LAUNCHPAD: LaunchpadRow[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Alerts — NtAlerts.dc.html (the `data` array, 12 rows)
+// Alerts — NtAlerts.dc.html (the `data` array, 12 rows, plus repeat firings
+// of the tunnel-flap and DHCP-pool alerts so the demo queue exercises
+// fingerprint grouping — a flapping alert is exactly what dedup is for)
 // ---------------------------------------------------------------------------
 
 export const ALERTS: AlertRow[] = [
@@ -289,7 +327,10 @@ export const ALERTS: AlertRow[] = [
   { sev: 'P1', tone: 'danger', title: 'mm-lake-1 lost heartbeat from 3 controllers', detail: 'mc-lake-2, mc-lake-3, mc-lake-4 · cluster degraded', siteId: 'lakeshore', siteName: 'Lakeshore Medical', plane: 'AOS-8', state: 'open', age: '41m', device: 'mm-lake-1' },
   { sev: 'P1', tone: 'danger', title: 'Central Classic sync stalled — inventory 6h stale', detail: 'api 429 rate-limited · 24 devices unverified', siteId: 'riverside', siteName: 'Riverside Clinic', plane: 'CLASSIC', state: 'open', age: '6h', device: 'sw-core-a' },
   { sev: 'P2', tone: 'warning', title: 'DHCP pool 92% used on vlan 812', detail: 'scope 10.42.12.0/23 · 1,842 of 2,046 leases', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'CENTRAL', state: 'open', age: '20m', device: 'sw-core-a' },
+  { sev: 'P2', tone: 'warning', title: 'DHCP pool 92% used on vlan 812', detail: 'scope 10.42.12.0/23 · 1,901 of 2,046 leases', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'CENTRAL', state: 'open', age: '9m', device: 'sw-core-a' },
   { sev: 'P2', tone: 'warning', title: 'gw-edge-1 tunnel flap ×14 in an hour', detail: 'ipsec to dc1 · mtu blackhole suspected', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'AOS-10', state: 'open', age: '55m', device: 'gw-edge-1' },
+  { sev: 'P2', tone: 'warning', title: 'gw-edge-1 tunnel flap ×14 in an hour', detail: 'ipsec to dc1 · rekey collision on iked restart', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'AOS-10', state: 'open', age: '38m', device: 'gw-edge-1' },
+  { sev: 'P2', tone: 'warning', title: 'gw-edge-1 tunnel flap ×14 in an hour', detail: 'ipsec to dc1 · ddos guard throttled ike', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'AOS-10', state: 'open', age: '12m', device: 'gw-edge-1' },
   { sev: 'P2', tone: 'warning', title: 'Wi-Fi drops, 3rd floor east — 22 clients', detail: 'ap-3f-12, ap-3f-14 · dfs radar events on 5GHz', siteId: 'campus-02', siteName: 'Campus-02 Research', plane: 'MIST', state: 'acked', age: '2h', device: 'ap-3f-12' },
   { sev: 'P2', tone: 'warning', title: 'sw-core-a PSU 2 absent — single supply', detail: 'chassis CX 8325 · psu2 removed 03:12', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'LOCAL', state: 'open', age: '3h', device: 'sw-core-a' },
   { sev: 'P2', tone: 'warning', title: 'uxi-cam01-2 sensor offline', detail: 'last test 04:50 · poe port 1/1/22 down', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'UXI', state: 'open', age: '5h', device: 'sw-acc-3f-2' },
@@ -414,9 +455,55 @@ export const SITE_CHAIN: Partial<Record<SiteId, SiteChain>> = {
   },
 };
 
+/**
+ * Cross-site and fabric neighbour reports — the demo world's answer to what
+ * the planes would report at poll time for the estate-level topology graph
+ * (shared/topologyGraph.ts). Not from the prototypes: authored to agree with
+ * the authored estate (SITE_CHAIN's WAN words, DEVICES' rows and states), one
+ * row per PLANE report, so a link two planes report exercises the same merge
+ * as a live estate. The story they tell:
+ *
+ *  - the Campus-01 CX fabric (VSX pair + the two access switches), read by
+ *    the local collector over SSH ('show lldp neighbors');
+ *  - Campus-01 ↔ Campus-02 ('10G to Campus-01'), reported by BOTH ends' planes
+ *    — the collector read it on sw-core-a, Mist read it on sw-cam02-1 — so the
+ *    merged edge carries two badges;
+ *  - Lakeshore's 1G primary landing on the VSX secondary (sw-core-b);
+ *  - the 2 × 10G DC1 handoff as TWO parallel links on distinct port pairs;
+ *  - Northgate's broadband CPE and Riverside's ISP handoff as ghosts (named
+ *    by a plane, managed by none) — Riverside's riding Classic's CDP report,
+ *    flagged stale because Classic is six hours behind;
+ *  - the Warehouse-DC1 VSF stack link to member 3, which never rejoined after
+ *    the 02:00 reboot (its state word stays 'missing' on the card).
+ *
+ * Stamps are the fixed demo instant (DEMO_TOPOLOGY_STAMP's own value, kept a
+ * literal here the way the SLE fixtures carry theirs) so the demo graph is
+ * byte-identical on every read; staleness is an explicit flag, not a clock.
+ */
+export const TOPOLOGY_EDGE_REPORTS: TopologyEdgeReportInput[] = [
+  // -- Campus-01 fabric, the local collector's LLDP reads -------------------
+  { plane: 'LOCAL', protocol: 'LLDP', from: { name: 'sw-core-a', port: '1/1/51' }, to: { name: 'sw-core-b', port: '1/1/51' }, speedBps: 25_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z' },
+  { plane: 'LOCAL', protocol: 'LLDP', from: { name: 'sw-acc-3f-2', port: '1/1/49' }, to: { name: 'sw-core-a', port: '1/1/13' }, speedBps: 10_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z' },
+  { plane: 'LOCAL', protocol: 'LLDP', from: { name: 'sw-acc-3f-3', port: '1/1/49' }, to: { name: 'sw-core-b', port: '1/1/14' }, speedBps: 10_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z' },
+  // -- Campus-01 ↔ Campus-02, reported from BOTH ends -----------------------
+  { plane: 'LOCAL', protocol: 'LLDP', from: { name: 'sw-core-a', port: '1/1/49' }, to: { name: 'sw-cam02-1', port: 'xe-0/1/0' }, speedBps: 10_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z' },
+  { plane: 'MIST', protocol: 'LLDP', from: { name: 'sw-cam02-1', port: 'xe-0/1/0' }, to: { name: 'sw-core-a', port: '1/1/49' }, speedBps: 10_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z' },
+  // -- Lakeshore's 1G primary, on the VSX secondary -------------------------
+  { plane: 'LOCAL', protocol: 'LLDP', from: { name: 'sw-lake-1', port: '1/1/49' }, to: { name: 'sw-core-b', port: '1/1/49' }, speedBps: 1_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z' },
+  // -- The 2 × 10G DC1 handoff: two parallel links, distinct port pairs -----
+  { plane: 'LOCAL', protocol: 'LLDP', from: { name: 'gw-edge-1', port: '1/1/1' }, to: { name: 'sw-wh1-1', port: '1/1/1' }, speedBps: 10_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z' },
+  { plane: 'LOCAL', protocol: 'LLDP', from: { name: 'gw-edge-1', port: '1/1/2' }, to: { name: 'sw-wh1-1', port: '1/1/2' }, speedBps: 10_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z' },
+  // -- Northgate's broadband CPE: heard via LLDP, managed by nobody ---------
+  { plane: 'MIST', protocol: 'LLDP', from: { name: 'sw-ng-1', port: 'ge-0/0/0' }, to: { name: 'broadband-cpe-ng', port: 'wan1' }, speedBps: 1_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z' },
+  // -- Riverside's ISP handoff: Classic's CDP report, six hours stale -------
+  { plane: 'CLASSIC', protocol: 'CDP', from: { name: 'sw-riv-1', port: '1/1/52' }, to: { name: 'isp-cpe-riv', port: 'gi0/0' }, speedBps: 1_000_000_000, reportedAt: '2026-07-26T11:59:00.000Z', stale: true },
+  // -- Warehouse-DC1's VSF stack link to the member that never rejoined -----
+  { plane: 'LOCAL', protocol: 'VSF', from: { name: 'sw-wh1-1', port: '1/1/27' }, to: { name: 'sw-wh1-3', port: '1/1/27' }, reportedAt: '2026-07-26T11:59:00.000Z' },
+];
+
 /** Client sessions — the `clients` array (16 rows). Fixture `kind` → model. */
 export const CLIENTS: ClientRow[] = [
-  { name: 'm.okonjo', model: 'iPad Pro', type: 'tablet', group: 'clinical-floors', mac: '3c:22:fb:41:0a:19', ip: '10.44.12.88', attach: 'ap-3f-12', where: '3F east · ward 3E', plane: 'MIST', planeTone: 'info', auth: '802.1X', authBy: 'clearpass', role: 'Clinical staff', vlan: 'vlan 820', health: 'good', healthTone: 'success', session: '2h 14m', medium: 'wireless', siteId: 'campus-02', siteName: 'Campus-02 Research', problem: false, link: '5 GHz · ch 36 · 40 MHz', rssi: '−52 dBm', snr: '41 dB', retries: '2.1%', tput: '866 Mbps', roams: '3', quality: 94, zone: 'Tower A · 3rd floor east · bed bay 12', closet: 'IDF-3F-A · sw-acc-3f-2 port 1/1/14' },
+  { name: 'm.okonjo', model: 'iPad Pro', type: 'tablet', group: 'clinical-floors', mac: '3c:22:fb:41:0a:19', ip: '10.44.12.88', attach: 'ap-3f-12', where: '3F east · ward 3E', plane: 'MIST', planeTone: 'info', auth: '802.1X', authBy: 'clearpass', role: 'Clinical staff', vlan: 'vlan 820', health: 'good', healthTone: 'success', session: '2h 14m', medium: 'wireless', siteId: 'campus-02', siteName: 'Campus-02 Research', problem: false, link: '5 GHz · ch 36 · 40 MHz', rssi: '−52 dBm', snr: '41 dB', retries: '2.1%', tput: '866 Mbps', roams: '3', quality: 94, zone: 'Tower A · 3rd floor east · bed bay 12', closet: 'IDF-3F-A · sw-acc-3f-2 port 1/1/14', x: 362, y: 268, mapId: 'map-cam02-3f' },
   { name: 'infusion-4A-12', model: 'Infusion pump', type: 'medical', group: 'medical-wired', mac: '00:1b:c5:09:7f:22', ip: '10.42.30.44', attach: 'sw-acc-3f-2', where: 'port 1/1/20', plane: 'LOCAL', planeTone: 'neutral', auth: 'MAB', authBy: 'clearpass', role: 'Medical device', vlan: 'vlan 820', health: 'good', healthTone: 'success', session: '41d', medium: 'wired', siteId: 'campus-01', siteName: 'Campus-01 HQ', problem: false, link: '1 Gb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '4 Mbps', roams: '0', quality: 99, zone: 'Tower A · 4th floor · room 4A-12', closet: 'IDF-3F-A · port 1/1/20 · poe 6.1 W' },
   { name: 'j.alvarez', model: 'MacBook Pro', type: 'laptop', group: 'staff-wireless', mac: '8c:85:90:22:d1:04', ip: '10.42.14.19', attach: 'ap-3f-08', where: 'ward 3E · nurse station', plane: 'CENTRAL', planeTone: 'accent', auth: 'EAP-TLS', authBy: 'clearpass', role: 'IT admin', vlan: 'vlan 810', health: 'good', healthTone: 'success', session: '5h 02m', medium: 'wireless', siteId: 'campus-01', siteName: 'Campus-01 HQ', problem: false, link: '6 GHz · ch 37 · 80 MHz', rssi: '−48 dBm', snr: '45 dB', retries: '1.2%', tput: '1.2 Gbps', roams: '1', quality: 97, zone: 'Tower A · 3rd floor · nurse station', closet: 'IDF-3F-B · sw-acc-3f-3 port 1/1/9' },
   { name: 'guest-4471', model: 'Android phone', type: 'phone', group: 'guest-lobby', mac: 'f0:18:98:5c:11:73', ip: '10.42.12.208', attach: 'ap-1f-04', where: 'lobby · reception', plane: 'CENTRAL', planeTone: 'accent', auth: 'PSK + portal', authBy: 'clearpass guest', role: 'Guest', vlan: 'vlan 812', health: 'weak signal', healthTone: 'warning', session: '18m', medium: 'wireless', siteId: 'campus-01', siteName: 'Campus-01 HQ', problem: true, link: '5 GHz · ch 44 · 20 MHz', rssi: '−74 dBm', snr: '18 dB', retries: '14.8%', tput: '117 Mbps', roams: '0', quality: 46, zone: 'Ground floor · lobby, far corner by the café', closet: 'IDF-1F-A · sw-acc-1f-1 port 1/1/4' },
@@ -425,13 +512,19 @@ export const CLIENTS: ClientRow[] = [
   { name: 'r.okafor', model: 'ThinkPad X1', type: 'laptop', group: 'staff-wireless', mac: '54:e1:ad:03:77:c1', ip: '10.42.14.61', attach: 'ap-1f-04', where: 'lobby · hot desk', plane: 'CENTRAL', planeTone: 'accent', auth: 'EAP-TLS', authBy: 'clearpass', role: 'IT admin', vlan: 'vlan 810', health: 'good', healthTone: 'success', session: '3h 44m', medium: 'wireless', siteId: 'campus-01', siteName: 'Campus-01 HQ', problem: false, link: '5 GHz · ch 36 · 80 MHz', rssi: '−55 dBm', snr: '38 dB', retries: '2.8%', tput: '866 Mbps', roams: '2', quality: 92, zone: 'Ground floor · lobby hot desks', closet: 'IDF-1F-A · sw-acc-1f-1 port 1/1/4' },
   { name: 'ct-scanner-b', model: 'CT scanner', type: 'imaging', group: 'medical-wired', mac: '00:50:56:11:c4:07', ip: '10.48.30.61', attach: 'sw-lake-1', where: 'port 1/3/4', plane: 'LOCAL', planeTone: 'neutral', auth: 'MAB', authBy: 'clearpass', role: 'Medical device', vlan: 'vlan 848', health: 'good', healthTone: 'success', session: '96d', medium: 'wired', siteId: 'lakeshore', siteName: 'Lakeshore Medical', problem: false, link: '1 Gb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '210 Mbps', roams: '0', quality: 99, zone: 'Tower 1 · basement · imaging suite 2', closet: 'MDF-T1 · port 1/3/4' },
   { name: 'unknown', model: 'Unrecognised', type: 'unknown', group: 'clinical-floors', mac: '6e:41:0d:99:2b:af', ip: '—', attach: 'ap-3f-14', where: '3F east', plane: 'MIST', planeTone: 'info', auth: '802.1X', authBy: 'reject ×7', role: 'Quarantine', vlan: 'none', health: 'auth failing', healthTone: 'danger', session: '—', medium: 'wireless', siteId: 'campus-02', siteName: 'Campus-02 Research', problem: true, link: '5 GHz · ch 36 · assoc only', rssi: '−61 dBm', snr: '30 dB', retries: '—', tput: '0', roams: '0', quality: 12, zone: 'Tower A · 3rd floor east · unknown position', closet: 'IDF-3F-A · sw-acc-3f-2 port 1/1/16' },
-  { name: 's.mehta', model: 'iPhone 16', type: 'phone', group: 'clinical-floors', mac: 'de:ad:0b:14:65:22', ip: '10.44.12.140', attach: 'ap-3f-12', where: '3F east · ward 3E', plane: 'MIST', planeTone: 'info', auth: '802.1X', authBy: 'clearpass', role: 'Clinical staff', vlan: 'vlan 820', health: 'sticky client', healthTone: 'warning', session: '48m', medium: 'wireless', siteId: 'campus-02', siteName: 'Campus-02 Research', problem: true, link: '2.4 GHz · ch 6 · 20 MHz', rssi: '−71 dBm', snr: '21 dB', retries: '11.2%', tput: '144 Mbps', roams: '0', quality: 52, zone: 'Tower A · 3rd floor east · should be on 5 GHz', closet: 'IDF-3F-A · sw-acc-3f-2 port 1/1/14' },
+  { name: 's.mehta', model: 'iPhone 16', type: 'phone', group: 'clinical-floors', mac: 'de:ad:0b:14:65:22', ip: '10.44.12.140', attach: 'ap-3f-12', where: '3F east · ward 3E', plane: 'MIST', planeTone: 'info', auth: '802.1X', authBy: 'clearpass', role: 'Clinical staff', vlan: 'vlan 820', health: 'sticky client', healthTone: 'warning', session: '48m', medium: 'wireless', siteId: 'campus-02', siteName: 'Campus-02 Research', problem: true, link: '2.4 GHz · ch 6 · 20 MHz', rssi: '−71 dBm', snr: '21 dB', retries: '11.2%', tput: '144 Mbps', roams: '0', quality: 52, zone: 'Tower A · 3rd floor east · should be on 5 GHz', closet: 'IDF-3F-A · sw-acc-3f-2 port 1/1/14', x: 414, y: 296, mapId: 'map-cam02-3f' },
   { name: 'kiosk-ng-02', model: 'Check-in kiosk', type: 'kiosk', group: 'northgate-public', mac: '00:26:57:03:14:9a', ip: '10.52.4.22', attach: 'ap-ng-02', where: 'reception', plane: 'MIST', planeTone: 'info', auth: 'PSK', authBy: 'local psk', role: 'Kiosk', vlan: 'vlan 830', health: 'good', healthTone: 'success', session: '22d', medium: 'wireless', siteId: 'northgate', siteName: 'Northgate Clinic', problem: false, link: '5 GHz · ch 100 · 40 MHz', rssi: '−58 dBm', snr: '35 dB', retries: '3.1%', tput: '400 Mbps', roams: '0', quality: 90, zone: 'Ground floor · reception, fixed mount', closet: 'Comms cupboard · sw-ng-1 port 1/1/6' },
   { name: 'p.singh', model: 'Surface Laptop', type: 'laptop', group: 'remote-workers', mac: 'a4:83:e7:5f:00:31', ip: '10.70.8.44', attach: 'gw-edge-1', where: 'VIA tunnel · home', plane: 'AOS-10', planeTone: 'accent', auth: 'EAP-TLS', authBy: 'clearpass', role: 'Remote worker', vlan: 'vlan 870', health: 'good', healthTone: 'success', session: '1h 51m', medium: 'wireless', siteId: 'remote-vpn', siteName: 'Remote & VPN users', problem: false, link: 'IPsec · 42 Mbps · rtt 28 ms', rssi: '—', snr: '—', retries: '0.4%', tput: '42 Mbps', roams: '0', quality: 88, zone: 'Off-site · Chicago metro, residential broadband', closet: 'n/a — VPN client' },
   { name: 'printer-2f-04', model: 'Multifunction', type: 'printer', group: 'office-wired', mac: '00:17:c8:20:11:70', ip: '10.42.18.4', attach: 'sw-acc-3f-3', where: 'port 1/1/31', plane: 'LOCAL', planeTone: 'neutral', auth: 'MAB', authBy: 'clearpass', role: 'Printer', vlan: 'vlan 818', health: 'good', healthTone: 'success', session: '61d', medium: 'wired', siteId: 'campus-01', siteName: 'Campus-01 HQ', problem: false, link: '100 Mb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '2 Mbps', roams: '0', quality: 97, zone: 'Tower A · 2nd floor · print room', closet: 'IDF-3F-B · port 1/1/31' },
   { name: 'guest-4488', model: 'Windows laptop', type: 'laptop', group: 'guest-lobby', mac: '2c:33:61:8a:04:12', ip: 'pending', attach: 'ap-1f-04', where: 'lobby', plane: 'CENTRAL', planeTone: 'accent', auth: 'PSK + portal', authBy: 'dhcp pending', role: 'Guest', vlan: 'vlan 812', health: 'no address', healthTone: 'danger', session: '3m', medium: 'wireless', siteId: 'campus-01', siteName: 'Campus-01 HQ', problem: true, link: '5 GHz · ch 44 · 40 MHz', rssi: '−63 dBm', snr: '29 dB', retries: '4.0%', tput: '0', roams: '0', quality: 28, zone: 'Ground floor · lobby, seating area', closet: 'IDF-1F-A · sw-acc-1f-1 port 1/1/4' },
   { name: 'a.ferreira', model: 'iPad Air', type: 'tablet', group: 'lakeshore-medical', mac: '9a:11:74:0c:33:81', ip: '10.48.12.19', attach: 'ap-t2-04', where: 'tower 2 · ICU', plane: 'AOS-8', planeTone: 'accent', auth: '802.1X', authBy: 'controller', role: 'Clinical staff', vlan: 'vlan 820', health: 'good', healthTone: 'success', session: '2h 40m', medium: 'wireless', siteId: 'lakeshore', siteName: 'Lakeshore Medical', problem: false, link: '5 GHz · ch 52 · 40 MHz', rssi: '−57 dBm', snr: '36 dB', retries: '2.6%', tput: '866 Mbps', roams: '4', quality: 91, zone: 'Tower 2 · 5th floor · ICU bay 3', closet: 'MDF-T1 · sw-lake-1 port 1/2/14' },
   { name: 'badge-reader-14', model: 'Door controller', type: 'building', group: 'building-systems', mac: '00:1e:c0:44:81:07', ip: '10.60.2.14', attach: 'sw-wh1-1', where: 'port 1/1/9', plane: 'LOCAL', planeTone: 'neutral', auth: 'MAB', authBy: 'local db', role: 'Building system', vlan: 'vlan 860', health: 'good', healthTone: 'success', session: '88d', medium: 'wired', siteId: 'warehouse-dc1', siteName: 'Warehouse-DC1', problem: false, link: '100 Mb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '64 kbps', roams: '0', quality: 96, zone: 'Warehouse · dock door 14', closet: 'Dock panel · port 1/1/9 · poe 3.2 W' },
+  // The Mist wired roster at Campus-02 — the demo world's answer to the live
+  // adapter's /orgs/{org}/wired_clients/search read: a research workstation
+  // and a bench instrument on sw-cam02-1, the site the live probe calls the
+  // portal's first wired medium.
+  { name: 'rsch-ws-07', model: 'Linux workstation', type: 'laptop', group: 'research-wired', mac: '3c:52:82:1e:07:a1', ip: '10.44.22.31', attach: 'sw-cam02-1', where: 'port ge-0/0/8', plane: 'MIST', planeTone: 'info', auth: '802.1X', authBy: 'clearpass', role: 'Research', vlan: 'vlan 822', health: 'good', healthTone: 'success', session: '6d 4h', medium: 'wired', siteId: 'campus-02', siteName: 'Campus-02 Research', problem: false, link: '1 Gb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '96 Mbps', roams: '0', quality: 97, zone: 'Tower B · 3rd floor · lab bench 7', closet: 'IDF-3F-C · sw-cam02-1 port ge-0/0/8' },
+  { name: 'bench-daq-02', model: 'Data-acquisition unit', type: 'building', group: 'research-wired', mac: '3c:52:82:44:02:19', ip: '10.44.22.44', attach: 'sw-cam02-1', where: 'port ge-0/0/11', plane: 'MIST', planeTone: 'info', auth: 'MAB', authBy: 'clearpass', role: 'Lab instrument', vlan: 'vlan 828', health: 'good', healthTone: 'success', session: '21d', medium: 'wired', siteId: 'campus-02', siteName: 'Campus-02 Research', problem: false, link: '100 Mb full duplex', rssi: '—', snr: '—', retries: '0.0%', tput: '240 kbps', roams: '0', quality: 95, zone: 'Tower B · 3rd floor · instrument rack 2', closet: 'IDF-3F-C · sw-cam02-1 port ge-0/0/11 · poe 5.0 W' },
 ];
 
 /** Session timelines — the `timelines` map (3 variants). */
@@ -471,7 +564,10 @@ export const AUTH_STATS: StatDef[] = [
   { label: 'Known endpoints', value: '4,182', delta: 'of 5,000 licensed', tone: 'neutral' },
 ];
 
-/** RADIUS decisions — the `events` array (18 rows). */
+/** RADIUS decisions — the `events` array (19 rows). m.okonjo's two rows are
+ *  deliberate: the Clients drawer's Client 360 panel needs one endpoint with
+ *  a PLURAL recent-decisions list, and her second accept matches the roam the
+ *  stitched timeline (TIMELINES.default, 08:12) already narrates. */
 export const AUTH_EVENTS: AuthEventRow[] = [
   { time: '09:41:22', who: 'm.okonjo', mac: '3c:22:fb:41:0a:19', service: 'MRDN Wireless 802.1X', method: 'EAP-TLS', result: 'accept', tone: 'success', reason: 'Certificate valid, AD group Clinical', role: 'role Clinical staff · vlan 820', nas: 'ap-3f-12', plane: 'MIST' },
   { time: '09:41:04', who: 'infusion-4A-12', mac: '00:1b:c5:09:7f:22', service: 'MRDN Wired MAB', method: 'MAB', result: 'accept', tone: 'success', reason: 'Endpoint profiled as medical pump', role: 'role Medical device · vlan 820', nas: 'sw-acc-3f-2', plane: 'LOCAL' },
@@ -491,6 +587,7 @@ export const AUTH_EVENTS: AuthEventRow[] = [
   { time: '09:35:08', who: 'guest-4471', mac: 'f0:18:98:5c:11:73', service: 'MRDN Guest Portal', method: 'PSK + portal', result: 'timeout', tone: 'warning', reason: 'Portal page abandoned, retried at 09:36', role: 'role Guest pending', nas: 'ap-1f-04', plane: 'CENTRAL' },
   { time: '09:34:22', who: 'contractor-tab', mac: '7c:2e:bd:44:19:03', service: 'MRDN Wireless 802.1X', method: 'EAP-PEAP', result: 'reject', tone: 'danger', reason: 'Not a member of any authorised group', role: 'role Quarantine', nas: 'ap-1f-04', plane: 'CENTRAL' },
   { time: '09:33:47', who: 'sw-riv-2 uplink', mac: '00:0b:86:41:22:19', service: 'Device Admin (TACACS)', method: 'TACACS+', result: 'accept', tone: 'success', reason: 'Portal collector service account', role: 'role read-only shell', nas: 'sw-riv-1', plane: 'LOCAL' },
+  { time: '08:12:03', who: 'm.okonjo', mac: '3c:22:fb:41:0a:19', service: 'MRDN Wireless 802.1X', method: 'EAP-TLS', result: 'accept', tone: 'success', reason: 'Reauthenticated after 11r roam from ap-3f-12, cached session reused', role: 'role Clinical staff · vlan 820', nas: 'ap-3f-08', plane: 'MIST' },
 ];
 
 /** "Why authentications failed" — the `reasons` array (5 rows, Progress max=60). */
@@ -516,25 +613,158 @@ export const POLICY_SERVICES: PolicyServiceRow[] = [
  * ClearPass endpoint repository (demo). 15 rows spanning the categories,
  * statuses and OS families the endpoint table is meant to show — Computer /
  * Phone / Printer / IoT devices, Known / Unknown / Disabled statuses, and
- * Windows / iOS / Android / macOS / Linux operating systems.
+ * Windows / iOS / Android / macOS / Linux operating systems. `insightTags`
+ * is Device Insight's free-text categorisation (the profiler's evidence) —
+ * present on the rows a profiler would have classified, absent on the
+ * unknown/plain ones, and never just a copy of `profile`.
  */
 export const CLEARPASS_ENDPOINTS: EndpointRow[] = [
-  { id: 'ep-001', mac: '3c:22:fb:41:0a:19', ip: '10.44.12.88', hostname: 'm-okonjo-ipad', status: 'Known', category: 'Phone', family: 'iOS', os: 'iOS 17.5', profile: 'Clinical staff', updatedAt: '2 minutes ago' },
-  { id: 'ep-002', mac: '00:1b:c5:09:7f:22', ip: '10.42.30.44', hostname: 'infusion-4a-12', status: 'Known', category: 'Computer', family: 'Embedded', os: 'RTOS 4.2', profile: 'Medical device', updatedAt: '4 minutes ago' },
-  { id: 'ep-003', mac: '6e:41:0d:99:2b:af', ip: null, hostname: null, status: 'Unknown', category: null, family: null, os: null, profile: 'Quarantine', updatedAt: '9 minutes ago' },
-  { id: 'ep-004', mac: '2c:33:61:8a:04:12', ip: '10.42.18.90', hostname: 'guest-4488', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 11', profile: 'Guest', updatedAt: '11 minutes ago' },
-  { id: 'ep-005', mac: '8c:85:90:22:d1:04', ip: '10.42.14.19', hostname: 'j-alvarez-mbp', status: 'Known', category: 'Computer', family: 'macOS', os: 'macOS 14.5 Sonoma', profile: 'IT admin', updatedAt: '12 minutes ago' },
-  { id: 'ep-006', mac: '00:0c:29:7a:41:88', ip: '10.48.10.12', hostname: 'xray-cart-2', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 10 IoT', profile: 'Medical device', updatedAt: '18 minutes ago' },
-  { id: 'ep-007', mac: '00:17:c8:20:11:70', ip: '10.42.18.4', hostname: 'printer-2f-04', status: 'Known', category: 'Printer', family: 'Embedded', os: null, profile: 'Printer', updatedAt: '21 minutes ago' },
-  { id: 'ep-008', mac: 'de:ad:0b:14:65:22', ip: '10.44.12.140', hostname: 's-mehta-iphone', status: 'Known', category: 'Phone', family: 'iOS', os: 'iOS 17.4', profile: 'Clinical staff', updatedAt: '24 minutes ago' },
-  { id: 'ep-009', mac: 'a4:83:e7:5f:00:31', ip: '10.70.8.44', hostname: 'p-singh-surface', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 11', profile: 'Remote worker', updatedAt: '29 minutes ago' },
-  { id: 'ep-010', mac: '00:1e:c0:44:81:07', ip: '10.42.60.14', hostname: 'badge-reader-14', status: 'Disabled', category: 'IoT', family: 'Embedded', os: null, profile: 'Building system (revoked)', updatedAt: '1 hour ago' },
-  { id: 'ep-011', mac: '48:2a:e3:11:07:c4', ip: null, hostname: 'lab-laptop-7', status: 'Disabled', category: 'Computer', family: 'Windows', os: 'Windows 10', profile: 'Disabled — AD account locked', updatedAt: '2 hours ago' },
-  { id: 'ep-012', mac: '9a:11:74:0c:33:81', ip: '10.48.30.09', hostname: 'a-ferreira-android', status: 'Known', category: 'Phone', family: 'Android', os: 'Android 14', profile: 'Clinical staff', updatedAt: '2 hours ago' },
-  { id: 'ep-013', mac: '00:04:f2:aa:19:60', ip: '10.42.16.114', hostname: 'voip-3f-114', status: 'Known', category: 'Phone', family: 'Embedded', os: null, profile: 'Voice', updatedAt: '3 hours ago' },
-  { id: 'ep-014', mac: '00:50:56:11:c4:07', ip: '10.48.30.61', hostname: 'ct-scanner-b', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 10 IoT', profile: 'Medical device', updatedAt: '5 hours ago' },
-  { id: 'ep-015', mac: 'f0:18:98:5c:11:73', ip: null, hostname: null, status: 'Unknown', category: null, family: null, os: null, profile: 'Guest pending', updatedAt: '6 hours ago' },
+  { id: 'ep-001', mac: '3c:22:fb:41:0a:19', description: 'Ward 3E rounds iPad — Dr. Okonjo', ip: '10.44.12.88', hostname: 'm-okonjo-ipad', status: 'Known', category: 'Phone', family: 'iOS', os: 'iOS 17.5', profile: 'Clinical staff', updatedAt: '2 minutes ago', insightTags: ['Tablet', 'Apple iOS'] },
+  { id: 'ep-002', mac: '00:1b:c5:09:7f:22', description: 'Infusion pump, room 4A-12', ip: '10.42.30.44', hostname: 'infusion-4a-12', status: 'Known', category: 'Computer', family: 'Embedded', os: 'RTOS 4.2', profile: 'Medical device', updatedAt: '4 minutes ago', insightTags: ['Medical Device', 'IoT'] },
+  { id: 'ep-003', mac: '6e:41:0d:99:2b:af', description: null, ip: null, hostname: null, status: 'Unknown', category: null, family: null, os: null, profile: 'Quarantine', updatedAt: '9 minutes ago' },
+  { id: 'ep-004', mac: '2c:33:61:8a:04:12', description: 'Lobby guest laptop — front desk sponsor', ip: '10.42.18.90', hostname: 'guest-4488', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 11', profile: 'Guest', updatedAt: '11 minutes ago' },
+  { id: 'ep-005', mac: '8c:85:90:22:d1:04', description: 'IT admin — J. Alvarez', ip: '10.42.14.19', hostname: 'j-alvarez-mbp', status: 'Known', category: 'Computer', family: 'macOS', os: 'macOS 14.5 Sonoma', profile: 'IT admin', updatedAt: '12 minutes ago' },
+  { id: 'ep-006', mac: '00:0c:29:7a:41:88', description: 'Radiology cart, Lakeshore tower 1', ip: '10.48.10.12', hostname: 'xray-cart-2', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 10 IoT', profile: 'Medical device', updatedAt: '18 minutes ago', insightTags: ['Medical Device', 'IoT'] },
+  { id: 'ep-007', mac: '00:17:c8:20:11:70', description: '2F print room multifunction', ip: '10.42.18.4', hostname: 'printer-2f-04', status: 'Known', category: 'Printer', family: 'Embedded', os: null, profile: 'Printer', updatedAt: '21 minutes ago', insightTags: ['Office Device', 'IoT'] },
+  { id: 'ep-008', mac: 'de:ad:0b:14:65:22', description: 'Clinical iPhone — S. Mehta', ip: '10.44.12.140', hostname: 's-mehta-iphone', status: 'Known', category: 'Phone', family: 'iOS', os: 'iOS 17.4', profile: 'Clinical staff', updatedAt: '24 minutes ago', insightTags: ['Smartphone', 'Apple iOS'] },
+  { id: 'ep-009', mac: 'a4:83:e7:5f:00:31', description: 'Remote worker — VIA tunnel', ip: '10.70.8.44', hostname: 'p-singh-surface', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 11', profile: 'Remote worker', updatedAt: '29 minutes ago' },
+  { id: 'ep-010', mac: '00:1e:c0:44:81:07', description: 'Dock door 14 controller — access revoked', ip: '10.42.60.14', hostname: 'badge-reader-14', status: 'Disabled', category: 'IoT', family: 'Embedded', os: null, profile: 'Building system (revoked)', updatedAt: '1 hour ago', insightTags: ['Building Automation', 'IoT'] },
+  { id: 'ep-011', mac: '48:2a:e3:11:07:c4', description: 'Research loaner — AD account locked', ip: null, hostname: 'lab-laptop-7', status: 'Disabled', category: 'Computer', family: 'Windows', os: 'Windows 10', profile: 'Disabled — AD account locked', updatedAt: '2 hours ago' },
+  { id: 'ep-012', mac: '9a:11:74:0c:33:81', description: 'ICU tablet — A. Ferreira', ip: '10.48.30.09', hostname: 'a-ferreira-android', status: 'Known', category: 'Phone', family: 'Android', os: 'Android 14', profile: 'Clinical staff', updatedAt: '2 hours ago', insightTags: ['Tablet', 'Android'] },
+  { id: 'ep-013', mac: '00:04:f2:aa:19:60', description: 'Desk handset, 3F station 114', ip: '10.42.16.114', hostname: 'voip-3f-114', status: 'Known', category: 'Phone', family: 'Embedded', os: null, profile: 'Voice', updatedAt: '3 hours ago', insightTags: ['VoIP Phone', 'IoT'] },
+  { id: 'ep-014', mac: '00:50:56:11:c4:07', description: 'Imaging suite 2 CT scanner', ip: '10.48.30.61', hostname: 'ct-scanner-b', status: 'Known', category: 'Computer', family: 'Windows', os: 'Windows 10 IoT', profile: 'Medical device', updatedAt: '5 hours ago', insightTags: ['Medical Device', 'Imaging'] },
+  { id: 'ep-015', mac: 'f0:18:98:5c:11:73', description: null, ip: null, hostname: null, status: 'Unknown', category: null, family: null, os: null, profile: 'Guest pending', updatedAt: '6 hours ago' },
 ];
+
+/**
+ * ClearPass NAD inventory (demo) — the switches RADIUS-authenticating to
+ * cppm-01. Names and mgmt IPs match the demo estate's own device rows:
+ * sw-core-a (10.42.8.11, the Campus-01 CX 8325 core), its 3F access switch,
+ * and the Campus-02 EX4400 that tunnels RadSec to cppm-01 (the trust the
+ * 'RadSec certificate expires' alert is about).
+ */
+export const CLEARPASS_NETWORK_DEVICES: ClearPassNetworkDeviceRow[] = [
+  { id: 'nad-001', name: 'sw-core-a', ipAddress: '10.42.8.11', vendorName: 'Aruba', coaCapable: true, radsecEnabled: false, description: 'Campus-01 core · CX 8325 VSX primary' },
+  { id: 'nad-002', name: 'sw-acc-3f-2', ipAddress: '10.42.8.32', vendorName: 'Aruba', coaCapable: true, radsecEnabled: false, description: 'Campus-01 IDF-3F-A access · CX 6300' },
+  { id: 'nad-003', name: 'sw-cam02-1', ipAddress: '10.44.8.11', vendorName: 'Juniper', coaCapable: true, radsecEnabled: true, description: 'Campus-02 core · EX4400 virtual chassis · RadSec to cppm-01' },
+];
+
+/**
+ * ClearPass authentication sources (demo) — the AD the auth feed's accept
+ * reasons name ('AD group Clinical', 'Password expired in Active
+ * Directory') and the local repository the MAB fallback rows use ('Local
+ * endpoint database').
+ */
+export const CLEARPASS_AUTH_SOURCES: ClearPassAuthSourceRow[] = [
+  { id: 'as-001', name: 'AD meridian.health', type: 'Active Directory', description: 'dc-01/dc-02 · clinical + staff groups' },
+  { id: 'as-002', name: 'Local User Repository', type: 'Local', description: 'cppm-01 local db · service accounts + sponsors' },
+];
+
+/**
+ * ClearPass roles (demo) — the roles the auth feed applies ('role Clinical
+ * staff · vlan 820') and the endpoint repository's profiles echo.
+ */
+export const CLEARPASS_ROLES: ClearPassRoleRow[] = [
+  { id: 'role-001', name: 'Clinical staff', description: 'vlan 820 · clinical apps + internet' },
+  { id: 'role-002', name: 'Medical device', description: 'vlan 820/848 · device servers only' },
+  { id: 'role-003', name: 'IT admin', description: 'vlan 810 · full management access' },
+  { id: 'role-004', name: 'Guest', description: 'vlan 812 · internet only, 8h session' },
+  { id: 'role-005', name: 'Voice', description: 'vlan 816 · LLDP-MED handsets' },
+  { id: 'role-006', name: 'Printer', description: 'vlan 818 · static endpoint list' },
+  { id: 'role-007', name: 'Research', description: 'vlan 822 · lab benches, Campus-02' },
+  { id: 'role-008', name: 'Quarantine', description: 'remediation portal only' },
+];
+
+/**
+ * ClearPass enforcement policies (demo) — the 802.1X and guest pair behind
+ * the auth feed's top two services; each policy's default profile is one of
+ * CLEARPASS_ENFORCEMENT_PROFILES.
+ */
+export const CLEARPASS_ENFORCEMENT_POLICIES: ClearPassEnforcementPolicyRow[] = [
+  { id: 'epol-001', name: 'MRDN Wireless 802.1X Enforcement', enforcementType: 'RADIUS', defaultProfile: 'Quarantine' },
+  { id: 'epol-002', name: 'MRDN Guest Portal Enforcement', enforcementType: 'WEBAUTH', defaultProfile: 'Guest' },
+];
+
+/** ClearPass enforcement profiles (demo) — the vlan/ACL answers the two
+ *  policies above return. */
+export const CLEARPASS_ENFORCEMENT_PROFILES: ClearPassEnforcementProfileRow[] = [
+  { id: 'eprof-001', name: 'Clinical staff', type: 'RADIUS', description: 'vlan 820 + clinical ACLs' },
+  { id: 'eprof-002', name: 'Guest', type: 'RADIUS', description: 'vlan 812 + internet-only ACL' },
+  { id: 'eprof-003', name: 'Quarantine', type: 'RADIUS', description: 'remediation portal only' },
+];
+
+/**
+ * ClearPass local users (demo) — the portal's own service account (the
+ * TACACS row in the auth feed: 'Portal collector service account') and the
+ * front-desk guest sponsor. Whitelisted fields only, exactly as the live
+ * adapter maps them: no password hash exists in this world either.
+ */
+export const CLEARPASS_LOCAL_USERS: ClearPassLocalUserRow[] = [
+  { id: 'lu-001', userId: 'portal-collector', username: 'Portal Collector Service', roleName: 'read-only shell', enabled: true },
+  { id: 'lu-002', userId: 'front-desk-sponsor', username: 'Front Desk Sponsor', roleName: 'Guest Sponsor', enabled: true },
+];
+
+/**
+ * ClearPass services (demo) — the policy chain's front door, as a 6.11 CPPM
+ * answers /api/config/service: the guest 802.1X SSID visitors join, the
+ * eduroam pilot for visiting research clinicians (disabled until announced —
+ * this world's one honest Disabled service, hit count 0), the wired MAB
+ * fallback the pumps and printers ride, and TACACS+ device administration.
+ * Auth sources are the two CLEARPASS_AUTH_SOURCES names (eduroam proxies to
+ * the home IdP, so it names none); hit counts echo the auth feed's
+ * POLICY_SERVICES rates; the NAD IPs in the match rules are the demo NADs'
+ * own management addresses. This collection is served in demo — device
+ * groups stay the absent one.
+ */
+export const CLEARPASS_SERVICES: ClearPassServiceRow[] = [
+  { id: 'svc-001', name: 'MRDN Guest 802.1X', type: '1X', description: 'guest SSID · sponsor-approved accounts', template: '802.1X Wireless', enabled: true, hitCount: 412, orderNo: 3, authSources: ['Local User Repository'], rulesSummary: 'Radius:Called-Station-Id CONTAINS MRDN-Guest' },
+  { id: 'svc-002', name: 'eduroam 802.1X', type: '1X', description: 'visiting research clinicians · pilot, awaiting go-live', template: 'eduroam Wireless', enabled: false, hitCount: 0, orderNo: 11, rulesSummary: 'Radius:Called-Station-Id EQUALS eduroam' },
+  { id: 'svc-003', name: 'MRDN Wired MAB', type: 'MAC_AUTH', description: 'medical devices, printers · static endpoint list', template: 'MAC Authentication', enabled: true, hitCount: 1204, orderNo: 5, authSources: ['Local User Repository'], rulesSummary: 'Connection:NAD-IP-Address EQUALS 10.42.8.32' },
+  { id: 'svc-004', name: 'Device Admin (TACACS+)', type: 'TACACS', description: 'switch shell · engineers + portal service accounts', template: 'TACACS+ Enforcement', enabled: true, hitCount: 96, orderNo: 8, authSources: ['AD meridian.health', 'Local User Repository'], rulesSummary: 'Connection:NAD-IP-Address EQUALS 10.42.8.11' },
+];
+
+/**
+ * The full service object behind the Services-tab drawer (demo) — svc-001,
+ * the guest 802.1X SSID, as a 6.11 CPPM answers GET /api/config/service/{id}
+ * (the verified shape, vocabulary included: the DETAIL object types an 802.1X
+ * service 'RADIUS' where the collection row says '1X'). The story is the
+ * collection row's own, deepened: the MRDN-Guest called-station match, PEAP
+ * against the sponsor-approved local accounts, the guest role mapping and the
+ * estate's guest enforcement pair. The other three demo services stay
+ * collection rows only — the route 404s their detail, the same honest
+ * 'not recorded' the SLE drill fixtures keep. Whitelisted like every other
+ * ClearPass fixture: no credential material exists in this world.
+ */
+export const CLEARPASS_SERVICE_DETAILS: Record<string, ClearPassServiceDetailLive> = {
+  'svc-001': {
+    service: {
+      id: 'svc-001',
+      name: 'MRDN Guest 802.1X',
+      type: 'RADIUS',
+      template: '802.1X Wireless',
+      enabled: true,
+      hitCount: 412,
+      orderNo: 3,
+      description: 'guest SSID · sponsor-approved accounts',
+      monitorMode: false,
+      rulesMatchType: 'MATCHES_ALL',
+      rulesConditions: [
+        { type: 'Radius', name: 'Called-Station-Id', operator: 'CONTAINS', value: 'MRDN-Guest' },
+      ],
+      authMethods: ['PEAP', 'MSCHAPv2'],
+      authSources: ['Local User Repository'],
+      stripUsername: false,
+      roleMappingPolicy: 'MRDN Guest Role Mapping',
+      enforcementPolicy: 'MRDN Guest Portal Enforcement',
+      useCachedPolicyResults: true,
+      postureEnabled: false,
+      auditEnabled: false,
+      profilerEnabled: true,
+      acctProxyEnabled: false,
+    },
+    source: { plane: 'clearpass', at: '2026-07-26T11:59:00.000Z', sections: { service: 'ok' } },
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Sites — NtSites.dc.html
@@ -580,20 +810,135 @@ export function isRealSiteId(id: string): id is SiteId {
  * carry a row; the rest are absent rather than a fabricated score, same
  * "not reported" rule the live adapter follows. Covers the full spread the
  * Sites screen's badge needs to demonstrate: good (≥0.9), moderate
- * (0.7–0.9) and poor (<0.7).
+ * (0.7–0.9) and poor (<0.7). Each row's `metrics` mirrors what the live
+ * adapter reads from the per-site SLE summaries — the headline fractions
+ * are the same numbers the metrics' sample counts derive to, and the
+ * classifiers/impact tell the WHY (all authored: the demo estate's names
+ * and counts, in Mist's vocabulary).
  */
 export const SITE_SLE: Partial<Record<SiteId, MistSleRow>> = {
   'campus-02': {
     siteId: 'campus-02', siteName: 'Campus-02 Research',
     coverage: 0.97, capacity: 0.95, roaming: 0.96, apHealth: 0.98, wan: 0.94, overall: 0.96,
+    metrics: [
+      { name: 'time-to-connect', success: 0.97, samples: 4112, degraded: 123,
+        impact: { numUsers: 36, numAps: 4, totalUsers: 1240, totalAps: 72 },
+        classifiers: [
+          { name: 'dhcp', samples: 71, degraded: 71, durationSec: 1704, impact: { numUsers: 21, numAps: 2, totalUsers: 1240, totalAps: 72 } },
+          { name: 'authorization', samples: 31, degraded: 31, durationSec: 612, impact: { numUsers: 9, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+          { name: 'association', samples: 21, degraded: 21, durationSec: 498, impact: { numUsers: 6, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+        ] },
+      { name: 'roaming', success: 0.96, samples: 2054, degraded: 82,
+        impact: { numUsers: 22, numAps: 3, totalUsers: 1240, totalAps: 72 },
+        classifiers: [
+          { name: 'roam-latency', samples: 57, degraded: 57, durationSec: 1332, impact: { numUsers: 15, numAps: 2, totalUsers: 1240, totalAps: 72 } },
+          { name: 'sticky-client', samples: 25, degraded: 25, durationSec: 588, impact: { numUsers: 7, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+        ] },
+      { name: 'ap-availability', success: 0.99, samples: 1030, degraded: 10,
+        impact: { numUsers: 9, numAps: 1, totalUsers: 1240, totalAps: 72 },
+        classifiers: [
+          { name: 'reboot', samples: 10, degraded: 10, durationSec: 600, impact: { numUsers: 9, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+        ] },
+      { name: 'ap-health', success: 0.98, samples: 1030, degraded: 21,
+        impact: { numUsers: 12, numAps: 2, totalUsers: 1240, totalAps: 72 },
+        classifiers: [
+          { name: 'memory', samples: 12, degraded: 12, durationSec: 720, impact: { numUsers: 7, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+          { name: 'uplink-errors', samples: 9, degraded: 9, durationSec: 402, impact: { numUsers: 5, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+        ] },
+      { name: 'capacity', success: 0.95, samples: 6200, degraded: 310,
+        impact: { numUsers: 58, numAps: 6, totalUsers: 1240, totalAps: 72 },
+        classifiers: [
+          { name: 'channel-utilization', samples: 204, degraded: 204, durationSec: 4896, impact: { numUsers: 39, numAps: 4, totalUsers: 1240, totalAps: 72 } },
+          { name: 'client-load', samples: 106, degraded: 106, durationSec: 2544, impact: { numUsers: 19, numAps: 2, totalUsers: 1240, totalAps: 72 } },
+        ] },
+      { name: 'coverage', success: 0.97, samples: 6200, degraded: 186,
+        impact: { numUsers: 41, numAps: 3, totalUsers: 1240, totalAps: 72 },
+        classifiers: [
+          { name: 'signal-strength', samples: 141, degraded: 141, durationSec: 3384, impact: { numUsers: 29, numAps: 2, totalUsers: 1240, totalAps: 72 } },
+          { name: 'interference', samples: 45, degraded: 45, durationSec: 1080, impact: { numUsers: 12, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+        ] },
+    ],
   },
   northgate: {
     siteId: 'northgate', siteName: 'Northgate Clinic',
     coverage: 0.88, capacity: 0.82, roaming: 0.79, apHealth: 0.91, wan: null, overall: 0.85,
+    metrics: [
+      { name: 'time-to-connect', success: 0.87, samples: 512, degraded: 67,
+        impact: { numUsers: 14, numAps: 2, totalUsers: 142, totalAps: 12 },
+        classifiers: [
+          { name: 'dhcp', samples: 44, degraded: 44, durationSec: 1056, impact: { numUsers: 9, numAps: 1, totalUsers: 142, totalAps: 12 } },
+          { name: 'authorization', samples: 23, degraded: 23, durationSec: 474, impact: { numUsers: 5, numAps: 1, totalUsers: 142, totalAps: 12 } },
+        ] },
+      { name: 'roaming', success: 0.79, samples: 288, degraded: 60,
+        impact: { numUsers: 11, numAps: 2, totalUsers: 142, totalAps: 12 },
+        classifiers: [
+          { name: 'sticky-client', samples: 41, degraded: 41, durationSec: 984, impact: { numUsers: 8, numAps: 2, totalUsers: 142, totalAps: 12 } },
+          { name: 'roam-latency', samples: 19, degraded: 19, durationSec: 390, impact: { numUsers: 3, numAps: 1, totalUsers: 142, totalAps: 12 } },
+        ] },
+      { name: 'ap-availability', success: 0.93, samples: 180, degraded: 13,
+        impact: { numUsers: 6, numAps: 1, totalUsers: 142, totalAps: 12 },
+        classifiers: [
+          { name: 'unreachable', samples: 13, degraded: 13, durationSec: 936, impact: { numUsers: 6, numAps: 1, totalUsers: 142, totalAps: 12 } },
+        ] },
+      { name: 'ap-health', success: 0.91, samples: 180, degraded: 16,
+        impact: { numUsers: 7, numAps: 1, totalUsers: 142, totalAps: 12 },
+        classifiers: [
+          { name: 'uplink-errors', samples: 16, degraded: 16, durationSec: 768, impact: { numUsers: 7, numAps: 1, totalUsers: 142, totalAps: 12 } },
+        ] },
+      { name: 'capacity', success: 0.82, samples: 940, degraded: 169,
+        impact: { numUsers: 18, numAps: 3, totalUsers: 142, totalAps: 12 },
+        classifiers: [
+          { name: 'channel-utilization', samples: 121, degraded: 121, durationSec: 2904, impact: { numUsers: 13, numAps: 2, totalUsers: 142, totalAps: 12 } },
+          { name: 'client-load', samples: 48, degraded: 48, durationSec: 1152, impact: { numUsers: 5, numAps: 1, totalUsers: 142, totalAps: 12 } },
+        ] },
+      { name: 'coverage', success: 0.88, samples: 940, degraded: 113,
+        impact: { numUsers: 15, numAps: 2, totalUsers: 142, totalAps: 12 },
+        classifiers: [
+          { name: 'signal-strength', samples: 113, degraded: 113, durationSec: 2712, impact: { numUsers: 15, numAps: 2, totalUsers: 142, totalAps: 12 } },
+        ] },
+    ],
   },
   southpoint: {
     siteId: 'southpoint', siteName: 'Southpoint Clinic',
     coverage: 0.61, capacity: 0.58, roaming: 0.52, apHealth: 0.49, wan: 0.55, overall: 0.55,
+    metrics: [
+      { name: 'time-to-connect', success: 0.63, samples: 402, degraded: 149,
+        impact: { numUsers: 31, numAps: 4, totalUsers: 118, totalAps: 10 },
+        classifiers: [
+          { name: 'dhcp', samples: 98, degraded: 98, durationSec: 2352, impact: { numUsers: 21, numAps: 3, totalUsers: 118, totalAps: 10 } },
+          { name: 'association', samples: 51, degraded: 51, durationSec: 1224, impact: { numUsers: 10, numAps: 2, totalUsers: 118, totalAps: 10 } },
+        ] },
+      { name: 'roaming', success: 0.52, samples: 210, degraded: 101,
+        impact: { numUsers: 19, numAps: 3, totalUsers: 118, totalAps: 10 },
+        classifiers: [
+          { name: 'sticky-client', samples: 72, degraded: 72, durationSec: 1728, impact: { numUsers: 13, numAps: 2, totalUsers: 118, totalAps: 10 } },
+          { name: 'roam-latency', samples: 29, degraded: 29, durationSec: 696, impact: { numUsers: 6, numAps: 1, totalUsers: 118, totalAps: 10 } },
+        ] },
+      { name: 'ap-availability', success: 0.71, samples: 150, degraded: 44,
+        impact: { numUsers: 12, numAps: 2, totalUsers: 118, totalAps: 10 },
+        classifiers: [
+          { name: 'reboot', samples: 31, degraded: 31, durationSec: 1860, impact: { numUsers: 9, numAps: 2, totalUsers: 118, totalAps: 10 } },
+          { name: 'unreachable', samples: 13, degraded: 13, durationSec: 936, impact: { numUsers: 3, numAps: 1, totalUsers: 118, totalAps: 10 } },
+        ] },
+      { name: 'ap-health', success: 0.49, samples: 150, degraded: 77,
+        impact: { numUsers: 16, numAps: 3, totalUsers: 118, totalAps: 10 },
+        classifiers: [
+          { name: 'memory', samples: 44, degraded: 44, durationSec: 2640, impact: { numUsers: 10, numAps: 2, totalUsers: 118, totalAps: 10 } },
+          { name: 'uplink-errors', samples: 33, degraded: 33, durationSec: 1584, impact: { numUsers: 6, numAps: 1, totalUsers: 118, totalAps: 10 } },
+        ] },
+      { name: 'capacity', success: 0.58, samples: 760, degraded: 319,
+        impact: { numUsers: 27, numAps: 5, totalUsers: 118, totalAps: 10 },
+        classifiers: [
+          { name: 'channel-utilization', samples: 214, degraded: 214, durationSec: 5136, impact: { numUsers: 18, numAps: 3, totalUsers: 118, totalAps: 10 } },
+          { name: 'client-load', samples: 105, degraded: 105, durationSec: 2520, impact: { numUsers: 9, numAps: 2, totalUsers: 118, totalAps: 10 } },
+        ] },
+      { name: 'coverage', success: 0.61, samples: 760, degraded: 296,
+        impact: { numUsers: 24, numAps: 4, totalUsers: 118, totalAps: 10 },
+        classifiers: [
+          { name: 'signal-strength', samples: 201, degraded: 201, durationSec: 4824, impact: { numUsers: 17, numAps: 3, totalUsers: 118, totalAps: 10 } },
+          { name: 'interference', samples: 95, degraded: 95, durationSec: 2280, impact: { numUsers: 7, numAps: 1, totalUsers: 118, totalAps: 10 } },
+        ] },
+    ],
   },
 };
 
@@ -693,40 +1038,6 @@ export const SITE_PROFILES: Partial<Record<SiteId, SiteProfile>> = {
     ],
   },
 };
-
-/** Local-only fallback profile — fallback(name) in the prototype. The stats are
- *  authored for Warehouse-DC1 and are returned verbatim for any unknown site. */
-export function buildLocalOnlySiteProfile(name: string): SiteProfile {
-  return {
-    name, siteId: siteIdFor(name) ?? null, blurb: 'Local-only site: no cloud plane claims these devices, so the SSH collector is the source of truth.',
-    launch: 'Open local WebUI', deviceCount: '18', deviceDelta: '4 ap · 14 sw', clients: '96', clientDelta: 'peak 104',
-    health: '100%', healthNote: 'clear 30d', healthTone: 'positive', alertCount: '0', alertNote: 'none open', drift: '0', driftNote: 'matches baseline',
-    collector: 'healthy', collectorTone: 'success', reachValue: 100, core: 'sw-wh1-1',
-    collectorNote: 'collector-05 · polls every 30s · 14 of 14 switches answering over ssh',
-    facts: [
-      { k: 'Subnets', v: '10.60.0.0/22' },
-      { k: 'WAN', v: '1G to DC1' },
-      { k: 'Core', v: 'sw-wh1-1 · CX 6300 stack of 3' },
-      { k: 'Planes', v: 'Local SSH only' },
-      { k: 'Note', v: 'Candidate for Central onboarding in Q4' },
-    ],
-    devices: [
-      { name: 'sw-wh1-1', model: 'CX 6300M-24G', plane: 'LOCAL', planeTone: 'neutral', role: 'stack master', state: 'up', stateTone: 'success', uptime: '88d' },
-      { name: 'sw-wh1-2', model: 'CX 6300M-24G', plane: 'LOCAL', planeTone: 'neutral', role: 'stack member', state: 'up', stateTone: 'success', uptime: '88d' },
-      { name: 'sw-wh1-3', model: 'CX 6300M-24G', plane: 'LOCAL', planeTone: 'neutral', role: 'stack member', state: 'missing', stateTone: 'warning', uptime: '—' },
-      { name: 'ap-wh1-01', model: 'AP-505', plane: 'LOCAL', planeTone: 'neutral', role: 'dock area', state: 'up', stateTone: 'success', uptime: '88d' },
-    ],
-    alerts: [{ sev: 'P3', tone: 'info', title: 'Stack member 3 missing after reboot', meta: 'local ssh · 3d' }],
-  };
-}
-
-/** Prototype lookup: authored profile for the site, else the local-only fallback
- *  (accepts any authored name variant or a canonical siteId). */
-export function siteProfileFor(siteName: string): SiteProfile {
-  const id = siteIdFor(siteName);
-  const profile = id ? SITE_PROFILES[id] : undefined;
-  return profile ?? buildLocalOnlySiteProfile(siteName);
-}
 
 /** Inventory row → the site-detail device table's row shape. `role` and
  *  `uptime` are not on a DeviceRow, so they read '—' rather than invented. */
@@ -841,10 +1152,13 @@ export const DEVICES: DeviceRow[] = [
   { name: 'gw-edge-2', model: 'AOS-10 9240', type: 'gateway', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'AOS-10', planeTone: 'accent', state: 'up', stateTone: 'success', firmware: '10.6.0.2', firmwareApproved: true, licence: 'Advanced', reconciliationIssue: false, localShell: hasLocalShell('gw-edge-2') },
   { name: 'ap-1f-04', model: 'AP-635', type: 'ap', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'CENTRAL', planeTone: 'accent', state: 'up', stateTone: 'success', firmware: '10.6.0.2', firmwareApproved: true, licence: 'Foundation', reconciliationIssue: false, localShell: hasLocalShell('ap-1f-04') },
   { name: 'ap-3f-08', model: 'AP-635', type: 'ap', siteId: 'campus-01', siteName: 'Campus-01 HQ', plane: 'CENTRAL', planeTone: 'accent', state: 'up', stateTone: 'success', firmware: '10.6.0.2', firmwareApproved: true, licence: 'Foundation', reconciliationIssue: false, localShell: hasLocalShell('ap-3f-08') },
-  { name: 'ap-3f-12', model: 'AP43', type: 'ap', siteId: 'campus-02', siteName: 'Campus-02 Research', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', firmware: '0.14.29', firmwareApproved: true, licence: 'Wi-Fi SUB', reconciliationIssue: false, localShell: hasLocalShell('ap-3f-12') },
-  { name: 'ap-3f-14', model: 'AP43', type: 'ap', siteId: 'campus-02', siteName: 'Campus-02 Research', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', firmware: '0.14.29', firmwareApproved: true, licence: 'Wi-Fi SUB', reconciliationIssue: false, localShell: hasLocalShell('ap-3f-14') },
-  { name: 'ap-ng-02', model: 'AP32', type: 'ap', siteId: 'northgate', siteName: 'Northgate Clinic', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', firmware: '0.14.29', firmwareApproved: true, licence: 'Wi-Fi SUB', reconciliationIssue: false, localShell: hasLocalShell('ap-ng-02') },
-  { name: 'sw-cam02-1', model: 'EX4400-48P', type: 'switch', siteId: 'campus-02', siteName: 'Campus-02 Research', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', firmware: '23.4R2', firmwareApproved: true, licence: 'Wired SUB', reconciliationIssue: false, localShell: hasLocalShell('sw-cam02-1') },
+  { name: 'ap-3f-12', model: 'AP43', type: 'ap', siteId: 'campus-02', siteName: 'Campus-02 Research', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', firmware: '0.14.29', firmwareApproved: true, licence: 'Wi-Fi SUB', reconciliationIssue: false, localShell: hasLocalShell('ap-3f-12'), claimCode: 'KV4M9Q2X7RND3H1' },
+  // One Mist AP demonstrably BEHIND the recommended train (0.14.29), with the
+  // upgrade already running — the demo's at/behind spread for the firmware
+  // verdict, and the plane's own state word riding through verbatim.
+  { name: 'ap-3f-14', model: 'AP43', type: 'ap', siteId: 'campus-02', siteName: 'Campus-02 Research', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', firmware: '0.13.18', firmwareApproved: false, firmwareTarget: '0.14.29', firmwareUpdate: 'inprogress', licence: 'Wi-Fi SUB', reconciliationIssue: false, localShell: hasLocalShell('ap-3f-14'), claimCode: 'MX8B4T2Q9WLF6P3' },
+  { name: 'ap-ng-02', model: 'AP32', type: 'ap', siteId: 'northgate', siteName: 'Northgate Clinic', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', firmware: '0.14.29', firmwareApproved: true, licence: 'Wi-Fi SUB', reconciliationIssue: false, localShell: hasLocalShell('ap-ng-02'), claimCode: 'QF7R2M9X4TNB8D5' },
+  { name: 'sw-cam02-1', model: 'EX4400-48P', type: 'switch', siteId: 'campus-02', siteName: 'Campus-02 Research', plane: 'MIST', planeTone: 'info', state: 'up', stateTone: 'success', firmware: '23.4R2', firmwareApproved: true, licence: 'Wired SUB', reconciliationIssue: false, localShell: hasLocalShell('sw-cam02-1'), claimCode: 'ZT3W8K6N2PQX7R4' },
   { name: 'mm-lake-1', model: 'AOS-8 MM-VA', type: 'controller', siteId: 'lakeshore', siteName: 'Lakeshore Medical', plane: 'AOS-8', planeTone: 'accent', state: 'degraded', stateTone: 'warning', firmware: '8.10.0.10', firmwareApproved: true, licence: 'MM perpetual', reconciliationIssue: false, localShell: hasLocalShell('mm-lake-1') },
   { name: 'mc-lake-2', model: '7210 controller', type: 'controller', siteId: 'lakeshore', siteName: 'Lakeshore Medical', plane: 'AOS-8', planeTone: 'accent', state: 'no heartbeat', stateTone: 'danger', firmware: '8.10.0.10', firmwareApproved: true, licence: 'AP-16 perpetual', reconciliationIssue: false, localShell: hasLocalShell('mc-lake-2') },
   { name: 'mc-lake-3', model: '7210 controller', type: 'controller', siteId: 'lakeshore', siteName: 'Lakeshore Medical', plane: 'AOS-8', planeTone: 'accent', state: 'no heartbeat', stateTone: 'danger', firmware: '8.10.0.9', firmwareApproved: false, licence: 'AP-16 perpetual', reconciliationIssue: false, localShell: hasLocalShell('mc-lake-3') },
@@ -1178,10 +1492,43 @@ export const DEVICE_PROFILE_BUILDERS = {
     ],
     listTitle: 'Ports of interest', listMeta: '48 TOTAL',
     ports: [
-      { id: '1/1/1-2', what: 'VSX ISL to sw-core-b · 20G lag', state: 'up', tone: 'success' },
-      { id: '1/1/14', what: 'ap-3f-12 · poe 22.1W · vlan 812', state: 'up', tone: 'success' },
-      { id: '1/1/22', what: 'uxi-cam01-2 · no carrier since 04:50', state: 'down', tone: 'danger' },
-      { id: '1/1/47-48', what: 'gw-edge-1 / gw-edge-2 transit', state: 'up', tone: 'success' },
+      // Counters follow the authored story: the 20G ISL carries the estate,
+      // the WAN transit is next, an AP uplink is modest, and the dead sensor
+      // port froze when its carrier dropped. psu2 is not an interface, so it
+      // has no counters to say — the same honesty shape the live read has
+      // when a plane reports no statistics map for a row.
+      {
+        id: '1/1/1-2', what: 'VSX ISL to sw-core-b · 20G lag', state: 'up', tone: 'success',
+        counters: {
+          rxBytes: 31_482_000_000_000, txBytes: 28_913_000_000_000,
+          rxPackets: 24_600_000_000, txPackets: 22_800_000_000,
+          rxErrors: 0, txErrors: 0, rxDropped: 0, txDropped: 0,
+        },
+      },
+      {
+        id: '1/1/14', what: 'ap-3f-12 · poe 22.1W · vlan 812', state: 'up', tone: 'success',
+        counters: {
+          rxBytes: 412_000_000_000, txBytes: 1_280_000_000_000,
+          rxPackets: 512_000_000, txPackets: 1_400_000_000,
+          rxErrors: 0, txErrors: 0, rxDropped: 0, txDropped: 0,
+        },
+      },
+      {
+        id: '1/1/22', what: 'uxi-cam01-2 · no carrier since 04:50', state: 'down', tone: 'danger',
+        counters: {
+          rxBytes: 86_000_000_000, txBytes: 4_100_000_000,
+          rxPackets: 64_000_000, txPackets: 31_000_000,
+          rxErrors: 0, txErrors: 0, rxDropped: 0, txDropped: 0,
+        },
+      },
+      {
+        id: '1/1/47-48', what: 'gw-edge-1 / gw-edge-2 transit', state: 'up', tone: 'success',
+        counters: {
+          rxBytes: 9_800_000_000_000, txBytes: 14_200_000_000_000,
+          rxPackets: 8_100_000_000, txPackets: 11_900_000_000,
+          rxErrors: 3, txErrors: 0, rxDropped: 27, txDropped: 0,
+        },
+      },
       { id: 'psu2', what: 'absent since 03:12 — single supply', state: 'fault', tone: 'warning' },
     ],
     checks: [
@@ -1237,6 +1584,280 @@ export const ORPHANS: OrphanRow[] = [
   { tag: 'idle', tone: 'neutral', what: 'AOS-8 AP capacity 52 unused of 96', detail: 'freed as Lakeshore migrates to AOS-10' },
 ];
 
+/**
+ * Mist per-site licence consumption — the demo world's answer to the live
+ * adapter's GET /api/v1/orgs/{org}/licenses/usages read. These are USAGE
+ * counts (what each site consumes by service), not the subscription
+ * assignment totals on SUBSCRIPTIONS above — per-site consumption sums to
+ * less than the 108/26 assigned because Southpoint's four unassigned wired
+ * SUBs (the orphan row above) consume nothing anywhere. `fullyLoaded` is
+ * Mist's demand-if-every-feature-were-on map, carried in the same voice.
+ */
+export const MIST_LICENSE_USAGES: MistLicenseUsageRow[] = [
+  {
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    numDevices: 96, numAps: 72,
+    usages: { 'SUB-WLAN': 72, 'SUB-SW': 22, 'SUB-ENG': 72 },
+    fullyLoaded: { 'SUB-WLAN': 72, 'SUB-SW': 24, 'SUB-ENG': 72 },
+  },
+  {
+    siteId: 'northgate', siteName: 'Northgate Clinic',
+    numDevices: 16, numAps: 12,
+    usages: { 'SUB-WLAN': 12, 'SUB-SW': 4 },
+    fullyLoaded: { 'SUB-WLAN': 12, 'SUB-SW': 4, 'SUB-ENG': 12 },
+  },
+  {
+    siteId: 'southpoint', siteName: 'Southpoint Clinic',
+    numDevices: 15, numAps: 10,
+    usages: { 'SUB-WLAN': 10, 'SUB-SW': 0 },
+    fullyLoaded: { 'SUB-WLAN': 10, 'SUB-SW': 4, 'SUB-ENG': 10 },
+  },
+];
+
+/**
+ * Mist per-AP rich stats — the demo world's answer to the live adapter's
+ * site-scoped stats/devices?type=ap walk. Authored in the live row's voice:
+ * ap-3f-12 is the fully-instrumented AP43 (both radios, env sensors, the
+ * LLDP uplink to sw-cam02-1 that topology edges are built from); ap-3f-14 is
+ * the NET-4188 DFS-ticket AP, PoE-constrained and sitting on channel 116;
+ * ap-ng-02 shows the honest-omission case (an AP32 has no env sensor block,
+ * so `env` is null — "not reported", never a fabricated 21.5°C).
+ */
+export const MIST_AP_STATS: MistApStatsRow[] = [
+  {
+    deviceName: 'ap-3f-12', deviceUuid: '00000000-0000-0000-1000-3c52823f1201',
+    mac: '3c:52:82:3f:12:01', serial: 'MST43KF1201',
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    numClients: 41, cpuUtilPct: 23, memTotalKb: 997_376, memUsedKb: 512_040,
+    uptimeSec: 3_945_600, rxBps: 48_200_000, txBps: 12_400_000, extIp: '198.51.100.44',
+    dns: '10.44.1.10', gateway: '10.44.0.1', dhcpServer: '10.44.1.11',
+    powerSrc: 'PoE 802.3at', powerConstrained: false,
+    radios: [
+      { band: '2.4 GHz', channel: 6, bandwidthMHz: 20, powerDbm: 11, noiseFloorDbm: -92, utilAllPct: 58, utilTxPct: 22, utilRxInBssPct: 18, utilRxOtherBssPct: 14, utilNonWifiPct: 4, numClients: 13 },
+      { band: '5 GHz', channel: 36, bandwidthMHz: 40, powerDbm: 14, noiseFloorDbm: -96, utilAllPct: 31, utilTxPct: 12, utilRxInBssPct: 9, utilRxOtherBssPct: 7, utilNonWifiPct: 3, numClients: 28 },
+    ],
+    ports: [
+      { name: 'eth0', up: true, speedMbps: 1000, fullDuplex: true, rxBytes: 4_812_340_220, txBytes: 1_203_110_540, rxErrors: 0, txErrors: 0, peakBps: 812_000_000 },
+    ],
+    env: { ambientTempC: 23.8, pressureHpa: 1004.2, humidityPct: 41, accelX: 0, accelY: 0, accelZ: 0 },
+    lldpUplink: { systemName: 'sw-cam02-1', systemDesc: 'Juniper EX4400-48P', portId: 'ge-0/0/12', chassisId: '3c:52:82:c0:02:01', mgmtAddr: '10.44.1.5' },
+  },
+  {
+    deviceName: 'ap-3f-14', deviceUuid: '00000000-0000-0000-1000-3c52823f1401',
+    mac: '3c:52:82:3f:14:01', serial: 'MST43KF1401',
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    numClients: 19, cpuUtilPct: 31, memTotalKb: 997_376, memUsedKb: 608_120,
+    uptimeSec: 1_209_600, rxBps: 9_600_000, txBps: 3_100_000, extIp: '198.51.100.44',
+    dns: '10.44.1.10', gateway: '10.44.0.1', dhcpServer: '10.44.1.11',
+    powerSrc: 'PoE 802.3af', powerConstrained: true,
+    radios: [
+      { band: '2.4 GHz', channel: 11, bandwidthMHz: 20, powerDbm: 9, noiseFloorDbm: -91, utilAllPct: 44, utilTxPct: 16, utilRxInBssPct: 12, utilRxOtherBssPct: 11, utilNonWifiPct: 5, numClients: 7 },
+      // Channel 116 with a non-Wi-Fi spike — the NET-4188 DFS-radar story.
+      { band: '5 GHz', channel: 116, bandwidthMHz: 40, powerDbm: 13, noiseFloorDbm: -93, utilAllPct: 52, utilTxPct: 9, utilRxInBssPct: 6, utilRxOtherBssPct: 15, utilNonWifiPct: 22, numClients: 12 },
+    ],
+    ports: [
+      { name: 'eth0', up: true, speedMbps: 1000, fullDuplex: true, rxBytes: 901_220_410, txBytes: 244_018_773, rxErrors: 3, txErrors: 0, peakBps: 388_000_000 },
+    ],
+    env: { ambientTempC: 26.1, pressureHpa: 1004.0, humidityPct: 38, accelX: 0, accelY: 0, accelZ: 0 },
+    lldpUplink: { systemName: 'sw-cam02-1', systemDesc: 'Juniper EX4400-48P', portId: 'ge-0/0/16', chassisId: '3c:52:82:c0:02:01', mgmtAddr: '10.44.1.5' },
+  },
+  {
+    deviceName: 'ap-ng-02', deviceUuid: '00000000-0000-0000-1000-3c5282a00201',
+    mac: '3c:52:82:a0:02:01', serial: 'MST32NG0201',
+    siteId: 'northgate', siteName: 'Northgate Clinic',
+    numClients: 9, cpuUtilPct: 18, memTotalKb: 506_880, memUsedKb: 301_220,
+    uptimeSec: 5_702_400, rxBps: 4_100_000, txBps: 1_800_000, extIp: '203.0.113.18',
+    dns: '10.52.1.10', gateway: '10.52.0.1', dhcpServer: '10.52.1.11',
+    powerSrc: 'PoE 802.3af', powerConstrained: false,
+    radios: [
+      { band: '2.4 GHz', channel: 1, bandwidthMHz: 20, powerDbm: 10, noiseFloorDbm: -90, utilAllPct: 39, utilTxPct: 11, utilRxInBssPct: 8, utilRxOtherBssPct: 14, utilNonWifiPct: 6, numClients: 4 },
+      { band: '5 GHz', channel: 100, bandwidthMHz: 40, powerDbm: 14, noiseFloorDbm: -95, utilAllPct: 22, utilTxPct: 7, utilRxInBssPct: 5, utilRxOtherBssPct: 8, utilNonWifiPct: 2, numClients: 5 },
+    ],
+    ports: [
+      { name: 'eth0', up: true, speedMbps: 1000, fullDuplex: true, rxBytes: 1_102_448_901, txBytes: 402_991_207, rxErrors: 0, txErrors: 0, peakBps: 244_000_000 },
+    ],
+    env: null, // the AP32 has no env sensor block — not reported, never fabricated
+    lldpUplink: { systemName: 'sw-ng-1', systemDesc: 'Juniper EX2300-24P', portId: 'ge-0/0/6', chassisId: '3c:52:82:c0:11:01', mgmtAddr: '10.52.1.4' },
+  },
+];
+
+/**
+ * Mist floor plans — the demo world's answer to the maps + AP-config walk.
+ * The live probe org publishes ZERO maps (200 [], an honest empty), so this
+ * is the showcase: one plan for Campus-02's third floor with both Mist APs
+ * placed, the client dots riding on the CLIENTS rows' own x/y/mapId. The
+ * image is an inline SVG data-URI (the live field carries Mist's hosted URL
+ * — same `imageUrl` field, rendered the same way in an <svg><image>).
+ */
+const CAM02_3F_PLAN_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800">' +
+  '<rect width="1200" height="800" fill="#f4f1ea"/>' +
+  '<rect x="40" y="40" width="1120" height="720" fill="none" stroke="#4a463f" stroke-width="10"/>' +
+  '<line x1="600" y1="40" x2="600" y2="760" stroke="#4a463f" stroke-width="6"/>' +
+  '<line x1="40" y1="400" x2="1160" y2="400" stroke="#4a463f" stroke-width="6"/>' +
+  '<line x1="600" y1="220" x2="1160" y2="220" stroke="#8a8578" stroke-width="3"/>' +
+  '<line x1="300" y1="400" x2="300" y2="760" stroke="#8a8578" stroke-width="3"/>' +
+  '<text x="80" y="90" font-family="sans-serif" font-size="28" fill="#4a463f">Lab 3B-East</text>' +
+  '<text x="640" y="90" font-family="sans-serif" font-size="28" fill="#4a463f">Ward 3E</text>' +
+  '<text x="640" y="450" font-family="sans-serif" font-size="28" fill="#4a463f">Instrument bay</text>' +
+  '<text x="80" y="450" font-family="sans-serif" font-size="28" fill="#4a463f">Nurse station</text>' +
+  '<text x="1120" y="790" font-family="sans-serif" font-size="18" fill="#8a8578" text-anchor="end">48 m × 32 m</text>' +
+  '</svg>';
+
+export const MIST_SITE_MAPS: MistSiteMap[] = [
+  {
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    mapId: 'map-cam02-3f', name: 'Tower B · 3rd floor — east labs',
+    imageUrl: `data:image/svg+xml;utf8,${encodeURIComponent(CAM02_3F_PLAN_SVG)}`,
+    widthPx: 1200, heightPx: 800, widthM: 48, heightM: 32, orientationDeg: 0,
+    aps: [
+      { deviceName: 'ap-3f-12', deviceUuid: '00000000-0000-0000-1000-3c52823f1201', mac: '3c:52:82:3f:12:01', x: 320, y: 240 },
+      { deviceName: 'ap-3f-14', deviceUuid: '00000000-0000-0000-1000-3c52823f1401', mac: '3c:52:82:3f:14:01', x: 880, y: 560 },
+    ],
+  },
+];
+
+/**
+ * Mist rogue & neighbor APs — the demo world's answer to the per-site
+ * insights/rogues walk. The lead row is the showcase: 'FREE-CLINIC-WIFI'
+ * seen ON the wire at Campus-02 (seen_on_lan true — a rogue plugged into
+ * your own infrastructure is the alarm the section leads with), heard by
+ * both 3F APs at a strong -48 dBm. The rest are honest neighbors: BSSIDs in
+ * earshot that are NOT on the wire, including one whose SSID spoofs the
+ * demo estate's own MRDN-Clinical (an evil-twin tell, but off-LAN). One row
+ * carries no seen_on_lan at all — 'not reported', never an assumed safe.
+ */
+export const MIST_ROGUE_APS: MistRogueApRow[] = [
+  {
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    bssid: '5c:5b:35:00:0e:77', ssid: 'FREE-CLINIC-WIFI',
+    channel: 6, avgRssi: -48, numAps: 2, seenOnLan: true,
+  },
+  {
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    bssid: '5c:5b:35:00:0e:88', ssid: 'MRDN-Clinical',
+    channel: 36, avgRssi: -71, numAps: 2, seenOnLan: false,
+  },
+  {
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    bssid: 'b8:6a:f1:02:44:01', ssid: 'CoffeeShop_Guest',
+    channel: 11, avgRssi: -83, numAps: 1, seenOnLan: false,
+  },
+  {
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    bssid: 'b8:6a:f1:02:55:09', ssid: null,
+    channel: 1, avgRssi: -89, numAps: 1, seenOnLan: null,
+  },
+  {
+    siteId: 'northgate', siteName: 'Northgate Clinic',
+    bssid: '70:a7:41:19:02:3c', ssid: 'Xfinitywifi',
+    channel: 149, avgRssi: -78, numAps: 3, seenOnLan: false,
+  },
+];
+
+/**
+ * Mist org audit log — the demo world's answer to the on-demand
+ * /orgs/{org}/logs/search read behind the Systems drawer's Mist section.
+ * Newest first, stamped on the demo world's FIXED clock (deterministic, like
+ * MIST_SLE_DRILLDOWN). Tells the demo estate's own story: the MRDN-Research
+ * WLAN edit (its before/after carries a psk key — the demo proves the
+ * portal's redaction marker shows instead of the value), ap-3f-14's radio
+ * config change from the NET-4188 DFS ticket, and an org-scoped entry with
+ * no site at all.
+ */
+export const MIST_AUDIT_LOG: MistAuditLogRow[] = [
+  {
+    id: 'log-demo-0003', at: '2026-07-26T11:42:00.000Z',
+    admin: 'n.osei@meridian-health.example',
+    message: "Updated WLAN 'MRDN-Research' (vlan_id 820 → 822)",
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    before: '{"ssid":"MRDN-Research","vlan_id":820,"auth":{"type":"psk","psk":"<redacted by the portal>"}}',
+    after: '{"ssid":"MRDN-Research","vlan_id":822,"auth":{"type":"psk","psk":"<redacted by the portal>"}}',
+  },
+  {
+    id: 'log-demo-0002', at: '2026-07-26T09:15:00.000Z',
+    admin: 'a.whitfield@meridian-health.example',
+    message: "Updated device 'ap-3f-14' radio_config (band_5 channel 116 → 100) — NET-4188",
+    siteId: 'campus-02', siteName: 'Campus-02 Research',
+    before: '{"radio_config":{"band_5":{"channel":116,"power":13}}}',
+    after: '{"radio_config":{"band_5":{"channel":100,"power":13}}}',
+  },
+  {
+    id: 'log-demo-0001', at: '2026-07-25T16:03:00.000Z',
+    admin: 'automation@meridian-health.example',
+    message: "Updated org setting 'auto_upgrade' (window 01:00–04:00)",
+    siteId: null, siteName: null,
+  },
+];
+
+/**
+ * The demo world's Mist plane status — the authored answer to the registry
+ * block the live /api/mist payload builds from PlaneState. Agrees with the
+ * SYSTEMS row's own facts (healthy, 128 devices claimed, 1,472 client
+ * sessions reported) and stamps the demo FIXED clock one minute behind the
+ * audit log's 'now' (2026-07-26T11:59Z) — the demo world never moves.
+ */
+export const MIST_PLANE_STATUS: MistPlaneStatus = {
+  linked: true,
+  health: 'healthy',
+  lastSync: '2026-07-26T11:58:00.000Z',
+  deviceCount: 128,
+  clientCount: 1472,
+  note: null,
+};
+
+/**
+ * Mist SLE drill-down fixtures — the demo world's answer to the lazy
+ * classifiers / impacted-users / impacted-aps / summary-trend reads, keyed
+ * `${siteId}|${metric}` the way the adapter's mistSleMetricDetail() is
+ * called. Authored to agree with SITE_SLE above (same classifiers, same
+ * named clients and APs) and stamped with a FIXED `at` — the demo world is
+ * deterministic; a renderer never sees a moving clock.
+ */
+export const MIST_SLE_DRILLDOWN: Record<string, MistSleMetricDetail> = {
+  'campus-02|coverage': {
+    siteId: 'campus-02', siteName: 'Campus-02 Research', metric: 'coverage',
+    classifiers: [
+      { name: 'signal-strength', samples: 141, degraded: 141, durationSec: 3384, impact: { numUsers: 29, numAps: 2, totalUsers: 1240, totalAps: 72 } },
+      { name: 'interference', samples: 45, degraded: 45, durationSec: 1080, impact: { numUsers: 12, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+    ],
+    impactedClients: [
+      { mac: 'de:ad:0b:14:65:22', name: 's.mehta', degraded: 31 },
+      { mac: '6e:41:0d:99:2b:af', name: null, degraded: 18 },
+    ],
+    impactedAps: [
+      { mac: '3c:52:82:3f:14:01', name: 'ap-3f-14', degraded: 12 },
+      { mac: '3c:52:82:3f:12:01', name: 'ap-3f-12', degraded: 5 },
+    ],
+    trend: {
+      startSec: 1_785_513_600, endSec: 1_785_600_000, intervalSec: 3600,
+      total: [258, 261, 255, 262, 259, 260, 258, 257, 261, 259, 254, 251, 248, 244, 241, 239, 242, 246, 251, 255, 258, 260, 261, 259],
+      degraded: [4, 4, 5, 4, 4, 5, 5, 6, 6, 7, 8, 9, 12, 15, 18, 21, 17, 13, 10, 8, 7, 6, 5, 4],
+    },
+    source: { plane: 'mist', at: '2026-07-26T11:59:00.000Z', sections: { classifiers: 'ok', impactedClients: 'ok', impactedAps: 'ok', trend: 'ok' } },
+  },
+  'campus-02|time-to-connect': {
+    siteId: 'campus-02', siteName: 'Campus-02 Research', metric: 'time-to-connect',
+    classifiers: [
+      { name: 'dhcp', samples: 71, degraded: 71, durationSec: 1704, impact: { numUsers: 21, numAps: 2, totalUsers: 1240, totalAps: 72 } },
+      { name: 'authorization', samples: 31, degraded: 31, durationSec: 612, impact: { numUsers: 9, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+      { name: 'association', samples: 21, degraded: 21, durationSec: 498, impact: { numUsers: 6, numAps: 1, totalUsers: 1240, totalAps: 72 } },
+    ],
+    impactedClients: [
+      { mac: '3c:22:fb:41:0a:19', name: 'm.okonjo', degraded: 9 },
+    ],
+    impactedAps: [
+      { mac: '3c:52:82:3f:12:01', name: 'ap-3f-12', degraded: 7 },
+    ],
+    trend: {
+      startSec: 1_785_513_600, endSec: 1_785_600_000, intervalSec: 3600,
+      total: [171, 174, 170, 172, 169, 171, 168, 166, 172, 174, 170, 168, 165, 162, 160, 158, 161, 164, 168, 171, 173, 172, 174, 172],
+      degraded: [3, 3, 4, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9, 11, 12, 10, 8, 6, 5, 4, 4, 3, 3, 3],
+    },
+    source: { plane: 'mist', at: '2026-07-26T11:59:00.000Z', sections: { classifiers: 'ok', impactedClients: 'ok', impactedAps: 'ok', trend: 'ok' } },
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Configure — NtConfigure.dc.html
 // ---------------------------------------------------------------------------
@@ -1245,15 +1866,20 @@ export const ORPHANS: OrphanRow[] = [
 export const CONFIGURE_STATS: StatDef[] = [
   { label: 'Queued changes', value: '3', delta: '2 need a window', tone: 'neutral' },
   { label: 'Pushed today', value: '6', delta: 'all ticket-stamped', tone: 'positive' },
-  { label: 'Config objects', value: '27', delta: '5 ssid · 7 vlan · 12 port', tone: 'neutral' },
+  { label: 'Config objects', value: '28', delta: '6 ssid · 7 vlan · 12 port', tone: 'neutral' },
   { label: 'Drift open', value: '12', delta: '7 auto-remediable', tone: 'negative' },
 ];
 
-/** Wireless SSIDs — the `ssids` array (5 rows). */
+/** Wireless SSIDs — the `ssids` array (6 rows). The PSK rows carry the same
+ *  redaction note the Mist adapter stamps on WLANs whose payload held the
+ *  cleartext key: the portal says a PSK exists, and never transports it.
+ *  MRDN-Research is the demo's purely-Mist WLAN (Campus-02 is the demo
+ *  estate's Mist site): it is what the Mist direct-write edit flow opens on. */
 export const SSIDS: SsidObject[] = [
   { kind: 'ssid', name: 'MRDN-Staff', vlan: 'vlan 820', security: 'WPA3-Enterprise', targets: 'clinical-floors, staff-wireless · 268 APs', plane: 'CENTRAL + MIST', tone: 'accent' },
-  { kind: 'ssid', name: 'MRDN-Guest', vlan: 'vlan 812', security: 'PSK + captive portal', targets: 'guest-lobby, northgate-public · 96 APs', plane: 'CENTRAL', tone: 'accent' },
-  { kind: 'ssid', name: 'MRDN-IoT', vlan: 'vlan 830', security: 'WPA2-PSK', targets: 'all groups · 268 APs', plane: 'CENTRAL + MIST', tone: 'accent' },
+  { kind: 'ssid', name: 'MRDN-Guest', vlan: 'vlan 812', security: 'PSK + captive portal', targets: 'guest-lobby, northgate-public · 96 APs', plane: 'CENTRAL', tone: 'accent', note: 'PSK set — redacted by the portal' },
+  { kind: 'ssid', name: 'MRDN-IoT', vlan: 'vlan 830', security: 'WPA2-PSK', targets: 'all groups · 268 APs', plane: 'CENTRAL + MIST', tone: 'accent', note: 'PSK set — redacted by the portal' },
+  { kind: 'ssid', name: 'MRDN-Research', vlan: 'vlan 822', security: 'WPA2-PSK', targets: 'Campus-02 Research · enabled', plane: 'MIST', tone: 'info', note: 'PSK set — redacted by the portal', enabled: true },
   { kind: 'ssid', name: 'LAKE-Clinical', vlan: 'vlan 848', security: 'WPA2-Enterprise', targets: 'lakeshore-medical · 44 APs', plane: 'AOS-8', tone: 'warning' },
   { kind: 'ssid', name: 'MRDN-Legacy', vlan: 'vlan 810', security: 'WPA2-Enterprise', targets: 'riverside only · retiring 12 Aug', plane: 'CLASSIC', tone: 'danger' },
 ];
@@ -1279,21 +1905,24 @@ export const VLANS: VlanObject[] = [
   { kind: 'vlan', id: '860', name: 'building-systems', detail: '10.60.2.0/24 · doors, HVAC', role: 'Building' },
 ];
 
-/** Queued changes — the `queue` array (3 rows). */
+/** Queued changes — the `queue` array (3 rows). The NET-4188 row stays
+ *  console-bound on purpose: DFS exclusion is an RF-profile change, which the
+ *  Mist direct SSID write path refuses — "Mist is no longer read-only" does
+ *  not make every Mist change portal-writable. */
 export const QUEUED_CHANGES: QueuedChangeRow[] = [
   { state: 'ready', tone: 'success', what: 'Add DHCP helper 10.44.0.20 to vlan 812', where: '2 core switches · local collector', ticket: 'NET-4166' },
   { state: 'needs window', tone: 'warning', what: 'Tunnel MTU 1400 on mc-lake-3', where: 'AOS-8 · window 01:00–04:00', ticket: 'NET-4149' },
-  { state: 'console', tone: 'neutral', what: 'Exclude DFS channels on clinical-floors', where: 'Mist · read-only, opens in console', ticket: 'NET-4188' },
+  { state: 'console', tone: 'neutral', what: 'Exclude DFS channels on clinical-floors', where: 'Mist · RF profile, opens in console', ticket: 'NET-4188' },
 ];
 
 /** "Where a change can go" capability matrix — the `capability` array (6 rows). */
 export const CAPABILITY_MATRIX: CapabilityRow[] = [
-  { plane: 'HPE Aruba Central', note: 'wlan, groups, templates', mode: 'brokered', tone: 'accent', linked: true },
-  { plane: 'Local switch collector', note: 'ports, vlans, aaa', mode: 'brokered', tone: 'accent', linked: true },
-  { plane: 'AOS-8 master', note: 'recorded shell, window only', mode: 'ssh', tone: 'accent', linked: true },
-  { plane: 'Mist', note: 'payload pre-filled in console', mode: 'read only', tone: 'neutral', linked: true },
-  { plane: 'Central Classic', note: 'retiring 12 Aug', mode: 'read only', tone: 'neutral', linked: true },
-  { plane: 'ClearPass', note: 'policy edited in ClearPass', mode: 'read only', tone: 'neutral', linked: true },
+  { plane: 'HPE Aruba Central', note: 'wlan, groups, templates', mode: 'brokered', tone: 'accent', linked: true, planeId: 'central' },
+  { plane: 'Local switch collector', note: 'ports, vlans, aaa', mode: 'brokered', tone: 'accent', linked: true, planeId: 'local' },
+  { plane: 'AOS-8 master', note: 'recorded shell, window only', mode: 'ssh', tone: 'accent', linked: true, planeId: 'aos8' },
+  { plane: 'Mist', note: 'reviewed SSID writes, no ticket', mode: 'direct', tone: 'accent', linked: true, planeId: 'mist' },
+  { plane: 'Central Classic', note: 'retiring 12 Aug', mode: 'read only', tone: 'neutral', linked: true, planeId: 'classic' },
+  { plane: 'ClearPass', note: 'policy edited in ClearPass', mode: 'read only', tone: 'neutral', linked: true, planeId: 'clearpass' },
 ];
 
 /** What the write broker can actually do per plane — the single source the
@@ -1307,6 +1936,11 @@ export const PLANE_WRITE_MODE: Record<PlaneKey, WriteMode> = {
   local: 'ssh',
   aos8: 'ssh',
   classic: 'read only',
+  // Mist's SSID write path is the reviewed direct apply (Configure's SSID
+  // drawer → /sites/{site}/wlans), never the ticketed broker — 'read only'
+  // here is accurate for the broker's vocabulary. The real capability is
+  // claimed by the adapter via PlaneCapabilities.directWrite and granted per
+  // deployment through the plane's write scope, exactly like SSE below.
   mist: 'read only',
   greenlake: 'read only',
   clearpass: 'read only',
@@ -1413,6 +2047,25 @@ export const SSID_CATALOG_DEMO: SsidCatalog = {
   source: 'Central demo catalog (network-config/v1alpha1)',
 };
 
+/**
+ * The Mist half of the demo catalog — what "Edit" on a Mist SSID loads when
+ * the portal is in demo mode. Mist WLANs are SITE-scoped, so the only scope
+ * category on offer is the demo estate's two Mist sites, and the Central
+ * dependency sections (roles, server groups, portal profiles) are genuinely
+ * absent rather than unavailable — Mist has no such catalogs.
+ */
+export const SSID_CATALOG_DEMO_MIST: SsidCatalog = {
+  scopes: [
+    { id: 'campus-02', label: 'Campus-02 Research', category: 'site' },
+    { id: 'northgate', label: 'Northgate Clinic', category: 'site' },
+  ],
+  roles: [],
+  authServerGroups: [],
+  captivePortalProfiles: [],
+  unavailable: [],
+  source: 'Mist demo catalog (sites/{site}/wlans)',
+};
+
 export const SSID_BAND_OPTIONS: SelectOption[] = [
   { value: '5+6', label: '5 GHz + 6 GHz' },
   { value: 'all', label: '2.4 + 5 + 6 GHz' },
@@ -1442,14 +2095,14 @@ export const CONFIG_EDIT_TITLES: Record<string, string> = {
 };
 
 export const CONFIG_EDIT_DESCS: Record<string, string> = {
-  ssid: 'Written to Central directly; the Mist half opens in its console with the same payload.',
+  ssid: 'Written directly to the selected plane — Central or Mist — after review.',
   port: 'Pushed over the recorded SSH session on the local collector, with a rollback snapshot.',
   vlan: 'Applied to every switch in the selected scope through the local collector.',
 };
 
 /** Mono note under the queue buttons, per object kind — `pushNote`. */
 export const CONFIG_PUSH_NOTES: Record<string, string> = {
-  ssid: 'Central accepts this push directly. The Mist half is read-only from here — the portal opens the Mist console with the payload pre-filled.',
+  ssid: 'Central and Mist both accept this push directly — reviewed, audited, and written to the selected scope.',
   port: 'Pushed over the recorded SSH session; every keystroke and the resulting diff are attached to the ticket.',
   vlan: 'Applied switch by switch with a verify step between each; the run stops on the first mismatch.',
 };
@@ -1774,27 +2427,27 @@ export const MIST_REGIONS: SelectOption[] = [
 ];
 
 /**
- * HPE Aruba Central regional API gateway hostnames.
+ * HPE Aruba Central regional API gateway base URLs.
  * Source: aruba/pycentral v2 — pycentral/utils/constants.py CLUSTER_BASE_URLS
- * Use the hostname as `gatewayBaseUrl` when connecting a Central plane.
+ * Use the base URL as `gatewayBaseUrl` when connecting a Central plane.
  */
 export const CENTRAL_CLUSTERS: SelectOption[] = [
-  { value: 'us1.api.central.arubanetworks.com', label: 'US-1 (us1)' },
-  { value: 'us2.api.central.arubanetworks.com', label: 'US-2 (us2)' },
-  { value: 'us4.api.central.arubanetworks.com', label: 'US-WEST-4 (us4)' },
-  { value: 'us5.api.central.arubanetworks.com', label: 'US-WEST-5 (us5)' },
-  { value: 'us6.api.central.arubanetworks.com', label: 'US-East1 (us6)' },
-  { value: 'ca1.api.central.arubanetworks.com', label: 'Canada-1 (ca1)' },
-  { value: 'de1.api.central.arubanetworks.com', label: 'EU-1 / Germany (de1)' },
-  { value: 'de2.api.central.arubanetworks.com', label: 'EU-Central2 (de2)' },
-  { value: 'de3.api.central.arubanetworks.com', label: 'EU-Central3 (de3)' },
-  { value: 'gb1.api.central.arubanetworks.com', label: 'UK (gb1)' },
-  { value: 'in1.api.central.arubanetworks.com', label: 'APAC-1 / India (in1)' },
-  { value: 'jp1.api.central.arubanetworks.com', label: 'APAC-EAST1 / Japan (jp1)' },
-  { value: 'au1.api.central.arubanetworks.com', label: 'APAC-SOUTH1 / Australia (au1)' },
-  { value: 'ae1.api.central.arubanetworks.com', label: 'UAE (ae1)' },
-  { value: 'cn1.api.central.arubanetworks.com.cn', label: 'China (cn1)' },
-  { value: 'internal.api.central.arubanetworks.com', label: 'Internal / Lab' },
+  { value: 'https://us1.api.central.arubanetworks.com', label: 'US-1 (us1)' },
+  { value: 'https://us2.api.central.arubanetworks.com', label: 'US-2 (us2)' },
+  { value: 'https://us4.api.central.arubanetworks.com', label: 'US-WEST-4 (us4)' },
+  { value: 'https://us5.api.central.arubanetworks.com', label: 'US-WEST-5 (us5)' },
+  { value: 'https://us6.api.central.arubanetworks.com', label: 'US-East1 (us6)' },
+  { value: 'https://ca1.api.central.arubanetworks.com', label: 'Canada-1 (ca1)' },
+  { value: 'https://de1.api.central.arubanetworks.com', label: 'EU-1 / Germany (de1)' },
+  { value: 'https://de2.api.central.arubanetworks.com', label: 'EU-Central2 (de2)' },
+  { value: 'https://de3.api.central.arubanetworks.com', label: 'EU-Central3 (de3)' },
+  { value: 'https://gb1.api.central.arubanetworks.com', label: 'UK (gb1)' },
+  { value: 'https://in1.api.central.arubanetworks.com', label: 'APAC-1 / India (in1)' },
+  { value: 'https://jp1.api.central.arubanetworks.com', label: 'APAC-EAST1 / Japan (jp1)' },
+  { value: 'https://au1.api.central.arubanetworks.com', label: 'APAC-SOUTH1 / Australia (au1)' },
+  { value: 'https://ae1.api.central.arubanetworks.com', label: 'UAE (ae1)' },
+  { value: 'https://cn1.api.central.arubanetworks.com.cn', label: 'China (cn1)' },
+  { value: 'https://internal.api.central.arubanetworks.com', label: 'Internal / Lab' },
 ];
 
 /** Connect-a-system: type-dependent endpoint field — `endpoints` (7 variants). */
@@ -1906,7 +2559,7 @@ export const CONNECT_FIELDS: Record<SystemTypeKey, ConnectField[]> = {
  * hidden so a save can never write a value under a key that plane's
  * `isComplete()` does not read.
  */
-export const CONNECT_HIDE_CLIENT_CREDENTIALS: readonly SystemTypeKey[] = ['sse'];
+export const CONNECT_HIDE_CLIENT_CREDENTIALS: readonly SystemTypeKey[] = ['sse', 'mist', 'local', 'edgeconnect'];
 
 /**
  * Settings key the connect drawer's endpoint input must save under, per plane
@@ -1932,10 +2585,6 @@ export const CONNECT_ENDPOINT_KEY: Record<SystemTypeKey, string> = {
   opsramp: 'tenantId',
   edgeconnect: 'baseUrl',
 };
-
-/** Success alert body after "Test connection" — `testResult`. */
-export const CONNECT_TEST_RESULT =
-  'Authenticated, read scopes granted. Found 164 devices across 3 sites and 486 subscription records — 3 devices are already claimed by another plane and will be flagged, not duplicated.';
 
 // ---------------------------------------------------------------------------
 // UXI sensor fleet (NtUxi) — demo data for the dedicated UXI screen.
@@ -2068,3 +2717,252 @@ export const UXI_SENSORS: UxiSensorRow[] = [
     ethernetMac: null,
   },
 ];
+
+
+// ---------------------------------------------------------------------------
+// Site application visibility (DPI) + hardware trends — the demo world for
+// Central's ON-DEMAND reads (shared/appRisk.ts + shared/trends.ts).
+//
+// There is no design/*.dc.html markup for these screens yet, so — like the
+// UXI roster above — these are hand-authored, coherent with the estate
+// above: campus-01 is the demo's Central-claimed site, sw-core-a its
+// degraded core switch, ap-1f-04 one of its Central APs.
+//
+// The RAW wire shapes are what is authored; the exported payloads are
+// computed from them through the real normalizers at module load, so the
+// demo world can never drift from what a live payload would produce. Every
+// stamp is a fixed authored instant — demo output is deterministic.
+// ---------------------------------------------------------------------------
+
+const DPI_DEMO_NOW_MS = Date.parse('2026-07-26T12:00:00.000Z');
+/** The demo read window: the 24h ending at the demo "now" (well inside the
+ *  endpoint's 7-day cap). */
+const DPI_DEMO_WINDOW = { start: '2026-07-25T12:00:00.000Z', end: '2026-07-26T12:00:00.000Z' };
+const DPI_DEMO_SOURCE_AT = '2026-07-26T11:59:00.000Z';
+const HOUR_MS = 3_600_000;
+const TREND_DEMO_START_MS = Date.parse(DPI_DEMO_WINDOW.start);
+
+/**
+ * The campus-01 application table in Central's wire shape (verified field
+ * names; statistics ride as strings). Dead fields are authored the way the
+ * plane ships them — experience all-zero, tlsVersion/certificateExpiryDate
+ * empty — and the normalizer is what turns those into honest nulls.
+ */
+const CAMPUS01_APPS_RAW: unknown[] = [
+  { name: 'Microsoft 365', id: 'app-0365', risk: 'trusted', state: 'active', rxBytes: '4230000000', txBytes: '810000000', categories: ['Collaboration', 'Web'], applicationHostType: 'cloud', destLocation: ['US'], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 60_000), tlsVersion: '', certificateExpiryDate: '' },
+  { name: 'Epic Hyperspace', id: 'app-epic', risk: 'trusted', state: 'active', rxBytes: '3150000000', txBytes: '640000000', categories: ['Business Applications', 'Healthcare'], applicationHostType: 'datacenter', destLocation: [], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 180_000), tlsVersion: '', certificateExpiryDate: '' },
+  { name: 'YouTube', id: 'app-yt', risk: 'low', state: 'active', rxBytes: '2890000000', txBytes: '120000000', categories: ['Streaming', 'Web'], applicationHostType: 'cloud', destLocation: ['US'], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 300_000), tlsVersion: '', certificateExpiryDate: '' },
+  { name: 'Zoom', id: 'app-zoom', risk: 'trusted', state: 'active', rxBytes: '1740000000', txBytes: '990000000', categories: ['Collaboration', 'Voice'], applicationHostType: 'cloud', destLocation: ['US'], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 900_000), tlsVersion: '', certificateExpiryDate: '' },
+  { name: 'Windows Update', id: 'app-wu', risk: 'safe', state: 'active', rxBytes: '1520000000', txBytes: '45000000', categories: ['Software Update'], applicationHostType: 'cloud', destLocation: ['US'], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 3_600_000), tlsVersion: '', certificateExpiryDate: '' },
+  { name: 'Netflix', id: 'app-nf', risk: 'very_low', state: 'active', rxBytes: '1210000000', txBytes: '38000000', categories: ['Streaming'], applicationHostType: 'cloud', destLocation: ['US'], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 5_400_000), tlsVersion: '', certificateExpiryDate: '' },
+  { name: 'Slack', id: 'app-slack', risk: 'trusted', state: 'active', rxBytes: '610000000', txBytes: '240000000', categories: ['Collaboration'], applicationHostType: 'cloud', destLocation: ['US'], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 420_000), tlsVersion: '', certificateExpiryDate: '' },
+  // Flagged, KNOWN: a peer-to-peer client and an anonymizer — risk words the
+  // aliases fold into 'suspicious', categories the plane could name.
+  { name: 'BitTorrent', id: 'app-bt', risk: 'high', state: 'active', rxBytes: '940000000', txBytes: '720000000', categories: ['Peer-to-Peer'], applicationHostType: 'cloud', destLocation: ['NL', 'SE'], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 1_800_000), tlsVersion: '', certificateExpiryDate: '' },
+  { name: 'Tor', id: 'app-tor', risk: 'very_high', state: 'active', rxBytes: '86000000', txBytes: '41000000', categories: ['Anonymizer'], applicationHostType: 'cloud', destLocation: ['DE'], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 7_200_000), tlsVersion: '', certificateExpiryDate: '' },
+  // Flagged, UNCLASSIFIED: elevated risk and the plane could not say what it
+  // is — the watchlist's investigation queue of one.
+  { name: 'unknown-tcp-4410', id: 'app-unk-4410', risk: 'medium', state: 'active', rxBytes: '410000000', txBytes: '38000000', categories: ['unknown'], applicationHostType: null, destLocation: [], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 1_200_000), tlsVersion: '', certificateExpiryDate: '' },
+  { name: 'Spotify', id: 'app-spot', risk: 'low', state: 'active', rxBytes: '350000000', txBytes: '12000000', categories: ['Streaming', 'Audio'], applicationHostType: 'cloud', destLocation: ['US'], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 2_400_000), tlsVersion: '', certificateExpiryDate: '' },
+  // The plane reported this app's presence but no byte counters for it — a
+  // null total in the ranking, never a zero.
+  { name: 'NTP', id: 'app-ntp', risk: 'trusted', state: 'active', categories: ['Network'], applicationHostType: 'infrastructure', destLocation: [], experience: 0, lastUsedTime: String(DPI_DEMO_NOW_MS - 30_000), tlsVersion: '', certificateExpiryDate: '' },
+];
+
+/** The demo DPI read for a site: the ranked table for the demo window. */
+export const SITE_APPLICATIONS_DEMO: Partial<Record<SiteId, SiteApplicationsLive>> = {
+  'campus-01': {
+    siteId: 'campus-01',
+    window: { ...DPI_DEMO_WINDOW },
+    apps: byBytesDesc(
+      CAMPUS01_APPS_RAW.map((raw) => normalizeSiteApp(raw)).filter((a): a is SiteAppRow => a !== null),
+    ),
+    source: { plane: 'central', at: DPI_DEMO_SOURCE_AT, sections: { apps: 'ok' } },
+  },
+};
+
+/**
+ * Hourly gauge samples in the switch hardware-trends wire shape: positional
+ * `data` (strings) per timestamp (epoch ms). `skipHours` omits buckets
+ * outright — the demo's 03:00–05:00 telemetry outage that the normalizer
+ * must break the line across, never bridge.
+ */
+function demoHourlySamples(
+  seriesValues: readonly (readonly number[])[],
+  skipHours: readonly number[] = [],
+): { timestamp: number; data: string[] }[] {
+  const out: { timestamp: number; data: string[] }[] = [];
+  for (let hour = 0; hour < 24; hour += 1) {
+    if (skipHours.includes(hour)) continue;
+    out.push({
+      timestamp: TREND_DEMO_START_MS + hour * HOUR_MS,
+      data: seriesValues.map((values) => String(values[hour])),
+    });
+  }
+  return out;
+}
+
+/** Cumulative-counter samples from hourly increments (SNMP-style octet and
+ *  error counters, strings on the wire). */
+function demoCounterSamples(
+  bases: readonly number[],
+  hourlyIncrements: readonly (readonly number[])[],
+): { timestamp: number; data: string[] }[] {
+  const cumulative = [...bases];
+  const out: { timestamp: number; data: string[] }[] = [];
+  for (let hour = 0; hour < 24; hour += 1) {
+    for (let s = 0; s < cumulative.length; s += 1) cumulative[s] += hourlyIncrements[s][hour];
+    out.push({ timestamp: TREND_DEMO_START_MS + hour * HOUR_MS, data: cumulative.map(String) });
+  }
+  return out;
+}
+
+/** AP trend samples: ISO timestamps (verified envelope shape), one value per
+ *  hourly bucket. */
+function demoApSamples(values: readonly number[]): { timestamp: string; data: string[] }[] {
+  return values.map((v, hour) => ({
+    timestamp: new Date(TREND_DEMO_START_MS + hour * HOUR_MS).toISOString(),
+    data: [String(v)],
+  }));
+}
+
+const SW_CORE_A_HW_KEYS = [
+  'cpuUtilization',
+  'memoryUtilization',
+  'systemTemperature',
+  'poeAvailable',
+  'poeConsumption',
+  'powerConsumption',
+  'totalPowerConsumption',
+];
+
+/**
+ * sw-core-a's hardware trends: 24 hourly buckets over the demo window.
+ * Buckets 15–16 (03:00–05:00) are SKIPPED — the telemetry outage. The story
+ * matches the demo estate's 'degraded' verdict: a CPU/temperature excursion
+ * 08:00–10:00 that is recovering by the window's end. Values at the skipped
+ * indices are placeholders and never reach the samples.
+ */
+const SW_CORE_A_HW_VALUES: readonly (readonly number[])[] = [
+  // cpuUtilization (the terminal's baseline 14%)
+  [14, 13, 14, 14, 15, 14, 13, 14, 14, 13, 14, 15, 14, 14, 13, 0, 0, 14, 15, 14, 14, 61, 83, 87, 52],
+  // memoryUtilization (baseline 39%)
+  [39, 39, 40, 39, 40, 41, 40, 39, 40, 40, 41, 40, 39, 40, 41, 0, 0, 40, 41, 42, 43, 44, 44, 44, 42],
+  // systemTemperature (baseline 41.5C)
+  [41.5, 41.4, 41.6, 41.5, 41.7, 41.8, 41.6, 41.5, 41.6, 41.7, 41.9, 42.1, 42.0, 41.8, 41.9, 0, 0, 42.3, 42.6, 43.1, 44.2, 49.8, 54.3, 57.6, 51.2],
+  // poeAvailable — flat budget
+  [370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 0, 0, 370, 370, 370, 370, 370, 370, 370, 370],
+  // poeConsumption
+  [178, 179, 180, 180, 181, 180, 179, 178, 179, 180, 182, 183, 182, 181, 180, 0, 0, 181, 182, 183, 184, 185, 186, 186, 184],
+  // powerConsumption
+  [208, 209, 210, 210, 211, 210, 209, 208, 209, 210, 212, 213, 212, 211, 210, 0, 0, 211, 212, 214, 216, 231, 246, 252, 228],
+  // totalPowerConsumption — always >= powerConsumption + poeConsumption
+  [392, 394, 396, 396, 398, 396, 394, 392, 394, 396, 400, 402, 400, 398, 396, 0, 0, 398, 400, 403, 406, 422, 438, 444, 418],
+];
+
+/** The demo hardware-trends read, keyed by device NAME (demo devices carry
+ *  no serial — the demo read is addressed the same way). */
+export const SWITCH_HARDWARE_TRENDS_DEMO: Record<string, SwitchHardwareTrendsLive> = {
+  'sw-core-a': {
+    serial: 'sw-core-a',
+    window: { ...DPI_DEMO_WINDOW },
+    trends: normalizeTrendSet(SW_CORE_A_HW_KEYS, demoHourlySamples(SW_CORE_A_HW_VALUES, [15, 16])),
+    source: { plane: 'central', at: DPI_DEMO_SOURCE_AT, sections: { hardware: 'ok' } },
+  },
+};
+
+/** Hourly AP values per metric: an overnight-quiet office AP that ramps with
+ *  the workday; the throughput row is BYTES PER BUCKET (the wire shape), which
+ *  the normalizer scales to bit/s. */
+const AP_1F_04_VALUES: Record<'cpu' | 'memory' | 'throughput', readonly number[]> = {
+  cpu: [18, 17, 16, 15, 14, 13, 12, 11, 10, 10, 9, 9, 8, 8, 8, 9, 9, 10, 11, 13, 15, 18, 21, 20],
+  memory: [58, 58, 57, 57, 56, 56, 55, 55, 54, 54, 54, 55, 55, 56, 56, 56, 57, 57, 58, 58, 59, 60, 61, 60],
+  throughput: [
+    130_000_000_000, 122_000_000_000, 110_000_000_000, 98_000_000_000, 86_000_000_000, 72_000_000_000,
+    58_000_000_000, 44_000_000_000, 32_000_000_000, 24_000_000_000, 18_000_000_000, 14_000_000_000,
+    11_000_000_000, 9_000_000_000, 8_400_000_000, 8_800_000_000, 10_000_000_000, 13_000_000_000,
+    22_000_000_000, 41_000_000_000, 68_000_000_000, 96_000_000_000, 150_000_000_000, 162_000_000_000,
+  ],
+};
+
+const AP_TREND_KEY: Record<'cpu' | 'memory' | 'throughput', string> = {
+  cpu: 'cpuUtilization',
+  memory: 'memoryUtilization',
+  throughput: 'throughput',
+};
+
+/** The demo AP trend reads, keyed `${deviceName}|${metric}` — the way the
+ *  adapter is called. */
+export const AP_TRENDS_DEMO: Record<string, ApTrendsLive> = Object.fromEntries(
+  (['cpu', 'memory', 'throughput'] as const).map((metric) => {
+    const keys = [AP_TREND_KEY[metric]];
+    const live: ApTrendsLive = {
+      serial: 'ap-1f-04',
+      metric,
+      window: { ...DPI_DEMO_WINDOW },
+      trends: normalizeTrendSet(keys, demoApSamples(AP_1F_04_VALUES[metric]), apTrendSpecs(metric, keys)),
+      source: { plane: 'central', at: DPI_DEMO_SOURCE_AT, sections: { trends: 'ok' } },
+    };
+    return [`ap-1f-04|${metric}`, live];
+  }),
+);
+
+const SW_CORE_A_IF_KEYS = [
+  'txBytes',
+  'rxBytes',
+  'inErrors',
+  'outErrors',
+  'inDiscards',
+  'outDiscards',
+  'inFcs',
+  'inCrcErrors',
+  'inFragmented',
+  'outCollision',
+  'inRunts',
+  'inGiants',
+];
+
+/** sw-core-a's interface counters: cumulative octet counters growing ~1e12
+ *  bytes/hour, error counters flat except a CRC/input-error burst during the
+ *  08:00–10:00 excursion — the wired side of the same 'degraded' story. */
+const SW_CORE_A_IF_BASES = [84_600_000_000_000, 91_200_000_000_000, 4120, 2055, 880, 640, 96, 1830, 44, 12, 61, 29];
+const SW_CORE_A_IF_HOURLY: readonly (readonly number[])[] = [
+  // txBytes
+  [1_350_000_000_000, 1_280_000_000_000, 1_150_000_000_000, 1_020_000_000_000, 940_000_000_000, 860_000_000_000, 800_000_000_000, 760_000_000_000, 740_000_000_000, 750_000_000_000, 770_000_000_000, 800_000_000_000, 840_000_000_000, 880_000_000_000, 920_000_000_000, 960_000_000_000, 1_020_000_000_000, 1_080_000_000_000, 1_150_000_000_000, 1_240_000_000_000, 1_360_000_000_000, 1_480_000_000_000, 1_580_000_000_000, 1_500_000_000_000],
+  // rxBytes
+  [1_150_000_000_000, 1_090_000_000_000, 980_000_000_000, 870_000_000_000, 800_000_000_000, 730_000_000_000, 680_000_000_000, 650_000_000_000, 630_000_000_000, 640_000_000_000, 660_000_000_000, 680_000_000_000, 710_000_000_000, 750_000_000_000, 780_000_000_000, 820_000_000_000, 870_000_000_000, 920_000_000_000, 980_000_000_000, 1_050_000_000_000, 1_160_000_000_000, 1_260_000_000_000, 1_340_000_000_000, 1_280_000_000_000],
+  // inErrors — the excursion leaves a mark
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 5, 7, 4],
+  // outErrors
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  // inDiscards
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0],
+  // outDiscards
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  // inFcs
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  // inCrcErrors — the loudest of the burst
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 9, 12, 6],
+  // inFragmented
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  // outCollision
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  // inRunts
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  // inGiants
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+];
+
+/** The demo interface-trends read, keyed by device NAME. */
+export const SWITCH_INTERFACE_TRENDS_DEMO: Record<string, SwitchInterfaceTrendsLive> = {
+  'sw-core-a': {
+    serial: 'sw-core-a',
+    window: { ...DPI_DEMO_WINDOW },
+    trends: normalizeTrendSet(
+      SW_CORE_A_IF_KEYS,
+      demoCounterSamples(SW_CORE_A_IF_BASES, SW_CORE_A_IF_HOURLY),
+      interfaceTrendSpecs(SW_CORE_A_IF_KEYS),
+    ),
+    source: { plane: 'central', at: DPI_DEMO_SOURCE_AT, sections: { interfaces: 'ok' } },
+  },
+};

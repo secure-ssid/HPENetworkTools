@@ -9,6 +9,7 @@
 
 import {
   VLAN_SCOPE_OPTIONS,
+  planeKeyOf,
   ssidDependencyRequirementsFor,
   type ConfigForm,
   type ConfigKind,
@@ -19,6 +20,15 @@ import {
   type SsidSecurity,
   type VlanForm,
 } from '@hpe/shared';
+
+/** The direct-write target plane for an SSID form — the drawer's Mist
+ *  switches, catalog query and refusal notes all read this one derivation so
+ *  they can never disagree. A label planeKeyOf cannot place ('CENTRAL +
+ *  MIST', an AOS-8 row) rides the Central flow, exactly as the server treats
+ *  it (ssidDirectWrite.ts refuses anything that is not central or mist). */
+export function ssidPlaneOf(form: SsidForm): 'mist' | 'central' {
+  return planeKeyOf(form.plane as Parameters<typeof planeKeyOf>[0]) === 'mist' ? 'mist' : 'central';
+}
 
 export const LIVE_SSID_FORM: SsidForm = {
   name: '',
@@ -126,10 +136,12 @@ export function formForPreview(
 }
 
 /** Drop values that the selected security mode cannot use. Hidden inputs
- *  must not survive a mode change and later ride along with a direct write. */
+ *  must not survive a mode change and later ride along with a direct write.
+ *  The dependency rules are the target plane's (Central needs a role for
+ *  every mode; Mist keeps only the write-only passphrase). */
 export function ssidFormForSecurity(form: SsidForm, security: SsidSecurity): SsidForm {
   const { passphrase, authServerGroupId, captivePortalProfileId, ...base } = form;
-  const requirement = ssidDependencyRequirementsFor(security);
+  const requirement = ssidDependencyRequirementsFor(security, form.plane);
   return {
     ...base,
     security,

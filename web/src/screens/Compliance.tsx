@@ -7,9 +7,22 @@
  * Findings open table (Sev Badge + dot, finding + mono detail, mono rule,
  * plane Badge, copper mono device count → device detail, colour-coded fix
  * Badge) with a mono `N of M findings` count. Right: "Pass rate by baseline"
- * (five Progress bars with mono notes) and "Drift, as text" (DiffCode with
- * danger/success line colouring; Push fix / Accept as exception are honest
- * hand-off toasts).
+ * (five Progress bars with mono notes), "Config drift — running-config
+ * snapshots" (the backup service's roster of drifted devices, each opening a
+ * Drawer with the unified diff between its two newest snapshots via
+ * getConfigBackupVersions + getConfigBackupDiff; demo snapshots are labelled),
+ * and "Drift, as text" (DiffCode with danger/success line colouring; Push fix
+ * / Accept as exception are honest hand-off toasts).
+ *
+ * The Findings table is the nightdesk DataTable: the column manager (View
+ * options in the Findings section meta → show/hide/reorder, header-edge
+ * resize) persists through SettingsContext under the 'compliance' table id.
+ * Sev is the one tinted column — severity is the only value on the row with
+ * a threshold vocabulary (the tint fn below documents it). The rows are
+ * deliberately NOT a keyboard grid: a finding row has no primary action —
+ * the device count is a nested button, already keyboard-reachable on its
+ * own — and inventing a row action would put a shortcut overlay up that lies
+ * about what Enter does.
  * Data: getCompliance() — live /api/compliance when the server is up, fixtures otherwise.
  */
 
@@ -19,21 +32,24 @@ import {
   Alert,
   Badge,
   Button,
+  DataTable,
   Divider,
+  Drawer,
   EmptyState,
   Progress,
   SectionHeader,
   Select,
   Spinner,
-  Table,
+  TableViewOptions,
   useToast,
 } from '../nightdesk';
-import { getCompliance, syncSystems } from '../api/client';
+import type { DataTableColumn } from '../nightdesk';
+import { getCompliance, getConfigBackups, getConfigBackupDiff, getConfigBackupVersions, syncSystems } from '../api/client';
 import type { ComplianceData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { hhmmLocal as hhmm } from '@hpe/shared';
 import { findingDevicesPath } from '../app/nav';
-import type { FindingRow, Tone } from '@hpe/shared';
+import type { ConfigBackupDiff, ConfigBackupListEnvelope, FindingRow, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { DiffCode } from '../lib/DiffCode';
@@ -67,9 +83,19 @@ function fixTone(f: FindingRow): Tone {
   return FIX_COLOR_TONES[f.fixColor] ?? FIX_TONES[f.fix];
 }
 
+/* The Sev tint is the finding's OWN tone — the severity vocabulary the
+   payload already computed (high → danger, med → warning, low → info, exactly
+   what the fixtures and the live route ship) and the same field the Sev Badge
+   renders. Severity is the one value on the row that is itself a threshold
+   judgement, and keying the wash on the badge's own field means the two can
+   never disagree. */
+function sevTint(f: FindingRow): Tone {
+  return f.tone;
+}
+
 export default function Compliance() {
   const navigate = useNavigate();
-  const { density, showPlatformTags } = useSettings();
+  const { density, showPlatformTags, tableColumns, setTableColumns } = useSettings();
   const { toast } = useToast();
   const [data, setData] = useState<ComplianceData | null>(null);
   const [baseline, setBaseline] = useState('all');
@@ -86,6 +112,50 @@ export default function Compliance() {
      Same guard CentralWebhooksPanel documents for the same reason. */
   const mountedRef = useRef(true);
   const scanTimerRef = useRef<number | null>(null);
+
+  /* Versioned config backups: the drift roster is additive to this screen —
+     a null envelope (API unreachable or in error) hides the section rather
+     than painting backup data the server never claimed. */
+  const [backups, setBackups] = useState<ConfigBackupListEnvelope | null>(null);
+  const [driftView, setDriftView] = useState<
+    | { device: string; state: 'loading' }
+    | { device: string; state: 'error'; message: string }
+    | { device: string; state: 'ready'; diff: ConfigBackupDiff; source: string }
+    | null
+  >(null);
+
+  useEffect(() => {
+    let live = true;
+    void getConfigBackups().then((b) => {
+      if (live) setBackups(b);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  /** Open the drift drawer for one device: the diff between its two newest
+   *  snapshots. Versions come first because pruning can leave gaps — v9 → v10
+   *  is not a safe guess. */
+  const openDrift = async (device: string) => {
+    setDriftView({ device, state: 'loading' });
+    const versions = await getConfigBackupVersions(device);
+    if (!versions || versions.versions.length < 2) {
+      setDriftView({
+        device,
+        state: 'error',
+        message: 'This device does not have two snapshots to diff yet — drift needs a previous version to compare against.',
+      });
+      return;
+    }
+    const [latest, previous] = versions.versions; // newest first
+    const diff = await getConfigBackupDiff(device, previous.version, latest.version);
+    if (!diff) {
+      setDriftView({ device, state: 'error', message: 'The server did not answer with a diff.' });
+      return;
+    }
+    setDriftView({ device, state: 'ready', diff, source: latest.source });
+  };
 
   useEffect(() => {
     mountedRef.current = true;
@@ -131,6 +201,98 @@ export default function Compliance() {
   const bases = findings.map((f) => f.baseline).filter((v, i, a) => a.indexOf(v) === i);
   const baselineOptions = [{ value: 'all', label: 'All baselines' }].concat(
     bases.map((b) => ({ value: b, label: b + ' baseline' })),
+  );
+  const drifted = backups?.devices.filter((d) => d.drift) ?? [];
+
+  /* The findings table as DataTable defs. 'Finding' is the primary
+     identifier — always visible, never offered for hiding; the manager
+     persists against these keys under the 'compliance' table id, so renaming
+     a label never orphans a saved layout. Sev is the only tinted column. */
+  const findingColumns: Array<DataTableColumn<FindingRow>> = [
+    {
+      key: 'sev',
+      title: 'Sev',
+      tint: sevTint,
+      render: (f) => (
+        <Badge tone={f.tone} dot>
+          {f.sev}
+        </Badge>
+      ),
+    },
+    {
+      key: 'finding',
+      title: 'Finding',
+      hideable: false,
+      render: (f) => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{f.title}</span>
+          <span
+            style={{
+              fontFamily: 'var(--nd-font-mono)',
+              fontSize: 10.5,
+              color: 'var(--nd-text-muted)',
+            }}
+          >
+            {f.detail}
+          </span>
+        </div>
+      ),
+    },
+    {
+      key: 'rule',
+      title: 'Rule',
+      render: (f) => (
+        <span
+          style={{
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 10.5,
+            color: 'var(--nd-text-secondary)',
+          }}
+        >
+          {f.rule}
+        </span>
+      ),
+    },
+    {
+      key: 'plane',
+      title: 'Plane',
+      render: (f) => (showPlatformTags ? <Badge tone="neutral">{f.plane}</Badge> : null),
+    },
+    {
+      key: 'devices',
+      title: 'Devices',
+      numeric: true,
+      render: (f) => (
+        <button
+          type="button"
+          onClick={() => navigate(findingDevicesPath(f.devices ?? [f.device]))}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            cursor: 'pointer',
+            fontFamily: 'var(--nd-font-mono)',
+            fontSize: 'var(--nd-text-12)',
+            color: 'var(--nd-accent-text)',
+          }}
+        >
+          {f.count}
+        </button>
+      ),
+    },
+    {
+      key: 'fix',
+      title: 'Fix',
+      render: (f) => <Badge tone={fixTone(f)}>{f.fix}</Badge>,
+    },
+  ];
+
+  // A live check emits one finding per (rule, plane) pair, so the rule alone
+  // is not an identity. DataTable's rowKey sees no index, so the identity the
+  // compound Table keyed on — (rule, plane, device) plus the row position —
+  // is mapped once here.
+  const findingIds = new Map<FindingRow, string>(
+    rows.map((f, i) => [f, `${f.rule}|${f.plane}|${f.device}|${i}`] as const),
   );
 
   const runScan = async () => {
@@ -284,82 +446,29 @@ export default function Compliance() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
           <SectionHeader
             label="Findings"
-            meta={`${rows.length} of ${findings.length} findings · ${scannedNote}`}
+            meta={
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                {`${rows.length} of ${findings.length} findings · ${scannedNote}`}
+                {/* The column manager for the table below — this screen's
+                    filter (the baseline Select) lives in the header, so the
+                    control rides the section meta instead. */}
+                <TableViewOptions
+                  columns={findingColumns}
+                  config={tableColumns.compliance ?? {}}
+                  onChange={(config) => setTableColumns('compliance', config)}
+                />
+              </span>
+            }
           />
-          <Table density={density}>
-            <Table.Head>
-              <Table.Row>
-                <Table.HeaderCell>Sev</Table.HeaderCell>
-                <Table.HeaderCell>Finding</Table.HeaderCell>
-                <Table.HeaderCell>Rule</Table.HeaderCell>
-                <Table.HeaderCell>Plane</Table.HeaderCell>
-                <Table.HeaderCell numeric>Devices</Table.HeaderCell>
-                <Table.HeaderCell>Fix</Table.HeaderCell>
-              </Table.Row>
-            </Table.Head>
-            <Table.Body>
-              {rows.map((f, i) => (
-                // A live check emits one finding per (rule, plane) pair, so the
-                // rule alone is not an identity — key on the pair plus the row
-                // position rather than letting React reuse the wrong <tr>.
-                <Table.Row key={`${f.rule}|${f.plane}|${f.device}|${i}`}>
-                  <Table.Cell>
-                    <Badge tone={f.tone} dot>
-                      {f.sev}
-                    </Badge>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{f.title}</span>
-                      <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 10.5,
-                          color: 'var(--nd-text-muted)',
-                        }}
-                      >
-                        {f.detail}
-                      </span>
-                    </div>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 10.5,
-                        color: 'var(--nd-text-secondary)',
-                      }}
-                    >
-                      {f.rule}
-                    </span>
-                  </Table.Cell>
-                  <Table.Cell>
-                    {showPlatformTags ? <Badge tone="neutral">{f.plane}</Badge> : null}
-                  </Table.Cell>
-                  <Table.Cell numeric>
-                    <button
-                      type="button"
-                      onClick={() => navigate(findingDevicesPath(f.devices ?? [f.device]))}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        padding: 0,
-                        cursor: 'pointer',
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-12)',
-                        color: 'var(--nd-accent-text)',
-                      }}
-                    >
-                      {f.count}
-                    </button>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <Badge tone={fixTone(f)}>{f.fix}</Badge>
-                  </Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table>
+          <DataTable
+            ariaLabel="Compliance findings"
+            density={density}
+            columns={findingColumns}
+            rows={rows}
+            rowKey={(f) => findingIds.get(f) ?? f.title}
+            columnsConfig={tableColumns.compliance}
+            onColumnsConfigChange={(config) => setTableColumns('compliance', config)}
+          />
           {rows.length === 0 ? (
             <EmptyState
               title={findings.length === 0 ? 'No findings to report' : 'Nothing matches that baseline'}
@@ -404,6 +513,67 @@ export default function Compliance() {
             ) : null}
           </div>
 
+          {/* Versioned running-config snapshots (Oxidized-style): which
+              devices drifted against their own previous snapshot, with the
+              unified diff one click away. Demo snapshots say so. */}
+          {backups ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <SectionHeader
+                label="Config drift — running-config snapshots"
+                meta={`${backups.summary.backedUp} backed up · ${backups.summary.drift} drifting`}
+              />
+              {backups.dataSource === 'demo' ? (
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-10)',
+                    color: 'var(--nd-text-muted)',
+                  }}
+                >
+                  {backups.note ?? 'Synthesized demo snapshots — no device was contacted.'}
+                </span>
+              ) : null}
+              {drifted.length === 0 ? (
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-10)',
+                    color: 'var(--nd-text-muted)',
+                  }}
+                >
+                  {backups.summary.backedUp === 0
+                    ? 'No config snapshots collected yet — the first sweep has not landed.'
+                    : `No drift across ${backups.summary.backedUp} devices with snapshots.`}
+                </span>
+              ) : (
+                drifted.map((row) => (
+                  <div
+                    key={row.device}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                      <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 12, color: 'var(--nd-text-primary)' }}>
+                        {row.device}
+                      </span>
+                      <span
+                        style={{
+                          fontFamily: 'var(--nd-font-mono)',
+                          fontSize: 'var(--nd-text-10)',
+                          color: 'var(--nd-text-muted)',
+                        }}
+                      >
+                        {`${row.versions} versions · latest ${row.latest ? hhmm(row.latest.takenAt) : '—'} · ${row.latest?.source ?? 'unknown source'}`}
+                      </span>
+                    </div>
+                    <Button variant="secondary" size="sm" onClick={() => void openDrift(row.device)}>
+                      View diff
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : null}
+
           {showDrift && data.diff ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <SectionHeader label={data.evidenceMode === 'coverage' ? 'Evidence coverage, as text' : 'Drift, as text'} />
@@ -422,6 +592,35 @@ export default function Compliance() {
           ) : null}
         </div>
       </div>
+
+      {/* The unified diff between the device's two newest snapshots. The
+          provenance rides in the description so a screenshot of the drawer
+          carries whether this is real collection or demo synthesis. */}
+      <Drawer
+        open={driftView !== null}
+        onOpenChange={(open) => {
+          if (!open) setDriftView(null);
+        }}
+        width="lg"
+        title={driftView ? `Config drift — ${driftView.device}` : undefined}
+        description={
+          driftView?.state === 'ready'
+            ? `v${driftView.diff.fromVersion} → v${driftView.diff.toVersion} · +${driftView.diff.added} −${driftView.diff.removed} · ${driftView.source}`
+            : undefined
+        }
+      >
+        {driftView?.state === 'loading' ? (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+            <Spinner size="md" />
+          </div>
+        ) : null}
+        {driftView?.state === 'error' ? (
+          <Alert tone="warning" title="Diff unavailable">
+            <span>{driftView.message}</span>
+          </Alert>
+        ) : null}
+        {driftView?.state === 'ready' ? <DiffCode text={driftView.diff.text} /> : null}
+      </Drawer>
     </div>
   );
 }

@@ -6,6 +6,15 @@
  * "Edit ▸" rows. Right: Queued changes (Push queue gated on ≥1 ready entry;
  * push hands ready entries to the write broker, Discard clears) and the
  * "Where a change can go" capability matrix.
+ * The queue is a nightdesk DataTable with the selection foundation wired: a
+ * checkbox column, a select-all header checkbox, and the controlled
+ * selectedKeys/onSelectionChange pair (x toggles the focused row, Esc
+ * clears). A selection raises a contextual action bar — "N selected —
+ * Approve / Reject" — that applies the EXISTING per-item push/discard flow
+ * in sequence: every change still goes through its own brokered review,
+ * lease and audit line, the bar only iterates, and the summary toast names
+ * the per-item outcomes (applied / accepted / failed / skipped) with the
+ * failures named.
  * The edit drawer (width="lg") renders a per-kind form whose "What gets
  * pushed" Code block recomputes LIVE on every keystroke/toggle through the
  * shared configPreviewFor/previewMetaFor/blastRadiusFor, with a required
@@ -28,6 +37,7 @@ import {
   Button,
   Checkbox,
   Code,
+  DataTable,
   Drawer,
   EmptyState,
   FormField,
@@ -39,6 +49,7 @@ import {
   Switch,
   useToast,
 } from '../nightdesk';
+import type { DataTableColumn } from '../nightdesk';
 import {
   applySsidDirect,
   discardChange,
@@ -66,6 +77,7 @@ import {
   VLAN_SCOPE_OPTIONS,
   blastRadiusFor,
   configPreviewFor,
+  mistSsidSecurityRefusal,
   previewMetaFor,
   queuedChangeNote,
   seedFormFromRow,
@@ -107,6 +119,7 @@ import {
   formForPreview,
   groupScopesByCategory,
   ssidFormForSecurity,
+  ssidPlaneOf,
   ssidSectionUnavailableNote,
   withPlaceholder,
 } from './configure/forms';
@@ -126,6 +139,7 @@ import {
   ROW,
   auditTone,
   queuedEntryFor,
+  queueRowKey,
   rowForChange,
 } from './configure/queue';
 import '../app/app.css';
@@ -173,6 +187,13 @@ import '../app/app.css';
 function assignmentMark(a: SsidScopeAssignmentResult): string {
   if (a.ok) return isUnconfirmed(a) ? '?' : '✓';
   return a.verified === false ? '⧗' : '✗';
+}
+
+/** Up to three change summaries, truncated, then "+N more" — the bulk bar's
+ *  per-item honesty without a toast that scrolls. */
+function nameList(whats: readonly string[]): string {
+  const shown = whats.slice(0, 3).map((w) => w.slice(0, 48));
+  return shown.join(', ') + (whats.length > 3 ? `, +${whats.length - 3} more` : '');
 }
 
 /**
@@ -256,6 +277,12 @@ export default function Configure() {
   const [data, setData] = useState<ConfigureData | null>(null);
   const [queue, setQueue] = useState<QueueEntry[] | null>(null);
   const [queueSource, setQueueSource] = useState<'server' | 'local'>('local');
+  /* Queue-table selection for the bulk action bar: the DataTable's controlled
+   * selectedKeys pair (checkbox column + select-all header + the x/Esc
+   * keyboard grid). `bulkBusy` serializes a bulk run — one at a time, never
+   * stacked behind clicks. */
+  const [queueSel, setQueueSel] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState<'approve' | 'reject' | null>(null);
 
   const [kind, setKind] = useState<ConfigKind | null>(null);
   const [ssid, setSsid] = useState<SsidForm>(DEFAULT_SSID_FORM);
@@ -322,33 +349,59 @@ export default function Configure() {
   }, []);
 
   // A dry-run result is stale the moment the form or ticket changes — drop it.
-  useEffect(() => {
+  // State adjusted during render (the React-docs pattern for a changed input):
+  // an effect would commit the stale result for one frame first.
+  const dryRunInputs = [kind, ssid, port, vlan, ticket] as const;
+  const [prevDryRunInputs, setPrevDryRunInputs] = useState(dryRunInputs);
+  if (prevDryRunInputs.some((v, i) => v !== dryRunInputs[i])) {
+    setPrevDryRunInputs(dryRunInputs);
     setDryRun(null);
-  }, [kind, ssid, port, vlan, ticket]);
+  }
 
   // The "Queued for push" alert clears on the next form edit (the prototype
   // resets `queued` in every form setter — but NOT on a ticket edit).
-  useEffect(() => {
+  const queuedInputs = [kind, ssid, port, vlan] as const;
+  const [prevQueuedInputs, setPrevQueuedInputs] = useState(queuedInputs);
+  if (prevQueuedInputs.some((v, i) => v !== queuedInputs[i])) {
+    setPrevQueuedInputs(queuedInputs);
     setQueued(false);
-  }, [kind, ssid, port, vlan]);
+  }
 
   // A stale review/apply result must not survive an edit to the form it
   // described — the operator is reviewing a DIFFERENT payload now.
-  useEffect(() => {
+  const [prevSsid, setPrevSsid] = useState(ssid);
+  if (prevSsid !== ssid) {
+    setPrevSsid(ssid);
     setSsidReviewed(false);
     setSsidApplyResult(null);
-  }, [ssid]);
+  }
+
+  // A selection that outlives its rows is a lie about what an Approve would
+  // touch: prune keys whose rows left the queue (pushed, discarded, refreshed
+  // away). Same render-time adjustment pattern as the stale-input resets above.
+  const [prevQueue, setPrevQueue] = useState(queue);
+  if (prevQueue !== queue) {
+    setPrevQueue(queue);
+    const keys = new Set((queue ?? []).map(queueRowKey));
+    const pruned = queueSel.filter((k) => keys.has(k));
+    if (pruned.length !== queueSel.length) setQueueSel(pruned);
+  }
 
   // -- live preview: recomputed on every keystroke and toggle ---------------
+  const mistSsid = kind === 'ssid' && ssidPlaneOf(ssid) === 'mist';
   const preview = useMemo(() => {
-    if (liveMode)
+    // A Mist-targeted SSID renders its real site-scoped WLAN call even in
+    // demo mode — the authored CLI template's "mist → read-only" annotation
+    // predates the direct write path and would be a lie beside it.
+    if (liveMode || mistSsid)
       return livePreview(kind ?? 'ssid', formForPreview(kind, ssid, port, vlan), data?.capabilities ?? []);
     if (kind === 'port') return configPreviewFor('port', port);
     if (kind === 'vlan') return configPreviewFor('vlan', vlan);
     return configPreviewFor('ssid', ssid);
-  }, [data?.capabilities, kind, liveMode, ssid, port, vlan]);
+  }, [data?.capabilities, kind, liveMode, mistSsid, ssid, port, vlan]);
   const previewMeta = useMemo(() => {
-    if (liveMode) {
+    if (liveMode || mistSsid) {
+      if (mistSsid) return `${ssid.plane || 'MIST'} · SITE-SCOPED WLAN`;
       if (kind === 'port') return `${port.device || 'DEVICE NOT ENTERED'} · TEMPLATE PREVIEW`;
       if (kind === 'vlan') return `${vlan.scope.toUpperCase()} · TEMPLATE PREVIEW`;
       return `${ssid.plane || 'CENTRAL'} · TEMPLATE PREVIEW`;
@@ -356,16 +409,29 @@ export default function Configure() {
     if (kind === 'port') return previewMetaFor('port', port);
     if (kind === 'vlan') return previewMetaFor('vlan', vlan);
     return previewMetaFor('ssid', ssid);
-  }, [kind, liveMode, ssid, port, vlan]);
+  }, [kind, liveMode, mistSsid, ssid, port, vlan]);
   const radius = useMemo(() => {
-    if (liveMode) return liveRadius(kind ?? 'ssid', formForPreview(kind, ssid, port, vlan));
+    if (liveMode || mistSsid) return liveRadius(kind ?? 'ssid', formForPreview(kind, ssid, port, vlan));
     if (kind === 'port') return blastRadiusFor('port', port);
     if (kind === 'vlan') return blastRadiusFor('vlan', vlan);
     return blastRadiusFor('ssid', ssid);
-  }, [kind, liveMode, ssid, port, vlan]);
+  }, [kind, liveMode, mistSsid, ssid, port, vlan]);
 
   // -- SSID direct-apply derived state ---------------------------------------
-  const ssidRequirement = useMemo(() => ssidDependencyRequirementsFor(ssid.security), [ssid.security]);
+  /** The deployment reported a Mist direct-write path (capability matrix
+   *  'direct' mode) — the drawer offers the plane choice only then, never
+   *  from the form's own claim. */
+  const mistDirectAvailable = useMemo(
+    () => (data?.capabilities ?? []).some((c) => c.planeId === 'mist' && c.mode === 'direct'),
+    [data?.capabilities],
+  );
+  /** What the form's security mode cannot express on Mist — the shared
+   *  sentence the adapter refuses with, so drawer and plane never disagree. */
+  const mistRefusal = mistSsid ? mistSsidSecurityRefusal(ssid.security) : null;
+  const ssidRequirement = useMemo(
+    () => ssidDependencyRequirementsFor(ssid.security, ssid.plane),
+    [ssid.security, ssid.plane],
+  );
   const ssidScopeGroups = useMemo(() => groupScopesByCategory(ssidCatalog?.scopes ?? []), [ssidCatalog]);
   const ssidMissingDependencies = useMemo(() => {
     if (!ssidCatalog) return [];
@@ -415,6 +481,7 @@ export default function Configure() {
     !ssidFormComplete ||
     valueProblems.length > 0 ||
     ssidMissingDependencies.length > 0 ||
+    mistRefusal !== null ||
     !ssidReviewed ||
     ssidApplying ||
     ssidCatalogLoading ||
@@ -463,9 +530,89 @@ export default function Configure() {
   const dormantTargets = data.capabilities.filter((c) => !c.linked);
   const writableTargets = data.capabilities.filter((c) => c.linked);
 
+  /* The queue table's columns. The first is the selection checkbox — its
+     header is the select-all — and 'change' is non-hideable because it is the
+     row's primary identifier (the same rule the Alerts queue gives its
+     'alert' column). Selection itself lives in the controlled queueSel pair,
+     so the bulk bar below the table reads exactly what the checkboxes show. */
+  const allQueueSelected = queue.length > 0 && queueSel.length === queue.length;
+  const queueColumns: Array<DataTableColumn<QueueEntry>> = [
+    {
+      key: 'select',
+      title: 'Select',
+      hideable: false,
+      width: 40,
+      header: (
+        <Checkbox
+          aria-label="Select all queued changes"
+          checked={allQueueSelected}
+          onChange={() => setQueueSel(allQueueSelected ? [] : queue.map(queueRowKey))}
+        />
+      ),
+      render: (q) => {
+        const key = queueRowKey(q);
+        return (
+          <Checkbox
+            aria-label={`Select change: ${q.what}`}
+            checked={queueSel.includes(key)}
+            onChange={() =>
+              setQueueSel((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]))
+            }
+          />
+        );
+      },
+    },
+    {
+      key: 'state',
+      title: 'State',
+      width: 110,
+      render: (q) => <Badge tone={q.tone}>{q.state}</Badge>,
+    },
+    {
+      key: 'change',
+      title: 'Change',
+      hideable: false,
+      render: (q) => {
+        const lease = leaseNote(q, now);
+        const leaseGone = lease?.startsWith('lease expired') ?? false;
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span style={{ fontSize: 12.5, color: 'var(--nd-text-primary)', lineHeight: 1.4 }}>{q.what}</span>
+            <span
+              style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}
+            >
+              {q.where}
+            </span>
+            {lease ? (
+              <span
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 10,
+                  color: leaseGone ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
+                }}
+              >
+                {lease}
+              </span>
+            ) : null}
+          </div>
+        );
+      },
+    },
+    {
+      key: 'ticket',
+      title: 'Ticket',
+      width: 110,
+      render: (q) => (
+        <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}>
+          {q.ticket}
+        </span>
+      ),
+    },
+  ];
+
   // -- drawer openers: seed the form over its current state ------------------
   const openSsid = (row?: SsidObject) => {
-    setSsid({
+    const seeded: SsidForm = {
       ...(liveMode ? LIVE_SSID_FORM : DEFAULT_SSID_FORM),
       ...(row
         ? seedFormFromRow('ssid', row)
@@ -479,11 +626,34 @@ export default function Configure() {
       authServerGroupId: undefined,
       captivePortalProfileId: undefined,
       passphrase: undefined,
-    });
+    };
+    setSsid(seeded);
     setKind('ssid');
     setSsidReviewed(false);
     setSsidApplyResult(null);
-    void loadSsidCatalog();
+    void loadSsidCatalog(ssidPlaneOf(seeded));
+  };
+  /**
+   * The drawer's plane choice (offered only when the deployment reported a
+   * Mist direct-write path). Switching planes clears every plane-scoped
+   * selection — a Central scope id or server group is not a Mist site — and
+   * reloads the catalog from the plane that now owns the write.
+   */
+  const switchSsidPlane = (plane: 'CENTRAL' | 'MIST') => {
+    const next: SsidForm = {
+      ...ssid,
+      plane,
+      scopeIds: [],
+      defaultRole: undefined,
+      authServerGroupId: undefined,
+      captivePortalProfileId: undefined,
+      // `enabled` is a Mist WLAN field; Central's profile upsert always
+      // writes enable:true, so the switch (and the field) exists for Mist
+      // only. A new Mist WLAN starts enabled — the operator can say otherwise.
+      enabled: plane === 'MIST' ? (ssid.enabled ?? true) : undefined,
+    };
+    setSsid(next);
+    void loadSsidCatalog(ssidPlaneOf(next));
   };
   const openPort = (row?: PortObject) => {
     setPort({
@@ -505,12 +675,13 @@ export default function Configure() {
   };
 
   /** Load the editor's live scope/dependency catalog — called every time the
-   *  SSID drawer opens, never cached across opens (a stale catalog could
-   *  offer a scope or profile id the plane no longer has). */
-  const loadSsidCatalog = async () => {
+   *  SSID drawer opens (and every time its plane changes), never cached
+   *  across opens (a stale catalog could offer a scope or profile id the
+   *  plane no longer has). */
+  const loadSsidCatalog = async (plane: 'mist' | 'central') => {
     setSsidCatalogLoading(true);
     setSsidCatalogError(null);
-    const r = await getSsidCatalog();
+    const r = await getSsidCatalog(plane);
     setSsidCatalogLoading(false);
     if (isApiError(r)) {
       setSsidCatalogError(r.error);
@@ -637,6 +808,116 @@ export default function Configure() {
     setQueue((q) => (q ?? []).filter((x) => x.id !== null));
   };
 
+  /**
+   * Bulk approve: the selected rows pushed one at a time through the EXISTING
+   * per-item broker flow — the same pushChange call Push queue makes per
+   * ready entry, so every change keeps its own review, lease and audit line;
+   * the bar only iterates. The summary toast names the per-item outcomes:
+   * applied, accepted (a 202 is neither success nor failure), failed, and
+   * skipped (not ready, or a local row with no broker id) — the failures
+   * named, never folded into a green count.
+   */
+  const bulkApprove = async () => {
+    if (bulkBusy) return;
+    const targets = queue.filter((q) => queueSel.includes(queueRowKey(q)));
+    if (targets.length === 0) return;
+    setBulkBusy('approve');
+    let applied = 0;
+    let anyApplied = false;
+    const accepted: string[] = [];
+    const failed: string[] = [];
+    const skipped: string[] = [];
+    if (queueSource === 'server') {
+      for (const entry of targets) {
+        if (entry.id === null || entry.state !== 'ready') {
+          skipped.push(entry.what);
+          continue;
+        }
+        const r = await pushChange(entry.id);
+        if (isApiError(r)) failed.push(entry.what);
+        else if (r.applied) {
+          applied++;
+          anyApplied = true;
+        } else if (r.accepted) accepted.push(entry.what);
+        else failed.push(entry.what);
+      }
+      await refreshServerQueue();
+      // Same rule as Push queue: an applied change re-reads the estate, or
+      // the lists beside the queue argue for queueing it a second time.
+      if (anyApplied) setData(await getConfigure());
+    } else {
+      // No broker answered: nothing here can be pushed — every selected row
+      // is local, exactly like Push queue's offline branch.
+      skipped.push(...targets.map((q) => q.what));
+    }
+    const parts: string[] = [];
+    if (accepted.length > 0) parts.push(`accepted, not yet confirmed: ${nameList(accepted)}`);
+    if (failed.length > 0) parts.push(`failed: ${nameList(failed)}`);
+    if (skipped.length > 0) {
+      parts.push(
+        queueSource === 'server'
+          ? `skipped (not ready or no broker id): ${nameList(skipped)}`
+          : `not pushed — reconnect the portal backend, then queue the change again: ${nameList(skipped)}`,
+      );
+    }
+    toast(`Bulk approve — ${applied} of ${targets.length} applied`, {
+      description: parts.length > 0 ? parts.join(' · ') : undefined,
+      tone:
+        failed.length > 0
+          ? applied + accepted.length > 0
+            ? 'warning'
+            : 'danger'
+          : accepted.length + skipped.length > 0
+            ? 'warning'
+            : 'success',
+    });
+    setQueueSel([]);
+    setBulkBusy(null);
+  };
+
+  /**
+   * Bulk reject: the selected rows discarded one at a time through the same
+   * per-item discardChange call Discard uses — nothing leaves the broker
+   * without its own audit line. Selected local rows (no broker id) exist
+   * nowhere but here, so dropping them IS their discard; an id-bearing row
+   * the broker cannot answer for is named as failed, not silently kept.
+   */
+  const bulkReject = async () => {
+    if (bulkBusy) return;
+    const targets = queue.filter((q) => queueSel.includes(queueRowKey(q)));
+    if (targets.length === 0) return;
+    setBulkBusy('reject');
+    let discarded = 0;
+    const failed: string[] = [];
+    if (queueSource === 'server') {
+      for (const entry of targets) {
+        if (entry.id === null) continue; // local rows are dropped below
+        const r = await discardChange(entry.id);
+        if (isApiError(r)) failed.push(entry.what);
+        else discarded++;
+      }
+      const localKeys = new Set(targets.filter((q) => q.id === null).map(queueRowKey));
+      if (localKeys.size > 0) {
+        discarded += localKeys.size;
+        setQueue((cur) => (cur ?? []).filter((q) => !localKeys.has(queueRowKey(q))));
+      }
+      await refreshServerQueue();
+    } else {
+      const dropKeys = new Set(targets.filter((q) => q.id === null).map(queueRowKey));
+      for (const entry of targets) {
+        if (entry.id === null) discarded++;
+        else failed.push(entry.what);
+      }
+      if (dropKeys.size > 0) setQueue((cur) => (cur ?? []).filter((q) => !dropKeys.has(queueRowKey(q))));
+    }
+    toast(`Bulk reject — ${discarded} of ${targets.length} discarded`, {
+      description: failed.length > 0 ? `failed: ${nameList(failed)}` : undefined,
+      tone: failed.length > 0 ? (discarded > 0 ? 'warning' : 'danger') : 'success',
+    });
+    setQueueSel([]);
+    setBulkBusy(null);
+  };
+
   const queueIt = async () => {
     const t = ticket.trim();
     if (!kind || !t) return;
@@ -682,8 +963,14 @@ export default function Configure() {
    */
   const applySsid = async () => {
     if (!ssidReviewed || ssidApplying) return;
+    const planeLabel = ssidPlaneOf(ssid) === 'mist' ? 'Mist' : 'Central';
     setSsidApplying(true);
-    const r = await applySsidDirect(ssidFormForSecurity(ssid, ssid.security), true);
+    // A multi-plane display label ('CENTRAL + MIST') is not a write target:
+    // the reviewed apply writes the ONE plane the drawer is showing, and the
+    // server refuses anything it cannot place. The Mist copy of a dual-plane
+    // SSID is a separate, site-scoped write the operator chooses explicitly.
+    const wireForm = ssidFormForSecurity(ssid, ssid.security);
+    const r = await applySsidDirect({ ...wireForm, plane: ssidPlaneOf(wireForm) === 'mist' ? 'MIST' : 'CENTRAL' }, true);
     setSsidApplying(false);
     if (isApiError(r)) {
       setSsidApplyResult({ error: r.error });
@@ -699,7 +986,9 @@ export default function Configure() {
         {
           description:
             (unconfirmed > 0
-              ? `Central answered the assignment ${unconfirmed === 1 ? 'write' : 'writes'} but its assignment list could not be read back. Check the scopes before treating this SSID as live at them.`
+              ? ssidPlaneOf(ssid) === 'mist'
+                ? `${planeLabel} answered the ${unconfirmed === 1 ? 'write' : 'writes'} but a site read-back could not confirm ${unconfirmed === 1 ? 'it' : 'them'}. Check the sites before treating this SSID as live there.`
+                : `${planeLabel} answered the assignment ${unconfirmed === 1 ? 'write' : 'writes'} but its assignment list could not be read back. Check the scopes before treating this SSID as live at them.`
               : r.profile.message) + (cacheStaleNote(r) ?? ''),
           tone: unconfirmed > 0 || cacheStaleNote(r) !== null ? 'warning' : 'success',
         },
@@ -715,7 +1004,7 @@ export default function Configure() {
         {
           description:
             (unconfirmed
-              ? 'Central took the assignment but it is not in the list yet. Re-check before treating the SSID as live at those scopes — the profile was not rolled back.'
+              ? `${planeLabel} took the assignment but it is not in the list yet. Re-check before treating the SSID as live at those scopes — the profile was not rolled back.`
               : 'Review the assignment results below and retry — the profile was not rolled back.') +
             (cacheStaleNote(r) ?? ''),
           tone: 'warning',
@@ -729,7 +1018,7 @@ export default function Configure() {
     } else if (profileWrittenButUnconfirmed(r.profile)) {
       toast(`${ssid.name}: profile ${r.profile.action}, not confirmed`, {
         description:
-          `${r.profile.message}. Central accepted the write — check the SSID in Central before applying it again.` +
+          `${r.profile.message}. ${planeLabel} accepted the write — check the SSID in ${planeLabel} before applying it again.` +
           (cacheStaleNote(r) ?? ''),
         tone: 'warning',
       });
@@ -856,6 +1145,10 @@ export default function Configure() {
                   }}
                 >
                   {w.targets}
+                  {/* A fact with no column of its own — e.g. a Mist WLAN whose
+                      payload carried the cleartext key says 'PSK set — redacted
+                      by the portal'. The marker is rendered, never the secret. */}
+                  {w.note ? <span style={{ display: 'block', paddingTop: 3 }}>{w.note}</span> : null}
                 </span>
                 <span className="nt-configure-row__actions">
                   {w.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
@@ -1070,64 +1363,74 @@ export default function Configure() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
             <SectionHeader label="Queued changes" meta={String(queue.length)} />
-            {queue.map((q) => {
-              const lease = leaseNote(q, now);
-              const leaseGone = lease?.startsWith('lease expired') ?? false;
-              return (
-              <div
-                key={q.id ?? `${q.ticket}-${q.what}`}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 5,
-                  padding: '12px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Badge tone={q.tone}>{q.state}</Badge>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10,
-                      color: 'var(--nd-text-muted)',
-                      marginLeft: 'auto',
-                    }}
-                  >
-                    {q.ticket}
-                  </span>
-                </div>
-                <span style={{ fontSize: 12.5, color: 'var(--nd-text-primary)', lineHeight: 1.4 }}>
-                  {q.what}
-                </span>
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10,
-                    color: 'var(--nd-text-muted)',
-                  }}
-                >
-                  {q.where}
-                </span>
-                {lease ? (
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10,
-                      color: leaseGone ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
-                    }}
-                  >
-                    {lease}
-                  </span>
-                ) : null}
-              </div>
-              );
-            })}
+            {queue.length > 0 ? (
+              <DataTable
+                ariaLabel="Queued changes"
+                columns={queueColumns}
+                rows={queue}
+                rowKey={queueRowKey}
+                selectedKeys={queueSel}
+                onSelectionChange={setQueueSel}
+              />
+            ) : null}
             {queue.length === 0 ? (
               <EmptyState
                 title="No changes queued"
                 description="Edit an SSID, port or VLAN to render a payload and queue it against a ticket."
               />
+            ) : null}
+            {/* The bulk bar is contextual — it exists only while rows are
+                selected, and it never opens a new path: Approve/Reject run
+                the same per-item push/discard the buttons below run, one
+                change at a time, with the per-item outcomes named. */}
+            {queueSel.length > 0 ? (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  flexWrap: 'wrap',
+                  marginTop: 12,
+                  padding: '10px 12px',
+                  border: '1px solid var(--nd-border-default)',
+                  background: 'var(--nd-bg-raised)',
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-11)',
+                    color: 'var(--nd-text-secondary)',
+                    letterSpacing: '.08em',
+                  }}
+                >
+                  {`${queueSel.length} SELECTED`}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+                  each change still goes through its own brokered review — the bar just iterates
+                </span>
+                <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={bulkBusy !== null}
+                    onClick={() => void bulkApprove()}
+                  >
+                    {bulkBusy === 'approve' ? 'Approving…' : 'Approve'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={bulkBusy !== null}
+                    onClick={() => void bulkReject()}
+                  >
+                    {bulkBusy === 'reject' ? 'Rejecting…' : 'Reject'}
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={bulkBusy !== null} onClick={() => setQueueSel([])}>
+                    Clear
+                  </Button>
+                </span>
+              </div>
             ) : null}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12 }}>
               <Button
@@ -1199,6 +1502,25 @@ export default function Configure() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
             {kind === 'ssid' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {mistDirectAvailable ? (
+                  <FormField
+                    label="Plane"
+                    help={
+                      mistSsid
+                        ? 'Mist WLANs are site-scoped — the write lands at each selected site.'
+                        : 'Central writes a named WLAN profile, then assigns it to the selected scopes.'
+                    }
+                  >
+                    <Select
+                      options={[
+                        { value: 'CENTRAL', label: 'HPE Aruba Central' },
+                        { value: 'MIST', label: 'Mist' },
+                      ]}
+                      value={mistSsid ? 'MIST' : 'CENTRAL'}
+                      onValueChange={(v) => switchSsidPlane(v as 'CENTRAL' | 'MIST')}
+                    />
+                  </FormField>
+                ) : null}
                 <div
                   style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
                 >
@@ -1224,7 +1546,11 @@ export default function Configure() {
                 >
                   <FormField
                     label="Security"
-                    help="Direct apply loads the live role/AAA/captive-portal dependencies this mode needs below."
+                    help={
+                      mistSsid
+                        ? 'Mist direct writes support WPA2-PSK and Open — enterprise and captive-portal WLANs need org RADIUS/portal configuration the form cannot express.'
+                        : 'Direct apply loads the live role/AAA/captive-portal dependencies this mode needs below.'
+                    }
                   >
                     <Select
                       options={SSID_SECURITY_OPTIONS}
@@ -1240,13 +1566,22 @@ export default function Configure() {
                     />
                   </FormField>
                 </div>
+                {mistRefusal ? (
+                  <Alert tone="warning" title="Apply is disabled — Mist cannot express this security mode">
+                    <span style={{ fontSize: 13 }}>The write was refused before it was built: {mistRefusal}.</span>
+                  </Alert>
+                ) : null}
 
-                {/* -- live security dependencies (role / auth server / captive portal / passphrase) -- */}
+                {/* -- live security dependencies (role / auth server / captive portal / passphrase) --
+                    Mist has no role/server-group/portal catalogs: those selects are Central-only,
+                    and the section itself disappears when the Mist mode needs nothing (Open). */}
+                {!mistSsid || ssidRequirement.passphrase ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <SectionHeader label="Security dependencies" meta={ssidCatalogLoading ? 'loading…' : undefined} />
                   {/* FormField only clones an id onto a SINGLE child element for the
                       label's htmlFor — the "unavailable" note is a sibling below it,
                       never a second child, or the select loses its accessible name. */}
+                  {!mistSsid ? (
                   <FormField label="Default role">
                     <Select
                       options={withPlaceholder(
@@ -1258,12 +1593,13 @@ export default function Configure() {
                       disabled={ssidCatalogLoading || (ssidCatalog?.roles.length ?? 0) === 0}
                     />
                   </FormField>
-                  {ssidCatalog?.unavailable.includes('roles') ? (
+                  ) : null}
+                  {!mistSsid && ssidCatalog?.unavailable.includes('roles') ? (
                     <span style={{ fontSize: 11, color: 'var(--nd-warning-text, var(--nd-text-muted))' }}>
                       {ssidSectionUnavailableNote('roles')}
                     </span>
                   ) : null}
-                  {ssidRequirement.authServerGroup ? (
+                  {!mistSsid && ssidRequirement.authServerGroup ? (
                     <>
                       <FormField label="Authentication server group">
                         <Select
@@ -1283,7 +1619,7 @@ export default function Configure() {
                       ) : null}
                     </>
                   ) : null}
-                  {ssidRequirement.captivePortal ? (
+                  {!mistSsid && ssidRequirement.captivePortal ? (
                     <>
                       <FormField label="Captive-portal profile">
                         <Select
@@ -1315,6 +1651,7 @@ export default function Configure() {
                     </FormField>
                   ) : null}
                 </div>
+                ) : null}
 
                 {/* -- scope targets (immutable plane ids, grouped by category) -- */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1380,6 +1717,16 @@ export default function Configure() {
                     borderBottom: '1px solid var(--nd-border-subtle)',
                   }}
                 >
+                  {/* Mist WLANs carry `enabled`; Central's profile upsert always
+                      writes enable:true, so the switch is Mist-only — offering it
+                      for Central would be a control that silently does nothing. */}
+                  {mistSsid ? (
+                    <Switch
+                      label="WLAN enabled"
+                      checked={ssid.enabled ?? true}
+                      onCheckedChange={(v) => setSsid({ ...ssid, enabled: v })}
+                    />
+                  ) : null}
                   <Switch
                     label="Broadcast the SSID"
                     checked={ssid.broadcast}
@@ -1606,7 +1953,9 @@ export default function Configure() {
                   })
                 )}
                 <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' }}>
-                  device-function CAMPUS_AP · assigned via /network-config/v1alpha1/config-assignments — no secret value is ever shown here.
+                  {mistSsid
+                    ? 'site-scoped WLAN write · POST/PUT /api/v1/sites/{site}/wlans — no secret value is ever shown here.'
+                    : 'device-function CAMPUS_AP · assigned via /network-config/v1alpha1/config-assignments — no secret value is ever shown here.'}
                 </span>
 
                 <Checkbox
@@ -1615,7 +1964,7 @@ export default function Configure() {
                   onChange={(e) => setSsidReviewed(e.target.checked)}
                 />
                 {valueProblems.length > 0 ? (
-                  <Alert tone="warning" title="Apply is disabled — Central would refuse this form">
+                  <Alert tone="warning" title={`Apply is disabled — ${mistSsid ? 'Mist' : 'Central'} would refuse this form`}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
                       {valueProblems.map((problem) => (
                         <span key={problem}>{problem}</span>

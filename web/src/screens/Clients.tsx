@@ -14,6 +14,15 @@
  * under the table instead of repeated on all of them, and comes back the
  * moment one session disagrees.
  *
+ * The table itself is the nightdesk DataTable: the column manager (View
+ * options → show/hide/reorder, header-edge resize) persists its controlled
+ * config through SettingsContext under the 'clients' table id, and the rows
+ * are a keyboard grid (j/↓ k/↑ move, Enter/→ opens the client drawer — the
+ * row's one primary action — x selects, Esc clears; '?' lists them). No
+ * column tints: a session's health already wears its tone as a Badge, and no
+ * other column has a threshold that is the same fact down the column (the
+ * same call Devices made).
+ *
  * Where it is, the vertical path-to-the-internet hop chain computed with
  * shared pathFor(), the stitched session timeline via timelineFor(), and the
  * action row).
@@ -28,33 +37,40 @@ import {
   Alert,
   Badge,
   Button,
+  DATATABLE_ROW_SHORTCUTS,
+  DataTable,
   Drawer,
   EmptyState,
   FormField,
   Input,
+  KeyboardShortcuts,
   Progress,
   SectionHeader,
   Select,
   Spinner,
   Switch,
-  Table,
+  TableViewOptions,
   useToast,
 } from '../nightdesk';
+import type { DataTableColumn } from '../nightdesk';
 import {
   blockClient,
   disconnectClient,
-  getClientDetail,
+  getClientDetailBlock,
   getClients,
+  getSiteApplications,
   getSiteTopology,
   getTickets,
 } from '../api/client';
-import type { ClientsData } from '../api/client';
+import type { ClientDetailBlock, ClientsData, SiteApplicationsResult } from '../api/client';
 import { partitionColumns, SharedFacts } from './dataColumns';
 import type { DataColumn } from './dataColumns';
 import { useSettings } from '../app/SettingsContext';
 import { planeFilterForParam } from '../app/nav';
 import {
   clientFieldProvenance,
+  clientPlaneSections,
+  demoClient360World,
   deriveRssiDbm,
   detailState,
   pathFor,
@@ -65,8 +81,8 @@ import {
   formatCount,
 } from '@hpe/shared';
 import type {
-  ClientDetailLive,
   ClientDetailSection,
+  ClientPlaneSection,
   ClientRow,
   ClientTimelineEvent,
   PathHop,
@@ -139,12 +155,14 @@ function uniq<K extends keyof ClientRow>(clients: ClientRow[], k: K): string[] {
  * read; the 60s poll fetches NONE of them on purpose (9 devices x N
  * subresources x 1440 polls a day would burn the tenant's call budget for
  * rows nobody is looking at). These reads happen on the DETAIL path —
- * getClientDetail / getSiteTopology, issued once per object while its drawer
- * is open — and a rejection is swallowed into the honest empty state below
- * rather than into a fabricated number.
+ * getClientDetailBlock / getSiteTopology, issued once per object while its
+ * drawer is open — and a rejection is swallowed into the honest empty state
+ * below rather than into a fabricated number. The block also carries the
+ * Client 360 sections, which cost no plane call at all: they are a join over
+ * rows the poll already fetched.
  */
-async function readClientDetail(mac: string): Promise<ClientDetailLive | null> {
-  return (await getClientDetail(mac).catch(() => null)) ?? null;
+async function readClientBlock(mac: string): Promise<ClientDetailBlock | null> {
+  return (await getClientDetailBlock(mac).catch(() => null)) ?? null;
 }
 
 async function readSiteTopology(siteId: string): Promise<SiteTopologyLive | null> {
@@ -277,6 +295,98 @@ function timelineRowsFrom(events: ClientTimelineEvent[], plane: string): Timelin
       e.vlan ? `vlan ${e.vlan}` : null,
     ]).join(' · '),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Client 360 — one client, every plane's own answer
+// ---------------------------------------------------------------------------
+
+/** One plane's section of the Client 360 panel, with the render decisions made. */
+type Plane360Row = {
+  label: string;
+  tone: Tone;
+  lines: { text: string; muted: boolean }[];
+  events: NonNullable<ClientPlaneSection['authEvents']>;
+};
+
+function pct(fraction: number): string {
+  return `${Math.round(fraction * 100)}%`;
+}
+
+/** Mist's per-classifier SLE line — only the classifiers Mist actually
+ *  returned; a null classifier is "no signal", never a 0 (see MistSleRow). */
+function sleClassifierLine(sle: NonNullable<ClientPlaneSection['siteSle']>): string | null {
+  const parts = nonEmpty([
+    sle.coverage !== null ? `coverage ${pct(sle.coverage)}` : null,
+    sle.capacity !== null ? `capacity ${pct(sle.capacity)}` : null,
+    sle.roaming !== null ? `roaming ${pct(sle.roaming)}` : null,
+    sle.apHealth !== null ? `AP health ${pct(sle.apHealth)}` : null,
+    sle.wan !== null ? `WAN ${pct(sle.wan)}` : null,
+  ]);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/**
+ * A present section shows the plane's OWN rows — its session, its endpoint
+ * record, its recent decisions, its site SLE — never a merged guess; an
+ * absent section shows the one honest reason, muted. The section's `reason`
+ * rides along as a qualifier line whenever the server sent one.
+ */
+function plane360Row(section: ClientPlaneSection): Plane360Row {
+  if (section.state !== 'ok') {
+    return {
+      label: section.label,
+      tone: 'neutral',
+      lines: [{ text: section.reason ?? 'not reported', muted: true }],
+      events: [],
+    };
+  }
+  const lines: Plane360Row['lines'] = [];
+  if (section.session) {
+    const s = section.session;
+    lines.push({
+      text:
+        nonEmpty([
+          s.health,
+          reported(s.attach) ? `on ${s.attach}` : null,
+          reported(s.where),
+          reported(s.session) ? `session ${s.session}` : null,
+        ]).join(' · ') || 'session reported',
+      muted: false,
+    });
+  }
+  if (section.endpoint) {
+    const e = section.endpoint;
+    lines.push({
+      text: nonEmpty([
+        `endpoint ${e.status.toLowerCase()}`,
+        e.hostname,
+        e.os ?? e.family ?? e.category,
+        e.profile ? `profile ${e.profile}` : null,
+        e.updatedAt ? `updated ${e.updatedAt}` : null,
+      ]).join(' · '),
+      muted: false,
+    });
+  }
+  if (section.siteSle) {
+    const sle = section.siteSle;
+    lines.push({
+      text: nonEmpty([
+        sle.overall !== null ? `site SLE ${pct(sle.overall)}` : 'site SLE reported',
+        sle.siteName,
+      ]).join(' · '),
+      muted: false,
+    });
+    const classifiers = sleClassifierLine(sle);
+    if (classifiers) lines.push({ text: classifiers, muted: true });
+  }
+  if (section.reason) lines.push({ text: section.reason, muted: true });
+  return {
+    label: section.label,
+    tone: section.session?.planeTone ?? 'neutral',
+    lines,
+    events: section.authEvents ?? [],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -464,11 +574,51 @@ function livePathFor(client: ClientRow, topo: SiteTopologyLive): LivePath {
   };
 }
 
+/** Stable column-manager ids for the partitioned columns. The DataColumn key
+ *  is the display label; the manager persists against these slugs instead, so
+ *  a label tweak never orphans a saved layout. */
+const CLIENT_COLUMN_IDS: Record<string, string> = {
+  Type: 'type',
+  Model: 'model',
+  Site: 'site',
+  Group: 'group',
+  'Connected to': 'connectedTo',
+  'Port / SSID': 'where',
+  Plane: 'plane',
+  Auth: 'auth',
+  'Auth by': 'authBy',
+  Role: 'role',
+  VLAN: 'vlan',
+  Health: 'health',
+  Session: 'session',
+};
+
+/** Session strings ('41d', '2h 14m', '19m') → sortable seconds. An unreadable
+ *  or unreported value is null — it sorts last, never as zero-length. */
+function sessionSortSec(value: string | null): number | null {
+  if (!value) return null;
+  const day = /(\d+)\s*d/.exec(value);
+  const hour = /(\d+)\s*h/.exec(value);
+  const min = /(\d+)\s*m(?!s)/.exec(value);
+  const sec = /(\d+)\s*s/.exec(value);
+  if (!day && !hour && !min && !sec) return null;
+  return (
+    (day ? Number(day[1]) * 86400 : 0) +
+    (hour ? Number(hour[1]) * 3600 : 0) +
+    (min ? Number(min[1]) * 60 : 0) +
+    (sec ? Number(sec[1]) : 0)
+  );
+}
+
 export default function Clients() {
   const navigate = useNavigate();
-  const { density, showPlatformTags } = useSettings();
+  const { density, showPlatformTags, pollIntervalSec, tableColumns, setTableColumns } = useSettings();
   const { toast } = useToast();
   const [data, setData] = useState<ClientsData | null>(null);
+  /* Row selection for the table's keyboard grid. Nothing on this screen
+     consumes the selection yet — the same controlled-props wiring the Devices
+     reference integration runs for the change-queue bulk-actions work. */
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [searchParams, setSearchParams] = useSearchParams();
   const [q, setQ] = useState('');
   const [medium, setMedium] = useState('all');
@@ -478,21 +628,42 @@ export default function Clients() {
   const [plane, setPlane] = useState(() => planeFilterForParam(searchParams.get('plane')));
   const [problemsOnly, setProblemsOnly] = useState(false);
 
+  /* The header stamps SYNCED hh:mm, so a NOC tab must not sit on a mount-time
+     snapshot under it: poll on the settings cadence, the same pattern
+     Overview.tsx runs. One fetch at a time — a slow response never stacks up
+     behind the interval; fixture reads poll harmlessly. */
   useEffect(() => {
     let live = true;
-    void getClients().then((d) => {
-      if (live) setData(d);
-    });
+    let inFlight = false;
+    const pull = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void getClients()
+        .then((d) => {
+          if (live) setData(d);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    pull();
+    const every = Math.max(pollIntervalSec, 10) * 1000;
+    const id = setInterval(pull, every);
     return () => {
       live = false;
+      clearInterval(id);
     };
-  }, []);
+  }, [pollIntervalSec]);
 
-  /* Deep link: /clients?plane=<registryId> (from the Systems plane drawer). */
-  useEffect(() => {
+  /* Deep link: /clients?plane=<registryId> (from the Systems plane drawer).
+     Applied when the URL changes while the screen is mounted — state adjusted
+     during render rather than an effect that commits the stale filter first. */
+  const [prevParams, setPrevParams] = useState(searchParams);
+  if (prevParams !== searchParams) {
+    setPrevParams(searchParams);
     const pp = searchParams.get('plane');
     if (pp !== null) setPlane(planeFilterForParam(pp));
-  }, [searchParams]);
+  }
 
   /* The drawer selection is the ?mac= URL param — deep links open it directly. */
   const macParam = searchParams.get('mac');
@@ -515,10 +686,14 @@ export default function Clients() {
     setCoaOpen(true);
   };
 
-  useEffect(() => {
+  /* The confirm block closes when the drawer selection changes — adjusted
+     during render so it never commits open against the wrong client. */
+  const [prevMacParam, setPrevMacParam] = useState(macParam);
+  if (prevMacParam !== macParam) {
+    setPrevMacParam(macParam);
     setCoaOpen(false);
     setCoaTicket('');
-  }, [macParam]);
+  }
 
   /* Detail reads for the open drawer. Keyed by object, so a result that lands
    * after the operator moved on is filed, not raced; asked-for keys live in a
@@ -528,18 +703,25 @@ export default function Clients() {
   const sectionLive = data
     ? data.dataSource === 'live' || (data.blended?.includes('clients') ?? false)
     : false;
-  const [clientDetail, setClientDetail] = useState<Record<string, ClientDetailLive | null>>({});
+  const [clientBlock, setClientBlock] = useState<Record<string, ClientDetailBlock | null>>({});
   const [siteTopology, setSiteTopology] = useState<Record<string, SiteTopologyLive | null>>({});
   const detailAsked = useRef(new Set<string>());
   const topologyAsked = useRef(new Set<string>());
+  /* The Central client's site DPI table — the same on-demand read the site
+   * page's application-visibility section runs, keyed by site so two drawers
+   * at one site share it. Central's table is SITE-WIDE: it is not filtered
+   * to this MAC, and the 360 line says so rather than attribute site traffic
+   * to one client. */
+  const [siteApps, setSiteApps] = useState<Record<string, SiteApplicationsResult>>({});
+  const appsAsked = useRef(new Set<string>());
 
   useEffect(() => {
     /* Demo fixtures are authored and complete — nothing to fetch for them. */
     if (!macParam || !sectionLive) return;
     if (detailAsked.current.has(macParam)) return;
     detailAsked.current.add(macParam);
-    void readClientDetail(macParam).then((d) => {
-      setClientDetail((cache) => ({ ...cache, [macParam]: d }));
+    void readClientBlock(macParam).then((block) => {
+      setClientBlock((cache) => ({ ...cache, [macParam]: block }));
     });
   }, [macParam, sectionLive]);
 
@@ -553,6 +735,28 @@ export default function Clients() {
       setSiteTopology((cache) => ({ ...cache, [siteId]: t }));
     });
   }, [data, macParam, sectionLive]);
+
+  /* The site DPI read behind the 360's Central line. Lazy on drawer open,
+   * once per site per mount — and asked in demo too, where the route (or the
+   * client's own fixture mirror) serves the authored table. */
+  useEffect(() => {
+    if (!data || !macParam) return;
+    const client = data.clients.find((c) => c.mac === macParam);
+    if (!client || planeKeyOf(client.plane) !== 'central') return;
+    const siteId = client.siteId;
+    if (!siteId || appsAsked.current.has(siteId)) return;
+    appsAsked.current.add(siteId);
+    void getSiteApplications(siteId)
+      .then((r) => {
+        setSiteApps((cache) => ({ ...cache, [siteId]: r }));
+      })
+      .catch(() => {
+        setSiteApps((cache) => ({
+          ...cache,
+          [siteId]: { kind: 'failed', message: 'the application read failed' },
+        }));
+      });
+  }, [data, macParam]);
 
   useEffect(() => {
     if (!coaOpen) return;
@@ -666,12 +870,63 @@ export default function Clients() {
   ];
   const { shown, shared } = partitionColumns(rows, columns);
 
+  /* The partitioned set as DataTable column defs. 'Client' is the primary
+     identifier — always visible, never offered for hiding. A column the
+     partition collapsed this render (every visible session answers it
+     identically, so it is stated once below the table) simply leaves the
+     persisted layout: DataTable ignores config keys the current defs do not
+     define, and the column rejoins the moment one session disagrees. */
+  const clientColumns: Array<DataTableColumn<ClientRow>> = [
+    {
+      key: 'client',
+      title: 'Client',
+      hideable: false,
+      sortValue: (c) => c.name,
+      render: (c) => (
+        <>
+          {/* An unnamed client is displayed by its MAC, so printing the MAC
+              underneath would print the same string twice and cost a line on
+              every such row. */}
+          <span className="nt-clients-table__name">{c.name}</span>
+          {c.name.trim().toLowerCase() === c.mac.trim().toLowerCase() ? null : (
+            <span className="nt-cell-mono nt-cell-dim nt-clients-table__mac">{c.mac}</span>
+          )}
+        </>
+      ),
+    },
+    ...shown.map((column) => ({
+      key: CLIENT_COLUMN_IDS[column.key] ?? column.key,
+      title: column.key,
+      numeric: column.numeric,
+      /* Every column sorts on its text value; Session sorts by real duration,
+         not alphabetically ('2h 14m' must outrank '19m'). */
+      sortValue:
+        column.key === 'Session'
+          ? (c: ClientRow) => sessionSortSec(column.value(c))
+          : (c: ClientRow) => column.value(c),
+      render: (c: ClientRow) => {
+        const cell = column.render
+          ? column.render(c)
+          : (column.value(c) ?? <span className="nt-cell-dim">—</span>);
+        /* mono rode the <td> on the compound Table; DataTable owns the td, so
+           the same class wraps the value instead — identical type, one level in. */
+        return column.mono ? <span className="nt-cell-mono">{cell}</span> : cell;
+      },
+    })),
+  ];
+
   const typeOptions = [{ value: 'all', label: 'All device types' }].concat(
     uniq(clients, 'type').map((v) => ({ value: v, label: v })),
   );
   const planeOptions = [{ value: 'all', label: 'All planes' }].concat(
     uniq(clients, 'plane').map((v) => ({ value: v, label: v })),
   );
+  /* A ?plane= deep-link can name a plane that has no rows in this feed.
+     Without its own option the Select renders blank and the filter hiding
+     every row is invisible and unclearable — so union the active value in. */
+  if (plane !== 'all' && !planeOptions.some((o) => o.value === plane)) {
+    planeOptions.push({ value: plane, label: `${plane} (no clients)` });
+  }
   const siteOptions = [{ value: 'all', label: 'All sites' }].concat(
     uniq(clients, 'siteName').map((v) => ({ value: v, label: v })),
   );
@@ -748,7 +1003,7 @@ export default function Clients() {
 
         /* The per-client detail read for THIS drawer (undefined = still in
          * flight or never asked; null = asked, nothing usable came back). */
-        const det = sectionLive ? (clientDetail[cur.mac] ?? null) : null;
+        const det = sectionLive ? (clientBlock[cur.mac]?.detail ?? null) : null;
         const secState = (section: ClientDetailSection) => detailState(det?.source, section);
         /* One sentence per outcome. '' means "the detail path said nothing
          * about this", and the caller keeps the existing poll-level wording. */
@@ -952,6 +1207,82 @@ export default function Clients() {
                 }. Nothing is shown rather than a stale or invented timeline.`
               : 'No linked plane reported session events for this client. The portal will not substitute the demo timeline.';
 
+        /* Client 360 — which planes see this one MAC, and what each says.
+         * Live: the sections ride the same ?mac= envelope as the detail read,
+         * which lands AFTER the drawer shell — three states, kept distinct:
+         * undefined = the read is still in flight (a brief loading state,
+         * never a verdict); null = asked, and the route attached nothing (an
+         * older server, or the block read failed — the drawer says so rather
+         * than guessing); sections = the planes' own answers. Collapsing the
+         * first into the second flashed NOT REPORTED for a commit or two on
+         * every open. Demo: derived here from the fixtures through the SAME
+         * shared correlation the server runs, so the two can never disagree. */
+        const block360 = sectionLive ? clientBlock[cur.mac] : null;
+        const planes360 = sectionLive
+          ? block360 === undefined
+            ? undefined
+            : (block360?.clientPlanes ?? null)
+          : clientPlaneSections(cur.mac, cur.siteId, demoClient360World());
+        const planesOk = planes360?.filter((s) => s.state === 'ok').length ?? 0;
+        const planesMeta =
+          planes360 === undefined
+            ? 'CONTACTING PLANES…'
+            : planes360 === null
+              ? 'NOT REPORTED'
+              : `${planesOk} OF ${planes360.length} PLANES REPORT THIS MAC${sectionLive ? '' : ' · DEMO FEED'}`;
+        const planeRows = (planes360 ?? []).map(plane360Row);
+
+        /* The 360's Central line: the site's top applications. Lazy — the
+         * read lands after the drawer shell, like the 360 sections
+         * themselves — and SITE-WIDE: Central's DPI table is not filtered to
+         * one MAC, so the line names the site and says it is not per-client
+         * rather than attributing site traffic to this client. */
+        const apps360Lines: Plane360Row['lines'] = (() => {
+          if (planeKeyOf(cur.plane) !== 'central') return [];
+          if (!cur.siteId) {
+            return [{ text: 'not placed at a site — no site application table to join', muted: true }];
+          }
+          const r = siteApps[cur.siteId];
+          if (r === undefined) return [{ text: 'reading the site application table…', muted: true }];
+          if (r.kind === 'not-reported') {
+            return [{ text: `no application table reported for ${cur.siteName}`, muted: true }];
+          }
+          if (r.kind === 'failed') {
+            return [{ text: `the application read failed — ${r.message}`, muted: true }];
+          }
+          const apps = r.applications.apps ?? [];
+          const state = detailState(r.applications.source, 'apps');
+          if (state === 'ok' && apps.length > 0) {
+            const top = apps.slice(0, 3).map((a) => a.name).join(' · ');
+            return [
+              {
+                text: `top applications at ${cur.siteName}: ${top}${apps.length > 3 ? ` · +${countOf(apps.length - 3, 'more')}` : ''}`,
+                muted: false,
+              },
+              { text: 'site-wide DPI — Central does not filter this table to one client', muted: true },
+            ];
+          }
+          if (state === 'failed') {
+            return [
+              {
+                text: `the application read did not complete${r.applications.source.note ? ` — ${r.applications.source.note}` : ''}`,
+                muted: true,
+              },
+            ];
+          }
+          if (state === 'not-fetched') {
+            return [
+              {
+                text: `the site application table was not fetched${r.applications.source.note ? ` — ${r.applications.source.note}` : ''}`,
+                muted: true,
+              },
+            ];
+          }
+          return [
+            { text: `Central reported no application traffic at ${cur.siteName} in the window`, muted: true },
+          ];
+        })();
+
         const throughputMetric = {
           k: 'Throughput',
           v: tputNum !== null ? formatBps(tputNum) : cur.tput,
@@ -1099,6 +1430,10 @@ export default function Clients() {
           timeline,
           timelineMeta,
           timelineEmpty,
+          planes360,
+          planesMeta,
+          planeRows,
+          apps360Lines,
         };
       })()
     : null;
@@ -1126,7 +1461,7 @@ export default function Clients() {
               Auth events →
             </Button>
             <Button variant="secondary" size="sm" onClick={exportCsv}>
-              Export session
+              Export sessions
             </Button>
           </>
         }
@@ -1156,6 +1491,7 @@ export default function Clients() {
             placeholder="user, MAC, IP, hostname…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            aria-label="Filter clients"
           />
         </div>
         <div style={{ width: 150 }}>
@@ -1204,6 +1540,12 @@ export default function Clients() {
           />
         </div>
         <Switch label="Problems only" size="sm" checked={problemsOnly} onCheckedChange={setProblemsOnly} />
+        <TableViewOptions
+          columns={clientColumns}
+          config={tableColumns.clients ?? {}}
+          onChange={(config) => setTableColumns('clients', config)}
+        />
+        <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
         <span
           style={{
             marginLeft: 'auto',
@@ -1221,42 +1563,19 @@ export default function Clients() {
         </span>
       </div>
 
-      <Table density={density} className="nt-clients-table">
-        <Table.Head>
-          <Table.Row>
-            <Table.HeaderCell>Client</Table.HeaderCell>
-            {shown.map((column) => (
-              <Table.HeaderCell key={column.key} numeric={column.numeric}>
-                {column.key}
-              </Table.HeaderCell>
-            ))}
-          </Table.Row>
-        </Table.Head>
-        <Table.Body>
-          {rows.map((c) => (
-            <Table.Row key={c.mac} interactive onClick={() => openClient(c.mac)}>
-              <Table.Cell>
-                {/* An unnamed client is displayed by its MAC, so printing the
-                    MAC underneath would print the same string twice and cost a
-                    line on every such row. */}
-                <span className="nt-clients-table__name">{c.name}</span>
-                {c.name.trim().toLowerCase() === c.mac.trim().toLowerCase() ? null : (
-                  <span className="nt-cell-mono nt-cell-dim nt-clients-table__mac">{c.mac}</span>
-                )}
-              </Table.Cell>
-              {shown.map((column) => (
-                <Table.Cell
-                  key={column.key}
-                  numeric={column.numeric}
-                  className={column.mono ? 'nt-cell-mono' : undefined}
-                >
-                  {column.render ? column.render(c) : (column.value(c) ?? <span className="nt-cell-dim">—</span>)}
-                </Table.Cell>
-              ))}
-            </Table.Row>
-          ))}
-        </Table.Body>
-      </Table>
+      <DataTable
+        ariaLabel="Client sessions"
+        density={density}
+        className="nt-clients-table"
+        columns={clientColumns}
+        rows={rows}
+        rowKey={(c) => c.mac}
+        columnsConfig={tableColumns.clients}
+        onColumnsConfigChange={(config) => setTableColumns('clients', config)}
+        onRowActivate={(c) => openClient(c.mac)}
+        selectedKeys={selectedKeys}
+        onSelectionChange={setSelectedKeys}
+      />
       <SharedFacts facts={shared} count={rows.length} noun="sessions" />
 
       {/* No sessions at all and no sessions past the filter are different facts —
@@ -1452,6 +1771,118 @@ export default function Clients() {
                   ))}
                 </div>
               ) : null}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <SectionHeader label="Client 360" meta={drawer.planesMeta} />
+              {drawer.planes360 === undefined ? (
+                /* The per-client read lands after the drawer shell: say the
+                   planes are being asked, never that none reported. */
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '18px 0' }}>
+                  <Spinner size="sm" />
+                </div>
+              ) : drawer.planes360 === null ? (
+                <div
+                  style={{
+                    fontFamily: 'var(--nd-font-mono)',
+                    fontSize: 'var(--nd-text-11)',
+                    color: 'var(--nd-text-muted)',
+                    lineHeight: 1.6,
+                    padding: '9px 0',
+                  }}
+                >
+                  No cross-plane read came back for this client — the session above is unaffected;
+                  only the per-plane correlation is missing.
+                </div>
+              ) : (
+                drawer.planeRows.map((row, rowIdx) => (
+                  <div
+                    key={row.label}
+                    style={{
+                      display: 'flex',
+                      gap: 12,
+                      padding: '8px 0',
+                      borderBottom: '1px solid var(--nd-border-subtle)',
+                    }}
+                  >
+                    <span style={{ width: 104, flex: '0 0 104px', paddingTop: 1 }}>
+                      <Badge tone={row.tone}>{row.label}</Badge>
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {row.lines.map((line, i) => (
+                        <span
+                          key={i}
+                          style={{
+                            fontSize: 'var(--nd-text-12)',
+                            color: line.muted ? 'var(--nd-text-muted)' : 'var(--nd-text-secondary)',
+                          }}
+                        >
+                          {line.text}
+                        </span>
+                      ))}
+                      {/* The site-wide DPI line rides the Central row only —
+                          planeRows maps planes360 in order, so the indexes
+                          align. */}
+                      {drawer.planes360?.[rowIdx]?.plane === 'central'
+                        ? drawer.apps360Lines.map((line, j) => (
+                            <span
+                              key={`apps-${j}`}
+                              style={{
+                                fontSize: 'var(--nd-text-12)',
+                                color: line.muted ? 'var(--nd-text-muted)' : 'var(--nd-text-secondary)',
+                              }}
+                            >
+                              {line.text}
+                            </span>
+                          ))
+                        : null}
+                      {row.events.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, paddingTop: 2 }}>
+                          <span
+                            style={{
+                              fontFamily: 'var(--nd-font-mono)',
+                              fontSize: 'var(--nd-text-10)',
+                              color: 'var(--nd-text-muted)',
+                              letterSpacing: '.08em',
+                              textTransform: 'uppercase',
+                            }}
+                          >
+                            recent auth decisions
+                          </span>
+                          {row.events.map((e, i) => (
+                            <div
+                              key={i}
+                              style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}
+                            >
+                              <span
+                                style={{
+                                  fontFamily: 'var(--nd-font-mono)',
+                                  fontSize: 10.5,
+                                  color: 'var(--nd-text-muted)',
+                                  width: 62,
+                                  flex: '0 0 62px',
+                                }}
+                              >
+                                {e.time}
+                              </span>
+                              <Badge tone={e.tone}>{e.result}</Badge>
+                              <span
+                                style={{
+                                  fontFamily: 'var(--nd-font-mono)',
+                                  fontSize: 'var(--nd-text-10)',
+                                  color: 'var(--nd-text-muted)',
+                                }}
+                              >
+                                {nonEmpty([e.method, e.reason]).join(' · ')}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

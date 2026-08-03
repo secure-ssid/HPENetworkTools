@@ -10,9 +10,20 @@
     "./logic": "./logic.ts",
     "./fixtures": "./fixtures.ts",
     "./types": "./types.ts",
-    "./webhooks": "./webhooks.ts"
+    "./webhooks": "./webhooks.ts",
+    "./configBackup": "./configBackup.ts",
+    "./alertEngine": "./alertEngine.ts",
+    "./metricsHistory": "./metricsHistory.ts",
+    "./notifications": "./notifications.ts",
+    "./anomaly": "./anomaly.ts",
+    "./maintenanceWindows": "./maintenanceWindows.ts",
+    "./alertRules": "./alertRules.ts",
+    "./appRisk": "./appRisk.ts",
+    "./trends": "./trends.ts",
+    "./expiry": "./expiry.ts"
   },
   "scripts": {
+    "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   }
 }

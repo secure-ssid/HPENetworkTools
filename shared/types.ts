@@ -48,6 +48,7 @@ export type Sev = 'P1' | 'P2' | 'P3';
 /** Shell views (HpeNetworkTools state.view). */
 export type View =
   | 'overview'
+  | 'topology'
   | 'alerts'
   | 'tickets'
   | 'clients'
@@ -63,7 +64,9 @@ export type View =
   | 'compliance'
   | 'systems'
   | 'uxi'
-  | 'clearpass';
+  | 'clearpass'
+  | 'mist'
+  | 'central';
 
 // ---------------------------------------------------------------------------
 // Canonical site identity
@@ -212,6 +215,19 @@ export interface Device {
    *  authored fixtures carry neither. */
   serial?: string;
   mac?: string;
+  /** The firmware train the plane RECOMMENDS for this model, when it publishes
+   *  one (Mist /orgs/{org}/devices/versions). Absent = no recommendation was
+   *  read, which says nothing about compliance. */
+  firmwareTarget?: string;
+  /** The plane's own firmware-upgrade state word, verbatim (Mist's
+   *  `fwupdate.status` / `auto_upgrade_stat.status` on the stats row — e.g.
+   *  'inprogress'). Never interpreted into prose; absent = none reported. */
+  firmwareUpdate?: string;
+  /** The plane's claim/activation code for the device (Mist inventory
+   *  `magic`). It is a claim secret, so it rides only where an operator with
+   *  device-read access already sees the device — never into logs. Absent
+   *  unless the plane publishes one. */
+  claimCode?: string;
 }
 
 export type ClientType =
@@ -255,6 +271,16 @@ export interface Client {
   quality: number | null; // 0-100 score; null when the plane reports no numeric score
   zone: string; // physical location
   closet: string; // wiring
+  /** Floor-plan position in map-image PIXELS, when the plane locates the
+   *  client on a map (Mist's wireless roster carries x/y/x_m/y_m/map_id).
+   *  Optional — absent means the plane published no position, which must
+   *  render as "not located", never as (0,0). Set only as a pair: a dot
+   *  needs both coordinates. */
+  x?: number;
+  y?: number;
+  /** The floor plan x/y refer to (Mist map id — matches MistSiteMap.mapId).
+   *  Absent whenever x/y are absent. */
+  mapId?: string;
 }
 
 /** Computed, not stored — see logic.ts pathFor(). */
@@ -376,6 +402,15 @@ export interface SsidObject {
   targets: string;
   plane: string; // display label, e.g. 'CENTRAL + MIST'
   tone: Tone;
+  /** A fact about the row worth surfacing that has no column of its own —
+   *  e.g. 'PSK set — redacted by the portal' on a Mist WLAN whose payload
+   *  carried the cleartext key (the portal never transports Wi-Fi secrets, so
+   *  the marker is the only honest way to say a PSK exists). */
+  note?: string;
+  /** The WLAN's admin state, when the plane's config read reported it (Mist
+   *  WLANs carry `enabled`). Absent = not reported — the edit drawer must not
+   *  invent one. */
+  enabled?: boolean;
 }
 
 /** Switch port list row (NtConfigure). */
@@ -440,6 +475,85 @@ export interface ConfigInventory {
   unavailable?: ('ssids' | 'vlans' | 'ports')[];
 }
 
+// ---------------------------------------------------------------------------
+// Central plane screen (/api/central) — the plane's own operational dashboard
+// ---------------------------------------------------------------------------
+
+/**
+ * A dataset the Central screen renders a section for. `wlans` names the
+ * plane's config read (ConfigInventory.ssids) — 'config' would collide with
+ * the Configure screen's own vocabulary on the wire.
+ */
+export type CentralDataset = 'devices' | 'sites' | 'clients' | 'alerts' | 'wlans';
+
+/**
+ * The plane header's status block: link state, the registry health word and
+ * freshness, straight off the registry (live) or the authored SYSTEMS row
+ * (demo). `health` is the registry's own lower-case word ('healthy' |
+ * 'warning' | 'degraded' | 'unlinked') so the header never paraphrases the
+ * plane's condition; `lastSync` null = the plane has never completed a pull,
+ * which the header words as 'never', never as a guessed time.
+ */
+export interface CentralPlaneStatus {
+  linked: boolean;
+  health: string;
+  tone: Tone;
+  lastSync: string | null;
+  /** The registry's own note (a throttle reason, a partial-read warning);
+   *  null when there is none — the header shows nothing rather than inventing
+   *  one. */
+  note: string | null;
+}
+
+/**
+ * Fleet rollup behind the header tiles: devices by type and by state, counted
+ * off the plane's own inventory rows. `byState` keeps the feed's verbatim
+ * state words ('up', 'down', whatever Central next invents) — never folded
+ * into an umbrella good/bad pair, the same rule `?state=` deep links follow.
+ */
+export interface CentralFleetSummary {
+  total: number;
+  byType: Partial<Record<DeviceType, number>>;
+  byState: Record<string, number>;
+}
+
+/**
+ * One site in the plane's estate summary. Counts come off the plane's own
+ * rows (never the cross-plane merge — this screen is what CENTRAL sees).
+ * `clients` null = the plane reported no client roster this cycle;
+ * `healthPct` is the share of known-state devices that are up, null when
+ * nothing at the site has a verifiable state — never a fabricated 0.
+ */
+export interface CentralSiteRow {
+  siteId: SiteId;
+  siteName: string;
+  devices: number;
+  clients: number | null;
+  healthPct: number | null;
+  /** null = the alert feed was not reported this cycle, so no open count can
+   *  be asserted — the row words it rather than claiming a clear site. */
+  openAlerts: number | null;
+}
+
+/**
+ * A device behind its recommended firmware train: the plane's approved-train
+ * check failed (`firmwareApproved: false`). `target` is the train the plane
+ * RECOMMENDS when it publishes one — null when the verdict rests on the
+ * approved-train flag alone; `update` is the plane's own upgrade state word,
+ * verbatim, null when none was reported.
+ */
+export interface CentralFirmwareRow {
+  name: string;
+  model: string;
+  type: DeviceType;
+  siteId: SiteId;
+  siteName: string;
+  serial?: string;
+  firmware: string;
+  target: string | null;
+  update: string | null;
+}
+
 /** README ChangeRequest — the brokered-write unit. */
 export interface ChangeRequest {
   object: ConfigObject;
@@ -484,6 +598,11 @@ export interface SsidForm {
   /** PSK passphrase — required for wpa2-psk / psk-portal. Write-only: never
    *  returned by a catalog/apply response, never logged, never audited. */
   passphrase?: string;
+  /** WLAN admin state — Mist direct writes only (Mist WLANs carry `enabled`).
+   *  Absent means "leave the plane's current/default state alone": the Central
+   *  payload does not model it (its profile upsert always writes enable:true),
+   *  so the Central drawer never offers the switch and never sets this. */
+  enabled?: boolean;
 }
 
 export interface PortForm {
@@ -997,6 +1116,7 @@ export interface PolicyServiceRow {
 export interface EndpointRow {
   id: string;
   mac: string;
+  description: string | null; // the operator's free-text note on the endpoint
   ip: string | null;
   hostname: string | null;
   status: 'Known' | 'Unknown' | 'Disabled' | string;
@@ -1005,6 +1125,259 @@ export interface EndpointRow {
   os: string | null;
   profile: string | null; // enforcement profile / role
   updatedAt: string | null; // ISO or display string
+  /** Device Insight's free-text categorisation tags (`device_insight_tags`)
+   *  — the profiler's evidence, NOT the enforcement `profile` it often
+   *  echoes. Absent when the row carries no tags. */
+  insightTags?: string[];
+}
+
+// -- ClearPass policy-plane inventories --
+//
+// The smaller collections the adapter walks alongside the endpoint
+// repository (NADs, auth sources, roles, enforcement policy/profiles, local
+// users, services, device groups). Every field beyond identity is nullable
+// and read defensively — a fact the box did not report is null, never an
+// assumed value.
+
+/** One network access device (NAD) from GET /api/network-device. */
+export interface ClearPassNetworkDeviceRow {
+  id: string;
+  name: string;
+  ipAddress: string | null;
+  vendorName: string | null;
+  coaCapable: boolean | null;
+  radsecEnabled: boolean | null;
+  description: string | null;
+}
+
+/** One authentication source from GET /api/auth-source. */
+export interface ClearPassAuthSourceRow {
+  id: string;
+  name: string;
+  type: string | null; // e.g. 'Active Directory', 'Local'
+  description: string | null;
+}
+
+/** One role from GET /api/role. */
+export interface ClearPassRoleRow {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+/** One enforcement policy from GET /api/enforcement-policy. */
+export interface ClearPassEnforcementPolicyRow {
+  id: string;
+  name: string;
+  enforcementType: string | null; // e.g. 'RADIUS', 'WEBAUTH', 'TACACS'
+  defaultProfile: string | null; // the catch-all profile the policy falls back to
+}
+
+/** One enforcement profile from GET /api/enforcement-profile. */
+export interface ClearPassEnforcementProfileRow {
+  id: string;
+  name: string;
+  type: string | null; // e.g. 'RADIUS', 'RADIUS_CoA', 'TACACS'
+  description: string | null;
+}
+
+/**
+ * One local user from GET /api/local-user. STRICTLY whitelisted fields —
+ * the mapper reads this list by name and nothing else crosses, so no
+ * password hash or secret of any kind can ride a row the poller cache and
+ * the screens will serve.
+ */
+export interface ClearPassLocalUserRow {
+  id: string;
+  userId: string; // the login name
+  username: string | null; // the display name
+  roleName: string | null;
+  enabled: boolean | null;
+}
+
+/**
+ * One service from GET /api/config/service (the 6.11+ config namespace —
+ * verified against CPPM 6.11.12) with /api/service as the older-6.x fallback;
+ * a build that 404s BOTH does not expose the collection at all. The first
+ * four fields are the shape every build answers; the rest ride along only
+ * when the row reports them, so an older build's row stays exactly
+ * { id, name, type, description }. Whitelisted by name like the local-user
+ * row — nothing in a service definition is credential material, and the
+ * mapper keeps it that way.
+ */
+export interface ClearPassServiceRow {
+  id: string;
+  name: string;
+  type: string | null; // e.g. '1X', 'MAC_AUTH', 'TACACS'
+  description: string | null;
+  template?: string | null; // e.g. 'TACACS+ Enforcement'
+  enabled?: boolean | null;
+  hitCount?: number | null;
+  orderNo?: number | null;
+  authSources?: string[]; // source names, only when the row names them
+  /** One readable line built from rules_conditions — never raw JSON. */
+  rulesSummary?: string | null;
+}
+
+/**
+ * One condition of a service's match rules — a row of CPPM's rule editor
+ * (rules_conditions: { type, name, operator, value }), read-only here. A
+ * field the box did not report is null, and a list-valued `value` is joined
+ * readably — the drawer never renders raw JSON.
+ */
+export interface ClearPassServiceRuleCondition {
+  type: string | null;
+  name: string | null;
+  operator: string | null;
+  value: string | null;
+}
+
+/**
+ * One full service from GET /api/config/service/{id} (verified against a live
+ * CPPM 6.11.12) — the object the Services-tab drawer renders, fetched ON
+ * DEMAND for the one service being viewed, never on the poll. This is the
+ * detail the collection row (ClearPassServiceRow) summarises, and its
+ * vocabulary is the DETAIL object's own: `type` here is 'RADIUS' | 'TACACS' |
+ * 'Application' | 'WEBAUTH' where the collection row says '1X'/'MAC_AUTH'.
+ * Every boolean is tri-state: null means the box did not report the flag,
+ * which is not the same as false. Whitelisted by name like the collection
+ * row — nothing in a service definition is credential material, and the
+ * mapper keeps it that way.
+ */
+export interface ClearPassServiceDetail {
+  id: string;
+  name: string;
+  type: string | null;
+  template: string | null;
+  enabled: boolean | null;
+  hitCount: number | null;
+  orderNo: number | null;
+  description: string | null;
+  monitorMode: boolean | null;
+  rulesMatchType: string | null; // 'MATCHES_ALL' | 'MATCHES_ANY'
+  rulesConditions: ClearPassServiceRuleCondition[];
+  authMethods: string[]; // method names, only the ones the box names readably
+  authSources: string[]; // source names, same rule
+  stripUsername: boolean | null;
+  roleMappingPolicy: string | null;
+  /** CPPM's `enf_policy` — the enforcement policy this service evaluates. */
+  enforcementPolicy: string | null;
+  useCachedPolicyResults: boolean | null;
+  postureEnabled: boolean | null;
+  auditEnabled: boolean | null;
+  profilerEnabled: boolean | null;
+  acctProxyEnabled: boolean | null;
+}
+
+/** Sections of a service detail read — ONE GET, so ONE section: 'ok' the
+ *  object mapped, 'empty' the box 404'd every candidate path (no such
+ *  service, or the resource is not exposed), 'failed' the read broke. */
+export type ClearPassServiceDetailSection = 'service';
+
+/**
+ * The service detail payload — the mapped object plus its provenance
+ * envelope, the same contract as every on-demand detail read. `service` null
+ * means the read produced no object; `source.sections.service` says which of
+ * 'empty' (no such service) or 'failed' (the read broke) it was.
+ */
+export interface ClearPassServiceDetailLive {
+  service: ClearPassServiceDetail | null;
+  source: DetailSource<ClearPassServiceDetailSection>;
+}
+
+/** One device group from GET /api/device-group (not exposed on every build). */
+export interface ClearPassDeviceGroupRow {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+// -- ClearPass direct writes (endpoint repository + local users) --
+//
+// The CPPM write surface for the two datasets this portal operates on: POST
+// /api/endpoint registers a MAC, PATCH /api/endpoint/{id} updates its status
+// and operator note, POST /api/local-user creates an account and
+// PUT /api/local-user/{id} updates one. Policy itself is never written here
+// — it is edited in ClearPass. Every write rides the reviewed direct-write
+// flow (server/src/services/clearpassDirectWrite.ts): an explicit review
+// confirmation standing in for a ticket, one audit line per attempt, and a
+// read-back verify whose outcome is reported, never assumed. Local-user
+// passwords are WRITE-ONLY: they travel in the request body to CPPM and
+// nowhere else — never logged, never audited, never echoed in a result.
+
+/** The endpoint status vocabulary a write may set (CPPM's own three values). */
+export type ClearPassEndpointStatus = 'Known' | 'Unknown' | 'Disabled';
+export const CLEARPASS_ENDPOINT_STATUSES: ClearPassEndpointStatus[] = ['Known', 'Unknown', 'Disabled'];
+
+/** Register one endpoint (POST /api/endpoint). */
+export interface ClearPassEndpointRegisterForm {
+  /** Any separator/case — the service normalises to aa:bb:cc:dd:ee:ff and
+   *  refuses anything that is not 12 hex digits. */
+  mac: string;
+  description?: string;
+  /** Absent registers the endpoint as 'Known'. */
+  status?: ClearPassEndpointStatus;
+  /** Profiler-style attribute hints (e.g. {Category: 'Computer'}) — a flat
+   *  string map, exactly what CPPM's endpoint object nests. */
+  attributes?: Record<string, string>;
+}
+
+/** Update one endpoint (PATCH /api/endpoint/{id}) — status and/or the
+ *  operator note only; the MAC is the row's identity and is never rewritten.
+ *  At least one field must be present. */
+export interface ClearPassEndpointUpdateForm {
+  status?: ClearPassEndpointStatus;
+  /** Present-and-empty clears the note; absent leaves it alone. */
+  description?: string;
+}
+
+/** Create one local user (POST /api/local-user). */
+export interface ClearPassLocalUserCreateForm {
+  userId: string; // the login name
+  username?: string; // the display name
+  /** Must exist in the CPPM role inventory — checked against the reported
+   *  roles when the portal has them, otherwise left for CPPM to answer. */
+  roleName: string;
+  enabled: boolean;
+  /** WRITE-ONLY — never logged, audited, echoed, or read back. */
+  password: string;
+}
+
+/** Update one local user (PUT /api/local-user/{id}) — every field optional,
+ *  at least one required. */
+export interface ClearPassLocalUserUpdateForm {
+  username?: string;
+  roleName?: string;
+  enabled?: boolean;
+  /** WRITE-ONLY — present only when the operator is setting a new password;
+   *  absent leaves the current one alone. */
+  password?: string;
+}
+
+/**
+ * What one ClearPass direct write did, reported honestly. `ok` is true ONLY
+ * on a 2xx from the write call itself. `verified` is the read-back: true when
+ * a re-read found the written state, false when that read succeeded and the
+ * state was absent (accepted but not landed), and undefined when the
+ * confirming read could not be made at all — undefined is deliberately NOT
+ * false, exactly as the SSID apply reports it. `message` is always a fixed,
+ * secret-free string (an HTTP code at most — never a vendor body, and a
+ * local-user write's password appears nowhere in this shape).
+ */
+export interface ClearPassWriteResult {
+  ok: boolean;
+  /** 'failed' when the plane refused or errored — never rolled into ok. */
+  action: 'created' | 'updated' | 'failed';
+  verified?: boolean;
+  httpCode?: number;
+  message: string;
+  /**
+   * Set by the service layer, not the adapter — the screen's list is served
+   * from the poll cache, so without a forced re-read it would show the
+   * pre-write snapshot (see SsidApplyResult.cacheRefresh). Absent means no
+   * refresh was tried (demo mode), which is NOT a failed refresh.
+   */
+  cacheRefresh?: WriteCacheRefresh;
 }
 
 // -- Sites (NtSites) --
@@ -1016,13 +1389,61 @@ export interface SiteRow extends Site {
 }
 
 /**
+ * AP/user impact counts from one Mist SLE summary window
+ * (`sle_summary_impact`: num_* are the DEGRADED counts, total_* the
+ * population considered). Every field nullable — a count Mist did not
+ * report is null, never an assumed 0.
+ */
+export interface MistSleImpact {
+  numUsers: number | null;
+  numAps: number | null;
+  totalUsers: number | null;
+  totalAps: number | null;
+}
+
+/**
+ * One classifier of a Mist SLE metric (`sle_classifier`) — the WHY behind a
+ * degraded metric ('dhcp', 'signal-strength', …). `samples`/`degraded` are
+ * the summed per-interval counts and `durationSec` the summed observation
+ * durations, all straight off the wire; a series the summary did not carry
+ * sums to null, not 0.
+ */
+export interface MistSleClassifier {
+  name: string;
+  samples: number | null;
+  degraded: number | null;
+  durationSec: number | null;
+  impact: MistSleImpact | null;
+}
+
+/**
+ * One Mist SLE metric as read from the site-scoped summary endpoint
+ * (GET /api/v1/sites/{siteId}/sle/site/{siteId}/metric/{metric}/summary).
+ * `success` is the 0.0–1.0 fraction DERIVED from the sample counts
+ * (1 − Σdegraded/Σtotal): counts are unambiguous, where the `value` series'
+ * unit is not stated on the wire. null when the window held no countable
+ * samples — SLE has no "no signal" reading.
+ */
+export interface MistSleMetric {
+  name: string; // as Mist words it: 'time-to-connect', 'ap-health', …
+  success: number | null;
+  samples: number | null;
+  degraded: number | null;
+  impact: MistSleImpact | null;
+  classifiers: MistSleClassifier[];
+}
+
+/**
  * Mist Service Level Expectations — the platform's headline per-site score,
  * one classifier per operational dimension (coverage/capacity/roaming/AP
- * health/WAN). `value` rides straight off the wire as a 0.0–1.0 fraction, not
- * a percentage; a classifier the org insights read never returned is `null`,
- * never an assumed 0 — SLE has no "no signal" reading. `overall` is the mean
- * of whichever classifiers ARE present, so a site missing `wan` (no WAN edge)
- * is not penalised for a dimension Mist never scores it on. */
+ * health/WAN). Each dimension's score is the success fraction derived from
+ * that metric's summary sample counts (see MistSleMetric); a metric the
+ * site does not score (the summary 404s — no WAN edge, insufficient data)
+ * is `null`, not an assumed 0. `overall` is the mean of whichever
+ * dimensions ARE present, so a WAN-less site is not penalised for a
+ * dimension Mist never scores it on. `metrics` carries the richer per-metric
+ * detail (classifiers, impact) for the drill-down; absent when only the
+ * headline fractions were read. */
 export interface MistSleRow {
   siteId: SiteId;
   siteName: string; // raw Mist site name
@@ -1032,6 +1453,328 @@ export interface MistSleRow {
   apHealth: number | null;
   wan: number | null;
   overall: number | null;
+  metrics?: MistSleMetric[];
+}
+
+/**
+ * One site's licence consumption as Mist reports it
+ * (GET /api/v1/orgs/{orgId}/licenses/usages row). `usages` and
+ * `fullyLoaded` are Mist's own service→count maps verbatim ({'SUB-MAN': 12})
+ * — current consumption, and the demand if every device used every service —
+ * null when the row did not carry the map. Counts Mist did not report stay
+ * null rather than reading as an authoritative 0.
+ */
+export interface MistLicenseUsageRow {
+  siteId: SiteId;
+  siteName: string;
+  numDevices: number | null;
+  numAps: number | null;
+  usages: Record<string, number> | null;
+  fullyLoaded: Record<string, number> | null;
+}
+
+// -- Mist AP rich stats (GET /sites/{siteId}/stats/devices?type=ap) --
+
+/**
+ * One radio's live stats from a Mist site AP-stats row (`radio_stat.band_*`).
+ * Mist keys radios `band_24`/`band_5`/`band_6`; `band` is normalized here to
+ * the display words ('2.4 GHz'…) so a renderer never re-derives them. Every
+ * reading nullable — a stat the row did not carry is null, never an assumed
+ * 0 (0% utilization and "not reported" are different facts).
+ */
+export interface MistApRadioStats {
+  /** '2.4 GHz' | '5 GHz' | '6 GHz' | the raw key suffix when unrecognized. */
+  band: string;
+  channel: number | null;
+  /** Channel width in MHz (20/40/80/160). */
+  bandwidthMHz: number | null;
+  powerDbm: number | null;
+  noiseFloorDbm: number | null;
+  /** `util_all` — total channel utilization, percent 0-100. */
+  utilAllPct: number | null;
+  utilTxPct: number | null;
+  utilRxInBssPct: number | null;
+  utilRxOtherBssPct: number | null;
+  /** `util_non_wifi` — non-Wi-Fi interference share, percent 0-100. */
+  utilNonWifiPct: number | null;
+  /** Clients associated to THIS radio (`num_clients`). */
+  numClients: number | null;
+}
+
+/**
+ * One wired port's live stats (`port_stat.eth0`). Mist reports `speed` in
+ * Mbps (1000 for a 1 Gb port); byte/error counters are cumulative since boot.
+ */
+export interface MistApPortStats {
+  /** Port name as Mist keys it ('eth0'). */
+  name: string;
+  up: boolean | null;
+  speedMbps: number | null;
+  fullDuplex: boolean | null;
+  rxBytes: number | null;
+  txBytes: number | null;
+  rxErrors: number | null;
+  txErrors: number | null;
+  peakBps: number | null;
+}
+
+/**
+ * Onboard environment sensors (`env_stat`). Not every AP model carries these
+ * — the whole block is null when the row has no `env_stat`, and each reading
+ * is null when the sensor reported nothing.
+ */
+export interface MistApEnvStats {
+  ambientTempC: number | null;
+  /** Barometric pressure; mbar and hPa are the same unit 1:1. */
+  pressureHpa: number | null;
+  humidityPct: number | null;
+  accelX: number | null;
+  accelY: number | null;
+  accelZ: number | null;
+}
+
+/**
+ * The AP's uplink neighbour as LLDP reports it (`lldp_stat`) — the real
+ * AP → switch edge (e.g. AP → "CX6300-CORE" port 1/1/5) that topology edges
+ * are built from. null when the row carried no `lldp_stat`.
+ */
+export interface MistApLldpUplink {
+  systemName: string | null;
+  /** Platform description verbatim ('HPE JL660A …'). */
+  systemDesc: string | null;
+  portId: string | null;
+  chassisId: string | null;
+  mgmtAddr: string | null;
+}
+
+/**
+ * One AP's rich live stats from the SITE-scoped stats walk
+ * (GET /api/v1/sites/{siteId}/stats/devices?type=ap) — the radios, ports,
+ * environment, LLDP uplink and load readings the org-wide row does not
+ * carry. `numClients` is the per-device client count that only this surface
+ * publishes (see the Mist adapter header). Readings the row did not carry
+ * stay null; absent arrays (`radios`/`ports`) mean the row had no
+ * `radio_stat`/`port_stat` at all.
+ */
+export interface MistApStatsRow {
+  deviceName: string;
+  /** Mist's device UUID — the key the site-scoped detail reads want
+   *  (00000000-0000-0000-1000-<mac>), NOT the mac. null when unreported. */
+  deviceUuid: string | null;
+  mac: string | null;
+  serial: string | null;
+  siteId: SiteId;
+  siteName: string;
+  /** Wireless clients on this AP, as the row reports it. */
+  numClients: number | null;
+  cpuUtilPct: number | null;
+  memTotalKb: number | null;
+  memUsedKb: number | null;
+  uptimeSec: number | null;
+  rxBps: number | null;
+  txBps: number | null;
+  /** External (WAN-side) IP, when the row reports one. */
+  extIp: string | null;
+  /** `ip_stat` — the AP's own view of its network services. */
+  dns: string | null;
+  gateway: string | null;
+  dhcpServer: string | null;
+  /** `power_src` verbatim ('PoE 802.3at', …). */
+  powerSrc: string | null;
+  powerConstrained: boolean | null;
+  radios: MistApRadioStats[];
+  ports: MistApPortStats[];
+  env: MistApEnvStats | null;
+  lldpUplink: MistApLldpUplink | null;
+}
+
+// -- Mist floor plans (GET /sites/{siteId}/maps + device config x/y) --
+
+/** One AP's placement on a floor plan, from the site device-config rows
+ *  (GET /sites/{siteId}/devices?type=ap carries x/y/map_id per AP). x/y are
+ *  PIXELS in the map image. */
+export interface MistSiteMapAp {
+  deviceName: string;
+  deviceUuid: string | null;
+  mac: string | null;
+  x: number | null;
+  y: number | null;
+}
+
+/**
+ * One floor plan at one Mist site. `imageUrl` is Mist's hosted image URL
+ * verbatim (the demo world authors an inline SVG data-URI instead — same
+ * field, renderable the same way); width/height come in both pixels (image)
+ * and meters (Mist's calibration) exactly as the map row reports them, null
+ * when unreported. `aps` holds the APs the site config places on THIS map;
+ * client dots ride on the ClientRow's own x/y/mapId.
+ */
+export interface MistSiteMap {
+  siteId: SiteId;
+  siteName: string;
+  /** Mist's map id — the key ClientRow.mapId and the AP config's map_id use. */
+  mapId: string;
+  name: string | null;
+  imageUrl: string | null;
+  widthPx: number | null;
+  heightPx: number | null;
+  widthM: number | null;
+  heightM: number | null;
+  /** Map rotation, degrees, as the row reports it. */
+  orientationDeg: number | null;
+  aps: MistSiteMapAp[];
+}
+
+// -- Mist rogue & neighbor APs (GET /sites/{siteId}/insights/rogues) --
+
+/**
+ * One BSSID from a site's rogue/neighbor report
+ * (GET /api/v1/sites/{siteId}/insights/rogues row). `bssid` is the identity —
+ * a row without one is junk and maps to null. `seenOnLan` (`seen_on_lan`) is
+ * the on-your-wire flag: true means the AP is connected to YOUR wired
+ * infrastructure, which is the actual alarm — everything else is a neighbor.
+ * null means the row did not say, which reads as "not reported", never as a
+ * safe false. Readings the row did not carry (ssid, channel, avg_rssi,
+ * num_aps) stay null rather than an assumed value.
+ */
+export interface MistRogueApRow {
+  siteId: SiteId;
+  siteName: string;
+  /** The BSSID the report keys on, verbatim as Mist carries it. */
+  bssid: string;
+  ssid: string | null;
+  channel: number | null;
+  /** Average signal strength the site's APs heard it at, dBm. */
+  avgRssi: number | null;
+  /** How many of the site's APs reported hearing it. */
+  numAps: number | null;
+  /** The on-your-wire flag — true is the alarm. null = not reported. */
+  seenOnLan: boolean | null;
+}
+
+// -- Mist org audit log (GET /orgs/{orgId}/logs/search, on-demand) --
+
+/**
+ * One org admin change from Mist's audit log
+ * (GET /api/v1/orgs/{orgId}/logs/search `results` row) — who changed what,
+ * when. `before`/`after` are the entry's config snapshots as compact JSON
+ * with every secret-shaped value (psk/secret/passphrase/password/private key/
+ * token/api key) replaced by a redaction marker BEFORE it leaves the server —
+ * the snapshots can carry a cleartext WLAN PSK, so they get the same
+ * whitelist discipline the site-WLAN read does. Readings the row did not
+ * carry stay null; a row with neither an id nor a message maps to null.
+ */
+export interface MistAuditLogRow {
+  /** The entry's own id, when Mist carries one. */
+  id: string | null;
+  /** ISO instant — Mist stamps epoch milliseconds. null when unreported. */
+  at: string | null;
+  /** The admin who made the change (email or name as reported). */
+  admin: string | null;
+  /** What changed, in Mist's own words. */
+  message: string;
+  /** Portal site key when the entry is site-scoped; null = org-wide. */
+  siteId: SiteId | null;
+  siteName: string | null;
+  before?: string;
+  after?: string;
+}
+
+/** Sections of the org audit-log read. */
+export type MistAuditLogSection = 'logs';
+
+/**
+ * The latest org admin changes behind the Systems screen's Mist drawer — read
+ * ON DEMAND when the drawer opens, never on the 60s poll (the drawer is the
+ * only consumer, and a quota'd plane should not pay for it every cycle).
+ * Absent `entries` = the read was not fetched; check `source.sections`
+ * before any "nothing changed" line.
+ */
+export interface MistAuditLogLive {
+  entries?: MistAuditLogRow[];
+  source: DetailSource<MistAuditLogSection>;
+}
+
+// -- Mist screen (/api/mist) — the plane's operational dashboard payload -----
+
+/**
+ * The Mist plane's own status, carried on the Mist screen's payload so the
+ * header can say what the plane is doing without a second fetch: the
+ * registry's facts in live mode (linked/health/lastSync verbatim — a plane
+ * that never synced keeps lastSync null, never a borrowed stamp), the demo
+ * world's authored row in demo mode (MIST_PLANE_STATUS, stamped on the demo
+ * fixed clock like the audit-log fixtures). `deviceCount`/`clientCount` are
+ * the plane's own claimed counts where the mode has them, null where it does
+ * not — never a recounted subset presented as the plane's claim.
+ */
+export interface MistPlaneStatus {
+  linked: boolean;
+  /** The registry health word; 'unlinked' when no credentials are stored. */
+  health: 'healthy' | 'warning' | 'degraded' | 'unlinked';
+  /** ISO instant of the last successful pull; null = never synced. */
+  lastSync: string | null;
+  /** Devices the plane claims; null = not reported. */
+  deviceCount: number | null;
+  /** Clients the plane reports; null = not reported. */
+  clientCount: number | null;
+  /** The plane's own pull note, verbatim (e.g. a half-read caveat). */
+  note: string | null;
+}
+
+// -- Mist SLE drill-down (lazy per-metric reads, on the detail path only) --
+
+/**
+ * One interval series of an SLE summary-trend read
+ * (GET …/sle/site/{id}/metric/{metric}/summary-trend). `total`/`degraded`
+ * are parallel to the intervals starting at `startSec`, stepping
+ * `intervalSec`; a null entry is an interval Mist reported no count for.
+ */
+export interface MistSleTrend {
+  startSec: number | null;
+  endSec: number | null;
+  intervalSec: number | null;
+  total: Array<number | null>;
+  degraded: Array<number | null>;
+}
+
+/** One client an SLE metric names as impacted (…/impacted-users). `degraded`
+ *  is the row's own degraded-sample count when it carries one. */
+export interface MistSleImpactedClient {
+  mac: string;
+  /** hostname/username as the row words it; null when it names only the MAC. */
+  name: string | null;
+  degraded: number | null;
+}
+
+/** One AP an SLE metric names as impacted (…/impacted-aps). */
+export interface MistSleImpactedAp {
+  mac: string;
+  name: string | null;
+  degraded: number | null;
+}
+
+/** Sections of an SLE drill-down read. */
+export type MistSleDrillSection = 'classifiers' | 'impactedClients' | 'impactedAps' | 'trend';
+
+/**
+ * The drill-down behind ONE SLE metric at ONE site — classifiers (the WHY),
+ * impacted clients/APs (the WHO/WHERE) and the summary trend (the WHEN).
+ * Read ON DEMAND when an operator opens the metric, never on the poll: the
+ * headline MistSleRow.metrics already carries the summary classifiers, and
+ * fetching four more endpoints per metric per site per cycle would hammer a
+ * quota'd plane for data nobody is looking at. Absent array = that section
+ * was not fetched; check `source.sections` before any "nothing here" line.
+ */
+export interface MistSleMetricDetail {
+  siteId: SiteId;
+  siteName: string;
+  /** The metric as Mist words it ('time-to-connect', 'coverage', …). */
+  metric: string;
+  classifiers?: MistSleClassifier[];
+  impactedClients?: MistSleImpactedClient[];
+  impactedAps?: MistSleImpactedAp[];
+  trend?: MistSleTrend;
+  source: DetailSource<MistSleDrillSection>;
 }
 
 // -- Site detail (NtSiteDetail) --
@@ -1058,6 +1801,19 @@ export interface SiteAlertRow {
   tone: Tone;
   title: string;
   meta: string;
+}
+
+/**
+ * A firing an active silence benched off a site page's "Open here" — moved,
+ * never hidden, exactly like the bench on the Alerts screen: it renders under
+ * the section's own SILENCED (N) group with the reason and expiry that hushed
+ * it, so a site reading 'clear' never lists the firing as if it still needed
+ * someone. `until` rides as the silence's ISO stamp; the renderer formats it
+ * in the reader's own clock.
+ */
+export interface SilencedSiteAlertRow extends SiteAlertRow {
+  reason: string;
+  until: string;
 }
 
 export interface SiteProfile {
@@ -1207,6 +1963,11 @@ export interface DevicePortRow {
   what: string;
   state: string;
   tone: Tone;
+  /** Structured counters for the authored CX switch rows — the same contract
+   *  as the live read (DevicePort.counters), so the demo estate shows what a
+   *  real AOS-CX counters read looks like without a switch. Absent = the
+   *  authored row has no counters to say (a PSU row is not an interface). */
+  counters?: DevicePortCounters;
 }
 
 export interface DeviceCheckRow {
@@ -1291,12 +2052,30 @@ export interface CfgHistoryRow {
   tone: Tone;
 }
 
+/** Where a DeviceCfg block came from, when it came from the config-backup
+ *  store. Absent on the authored fixtures — the presence of this block is how
+ *  the screen tells a real collected snapshot from demo furniture, so the
+ *  caption can name the collection channel instead of implying one. */
+export interface DeviceCfgProvenance {
+  /** The snapshot version the Running tab shows. */
+  version: number;
+  /** Versions on file for this device (pruning gaps included in the count's
+   *  basis — the history rows carry the real numbers). */
+  versions: number;
+  /** Collection channel, e.g. 'demo synthesis' | 'ssh show running-config'. */
+  source: string;
+  /** ISO instant the shown snapshot was collected; the browser formats it in
+   *  the reader's own clock, never the server's. */
+  takenAt: string;
+}
+
 /** Running / drift / history config block per device kind (NT_CFG). */
 export interface DeviceCfg {
   meta: string;
   running: string;
   diff: string;
   history: CfgHistoryRow[];
+  provenance?: DeviceCfgProvenance;
 }
 
 export interface DeviceClientRow {
@@ -1589,7 +2368,11 @@ export interface QueuedChangeRow {
 export interface CapabilityRow {
   plane: string;
   note: string;
-  mode: 'brokered' | 'ssh' | 'read only';
+  /** 'direct' is a reviewed direct write with no ticket/queue (Mist SSIDs,
+   *  SSE object CRUD) — distinct from 'brokered' (ticketed) and from
+   *  'read only', and still a write path for the purposes of the screen's
+   *  "which planes accept a change" filter. */
+  mode: 'brokered' | 'ssh' | 'direct' | 'read only';
   tone: Tone;
   /**
    * Whether the plane holds credentials at all. Configure collapses the
@@ -1598,6 +2381,10 @@ export interface CapabilityRow {
    * change wording without silently un-collapsing the list.
    */
   linked: boolean;
+  /** The registry plane key ('mist', 'central', …) when the row describes one
+   *  plane — the stable identity a screen matches on, since `plane` is a
+   *  display label the operator can rename. */
+  planeId?: string;
 }
 
 // -- Compliance (NtCompliance) --
@@ -1708,24 +2495,11 @@ export type ScreenSection = (typeof SCREEN_SECTIONS)[number];
 export type SectionMode = Partial<Record<ScreenSection, 'demo' | 'live'>>;
 
 // ---------------------------------------------------------------------------
-// Envelope, plane freshness and sync outcomes (README §"Design rules" 1)
+// Data sources and plane freshness (README §"Design rules" 1)
 // ---------------------------------------------------------------------------
 
 /** Which source served a payload — every /api screen envelope carries it. */
 export type DataSource = 'demo' | 'live';
-
-/** The envelope fields that ride alongside every screen payload. Screens read
- *  these to say where the rows came from and how fresh they are. */
-export interface EnvelopeMeta {
-  dataSource: DataSource;
-  /** Last successful sync for this section; null in live mode before the
-   *  first poll lands. Never stamped from an empty or failed pull. */
-  syncedAt?: string | null;
-  /** Sections whose fixtures were swapped for live rows in blend mode. */
-  blended?: string[];
-  /** Set when the backend answered but could not serve the screen. */
-  apiError?: string;
-}
 
 /** Registry plane ids — the same union the server's PLANE_IDS declares
  *  (SystemTypeKey is the connect-drawer subset; aos10 is brokered, not
@@ -1746,7 +2520,19 @@ export const PLANE_DATASET_KEYS = [
   'sse',
   'greenlake',
   'mistSle',
+  'mistLicenseUsages',
+  'mistApStats',
+  'mistMaps',
+  'mistRogues',
   'uxiSensors',
+  'networkDevices',
+  'authSources',
+  'roles',
+  'enforcementPolicies',
+  'enforcementProfiles',
+  'localUsers',
+  'services',
+  'deviceGroups',
 ] as const;
 export type PlaneDatasetKey = (typeof PLANE_DATASET_KEYS)[number];
 
@@ -1763,32 +2549,6 @@ export const PLANE_ROW_DATASET_KEYS = [
   'subscriptions',
 ] as const;
 export type PlaneRowDatasetKey = (typeof PLANE_ROW_DATASET_KEYS)[number];
-
-/**
- * What one pull actually achieved. The distinction the honesty rules need is
- * 'ok' vs 'empty': a call that succeeded and returned no rows is NOT a healthy
- * sync with data, and must not stamp a screen's freshness as current.
- *   ok              — every requested dataset came back, at least one row
- *   empty           — the plane answered, and reported nothing at all
- *   partial         — some datasets read, others could not be (404 / unparsable)
- *   failed          — the pull threw; last-good data is being served
- *   not-implemented — a stub adapter: no sync happened, nothing to stamp
- *   skipped         — not polled this cycle (in flight, unlinked, demo mode)
- */
-export type SyncOutcome = 'ok' | 'empty' | 'partial' | 'failed' | 'not-implemented' | 'skipped';
-
-/** The result of one plane pull, in the form the registry stamps and the
- *  Systems screen renders. `reported` is what actually came back; `missing`
- *  is what the plane could not read — an absent dataset is unknown, never an
- *  authoritative zero. */
-export interface PlaneSyncResult {
-  outcome: SyncOutcome;
-  at: string; // ISO — when the pull settled
-  reported: PlaneDatasetKey[];
-  missing: PlaneDatasetKey[];
-  rows: number; // total rows across the reported datasets
-  note: string | null;
-}
 
 /** Age of a plane's last successful sync, and whether it has expired.
  *  A stale plane's devices read `unverified`, never `up` (design rule 1). */
@@ -2358,6 +3118,68 @@ export interface ClientDetailLive {
   source: DetailSource<ClientDetailSection>;
 }
 
+// ---------------------------------------------------------------------------
+// Client 360 — ONE client correlated across every registry plane by MAC
+// ---------------------------------------------------------------------------
+
+/**
+ * What happened to one plane's section of a Client 360 block.
+ *
+ * A subset of DetailFetchState: 'failed' cannot occur, because the block is a
+ * PURE CORRELATION of rows the poller already pulled — no per-plane call is
+ * issued for it, so there is no call to fail. The three remaining states keep
+ * their usual meanings:
+ *   ok          — this plane holds something about this MAC (a session, an
+ *                 endpoint record, auth decisions, a site SLE).
+ *   empty       — the plane's feed was read and genuinely has nothing for
+ *                 this MAC.
+ *   not-fetched — the plane cannot be asked (not linked, no working sync
+ *                 adapter, structurally no per-client view) or has not
+ *                 reported the dataset the section reads.
+ */
+export type ClientPlaneSectionState = 'ok' | 'empty' | 'not-fetched';
+
+/** The row datasets a Client 360 section reads. */
+export type Client360Dataset = 'clients' | 'authEvents' | 'endpoints';
+
+/**
+ * One registry plane's view of ONE client — a section of the Client 360 block
+ * the Clients drawer renders as its cross-plane panel.
+ *
+ * Every registry plane gets a section, present-with-data or
+ * absent-with-an-honest-reason, so "which planes see this client?" is answered
+ * by reading one list instead of by knowing which feeds to check. The data
+ * fields are per-plane on purpose — a correlation shows what THIS plane says,
+ * in its own rows, never a merged guess:
+ *
+ *   session     — the plane's own session row for this MAC (pre-dedupe: the
+ *                 roster merges cross-plane duplicates; this block must not,
+ *                 or the very sightings it exists to show would be erased).
+ *   endpoint    — the ClearPass endpoint-repository profile for this MAC.
+ *   authEvents  — recent ClearPass decisions for this MAC, newest first,
+ *                 capped at CLIENT_360_AUTH_EVENT_LIMIT (shared/logic.ts). The
+ *                 full log is the Auth events screen's job; this is the
+ *                 summary.
+ *   siteSle     — site-level SLE when the plane scores the client's site
+ *                 (Mist). SITE-LEVEL, never a per-client score — a renderer
+ *                 must label it as the site's.
+ */
+export interface ClientPlaneSection {
+  /** Registry plane key this section answers for. */
+  plane: PlaneKey;
+  /** Display label ('CENTRAL'). */
+  label: Plane;
+  state: ClientPlaneSectionState;
+  /** One honest sentence: why the plane has nothing (absent sections), or a
+   *  qualifier about what is present (e.g. "the endpoint repository was not
+   *  read this cycle"). */
+  reason?: string;
+  session?: ClientRow;
+  endpoint?: EndpointRow;
+  authEvents?: AuthEventRow[];
+  siteSle?: MistSleRow;
+}
+
 /**
  * One AP radio (Central /aps/{serial}/radios).
  *
@@ -2424,6 +3246,29 @@ export interface DeviceWlan {
 }
 
 /**
+ * One interface's cumulative counters since boot (or the last clear), as the
+ * plane counts them — AOS-CX reports them as the interface's `statistics`
+ * attribute (documented in the AOS-CX NAE guide's monitor URIs,
+ * `…/system/interfaces/{name}?attributes=statistics.rx_packets`).
+ *
+ * The BLOCK is optional and each FIELD nullable on purpose, because they are
+ * different facts: no block = the plane did not report a statistics map for
+ * this port at all (Central's interface list carries none, so the key stays
+ * absent there); a null field = the map came back without that counter, which
+ * must render as "not reported", never as a zero.
+ */
+export interface DevicePortCounters {
+  rxBytes: number | null;
+  txBytes: number | null;
+  rxPackets: number | null;
+  txPackets: number | null;
+  rxErrors: number | null;
+  txErrors: number | null;
+  rxDropped: number | null;
+  txDropped: number | null;
+}
+
+/**
  * One switch/gateway port (Central /switches/{serial}/interfaces).
  *
  * The neighbour* fields are what makes the Clients drawer's "Wiring" row real:
@@ -2467,6 +3312,10 @@ export interface DevicePort {
   lag?: string;
   /** True when the plane marks this port as an uplink. */
   uplink?: boolean;
+  /** Cumulative rx/tx counters, only when the plane reports an interface
+   *  statistics map — the AOS-CX local collector reads it; Central's
+   *  interface list has none, so the key stays absent on its rows. */
+  counters?: DevicePortCounters;
 }
 
 /** Which family of per-object subresources a device detail read should ask

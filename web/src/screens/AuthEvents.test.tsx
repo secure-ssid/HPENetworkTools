@@ -14,8 +14,8 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import AuthEvents from './AuthEvents';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -81,7 +81,7 @@ function liveData(over: Partial<AuthEventsData> = {}): AuthEventsData {
 
 function renderAuthEvents() {
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <ToastProvider>
         <SettingsProvider>
           <AuthEvents />
@@ -168,7 +168,7 @@ describe('AuthEvents', () => {
   it('(e) a ?plane= deep-link with no rows stays visible and clearable in the Select', async () => {
     mockGetAuthEvents.mockResolvedValue(liveData({ events: [] }));
     render(
-      <MemoryRouter initialEntries={['/auth-events?plane=clearpass']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/auth-events?plane=clearpass']}>
         <ToastProvider>
           <SettingsProvider>
             <AuthEvents />
@@ -224,5 +224,124 @@ describe('AuthEvents', () => {
     mockGetAuthEvents.mockResolvedValue(liveData({ failReasons: reasons, dataSource: 'demo' }));
     renderAuthEvents();
     expect(await screen.findByText('LAST 24 HOURS')).toBeTruthy();
+  });
+});
+
+/* The TimeRangeControl narrows the feed client-side and lives in the URL as
+ * ?range=, so a narrowed view is shareable. It can only narrow what the feed
+ * holds — a live feed is the current poller snapshot — so when a range
+ * reaches further back than the snapshot, or rows carry no timestamp at all,
+ * the filter row says so instead of letting the range label overclaim. */
+describe('AuthEvents time range', () => {
+  const RECENT = () => new Date(Date.now() - 5 * 60_000).toISOString(); // 5m ago
+  const OLD = () => new Date(Date.now() - 2 * 60 * 60_000).toISOString(); // 2h ago
+
+  function twoRows(): AuthEventRow[] {
+    return [
+      { ...EVENT, who: 'recent.user', at: RECENT() },
+      { ...EVENT, who: 'old.user', at: OLD() },
+    ];
+  }
+
+  /** Exposes the query string so the range's URL sync is asserted, not assumed. */
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(entry: string) {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <AuthEvents />
+            <SearchProbe />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('a ?range= deep link lands pre-selected and narrows the log to the window', async () => {
+    mockGetAuthEvents.mockResolvedValue(liveData({ events: twoRows() }));
+    renderAt('/auth-events?range=15m');
+
+    expect(await screen.findByText('1 of 2 shown')).toBeTruthy();
+    expect(screen.getByText('recent.user')).toBeTruthy();
+    expect(screen.queryByText('old.user')).toBeNull();
+    expect(screen.getByRole('tab', { name: '15m' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('picking a range writes ?range= and All drops the param again', async () => {
+    mockGetAuthEvents.mockResolvedValue(liveData({ events: twoRows() }));
+    renderAt('/auth-events');
+
+    fireEvent.click(await screen.findByRole('tab', { name: '1h' }));
+    expect(screen.getByTestId('search').textContent).toBe('?range=1h');
+    // The 2h-old row falls outside the picked hour.
+    expect(await screen.findByText('1 of 2 shown')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'All' }));
+    expect(screen.getByTestId('search').textContent).toBe('');
+    expect(await screen.findByText('2 of 2 shown')).toBeTruthy();
+  });
+
+  it('says so when the range reaches further back than the poller snapshot holds', async () => {
+    mockGetAuthEvents.mockResolvedValue(liveData({ events: twoRows() }));
+    renderAt('/auth-events?range=24h');
+
+    // Both rows are inside 24h — nothing is hidden — but the feed itself is
+    // minutes old, so "24h" must not read as a day of history.
+    expect(await screen.findByText('2 of 2 shown')).toBeTruthy();
+    expect(
+      screen.getByText(/current poller snapshot — a 24h range reaches further back than the snapshot holds/),
+    ).toBeTruthy();
+  });
+
+  it('keeps undated rows under any range and counts them in the caveat', async () => {
+    mockGetAuthEvents.mockResolvedValue(
+      liveData({ events: [{ ...EVENT, who: 'undated.row' }, { ...EVENT, who: 'recent.user', at: RECENT() }] }),
+    );
+    renderAt('/auth-events?range=15m');
+
+    expect(await screen.findByText('2 of 2 shown')).toBeTruthy();
+    expect(screen.getByText('undated.row')).toBeTruthy();
+    expect(
+      screen.getByText(/1 row carries no timestamp and stays shown whatever the range\./),
+    ).toBeTruthy();
+  });
+
+  it('demo fixtures carry no timestamp, so a range keeps them and explains — without a snapshot claim', async () => {
+    mockGetAuthEvents.mockResolvedValue(liveData({ dataSource: 'demo', events: [EVENT] }));
+    renderAt('/auth-events?range=15m');
+
+    expect(await screen.findByText('1 of 1 shown · 1,904 events indexed today')).toBeTruthy();
+    expect(
+      screen.getByText(/1 row carries no timestamp and stays shown whatever the range\./),
+    ).toBeTruthy();
+    // The snapshot caveat belongs to a live feed; demo never borrows it.
+    expect(screen.queryByText(/current poller snapshot — a/)).toBeNull();
+  });
+
+  it('a window no event falls in reads as the filter, never as a missing feed', async () => {
+    mockGetAuthEvents.mockResolvedValue(liveData({ events: [{ ...EVENT, who: 'old.user', at: OLD() }] }));
+    renderAt('/auth-events?range=15m');
+
+    expect(await screen.findByText('Nothing matches that filter')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Loosen the result, service or plane filter — or widen the time range — to see more of the log.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('No auth events from any policy plane')).toBeNull();
+  });
+
+  it('an unrecognised range param reads as all — a typo cannot hide the log', async () => {
+    mockGetAuthEvents.mockResolvedValue(liveData({ events: twoRows() }));
+    renderAt('/auth-events?range=24');
+
+    expect(await screen.findByText('2 of 2 shown')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'All' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByText(/reaches further back|no timestamp/)).toBeNull();
   });
 });

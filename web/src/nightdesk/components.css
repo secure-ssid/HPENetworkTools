@@ -324,6 +324,16 @@
   vertical-align: middle;
 }
 
+/* Sticky column headers keep a long table's column context on scroll. The
+   surface token matches the soft Card a table sits on; 10 lifts the header
+   above its rows but keeps it under the sticky topbar (z-index 20). */
+.nd-table__th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--nd-bg-surface);
+}
+
 .nd-table--compact .nd-table__th {
   padding: 4px 12px 6px;
 }
@@ -366,6 +376,321 @@
   outline: 2px solid var(--nd-accent);
   outline-offset: -2px;
   background: var(--nd-bg-surface);
+}
+
+/* ---------- data table superpowers ---------- */
+
+/* Threshold-tint cells: a ~12%-alpha tone wash, straight from the -subtle
+   token family. Mechanics only — a column opts in via its definition. */
+.nd-table__td--tint-success {
+  background: var(--nd-success-subtle);
+}
+
+.nd-table__td--tint-warning {
+  background: var(--nd-warning-subtle);
+}
+
+.nd-table__td--tint-danger {
+  background: var(--nd-danger-subtle);
+}
+
+.nd-table__td--tint-info {
+  background: var(--nd-info-subtle);
+}
+
+.nd-table__td--tint-neutral {
+  background: var(--nd-neutral-subtle);
+}
+
+.nd-table__td--tint-accent {
+  background: var(--nd-accent-subtle);
+}
+
+/* The focused-row / selected-row states of a keyboard grid. Focus reuses the
+   interactive row's outline above; selection is the accent edge-bar from the
+   hover state, held on, over a faint glow so it reads as a state, not a
+   pointer position. */
+.nd-table__tr--selected {
+  background: var(--nd-glow);
+  box-shadow: inset 2px 0 0 var(--nd-accent);
+}
+
+/* Edge-drag resize handle. The th is already positioned (sticky), so the
+   handle parks on its right edge with an invisible grip wide enough to hit. */
+.nd-table__resize {
+  position: absolute;
+  top: 0;
+  /* Inside the header cell: a -5px overhang past the last column counts as
+     scrollable overflow in .nd-table-scroll and paints a phantom horizontal
+     scrollbar even when the table fits. */
+  right: 0;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 11;
+}
+
+.nd-table__resize::after {
+  content: '';
+  position: absolute;
+  top: 20%;
+  bottom: 20%;
+  right: 4px;
+  width: 2px;
+  border-radius: var(--nd-radius-full);
+  background: transparent;
+  transition: background var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-table__resize:hover::after,
+.nd-table__resize:active::after {
+  background: var(--nd-accent);
+}
+
+/* Header sort control: an unstyled button carrying the header's own
+   typography; the mark stays muted until the column drives the order. */
+.nd-table__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.nd-table__sort:hover {
+  color: var(--nd-text-primary);
+}
+
+.nd-table__sort-mark {
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-faint, var(--nd-text-muted));
+  opacity: 0.55;
+}
+
+.nd-table__sort-mark--active {
+  color: var(--nd-accent);
+  opacity: 1;
+}
+
+/* ---------- view options (column manager popover) ---------- */
+
+.nd-viewopts {
+  position: relative;
+  display: inline-flex;
+}
+
+.nd-viewopts__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: var(--nd-z-dropdown);
+  min-width: 224px;
+  padding: 10px;
+  background: var(--nd-bg-raised);
+  border: 1px solid var(--nd-border-default);
+  border-radius: var(--nd-radius-lg);
+  box-shadow: var(--nd-shadow-overlay);
+  animation: nd-fade var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-viewopts__heading {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  padding: 0 6px 6px;
+}
+
+.nd-viewopts__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nd-viewopts__item {
+  display: flex;
+  align-items: center;
+  gap: var(--nd-space-2);
+  padding: 2px 6px;
+  border-radius: var(--nd-radius-md);
+}
+
+.nd-viewopts__item:hover {
+  background: var(--nd-bg-surface);
+}
+
+.nd-viewopts__check {
+  flex: 1;
+  min-width: 0;
+  color: var(--nd-text-primary);
+}
+
+.nd-viewopts__moves {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.nd-viewopts__move {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--nd-border-default);
+  border-radius: var(--nd-radius-sm);
+  background: none;
+  color: var(--nd-text-secondary);
+  font-size: var(--nd-text-11);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nd-viewopts__move:hover:not(:disabled),
+.nd-viewopts__move:focus-visible {
+  color: var(--nd-text-primary);
+  border-color: var(--nd-border-strong);
+}
+
+.nd-viewopts__move:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.nd-viewopts__reset {
+  margin-top: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid var(--nd-border-default);
+  border-radius: var(--nd-radius-md);
+  background: none;
+  color: var(--nd-accent-text);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  cursor: pointer;
+}
+
+.nd-viewopts__reset:hover,
+.nd-viewopts__reset:focus-visible {
+  border-color: var(--nd-accent);
+}
+
+/* ---------- keyboard shortcuts overlay ---------- */
+
+.nd-shortcuts__trigger {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--nd-border-default);
+  border-radius: var(--nd-radius-full);
+  background: none;
+  color: var(--nd-text-muted);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  cursor: pointer;
+}
+
+.nd-shortcuts__trigger:hover,
+.nd-shortcuts__trigger:focus-visible {
+  color: var(--nd-text-primary);
+  border-color: var(--nd-border-strong);
+}
+
+.nd-shortcuts-root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--nd-z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nd-shortcuts-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--nd-overlay-scrim);
+  animation: nd-fade var(--nd-duration-base) var(--nd-ease);
+}
+
+.nd-shortcuts {
+  position: relative;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  padding: 20px 24px 24px;
+  background: var(--nd-bg-surface);
+  border: 1px solid var(--nd-border-default);
+  border-radius: var(--nd-radius-xl);
+  box-shadow: var(--nd-shadow-overlay);
+}
+
+.nd-shortcuts__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.nd-shortcuts__title {
+  font-family: var(--nd-font-display);
+  font-size: var(--nd-text-16);
+  color: var(--nd-text-primary);
+  line-height: 1.25;
+}
+
+.nd-shortcuts__close {
+  border: 0;
+  background: none;
+  color: var(--nd-text-secondary);
+  cursor: pointer;
+  font-size: 24px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.nd-shortcuts__close:hover,
+.nd-shortcuts__close:focus-visible {
+  color: var(--nd-text-primary);
+}
+
+.nd-shortcuts__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.nd-shortcuts__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-secondary);
+}
+
+.nd-shortcuts__item .nd-kbd {
+  min-width: 72px;
+  height: auto;
+  padding: 3px 8px;
+  text-align: center;
+  flex: 0 0 auto;
 }
 
 /* ---------- stat ---------- */

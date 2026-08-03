@@ -15,13 +15,13 @@
  * See "THREE STATES, PRESERVED ACROSS THIS BOUNDARY" below.
  */
 
-import { type WebhookUnknownOutcomeCode } from '@hpe/shared';
+import { type DataSource, type WebhookUnknownOutcomeCode } from '@hpe/shared';
 
 // ---------------------------------------------------------------------------
 // Response envelopes (per-screen view models + dataSource)
 // ---------------------------------------------------------------------------
 
-export type DataSource = 'live' | 'demo';
+export type { DataSource };
 
 export interface ScreenEnvelope {
   dataSource: DataSource;
@@ -82,8 +82,16 @@ export function dropUnreadableBlocks<T extends object>(data: T, ...keys: DetailB
   return copy as T;
 }
 
-/** The two keys a route attaches a detail payload under. */
-export type DetailBlockKey = 'detail' | 'topology';
+/** The keys a route attaches a detail payload under. */
+export type DetailBlockKey =
+  | 'detail'
+  | 'topology'
+  | 'sleDetail'
+  | 'applications'
+  | 'hardwareTrends'
+  | 'interfaceTrends'
+  | 'apTrends'
+  | 'serviceDetail';
 
 // ---------------------------------------------------------------------------
 // Fetch helpers

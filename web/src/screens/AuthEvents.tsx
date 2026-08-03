@@ -7,6 +7,13 @@
  * "Why authentications failed" (Progress bars, max=60) and "Policy services".
  * The search field honours ?q=<text> so the client drawer's "Auth history"
  * action lands pre-filtered.
+ * The filter row also carries a TimeRangeControl (15m–7d / All) kept in the
+ * URL as ?range= so a narrowed view is shareable. The range can only narrow
+ * what the feed already holds — a live feed is the current poller snapshot,
+ * minutes of traffic rather than days — so when the picked range reaches
+ * further back than the snapshot does, the row says so (the same voice the
+ * breakdown's CURRENT POLLER SNAPSHOT caveat uses), and rows that carry no
+ * timestamp stay shown under any range, counted in the same caveat.
  * Data: getAuthEvents() — live /api/auth-events when the server is up, fixtures otherwise.
  */
 
@@ -28,12 +35,14 @@ import {
 import { getAuthEvents } from '../api/client';
 import type { AuthEventsData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
-import { planeFilterForParam } from '../app/nav';
+import { deviceDetailPath, planeFilterForParam } from '../app/nav';
 import { hhmmLocal as hhmm, hhmmssLocal } from '@hpe/shared';
 import type { AuthEventRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
+import { TIME_RANGE_MS, TimeRangeControl, timeRangeForParam, withinTimeRange } from '../components/TimeRangeControl';
+import type { TimeRange } from '../components/TimeRangeControl';
 
 const RESULT_OPTIONS = [
   { value: 'all', label: 'All results' },
@@ -48,33 +57,76 @@ function uniq<K extends keyof AuthEventRow>(events: AuthEventRow[], k: K): strin
 
 export default function AuthEvents() {
   const navigate = useNavigate();
-  const { density, showPlatformTags } = useSettings();
+  const { density, showPlatformTags, pollIntervalSec } = useSettings();
   const { toast } = useToast();
   const [data, setData] = useState<AuthEventsData | null>(null);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [q, setQ] = useState(() => searchParams.get('q') ?? '');
   const [result, setResult] = useState('all');
   const [service, setService] = useState('all');
   const [plane, setPlane] = useState(() => planeFilterForParam(searchParams.get('plane')));
+  /* The time range lives in the URL (?range=) rather than in state — the same
+     rule Devices gives ?names=: a filter that narrows the log this hard must
+     not drift from the address that explains it, and the view stays shareable.
+     Read straight off the params; 'all' is the absent param, never written. */
+  const timeRange = timeRangeForParam(searchParams.get('range'));
+  const setTimeRange = (range: TimeRange) => {
+    const next = new URLSearchParams(searchParams);
+    if (range === 'all') next.delete('range');
+    else next.set('range', range);
+    setSearchParams(next, { replace: true });
+  };
+  /* The range cutoff is measured against now, held in state so an arbitrary
+     re-render cannot move it: a row sitting exactly on the cutoff must not
+     flicker between the table and the caveats as other filters change. It
+     advances only when a poll lands fresh rows — the cutoff and the feed then
+     describe the same moment. (A bare Date.now() in render trips the
+     compiler's purity rule; a hook this late would trip rules-of-hooks, so it
+     lives with the other hooks.) */
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
+  /* A NOC tab must not sit on a mount-time snapshot under a SYNCED stamp:
+     poll on the settings cadence, the same pattern Overview.tsx runs. One
+     fetch at a time; fixture reads poll harmlessly. */
   useEffect(() => {
     let live = true;
-    void getAuthEvents().then((d) => {
-      if (live) setData(d);
-    });
+    let inFlight = false;
+    const pull = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void getAuthEvents()
+        .then((d) => {
+          if (live) {
+            setData(d);
+            setNowMs(Date.now());
+          }
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    pull();
+    const every = Math.max(pollIntervalSec, 10) * 1000;
+    const id = setInterval(pull, every);
     return () => {
       live = false;
+      clearInterval(id);
     };
-  }, []);
+  }, [pollIntervalSec]);
 
   /* Deep links: ?q=<mac> (client drawer's Auth history), ?plane=<registryId>
-     (Systems plane drawer). */
-  useEffect(() => {
+     (Systems plane drawer). Applied when the URL changes while the screen is
+     mounted — state adjusted during render, the React-docs pattern for
+     deriving from a changed prop, rather than an effect that commits the
+     stale filter first. */
+  const [prevParams, setPrevParams] = useState(searchParams);
+  if (prevParams !== searchParams) {
+    setPrevParams(searchParams);
     const qp = searchParams.get('q');
     if (qp !== null) setQ(qp);
     const pp = searchParams.get('plane');
     if (pp !== null) setPlane(planeFilterForParam(pp));
-  }, [searchParams]);
+  }
 
   if (!data) {
     return (
@@ -92,6 +144,7 @@ export default function AuthEvents() {
       (result === 'all' || e.result === result) &&
       (service === 'all' || e.service === service) &&
       (plane === 'all' || e.plane === plane) &&
+      withinTimeRange(e.at, timeRange, nowMs) &&
       (!ql || (e.who + e.mac + e.reason + e.nas + e.role).toLowerCase().includes(ql)),
   );
 
@@ -113,6 +166,38 @@ export default function AuthEvents() {
    * pulled, and whether they are fixtures at all (README design rule 1). */
   const sectionLive = data.dataSource === 'live' || (data.blended?.includes('authEvents') ?? false);
   const synced = sectionLive ? `SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : '—'}` : 'SYNCED 09:41';
+
+  /* What the active range must say for itself, in the filter row:
+   *  - a live feed is the current poller snapshot (minutes of traffic, not a
+   *    day — the breakdown below says the same). When the picked range
+   *    reaches further back than even the feed's oldest row, the filter is
+   *    not "showing 24h", it is narrowing a shorter window, and the row has
+   *    to say so rather than let the range label overclaim.
+   *  - a row with no `at` cannot be placed in any window, so it stays shown
+   *    under every range — and is counted, so its presence under a narrowed
+   *    view is explained rather than mistaken for a filter that did nothing.
+   * Both are measured over the whole feed, not the filtered rows: they
+   * describe what the range CAN see here, not what the other filters left. */
+  const cutoffMs = timeRange === 'all' ? null : nowMs - TIME_RANGE_MS[timeRange];
+  const rangeCaveats: string[] = [];
+  if (cutoffMs !== null) {
+    const datedMs = events
+      .map((e) => (e.at ? new Date(e.at).getTime() : Number.NaN))
+      .filter((ms) => Number.isFinite(ms));
+    if (sectionLive && datedMs.length > 0 && Math.min(...datedMs) > cutoffMs) {
+      rangeCaveats.push(
+        `The feed is the current poller snapshot — a ${timeRange} range reaches further back than the snapshot holds.`,
+      );
+    }
+    const undated = events.length - datedMs.length;
+    if (undated > 0) {
+      rangeCaveats.push(
+        undated === 1
+          ? '1 row carries no timestamp and stays shown whatever the range.'
+          : `${undated} rows carry no timestamp and stay shown whatever the range.`,
+      );
+    }
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -159,6 +244,7 @@ export default function AuthEvents() {
             placeholder="user, MAC, reason, NAS…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            aria-label="Filter auth events"
           />
         </div>
         <div style={{ width: 150 }}>
@@ -188,6 +274,7 @@ export default function AuthEvents() {
             aria-label="Plane"
           />
         </div>
+        <TimeRangeControl value={timeRange} onValueChange={setTimeRange} />
         <span
           style={{
             marginLeft: 'auto',
@@ -200,6 +287,19 @@ export default function AuthEvents() {
               a live/blended feed shows only what it actually holds. */}
           {rows.length} of {events.length} shown{sectionLive ? '' : ' · 1,904 events indexed today'}
         </span>
+        {rangeCaveats.length > 0 ? (
+          <span
+            style={{
+              flexBasis: '100%',
+              fontFamily: 'var(--nd-font-mono)',
+              fontSize: 'var(--nd-text-10)',
+              color: 'var(--nd-text-muted)',
+              lineHeight: 1.6,
+            }}
+          >
+            {rangeCaveats.join(' ')}
+          </span>
+        ) : null}
       </div>
 
       <Table density={density}>
@@ -294,7 +394,7 @@ export default function AuthEvents() {
               <Table.Cell>
                 <button
                   type="button"
-                  onClick={() => navigate(`/devices/${encodeURIComponent(e.nas)}`)}
+                  onClick={() => navigate(deviceDetailPath({ name: e.nas, plane: e.plane }))}
                   style={{
                     background: 'none',
                     border: 'none',
@@ -338,7 +438,11 @@ export default function AuthEvents() {
         ) : (
           <EmptyState
             title="Nothing matches that filter"
-            description="Loosen the result, service or plane filter to see more of the log."
+            description={
+              timeRange === 'all'
+                ? 'Loosen the result, service or plane filter to see more of the log.'
+                : 'Loosen the result, service or plane filter — or widen the time range — to see more of the log.'
+            }
           />
         )
       ) : null}

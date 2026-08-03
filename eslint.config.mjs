@@ -26,6 +26,9 @@ export default tseslint.config(
       // the visual reference the screens were ported from and run in a browser
       // with their own globals.
       'design/**',
+      // 4 MB of vendor API typings generated locally (gitignored, imported by
+      // nothing); the generator's output trips no-irregular-whitespace.
+      'shared/vendor/**',
       'eslint.config.mjs',
     ],
   },

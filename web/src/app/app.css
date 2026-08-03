@@ -702,6 +702,29 @@
   -webkit-box-orient: vertical;
 }
 
+/* A count tile that leads somewhere (Overview → the screen listing what it
+   counts). The anchor is only the click target: no underline, no colour of
+   its own, and the same hover/focus affordance an interactive table row gets
+   (.nd-table__tr--interactive) so it reads as openable without restyling the
+   stat itself. */
+.nt-stat-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  transition: background var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-stat-link:hover {
+  background: var(--nd-bg-surface);
+}
+
+.nt-stat-link:focus-visible {
+  outline: 2px solid var(--nd-accent);
+  outline-offset: -2px;
+  background: var(--nd-bg-surface);
+}
+
 .nt-configure {
   min-width: 0;
   max-width: 100%;

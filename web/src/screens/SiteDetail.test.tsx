@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 import SiteDetail from './SiteDetail';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
-import { getSettings, getSiteDetail } from '../api/client';
+import { getSettings, getSiteApplications, getSiteDetail, getSleMetricDetail } from '../api/client';
 import type { SiteDetailData } from '../api/client';
-import { SITE_PROFILES } from '@hpe/shared';
+import { hhmmLocal, DPI_BYTES_ARE_ESTIMATES, MIST_SITE_MAPS, MIST_SLE_DRILLDOWN, SITE_APPLICATIONS_DEMO, SITE_PROFILES, SITE_SLE, SITES, deriveSiteProfile } from '@hpe/shared';
 import type { SiteRow, SiteTopologyLive, TopologyDeviceNode } from '@hpe/shared';
 
 if (!window.matchMedia) {
@@ -28,11 +28,15 @@ vi.mock('../api/client', async (importOriginal) => {
     ...actual,
     getSettings: vi.fn(),
     getSiteDetail: vi.fn(),
+    getSleMetricDetail: vi.fn(),
+    getSiteApplications: vi.fn(),
   };
 });
 
 const mockGetSettings = vi.mocked(getSettings);
 const mockGetSiteDetail = vi.mocked(getSiteDetail);
+const mockGetSleMetricDetail = vi.mocked(getSleMetricDetail);
+const mockGetSiteApplications = vi.mocked(getSiteApplications);
 
 const LIVE_SITE: SiteRow = {
   id: 'multiple',
@@ -113,6 +117,11 @@ beforeEach(() => {
     profile: null,
     dataSource: 'live',
   });
+  // No test opens a drill drawer unless it says so — a safe straight answer.
+  mockGetSleMetricDetail.mockResolvedValue({ kind: 'not-reported' });
+  // The application-visibility section reads on mount for a Central site; a
+  // test that does not exercise it gets the straight "not reported" answer.
+  mockGetSiteApplications.mockResolvedValue({ kind: 'not-reported' });
 });
 
 afterEach(() => {
@@ -128,7 +137,7 @@ function DeviceStub() {
 
 function renderDetail(path = '/sites/SecureSSID') {
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
       <ToastProvider>
         <SettingsProvider>
           <Routes>
@@ -385,6 +394,69 @@ describe('SiteDetail live summary', () => {
     expect(screen.queryByText('no device claimed this site in the last pull')).toBeNull();
   });
 
+  it('benches silenced firings under SILENCED (N) with their reason, out of the active list', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: { ...LIVE_SITE, alerts: '1 open', alertTone: 'warning' },
+      profile: null,
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:41:00.000Z',
+      alerts: [
+        { sev: 'P2', tone: 'warning', title: 'Radio down on ap-live-1', meta: 'central · 12m' },
+      ],
+      silencedAlerts: [
+        {
+          sev: 'P1',
+          tone: 'danger',
+          title: 'AP flapping',
+          meta: 'central · 5m',
+          reason: 'RMA in flight',
+          until: '2026-03-04T15:41:00.000Z',
+        },
+      ],
+    } as SiteDetailData);
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Open here')).toBeTruthy());
+    // The active row stands; the hushed firing is not in it…
+    expect(screen.getByText('Radio down on ap-live-1')).toBeTruthy();
+    expect(screen.queryByText('nothing open here')).toBeNull();
+    // …it is moved to the bench WITH the reason and expiry — never hidden,
+    // and never listed as if it still needed someone (exactly once, there).
+    expect(screen.getByText('SILENCED (1)')).toBeTruthy();
+    expect(screen.getAllByText('AP flapping')).toHaveLength(1);
+    expect(screen.getByText(/RMA in flight · until /)).toBeTruthy();
+  });
+
+  it('says hushed, not quiet, when every firing at the site is silenced', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: { ...LIVE_SITE, alerts: 'clear', alertTone: 'success' },
+      profile: null,
+      dataSource: 'live',
+      alerts: [],
+      silencedAlerts: [
+        {
+          sev: 'P2',
+          tone: 'warning',
+          title: 'AP flapping',
+          meta: 'central · 5m',
+          reason: 'known controller bug',
+          until: '2026-03-04T15:41:00.000Z',
+        },
+      ],
+    } as SiteDetailData);
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Open here')).toBeTruthy());
+    // A 'clear' badge over "nothing open here" would call the site quiet; the
+    // note names the hush instead, and the bench says what is still firing.
+    expect(screen.getByText('hushed, not quiet — everything firing here is silenced below')).toBeTruthy();
+    expect(screen.queryByText('nothing open here')).toBeNull();
+    expect(screen.getByText('SILENCED (1)')).toBeTruthy();
+    expect(screen.getByText(/known controller bug · until /)).toBeTruthy();
+  });
+
   it('states the source and freshness, and says so when the live sections are empty', async () => {
     renderDetail();
 
@@ -581,5 +653,211 @@ describe('SiteDetail live summary', () => {
     await waitFor(() => expect(screen.getByText('Site not found')).toBeTruthy());
     expect(screen.queryByText('Devices at this site')).toBeNull();
     expect(screen.queryByText('sw-core-a')).toBeNull();
+  });
+});
+
+describe('SiteDetail polling', () => {
+  /* The header stamps LIVE · SYNCED hh:mm, so the screen must re-read on the
+     settings cadence — a NOC tab cannot sit on a mount-time snapshot under a
+     freshness claim (design rule 1). */
+  it('re-reads the detail on the settings cadence', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderDetail();
+      await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+      expect(mockGetSiteDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(mockGetSiteDetail).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(mockGetSiteDetail).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never stacks a second read behind a slow one', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let resolveSlow: ((d: SiteDetailData) => void) | null = null;
+      mockGetSiteDetail.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSlow = resolve;
+          }),
+      );
+      renderDetail();
+      // The mount read is still out when two interval ticks pass: neither
+      // may queue another read behind it.
+      await act(async () => {
+        vi.advanceTimersByTime(120_000);
+      });
+      expect(mockGetSiteDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveSlow?.({ site: LIVE_SITE, profile: null, dataSource: 'live' });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(mockGetSiteDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('moves the LIVE · SYNCED stamp when a poll returns a newer sync', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockGetSiteDetail
+        .mockResolvedValueOnce({
+          site: LIVE_SITE,
+          profile: null,
+          dataSource: 'live',
+          syncedAt: '2026-03-04T09:41:00.000Z',
+        } as SiteDetailData)
+        .mockResolvedValue({
+          site: LIVE_SITE,
+          profile: null,
+          dataSource: 'live',
+          syncedAt: '2026-03-04T10:05:00.000Z',
+        } as SiteDetailData);
+      renderDetail();
+      await waitFor(() =>
+        expect(
+          screen.getByText(`LIVE · SYNCED ${hhmmLocal('2026-03-04T09:41:00.000Z')}`),
+        ).toBeTruthy(),
+      );
+
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(
+        screen.getByText(`LIVE · SYNCED ${hhmmLocal('2026-03-04T10:05:00.000Z')}`),
+      ).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('SiteDetail Mist sections', () => {
+  it('renders the floor plan and SLE sections from the payload, and drills into a metric', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: SITES.find((s) => s.id === 'campus-02') ?? null,
+      profile: deriveSiteProfile('campus-02'),
+      dataSource: 'demo',
+      maps: MIST_SITE_MAPS,
+      sle: SITE_SLE['campus-02'] ?? null,
+      mapClients: [
+        {
+          name: 's.mehta',
+          mac: 'de:ad:0b:14:65:22',
+          x: 414,
+          y: 296,
+          mapId: 'map-cam02-3f',
+          health: 'sticky client',
+          healthTone: 'warning',
+        },
+      ],
+    } as SiteDetailData);
+    mockGetSleMetricDetail.mockResolvedValue({
+      kind: 'ok',
+      detail: MIST_SLE_DRILLDOWN['campus-02|coverage']!,
+    });
+
+    renderDetail('/sites/campus-02');
+
+    // The floor plan draws the demo map, both APs and the located client.
+    await waitFor(() => expect(screen.getByText('Floor plan')).toBeTruthy());
+    expect(screen.getByText('Tower B · 3rd floor — east labs')).toBeTruthy();
+    // 'ap-3f-12' is also a row in the device table — the floor-plan hover
+    // label is the match living in an SVG <title>.
+    expect(screen.getAllByText('ap-3f-12').some((el) => el.tagName === 'title')).toBe(true);
+    expect(screen.getByText(/s\.mehta · de:ad:0b:14:65:22/).tagName).toBe('title');
+
+    // The SLE section's rows come from the polled row; clicking drills.
+    expect(screen.getByText('OVERALL 96% · MIST SLE')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /coverage/i }));
+    await waitFor(() => expect(screen.getByText('Signal strength')).toBeTruthy());
+    expect(mockGetSleMetricDetail).toHaveBeenCalledWith('campus-02', 'coverage');
+    expect(screen.getByText('s.mehta')).toBeTruthy();
+  });
+
+  it('a site with no map and no SLE row says so instead of fabricating either', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: SITES.find((s) => s.id === 'warehouse-dc1') ?? null,
+      profile: deriveSiteProfile('warehouse-dc1'),
+      dataSource: 'demo',
+      maps: [],
+      sle: null,
+      mapClients: [],
+    } as unknown as SiteDetailData);
+
+    renderDetail('/sites/warehouse-dc1');
+
+    await waitFor(() => expect(screen.getByText('Floor plan')).toBeTruthy());
+    // warehouse-dc1 carries no MIST badge, so both sections name the plane
+    // gap rather than pointing at the Mist dashboard.
+    expect(screen.getByText('No linked plane publishes a floor plan for this site.')).toBeTruthy();
+    expect(screen.getByText('No linked plane publishes SLE scores for this site.')).toBeTruthy();
+  });
+});
+
+describe('SiteDetail application visibility', () => {
+  it('the authored branch fetches the section on mount and renders the DPI table', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: SITES.find((s) => s.id === 'campus-01') ?? null,
+      profile: SITE_PROFILES['campus-01'] ?? deriveSiteProfile('campus-01'),
+      dataSource: 'demo',
+      maps: [],
+      sle: null,
+      mapClients: [],
+    } as unknown as SiteDetailData);
+    mockGetSiteApplications.mockResolvedValue({ kind: 'ok', applications: SITE_APPLICATIONS_DEMO['campus-01']! });
+
+    renderDetail('/sites/campus-01');
+
+    await waitFor(() => expect(screen.getByText('Application visibility')).toBeTruthy());
+    expect(mockGetSiteApplications).toHaveBeenCalledWith('campus-01');
+    // The risk strip, the watchlist's unclassified queue and the caveat.
+    expect(screen.getByText('2 suspicious')).toBeTruthy();
+    expect(screen.getByText(/Aruba doesn't know what this is and doesn't like it/)).toBeTruthy();
+    expect(screen.getByText(DPI_BYTES_ARE_ESTIMATES)).toBeTruthy();
+  });
+
+  it('the live branch reads the same section for a Central-claimed site row', async () => {
+    // The default beforeEach payload: the live 'multiple'/SecureSSID site
+    // with its CENTRAL badge and a null profile.
+    mockGetSiteApplications.mockResolvedValue({ kind: 'ok', applications: SITE_APPLICATIONS_DEMO['campus-01']! });
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('Application visibility')).toBeTruthy());
+    expect(mockGetSiteApplications).toHaveBeenCalledWith('multiple');
+    // A flagged app appears in both the watchlist and the top talkers.
+    expect(screen.getAllByText('unknown-tcp-4410')).toHaveLength(2);
+  });
+
+  it('a site no Central badge claims says so and never fetches', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: SITES.find((s) => s.id === 'warehouse-dc1') ?? null,
+      profile: deriveSiteProfile('warehouse-dc1'),
+      dataSource: 'demo',
+      maps: [],
+      sle: null,
+      mapClients: [],
+    } as unknown as SiteDetailData);
+
+    renderDetail('/sites/warehouse-dc1');
+
+    await waitFor(() => expect(screen.getByText('Application visibility')).toBeTruthy());
+    expect(screen.getByText('No linked plane publishes DPI application data for this site.')).toBeTruthy();
+    expect(mockGetSiteApplications).not.toHaveBeenCalled();
   });
 });

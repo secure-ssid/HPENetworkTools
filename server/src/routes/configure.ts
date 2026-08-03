@@ -104,17 +104,17 @@ export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirect
   });
 
   /**
-   * Live scope choices (sites, site collections, AP device groups, APs) and
-   * live security dependencies (roles, authentication server groups, captive-portal
-   * profiles) for the SSID editor. Never 4xx on its own — an unlinked/Classic
+   * Live scope choices and live security dependencies for the SSID editor.
+   * `?plane=mist` selects the Mist site-scoped catalog; absent is Central.
+   * Never 4xx on its own — an unlinked/Classic
    * plane answers 200 with every section named in `unavailable` so the
    * screen can disable Apply for what it cannot offer, the same honesty rule
    * every other "not reported by this plane" surface follows.
    */
   router.get(
     '/configure/ssids/catalog',
-    h(async (_req, res) => {
-      res.json(await ssidService.catalog());
+    h(async (req, res) => {
+      res.json(await ssidService.catalog(req.query.plane));
     }),
   );
 

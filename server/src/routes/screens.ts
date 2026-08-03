@@ -18,12 +18,22 @@
 import { Router, type Response } from 'express';
 import {
   ALERTS,
+  AP_TREND_METRICS,
+  AP_TRENDS_DEMO,
   AUTH_EVENTS,
   AUTH_FAIL_REASONS,
   AUTH_STATS,
   BASELINE_PROGRESS,
   CAPABILITY_MATRIX,
+  CLEARPASS_AUTH_SOURCES,
   CLEARPASS_ENDPOINTS,
+  CLEARPASS_ENFORCEMENT_POLICIES,
+  CLEARPASS_ENFORCEMENT_PROFILES,
+  CLEARPASS_LOCAL_USERS,
+  CLEARPASS_NETWORK_DEVICES,
+  CLEARPASS_ROLES,
+  CLEARPASS_SERVICES,
+  CLEARPASS_SERVICE_DETAILS,
   CLIENT_STATS,
   CLIENTS,
   COMPLIANCE_DIFF,
@@ -37,27 +47,42 @@ import {
   LANE_META,
   LICENSE_STATS,
   MAX_NOTE_CHARS,
-  OVERVIEW_ALERTS,
+  MIST_AP_STATS,
+  MIST_AUDIT_LOG,
+  MIST_LICENSE_USAGES,
+  MIST_PLANE_STATUS,
+  MIST_ROGUE_APS,
+  MIST_SITE_MAPS,
+  MIST_SLE_DRILLDOWN,
   OVERVIEW_CHANGES,
   OVERVIEW_LAUNCHPAD,
   OVERVIEW_PLANES,
   OVERVIEW_SITES,
-  OVERVIEW_STATS,
   PERMISSIONS,
   POLICY_SERVICES,
   RENEWALS,
   SEARCH_INDEX,
+  SITE_APPLICATIONS_DEMO,
   SITE_PROFILES,
   SITE_STATS,
   SITES,
   SITE_SLE,
   SSIDS,
   SUBSCRIPTIONS,
+  SWITCH_HARDWARE_TRENDS_DEMO,
+  SWITCH_INTERFACE_TRENDS_DEMO,
   SYNC_HISTORY,
   SYSTEMS,
   TICKETS,
   UXI_SENSORS,
   VLANS,
+  buildDemoTopologyGraph,
+  buildTopologyGraph,
+  centralSections,
+  clientPlaneSections,
+  demoCentralSections,
+  demoClient360World,
+  demoTopologyNotes,
   deriveRssiDbm,
   deriveSiteProfile,
   detailState,
@@ -72,20 +97,35 @@ import {
   toSiteDeviceRow,
   ORPHANS,
   type AlertRow,
+  type ApTrendMetric,
+  type ApTrendsLive,
   type CapabilityRow,
+  type CentralDataset,
+  type CentralPlaneStatus,
+  type ClearPassServiceDetailLive,
   type ClientDetailLive,
   type ClientRow,
   type ClientWiring,
   type DetailFetchState,
+  type DeviceCfg,
   type DeviceEvidence,
   type DeviceRow,
   type EndpointRow,
+  type MistLicenseUsageRow,
+  type MistAuditLogLive,
+  type MistPlaneStatus,
+  type MistRogueApRow,
+  type MistSiteMap,
+  type MistSleDrillSection,
+  type MistSleMetricDetail,
   type Plane,
   type PlaneKey,
   type SearchIndexEntry,
   type ScreenSection,
   type ServingRadio,
+  type SilencedSiteAlertRow,
   type SiteAlertRow,
+  type SiteApplicationsLive,
   type SiteDeviceRow,
   type SiteId,
   type SiteProfile,
@@ -93,17 +133,28 @@ import {
   type SiteRow,
   type SiteTopologyLive,
   type StatDef,
+  type SwitchHardwareTrendsLive,
+  type SwitchInterfaceTrendsLive,
+  type TopologyDeviceInput,
+  type TopologyEdgeReportInput,
+  type TrendWindow,
   formatCount,
   countOf,
 } from '@hpe/shared';
 import { settings } from '../config/settings';
 import { poller } from '../services/poller';
+import { configBackups } from '../services/configBackup';
 import { ticketStore } from '../services/tickets';
+import { alertQueueView } from '../services/silences';
+import { alertTimelineFor } from './screens/alertTimeline';
+import { withWebhookAlerts } from './screens/webhookAlerts';
 import { resolveDeviceIdentity, safeDeviceCandidates, type DeviceIdentity } from '../services/deviceIdentity';
 import { registry } from '../planes/registry';
 import { PLANE_LABEL, type ReconciledDeviceRow } from '../services/reconcile';
 import {
   PLANE_IDS,
+  type PlaneAdapter,
+  type PlaneId,
 } from '../planes/types';
 import { normalizeMac } from '../planes/clearpass';
 
@@ -126,6 +177,7 @@ import {
   DataSource,
   blendFor,
   blendSection,
+  blending,
   dataSource,
   datasetReported,
   envelope,
@@ -133,16 +185,26 @@ import {
   isSiteId,
   reportedValue,
   sourceFor,
+  stalePlanes,
   syncedAt,
   withBlended,
 } from './screens/context';
 import {
+  DETAIL_TTL_MS,
+  attemptDetail,
+  cachedDetail,
+  detailBudgetNote,
+  detailPlaneFor,
   liveClientDetail,
   liveDeviceDetail,
   liveSiteById,
   liveSiteTopology,
+  neverThrows,
+  planeSiteKey,
+  sectionMap,
   settle,
 } from './screens/detailCache';
+import { liveClient360World } from './screens/client360';
 import {
   canOpenShell,
   liveDeviceClients,
@@ -171,7 +233,13 @@ import {
   sortLiveAlerts,
 } from './screens/liveCore';
 import {
+  liveMistApStats,
+  mistApStatsFor,
+  mistLldpTopology,
+} from './screens/mistApStats';
+import {
   HEALTH_TONE,
+  demoOverviewQueue,
   liveLaneMeta,
   liveLaunchpad,
   liveOverviewChanges,
@@ -183,6 +251,7 @@ import {
 } from './screens/overviewModel';
 import {
   SYSTEM_DISPLAY,
+  SYSTEM_HEALTH_TONE,
   liveSyncHistory,
   liveSystemRows,
   effectiveScope,
@@ -300,8 +369,15 @@ export const screensRouter = Router();
 
 screensRouter.get('/overview', (_req, res) => {
   if (sourceFor('overview') === 'demo') {
+    // Silences are real operator data in every mode: the demo panel and its
+    // 'Open alerts' tile go through the same hush the Alerts screen applies,
+    // or a silenced P1 would still headline the landing screen.
+    const demoQueue = demoOverviewQueue();
     if (blendFor('overview')) {
       const live = liveMerged();
+      // The same partition /api/alerts serves — the panel, the tile and the
+      // Alerts screen can never disagree about what still needs someone.
+      const queue = alertQueueView(withWebhookAlerts(live.alerts));
       const blended: string[] = [];
       // The plane roster now always has nine rows (unlinked planes included),
       // so "is there live plane state to swap to?" is the LINKED count, not
@@ -313,7 +389,7 @@ screensRouter.get('/overview', (_req, res) => {
       // actually REPORTED rows (a linked-but-failing plane would otherwise
       // paint '0 / 0' over the fixture strip between syncs).
       const statsLive = live.devices.length > 0 || live.alerts.length > 0;
-      const stats = statsLive ? liveOverviewStats(live) : OVERVIEW_STATS;
+      const stats = statsLive ? liveOverviewStats({ ...live, alerts: queue.alerts }) : demoQueue.stats;
       if (statsLive) blended.push('stats');
       const liveChanges = liveOverviewChanges();
       res.json(
@@ -321,7 +397,7 @@ screensRouter.get('/overview', (_req, res) => {
           envelopeFor('overview', {
             workspace: settings.get().workspaceName,
             stats,
-            alerts: blendSection('alerts', needsYouNowAlerts(live.alerts), OVERVIEW_ALERTS, blended),
+            alerts: blendSection('alerts', needsYouNowAlerts(queue.alerts), demoQueue.alerts, blended),
             sites: blendSection('sites', live.sites.map(liveOverviewSite), OVERVIEW_SITES, blended),
             planes: blendSection('planes', livePlanes, OVERVIEW_PLANES, blended),
             changes: blendSection('changes', liveChanges.changes, OVERVIEW_CHANGES, blended),
@@ -346,8 +422,8 @@ screensRouter.get('/overview', (_req, res) => {
     res.json(
       envelopeFor('overview', {
         workspace: settings.get().workspaceName,
-        stats: OVERVIEW_STATS,
-        alerts: OVERVIEW_ALERTS,
+        stats: demoQueue.stats,
+        alerts: demoQueue.alerts,
         sites: OVERVIEW_SITES,
         planes: OVERVIEW_PLANES,
         changes: OVERVIEW_CHANGES,
@@ -357,12 +433,16 @@ screensRouter.get('/overview', (_req, res) => {
     return;
   }
   const live = liveMerged();
+  // The same partition /api/alerts serves, applied to everything the overview
+  // derives from the queue: a silenced firing neither headlines "Needs you
+  // now" nor counts on the 'Open alerts' tile.
+  const queue = alertQueueView(withWebhookAlerts(live.alerts));
   const liveChanges = liveOverviewChanges();
   res.json(
     envelopeFor('overview', {
       workspace: settings.get().workspaceName,
-      stats: liveOverviewStats(live),
-      alerts: needsYouNowAlerts(live.alerts),
+      stats: liveOverviewStats({ ...live, alerts: queue.alerts }),
+      alerts: needsYouNowAlerts(queue.alerts),
       sites: live.sites.map(liveOverviewSite),
       planes: liveOverviewPlanes(),
       changes: liveChanges.changes,
@@ -380,10 +460,12 @@ screensRouter.get('/alerts', (_req, res) => {
   if (sourceFor('alerts') === 'demo') {
     if (blendFor('alerts')) {
       const blended: string[] = [];
-      const alerts = blendSection('alerts', sortLiveAlerts(liveAlerts()), ALERTS, blended);
+      const view = alertQueueView(withWebhookAlerts(blendSection('alerts', sortLiveAlerts(liveAlerts()), ALERTS, blended)));
       // Only a swapped (real) queue gets a derived banner; the authored rows
-      // keep the authored one the design wrote for them.
-      const correlation = blended.includes('alerts') ? liveCorrelation(alerts) : undefined;
+      // keep the authored one the design wrote for them. The banner derives
+      // from the ACTIVE rows — a silenced firing cannot headline the queue it
+      // was benched from.
+      const correlation = blended.includes('alerts') ? liveCorrelation(view.alerts) : undefined;
       // Same gate as the correlation: the authored rows are complete by
       // construction, so naming an unread plane against them would be a
       // warning about a queue those planes were never asked to fill.
@@ -391,7 +473,9 @@ screensRouter.get('/alerts', (_req, res) => {
       res.json(
         withBlended(
           envelopeFor('alerts', {
-            alerts,
+            alerts: view.alerts,
+            groups: view.groups,
+            silenced: view.silenced,
             ...(correlation === undefined ? {} : { correlation }),
             ...(swapped ? { missingSources: planesMissingDataset('alerts') } : {}),
           }),
@@ -401,20 +485,38 @@ screensRouter.get('/alerts', (_req, res) => {
       );
       return;
     }
-    res.json(envelopeFor('alerts', { alerts: ALERTS }));
+    res.json(envelopeFor('alerts', { ...alertQueueView(withWebhookAlerts(ALERTS)) }));
     return;
   }
-  const alerts = sortLiveAlerts(liveAlerts());
+  const view = alertQueueView(sortLiveAlerts(withWebhookAlerts(liveAlerts())));
   res.json(
     envelopeFor('alerts', {
-      alerts,
-      correlation: liveCorrelation(alerts),
+      alerts: view.alerts,
+      groups: view.groups,
+      silenced: view.silenced,
+      correlation: liveCorrelation(view.alerts),
       // A queue missing a plane's alerts is not a quiet estate. Without this
       // an unread plane and a plane with nothing open look the same, and the
       // empty state reads as all-clear (see liveCore.ts planesMissingDataset).
       missingSources: planesMissingDataset('alerts'),
     }),
   );
+});
+
+/**
+ * GET /api/alerts/:fingerprint/timeline — one group's occurrence history:
+ * firings, silences, the device's change-log lines and config drift, joined
+ * by screens/alertTimeline.ts (facts are not re-persisted, only joined).
+ * 404 when neither the queue nor any store knows the fingerprint — an empty
+ * timeline would read as "nothing ever happened here".
+ */
+screensRouter.get('/alerts/:fingerprint/timeline', (req, res) => {
+  const timeline = alertTimelineFor(req.params.fingerprint);
+  if (!timeline) {
+    res.status(404).json({ error: `unknown alert fingerprint '${req.params.fingerprint}'` });
+    return;
+  }
+  res.json(envelopeFor('alerts', { timeline }));
 });
 
 screensRouter.get('/tickets', (_req, res) => {
@@ -768,6 +870,13 @@ function withClientJoins(
  * issued together and all three are cached, and the site graph is shared with
  * the site and device pages — so a drawer open costs one client call, one AP
  * call per AP per TTL, and one site call per TTL.
+ *
+ * `clientPlanes` is the Client 360 block: every registry plane's view of this
+ * one MAC, correlated from rows the poller ALREADY pulled (sessions,
+ * ClearPass auth events + endpoint repository, Mist site SLE). It issues no
+ * per-plane call of its own — a JOIN, not a fan-out — so it is attached even
+ * when the named MAC is not on the roster: "left the network, but ClearPass
+ * accepted it ten minutes ago" is exactly the answer a drawer open is for.
  */
 async function clientDetailKeys(
   client: ClientRow | null,
@@ -780,7 +889,12 @@ async function clientDetailKeys(
     liveSiteTopology(liveSiteById(client?.siteId)),
     ap && client ? liveServingRadio(client, ap) : Promise.resolve(null),
   ]);
-  return { client, detail: withClientJoins(detail, client, ap, served, topology), topology };
+  return {
+    client,
+    detail: withClientJoins(detail, client, ap, served, topology),
+    topology,
+    clientPlanes: clientPlaneSections(wanted, client?.siteId ?? null, liveClient360World()),
+  };
 }
 
 /**
@@ -819,8 +933,26 @@ async function serveClients(res: Response, macParam: string | null): Promise<voi
     }
     // Demo rows are authored and complete. There is no live object behind a
     // fixture MAC, so asking a plane about one would spend a call to learn
-    // nothing — and the payload stays exactly as demo mode has always served it.
-    res.json(envelopeFor('clients', { stats: CLIENT_STATS, clients: CLIENTS }));
+    // nothing — the per-object detail read stays off in demo, exactly as it
+    // always was. The Client 360 block is different: it is a JOIN over the
+    // fixtures themselves (no plane call — the fixtures ARE the estate), so a
+    // named client gets it in demo too, and the drawer demonstrates fully.
+    res.json(
+      envelopeFor('clients', {
+        stats: CLIENT_STATS,
+        clients: CLIENTS,
+        ...(wanted === null
+          ? {}
+          : {
+              client: pick(CLIENTS),
+              clientPlanes: clientPlaneSections(
+                wanted,
+                pick(CLIENTS)?.siteId ?? null,
+                demoClient360World(),
+              ),
+            }),
+      }),
+    );
     return;
   }
   const clients = liveClients();
@@ -991,12 +1123,24 @@ screensRouter.get('/uxi', (_req, res) => {
 });
 
 /**
- * ClearPass endpoint repository + auth feed, one screen. Demo mode serves
- * both fixtures; live mode reads the poller cache — `endpoints` is the
- * best-effort dataset (ClearPassAdapter.pull() never fails the auth feed on
- * an endpoint-read failure), so a plane that pulled auth events but not
- * endpoints this cycle still contributes its rows here instead of vanishing
- * the whole screen.
+ * ClearPass endpoint repository + auth feed + policy inventories, one screen.
+ * Demo mode serves the fixtures; live mode reads the poller cache —
+ * `endpoints` is the best-effort dataset (ClearPassAdapter.pull() never fails
+ * the auth feed on an endpoint-read failure), so a plane that pulled auth
+ * events but not endpoints this cycle still contributes its rows here instead
+ * of vanishing the whole screen.
+ *
+ * The policy inventories (NADs, auth sources, roles, enforcement
+ * policies/profiles, local users, services, device groups) are ClearPass-only
+ * datasets — nothing merges them across planes, so they come straight from
+ * the clearpass contribution, the same pattern as liveMistSle(). Each rides
+ * the envelope ONLY when the plane's pull carried it: an absent key means
+ * this CPPM did not report that collection (a failed read, or a build that
+ * does not expose it), and the screen says so instead of rendering an
+ * authoritative-looking empty table. The demo estate's CPPM is a 6.11 build,
+ * so services ARE served here (CLEARPASS_SERVICES); /api/device-group stays
+ * the collection this CPPM does not expose, absent in demo mode too — the
+ * screen renders the same honest line in both modes.
  */
 screensRouter.get('/clearpass', (_req, res) => {
   if (dataSource() === 'demo') {
@@ -1006,6 +1150,13 @@ screensRouter.get('/clearpass', (_req, res) => {
       missingSources: [],
       endpoints: CLEARPASS_ENDPOINTS,
       authEvents: AUTH_EVENTS,
+      networkDevices: CLEARPASS_NETWORK_DEVICES,
+      authSources: CLEARPASS_AUTH_SOURCES,
+      roles: CLEARPASS_ROLES,
+      enforcementPolicies: CLEARPASS_ENFORCEMENT_POLICIES,
+      enforcementProfiles: CLEARPASS_ENFORCEMENT_PROFILES,
+      localUsers: CLEARPASS_LOCAL_USERS,
+      services: CLEARPASS_SERVICES,
     });
     return;
   }
@@ -1017,12 +1168,307 @@ screensRouter.get('/clearpass', (_req, res) => {
   const missing = [...planesMissingDataset('endpoints'), ...planesMissingDataset('authEvents')].filter(
     (p, i, all) => all.indexOf(p) === i,
   );
+  const cp = poller.contributionsByPlane().get('clearpass');
   res.json({
     dataSource: 'live',
     syncedAt: poller.lastSyncFor('endpoints', 'authEvents'),
     missingSources: missing,
     endpoints,
     authEvents,
+    ...(cp?.networkDevices !== undefined ? { networkDevices: cp.networkDevices } : {}),
+    ...(cp?.authSources !== undefined ? { authSources: cp.authSources } : {}),
+    ...(cp?.roles !== undefined ? { roles: cp.roles } : {}),
+    ...(cp?.enforcementPolicies !== undefined ? { enforcementPolicies: cp.enforcementPolicies } : {}),
+    ...(cp?.enforcementProfiles !== undefined ? { enforcementProfiles: cp.enforcementProfiles } : {}),
+    ...(cp?.localUsers !== undefined ? { localUsers: cp.localUsers } : {}),
+    ...(cp?.services !== undefined ? { services: cp.services } : {}),
+    ...(cp?.deviceGroups !== undefined ? { deviceGroups: cp.deviceGroups } : {}),
+  });
+});
+
+/**
+ * GET /api/clearpass/services/:id — ONE service's full definition for the
+ * Services-tab drawer.
+ *
+ * On-demand on purpose: the summary rows ride the screen envelope, but the
+ * full object is one more GET per service, so it runs only when an operator
+ * opens the drawer — behind the shared TTL cache, single-flight and
+ * call-budget gate, exactly like the device/client detail reads. The
+ * ClearPass adapter is the only plane that can answer; an adapter without
+ * the capability is the honest `serviceDetail: null`, never a fabricated
+ * object. The adapter's own verdicts ride in the payload: 'empty' means the
+ * box 404'd (no such service), 'failed' means the read broke.
+ *
+ * Demo mode serves the authored CLEARPASS_SERVICE_DETAILS fixture and 404s
+ * an id the demo world did not author — the same honest 'not recorded' the
+ * SLE drill route keeps. Blend follows the /central route's rule: with
+ * blendLive on AND live services reported, a fixture detail for the live
+ * CPPM's world would be fabrication, so the read rides the adapter instead.
+ */
+screensRouter.get('/clearpass/services/:id', (req, res) => {
+  settle(res, serveClearPassServiceDetail(res, req.params.id.trim()));
+});
+
+/** A service detail payload that carries no object and says why — the same
+ *  contract as the other detail stubs: sections {} reads 'not-fetched' (we
+ *  chose not to ask, e.g. the call budget is spent), 'failed' means we
+ *  asked and it broke. */
+function serviceDetailStub(id: string, note: string, attempted: boolean): ClearPassServiceDetailLive {
+  return {
+    service: null,
+    source: {
+      plane: 'clearpass',
+      at: new Date().toISOString(),
+      sections: attempted ? { service: 'failed' } : {},
+      note,
+    },
+  };
+}
+
+async function serveClearPassServiceDetail(res: Response, id: string): Promise<void> {
+  if (dataSource() === 'demo') {
+    if (blending() && poller.contributionsByPlane().get('clearpass')?.services !== undefined) {
+      await serveLiveClearPassServiceDetail(res, id);
+      return;
+    }
+    const detail = CLEARPASS_SERVICE_DETAILS[id] ?? null;
+    if (detail === null) {
+      res.status(404).json({ error: `no service detail recorded for '${id}'`, dataSource: 'demo' });
+      return;
+    }
+    res.json(envelope({ serviceDetail: detail }));
+    return;
+  }
+  await serveLiveClearPassServiceDetail(res, id);
+}
+
+/** Live/blend half of the route: only the ClearPass adapter can answer (no
+ *  other plane holds CPPM policy), so there is no badge walk — an adapter
+ *  without the capability is the honest 'not reported'. */
+async function serveLiveClearPassServiceDetail(res: Response, id: string): Promise<void> {
+  const adapter = registry.get('clearpass');
+  const read = adapter.serviceDetail;
+  if (typeof read !== 'function' || !id) {
+    res.json(envelope({ serviceDetail: null }));
+    return;
+  }
+  const budget = detailBudgetNote('clearpass');
+  if (budget) {
+    res.json(envelope({ serviceDetail: serviceDetailStub(id, budget, false) }));
+    return;
+  }
+  const detail = await neverThrows(
+    cachedDetail(`clearpass:service:${id}`, DETAIL_TTL_MS, () =>
+      attemptDetail(
+        () => read.call(adapter, id),
+        (note) => serviceDetailStub(id, note, true),
+      ),
+    ),
+  );
+  res.json(envelope({ serviceDetail: detail }));
+}
+
+// -- Mist (the plane's operational dashboard) ----------------------------------
+
+/**
+ * The Mist plane's own status block for the screen header. Live mode passes
+ * the registry's facts through untouched — the health word, the last-sync
+ * stamp (null when the plane never completed a pull), the claimed device
+ * count and the pull note are the plane's own, never recomputed here. The
+ * client count is the pull's own client rows — labelled as what it is,
+ * since Mist publishes no org-wide client total on the poll.
+ */
+function liveMistPlaneStatus(clientCount: number | null): MistPlaneStatus {
+  const state = registry.state('mist');
+  return {
+    linked: state.linked,
+    health: state.health,
+    lastSync: state.lastSync,
+    deviceCount: state.deviceCount,
+    clientCount,
+    note: state.note,
+  };
+}
+
+/** Devices any MIST badge claims, for the firmware section. Reconciled rows
+ *  carry the full claimant list; a row without it (the authored fixtures)
+ *  falls back to its display plane. */
+function mistClaimedDevices(devices: ReconciledDeviceRow[]): ReconciledDeviceRow[] {
+  return devices.filter((d) => (d.claimedBy ? d.claimedBy.includes('MIST') : d.plane === 'MIST'));
+}
+
+/**
+ * GET /api/mist — one payload for the plane's operational dashboard: the
+ * per-site SLE rows, the rogue/neighbor report, the AP rich-stats walk, the
+ * licence usages, the WLAN inventory and the Mist-claimed devices, every one
+ * a projection of reads the poller ALREADY made — composing them here costs
+ * no plane call. (The org audit log stays on-demand behind
+ * /api/systems/mist/audit-log: a paged org search is not poll-cheap.)
+ *
+ * Honesty contract, the ClearPass pattern: demo serves the authored fixtures
+ * (MIST_PLANE_STATUS, SITE_SLE, MIST_ROGUE_APS, MIST_AP_STATS,
+ * MIST_LICENSE_USAGES, the MIST-badged SSIDS and DEVICES rows). Live serves a
+ * dataset key ONLY when the Mist pull carried it — an absent key means the
+ * plane did not report that walk this cycle (a failed read, or a build that
+ * does not expose it), which the screen words differently from a
+ * present-but-empty real answer. `licenseUsages`/`wlans` go further and send
+ * an explicit null, the Licenses screen's own "Mist reported nothing"
+ * contract, because both have an unavailable-vs-empty story to tell apart
+ * from "the key never rode the envelope".
+ */
+screensRouter.get('/mist', (_req, res) => {
+  if (dataSource() === 'demo') {
+    res.json({
+      dataSource: 'demo',
+      syncedAt: new Date().toISOString(),
+      plane: MIST_PLANE_STATUS,
+      sleBySiteId: SITE_SLE,
+      rogues: MIST_ROGUE_APS,
+      apStats: MIST_AP_STATS,
+      licenseUsages: MIST_LICENSE_USAGES,
+      wlans: SSIDS.filter((s) => s.plane.includes('MIST')),
+      devices: DEVICES.filter((d) => d.plane === 'MIST'),
+    });
+    return;
+  }
+  const pull = poller.contributionsByPlane().get('mist');
+  res.json({
+    dataSource: 'live',
+    // The payload is single-plane, so its stamp is the Mist registry's own —
+    // lastSyncAny() would date these rows with another plane's pull.
+    syncedAt: registry.state('mist').lastSync,
+    plane: liveMistPlaneStatus(pull?.clients !== undefined ? pull.clients.length : null),
+    ...(pull?.mistSle !== undefined ? { sleBySiteId: liveMistSle() } : {}),
+    ...(pull?.mistRogues !== undefined ? { rogues: pull.mistRogues } : {}),
+    ...(pull?.mistApStats !== undefined ? { apStats: pull.mistApStats } : {}),
+    licenseUsages: liveMistLicenseUsages(),
+    wlans: pull?.config?.ssids ?? null,
+    devices: mistClaimedDevices(liveDeviceData().devices),
+  });
+});
+
+// -- Central (the plane's operational dashboard) --------------------------------
+
+/**
+ * The Central plane's own status block for the screen header, straight off
+ * the registry — the health word, the last-sync stamp (null when the plane
+ * never completed a pull) and the pull note are the plane's own, never
+ * recomputed here. The demo branch reads the authored SYSTEMS row instead
+ * (shared/central.ts demoCentralPlaneStatus), so the two modes cannot tell
+ * two stories about the same estate.
+ */
+function liveCentralPlaneStatus(): CentralPlaneStatus {
+  const state = registry.state('central');
+  return {
+    linked: state.linked,
+    health: state.health,
+    tone: SYSTEM_HEALTH_TONE[state.health],
+    lastSync: state.lastSync,
+    note: state.note,
+  };
+}
+
+/**
+ * The live payload, composed from the Central plane's OWN contribution —
+ * pull.devices / clients / alerts / sites / config.ssids. The reconciled
+ * merge is deliberately NOT read here: the firmware section's verdict
+ * (firmwareApproved / firmwareTarget) lives on Central's own rows, and a
+ * reconciled row claimed by two planes could be wearing another plane's
+ * fields. A dataset the pull did not carry is named in `notReported` — an
+ * absent key is a failed or unsupported read, never an implied empty estate.
+ *
+ * The alert section is the ACTIVE queue (silences applied, received webhook
+ * deliveries prepended — real inbound data in every mode) cut to this plane
+ * and severity-sorted, so a firing benched on the Alerts screen cannot
+ * headline here.
+ */
+function liveCentralSections(): ReturnType<typeof centralSections> & { notReported: CentralDataset[] } {
+  const pull = poller.contributionsByPlane().get('central');
+  const notReported: CentralDataset[] = [];
+  if (pull?.devices === undefined) notReported.push('devices');
+  if (pull?.sites === undefined) notReported.push('sites');
+  if (pull?.clients === undefined) notReported.push('clients');
+  if (pull?.alerts === undefined) notReported.push('alerts');
+  if (pull?.config?.ssids === undefined) notReported.push('wlans');
+  const alerts =
+    pull?.alerts === undefined
+      ? null
+      : sortLiveAlerts(
+          alertQueueView(withWebhookAlerts(pull.alerts)).alerts.filter((a) => a.plane === 'CENTRAL'),
+        );
+  const sections = centralSections({
+    plane: liveCentralPlaneStatus(),
+    devices: pull?.devices ?? [],
+    clients: pull?.clients ?? null,
+    alerts,
+    wlans: pull?.config?.ssids ?? null,
+    siteIds: (pull?.sites ?? []).map((s) => s.id),
+  });
+  // Tiles over an unread dataset say so rather than painting a zero the
+  // plane never claimed — the stats derive from rows, and rows the pull did
+  // not carry are not a fleet of none.
+  const stats = sections.stats.map((tile) => {
+    if (tile.label === 'Devices' && notReported.includes('devices')) {
+      return { ...tile, value: '—', delta: 'no device inventory reported', tone: 'neutral' as const };
+    }
+    if (tile.label === 'Sites' && notReported.includes('sites')) {
+      return { ...tile, delta: 'sites of the reported rows only' };
+    }
+    return tile;
+  });
+  return { ...sections, stats, notReported };
+}
+
+/**
+ * GET /api/central — one payload for the plane's operational dashboard:
+ * plane status, fleet rollup, per-site summary, firmware-behind-train rows,
+ * the WLAN inventory and the recent alert queue. Every section is a
+ * projection of reads the poller ALREADY made, so composing them costs no
+ * plane call. (DPI application visibility and hardware trends stay on-demand
+ * behind /api/sites/:siteId/applications and /api/devices/:name/trends/* —
+ * paged, budget-gated reads are not poll-cheap. Webhook and scope
+ * MANAGEMENT stay in Connected systems; this screen reads.)
+ *
+ * Demo serves the authored fixtures through the SAME shared composers the
+ * web client's offline fallback uses (shared/central.ts), so the two can
+ * never drift; blend mode swaps to the live composition once the real
+ * Central plane reports devices, the same rule /api/systems applies to its
+ * fixture rows. The payload is single-plane, so the live stamp is the
+ * Central registry's own — lastSyncAny() would date these rows with another
+ * plane's pull.
+ */
+screensRouter.get('/central', (_req, res) => {
+  if (dataSource() === 'demo') {
+    if (blending() && poller.contributionsByPlane().get('central')?.devices !== undefined) {
+      const { notReported, ...sections } = liveCentralSections();
+      res.json({
+        dataSource: 'demo',
+        syncedAt: registry.state('central').lastSync,
+        blended: ['central'],
+        ...sections,
+        notReported,
+      });
+      return;
+    }
+    // Received Central webhook alerts are real inbound data in demo mode too,
+    // and the active-queue partition keeps a silenced firing off this screen
+    // exactly like the Alerts screen — the stats count the same queue.
+    const alerts = sortLiveAlerts(
+      alertQueueView(withWebhookAlerts(ALERTS.filter((a) => a.plane === 'CENTRAL'))).alerts.filter(
+        (a) => a.plane === 'CENTRAL',
+      ),
+    );
+    res.json({
+      dataSource: 'demo',
+      syncedAt: new Date().toISOString(),
+      ...demoCentralSections(alerts),
+    });
+    return;
+  }
+  res.json({
+    dataSource: 'live',
+    syncedAt: registry.state('central').lastSync,
+    ...liveCentralSections(),
   });
 });
 
@@ -1075,14 +1521,28 @@ screensRouter.get('/sites', (_req, res) => {
  * "Devices at this site" and "Open here". Both are pure projections of the
  * merge the route already computed, so a live site page carries them exactly
  * like a demo one (the authored profiles embed the same two lists).
+ *
+ * "Open here" runs the same partition /api/alerts serves: the site's 'N open'
+ * badge has counted the ACTIVE queue since mergeLiveSites read alertQueueView,
+ * so a firing an active silence benched must leave this section too — into
+ * `silencedAlerts` WITH the reason and expiry, the same moved-never-hidden
+ * story the Alerts screen tells. Without it a site could read 'clear' while
+ * the section still listed the hushed firing as if it needed someone.
  */
 function liveSiteSections(
   live: { devices: ReconciledDeviceRow[]; alerts: AlertRow[] },
   site: SiteRow,
-): { devices: SiteDeviceRow[]; alerts: SiteAlertRow[] } {
+): { devices: SiteDeviceRow[]; alerts: SiteAlertRow[]; silencedAlerts: SilencedSiteAlertRow[] } {
+  const open = live.alerts.filter((a) => a.siteId === site.id && a.state === 'open');
+  const queue = alertQueueView(open);
   return {
     devices: live.devices.filter((d) => d.siteId === site.id).map(toSiteDeviceRow),
-    alerts: live.alerts.filter((a) => a.siteId === site.id && a.state === 'open').map(toSiteAlertRow),
+    alerts: queue.alerts.map(toSiteAlertRow),
+    silencedAlerts: queue.silenced.map(({ group, silence }) => ({
+      ...toSiteAlertRow(group.latest),
+      reason: silence.reason,
+      until: silence.until,
+    })),
   };
 }
 
@@ -1174,7 +1634,65 @@ function withoutHiddenDemoDevices(profile: SiteProfile | null): SiteProfile | nu
  * leaves the collector panel alone.
  */
 async function siteDetailKeys(site: SiteRow): Promise<Record<string, unknown>> {
-  return { topology: await liveSiteTopology(site) };
+  const topology = await liveSiteTopology(site);
+  // Mist publishes no /topology graph for every site (a 404 there is an
+  // honest null, not a failure) — but the AP stats walk carries every AP's
+  // own LLDP uplink report, which IS a graph. Substitute it only when the
+  // plane's read answered nothing (absent or empty): a FAILED read keeps its
+  // failure on screen rather than being quietly swapped for prettier data.
+  if (topology !== null && detailState(topology.source, 'nodes') !== 'empty') {
+    return { topology };
+  }
+  return { topology: mistLldpTopology(site, liveMistApStats(), liveMerged().devices) ?? topology };
+}
+
+/** The dot fields a floor-plan client marker needs, and nothing else — the
+ *  site page has no client table, so serving whole roster rows would publish
+ *  session detail nobody renders. ClientRow sets x/y/mapId as a triple; a
+ *  client missing any leg is not located and draws no dot. */
+function mapClientDots(clients: ClientRow[], siteId: SiteId) {
+  const dots: Array<{
+    name: string;
+    mac: string;
+    x: number;
+    y: number;
+    mapId: string;
+    health: string;
+    healthTone: ClientRow['healthTone'];
+  }> = [];
+  for (const c of clients) {
+    if (c.siteId !== siteId) continue;
+    if (c.x === undefined || c.y === undefined || c.mapId === undefined) continue;
+    dots.push({ name: c.name, mac: c.mac, x: c.x, y: c.y, mapId: c.mapId, health: c.health, healthTone: c.healthTone });
+  }
+  return dots;
+}
+
+/** Mist's floor plans across the estate, straight off the Mist contribution
+ *  (only Mist publishes maps — the same single-plane pattern as liveMistSle).
+ *  [] when no pull carried them: an honest no-map state, never a borrowed plan. */
+function liveMistSiteMaps(): MistSiteMap[] {
+  return poller.contributionsByPlane().get('mist')?.mistMaps ?? [];
+}
+
+/** Mist's rogue/neighbor report across the estate, same single-plane pattern
+ *  as liveMistSiteMaps. [] when no pull carried it — honest, never borrowed. */
+function liveMistRogues(): MistRogueApRow[] {
+  return poller.contributionsByPlane().get('mist')?.mistRogues ?? [];
+}
+
+/** The Mist-published slices of a live/blend site page — floor plans, the SLE
+ *  row, the rogue/neighbor report and the located-client dots. All four
+ *  project pulls the poller already made, so attaching them to the detail
+ *  payload costs no plane call; a plane that published nothing leaves honest
+ *  empty states, never borrowed fixtures. */
+function siteMistKeys(site: SiteRow): Record<string, unknown> {
+  return {
+    maps: liveMistSiteMaps().filter((m) => m.siteId === site.id),
+    sle: liveMistSle()[site.id] ?? null,
+    mapClients: mapClientDots(liveMerged().clients, site.id),
+    rogues: liveMistRogues().filter((r) => r.siteId === site.id),
+  };
 }
 
 screensRouter.get('/sites/:siteId', (req, res) => {
@@ -1205,6 +1723,7 @@ async function serveSiteDetail(res: Response, param: string): Promise<void> {
               reachability: liveSiteReachability(live.devices, site),
               ...liveSiteSections(live, site),
               ...(await siteDetailKeys(site)),
+              ...siteMistKeys(site),
             }),
             ['sites'],
             'sites',
@@ -1228,6 +1747,14 @@ async function serveSiteDetail(res: Response, param: string): Promise<void> {
       envelopeFor('sites', {
         site: SITES.find((s) => s.id === id) ?? null,
         profile: withoutHiddenDemoDevices(SITE_PROFILES[id] ?? deriveSiteProfile(id)),
+        // The Mist-published slices, demo edition: the authored floor plans,
+        // SLE row, rogue/neighbor report and located-client dots. Sites Mist
+        // does not manage get the empty forms, which render the honest
+        // no-map / not-reported states.
+        maps: MIST_SITE_MAPS.filter((m) => m.siteId === id),
+        sle: SITE_SLE[id] ?? null,
+        mapClients: mapClientDots(CLIENTS, id),
+        rogues: MIST_ROGUE_APS.filter((r) => r.siteId === id),
       }),
     );
     return;
@@ -1246,11 +1773,317 @@ async function serveSiteDetail(res: Response, param: string): Promise<void> {
       reachability: liveSiteReachability(live.devices, site),
       ...liveSiteSections(live, site),
       ...(await siteDetailKeys(site)),
+      ...siteMistKeys(site),
     }),
   );
 }
 
+// -- Mist SLE drill-down (on-demand) -------------------------------------------
+
+const SLE_DRILL_SECTIONS: readonly MistSleDrillSection[] = [
+  'classifiers',
+  'impactedClients',
+  'impactedAps',
+  'trend',
+];
+
+/** A drill payload that carries no data and says why — the same contract as
+ *  clientDetailStub/deviceDetailStub: sections {} reads 'not-fetched' (we
+ *  chose not to ask, e.g. the call budget is spent), all 'failed' means we
+ *  asked and it broke. */
+function sleDetailStub(
+  site: SiteRow,
+  metric: string,
+  note: string,
+  attempted: boolean,
+): MistSleMetricDetail {
+  return {
+    siteId: site.id,
+    siteName: site.name,
+    metric,
+    source: {
+      plane: 'mist',
+      at: new Date().toISOString(),
+      sections: attempted ? sectionMap(SLE_DRILL_SECTIONS, 'failed') : {},
+      note,
+    },
+  };
+}
+
+/**
+ * GET /api/sites/:siteId/sle/:metric — the drill-down behind ONE SLE metric at
+ * ONE site: classifiers, impacted clients/APs and the summary trend.
+ *
+ * On-demand on purpose: the headline MistSleRow rides the poll, but this read
+ * costs four more endpoints per metric, so it runs only when an operator opens
+ * the metric — behind the shared TTL cache, single-flight and call-budget
+ * gate, exactly like the device/client detail reads. 404 when the site itself
+ * is unknown; `sleDetail: null` when no linked plane can answer (SLE is
+ * Mist-only); a stub payload with `source.note` when the read was attempted
+ * and failed. Demo mode serves the authored MIST_SLE_DRILLDOWN fixtures and
+ * 404s a drill the demo world did not author — the same honest 'not reported'
+ * the live adapter stamps 'empty', never a fabricated drill.
+ */
+screensRouter.get('/sites/:siteId/sle/:metric', (req, res) => {
+  settle(res, serveSleMetricDetail(res, req.params.siteId, req.params.metric.trim()));
+});
+
+async function serveSleMetricDetail(res: Response, param: string, metric: string): Promise<void> {
+  const id: SiteId | undefined = isSiteId(param) ? param : siteIdFor(param);
+
+  if (sourceFor('sites') === 'demo') {
+    // Blend follows the section, same as the page route: a fixture drill for a
+    // site the live inventory doesn't know would be fabrication.
+    if (blendFor('sites') && liveMerged().sites.length > 0) {
+      await serveLiveSleMetricDetail(res, param, metric);
+      return;
+    }
+    if (!id || !isRealSiteId(id)) {
+      res.status(404).json({ error: `unknown site '${param}'`, dataSource: 'demo' });
+      return;
+    }
+    const detail = MIST_SLE_DRILLDOWN[`${id}|${metric}`] ?? null;
+    if (detail === null) {
+      res.status(404).json({
+        error: `no SLE drill-down recorded for '${metric}' at '${id}'`,
+        dataSource: 'demo',
+      });
+      return;
+    }
+    res.json(envelopeFor('sites', { sleDetail: detail }));
+    return;
+  }
+
+  await serveLiveSleMetricDetail(res, param, metric);
+}
+
+/** Live/blend half of the drill route: the site must be in the merged
+ *  inventory, and only the Mist adapter can answer (no other plane scores
+ *  SLE), so there is no badge walk — an adapter without the capability is the
+ *  honest 'not reported'. */
+async function serveLiveSleMetricDetail(res: Response, param: string, metric: string): Promise<void> {
+  const id: SiteId | undefined = isSiteId(param) ? param : siteIdFor(param);
+  const site =
+    liveMerged().sites.find((s) => s.id === id || s.name === param || String(s.id) === param) ??
+    null;
+  if (!site) {
+    res.status(404).json({ error: `site '${param}' not in the live inventory`, dataSource: dataSource() });
+    return;
+  }
+  const adapter = registry.get('mist');
+  const read = adapter.mistSleMetricDetail;
+  if (typeof read !== 'function' || !metric) {
+    res.json(envelopeFor('sites', { sleDetail: null }));
+    return;
+  }
+  const budget = detailBudgetNote('mist');
+  if (budget) {
+    res.json(envelopeFor('sites', { sleDetail: sleDetailStub(site, metric, budget, false) }));
+    return;
+  }
+  const detail = await neverThrows(
+    cachedDetail(`sle:mist:${site.id}:${metric}`, DETAIL_TTL_MS, () =>
+      attemptDetail(
+        () => read.call(adapter, site.id, metric),
+        (note) => sleDetailStub(site, metric, note, true),
+      ),
+    ),
+  );
+  res.json(envelopeFor('sites', { sleDetail: detail }));
+}
+
+// -- Central DPI application visibility (on-demand) ----------------------------
+
+/** The default DPI window: the last 24 hours, ending at request time. The
+ *  endpoint caps a window at 7 days; ?start=&end= ask for another one, and
+ *  the adapter refuses anything wider BEFORE spending a call. */
+const APPLICATIONS_DEFAULT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** The window a request asked for, or the 24h default. Present bounds pass
+ *  through verbatim: the adapter's own validation words a bad one, which is
+ *  more honest than silently substituting the default. */
+function applicationsWindow(query: { start?: unknown; end?: unknown }): TrendWindow {
+  const start = typeof query.start === 'string' ? query.start : undefined;
+  const end = typeof query.end === 'string' ? query.end : undefined;
+  if (start !== undefined || end !== undefined) return { start: start ?? '', end: end ?? '' };
+  const endMs = Date.now();
+  return {
+    start: new Date(endMs - APPLICATIONS_DEFAULT_WINDOW_MS).toISOString(),
+    end: new Date(endMs).toISOString(),
+  };
+}
+
+/** An applications payload that carries no data and says why — the same
+ *  contract as sleDetailStub: sections {} reads 'not-fetched' (we chose not
+ *  to ask, e.g. the call budget is spent), 'failed' means we asked and it
+ *  broke. */
+function siteApplicationsStub(
+  site: SiteRow,
+  window: TrendWindow,
+  note: string,
+  attempted: boolean,
+): SiteApplicationsLive {
+  return {
+    siteId: planeSiteKey(site),
+    window,
+    source: {
+      plane: 'central',
+      at: new Date().toISOString(),
+      sections: attempted ? { apps: 'failed' } : {},
+      note,
+    },
+  };
+}
+
+/**
+ * GET /api/sites/:siteId/applications — the DPI application table for ONE
+ * site over ONE window (default the last 24h; the endpoint refuses anything
+ * wider than 7 days).
+ *
+ * On-demand on purpose: the table pages at 200 rows a call against a metered
+ * plane, so it runs only when an operator opens the site's applications
+ * section — behind the shared TTL cache, single-flight and call-budget gate,
+ * exactly like the SLE drill above. 404 when the site itself is unknown;
+ * `applications: null` when no linked plane can answer (DPI is Central-only);
+ * a stub payload with `source.note` when the read was attempted and failed.
+ * Demo mode serves the authored SITE_APPLICATIONS_DEMO fixture and 404s a
+ * site the demo world did not author one for — the same honest 'not
+ * reported' the live adapter stamps 'empty', never a fabricated table.
+ */
+screensRouter.get('/sites/:siteId/applications', (req, res) => {
+  settle(res, serveSiteApplications(res, req.params.siteId, req.query));
+});
+
+async function serveSiteApplications(
+  res: Response,
+  param: string,
+  query: { start?: unknown; end?: unknown },
+): Promise<void> {
+  const id: SiteId | undefined = isSiteId(param) ? param : siteIdFor(param);
+
+  if (sourceFor('sites') === 'demo') {
+    // Blend follows the section, same as the page route: a fixture table for
+    // a site the live inventory doesn't know would be fabrication.
+    if (blendFor('sites') && liveMerged().sites.length > 0) {
+      await serveLiveSiteApplications(res, param, query);
+      return;
+    }
+    if (!id || !isRealSiteId(id)) {
+      res.status(404).json({ error: `unknown site '${param}'`, dataSource: 'demo' });
+      return;
+    }
+    const applications = SITE_APPLICATIONS_DEMO[id] ?? null;
+    if (applications === null) {
+      res.status(404).json({
+        error: `no application visibility recorded for '${id}'`,
+        dataSource: 'demo',
+      });
+      return;
+    }
+    res.json(envelopeFor('sites', { applications }));
+    return;
+  }
+
+  await serveLiveSiteApplications(res, param, query);
+}
+
+/** Live/blend half of the applications route: the site must be in the merged
+ *  inventory, and only the Central adapter can answer (no other plane runs
+ *  DPI), so there is no badge walk — an adapter without the capability is
+ *  the honest 'not reported'. The site-key join is the topology one: the
+ *  adapter owns the native site-id resolution. */
+async function serveLiveSiteApplications(
+  res: Response,
+  param: string,
+  query: { start?: unknown; end?: unknown },
+): Promise<void> {
+  const id: SiteId | undefined = isSiteId(param) ? param : siteIdFor(param);
+  const site =
+    liveMerged().sites.find((s) => s.id === id || s.name === param || String(s.id) === param) ??
+    null;
+  if (!site) {
+    res.status(404).json({ error: `site '${param}' not in the live inventory`, dataSource: dataSource() });
+    return;
+  }
+  const window = applicationsWindow(query);
+  const adapter = registry.get('central');
+  const read = adapter.siteApplications;
+  if (typeof read !== 'function') {
+    res.json(envelopeFor('sites', { applications: null }));
+    return;
+  }
+  const budget = detailBudgetNote('central');
+  if (budget) {
+    res.json(envelopeFor('sites', { applications: siteApplicationsStub(site, window, budget, false) }));
+    return;
+  }
+  const applications = await neverThrows(
+    cachedDetail(`apps:central:${site.id}:${window.start}:${window.end}`, DETAIL_TTL_MS, () =>
+      attemptDetail(
+        () => read.call(adapter, planeSiteKey(site), window),
+        (note) => siteApplicationsStub(site, window, note, true),
+      ),
+    ),
+  );
+  res.json(envelopeFor('sites', { applications }));
+}
+
 // -- Devices ------------------------------------------------------------------
+
+/**
+ * The config-backup join for /devices/:name.
+ *
+ * When the backup service has snapshots on disk for THIS device, the detail
+ * payload's `config` block is built from them instead of the branch's own
+ * answer: Running is the newest snapshot body, Drift the unified diff of the
+ * two newest versions ('' before a second version exists — never a fabricated
+ * comparison), History the real version list with its pruning gaps. The
+ * `provenance` block names the collection channel so the screen can label a
+ * real snapshot as one — and can never pass the authored fixture config off
+ * as collected, or a collected one as authored.
+ *
+ * No snapshots (unknown device, no collection source, the sweep has not run)
+ * → null, and the caller keeps exactly the config it serves today: the
+ * fixture block in the demo branch, null in the live/blend branches.
+ */
+function snapshotDeviceConfig(device: string): DeviceCfg | null {
+  const versions = configBackups.listVersions(device); // newest first
+  const latest = versions[0];
+  if (!latest) return null;
+  const running = configBackups.readVersionContent(device, latest.version);
+  // An index naming a version whose body is gone is corrupt on disk — fall
+  // back to the branch's own config rather than serve a half-real block.
+  if (running === null) return null;
+  const previous = versions[1];
+  let diff = '';
+  if (previous) {
+    try {
+      diff = configBackups.diffVersions(device, previous.version, latest.version).text;
+    } catch {
+      diff = ''; // a body pruned between the index read and the diff read
+    }
+  }
+  return {
+    meta: `SNAPSHOT v${latest.version} · ${versions.length} VERSION${versions.length === 1 ? '' : 'S'} ON FILE`,
+    running,
+    diff,
+    history: versions.map((v) => ({
+      // ISO, not pre-formatted text: the browser stamps it in the reader's own
+      // clock (the overview change rows' rule — displayTime in overviewModel).
+      when: v.takenAt,
+      what: `Snapshot v${v.version} — ${v.lines} lines`,
+      who: v.source,
+      tag: v.driftFromPrevious ? 'drift' : 'snapshot',
+      tone: v.driftFromPrevious ? 'warning' : 'neutral',
+    })),
+    provenance: {
+      version: latest.version,
+      versions: versions.length,
+      source: latest.source,
+      takenAt: latest.takenAt,
+    },
+  };
+}
 
 screensRouter.get('/devices', (_req, res) => {
   if (sourceFor('devices') === 'demo') {
@@ -1312,6 +2145,10 @@ screensRouter.get('/devices', (_req, res) => {
  * AP has no port list of its own) and a switch page can corroborate its
  * neighbours. Both are cached; the graph is shared with the site page and the
  * client drawer, so opening several pages at one site costs one graph read.
+ *
+ * `mistAp` is different: the Mist AP rich-stats row (RF, env, power, LLDP) is
+ * a POLL dataset, so joining it here costs no per-object call. null when this
+ * device is not a Mist AP the stats walk carried — the panel stays away.
  */
 async function deviceDetailKeys(
   device: ReconciledDeviceRow,
@@ -1320,7 +2157,7 @@ async function deviceDetailKeys(
     liveDeviceDetail(device),
     liveSiteTopology(liveSiteById(device.siteId)),
   ]);
-  return { detail, topology };
+  return { detail, topology, mistAp: mistApStatsFor(device, liveMistApStats()) };
 }
 
 /** Identity a /devices/:name request can carry on the query string, straight
@@ -1402,7 +2239,7 @@ async function serveDeviceDetail(res: Response, name: string, identity: DeviceId
             envelopeFor('devices', {
               device,
               profile: null,
-              config: null,
+              config: snapshotDeviceConfig(device.name),
               clients: liveDeviceClients(device.name),
               evidence: liveDeviceEvidence(device),
               ...liveTerminalPayload(device),
@@ -1440,8 +2277,15 @@ async function serveDeviceDetail(res: Response, name: string, identity: DeviceId
         // Same key as the live branch, so the panel reads one shape in both
         // modes; `mode` says which estate the verdicts describe.
         evidence: { checks: profile.checks, mode: 'demo' } satisfies DeviceEvidence,
-        config: DEVICE_CONFIGS[profile.kind],
+        // Real snapshots on file for this fixture win over the authored
+        // block — provenance travels with them so the screen labels which
+        // of the two it is showing.
+        config: snapshotDeviceConfig(fixtureDevice.name) ?? DEVICE_CONFIGS[profile.kind],
         clients: DEVICE_CLIENT_SETS[profile.kind],
+        // The demo world's Mist AP rich-stats row for this fixture (null for
+        // every non-Mist device) — same key the live branches serve off the
+        // Mist poll, so the RF/health panel reads one shape in every mode.
+        mistAp: mistApStatsFor(fixtureDevice, MIST_AP_STATS),
       }),
     );
     return;
@@ -1466,7 +2310,10 @@ async function serveDeviceDetail(res: Response, name: string, identity: DeviceId
     envelopeFor('devices', {
       device,
       profile: null,
-      config: null,
+      // The config-backup store is the live branch's running-config source:
+      // snapshots on file for this device, or the honest null the screen
+      // already renders as "not available in live mode".
+      config: snapshotDeviceConfig(device.name),
       clients: liveDeviceClients(device.name),
       // The two facts the live pane was missing next to the reconciled row:
       // this device's own evidence verdicts, and the shell block when the
@@ -1478,7 +2325,371 @@ async function serveDeviceDetail(res: Response, name: string, identity: DeviceId
   );
 }
 
+// -- Device hardware/telemetry trends (on-demand) ------------------------------
+//
+// The Central trend reads behind the device page's 'Hardware trends' panel:
+// a switch's hardware gauges and interface error counters, and an AP's
+// cpu/memory/throughput series. Every read is on-demand (one per open device
+// page, per window), TTL-cached, single-flighted and budget-gated — never
+// poller work, same contract as the detail reads and the applications route.
+
+/** The window a trends request asked for, or the 24h default — the
+ *  applications route's bounds and pass-through rule, unchanged. */
+const trendWindow = applicationsWindow;
+
+/** A trends payload that carries no data and says why — the same contract as
+ *  deviceDetailStub: sections {} reads 'not-fetched' (we chose not to ask,
+ *  e.g. the call budget is spent), 'failed' means we asked and it broke. */
+function hardwareTrendsStub(
+  serial: string,
+  window: TrendWindow,
+  plane: PlaneId,
+  note: string,
+  attempted: boolean,
+): SwitchHardwareTrendsLive {
+  return {
+    serial,
+    window,
+    source: {
+      plane,
+      at: new Date().toISOString(),
+      sections: attempted ? { hardware: 'failed' } : {},
+      note,
+    },
+  };
+}
+
+function interfaceTrendsStub(
+  serial: string,
+  window: TrendWindow,
+  plane: PlaneId,
+  note: string,
+  attempted: boolean,
+): SwitchInterfaceTrendsLive {
+  return {
+    serial,
+    window,
+    source: {
+      plane,
+      at: new Date().toISOString(),
+      sections: attempted ? { interfaces: 'failed' } : {},
+      note,
+    },
+  };
+}
+
+function apTrendsStub(
+  serial: string,
+  metric: ApTrendMetric,
+  window: TrendWindow,
+  plane: PlaneId,
+  note: string,
+  attempted: boolean,
+): ApTrendsLive {
+  return {
+    serial,
+    metric,
+    window,
+    source: {
+      plane,
+      at: new Date().toISOString(),
+      sections: attempted ? { trends: 'failed' } : {},
+      note,
+    },
+  };
+}
+
+/**
+ * The claimant walk for the per-device trend reads: the first claiming plane
+ * whose adapter has the capability wins (the same rule liveSiteTopology
+ * applies to a site's badges) — a double-claimed row is asked of the plane
+ * that can answer, never assumed to be Central.
+ */
+function trendClaimant<M extends 'switchHardwareTrends' | 'apTrends' | 'switchInterfaceTrends'>(
+  device: ReconciledDeviceRow,
+  method: M,
+): { planeId: PlaneId; adapter: PlaneAdapter; read: NonNullable<PlaneAdapter[M]> } | null {
+  for (const claimant of [device.plane, ...(device.claimedBy ?? [])]) {
+    const planeId = detailPlaneFor(claimant);
+    if (!planeId) continue;
+    const adapter = registry.get(planeId);
+    const read = adapter[method];
+    if (typeof read === 'function') {
+      return { planeId, adapter, read: read as NonNullable<PlaneAdapter[M]> };
+    }
+  }
+  return null;
+}
+
+/**
+ * The device a trends route serves, resolved with exactly the page route's
+ * rules (blend follows the section; serial beats name; ambiguity is a 409,
+ * never a picked-first). Returns null once `res` has been answered.
+ */
+function resolveTrendDevice(
+  res: Response,
+  name: string,
+  identity: DeviceIdentityQuery,
+): { device: ReconciledDeviceRow; live: true } | { device: DeviceRow; live: false } | null {
+  if (sourceFor('devices') === 'demo') {
+    if (blendFor('devices')) {
+      const liveDevices = liveDeviceData().devices;
+      if (liveDevices.length > 0) {
+        const { device, ambiguous, invalid } = resolveDeviceIdentity(liveDevices, name, identity);
+        if (invalid) {
+          res.status(400).json({ error: invalid, dataSource: 'demo', blended: ['devices'] });
+          return null;
+        }
+        if (ambiguous) {
+          ambiguousDeviceResponse(res, name, 'demo', ambiguous, { blended: ['devices'] });
+          return null;
+        }
+        if (!device) {
+          res.status(404).json({ error: `device '${name}' not in the live inventory`, dataSource: 'demo', blended: ['devices'] });
+          return null;
+        }
+        return { device, live: true };
+      }
+    }
+    const { device: fixtureDevice, ambiguous, invalid } = resolveDeviceIdentity(DEVICES, name, identity);
+    if (invalid) {
+      res.status(400).json({ error: invalid, dataSource: 'demo' });
+      return null;
+    }
+    if (ambiguous) {
+      ambiguousDeviceResponse(res, name, 'demo', ambiguous);
+      return null;
+    }
+    if (!fixtureDevice) {
+      res.status(404).json({ error: `unknown device '${name}'`, dataSource: 'demo' });
+      return null;
+    }
+    return { device: fixtureDevice, live: false };
+  }
+
+  const { device, ambiguous, invalid } = resolveDeviceIdentity(liveDeviceData().devices, name, identity);
+  if (invalid) {
+    res.status(400).json({ error: invalid, dataSource: 'live' });
+    return null;
+  }
+  if (ambiguous) {
+    ambiguousDeviceResponse(res, name, 'live', ambiguous);
+    return null;
+  }
+  if (!device) {
+    res.status(404).json({ error: `device '${name}' not in the live cache`, dataSource: 'live' });
+    return null;
+  }
+  return { device, live: true };
+}
+
+/**
+ * GET /api/devices/:name/trends/hardware — a switch's hardware gauges
+ * (cpu/memory/temperature/PoE/power) for ONE window (default the last 24h).
+ *
+ * 404 when the device is unknown, when it is not a switch (asking one costs
+ * a guaranteed-404 call against a metered plane — refused before spending
+ * it), or when demo mode holds no authored read for it. `hardwareTrends:
+ * null` when no claiming plane can answer; a stub payload with `source.note`
+ * when the read was attempted and failed.
+ */
+screensRouter.get('/devices/:name/trends/hardware', (req, res) => {
+  settle(res, serveDeviceHardwareTrends(res, req.params.name, deviceIdentityQuery(req), req.query));
+});
+
+async function serveDeviceHardwareTrends(
+  res: Response,
+  name: string,
+  identity: DeviceIdentityQuery,
+  query: { start?: unknown; end?: unknown },
+): Promise<void> {
+  const resolved = resolveTrendDevice(res, name, identity);
+  if (resolved === null) return;
+  if (!resolved.live) {
+    const hardwareTrends = SWITCH_HARDWARE_TRENDS_DEMO[resolved.device.name] ?? null;
+    if (hardwareTrends === null) {
+      res.status(404).json({ error: `no hardware-trend read recorded for '${resolved.device.name}'`, dataSource: 'demo' });
+      return;
+    }
+    res.json(envelopeFor('devices', { hardwareTrends }));
+    return;
+  }
+  const device = resolved.device;
+  if (device.type !== 'switch') {
+    res.status(404).json({
+      error: `'${device.name}' is a ${device.type}, not a switch — hardware trends are a Central switch read`,
+      dataSource: dataSource(),
+    });
+    return;
+  }
+  const window = trendWindow(query);
+  res.json(envelopeFor('devices', { hardwareTrends: await liveSwitchHardwareTrends(device, window) }));
+}
+
+function liveSwitchHardwareTrends(
+  device: ReconciledDeviceRow,
+  window: TrendWindow,
+): Promise<SwitchHardwareTrendsLive | null> {
+  if (!reportedValue(device.serial)) return Promise.resolve(null);
+  const claimant = trendClaimant(device, 'switchHardwareTrends');
+  if (!claimant) return Promise.resolve(null);
+  const serial = device.serial!;
+  const budget = detailBudgetNote(claimant.planeId);
+  if (budget) return Promise.resolve(hardwareTrendsStub(serial, window, claimant.planeId, budget, false));
+  return neverThrows(
+    cachedDetail(`hwtrends:${claimant.planeId}:${serial}:${window.start}:${window.end}`, DETAIL_TTL_MS, () =>
+      attemptDetail(
+        () => claimant.read.call(claimant.adapter, serial, window),
+        (note) => hardwareTrendsStub(serial, window, claimant.planeId, note, true),
+      ),
+    ),
+  );
+}
+
+/**
+ * GET /api/devices/:name/trends/interfaces — a switch's interface byte/error
+ * counter trends for ONE window. Same resolution and refusal rules as the
+ * hardware read above.
+ */
+screensRouter.get('/devices/:name/trends/interfaces', (req, res) => {
+  settle(res, serveDeviceInterfaceTrends(res, req.params.name, deviceIdentityQuery(req), req.query));
+});
+
+async function serveDeviceInterfaceTrends(
+  res: Response,
+  name: string,
+  identity: DeviceIdentityQuery,
+  query: { start?: unknown; end?: unknown },
+): Promise<void> {
+  const resolved = resolveTrendDevice(res, name, identity);
+  if (resolved === null) return;
+  if (!resolved.live) {
+    const interfaceTrends = SWITCH_INTERFACE_TRENDS_DEMO[resolved.device.name] ?? null;
+    if (interfaceTrends === null) {
+      res.status(404).json({ error: `no interface-trend read recorded for '${resolved.device.name}'`, dataSource: 'demo' });
+      return;
+    }
+    res.json(envelopeFor('devices', { interfaceTrends }));
+    return;
+  }
+  const device = resolved.device;
+  if (device.type !== 'switch') {
+    res.status(404).json({
+      error: `'${device.name}' is a ${device.type}, not a switch — interface trends are a Central switch read`,
+      dataSource: dataSource(),
+    });
+    return;
+  }
+  const window = trendWindow(query);
+  res.json(envelopeFor('devices', { interfaceTrends: await liveSwitchInterfaceTrends(device, window) }));
+}
+
+function liveSwitchInterfaceTrends(
+  device: ReconciledDeviceRow,
+  window: TrendWindow,
+): Promise<SwitchInterfaceTrendsLive | null> {
+  if (!reportedValue(device.serial)) return Promise.resolve(null);
+  const claimant = trendClaimant(device, 'switchInterfaceTrends');
+  if (!claimant) return Promise.resolve(null);
+  const serial = device.serial!;
+  const budget = detailBudgetNote(claimant.planeId);
+  if (budget) return Promise.resolve(interfaceTrendsStub(serial, window, claimant.planeId, budget, false));
+  return neverThrows(
+    cachedDetail(`iftrends:${claimant.planeId}:${serial}:${window.start}:${window.end}`, DETAIL_TTL_MS, () =>
+      attemptDetail(
+        () => claimant.read.call(claimant.adapter, serial, window),
+        (note) => interfaceTrendsStub(serial, window, claimant.planeId, note, true),
+      ),
+    ),
+  );
+}
+
+/**
+ * GET /api/devices/:name/trends/ap/:metric — ONE AP metric trend
+ * (cpu | memory | throughput; the throughput series arrives bytes-per-bucket
+ * and is normalized to bit/s) for ONE window. A metric outside the endpoint
+ * vocabulary is a caller mistake, answered in words before anything is
+ * resolved or called.
+ */
+screensRouter.get('/devices/:name/trends/ap/:metric', (req, res) => {
+  settle(res, serveDeviceApTrends(res, req.params.name, req.params.metric, deviceIdentityQuery(req), req.query));
+});
+
+async function serveDeviceApTrends(
+  res: Response,
+  name: string,
+  metricParam: string,
+  identity: DeviceIdentityQuery,
+  query: { start?: unknown; end?: unknown },
+): Promise<void> {
+  const metric = metricParam.trim();
+  if (!(AP_TREND_METRICS as readonly string[]).includes(metric)) {
+    res.status(404).json({
+      error: `unknown AP trend metric '${metricParam}' — expected one of ${AP_TREND_METRICS.join(', ')}`,
+      dataSource: dataSource(),
+    });
+    return;
+  }
+  const resolved = resolveTrendDevice(res, name, identity);
+  if (resolved === null) return;
+  if (!resolved.live) {
+    const apTrends = AP_TRENDS_DEMO[`${resolved.device.name}|${metric}`] ?? null;
+    if (apTrends === null) {
+      res.status(404).json({
+        error: `no AP trend read recorded for '${resolved.device.name}' (${metric})`,
+        dataSource: 'demo',
+      });
+      return;
+    }
+    res.json(envelopeFor('devices', { apTrends }));
+    return;
+  }
+  const device = resolved.device;
+  if (device.type !== 'ap') {
+    res.status(404).json({
+      error: `'${device.name}' is a ${device.type}, not an AP — ${metric} trends are a Central AP read`,
+      dataSource: dataSource(),
+    });
+    return;
+  }
+  const window = trendWindow(query);
+  res.json(envelopeFor('devices', { apTrends: await liveApTrends(device, metric as ApTrendMetric, window) }));
+}
+
+function liveApTrends(
+  device: ReconciledDeviceRow,
+  metric: ApTrendMetric,
+  window: TrendWindow,
+): Promise<ApTrendsLive | null> {
+  if (!reportedValue(device.serial)) return Promise.resolve(null);
+  const claimant = trendClaimant(device, 'apTrends');
+  if (!claimant) return Promise.resolve(null);
+  const serial = device.serial!;
+  const budget = detailBudgetNote(claimant.planeId);
+  if (budget) return Promise.resolve(apTrendsStub(serial, metric, window, claimant.planeId, budget, false));
+  return neverThrows(
+    cachedDetail(`aptrends:${claimant.planeId}:${serial}:${metric}:${window.start}:${window.end}`, DETAIL_TTL_MS, () =>
+      attemptDetail(
+        () => claimant.read.call(claimant.adapter, serial, metric, window),
+        (note) => apTrendsStub(serial, metric, window, claimant.planeId, note, true),
+      ),
+    ),
+  );
+}
+
 // -- Licences / configure / compliance ---------------------------------------
+
+/**
+ * Mist's per-site licence consumption (/orgs/{org}/licenses/usages) — the one
+ * plane that publishes it, read straight off the Mist contribution rather than
+ * merged across planes (there is nothing to merge), same pattern as
+ * liveMistSle. `null` when the contribution carries no usages key (Mist not
+ * linked, or this cycle's read failed): the screen renders that as "not
+ * reported", never as zero consumption.
+ */
+function liveMistLicenseUsages(): MistLicenseUsageRow[] | null {
+  return poller.contributionsByPlane().get('mist')?.mistLicenseUsages ?? null;
+}
 
 screensRouter.get('/licenses', (_req, res) => {
   if (sourceFor('licenses') === 'demo') {
@@ -1494,6 +2705,10 @@ screensRouter.get('/licenses', (_req, res) => {
               subscriptions: subs,
               renewals: liveRenewals(subs),
               orphans: liveOrphans(blendDevices, subs, blendAssignments, planesMissingDevices()),
+              // The usage rows follow the section they describe: a swapped
+              // payload carries what Mist really reported (null when it did
+              // not), not the authored fixtures.
+              mistLicenseUsages: liveMistLicenseUsages(),
             }),
             ['licenses'],
             'licenses',
@@ -1503,7 +2718,7 @@ screensRouter.get('/licenses', (_req, res) => {
       }
     }
     res.json(
-      envelopeFor('licenses', { stats: LICENSE_STATS, subscriptions: SUBSCRIPTIONS, renewals: RENEWALS, orphans: ORPHANS }),
+      envelopeFor('licenses', { stats: LICENSE_STATS, subscriptions: SUBSCRIPTIONS, renewals: RENEWALS, orphans: ORPHANS, mistLicenseUsages: MIST_LICENSE_USAGES }),
     );
     return;
   }
@@ -1521,6 +2736,7 @@ screensRouter.get('/licenses', (_req, res) => {
       subscriptions: subs,
       renewals: liveRenewals(subs),
       orphans: liveOrphans(devices, subs, assignments, planesMissingDevices()),
+      mistLicenseUsages: liveMistLicenseUsages(),
     }),
   );
 });
@@ -1549,10 +2765,24 @@ function liveCapabilityMatrix(): CapabilityRow[] {
   return PLANE_IDS.filter((id) => SYSTEM_DISPLAY[id]).map((id) => {
     const state = states[id];
     const linked = state.linked;
-    const granted = scopeForPlane(id as PlaneKey, { linked, scopes: stored[id]?.scopes ?? null });
+    const granted = scopeForPlane(id as PlaneKey, {
+      linked,
+      scopes: stored[id]?.scopes ?? null,
+      // Mist's directWrite IS a Configure-screen write path (the reviewed
+      // SSID apply), so it is passed here; SSE's is not (its object CRUD lives
+      // on the Systems Configuration tab — see liveSystemRow), so it stays
+      // 'read only' in THIS matrix even with a write scope granted.
+      directWrite: id === 'mist' ? state.capabilities?.directWrite : undefined,
+    });
     const scope = effectiveScope(state, granted);
     const mode: CapabilityRow['mode'] =
-      scope === 'read + broker' ? 'brokered' : scope === 'read + ssh' ? 'ssh' : 'read only';
+      scope === 'read + broker'
+        ? 'brokered'
+        : scope === 'read + ssh'
+          ? 'ssh'
+          : scope === 'read + direct'
+            ? 'direct'
+            : 'read only';
     const note = !linked
       ? 'not linked — no credentials stored'
       : state.health === 'degraded'
@@ -1561,18 +2791,21 @@ function liveCapabilityMatrix(): CapabilityRow[] {
           ? 'brokered write, ticket required'
           : mode === 'ssh'
             ? 'recorded shell, window only'
-            : granted === scope
-              ? 'payload pre-filled in the plane console'
-              : // The credential grants a write scope this plane's adapter says
-                // it cannot carry out — the honest row is the capability, not
-                // the grant, or Configure offers a push that cannot happen.
-                'this plane reports no write path — payload pre-filled in its console';
+            : mode === 'direct'
+              ? 'reviewed SSID writes, no ticket'
+              : granted === scope
+                ? 'payload pre-filled in the plane console'
+                : // The credential grants a write scope this plane's adapter says
+                  // it cannot carry out — the honest row is the capability, not
+                  // the grant, or Configure offers a push that cannot happen.
+                  'this plane reports no write path — payload pre-filled in its console';
     return {
       plane: stored[id]?.displayName ?? SYSTEM_DISPLAY[id]!,
       note,
       mode,
       tone: mode === 'read only' ? 'neutral' : 'accent',
       linked,
+      planeId: id,
     };
   });
 }
@@ -1664,7 +2897,7 @@ screensRouter.get('/compliance', (_req, res) => {
     // Compliance was the last screen still pinned to fixtures under a blend.
     if (blendFor('compliance') && datasetReported('devices')) {
       const blendMissing = planesMissingDataset('devices');
-      const blendCompliance = liveComplianceData(liveDeviceData().devices, blendMissing);
+      const blendCompliance = liveComplianceData(liveDeviceData().devices, blendMissing, configBackups.summary());
       res.json(
         withBlended(
           envelopeFor('compliance', {
@@ -1695,7 +2928,7 @@ screensRouter.get('/compliance', (_req, res) => {
   // reading as a verdict on all of it.
   const missingInventories = planesMissingDataset('devices');
   const compliance = devicesReported
-    ? liveComplianceData(liveDeviceData().devices, missingInventories)
+    ? liveComplianceData(liveDeviceData().devices, missingInventories, configBackups.summary())
     : { stats: [], findings: [], baselines: [], diff: '' };
   res.json(
     envelopeFor('compliance', {
@@ -1740,7 +2973,163 @@ screensRouter.get('/systems', (_req, res) => {
   res.json(envelopeFor('systems', { systems: liveSystemRows(states), syncHistory: liveSyncHistory(), permissions: PERMISSIONS }));
 });
 
+// -- Mist org audit log (on-demand, behind the Systems Mist drawer) -----------
+
+/** The adapter surface the audit-log route needs — structural (the
+ *  PlaneAdapter contract does not declare it), so an adapter without the
+ *  read is the honest 'not reported', never a crash. */
+type MistAuditLogReader = { mistAuditLog(limit?: number): Promise<MistAuditLogLive> };
+
+/**
+ * GET /api/systems/mist/audit-log?limit=N — the org's latest admin changes.
+ * On-demand like the SLE drill route: the read costs a paged org search on
+ * the Mist plane, so it runs only when the drawer asks — behind the shared
+ * TTL cache and call-budget gate. Demo mode serves the authored MIST_AUDIT_LOG
+ * fixtures; live mode answers `auditLog: null` when no linked plane can read
+ * it (unlinked, or an adapter without the capability) and a stub-shaped
+ * payload whose source.note says why when the read was attempted and failed.
+ */
+screensRouter.get('/systems/mist/audit-log', (req, res) => {
+  settle(res, serveMistAuditLog(res, req.query.limit));
+});
+
+async function serveMistAuditLog(res: Response, limitRaw: unknown): Promise<void> {
+  const limitParsed = typeof limitRaw === 'string' ? Number(limitRaw) : Number.NaN;
+  const limit = Number.isSafeInteger(limitParsed) && limitParsed > 0 ? Math.min(limitParsed, 100) : 25;
+
+  if (sourceFor('systems') === 'demo') {
+    res.json(
+      envelopeFor('systems', {
+        auditLog: {
+          entries: MIST_AUDIT_LOG.slice(0, limit),
+          // The demo world stamps a FIXED clock (the MIST_SLE_DRILLDOWN
+          // convention) — a moving 'now' would make the payload
+          // non-deterministic under a demo fixture.
+          source: { plane: 'mist', at: '2026-07-26T11:59:00.000Z', sections: { logs: MIST_AUDIT_LOG.length > 0 ? 'ok' : 'empty' } },
+        } satisfies MistAuditLogLive,
+      }),
+    );
+    return;
+  }
+
+  const adapter = registry.get('mist');
+  const read = (adapter as unknown as Partial<MistAuditLogReader>).mistAuditLog;
+  if (typeof read !== 'function') {
+    res.json(envelopeFor('systems', { auditLog: null }));
+    return;
+  }
+  const budget = detailBudgetNote('mist');
+  if (budget) {
+    res.json(
+      envelopeFor('systems', {
+        auditLog: {
+          source: { plane: 'mist', at: new Date().toISOString(), sections: {}, note: budget },
+        } satisfies MistAuditLogLive,
+      }),
+    );
+    return;
+  }
+  const detail = await neverThrows(
+    cachedDetail(`auditlog:mist:${limit}`, DETAIL_TTL_MS, () =>
+      attemptDetail(
+        () => read.call(adapter, limit),
+        (note): MistAuditLogLive => ({
+          source: { plane: 'mist', at: new Date().toISOString(), sections: { logs: 'failed' }, note },
+        }),
+      ),
+    ),
+  );
+  res.json(envelopeFor('systems', { auditLog: detail }));
+}
+
 // -- Search index --------------------------------------------------------------
+
+// -- Estate topology (the cross-plane neighbour graph) -------------------------
+
+/**
+ * The Mist AP-stats walk is the ONLY poll-time dataset carrying neighbour
+ * facts today (every AP's own LLDP uplink report — the same rows the site
+ * page's fallback graph reads). Central's site graphs and AOS-CX's port
+ * neighbours are per-site ON-DEMAND reads; replaying them here would spend a
+ * plane call per site on a screen poll, so the estate graph reads the poller
+ * cache only and says where the rest lives.
+ */
+function liveTopologyReports(): TopologyEdgeReportInput[] {
+  const stale = stalePlanes();
+  const mistAt = poller.freshness().mist;
+  const reports: TopologyEdgeReportInput[] = [];
+  for (const row of liveMistApStats()) {
+    const lldp = row.lldpUplink;
+    const systemName = (lldp?.systemName ?? '').trim();
+    if (!lldp || systemName === '') continue;
+    const upPorts = row.ports.filter((port) => port.up === true);
+    reports.push({
+      plane: 'MIST',
+      protocol: 'LLDP',
+      from: {
+        name: row.deviceName,
+        serial: row.serial,
+        mac: row.mac,
+        port: upPorts.length > 0 ? upPorts.map((port) => port.name).join('+') : null,
+      },
+      to: { name: systemName, mac: lldp.chassisId, port: lldp.portId },
+      speedBps:
+        upPorts.length === 1 && upPorts[0]!.speedMbps !== null ? upPorts[0]!.speedMbps * 1_000_000 : null,
+      reportedAt: mistAt,
+      stale: stale.has('mist'),
+    });
+  }
+  return reports;
+}
+
+/** The estate graph's footer notes, worded from what the poll actually carried. */
+function liveTopologyNotes(reports: TopologyEdgeReportInput[]): string[] {
+  const rest =
+    'Central site graphs and AOS-CX port neighbours are per-site on-demand reads, not replayed here — open a site for its own graph.';
+  if (reports.length > 0) {
+    return [
+      `Every edge is a neighbour fact a plane reported at poll time — currently Mist's AP-stats LLDP walk only. ${rest}`,
+      'A reported neighbour with no inventory row is a ghost, drawn as reported and never promoted to a managed device.',
+    ];
+  }
+  const why = registry.state('mist').linked
+    ? "the Mist AP-stats walk (the only poll-time neighbour source) carried no LLDP uplinks"
+    : 'no linked plane polls a neighbour dataset — Mist’s AP-stats LLDP walk is the only one today';
+  return [`No plane reported a neighbour fact at poll time: ${why}. ${rest}`];
+}
+
+screensRouter.get('/topology', (_req, res) => {
+  const live = liveMerged();
+  // Blend mode swaps the whole graph to live rows once any plane reports
+  // devices — fixture and live rows never mix inside one payload (the same
+  // rule the sites route applies), and the envelope says which happened.
+  const useLive = dataSource() === 'live' || (blending() && live.devices.length > 0);
+  if (!useLive) {
+    res.json(envelope({ graph: buildDemoTopologyGraph(), notes: demoTopologyNotes() }));
+    return;
+  }
+  const devices: TopologyDeviceInput[] = live.devices.map((d) => ({
+    name: d.name,
+    model: d.model,
+    type: d.type,
+    serial: d.serial,
+    mac: d.mac,
+    plane: d.plane,
+    claimedBy: d.claimedBy,
+    siteId: d.siteId,
+    siteName: d.siteName,
+    state: d.state,
+    tone: d.stateTone,
+  }));
+  const reports = liveTopologyReports();
+  const payload: Record<string, unknown> = {
+    dataSource: 'live',
+    syncedAt: poller.lastSyncFor('devices', 'sites'),
+    graph: buildTopologyGraph(devices, reports, live.sites),
+    notes: liveTopologyNotes(reports),
+  };
+  res.json(dataSource() === 'demo' ? withBlended(payload, ['devices']) : payload);
+});
 
 /** Raised tickets as search entries — real user data, so searchable in both
  *  modes (arg carries the id so the hit deep-links to /tickets?sel=<id>). */

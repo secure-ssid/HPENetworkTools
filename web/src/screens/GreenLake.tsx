@@ -140,9 +140,24 @@ export default function GreenLake() {
     setData(d);
   }, []);
 
+  /* The mount read is written out rather than routed through `load`: the
+     compiler's effect rule cannot see across load's await and flags the call,
+     and the live-guard is the house idiom for a one-shot fetch anyway. */
   useEffect(() => {
-    void load();
-  }, [load]);
+    let live = true;
+    void getGreenLakeInventory().then((d) => {
+      if (!live) return;
+      if (d === null) {
+        setFailed(true);
+        return;
+      }
+      setFailed(false);
+      setData(d);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   /**
    * Run one reviewed action, then reload. The toast distinguishes `applied`
@@ -568,7 +583,7 @@ export default function GreenLake() {
           </div>
           {/* Both constraints cost a failed round-trip to discover, so the form
               states them rather than letting GreenLake reject the submission. */}
-          <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--muted, #8b93a7)' }}>
+          <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--nd-text-muted)' }}>
             Country must be the full name (“United States”, not “US”). The primary contact must be
             an existing workspace member’s username — GreenLake rejects the location otherwise.
           </p>

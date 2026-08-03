@@ -25,6 +25,8 @@ let poller: (typeof import('../src/services/poller'))['poller'];
 let registry: (typeof import('../src/planes/registry'))['registry'];
 let mockSse: Server;
 let mockSseBase: string;
+let mockCppm: Server;
+let mockCppmBase: string;
 const sseRequests: Array<{ url: string; authorization: string | undefined }> = [];
 let previousSseHttpOverride: string | undefined;
 
@@ -88,11 +90,55 @@ beforeAll(async () => {
   mockSse.listen(0, '127.0.0.1');
   await new Promise<void>((resolve) => mockSse.once('listening', resolve));
   mockSseBase = `http://127.0.0.1:${(mockSse.address() as AddressInfo).port}`;
+
+  mockCppm = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/api/oauth' && req.method === 'POST') {
+      let raw = '';
+      req.on('data', (c) => (raw += c));
+      req.on('end', () => {
+        let clientId = '';
+        try {
+          clientId = String((JSON.parse(raw) as { client_id?: unknown }).client_id ?? '');
+        } catch {
+          /* malformed body falls through to the refusal */
+        }
+        if (clientId === 'good-client') {
+          res.end(JSON.stringify({ access_token: 'mock-cppm-token', expires_in: 28800 }));
+          return;
+        }
+        res.statusCode = 400;
+        res.end(JSON.stringify({ title: 'unauthorized_client', detail: 'The grant type is unauthorized for this client_id' }));
+      });
+      return;
+    }
+    if (req.url?.startsWith('/api/endpoint')) {
+      const token = typeof req.headers.authorization === 'string' ? req.headers.authorization.replace(/^Bearer /, '') : '';
+      if (token === 'good-token') {
+        res.end('[]');
+        return;
+      }
+      if (token === 'limited-token') {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ title: 'Forbidden', detail: 'Forbidden' }));
+        return;
+      }
+      res.statusCode = 401;
+      res.end('{}');
+      return;
+    }
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  mockCppm.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => mockCppm.once('listening', resolve));
+  mockCppmBase = `http://127.0.0.1:${(mockCppm.address() as AddressInfo).port}`;
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await new Promise<void>((resolve) => mockSse.close(() => resolve()));
+  await new Promise<void>((resolve) => mockCppm.close(() => resolve()));
   rmSync(tmpDir, { recursive: true, force: true });
   delete process.env.HPE_SETTINGS_PATH;
   delete process.env.HPE_DATA_DIR;
@@ -131,7 +177,7 @@ describe('connection tests never disclose or dial stored secrets', () => {
     expect(JSON.stringify(body)).not.toContain(secret);
   });
 
-  it('a failed TCP test reports host:port only — never the token or the socket detail', async () => {
+  it('an unreachable CPPM reports the target only — never the token or the socket detail', async () => {
     const secret = 'clearpass-token-s3cr3t-value';
     const save = await postJson('/api/systems/clearpass/credentials', { host: '127.0.0.1:1', token: secret });
     expect(save.status).toBe(200);
@@ -139,7 +185,7 @@ describe('connection tests never disclose or dial stored secrets', () => {
     const res = await fetch(`${base}/api/systems/clearpass/test`, { method: 'POST' });
     expect(res.status).toBe(502);
     const body = (await res.json()) as any;
-    expect(body.message).toBe('TCP connect to 127.0.0.1:1 failed');
+    expect(body.message).toBe('cannot reach https://127.0.0.1:1 — connection failed');
     expect(JSON.stringify(body)).not.toContain(secret);
 
     await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' }); // restore
@@ -159,6 +205,50 @@ describe('connection tests never disclose or dial stored secrets', () => {
     expect(res.status).toBe(502);
     expect(res.body.message).toBe('cannot reach http://127.0.0.1:1');
     expect(JSON.stringify(res.body)).not.toContain('body-secret');
+  });
+});
+
+describe('ClearPass connection validation', () => {
+  it('mints a real token when CPPM accepts the client credentials', async () => {
+    const result = await postJson('/api/systems/clearpass/test', {
+      host: mockCppmBase,
+      clientId: 'good-client',
+      clientSecret: 'cp-secret-never-echoed',
+    });
+    expect(result.status).toBe(200);
+    expect(result.body.ok).toBe(true);
+    expect(result.body.message).toContain('authenticated');
+    expect(JSON.stringify(result.body)).not.toContain('cp-secret-never-echoed');
+  });
+
+  it('passes CPPM\'s refusal detail through when the grant type is not allowed', async () => {
+    const result = await postJson('/api/systems/clearpass/test', {
+      host: mockCppmBase,
+      clientId: 'bad-client',
+      clientSecret: 'cp-secret-never-echoed',
+    });
+    expect(result.status).toBe(502);
+    expect(result.body.ok).toBe(false);
+    expect(result.body.message).toContain('The grant type is unauthorized for this client_id');
+    expect(JSON.stringify(result.body)).not.toContain('cp-secret-never-echoed');
+  });
+
+  it('accepts a pre-minted token that can read the endpoint repository', async () => {
+    const result = await postJson('/api/systems/clearpass/test', { host: mockCppmBase, token: 'good-token' });
+    expect(result.status).toBe(200);
+    expect(result.body.message).toContain('endpoint repository readable');
+  });
+
+  it('names the privilege gap when a valid token gets 403 from CPPM', async () => {
+    const result = await postJson('/api/systems/clearpass/test', { host: mockCppmBase, token: 'limited-token' });
+    expect(result.status).toBe(502);
+    expect(result.body.message).toContain('lacks Endpoint repository privileges');
+  });
+
+  it('says the token was rejected when CPPM answers 401', async () => {
+    const result = await postJson('/api/systems/clearpass/test', { host: mockCppmBase, token: 'bad-token' });
+    expect(result.status).toBe(502);
+    expect(result.body.message).toContain('rejected');
   });
 });
 

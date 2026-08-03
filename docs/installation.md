@@ -56,6 +56,10 @@ Open `http://localhost:5173`.
 | `PORT` | `5173` | UI, API, and terminal WebSocket port |
 | `HPE_SETTINGS_PATH` | `data/settings.json` | Settings and connected-system credentials |
 | `HPE_DATA_DIR` | `data/` | Audits, journals, terminal recordings, and runtime state |
+| `HPE_CONFIG_BACKUP_INTERVAL_MS` | `3600000` (hourly) | Running-config backup sweep interval; minimum 60000 |
+| `HPE_METRICS_SAMPLE_MS` | `300000` (5 minutes) | Metrics-history sample cadence for table sparklines; minimum 1000 |
+| `HPE_SESSION_TTL_MS` | `43200000` (12 hours) | Signed-in session lifetime; must be between 900000 (15m) and 2592000000 (30d) |
+| `HPE_MAINTENANCE_INTERVAL_MS` | `60000` (1 minute) | Maintenance-window scheduler tick; minimum 1000 |
 
 Example:
 
@@ -84,13 +88,22 @@ Restart the running server after the build completes.
 
 ```bash
 npm run typecheck
+npm run lint
 npm test
 npm run build
 bash scripts/smoke.sh
 ```
 
-The smoke script reads API and SPA routes. Do not add mutation requests to a
-production smoke run.
+The smoke script reads API and SPA routes. It assumes the demo no-auth
+server; against a deployment with authentication enabled, every route
+answers 401 unless you pass a token in `SMOKE_TOKEN`, which the script
+sends as an `Authorization: Bearer` header with every request:
+
+```bash
+SMOKE_TOKEN=<token> bash scripts/smoke.sh
+```
+
+Do not add mutation requests to a production smoke run.
 
 ## Troubleshooting
 

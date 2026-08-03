@@ -13,6 +13,18 @@
  *   vlans      GET  /rest/v10.12/system/vlans?depth=2
  *   lldp       GET  /rest/v10.12/system/interfaces/{name}/lldp_neighbors?depth=2
  *
+ * The interfaces read doubles as the per-port COUNTERS read (deviceDetail):
+ * at depth 2 each interface carries its `statistics` attribute — rx/tx bytes,
+ * packets, errors and drops — documented by the AOS-CX NAE guide's monitor
+ * URIs ('…/system/interfaces/1%2F1%2F5?attributes=statistics.rx_packets').
+ * This is read-only diagnostics data, not config.
+ *
+ * PoE draw per port is deliberately NOT published: no per-port power-draw
+ * attribute could be verified in the v10.12 REST surface (the CLI's
+ * `show interface … poe` has no confirmed REST equivalent at this version),
+ * and this portal does not fake capabilities — the keys stay absent rather
+ * than carry an invented reading.
+ *
  * TLS: a switch's management interface serves a self-signed certificate out
  * of the box, so the default transport is a small node:https fetch with
  * rejectUnauthorized OFF (set creds.verifyTls = 'true' to enforce chain
@@ -41,7 +53,16 @@
  */
 
 import * as https from 'node:https';
-import type { DeviceRow, Tone } from '@hpe/shared';
+import type {
+  DetailFetchState,
+  DeviceDetailKind,
+  DeviceDetailLive,
+  DeviceDetailSection,
+  DevicePort,
+  DevicePortCounters,
+  DeviceRow,
+  Tone,
+} from '@hpe/shared';
 import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
@@ -129,6 +150,14 @@ function obj(v: unknown): Record<string, unknown> | null {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
+/** Vendors send counters as numbers or numeric strings; anything else → null
+ *  (the same rule transport.ts's copy encodes, kept local like str/obj above). */
+function num(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim().length > 0 && !Number.isNaN(Number(v))) return Number(v);
+  return null;
+}
+
 /** `management_interface.ip_address` ("10.0.0.1/24" or bare) → the address alone. */
 function managementIp(system: Record<string, unknown>): string | null {
   const mgmt = obj(system.management_interface);
@@ -140,6 +169,82 @@ function managementIp(system: Record<string, unknown>): string | null {
 // ---------------------------------------------------------------------------
 // Row mapping (pure, exported for tests)
 // ---------------------------------------------------------------------------
+
+/** `vlan_tag` arrives as a URI reference ('/rest/v10.12/system/vlans/812') at
+ *  the depths this adapter reads, or as an expanded object keyed by id. */
+function vlanIdFromRef(raw: unknown): number | null {
+  const text = str(raw);
+  if (text) {
+    const tail = text.split('/').filter(Boolean).pop() ?? '';
+    return num(decodeURIComponent(tail));
+  }
+  const expanded = obj(raw);
+  if (expanded) {
+    const first = Object.keys(expanded)[0];
+    if (first !== undefined) return num(first);
+  }
+  return null;
+}
+
+/** `vlan_trunks` is a map keyed by VLAN id; a named trunk the portal cannot
+ *  number is dropped rather than guessed. Present-and-empty is meaningful
+ *  (the switch said "no tagged VLANs"), so an empty list is kept. */
+function trunkVlanIds(raw: unknown): number[] | null {
+  const trunks = obj(raw);
+  if (!trunks) return null;
+  return Object.keys(trunks)
+    .map((k) => num(k))
+    .filter((v): v is number => v !== null);
+}
+
+/** The interface's `statistics` attribute → the counters block. Every field
+ *  nullable: a map that came back without rx_errors is "not reported", not 0. */
+function mapAosCxCounters(statistics: Record<string, unknown>): DevicePortCounters {
+  return {
+    rxBytes: num(statistics.rx_bytes),
+    txBytes: num(statistics.tx_bytes),
+    rxPackets: num(statistics.rx_packets),
+    txPackets: num(statistics.tx_packets),
+    rxErrors: num(statistics.rx_errors),
+    txErrors: num(statistics.tx_errors),
+    rxDropped: num(statistics.rx_dropped),
+    txDropped: num(statistics.tx_dropped),
+  };
+}
+
+/**
+ * One entry of GET /system/interfaces?depth=2 → DevicePort. The map KEY is
+ * the interface name (the attribute may repeat it; the key always has it).
+ * AOS-CX reports link_speed in bits per second (1000000000 for a 1 Gb port),
+ * admin_state/link_state as 'up'/'down' — all kept as the switch words them.
+ *
+ * No `statistics` object → no `counters` key at all: "the switch reported no
+ * statistics map for this interface" and "it reported one full of zeros" are
+ * different facts, and only the second may render as zeros.
+ */
+export function mapAosCxPort(key: string, raw: unknown): DevicePort | null {
+  const iface = obj(raw);
+  if (!iface) return null;
+  const name = str(iface.name) ?? str(key);
+  if (!name) return null;
+  const linkState = str(iface.link_state) ?? '';
+  const nativeVlan = vlanIdFromRef(iface.vlan_tag);
+  const trunks = trunkVlanIds(iface.vlan_trunks);
+  const statistics = obj(iface.statistics);
+  return {
+    name,
+    status: linkState,
+    adminStatus: str(iface.admin_state) ?? '',
+    operStatus: linkState,
+    speedBps: num(iface.link_speed),
+    duplex: str(iface.duplex) ?? '',
+    mtu: num(iface.mtu),
+    vlanMode: str(iface.vlan_mode) ?? '',
+    ...(nativeVlan !== null ? { nativeVlan } : {}),
+    ...(trunks ? { allowedVlanIds: trunks } : {}),
+    ...(statistics ? { counters: mapAosCxCounters(statistics) } : {}),
+  };
+}
 
 /** `GET /rest/v10.12/system` body → the one DeviceRow this adapter publishes. */
 export function mapAosCxSwitch(raw: unknown, siteName: string | null): DeviceRow | null {
@@ -287,6 +392,61 @@ export class AosCxAdapter implements PlaneAdapter {
     // 'devices' dataset (registry.ts / inventory.ts read that flag as "the
     // search ran over a prefix of the estate", which would misstate this).
     return { devices: [device] };
+  }
+
+  /**
+   * Per-device detail for ONE serial — the switch's own interface table with
+   * per-port counters, read on the detail request path (never on the poll).
+   *
+   * The one box this adapter talks REST to is a switch, so any other kind is
+   * a subresource this plane genuinely does not have (null, not a guess).
+   * The serial is accepted but not re-checked against the box: the route
+   * resolves identity off the reconciled row, and this adapter addresses
+   * exactly one switch — the read is its interface table whoever asked.
+   *
+   * The read failing is a 'failed' section with the reason named, never a
+   * throw (attemptDetail would also catch one) and never an empty list —
+   * "the switch is unreachable" and "the switch has no interfaces" are
+   * different sentences on screen.
+   */
+  async deviceDetail(serial: string, kind: DeviceDetailKind): Promise<DeviceDetailLive | null> {
+    const id = (serial ?? '').trim();
+    if (!id || kind !== 'switch') return null;
+    const sections: Partial<Record<DeviceDetailSection, DetailFetchState>> = {};
+    const out: DeviceDetailLive = {
+      serial: id,
+      kind,
+      source: { plane: 'local', at: new Date().toISOString(), sections },
+    };
+    let interfaces: Record<string, unknown>;
+    try {
+      interfaces = await this.getJson('/system/interfaces?depth=2', 'GET /system/interfaces?depth=2');
+    } catch (err) {
+      sections.ports = 'failed';
+      out.source.note = `ports: ${(err as Error).message}`;
+      return out;
+    }
+    const rows = Object.entries(interfaces)
+      .map(([name, raw]) => mapAosCxPort(name, raw))
+      .filter((p): p is DevicePort => p !== null)
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    if (rows.length === 0 && Object.keys(interfaces).length > 0) {
+      // The switch answered with interfaces but none carried attributes (a
+      // firmware that won't honour depth=2 answers name → URI references).
+      // A name-only table would render as "every port down", which this read
+      // does not know — the section fails with the reason named instead.
+      sections.ports = 'failed';
+      out.source.note = 'ports: the switch listed interfaces but none carried readable attributes';
+      return out;
+    }
+    out.ports = rows;
+    sections.ports = rows.length > 0 ? 'ok' : 'empty';
+    if (rows.length > 0 && rows.every((p) => !p.counters)) {
+      // The port table is real; the counters half is not in it. Named in the
+      // payload so the gap is the switch's answer, not a renderer's silence.
+      out.source.note = 'no statistics attribute on any interface in this read — counters not reported';
+    }
+    return out;
   }
 
   // -- internals -------------------------------------------------------------

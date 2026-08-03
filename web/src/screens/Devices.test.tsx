@@ -1,19 +1,22 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Devices from './Devices';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
-import { getDevices } from '../api/client';
+import { getDevices, getMetricsHistory } from '../api/client';
 import { DEVICE_RECONCILIATION, DEVICES, LANE_META } from '@hpe/shared';
-import type { DeviceRow } from '@hpe/shared';
+import type { DeviceRow, MetricsHistoryEnvelope } from '@hpe/shared';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
-  return { ...actual, getDevices: vi.fn() };
+  // getMetricsHistory defaults to null (API unreachable/older server): the
+  // sparkline column hides rather than paints history the server never sent.
+  return { ...actual, getDevices: vi.fn(), getMetricsHistory: vi.fn(() => Promise.resolve(null)) };
 });
 
 const mockGetDevices = vi.mocked(getDevices);
+const mockGetMetrics = vi.mocked(getMetricsHistory);
 
 afterEach(() => {
   cleanup();
@@ -43,7 +46,7 @@ function liveRow(over: Partial<DeviceRow> = {}): DeviceRow {
 
 function renderDevices() {
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <SettingsProvider>
         <ToastProvider>
           <Devices />
@@ -63,7 +66,7 @@ function LocationProbe() {
 
 function renderDevicesWithRouting() {
   return render(
-    <MemoryRouter initialEntries={['/devices']}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/devices']}>
       <SettingsProvider>
         <ToastProvider>
           <Routes>
@@ -82,7 +85,7 @@ function renderDevicesWithRouting() {
 describe('Devices ?names= deep link', () => {
   function renderAt(entry: string) {
     return render(
-      <MemoryRouter initialEntries={[entry]}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
         <SettingsProvider>
           <ToastProvider>
             <Routes>
@@ -142,6 +145,89 @@ describe('Devices ?names= deep link', () => {
   });
 });
 
+/* An availability count's slice — /devices?state=down — narrows the inventory
+ * to the rows in that state. The filter has no Select of its own (states are
+ * the feed's free vocabulary, not a fixed option list), so the chip is what
+ * keeps it visible and clearable, exactly as the ?names= chip does. */
+describe('Devices ?state= deep link', () => {
+  function renderAt(entry: string) {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/devices" element={<Devices />} />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  const MIXED = {
+    dataSource: 'live' as const,
+    devices: [
+      liveRow({ name: 'ap-1', state: 'up', stateTone: 'success' as const }),
+      liveRow({ name: 'sw-2', state: 'down', stateTone: 'danger' as const }),
+      liveRow({ name: 'gw-3', state: 'down', stateTone: 'danger' as const }),
+    ],
+    lanes: {},
+    reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+  };
+
+  it('narrows the inventory to the rows in that state', async () => {
+    mockGetDevices.mockResolvedValue(MIXED);
+    renderAt('/devices?state=down');
+
+    expect(await screen.findByText('2 of 3 indexed')).toBeTruthy();
+    expect(screen.getByText('state: down — clear')).toBeTruthy();
+    expect(screen.queryByText('ap-1')).toBeNull();
+  });
+
+  it('matches a multi-word state verbatim rather than an umbrella bucket', async () => {
+    mockGetDevices.mockResolvedValue({
+      ...MIXED,
+      devices: [
+        liveRow({ name: 'mc-1', state: 'no heartbeat', stateTone: 'danger' as const }),
+        liveRow({ name: 'sw-2', state: 'down', stateTone: 'danger' as const }),
+      ],
+    });
+    renderAt(`/devices?state=${encodeURIComponent('no heartbeat')}`);
+
+    expect(await screen.findByText('1 of 2 indexed')).toBeTruthy();
+    expect(screen.getByText('mc-1')).toBeTruthy();
+    expect(screen.queryByText('sw-2')).toBeNull();
+  });
+
+  it('clears back to the whole inventory', async () => {
+    mockGetDevices.mockResolvedValue(MIXED);
+    renderAt('/devices?state=down');
+
+    fireEvent.click(await screen.findByText('state: down — clear'));
+    expect(await screen.findByText('3 of 3 indexed')).toBeTruthy();
+    expect(screen.queryByText(/state: down/)).toBeNull();
+  });
+
+  /* A state nothing is currently in must not render as an empty estate: the
+     chip stays up and the empty state names the filter, not the inventory. */
+  it('keeps a state with no matching rows visible and clearable', async () => {
+    mockGetDevices.mockResolvedValue(MIXED);
+    renderAt('/devices?state=flapping');
+
+    expect(await screen.findByText('0 of 3 indexed')).toBeTruthy();
+    expect(screen.getByText('state: flapping — clear')).toBeTruthy();
+    expect(screen.getByText('Nothing matches that filter')).toBeTruthy();
+  });
+
+  it('ignores an empty state param instead of hiding everything', async () => {
+    mockGetDevices.mockResolvedValue(MIXED);
+    renderAt('/devices?state=');
+
+    expect(await screen.findByText('3 of 3 indexed')).toBeTruthy();
+    expect(screen.queryByText(/state:/)).toBeNull();
+  });
+});
+
 describe('Devices sparse live inventory', () => {
   it('uses live reconciliation metadata and never renders authored demo totals or examples', async () => {
     mockGetDevices.mockResolvedValue({
@@ -169,7 +255,7 @@ describe('Devices sparse live inventory', () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <SettingsProvider>
           <ToastProvider>
             <Devices />
@@ -205,7 +291,7 @@ describe('Devices missing inventories', () => {
 
   const renderDevices = () =>
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <SettingsProvider>
           <ToastProvider>
             <Devices />
@@ -532,5 +618,495 @@ describe('Devices row links carry exact plane+serial identity', () => {
     expect((await screen.findByTestId('location')).textContent).toBe(
       '/devices/ap-dup?plane=CENTRAL&serial=DUP-CENTRAL-001',
     );
+  });
+});
+
+/* The attached-client sparkline column rides the metrics-history envelope:
+ * real or synthesized-demo series only, window and cadence stated in the
+ * header, and honest text (never a flat fake line) where a device has no
+ * series. A null envelope — older server, unreachable API — hides the column
+ * entirely rather than painting history the server never claimed. */
+describe('Devices client sparkline column', () => {
+  const METRICS: MetricsHistoryEnvelope = {
+    dataSource: 'demo',
+    since: '2026-07-24T12:00:00.000Z',
+    sampleMs: 300_000,
+    retentionMs: 86_400_000,
+    planes: {},
+    deviceClients: {
+      'ap-1f-04': [
+        { t: '2026-07-25T11:50:00.000Z', v: 3 },
+        { t: '2026-07-25T11:55:00.000Z', v: 5 },
+        { t: '2026-07-25T12:00:00.000Z', v: 4 },
+      ],
+      // One sample so far: honest text, not a one-point "line".
+      'sw-core-a': [{ t: '2026-07-25T12:00:00.000Z', v: 1 }],
+    },
+    note: 'synthesized demo history — no plane was sampled',
+  };
+
+  function demoDevices() {
+    return {
+      dataSource: 'demo' as const,
+      devices: DEVICES,
+      lanes: LANE_META,
+      reconciliation: DEVICE_RECONCILIATION,
+    };
+  }
+
+  it('labels the column with the window and cadence, and draws the series a device has', async () => {
+    mockGetDevices.mockResolvedValue(demoDevices());
+    mockGetMetrics.mockResolvedValue(METRICS);
+    renderDevices();
+
+    expect(await screen.findByText('last 24h · sampled every 5m · synthesized demo')).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: /Clients/ })).toBeTruthy();
+    // The aria label carries the value — the SVG itself is decorative.
+    expect(
+      screen.getByRole('img', { name: '4 attached clients · last 24h · sampled every 5m · synthesized demo' }),
+    ).toBeTruthy();
+  });
+
+  it('renders one sample as text and no series as an honest dash, never a flat line', async () => {
+    mockGetDevices.mockResolvedValue(demoDevices());
+    mockGetMetrics.mockResolvedValue(METRICS);
+    const { container } = renderDevices();
+
+    await screen.findByText('1 sample');
+    // sw-core-b has no series at all: a dash whose title says why.
+    const dash = container.querySelector('[title="no attached-client samples for this device"]');
+    expect(dash).not.toBeNull();
+    expect(dash!.textContent).toBe('—');
+  });
+
+  it('hides the whole column when the server sends no metrics envelope', async () => {
+    mockGetDevices.mockResolvedValue(demoDevices());
+    mockGetMetrics.mockResolvedValue(null);
+    renderDevices();
+
+    await screen.findByText(new RegExp(`${DEVICES.length} of ${DEVICES.length} indexed`));
+    expect(screen.queryByRole('columnheader', { name: /Clients/ })).toBeNull();
+    expect(screen.queryByRole('img')).toBeNull();
+  });
+
+  it('follows the density token — compact rows get a shorter sparkline', async () => {
+    // The SettingsContext seeds density from localStorage at construction
+    // (stubbed the SettingsContext.test.tsx way — plain localStorage is not
+    // reliable in this environment).
+    const values = new Map<string, string>([['nt-settings', JSON.stringify({ density: 'compact' })]]);
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+    try {
+      mockGetDevices.mockResolvedValue(demoDevices());
+      mockGetMetrics.mockResolvedValue(METRICS);
+      renderDevices();
+
+      const spark = await screen.findByRole('img', {
+        name: '4 attached clients · last 24h · sampled every 5m · synthesized demo',
+      });
+      expect(spark.querySelector('svg')!.getAttribute('height')).toBe('14');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The unified table is the nightdesk DataTable reference integration: the
+// column manager persists through SettingsContext (localStorage key
+// 'nt-table-columns' under the 'devices' table id), the rows are a keyboard
+// grid (j/k move, Enter opens the device, x selects, Esc clears) and '?'
+// lists the commands. These tests pin the wiring, not the mechanics — the
+// mechanics live in nightdesk/DataTable.test.tsx.
+// ---------------------------------------------------------------------------
+describe('Devices table superpowers', () => {
+  const THREE = {
+    dataSource: 'live' as const,
+    devices: [liveRow({ name: 'ap-1' }), liveRow({ name: 'ap-2' }), liveRow({ name: 'sw-3' })],
+    lanes: {},
+    reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+  };
+
+  beforeEach(() => {
+    // Plain localStorage is not reliable in this environment — stub it the
+    // SettingsContext.test.tsx way, fresh per test so no config leaks.
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function bodyRows(container: HTMLElement): HTMLTableRowElement[] {
+    return Array.from(container.querySelectorAll('tbody tr'));
+  }
+
+  it('hides and restores a column from View options, persisted to localStorage', async () => {
+    mockGetDevices.mockResolvedValue(THREE);
+    const { container } = renderDevices();
+    await screen.findByText('3 of 3 indexed');
+    expect(container.querySelector('th[data-column-key="model"]')).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'View options' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Model' }));
+    expect(container.querySelector('th[data-column-key="model"]')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('nt-table-columns') ?? '{}')).toEqual({
+      devices: { hidden: ['model'] },
+    });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Model' }));
+    expect(container.querySelector('th[data-column-key="model"]')).not.toBeNull();
+    expect(JSON.parse(localStorage.getItem('nt-table-columns') ?? '{}')).toEqual({
+      devices: { hidden: [] },
+    });
+  });
+
+  it('seeds the table from the persisted column config on mount', async () => {
+    localStorage.setItem(
+      'nt-table-columns',
+      JSON.stringify({ devices: { hidden: ['model'], order: ['state', 'device', 'model', 'type', 'site', 'managedBy', 'firmware', 'licence'] } }),
+    );
+    mockGetDevices.mockResolvedValue(THREE);
+    const { container } = renderDevices();
+    await screen.findByText('3 of 3 indexed');
+    expect(container.querySelector('th[data-column-key="model"]')).toBeNull();
+    const keys = Array.from(container.querySelectorAll('th')).map((th) => th.getAttribute('data-column-key'));
+    expect(keys[0]).toBe('state');
+    expect(keys[1]).toBe('device');
+  });
+
+  it('moves the focused row with j/k and opens the device on Enter', async () => {
+    mockGetDevices.mockResolvedValue(THREE);
+    const { container } = renderDevicesWithRouting();
+    await screen.findByText('3 of 3 indexed');
+    const [first, second] = bodyRows(container);
+
+    expect(first.getAttribute('tabindex')).toBe('0');
+    fireEvent.keyDown(first, { key: 'j' });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'k' });
+    expect(document.activeElement).toBe(first);
+
+    fireEvent.keyDown(first, { key: 'Enter' });
+    expect((await screen.findByTestId('location')).textContent).toBe('/devices/ap-1?plane=CENTRAL');
+  });
+
+  it('toggles row selection with x and clears it with Escape', async () => {
+    mockGetDevices.mockResolvedValue(THREE);
+    const { container } = renderDevices();
+    await screen.findByText('3 of 3 indexed');
+    const [first] = bodyRows(container);
+
+    fireEvent.keyDown(first, { key: 'x' });
+    expect(first.getAttribute('aria-selected')).toBe('true');
+    fireEvent.keyDown(first, { key: 'x' });
+    expect(first.getAttribute('aria-selected')).toBe('false');
+
+    fireEvent.keyDown(first, { key: 'x' });
+    fireEvent.keyDown(first, { key: 'Escape' });
+    expect(first.getAttribute('aria-selected')).toBe('false');
+  });
+
+  it("lists the row commands on '?'", async () => {
+    mockGetDevices.mockResolvedValue(THREE);
+    renderDevices();
+    await screen.findByText('3 of 3 indexed');
+
+    fireEvent.keyDown(document.body, { key: '?' });
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+    expect(screen.getByText('Move to the next row')).toBeTruthy();
+    expect(screen.getByText("Run the focused row's primary action")).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
+/* The faceted filters (plane / state / site) replaced the old plane and site
+ * Selects: OR within a facet, AND across facets, counts computed over the
+ * rows the OTHER facets and every non-facet filter let through. The ?plane=
+ * deep link seeds the plane facet. */
+describe('Devices facets', () => {
+  beforeEach(() => {
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const FOUR = {
+    dataSource: 'live' as const,
+    devices: [
+      liveRow({ name: 'ap-1', plane: 'CENTRAL', state: 'up', stateTone: 'success', siteId: 'campus-01', siteName: 'Campus-01 HQ' }),
+      liveRow({ name: 'sw-2', plane: 'CENTRAL', state: 'down', stateTone: 'danger', siteId: 'campus-01', siteName: 'Campus-01 HQ' }),
+      liveRow({ name: 'ap-3', plane: 'MIST', planeTone: 'info', state: 'down', stateTone: 'danger', siteId: 'campus-02', siteName: 'Campus-02 Lab' }),
+      liveRow({ name: 'gw-4', plane: 'MIST', planeTone: 'info', siteId: 'campus-02', siteName: 'Campus-02 Lab' }),
+    ],
+    lanes: {},
+    reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+  };
+
+  function renderAt(entry: string) {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/devices" element={<Devices />} />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('narrows the inventory by facet with honest live counts', async () => {
+    mockGetDevices.mockResolvedValue(FOUR);
+    renderDevices();
+    await screen.findByText('4 of 4 indexed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Plane' }));
+    const planePanel = screen.getByRole('group', { name: 'Plane filter' });
+    expect(within(planePanel).getByRole('checkbox', { name: 'CENTRAL' }).closest('li')!.textContent).toContain('2');
+    expect(within(planePanel).getByRole('checkbox', { name: 'MIST' }).closest('li')!.textContent).toContain('2');
+
+    // AND across facets: plane CENTRAL leaves the two CENTRAL rows…
+    fireEvent.click(within(planePanel).getByRole('checkbox', { name: 'CENTRAL' }));
+    expect(screen.getByText('2 of 4 indexed')).toBeTruthy();
+    expect(screen.getByText('ap-1')).toBeTruthy();
+    expect(screen.queryByText('ap-3')).toBeNull();
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    // …and the state facet's counts reflect the plane selection (MIST's down
+    // row is not counted), while MIST itself stays listed at 0 in its own facet.
+    fireEvent.click(screen.getByRole('button', { name: 'State' }));
+    const statePanel = screen.getByRole('group', { name: 'State filter' });
+    expect(within(statePanel).getByRole('checkbox', { name: 'up' }).closest('li')!.textContent).toContain('1');
+    expect(within(statePanel).getByRole('checkbox', { name: 'down' }).closest('li')!.textContent).toContain('1');
+    expect(within(statePanel).getByRole('checkbox', { name: 'unknown' }).closest('li')!.textContent).toContain('0');
+    fireEvent.click(within(statePanel).getByRole('checkbox', { name: 'down' }));
+    expect(screen.getByText('1 of 4 indexed')).toBeTruthy();
+    expect(screen.getByText('sw-2')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    fireEvent.click(screen.getByRole('button', { name: '2 facet values — clear' }));
+    expect(screen.getByText('4 of 4 indexed')).toBeTruthy();
+  });
+
+  it('facets compose with the free-text filter (AND), counts following the text', async () => {
+    mockGetDevices.mockResolvedValue(FOUR);
+    renderDevices();
+    await screen.findByText('4 of 4 indexed');
+
+    const box = screen.getByPlaceholderText('name, model, serial, ip…');
+    fireEvent.change(box, { target: { value: 'ap-' } });
+    expect(screen.getByText('2 of 4 indexed')).toBeTruthy();
+
+    // The facet universe is the text-filtered set: one CENTRAL and one MIST row.
+    fireEvent.click(screen.getByRole('button', { name: 'Plane' }));
+    const planePanel = screen.getByRole('group', { name: 'Plane filter' });
+    expect(within(planePanel).getByRole('checkbox', { name: 'CENTRAL' }).closest('li')!.textContent).toContain('1');
+    expect(within(planePanel).getByRole('checkbox', { name: 'MIST' }).closest('li')!.textContent).toContain('1');
+
+    fireEvent.click(within(planePanel).getByRole('checkbox', { name: 'MIST' }));
+    expect(screen.getByText('1 of 4 indexed')).toBeTruthy();
+    expect(screen.getByText('ap-3')).toBeTruthy();
+    expect(screen.queryByText('ap-1')).toBeNull();
+  });
+
+  it('labels the site facet by site name, keyed on the site id', async () => {
+    mockGetDevices.mockResolvedValue(FOUR);
+    renderDevices();
+    await screen.findByText('4 of 4 indexed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Site' }));
+    const sitePanel = screen.getByRole('group', { name: 'Site filter' });
+    fireEvent.click(within(sitePanel).getByRole('checkbox', { name: 'Campus-02 Lab' }));
+    expect(screen.getByText('2 of 4 indexed')).toBeTruthy();
+    expect(screen.getByText('ap-3')).toBeTruthy();
+    expect(screen.getByText('gw-4')).toBeTruthy();
+    expect(screen.queryByText('ap-1')).toBeNull();
+  });
+
+  it('seeds the plane facet from the ?plane= deep link', async () => {
+    mockGetDevices.mockResolvedValue(FOUR);
+    renderAt('/devices?plane=mist');
+
+    expect(await screen.findByText('2 of 4 indexed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Plane · 1' })).toBeTruthy();
+    expect(screen.queryByText('ap-1')).toBeNull();
+  });
+
+  it('keeps a deep-linked plane with no rows visible and clearable, count 0', async () => {
+    mockGetDevices.mockResolvedValue(FOUR);
+    renderAt('/devices?plane=uxi');
+
+    // The old Select unioned the value in as "(no devices)"; the facet keeps
+    // it listed at 0 — the hiding filter never turns invisible.
+    expect(await screen.findByText('0 of 4 indexed')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Plane · 1' }));
+    const planePanel = screen.getByRole('group', { name: 'Plane filter' });
+    expect(within(planePanel).getByRole('checkbox', { name: 'UXI' }).closest('li')!.textContent).toContain('0');
+
+    fireEvent.click(within(planePanel).getByRole('button', { name: 'Clear plane' }));
+    expect(screen.getByText('4 of 4 indexed')).toBeTruthy();
+  });
+});
+
+/* The saved-views dropdown captures the facet selection, free text, type and
+ * issues switch, the column-manager config and the density — persisted through
+ * SettingsContext under the 'devices' screen id. */
+describe('Devices saved views', () => {
+  beforeEach(() => {
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      clear: () => values.clear(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const FOUR = {
+    dataSource: 'live' as const,
+    devices: [
+      liveRow({ name: 'ap-1', plane: 'CENTRAL' }),
+      liveRow({ name: 'sw-2', plane: 'CENTRAL' }),
+      liveRow({ name: 'ap-3', plane: 'MIST', planeTone: 'info' }),
+      liveRow({ name: 'gw-4', plane: 'MIST', planeTone: 'info' }),
+    ],
+    lanes: {},
+    reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+  };
+
+  it('saves the current filters and layout, and applying a view restores them', async () => {
+    mockGetDevices.mockResolvedValue(FOUR);
+    const { container } = renderDevices();
+    await screen.findByText('4 of 4 indexed');
+
+    // Set up a view: plane facet CENTRAL, the Model column hidden.
+    fireEvent.click(screen.getByRole('button', { name: 'Plane' }));
+    fireEvent.click(
+      within(screen.getByRole('group', { name: 'Plane filter' })).getByRole('checkbox', { name: 'CENTRAL' }),
+    );
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'View options' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Model' }));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByText('2 of 4 indexed')).toBeTruthy();
+
+    // Save it, then tear the filters down again.
+    fireEvent.click(screen.getByRole('button', { name: 'Views' }));
+    fireEvent.change(screen.getByLabelText('New view name'), { target: { value: 'Central only' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(screen.getByRole('button', { name: 'Views · 1' })).toBeTruthy();
+
+    const persisted = JSON.parse(localStorage.getItem('nt-saved-views') ?? '{}');
+    expect(persisted.devices).toHaveLength(1);
+    expect(persisted.devices[0].name).toBe('Central only');
+    expect(persisted.devices[0].filters.facets).toEqual({ plane: ['CENTRAL'] });
+    expect(persisted.devices[0].tableColumns).toEqual({ hidden: ['model'] });
+
+    fireEvent.click(screen.getByRole('button', { name: '1 facet value — clear' }));
+    fireEvent.click(screen.getByRole('button', { name: 'View options' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Model' }));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByText('4 of 4 indexed')).toBeTruthy();
+    expect(container.querySelector('th[data-column-key="model"]')).not.toBeNull();
+
+    // Applying the view restores the facet selection AND the column layout.
+    fireEvent.click(screen.getByRole('button', { name: 'Views · 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Central only' }));
+    expect(screen.getByText('2 of 4 indexed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Plane · 1' })).toBeTruthy();
+    expect(container.querySelector('th[data-column-key="model"]')).toBeNull();
+  });
+});
+
+describe('Devices firmware verdicts', () => {
+  /* The plane's own firmware words, rendered — never interpreted into prose:
+     behind = warning with the recommended train named, the upgrade-state word
+     verbatim, at-target and unknown quiet. */
+  it('behind: warning badge naming the target, in-progress word verbatim', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [
+        liveRow({
+          name: 'ap-fw-1',
+          type: 'ap',
+          plane: 'MIST',
+          planeTone: 'info',
+          firmware: '0.13.18',
+          firmwareApproved: false,
+          firmwareTarget: '0.14.29',
+          firmwareUpdate: 'inprogress',
+        }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderDevices();
+
+    expect(await screen.findByText('behind → 0.14.29')).toBeTruthy();
+    expect(screen.getByText('inprogress')).toBeTruthy();
+    expect(screen.getByText('0.13.18')).toBeTruthy();
+  });
+
+  it('at target and unknown stay quiet — no badge, no invented state', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [
+        liveRow({ name: 'ap-fw-ok', type: 'ap', firmware: '0.14.29', firmwareApproved: true, firmwareTarget: '0.14.29' }),
+        liveRow({ name: 'sw-fw-unknown', firmware: 'unknown', firmwareApproved: true }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderDevices();
+
+    expect(await screen.findByText('0.14.29')).toBeTruthy();
+    expect(screen.queryByText(/behind →/)).toBeNull();
+    expect(screen.queryByText('inprogress')).toBeNull();
+  });
+
+  it('demo: the fixture estate shows the NET-4188 AP mid-upgrade off the recommended train', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'demo' as const,
+      devices: DEVICES,
+      lanes: LANE_META,
+      reconciliation: DEVICE_RECONCILIATION,
+    });
+
+    renderDevices();
+
+    // ap-3f-14 runs 0.13.18 with 0.14.29 suggested and an upgrade in progress.
+    expect(await screen.findByText('behind → 0.14.29')).toBeTruthy();
+    expect(screen.getByText('inprogress')).toBeTruthy();
+    // Its sibling ap-3f-12 is at the suggested train and stays quiet — exactly
+    // one behind badge on the whole table.
+    expect(screen.getAllByText(/behind →/)).toHaveLength(1);
   });
 });

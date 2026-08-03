@@ -110,6 +110,9 @@
 
 import {
   type AlertRow,
+  type ApTrendMetric,
+  type ApTrendsLive,
+  type ApTrendsSection,
   type ClientDetailLive,
   type ClientDetailSection,
   type ClientRow,
@@ -125,8 +128,13 @@ import {
   type DeviceRadio,
   type DeviceRow,
   type DeviceWlan,
+  type HardwareTrendsSection,
+  type InterfaceTrendsSection,
   type PlaneDatasetKey,
   type Sev,
+  type SiteAppRow,
+  type SiteApplicationsLive,
+  type SiteAppsSection,
   type SsidApplyResult,
   type SsidBands,
   type SsidCatalog,
@@ -142,12 +150,22 @@ import {
   type SiteRow,
   type SiteTopologyLive,
   type SiteTopologySection,
+  type SwitchHardwareTrendsLive,
+  type SwitchInterfaceTrendsLive,
   type Tone,
   type TopologyDeviceNode,
   type TopologyLink,
   type TopologyLinkPort,
+  type TrendWindow,
   type UsageSample,
+  AP_TREND_METRICS,
+  apTrendSpecs,
+  byBytesDesc,
   countOf,
+  interfaceTrendSpecs,
+  normalizeSiteApp,
+  normalizeTrendSet,
+  normalizeTrendWindow,
 } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
@@ -210,6 +228,12 @@ const MOBILITY_WINDOW_SEC = 24 * 60 * 60;
  *  cursor, and the timeline only needs the newest events (default sort is
  *  occurredAt DESC). Walking would spend calls to render rows nobody scrolls to. */
 const MOBILITY_PAGE_LIMIT = 100;
+/** DPI applications page size (the endpoint's documented limit). */
+const APPLICATIONS_PAGE_LIMIT = 200;
+/** Cap on pages one applications read will walk: 10 x 200 = 2,000 rows,
+ *  beyond which the table is honestly marked truncated rather than spending
+ *  unbounded calls on a drawer's request path. */
+const APPLICATIONS_MAX_PAGES = 10;
 
 export type CentralDeviceRow = DeviceRow & DeviceIdentityHints;
 
@@ -1345,6 +1369,7 @@ const PAYLOAD_KEYS = [
   'clients',
   'notifications',
   'alerts',
+  'applications',
   'items',
   'results',
   'wlan-ssid',
@@ -1434,6 +1459,32 @@ function readableObjectBody(res: {
         ? (res.body as Record<string, unknown>)
         : null;
   }
+}
+
+/**
+ * The trend payloads wrap their positional series differently per endpoint
+ * (verified: bare for hardware-trends, trends.graph for AP trends, response
+ * for interface-trends). Each candidate is a key path; the first object
+ * carrying BOTH keys[] and samples[] wins. Null when no candidate does —
+ * a 200 whose body cannot be read is a failed read, not an empty chart.
+ */
+function trendGraph(
+  body: Record<string, unknown>,
+  candidates: readonly (readonly string[])[],
+): { keys: unknown; samples: unknown } | null {
+  for (const path of candidates) {
+    let cur: unknown = body;
+    for (const key of path) {
+      cur = cur && typeof cur === 'object' && !Array.isArray(cur) ? (cur as Record<string, unknown>)[key] : null;
+    }
+    if (cur && typeof cur === 'object' && !Array.isArray(cur)) {
+      const graph = cur as Record<string, unknown>;
+      if (Array.isArray(graph.keys) && Array.isArray(graph.samples)) {
+        return { keys: graph.keys, samples: graph.samples };
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -1724,6 +1775,56 @@ export class CentralAdapter implements PlaneAdapter {
     const id = (siteId ?? '').trim();
     if (!id) return null;
     return this.cachedDetail(`topology:${id}`, () => this.readSiteTopology(id));
+  }
+
+  // -- DPI application visibility + hardware trends --------------------------
+  //
+  // Same on-demand contract as the detail reads above: fetched for the ONE
+  // site/device being viewed, TTL-cached, never from the poller. The window
+  // is validated against the 7-day cap BEFORE any call (a wider window 400s
+  // the applications endpoint); a refusal costs no call and reads as
+  // not-fetched + a note, never as a plane failure.
+  //
+  // NOTE ON WINDOWS: only the applications endpoint is verified to take
+  // start/end, so only that read sends them. The trend endpoints are called
+  // bare (verified one-call shapes); the requested window still rides in the
+  // payload and the cache key, and the series' own timestamps say what the
+  // plane actually returned.
+
+  /** The DPI application table for ONE site over ONE window (paged). */
+  async siteApplications(siteId: string, window: TrendWindow): Promise<SiteApplicationsLive | null> {
+    const id = (siteId ?? '').trim();
+    if (!id) return null;
+    return this.cachedDetail(`apps:${id}:${window?.start}:${window?.end}`, () => this.readSiteApplications(id, window));
+  }
+
+  /** A switch's hardware gauges for ONE serial — ONE call. */
+  async switchHardwareTrends(serial: string, window: TrendWindow): Promise<SwitchHardwareTrendsLive | null> {
+    const id = (serial ?? '').trim();
+    if (!id) return null;
+    return this.cachedDetail(`hwtrends:${id}:${window?.start}:${window?.end}`, () =>
+      this.readSwitchHardwareTrends(id, window),
+    );
+  }
+
+  /** ONE AP metric trend for ONE serial — ONE call per metric. */
+  async apTrends(serial: string, metric: ApTrendMetric, window: TrendWindow): Promise<ApTrendsLive | null> {
+    const id = (serial ?? '').trim();
+    // A metric outside the endpoint vocabulary is a caller bug, not a plane
+    // question — null ("this plane cannot answer"), and it costs no call.
+    if (!id || !AP_TREND_METRICS.includes(metric)) return null;
+    return this.cachedDetail(`aptrends:${id}:${metric}:${window?.start}:${window?.end}`, () =>
+      this.readApTrends(id, metric, window),
+    );
+  }
+
+  /** A switch's interface byte/error counter trends for ONE serial — ONE call. */
+  async switchInterfaceTrends(serial: string, window: TrendWindow): Promise<SwitchInterfaceTrendsLive | null> {
+    const id = (serial ?? '').trim();
+    if (!id) return null;
+    return this.cachedDetail(`iftrends:${id}:${window?.start}:${window?.end}`, () =>
+      this.readSwitchInterfaceTrends(id, window),
+    );
   }
 
   // -- direct SSID write (New Central network-config v1alpha1) ---------------
@@ -2494,6 +2595,196 @@ export class CentralAdapter implements PlaneAdapter {
       out.isolatedHealth = str(body.isolatedHealth);
       sections.nodes = nodes.length > 0 ? 'ok' : 'empty';
       sections.links = links.length > 0 ? 'ok' : 'empty';
+      out.source.note = null;
+    }
+    out.source.at = new Date(this.now()).toISOString();
+    out.source.cached = false;
+    return out;
+  }
+
+  /**
+   * The applications endpoint is keyed by the PLANE's site id, exactly like
+   * topology — resolve the native id remembered during pull() before falling
+   * back to what the caller passed.
+   */
+  private async readSiteApplications(siteId: string, window: TrendWindow): Promise<SiteApplicationsLive> {
+    const native =
+      this.nativeSiteIds.get(siteId) ?? this.nativeSiteIds.get(siteIdForName(siteId).siteId) ?? siteId;
+    const sections: Partial<Record<SiteAppsSection, DetailFetchState>> = {};
+    const out: SiteApplicationsLive = {
+      siteId,
+      window: { start: window?.start ?? '', end: window?.end ?? '' },
+      source: { plane: 'central', at: '', sections },
+    };
+
+    const w = normalizeTrendWindow(window?.start, window?.end);
+    if (!w.ok) {
+      // Refused BEFORE spending a call: sections stay 'not-fetched' (we chose
+      // not to ask) and the note says why — a caller mistake, not a plane
+      // failure.
+      out.source.note = `applications: ${w.error}`;
+      out.source.at = new Date(this.now()).toISOString();
+      out.source.cached = false;
+      return out;
+    }
+    out.window = w.window;
+
+    // Paged walk (limit=200&offset). A page-1 failure fails the section; a
+    // mid-walk failure or a short-of-total finish keeps the rows already
+    // read and marks the table truncated — a prefix of the ranking, never
+    // presented as the whole of it.
+    const rows: unknown[] = [];
+    let truncated = false;
+    let failed: string | null = null;
+    let offset = 0;
+    let statedTotal: number | null = null;
+    for (let page = 0; page < APPLICATIONS_MAX_PAGES; page += 1) {
+      const res = await this.detailGet(
+        `/network-monitoring/v1/applications?site_id=${encodeURIComponent(native)}` +
+          `&start=${encodeURIComponent(w.window.start)}&end=${encodeURIComponent(w.window.end)}` +
+          `&limit=${APPLICATIONS_PAGE_LIMIT}&offset=${offset}`,
+      );
+      const pageRows = res.ok ? rowsFromResponse(res) : null;
+      if (!res.ok || pageRows === null) {
+        const note = res.ok ? 'a 200 whose body carried no readable rows' : res.note;
+        if (page === 0) failed = note;
+        else truncated = true;
+        break;
+      }
+      rows.push(...pageRows);
+      statedTotal = extractTotal(res.body) ?? statedTotal;
+      const lastPage = pageRows.length < APPLICATIONS_PAGE_LIMIT || (statedTotal !== null && rows.length >= statedTotal);
+      if (lastPage) break;
+      offset += pageRows.length;
+      if (page === APPLICATIONS_MAX_PAGES - 1) truncated = true; // a full last page: more rows exist
+    }
+    // The endpoint stated a total it never handed over — same truncation
+    // rule as the poller's section walks.
+    if (failed === null && statedTotal !== null && rows.length < statedTotal) truncated = true;
+
+    if (failed !== null) {
+      sections.apps = 'failed';
+      out.source.note = `applications: ${failed}`;
+    } else {
+      const apps = byBytesDesc(rows.map((r) => normalizeSiteApp(r)).filter((a): a is SiteAppRow => a !== null));
+      out.apps = apps;
+      sections.apps = apps.length > 0 ? 'ok' : 'empty';
+      if (truncated) out.truncated = true;
+      out.source.note = truncated
+        ? 'applications: the paged walk did not finish — the table is a prefix of the full ranking'
+        : null;
+    }
+    out.source.at = new Date(this.now()).toISOString();
+    out.source.cached = false;
+    return out;
+  }
+
+  private async readSwitchHardwareTrends(serial: string, window: TrendWindow): Promise<SwitchHardwareTrendsLive> {
+    const sections: Partial<Record<HardwareTrendsSection, DetailFetchState>> = {};
+    const out: SwitchHardwareTrendsLive = {
+      serial,
+      window: { start: window?.start ?? '', end: window?.end ?? '' },
+      source: { plane: 'central', at: '', sections },
+    };
+    const w = normalizeTrendWindow(window?.start, window?.end);
+    if (!w.ok) {
+      out.source.note = `hardware-trends: ${w.error}`;
+      out.source.at = new Date(this.now()).toISOString();
+      out.source.cached = false;
+      return out;
+    }
+    out.window = w.window;
+
+    const res = await this.detailGet(`/network-monitoring/v1/switches/${encodeURIComponent(serial)}/hardware-trends`);
+    const body = res.ok ? readableObjectBody(res) : null;
+    const graph = body ? trendGraph(body, [[], ['response']]) : null;
+    if (!res.ok) {
+      sections.hardware = 'failed';
+      out.source.note = `hardware-trends: ${res.note}`;
+    } else if (graph === null) {
+      sections.hardware = 'failed';
+      out.source.note = 'hardware-trends: a 200 whose body carried no readable trend graph';
+    } else {
+      const set = normalizeTrendSet(graph.keys, graph.samples);
+      out.trends = set;
+      sections.hardware = set.ok ? 'ok' : 'empty';
+      out.source.note = null;
+    }
+    out.source.at = new Date(this.now()).toISOString();
+    out.source.cached = false;
+    return out;
+  }
+
+  private async readApTrends(serial: string, metric: ApTrendMetric, window: TrendWindow): Promise<ApTrendsLive> {
+    const sections: Partial<Record<ApTrendsSection, DetailFetchState>> = {};
+    const out: ApTrendsLive = {
+      serial,
+      metric,
+      window: { start: window?.start ?? '', end: window?.end ?? '' },
+      source: { plane: 'central', at: '', sections },
+    };
+    const w = normalizeTrendWindow(window?.start, window?.end);
+    if (!w.ok) {
+      out.source.note = `${metric}-trends: ${w.error}`;
+      out.source.at = new Date(this.now()).toISOString();
+      out.source.cached = false;
+      return out;
+    }
+    out.window = w.window;
+
+    const res = await this.detailGet(
+      `/network-monitoring/v1/aps/${encodeURIComponent(serial)}/${metric}-trends`,
+    );
+    const body = res.ok ? readableObjectBody(res) : null;
+    const graph = body ? trendGraph(body, [['trends', 'graph'], ['trends'], ['graph'], []]) : null;
+    if (!res.ok) {
+      sections.trends = 'failed';
+      out.source.note = `${metric}-trends: ${res.note}`;
+    } else if (graph === null) {
+      sections.trends = 'failed';
+      out.source.note = `${metric}-trends: a 200 whose body carried no readable trend graph`;
+    } else {
+      const keyNames = (graph.keys as unknown[]).filter((k): k is string => typeof k === 'string');
+      const set = normalizeTrendSet(graph.keys, graph.samples, apTrendSpecs(metric, keyNames));
+      out.trends = set;
+      sections.trends = set.ok ? 'ok' : 'empty';
+      out.source.note = null;
+    }
+    out.source.at = new Date(this.now()).toISOString();
+    out.source.cached = false;
+    return out;
+  }
+
+  private async readSwitchInterfaceTrends(serial: string, window: TrendWindow): Promise<SwitchInterfaceTrendsLive> {
+    const sections: Partial<Record<InterfaceTrendsSection, DetailFetchState>> = {};
+    const out: SwitchInterfaceTrendsLive = {
+      serial,
+      window: { start: window?.start ?? '', end: window?.end ?? '' },
+      source: { plane: 'central', at: '', sections },
+    };
+    const w = normalizeTrendWindow(window?.start, window?.end);
+    if (!w.ok) {
+      out.source.note = `interface-trends: ${w.error}`;
+      out.source.at = new Date(this.now()).toISOString();
+      out.source.cached = false;
+      return out;
+    }
+    out.window = w.window;
+
+    const res = await this.detailGet(`/network-monitoring/v1/switches/${encodeURIComponent(serial)}/interface-trends`);
+    const body = res.ok ? readableObjectBody(res) : null;
+    const graph = body ? trendGraph(body, [['response'], []]) : null;
+    if (!res.ok) {
+      sections.interfaces = 'failed';
+      out.source.note = `interface-trends: ${res.note}`;
+    } else if (graph === null) {
+      sections.interfaces = 'failed';
+      out.source.note = 'interface-trends: a 200 whose body carried no readable trend graph';
+    } else {
+      const keyNames = (graph.keys as unknown[]).filter((k): k is string => typeof k === 'string');
+      const set = normalizeTrendSet(graph.keys, graph.samples, interfaceTrendSpecs(keyNames));
+      out.trends = set;
+      sections.interfaces = set.ok ? 'ok' : 'empty';
       out.source.note = null;
     }
     out.source.at = new Date(this.now()).toISOString();

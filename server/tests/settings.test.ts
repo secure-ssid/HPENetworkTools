@@ -19,7 +19,7 @@ const ROUTE_DIR = vi.hoisted(() => {
 });
 
 import express from 'express';
-import { SettingsStore } from '../src/config/settings';
+import { SettingsStore, settings } from '../src/config/settings';
 import { settingsRouter } from '../src/routes/settings';
 import { registry } from '../src/planes/registry';
 import { poller } from '../src/services/poller';
@@ -141,6 +141,34 @@ describe('SettingsStore', () => {
     writeFileSync(file, '{ not json');
     expect(() => new SettingsStore(file).load()).toThrow(/not valid JSON/);
   });
+
+  /* The web shell's table column configs and saved views are opaque maps the
+   * server does not interpret — but they must survive the store: accepted by
+   * update(), kept across unrelated writes, and persisted to disk. */
+  it('passes tableColumns and savedViews through, keeping them across unrelated updates', () => {
+    const { file, store } = tmpStore();
+    store.load();
+    store.update({
+      tableColumns: { devices: { hidden: ['model'] } },
+      savedViews: { devices: [{ name: 'WAN focus', filters: { q: 'wan' }, density: 'compact' }] },
+    });
+    // An unrelated preference write must not drop either map.
+    store.update({ workspaceName: 'Unrelated' });
+    expect(store.get().tableColumns).toEqual({ devices: { hidden: ['model'] } });
+    expect(store.get().savedViews).toEqual({
+      devices: [{ name: 'WAN focus', filters: { q: 'wan' }, density: 'compact' }],
+    });
+
+    const loaded = new SettingsStore(file).load();
+    expect(loaded.tableColumns).toEqual({ devices: { hidden: ['model'] } });
+    expect(loaded.savedViews).toEqual({
+      devices: [{ name: 'WAN focus', filters: { q: 'wan' }, density: 'compact' }],
+    });
+
+    // Whole-map replace, never a deep merge: the client always sends its full map.
+    store.update({ tableColumns: { alerts: { hidden: ['site'] } } });
+    expect(store.get().tableColumns).toEqual({ alerts: { hidden: ['site'] } });
+  });
 });
 
 /**
@@ -220,5 +248,174 @@ describe('PUT /api/settings plane reinit guard', () => {
       clear.mockRestore();
       reinit.mockRestore();
     }
+  });
+});
+
+/**
+ * PUT /api/settings accepts an auth block (the settings screen echoes the
+ * whole masked store back), so it must apply the same validation as
+ * PUT /api/auth/config — otherwise it is a weaker path onto the identity
+ * provider than the dedicated route.
+ */
+describe('PUT /api/settings auth validation', () => {
+  let server: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    const app = express();
+    app.use(express.json({ limit: '1mb' }));
+    app.use('/api', settingsRouter);
+    server = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // The singleton store writes through to ROUTE_DIR on every update; the
+    // reinit-guard describe above has already removed it once.
+    rmSync(ROUTE_DIR, { recursive: true, force: true });
+  });
+
+  async function put(body: unknown): Promise<{ status: number; body: any }> {
+    const res = await fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  }
+
+  it('rejects an invalid identity provider rather than persisting it', async () => {
+    const plainHttpIssuer = await put({
+      auth: {
+        issuer: 'http://evil.example.com',
+        clientId: 'portal',
+        clientSecret: 's3cret-value',
+        redirectUri: 'https://portal.example.com/api/auth/callback',
+      },
+    });
+    expect(plainHttpIssuer.status).toBe(400);
+    expect(plainHttpIssuer.body.error).toBe('issuer must use HTTPS (http is allowed only for loopback)');
+
+    const badRedirect = await put({
+      auth: {
+        issuer: 'https://idp.example.com',
+        clientId: 'portal',
+        clientSecret: 's3cret-value',
+        redirectUri: 'not a url',
+      },
+    });
+    expect(badRedirect.status).toBe(400);
+    expect(badRedirect.body.error).toBe('redirectUri must be a valid absolute URL');
+
+    // Nothing reached the store through the side door.
+    expect(settings.get().auth).toBeNull();
+  });
+
+  it('accepts a valid provider and keeps the stored secret on a masked round-trip', async () => {
+    const saved = await put({
+      auth: {
+        issuer: 'https://idp.example.com',
+        clientId: 'portal',
+        clientSecret: 'real-secret',
+        redirectUri: 'https://portal.example.com/api/auth/callback',
+        allowedGroups: ['netops'],
+      },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.auth.clientSecret).toBe('••••••');
+    expect(settings.get().auth?.clientSecret).toBe('real-secret');
+
+    // The settings screen's write: the whole masked blob echoed back with one
+    // preference changed. The masked auth block must validate, and the stored
+    // secret must survive the round-trip untouched.
+    const masked = (await (await fetch(`${base}/api/settings`)).json()) as Record<string, unknown>;
+    const echoed = await put({ ...masked, workspaceName: 'Round Trip' });
+    expect(echoed.status).toBe(200);
+    expect(settings.get().auth?.clientSecret).toBe('real-secret');
+    expect(settings.get().auth?.issuer).toBe('https://idp.example.com');
+    expect(settings.get().workspaceName).toBe('Round Trip');
+
+    // Null removes the provider, as DELETE /api/auth/config does.
+    const removed = await put({ auth: null });
+    expect(removed.status).toBe(200);
+    expect(settings.get().auth).toBeNull();
+  });
+});
+
+/**
+ * The web shell syncs its table column configs and saved views through
+ * /api/settings (SettingsContext.tsx): both are opaque object maps the route
+ * must accept, serve back, and keep on a masked round-trip — and a non-object
+ * value must still fail validation rather than reaching the store.
+ */
+describe('PUT /api/settings UI layout keys', () => {
+  let server: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    const app = express();
+    app.use(express.json({ limit: '1mb' }));
+    app.use('/api', settingsRouter);
+    server = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(ROUTE_DIR, { recursive: true, force: true });
+  });
+
+  async function put(body: unknown): Promise<{ status: number; body: any }> {
+    const res = await fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  }
+
+  const COLUMNS = { devices: { hidden: ['model'], order: ['state', 'device'] } };
+  const VIEWS = { devices: [{ name: 'WAN focus', filters: { facets: { plane: ['CENTRAL'] } }, density: 'compact' }] };
+
+  it('accepts tableColumns and savedViews, serves them back, and keeps them on a shell round-trip', async () => {
+    const saved = await put({
+      density: 'comfortable',
+      inventoryView: 'Unified table',
+      showPlatformTags: true,
+      workspaceName: 'Meridian Health',
+      pollIntervalSec: 60,
+      tableColumns: COLUMNS,
+      savedViews: VIEWS,
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.tableColumns).toEqual(COLUMNS);
+    expect(saved.body.savedViews).toEqual(VIEWS);
+
+    // The shell's next preference write echoes the masked blob with one key
+    // changed and only ONE of the maps: the other must survive — the merged
+    // store only touches keys the patch actually carries.
+    const masked = (await (await fetch(`${base}/api/settings`)).json()) as Record<string, unknown>;
+    const echoed = await put({ ...masked, workspaceName: 'Round Trip', tableColumns: { alerts: { hidden: ['site'] } } });
+    expect(echoed.status).toBe(200);
+    expect(echoed.body.tableColumns).toEqual({ alerts: { hidden: ['site'] } });
+    expect(echoed.body.savedViews).toEqual(VIEWS);
+  });
+
+  it('rejects a non-object tableColumns or savedViews instead of persisting it', async () => {
+    const badColumns = await put({ tableColumns: ['not-an-object'] });
+    expect(badColumns.status).toBe(400);
+    expect(badColumns.body.error).toBe('invalid settings fields: tableColumns');
+
+    const badViews = await put({ savedViews: 'nope' });
+    expect(badViews.status).toBe(400);
+    expect(badViews.body.error).toBe('invalid settings fields: savedViews');
+
+    // A body that names ONLY an unsupported key is still a 400.
+    const unknown = await put({ somethingElse: {} });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error).toBe('settings body contains no supported fields');
   });
 });

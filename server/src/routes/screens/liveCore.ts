@@ -22,6 +22,7 @@ import {
   reconcileDevices,
   type ReconciledDeviceRow,
 } from '../../services/reconcile';
+import { alertQueueView } from '../../services/silences';
 import { mixString } from './complianceModel';
 import {
   datasetReported,
@@ -390,6 +391,14 @@ export function mergeLiveSites(
  * table. Datasets no plane reported read '—' rather than a false zero, and
  * unverified devices are named in the delta (design rule 1).
  *
+ * 'Sites with alerts' is counted off the merged rows themselves, not the raw
+ * queue: the merge is what the table renders, so the headline and the badges
+ * can never tell two stories — including when a silence benched every firing
+ * a site had (liveMerged merges the active queue, so a fully hushed site
+ * reads 'clear' in the table and drops out of this count with it). The
+ * `alerts` parameter is retained for signature stability; the merged rows
+ * already carry everything the count needs.
+ *
  * `missingInventories` names linked planes that contributed no device list.
  * Clients and alerts were already gated on datasetReported, but Sites and
  * Devices were not, and those two are the ones derived from the inventory:
@@ -409,7 +418,7 @@ export function liveSiteStats(
   const alertsReported = datasetReported('alerts');
   const unverified = devices.filter((d) => d.state === 'unverified').length;
   const stale = sites.filter((s) => s.tone === 'stale').length;
-  const withAlerts = new Set(alerts.filter((a) => a.state === 'open').map((a) => a.siteId)).size;
+  const withAlerts = sites.filter((s) => s.alertTone === 'warning').length;
   const short = missingInventories.length > 0 ? missingInventories.join(', ') : null;
   return [
     {
@@ -466,7 +475,15 @@ export function liveMerged(): {
     devices,
     doubleClaimed,
     unclaimed,
-    sites: mergeLiveSites(cache.sites, devices, clients, alerts),
+    // The per-site badge counts what still needs someone, so the merge reads
+    // the same active queue /api/alerts serves: a firing benched by a silence
+    // cannot leave a site reading '3 open' while the Alerts screen has all
+    // three in the silenced bench. The FULL queue still leaves here — the
+    // Alerts route partitions it for itself, and the site detail's "Open
+    // here" runs the same partition (screens.ts liveSiteSections): benched
+    // firings move to its own silenced group WITH their reason, so the
+    // silence-aware badge and the section can never tell two stories.
+    sites: mergeLiveSites(cache.sites, devices, clients, alertQueueView(alerts).alerts),
     clients,
     alerts: sortLiveAlerts(alerts),
   };

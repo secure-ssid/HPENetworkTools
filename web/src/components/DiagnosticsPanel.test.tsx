@@ -743,19 +743,19 @@ describe('diagnostic job timing', () => {
     // transition remounts it and `watchedSince` becomes now. Before this, that
     // handed the job a fresh 100s of retries it had already spent.
     const remountedNow = STARTED + 95_000;
-    expect(retryElapsedMs(job, remountedNow, remountedNow)).toBe(95_000);
+    expect(retryElapsedMs(job.startedAt, remountedNow, remountedNow)).toBe(95_000);
   });
 
   it('falls back to the watch clock when the plane did not date the run', () => {
     const job = apJob({ startedAt: 'not a date' });
-    expect(retryElapsedMs(job, 1_000, 61_000)).toBe(60_000);
+    expect(retryElapsedMs(job.startedAt, 1_000, 61_000)).toBe(60_000);
   });
 
   it('never shortens the ceiling below what the panel itself has watched', () => {
     // A browser clock behind the server's would otherwise read as a run that
     // had barely begun, and retry past a deadline the server already passed.
     const job = apJob();
-    expect(retryElapsedMs(job, STARTED - 30_000, STARTED)).toBe(30_000);
+    expect(retryElapsedMs(job.startedAt, STARTED - 30_000, STARTED)).toBe(30_000);
   });
 
   it('ages a running job so a stalled one cannot look like a fresh one', () => {

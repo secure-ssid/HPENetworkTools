@@ -466,9 +466,10 @@ const CONNECT_MS = 45_000;
  *
  * conn.shell()'s callback may simply never fire — a switch at its session
  * limit can accept the SSH transport and then never grant a channel. Without
- * this the session sat in 'connecting' forever: the idle timer had not started
- * (it starts on the first frame) and the operator saw a pane that never
- * resolved and never said why.
+ * this the session sat in 'connecting' with nothing to end it promptly: the
+ * idle timer starts at connect and resets on every client frame, so a stuck
+ * shell would hang for the full idle timeout (longer if the operator keeps
+ * prodding it) — a pane that never resolved and never said why.
  */
 const SHELL_OPEN_MS = 20_000;
 

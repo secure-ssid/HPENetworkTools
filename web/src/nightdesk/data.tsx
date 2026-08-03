@@ -1,7 +1,8 @@
 import type { CSSProperties, ReactNode } from 'react';
+import type { Tone } from '@hpe/shared';
 import { cx } from './utils';
 
-export type Tone = 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'accent';
+export type { Tone };
 
 /* ---------- Stat ---------- */
 

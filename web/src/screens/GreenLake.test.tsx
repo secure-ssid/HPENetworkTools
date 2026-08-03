@@ -56,7 +56,7 @@ function inventory(over: Partial<Parameters<typeof renderScreen>[0]> = {}) {
 function renderScreen(payload: Record<string, unknown>) {
   mockInventory.mockResolvedValue(payload as never);
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <ToastProvider>
         <SettingsProvider>
           <GreenLake />

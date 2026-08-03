@@ -38,6 +38,17 @@
  *                    four read outcomes (ok / empty / failed / not-fetched)
  *                    print four different sentences, and only the last two
  *                    may mention the plane at all.
+ *   (k) SNAPSHOT CONFIG — a `config` block joined from the config-backup store
+ *                    renders the same three tabs with its collection channel
+ *                    and time named in a caption, in the authored view and the
+ *                    live view alike; a fixture block carries no caption, one
+ *                    version on file says so on the Drift tab, and the live
+ *                    gap note stays exactly as it was when nothing is on file.
+ *   (l) PORT COUNTERS — the local AOS-CX detail read carries per-port
+ *                    counters; the ports table gains Traffic/Errors columns
+ *                    only for rows with a counters block, collapses an
+ *                    all-identical fault column, and the authored demo rows
+ *                    show the same counters without a switch.
  *
  * These tests caught a real regression: the reboot hooks used to live below
  * the `if (!data)` early return, so React threw "Rendered more hooks than
@@ -53,6 +64,9 @@ import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import {
   getDeviceDetail,
+  getDeviceHardwareTrends,
+  getDeviceInterfaceTrends,
+  getDeviceApTrends,
   getTerminalSession,
   getTerminalSessions,
   getTickets,
@@ -64,6 +78,9 @@ import {
   DEVICE_CLIENT_SETS,
   DEVICE_CONFIGS,
   DEVICES,
+  MIST_AP_STATS,
+  SWITCH_HARDWARE_TRENDS_DEMO,
+  SWITCH_INTERFACE_TRENDS_DEMO,
   TICKETS,
   deviceProfile,
   deviceTerminalKind,
@@ -71,6 +88,7 @@ import {
   terminalQuickCommands,
 } from '@hpe/shared';
 import type {
+  DeviceCfg,
   DeviceDetailLive,
   DeviceEvidence,
   DevicePort,
@@ -121,6 +139,11 @@ vi.mock('../api/client', async (importOriginal) => {
     getTerminalSessions: vi.fn(),
     getTickets: vi.fn(),
     rebootDevice: vi.fn(),
+    // The trend panel's on-demand reads: 'not reported' unless a test says
+    // otherwise — the panel's honest sentence, never an unstubbed crash.
+    getDeviceHardwareTrends: vi.fn(() => Promise.resolve({ kind: 'not-reported' as const })),
+    getDeviceInterfaceTrends: vi.fn(() => Promise.resolve({ kind: 'not-reported' as const })),
+    getDeviceApTrends: vi.fn(() => Promise.resolve({ kind: 'not-reported' as const })),
   };
 });
 
@@ -148,6 +171,9 @@ const mockGetTerminalSessions = vi.mocked(getTerminalSessions);
 const mockGetTickets = vi.mocked(getTickets);
 const mockRebootDevice = vi.mocked(rebootDevice);
 const mockCreateWsTransport = vi.mocked(createWsTransport);
+const mockGetDeviceHardwareTrends = vi.mocked(getDeviceHardwareTrends);
+const mockGetDeviceInterfaceTrends = vi.mocked(getDeviceInterfaceTrends);
+const mockGetDeviceApTrends = vi.mocked(getDeviceApTrends);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -155,7 +181,7 @@ const mockCreateWsTransport = vi.mocked(createWsTransport);
 
 function renderDeviceDetail(name: string) {
   return render(
-    <MemoryRouter initialEntries={[`/devices/${name}`]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[`/devices/${name}`]}>
       <SettingsProvider>
         <ToastProvider>
           <Routes>
@@ -172,7 +198,7 @@ function renderDeviceDetail(name: string) {
  *  carried reaches getDeviceDetail unchanged. */
 function renderDeviceDetailAtPath(path: string) {
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
       <SettingsProvider>
         <ToastProvider>
           <Routes>
@@ -1077,6 +1103,197 @@ describe('DeviceDetail — class-aware detail panels', () => {
 });
 
 // ---------------------------------------------------------------------------
+// (l) PORT COUNTERS — the local AOS-CX read carries per-port counters off the
+//     interface statistics attribute. The table gains Traffic/Errors columns
+//     only when rows carry a counters block, an all-identical fault column
+//     collapses into one stated fact, a row without a block reads as
+//     not-reported, and the authored demo rows show the same counters with no
+//     switch involved.
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — per-port counters (local AOS-CX)', () => {
+  const withDetail = <T extends object>(base: T, detail: DeviceDetailLive) => ({
+    ...base,
+    detail,
+  });
+
+  const liveBase = (deviceName: string) => {
+    const device = DEVICES.find((d) => d.name === deviceName);
+    if (!device) throw new Error(`fixture missing: ${deviceName}`);
+    return {
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live' as const,
+    };
+  };
+
+  const quietDeps = () => {
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+  };
+
+  /** A local AOS-CX port as the adapter maps it: the plane's own 'up'/'down'
+   *  words, counters only when the interface carried a statistics map. */
+  const cxPort = (
+    name: string,
+    counters: DevicePort['counters'] | null,
+    over: Partial<DevicePort> = {},
+  ): DevicePort => ({
+    name,
+    status: 'up',
+    adminStatus: 'up',
+    operStatus: 'up',
+    speedBps: 1_000_000_000,
+    duplex: 'full',
+    vlanMode: 'access',
+    nativeVlan: 812,
+    allowedVlanIds: [],
+    ...over,
+    ...(counters ? { counters } : {}),
+  });
+
+  const cleanCounters = (rxBytes: number, txBytes: number): NonNullable<DevicePort['counters']> => ({
+    rxBytes,
+    txBytes,
+    rxPackets: 1,
+    txPackets: 1,
+    rxErrors: 0,
+    txErrors: 0,
+    rxDropped: 0,
+    txDropped: 0,
+  });
+
+  const cxDetail = (ports: DevicePort[]): DeviceDetailLive => ({
+    serial: 'SG09KLM4X2',
+    kind: 'switch',
+    ports,
+    source: { plane: 'local', at: '2026-07-28T15:47:00.000Z', sections: { ports: 'ok' } },
+  });
+
+  it('renders Traffic and Errors columns when the plane reported counters', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(
+        liveBase('sw-core-a'),
+        cxDetail([
+          cxPort('1/1/14', cleanCounters(412_000_000_000, 1_280_000_000_000), { nativeVlan: 810 }),
+          cxPort('1/1/22', cleanCounters(86_000_000_000, 4_100_000_000), { nativeVlan: 811, speedBps: 2_500_000_000 }),
+          cxPort('lag1', {
+            rxBytes: 31_482_000_000_000,
+            txBytes: 28_913_000_000_000,
+            rxPackets: 1,
+            txPackets: 1,
+            rxErrors: 3,
+            txErrors: 0,
+            rxDropped: 27,
+            txDropped: 0,
+          }),
+        ]),
+      ),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('Traffic')).toBeTruthy();
+    expect(screen.getByText('Errors')).toBeTruthy();
+    expect(screen.getByText('rx 412 GB · tx 1.3 TB')).toBeTruthy();
+    expect(screen.getByText('3 err · 27 drop')).toBeTruthy();
+    // One row with real faults keeps the column — the clean rows keep cells.
+    expect(screen.getAllByText('0 err · 0 drop')).toHaveLength(2);
+    expect(screen.queryByText(/Same on all 3 ports: Errors/)).toBeNull();
+  });
+
+  it('collapses an all-clean fault column into one fact stated once', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(
+        liveBase('sw-core-a'),
+        cxDetail([
+          cxPort('1/1/13', cleanCounters(1_000_000_000, 2_000_000_000), { nativeVlan: 810 }),
+          cxPort('1/1/14', cleanCounters(412_000_000_000, 1_280_000_000_000), { nativeVlan: 811, speedBps: 2_500_000_000 }),
+          cxPort('1/1/15', cleanCounters(86_000_000_000, 4_100_000_000), { nativeVlan: 812, speedBps: 5_000_000_000 }),
+        ]),
+      ),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    // Every port answers identically, so the column leaves the grid and is
+    // stated once underneath — nothing is hidden.
+    expect(await screen.findByText('Same on all 3 ports: Errors 0 err · 0 drop')).toBeTruthy();
+    expect(screen.queryByText('Errors')).toBeNull();
+    // Traffic differs per row, so that column stays.
+    expect(screen.getByText('Traffic')).toBeTruthy();
+  });
+
+  it('adds no counter columns at all when no row carried a statistics map', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(
+        liveBase('sw-core-a'),
+        cxDetail([
+          cxPort('1/1/13', null, { nativeVlan: 810 }),
+          cxPort('1/1/14', null, { nativeVlan: 811, speedBps: 2_500_000_000 }),
+          cxPort('1/1/15', null, { nativeVlan: 812, speedBps: 5_000_000_000 }),
+        ]),
+      ),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('Ports of interest')).toBeTruthy();
+    expect(screen.queryByText('Traffic')).toBeNull();
+    expect(screen.queryByText('Errors')).toBeNull();
+  });
+
+  it('reads a row without a counters block as not-reported, never as zero', async () => {
+    mockGetDeviceDetail.mockResolvedValue(
+      withDetail(
+        liveBase('sw-core-a'),
+        cxDetail([
+          cxPort('1/1/13', null, { nativeVlan: 810 }),
+          cxPort('1/1/14', cleanCounters(412_000_000_000, 1_280_000_000_000), { nativeVlan: 811, speedBps: 2_500_000_000 }),
+          cxPort('1/1/15', null, { nativeVlan: 812, speedBps: 5_000_000_000 }),
+        ]),
+      ),
+    );
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('rx 412 GB · tx 1.3 TB')).toBeTruthy();
+    // The two unreported rows read '—' in both counter columns — 4 cells,
+    // each the same statement the rest of the screen makes: nothing was said.
+    expect(screen.getAllByText('—')).toHaveLength(4);
+  });
+
+  it('shows the authored counters on the demo CX switch rows — no switch required', async () => {
+    const profile = deviceProfile('sw-core-a');
+    const device = DEVICES.find((d) => d.name === 'sw-core-a') ?? null;
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('rx 31.5 TB · tx 28.9 TB · 0 err · 0 drop')).toBeTruthy();
+    expect(screen.getByText(/3 err · 27 drop/)).toBeTruthy();
+    // ISL, AP uplink and the frozen sensor port report clean counters; the
+    // transit row reports the faults above; psu2 is not an interface and
+    // earned no counter line at all.
+    expect(screen.getAllByText(/0 err · 0 drop/)).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (c) TRANSCRIPT RACE — stale transcript resolutions are ignored
 // ---------------------------------------------------------------------------
 
@@ -1851,5 +2068,445 @@ describe('DeviceDetail — recorded sessions use plane+serial, never name-only',
     expect(
       await screen.findByText(/names more than one device — recorded sessions need an exact plane and serial/),
     ).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (k) SNAPSHOT CONFIG — the config-backup join renders with provenance
+// ---------------------------------------------------------------------------
+
+/** A config block as the route builds it from the backup store (ISO times
+ *  without a Z suffix, so the hhmm assertions are timezone-independent). */
+function snapshotCfg(over: Partial<DeviceCfg> = {}): DeviceCfg {
+  return {
+    meta: 'SNAPSHOT v2 · 2 VERSIONS ON FILE',
+    running: 'hostname sw-core-a\nntp server 10.42.0.21 iburst',
+    diff: '  hostname sw-core-a\n- ntp server 10.42.0.20 iburst\n+ ntp server 10.42.0.21 iburst',
+    history: [
+      { when: '2026-07-25T12:04:00', what: 'Snapshot v2 — 2 lines', who: 'ssh show running-config', tag: 'drift', tone: 'warning' },
+      { when: '2026-07-25T06:00:00', what: 'Snapshot v1 — 2 lines', who: 'ssh show running-config', tag: 'snapshot', tone: 'neutral' },
+    ],
+    provenance: { version: 2, versions: 2, source: 'ssh show running-config', takenAt: '2026-07-25T12:04:00' },
+    ...over,
+  };
+}
+
+describe('DeviceDetail — config snapshot provenance', () => {
+  it('renders the joined snapshot in the three tabs with the collection channel named', async () => {
+    const profile = deviceProfile('sw-core-a');
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: snapshotCfg(),
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    renderDeviceDetail('sw-core-a');
+
+    // The Running tab opens on the snapshot body, the section meta counts the
+    // versions on file, and the caption says where the snapshot CAME FROM —
+    // a real collection channel, never implied.
+    expect(await screen.findByText(/ntp server 10\.42\.0\.21 iburst/)).toBeTruthy();
+    expect(screen.getByText('SNAPSHOT v2 · 2 VERSIONS ON FILE')).toBeTruthy();
+    expect(screen.getByText('snapshot v2 · ssh show running-config · 12:04')).toBeTruthy();
+
+    // Drift tab: the diff of the two newest versions, coloured as a diff.
+    fireEvent.click(screen.getByRole('tab', { name: 'Drift vs. baseline' }));
+    expect(screen.getByText(/^- ntp server 10\.42\.0\.20 iburst/)).toBeTruthy();
+    expect(screen.getByText(/^\+ ntp server 10\.42\.0\.21 iburst/)).toBeTruthy();
+
+    // History tab: the real version list, browser-stamped times, drift tagged.
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }));
+    expect(screen.getByText('Snapshot v2 — 2 lines')).toBeTruthy();
+    expect(screen.getByText('Snapshot v1 — 2 lines')).toBeTruthy();
+    expect(screen.getByText('12:04')).toBeTruthy();
+    expect(screen.getByText('06:00')).toBeTruthy();
+    expect(screen.getByText('drift')).toBeTruthy();
+    expect(screen.getAllByText('ssh show running-config').length).toBeGreaterThan(0);
+  });
+
+  it('says so on the Drift tab when only one snapshot is on file — an empty pane is not "no drift"', async () => {
+    const profile = deviceProfile('sw-core-a');
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: snapshotCfg({
+        meta: 'SNAPSHOT v1 · 1 VERSION ON FILE',
+        diff: '',
+        history: [snapshotCfg().history[1]!],
+        provenance: { version: 1, versions: 1, source: 'demo synthesis', takenAt: '2026-07-25T06:00:00' },
+      }),
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    renderDeviceDetail('sw-core-a');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Drift vs. baseline' }));
+    expect(
+      screen.getByText('Only one snapshot on file — drift appears once a second collection lands.'),
+    ).toBeTruthy();
+    // Demo synthesis names itself in the caption, same as any other channel.
+    expect(screen.getByText('snapshot v1 · demo synthesis · 06:00')).toBeTruthy();
+  });
+
+  it('renders no provenance caption for the authored fixture config', async () => {
+    const profile = deviceProfile('sw-core-a');
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    renderDeviceDetail('sw-core-a');
+    // The authored meta is the only labelling — nothing claims a collection.
+    expect(await screen.findByText('SNAPSHOT 06:00 · 4 CHANGES THIS WEEK')).toBeTruthy();
+    expect(screen.queryByText(/snapshot v\d/)).toBeNull();
+    // …and the authored history rows keep their pre-formatted text verbatim.
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }));
+    expect(screen.getByText('25 Jul 09:22')).toBeTruthy();
+  });
+
+  it('live view: snapshots on file render the tabs instead of the gap note', async () => {
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile: null,
+      config: snapshotCfg(),
+      clients: null,
+      dataSource: 'live',
+      syncedAt: '2026-07-26T09:41:00',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText(/ntp server 10\.42\.0\.21 iburst/)).toBeTruthy();
+    expect(screen.getByText('snapshot v2 · ssh show running-config · 12:04')).toBeTruthy();
+    expect(screen.getByText('SNAPSHOT v2 · 2 VERSIONS ON FILE')).toBeTruthy();
+    expect(
+      screen.queryByText('Not available in live mode — no linked plane reports a running config for this device.'),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }));
+    expect(screen.getByText('Snapshot v2 — 2 lines')).toBeTruthy();
+  });
+
+  it('live view: no snapshots keeps the gap note exactly', async () => {
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+    expect(
+      await screen.findByText('Not available in live mode — no linked plane reports a running config for this device.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: 'Drift vs. baseline' })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (m) MIST AP HEALTH & RF — the `mistAp` poll row drives the RF section:
+//     per-band tuning with the full airtime split, CPU/mem, env, power and
+//     the LLDP uplink. An AP with no env sensor block reads "not reported",
+//     and the generic lazy-read radios panel never duplicates the list.
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — Mist AP health & RF panel', () => {
+  const apFixture = (name: string) => {
+    const device = DEVICES.find((d) => d.name === name);
+    const stats = MIST_AP_STATS.find((r) => r.deviceName === name);
+    if (!device || !stats) throw new Error(`fixture missing: ${name}`);
+    return { device, stats };
+  };
+  const quietDeps = () => {
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: TICKETS, dataSource: 'demo' });
+  };
+
+  it('live: renders the RF split, health gauges, env, power and LLDP uplink from the poll row', async () => {
+    const { device, stats } = apFixture('ap-3f-12');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      mistAp: stats,
+      // The lazy per-object read landed too — with radios. The poll row is
+      // the fuller RF story, so the generic panel must NOT list them again.
+      detail: {
+        serial: 'MST43KF1201',
+        kind: 'ap',
+        radios: [
+          {
+            number: 0, band: '2.4 GHz', channel: '6', bandwidth: '20 MHz',
+            powerDbm: 11, clients: 13, channelUtilPct: 58, rxUtilPct: 18, txUtilPct: 22,
+            retries: null, drops: null, noiseFloorDbm: -92, nonWifiInterference: 4,
+            channelQuality: null, status: '', mode: '',
+          },
+        ],
+        source: { plane: 'mist', at: '2026-07-26T11:59:00.000Z', sections: { radios: 'ok', ports: 'ok' } },
+      },
+      dataSource: 'live',
+    });
+    quietDeps();
+
+    renderDeviceDetail('ap-3f-12');
+
+    expect(await screen.findByText('AP health & RF')).toBeTruthy();
+    // Per-band tuning facts and the full airtime split (util_all + its four
+    // reported components), straight off the stats row.
+    expect(screen.getByText('ch 6 · 20 MHz · 11 dBm · noise -92 dBm · 13 clients')).toBeTruthy();
+    expect(screen.getByText('util 58%')).toBeTruthy();
+    expect(screen.getByText('tx 22%')).toBeTruthy();
+    expect(screen.getByText('rx 18%')).toBeTruthy();
+    expect(screen.getByText('other BSS 14%')).toBeTruthy();
+    expect(screen.getByText('non-Wi-Fi 4%')).toBeTruthy();
+    expect(screen.getByText('ch 36 · 40 MHz · 14 dBm · noise -96 dBm · 28 clients')).toBeTruthy();
+    // Health gauges from the same row.
+    expect(screen.getByText('23%')).toBeTruthy(); // CPU
+    expect(screen.getByText('500 of 974 MB')).toBeTruthy(); // memory
+    expect(screen.getByText('46 d')).toBeTruthy(); // uptime
+    // Power and environment, as reported.
+    expect(screen.getByText('PoE 802.3at')).toBeTruthy();
+    expect(screen.queryByText('power constrained')).toBeNull();
+    expect(screen.getByText('23.8 °C · 41% RH')).toBeTruthy();
+    // The uplink port and the AP's own LLDP report of its neighbour.
+    expect(screen.getByText(/1 Gb · full · rx 4\.8 GB/)).toBeTruthy();
+    expect(screen.getByText(/sw-cam02-1 ge-0\/0\/12/)).toBeTruthy();
+    expect(screen.getByText(/reported by this AP via LLDP/)).toBeTruthy();
+    // The generic lazy-read panels stay away — one radio list, not two.
+    expect(screen.queryByText('Radios')).toBeNull();
+    expect(screen.queryByText('Ports of interest')).toBeNull();
+    // The claim code rides the identity rail (the one surface an operator
+    // with device-read access already sees).
+    expect(screen.getByText('KV4M9Q2X7RND3H1')).toBeTruthy();
+  });
+
+  it('live: an AP with no env sensor block reads "not reported", never a fabricated number', async () => {
+    const { device, stats } = apFixture('ap-ng-02');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      mistAp: stats,
+      dataSource: 'live',
+    });
+    quietDeps();
+
+    renderDeviceDetail('ap-ng-02');
+
+    expect(await screen.findByText('AP health & RF')).toBeTruthy();
+    // The AP32 publishes no env_stat block — the honest sentence, no °C.
+    expect(screen.getByText('not reported — this AP published no env sensor readings')).toBeTruthy();
+    expect(screen.queryByText(/°C/)).toBeNull();
+    expect(screen.getByText('PoE 802.3af')).toBeTruthy();
+    expect(screen.queryByText('power constrained')).toBeNull();
+    // Radios still render from the row that did land.
+    expect(screen.getByText('ch 100 · 40 MHz · 14 dBm · noise -95 dBm · 5 clients')).toBeTruthy();
+  });
+
+  it('live: a PoE-constrained AP carries the warning badge verbatim', async () => {
+    const { device, stats } = apFixture('ap-3f-14');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      mistAp: stats,
+      dataSource: 'live',
+    });
+    quietDeps();
+
+    renderDeviceDetail('ap-3f-14');
+
+    expect(await screen.findByText('power constrained')).toBeTruthy();
+    // Channel 116 with the non-Wi-Fi spike — the NET-4188 DFS story.
+    expect(screen.getByText('ch 116 · 40 MHz · 13 dBm · noise -93 dBm · 12 clients')).toBeTruthy();
+    expect(screen.getByText('non-Wi-Fi 22%')).toBeTruthy();
+  });
+
+  it('demo: the authored-profile branch renders the same panel ahead of the fixture port list', async () => {
+    const { device, stats } = apFixture('ap-3f-12');
+    const profile = deviceProfile('ap-3f-12');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      mistAp: stats,
+      dataSource: 'demo',
+    });
+    quietDeps();
+
+    renderDeviceDetail('ap-3f-12');
+
+    expect(await screen.findByText('AP health & RF')).toBeTruthy();
+    expect(screen.getByText('util 58%')).toBeTruthy();
+    // The claim code fact rides the authored identity rail too.
+    expect(screen.getByText('KV4M9Q2X7RND3H1')).toBeTruthy();
+  });
+
+  it('live: a non-Mist device with mistAp null renders no panel at all', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      mistAp: null,
+      dataSource: 'live',
+    });
+    quietDeps();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
+    expect(screen.queryByText('AP health & RF')).toBeNull();
+    expect(screen.queryByText('KV4M9Q2X7RND3H1')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (m) HARDWARE TRENDS PANEL — Central's per-device telemetry: mounted only
+//     where a claiming plane can answer for the class, fetched on demand for
+//     the one device being viewed, in both render branches
+// ---------------------------------------------------------------------------
+
+describe('DeviceDetail — hardware trends panel', () => {
+  const swCoreA = () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    return device;
+  };
+
+  const trendMocks = () => {
+    mockGetDeviceHardwareTrends.mockResolvedValue({
+      kind: 'ok',
+      live: SWITCH_HARDWARE_TRENDS_DEMO['sw-core-a']!,
+    });
+    mockGetDeviceInterfaceTrends.mockResolvedValue({
+      kind: 'ok',
+      live: SWITCH_INTERFACE_TRENDS_DEMO['sw-core-a']!,
+    });
+  };
+
+  it('live mode: a Central-claimed switch gets the panel, fetched for this one device', async () => {
+    mockGetDeviceDetail.mockResolvedValue({
+      device: { ...swCoreA(), plane: 'CENTRAL', planeTone: 'accent' },
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    trendMocks();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('Hardware trends')).toBeTruthy();
+    // The authored excursion's last bucket, from the trend read — not the
+    // profile's authored stat row (this payload carries none).
+    expect(await screen.findByText('87%')).toBeTruthy();
+    expect(screen.getByText('Interface errors')).toBeTruthy();
+    expect(screen.getByText('31 in the window')).toBeTruthy();
+
+    // One on-demand read per dataset, addressed to the row's exact identity.
+    expect(mockGetDeviceHardwareTrends).toHaveBeenCalledTimes(1);
+    const [name, window, identity] = mockGetDeviceHardwareTrends.mock.calls[0]!;
+    expect(name).toBe('sw-core-a');
+    expect(identity).toEqual({ plane: 'CENTRAL', serial: undefined });
+    expect(Date.parse(window.end) - Date.parse(window.start)).toBe(24 * 60 * 60_000);
+    expect(mockGetDeviceInterfaceTrends).toHaveBeenCalledTimes(1);
+  });
+
+  it('live mode: a LOCAL-only switch gets no panel at all — no claiming plane can answer', async () => {
+    mockGetDeviceDetail.mockResolvedValue({
+      device: { ...swCoreA(), plane: 'LOCAL', planeTone: 'neutral', claimedBy: ['LOCAL'] },
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
+    expect(screen.queryByText('Hardware trends')).toBeNull();
+    expect(mockGetDeviceHardwareTrends).not.toHaveBeenCalled();
+    expect(mockGetDeviceInterfaceTrends).not.toHaveBeenCalled();
+  });
+
+  it('live mode: a Mist AP gets no Central trend panel — the plane cannot answer it', async () => {
+    const device = DEVICES.find((d) => d.name === 'ap-3f-12');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('ap-3f-12');
+
+    expect(await screen.findByRole('heading', { name: 'ap-3f-12' })).toBeTruthy();
+    expect(screen.queryByText('Hardware trends')).toBeNull();
+    expect(mockGetDeviceApTrends).not.toHaveBeenCalled();
+  });
+
+  it('demo mode: the profile view renders the same panel from the authored read', async () => {
+    const profile = deviceProfile('sw-core-a');
+    mockGetDeviceDetail.mockResolvedValue({
+      device: swCoreA(),
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    trendMocks();
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('Hardware trends')).toBeTruthy();
+    expect(await screen.findByText('87%')).toBeTruthy();
+    // The gap stays a gap in the demo render too.
+    expect(
+      (await screen.findAllByRole('img', { name: /line broken where samples are missing/ })).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('31 in the window')).toBeTruthy();
   });
 });
