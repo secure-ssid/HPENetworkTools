@@ -497,6 +497,7 @@ describe('CodexAppServer', () => {
     expect(new Set(threadStarts.map((message) => message.id)).size).toBe(2);
     const turnStarts = fake.children[0]?.sent.filter((message) => message.method === 'turn/start') ?? [];
     expect(turnStarts.map((message) => message.params?.threadId)).toEqual(['thread-1', 'thread-2']);
+    expect(fake.children[0]?.killed).toBe(false);
     const firstThreadConfig = fake.children[0]?.sent.find((message) => message.method === 'thread/start')?.params?.config;
     expect(firstThreadConfig).not.toHaveProperty('model_reasoning_effort');
 
