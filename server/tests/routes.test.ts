@@ -4516,6 +4516,51 @@ describe('on-demand per-object detail reads', () => {
     expect(calls).toBe(1);
   });
 
+  it('adds Central site-link facts to the estate topology graph', async () => {
+    contributions.set('central', { devices: [AP, SW] });
+    let calls = 0;
+    stub('central', {
+      siteTopology: async (siteId: string) => {
+        calls += 1;
+        return GRAPH(siteId);
+      },
+    });
+
+    const { status, body } = await getJson('/api/topology');
+
+    expect(status).toBe(200);
+    expect(body.dataSource).toBe('live');
+    expect(calls).toBe(1);
+    const edge = (body.graph.edges as any[]).find((candidate) =>
+      ['ap-detail-1', 'sw-detail-1'].every((name) =>
+        [candidate.from, candidate.to]
+          .map((id: string) => (body.graph.nodes as any[]).find((node) => node.id === id)?.name)
+          .includes(name),
+      ),
+    );
+    expect(edge).toBeDefined();
+    expect(edge.protocols).toContain('Central topology');
+    expect(edge.speedBps).toBe(5_000_000_000);
+    expect(edge.fromPort).toBe('eth0');
+    expect(edge.toPort).toBe('1/1/12');
+  });
+
+  it('gives managed multiple-site devices their own topology card', async () => {
+    contributions.set('central', {
+      devices: [{ ...AP, siteId: 'multiple', siteName: 'Multiple sites' }],
+    });
+
+    const { status, body } = await getJson('/api/topology');
+
+    expect(status).toBe(200);
+    expect(body.graph.sites).toContainEqual(expect.objectContaining({
+      siteId: 'multiple',
+      name: 'Multiple sites',
+      nodeCount: 1,
+      planes: ['CENTRAL'],
+    }));
+  });
+
   it('a plane at its stored daily call budget is not called, and the payload says why', async () => {
     const saved = await fetch(`${base}/api/systems/classic/credentials`, {
       method: 'POST',

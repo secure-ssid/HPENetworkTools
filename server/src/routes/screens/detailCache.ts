@@ -362,8 +362,28 @@ export function planeSiteKey(site: SiteRow): string {
   return /^\d+$/.test(id) ? id : site.name;
 }
 
+/** One named plane's link topology for ONE site, cached across every screen. */
+export function livePlaneSiteTopology(site: SiteRow | null, planeId: PlaneId): Promise<SiteTopologyLive | null> {
+  if (!site) return Promise.resolve(null);
+  const siteKey = planeSiteKey(site);
+  if (!reportedValue(siteKey)) return Promise.resolve(null);
+  const adapter = registry.get(planeId);
+  const read = adapter.siteTopology;
+  if (typeof read !== 'function') return Promise.resolve(null);
+  const budget = detailBudgetNote(planeId);
+  if (budget) return Promise.resolve(topologyStub(siteKey, planeId, budget, false));
+  return neverThrows(
+    cachedDetail(`topology:${planeId}:${siteKey}`, TOPOLOGY_TTL_MS, () =>
+      attemptDetail(
+        () => read.call(adapter, siteKey),
+        (note) => topologyStub(siteKey, planeId, note, true),
+      ),
+    ),
+  );
+}
+
 /**
- * The plane's link topology for ONE site.
+ * The first claiming plane's link topology for ONE site.
  *
  * A site can be claimed by several planes; the first badge whose adapter can
  * actually answer wins, rather than assuming Central. The result is cached per
@@ -372,24 +392,11 @@ export function planeSiteKey(site: SiteRow): string {
  */
 export function liveSiteTopology(site: SiteRow | null): Promise<SiteTopologyLive | null> {
   if (!site) return Promise.resolve(null);
-  const siteKey = planeSiteKey(site);
-  if (!reportedValue(siteKey)) return Promise.resolve(null);
   for (const badge of site.planes) {
     const planeId = detailPlaneFor(badge.name);
     if (!planeId) continue;
     const adapter = registry.get(planeId);
-    const read = adapter.siteTopology;
-    if (typeof read !== 'function') continue;
-    const budget = detailBudgetNote(planeId);
-    if (budget) return Promise.resolve(topologyStub(siteKey, planeId, budget, false));
-    return neverThrows(
-      cachedDetail(`topology:${planeId}:${siteKey}`, TOPOLOGY_TTL_MS, () =>
-        attemptDetail(
-          () => read.call(adapter, siteKey),
-          (note) => topologyStub(siteKey, planeId, note, true),
-        ),
-      ),
-    );
+    if (typeof adapter.siteTopology === 'function') return livePlaneSiteTopology(site, planeId);
   }
   return Promise.resolve(null);
 }

@@ -197,6 +197,7 @@ import {
   detailPlaneFor,
   liveClientDetail,
   liveDeviceDetail,
+  livePlaneSiteTopology,
   liveSiteById,
   liveSiteTopology,
   neverThrows,
@@ -3047,14 +3048,46 @@ async function serveMistAuditLog(res: Response, limitRaw: unknown): Promise<void
 // -- Estate topology (the cross-plane neighbour graph) -------------------------
 
 /**
- * The Mist AP-stats walk is the ONLY poll-time dataset carrying neighbour
- * facts today (every AP's own LLDP uplink report — the same rows the site
- * page's fallback graph reads). Central's site graphs and AOS-CX's port
- * neighbours are per-site ON-DEMAND reads; replaying them here would spend a
- * plane call per site on a screen poll, so the estate graph reads the poller
- * cache only and says where the rest lives.
+ * Mist contributes every AP's poll-time LLDP uplink. Central's richer site
+ * graph is fetched on demand when the estate topology opens, then shares the
+ * same five-minute per-site cache as the site, device, and client drawers.
+ * That makes the estate diagram useful without adding topology reads to the
+ * minute-by-minute poll loop.
  */
-function liveTopologyReports(): TopologyEdgeReportInput[] {
+function portWords(ports: readonly { name: string }[]): string | null {
+  const names = [...new Set(ports.map((port) => port.name.trim()).filter(Boolean))];
+  return names.length > 0 ? names.join('+') : null;
+}
+
+function centralTopologyReports(topology: SiteTopologyLive | null, stale: boolean): TopologyEdgeReportInput[] {
+  if (!topology?.links) return [];
+  const nodes = new Map((topology.nodes ?? []).map((node) => [node.serial, node]));
+  return topology.links.map((link) => {
+    const from = nodes.get(link.from);
+    const to = nodes.get(link.to);
+    return {
+      plane: 'CENTRAL',
+      protocol: 'Central topology',
+      from: {
+        name: from?.name || link.from,
+        serial: link.from,
+        mac: from?.mac ?? null,
+        port: portWords(link.fromPorts),
+      },
+      to: {
+        name: to?.name || link.to,
+        serial: link.to,
+        mac: to?.mac ?? null,
+        port: portWords(link.toPorts),
+      },
+      speedBps: link.speedBps,
+      reportedAt: topology.source.at || null,
+      stale,
+    };
+  });
+}
+
+async function liveTopologyReports(sites: readonly SiteRow[]): Promise<TopologyEdgeReportInput[]> {
   const stale = stalePlanes();
   const mistAt = poller.freshness().mist;
   const reports: TopologyEdgeReportInput[] = [];
@@ -3079,26 +3112,70 @@ function liveTopologyReports(): TopologyEdgeReportInput[] {
       stale: stale.has('mist'),
     });
   }
+  const centralSites = sites.filter((site) => site.planes.some((badge) => badge.name === 'CENTRAL'));
+  const centralTopologies = await Promise.all(
+    centralSites.map((site) => livePlaneSiteTopology(site, 'central')),
+  );
+  for (const topology of centralTopologies) {
+    reports.push(...centralTopologyReports(topology, stale.has('central')));
+  }
   return reports;
+}
+
+/**
+ * A device can be managed but filed under a bookkeeping bucket such as
+ * `multiple`, which deliberately has no `/sites/:id` inventory profile.  The
+ * estate diagram still needs to show where that real device lives instead of
+ * silently grouping it with unfiled ghosts.  Supplement the merged site list
+ * only for this screen; it does not turn a bookkeeping id into a site route.
+ */
+function estateTopologySites(
+  sites: readonly Pick<SiteRow, 'id' | 'name' | 'planes'>[],
+  devices: readonly ReconciledDeviceRow[],
+): Pick<SiteRow, 'id' | 'name' | 'planes'>[] {
+  const cards = sites.map((site) => ({ ...site, planes: [...site.planes] }));
+  const known = new Set(cards.map((site) => site.id));
+  const extras = new Map<SiteId, { name: string; planes: Set<Plane> }>();
+
+  for (const device of devices) {
+    if (!device.siteId || known.has(device.siteId)) continue;
+    const extra = extras.get(device.siteId) ?? {
+      name: device.siteName.trim() || device.siteId,
+      planes: new Set<Plane>(),
+    };
+    for (const plane of device.claimedBy && device.claimedBy.length > 0 ? device.claimedBy : [device.plane]) {
+      extra.planes.add(plane);
+    }
+    extras.set(device.siteId, extra);
+  }
+
+  for (const [id, extra] of extras) {
+    cards.push({
+      id,
+      name: extra.name,
+      planes: [...extra.planes].map((name) => ({ name, tone: 'neutral' })),
+    });
+  }
+  return cards;
 }
 
 /** The estate graph's footer notes, worded from what the poll actually carried. */
 function liveTopologyNotes(reports: TopologyEdgeReportInput[]): string[] {
-  const rest =
-    'Central site graphs and AOS-CX port neighbours are per-site on-demand reads, not replayed here — open a site for its own graph.';
+  const sources = [...new Set(reports.map((report) => report.plane).filter((plane): plane is Plane => plane !== null))];
   if (reports.length > 0) {
     return [
-      `Every edge is a neighbour fact a plane reported at poll time — currently Mist's AP-stats LLDP walk only. ${rest}`,
+      `Every edge is a reported neighbour fact from ${sources.join(' + ')}.`,
       'A reported neighbour with no inventory row is a ghost, drawn as reported and never promoted to a managed device.',
     ];
   }
-  const why = registry.state('mist').linked
-    ? "the Mist AP-stats walk (the only poll-time neighbour source) carried no LLDP uplinks"
-    : 'no linked plane polls a neighbour dataset — Mist’s AP-stats LLDP walk is the only one today';
-  return [`No plane reported a neighbour fact at poll time: ${why}. ${rest}`];
+  return ['No linked plane reported a neighbour fact for the current estate.'];
 }
 
 screensRouter.get('/topology', (_req, res) => {
+  settle(res, serveTopology(res));
+});
+
+async function serveTopology(res: Response): Promise<void> {
   const live = liveMerged();
   // Blend mode swaps the whole graph to live rows once any plane reports
   // devices — fixture and live rows never mix inside one payload (the same
@@ -3121,15 +3198,15 @@ screensRouter.get('/topology', (_req, res) => {
     state: d.state,
     tone: d.stateTone,
   }));
-  const reports = liveTopologyReports();
+  const reports = await liveTopologyReports(live.sites);
   const payload: Record<string, unknown> = {
     dataSource: 'live',
     syncedAt: poller.lastSyncFor('devices', 'sites'),
-    graph: buildTopologyGraph(devices, reports, live.sites),
+    graph: buildTopologyGraph(devices, reports, estateTopologySites(live.sites, live.devices)),
     notes: liveTopologyNotes(reports),
   };
   res.json(dataSource() === 'demo' ? withBlended(payload, ['devices']) : payload);
-});
+}
 
 /** Raised tickets as search entries — real user data, so searchable in both
  *  modes (arg carries the id so the hit deep-links to /tickets?sel=<id>). */
