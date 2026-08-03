@@ -140,6 +140,25 @@ describe('SseObjectsService write gates', () => {
     await expect(service.create('connectorZones', { name: 'z' }, undefined)).resolves.toMatchObject({ staged: false });
   });
 
+  it('records policy-neutral staged and retry events in lab-direct mode', async () => {
+    let commitAttempts = 0;
+    const { service, events } = harness(
+      { token: 'x', scopes: 'write:brokered' },
+      (method, pathname) => {
+        if (method === 'POST' && pathname === SSE_KIND_SPEC.connectorZones.path) return { status: 201, body: { id: 'z' } };
+        if (method === 'POST' && pathname === '/api/v1.0/Commit') {
+          commitAttempts += 1;
+          return { status: commitAttempts === 1 ? 500 : 204 };
+        }
+        return undefined;
+      },
+      { allowsLabDirectWrites: () => true },
+    );
+    await expect(service.create('connectorZones', { name: 'z' }, undefined)).resolves.toMatchObject({ staged: true });
+    await expect(service.retryCommit(undefined)).resolves.toMatchObject({ commit: { ok: true } });
+    expect(events.map((event) => event.what).join('\n')).not.toMatch(/review/i);
+  });
+
   it('rejects a mutation without reviewConfirmed: true when hardened mode is enabled', async () => {
     const { service } = harness(
       { token: 'x', scopes: 'write:brokered' },

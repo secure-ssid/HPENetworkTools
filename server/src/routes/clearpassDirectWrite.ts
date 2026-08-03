@@ -1,10 +1,10 @@
 /**
  * server/src/routes/clearpassDirectWrite.ts — ClearPass direct writes.
  *
- *   POST /api/clearpass/endpoints          {form, reviewConfirmed} → ClearPassWriteResult
- *   PUT  /api/clearpass/endpoints/:id      {form, reviewConfirmed} → ClearPassWriteResult
- *   POST /api/clearpass/local-users        {form, reviewConfirmed} → ClearPassWriteResult
- *   PUT  /api/clearpass/local-users/:id    {form, reviewConfirmed} → ClearPassWriteResult
+ *   POST /api/clearpass/endpoints          {form, reviewConfirmed?} → ClearPassWriteResult
+ *   PUT  /api/clearpass/endpoints/:id      {form, reviewConfirmed?} → ClearPassWriteResult
+ *   POST /api/clearpass/local-users        {form, reviewConfirmed?} → ClearPassWriteResult
+ *   PUT  /api/clearpass/local-users/:id    {form, reviewConfirmed?} → ClearPassWriteResult
  *
  * The same direct-write pattern routes/configure.ts exposes for SSIDs (see
  * services/ssidDirectWrite.ts for why this is not the ticketed broker): lab

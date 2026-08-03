@@ -34,7 +34,7 @@
  * otherwise ambiguous record fails closed without calling Commit. Once
  * Commit is accepted, the journal is moved to a TERMINAL, non-retryable
  * `commit-accepted` phase BEFORE the cache is refreshed or the journal is
- * deleted — reviewed recovery for that phase may only refresh/verify and
+ * deleted — phase-specific recovery for that phase may only refresh/verify and
  * clean up. A definite mutation rejection is similarly moved to terminal
  * `mutation-rejected` BEFORE deletion, so a failed cleanup can never turn
  * that retained record into commit eligibility. If persisting an accepted
@@ -43,10 +43,10 @@
  * marker remains ambiguous and recovery still never replays Commit. Update
  * verification never trusts "the id still exists" alone — it compares
  * allowlisted, secret-free fields (name/description/enabled) from the
- * reviewed update against the refreshed row, or honestly reports the update
+ * submitted update against the refreshed row, or honestly reports the update
  * as unverified when nothing safely comparable was sent. The journal is
  * bound to a hash fingerprint of normalized base URL + token, survives
- * restarts, and may be cleared only after reviewed phase-specific recovery,
+ * restarts, and may be cleared only after phase-specific recovery,
  * an explicit manually reconciled cleanup, or a definite mutation rejection.
  * Every save/delete error propagates fail-closed.
  */
@@ -527,7 +527,7 @@ export class SseObjectsService {
       this.savePending({ ...pending, phase: 'commit-rejected' });
       this.log('sse-commit-retry', pending.kind, 'commit-rejected', commit.httpCode ?? undefined);
       this.registry.recordEvent('sse', {
-        what: 'commit retry was definitely rejected — the proven staged change remains eligible for another explicitly reviewed retry',
+        what: 'commit retry was definitely rejected — the proven staged change remains eligible for another retry',
         who: currentActor(),
       });
       return {
@@ -585,7 +585,7 @@ export class SseObjectsService {
   /** A definite mutation rejection can only need durable journal cleanup. */
   private recoverRejectedMutationJournal(pending: SsePendingCommit): SseCommitRetryResult {
     this.registry.recordEvent('sse', {
-      what: `reviewed cleanup for definitely rejected journaled ${pending.action} ${pending.kind}: Commit was not called`,
+      what: `cleanup for definitely rejected journaled ${pending.action} ${pending.kind}: Commit was not called`,
       who: currentActor(),
     });
     try {
@@ -630,7 +630,7 @@ export class SseObjectsService {
   private async recoverAcceptedJournal(pending: SsePendingCommit): Promise<SseCommitRetryResult> {
     const refreshed = await this.refreshCache(pending);
     this.registry.recordEvent('sse', {
-      what: `reviewed recovery for an already-committed journaled ${pending.action} ${pending.kind}: cache refresh + cleanup only, Commit was not called again`,
+      what: `recovery for an already-committed journaled ${pending.action} ${pending.kind}: cache refresh + cleanup only, Commit was not called again`,
       who: currentActor(),
     });
     try {
@@ -667,7 +667,7 @@ export class SseObjectsService {
     if (this.hasPendingJournal()) {
       throw new SseObjectsError(
         409,
-        'SSE credentials cannot be updated or deleted while a mutation journal is pending — use reviewed journal recovery and follow its commit-retry, cleanup-only, or manual-reconciliation/manual-cleanup guidance first',
+        'SSE credentials cannot be updated or deleted while a mutation journal is pending — use journal recovery and follow its commit-retry, cleanup-only, or manual-reconciliation/manual-cleanup guidance first',
         'SSE_PENDING_MUTATION',
       );
     }
@@ -707,7 +707,7 @@ export class SseObjectsService {
     if (this.hasPendingJournal()) {
       throw new SseObjectsError(
         409,
-        'a previous SSE mutation journal is still pending — use reviewed recovery and follow its phase-specific guidance; tenant-wide Commit is allowed only for a definite commit-rejected phase',
+        'a previous SSE mutation journal is still pending — use journal recovery and follow its phase-specific guidance; tenant-wide Commit is allowed only for a definite commit-rejected phase',
         'SSE_PENDING_MUTATION',
       );
     }
@@ -717,10 +717,10 @@ export class SseObjectsService {
     if (SSE_MANUAL_CLEANUP_PHASES.includes(pending.phase)) return;
     const guidance =
       pending.phase === 'commit-rejected'
-        ? 'use the reviewed commit-retry recovery path'
+        ? 'use the commit-retry recovery path'
         : pending.phase === 'commit-accepted'
           ? 'use the accepted-journal refresh-and-cleanup recovery path'
-          : 'use the existing reviewed cleanup path for the definitely rejected mutation';
+          : 'use the existing cleanup path for the definitely rejected mutation';
     throw new SseObjectsError(
       409,
       `manual reconciliation cleanup is not allowed for SSE journal phase '${pending.phase}' — ${guidance}; tenant-wide Commit was not called`,
@@ -964,7 +964,7 @@ export class SseObjectsService {
     this.registry.recordEvent('sse', {
       what: `${action} ${kind}${id ? ` ${id}` : ''} — ${outcome}${
         outcome === 'staged'
-          ? ' (durable commit-rejected blocker retained; an explicitly reviewed tenant-wide Commit retry is allowed)'
+          ? ' (durable commit-rejected blocker retained; a tenant-wide Commit retry is allowed)'
           : outcome === 'unknown'
             ? ' (durable ambiguous blocker retained; manual reconciliation required and Commit retry is forbidden)'
           : ''
@@ -1069,7 +1069,7 @@ export class SseObjectsService {
       // `update`: existence at the target id proves NOTHING by itself — the
       // object already existed there before the update. Verification must
       // compare allowlisted safe fields (name/description/enabled) from the
-      // reviewed update against the refreshed row; secrets/raw payloads are
+      // submitted update against the refreshed row; secrets/raw payloads are
       // never compared here. When the id is missing, the refresh cannot even
       // attempt this and is honestly reported unverified/stale.
       if (!targetId || !targetPresent) {
@@ -1091,7 +1091,7 @@ export class SseObjectsService {
           outcome: {
             attempted: true,
             status: 'stale',
-            message: `update target ${pending.kind} '${targetId}' is present, but none of the reviewed fields are in the safely comparable set (name/description/enabled) — update visibility is unverified from the cache alone`,
+            message: `update target ${pending.kind} '${targetId}' is present, but none of the submitted fields are in the safely comparable set (name/description/enabled) — update visibility is unverified from the cache alone`,
           },
         };
       }
@@ -1101,7 +1101,7 @@ export class SseObjectsService {
           outcome: {
             attempted: true,
             status: 'stale',
-            message: `update target ${pending.kind} '${targetId}' is present, but the reviewed field values do not match the refreshed object — update visibility is unverified (possibly stale)`,
+            message: `update target ${pending.kind} '${targetId}' is present, but the submitted field values do not match the refreshed object — update visibility is unverified (possibly stale)`,
           },
         };
       }
@@ -1110,7 +1110,7 @@ export class SseObjectsService {
         outcome: {
           attempted: true,
           status: 'refreshed',
-          message: `inventory cache refreshed and the update target's reviewed fields matched the refreshed object`,
+          message: `inventory cache refreshed and the update target's submitted fields matched the refreshed object`,
         },
       };
     } catch (err) {
@@ -1129,7 +1129,7 @@ export class SseObjectsService {
   /**
    * Allowlisted, secret-free comparison for update verification: `name`
    * (via the kind's nameField), `description`, and `enabled` are the ONLY
-   * fields compared, and ONLY when the reviewed update actually sent that
+   * fields compared, and ONLY when the submitted update actually sent that
    * key — never the raw payload, never anything else the kind's SDK body
    * shape carries (e.g. a connectorZone's `connectors`, a user's SSH key).
    * Returns 'no-comparable-fields' when the update touched none of them, so

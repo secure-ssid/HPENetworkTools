@@ -4,11 +4,11 @@
  *   GET    /api/sse/inventory              cached SseInventory (poller cache)
  *   GET    /api/sse/objects/:kind          one kind's rows, optional ?q= search
  *   GET    /api/sse/objects/:kind/:id      on-demand fresh detail read
- *   POST   /api/sse/objects/:kind          create {fields, reviewConfirmed}
- *   PUT    /api/sse/objects/:kind/:id      update {fields, reviewConfirmed}
- *   DELETE /api/sse/objects/:kind/:id      delete {reviewConfirmed}
- *   POST   /api/sse/commit/retry           commit-only retry {reviewConfirmed} — never replays a mutation
- *   POST   /api/sse/recovery/manual-cleanup cleanup-only {reviewConfirmed, manualReconciled}
+ *   POST   /api/sse/objects/:kind          create {fields, reviewConfirmed?}
+ *   PUT    /api/sse/objects/:kind/:id      update {fields, reviewConfirmed?}
+ *   DELETE /api/sse/objects/:kind/:id      delete {reviewConfirmed?}
+ *   POST   /api/sse/commit/retry           commit-only retry {reviewConfirmed?} — never replays a mutation
+ *   POST   /api/sse/recovery/manual-cleanup cleanup-only {reviewConfirmed?, manualReconciled}
  *
  * Every `:kind` is checked against the shared SSE_OBJECT_KINDS allowlist
  * before it ever reaches an adapter method: there is no route here that
@@ -21,7 +21,7 @@
  *
  * Every mutation and recovery operation is serialized in-process by
  * SseObjectsService. A durable journal blocks further mutations until its
- * phase-specific reviewed recovery succeeds: only `commit-rejected` may call
+ * phase-specific recovery succeeds: only `commit-rejected` may call
  * Commit; ambiguous phases require a separate manual-reconciliation
  * attestation and cleanup-only route. Every "a durable SSE journal already
  * blocks this" 409 carries a stable machine-readable `code` (e.g.
