@@ -20,7 +20,7 @@ class FakeChild implements CodexAppServerChild {
   killed = false;
   inventory = ['centralmcp'];
   emitRemoteStatus = false;
-  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' | 'streaming' | 'mismatched-stream' | 'token-result' | 'token-message' = 'complete';
+  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' | 'streaming' | 'mismatched-stream' | 'incomplete-item' | 'terminal-start-completed' | 'terminal-start-failed' | 'missing-completed-at' | 'unsafe-completed-at' | 'token-arguments' | 'token-result' | 'token-error' | 'token-message' = 'complete';
   private readonly events = new EventEmitter();
   private sequence = 0;
 
@@ -178,24 +178,57 @@ class FakeChild implements CodexAppServerChild {
         },
       });
     }
+    if (this.turnMode === 'terminal-start-completed' || this.turnMode === 'terminal-start-failed') {
+      this.emit({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          startedAtMs: 1,
+          item: {
+            id: 'tool-1',
+            type: 'mcpToolCall',
+            server: 'centralmcp',
+            tool: 'find_tool',
+            arguments: { query: 'switch inventory' },
+            status: this.turnMode === 'terminal-start-completed' ? 'completed' : 'failed',
+          },
+        },
+      });
+    }
     this.emit({
       method: 'item/completed',
       params: {
         threadId,
         turnId,
-        completedAtMs: 1,
+        ...(this.turnMode === 'missing-completed-at' ? {} : {
+          completedAtMs: this.turnMode === 'unsafe-completed-at' ? Number.MAX_SAFE_INTEGER + 1 : 1,
+        }),
         item: {
           id: 'tool-1',
           type: 'mcpToolCall',
           server,
           tool: 'find_tool',
-          arguments: { query: 'switch inventory' },
-          result: { content: [{ type: 'text', text: this.turnMode === 'token-result' ? 'secret-token' : 'catalogue found' }] },
-          status: 'completed',
-          error: null,
+          arguments: { query: this.turnMode === 'token-arguments' ? 'secret-token' : 'switch inventory' },
+          result: this.turnMode === 'token-error'
+            ? null
+            : { content: [{ type: 'text', text: this.turnMode === 'token-result' ? 'secret-token' : 'catalogue found' }] },
+          status: this.turnMode === 'token-error' ? 'failed' : 'completed',
+          error: this.turnMode === 'token-error' ? { message: 'secret-token' } : null,
         },
       },
     });
+    if (this.turnMode === 'incomplete-item') {
+      this.emit({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          startedAtMs: 2,
+          item: { id: 'reasoning-incomplete', type: 'reasoning', content: [], summary: [] },
+        },
+      });
+    }
     if (this.turnMode === 'streaming') {
       this.emit({
         method: 'item/started',
@@ -410,7 +443,37 @@ describe('CodexAppServer', () => {
     expect(fake.children[0]?.killed).toBe(true);
   });
 
-  it.each(['token-result', 'token-message'] as const)('fails closed when CentralMCP or final output echoes the bearer token via %s', async (turnMode) => {
+  it('rejects turn completion while a tracked allowed item is still incomplete', async () => {
+    const fake = testHarness({ turnMode: 'incomplete-item' });
+    transports.push(fake.transport);
+
+    await expect(fake.transport.chat(request)).rejects.toMatchObject({ stage: 'after-turn' });
+    expect(fake.children[0]?.killed).toBe(true);
+  });
+
+  it.each(['terminal-start-completed', 'terminal-start-failed'] as const)(
+    'rejects a started CentralMCP item carrying terminal status via %s',
+    async (turnMode) => {
+      const fake = testHarness({ turnMode });
+      transports.push(fake.transport);
+
+      await expect(fake.transport.chat(request)).rejects.toMatchObject({ stage: 'after-turn' });
+      expect(fake.children[0]?.killed).toBe(true);
+    },
+  );
+
+  it.each(['missing-completed-at', 'unsafe-completed-at'] as const)(
+    'rejects a schema-invalid completion timestamp via %s',
+    async (turnMode) => {
+      const fake = testHarness({ turnMode });
+      transports.push(fake.transport);
+
+      await expect(fake.transport.chat(request)).rejects.toMatchObject({ stage: 'after-turn' });
+      expect(fake.children[0]?.killed).toBe(true);
+    },
+  );
+
+  it.each(['token-arguments', 'token-result', 'token-error', 'token-message'] as const)('fails closed when CentralMCP or final output echoes the bearer token via %s', async (turnMode) => {
     const fake = testHarness({ turnMode });
     transports.push(fake.transport);
 

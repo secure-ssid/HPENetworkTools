@@ -642,7 +642,10 @@ export class CodexAppServer implements CodexAppServerLike {
       return;
     }
     if (method === 'item/completed') {
-      if (typeof params.turnId !== 'string' || !this.acceptTurnId(active, params.turnId) || !isRecord(params.item)) {
+      if (typeof params.turnId !== 'string'
+        || !this.acceptTurnId(active, params.turnId)
+        || !Number.isSafeInteger(params.completedAtMs)
+        || !isRecord(params.item)) {
         this.invalidate(session, new CodexAppServerFailure('after-turn'));
         return;
       }
@@ -655,6 +658,7 @@ export class CodexAppServer implements CodexAppServerLike {
         || !this.acceptTurnId(active, params.turn.id)
         || params.turn.status !== 'completed'
         || (params.turn.error !== undefined && params.turn.error !== null)
+        || Array.from(active.items.values()).some((item) => !item.completed)
         || !active.text) {
         this.invalidate(session, new CodexAppServerFailure('after-turn'));
         return;
@@ -692,7 +696,7 @@ export class CodexAppServer implements CodexAppServerLike {
         || typeof item.tool !== 'string'
         || !active.allowedTools.has(item.tool)
         || !Object.hasOwn(item, 'arguments')
-        || !['inProgress', 'completed', 'failed'].includes(String(item.status))) return false;
+        || item.status !== 'inProgress') return false;
       active.items.set(item.id, { type: 'mcpToolCall', completed: false });
       return true;
     }
