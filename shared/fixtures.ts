@@ -1998,7 +1998,7 @@ export const DEFAULT_PORT_FORM: PortForm = {
 };
 
 export const DEFAULT_VLAN_FORM: VlanForm = {
-  id: '812', name: 'guest-wifi', helpers: '10.42.0.20', scope: 'cx-campus-01',
+  plane: 'CENTRAL', id: '812', name: 'guest-wifi', helpers: '10.42.0.20', scope: 'cx-campus-01',
 };
 
 /** Security select labels — `secLabel` keyed by security value. */

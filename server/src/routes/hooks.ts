@@ -25,7 +25,9 @@
  *                                               alarms | client-sessions |
  *                                               device-updowns)
  *     GET    /api/hooks/mist/registration       the Mist webhook subscription
- *     POST   /api/hooks/mist/registration       auto-registration: REVIEWED
+ *     POST   /api/hooks/mist/registration       auto-registration: direct in
+ *                                               lab mode, review-confirmed in
+ *                                               hardened mode
  *                                               create/update of the org
  *                                               subscription pointing at this
  *                                               receiver (+ secret rotation
@@ -256,9 +258,8 @@ export function makeHooksRouter(receiver: WebhookReceiver = webhookReceiver): Ro
   );
 
   /**
-   * The reviewed register/rotate write. `reviewConfirmed: true` is the
-   * review gate — the same discipline the direct SSID apply enforces —
-   * because a subscription changes the org's configuration. The result body
+   * Register/rotate is direct in lab mode and review-confirmed in hardened
+   * mode because a subscription changes the org's configuration. The result body
    * is the service's own vocabulary (created/updated/unchanged/failed,
    * verified only when the re-read confirmed); the secret, when the form
    * rotates one, is write-only end to end.
@@ -288,9 +289,20 @@ export function makeHooksRouter(receiver: WebhookReceiver = webhookReceiver): Ro
         });
         return;
       }
+      if (
+        body.topics !== undefined &&
+        (!Array.isArray(body.topics) || body.topics.some((topic) => !isMistWebhookTopic(topic)))
+      ) {
+        res.status(400).json({
+          ok: false,
+          action: 'failed',
+          message: `topics must contain only ${MIST_WEBHOOK_TOPICS.join(', ')}`,
+        });
+        return;
+      }
       const form: MistWebhookRegistrationForm = {
         url: typeof body.url === 'string' ? body.url : '',
-        topics: Array.isArray(body.topics) ? body.topics.filter(isMistWebhookTopic) : [...MIST_WEBHOOK_TOPICS],
+        topics: Array.isArray(body.topics) ? body.topics : [...MIST_WEBHOOK_TOPICS],
         ...(typeof body.secret === 'string' ? { secret: body.secret } : {}),
       };
       const result = await registerMistWebhook(form);

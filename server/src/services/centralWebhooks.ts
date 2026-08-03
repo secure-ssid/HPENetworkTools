@@ -67,6 +67,7 @@ import { normaliseBaseUrlUnchecked } from '../planes/transport';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
 import { allowsLabDirectWrites } from './labWritePolicy';
+import { evaluateWriteAdmission, type AdmitWrite } from './writeAdmission';
 import { effectiveSectionSource, settings } from '../config/settings';
 
 export class CentralWebhooksError extends Error {
@@ -106,6 +107,8 @@ export interface CentralWebhooksOptions {
   tenantFingerprint?: () => string | null;
   /** Test seam for deterministic journal I/O failures. */
   handoffJournalStore?: WebhookHandoffJournalStore;
+  /** Test seam. Production always evaluates canonical settings + registry. */
+  admitWrite?: AdmitWrite;
 }
 
 export interface WebhookResolvedAddress {
@@ -692,6 +695,7 @@ export class CentralWebhooksService {
   private readonly tenantFingerprint: () => string | null;
   private readonly reviewBindingSecret = randomBytes(32);
   private readonly handoffJournal: WebhookHandoffJournalStore;
+  private readonly admitWrite: AdmitWrite;
   private handoffTail: Promise<void> = Promise.resolve();
 
   constructor(opts: CentralWebhooksOptions = {}) {
@@ -721,6 +725,11 @@ export class CentralWebhooksService {
       });
     this.handoffJournal =
       opts.handoffJournalStore ?? new AtomicWebhookHandoffJournalStore(this.dataDir);
+    this.admitWrite =
+      opts.admitWrite ??
+      (opts.plane !== undefined
+        ? (request) => ({ ok: true, plane: request.plane, adapter: {} as never })
+        : (request) => evaluateWriteAdmission(request, { registry: this.registry }));
   }
 
   private async withHandoffLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -1033,6 +1042,20 @@ export class CentralWebhooksService {
     return a instanceof CentralAdapter ? a : null;
   }
 
+  private admittedMutationAdapter(): CentralWebhooksTransport {
+    const admission = this.admitWrite({ operation: 'central-webhook', plane: 'central' });
+    if (!admission.ok) throw new CentralWebhooksError(admission.status, admission.message);
+    const candidate = this.planeOverride !== undefined ? this.planeOverride : admission.adapter;
+    if (!candidate) throw new CentralWebhooksError(409, 'central is not linked — cannot manage webhooks');
+    if (
+      typeof (candidate as Partial<CentralWebhooksTransport>).request !== 'function' ||
+      typeof (candidate as Partial<CentralWebhooksTransport>).capabilities !== 'function'
+    ) {
+      throw new CentralWebhooksError(409, 'central is linked but its adapter cannot manage webhooks');
+    }
+    return candidate as CentralWebhooksTransport;
+  }
+
   /** Display-only base URL for the review UI's "target URL" line — read
    *  straight from settings (never masked: gatewayBaseUrl is not secret-
    *  shaped), not from the adapter (whose baseUrl field is private). Absent
@@ -1142,7 +1165,7 @@ export class CentralWebhooksService {
       ts: new Date(this.nowMs()).toISOString(),
       event,
       changeId: `direct-webhook-${randomUUID()}`,
-      ticket: '(none — direct apply, review-confirmed)',
+      ticket: this.auditModeLabel(),
       kind: 'webhook',
       result:
         result.action === 'conflict' || result.action === 'unsupported' || result.action === 'unknown'
@@ -1175,11 +1198,32 @@ export class CentralWebhooksService {
       ts: new Date(this.nowMs()).toISOString(),
       event,
       changeId: `direct-webhook-${randomUUID()}`,
-      ticket: '(none — direct apply, review-confirmed)',
+      ticket: this.auditModeLabel(),
       kind: 'webhook',
       result: 'error (transport failure — outcome unknown)',
       ...(callbackValidatedAt ? { callbackValidatedAt } : {}),
     });
+  }
+
+  private auditModeLabel(): string {
+    return allowsLabDirectWrites()
+      ? '(none — lab direct apply)'
+      : '(none — direct apply, review-confirmed)';
+  }
+
+  private canWriteWebhooks(): boolean {
+    if (this.effectiveDemoMode()) return true;
+    const admission = this.admitWrite({ operation: 'central-webhook', plane: 'central' });
+    if (!admission.ok) return false;
+    const candidate = this.planeOverride !== undefined ? this.planeOverride : admission.adapter;
+    if (
+      !candidate ||
+      typeof (candidate as Partial<CentralWebhooksTransport>).request !== 'function' ||
+      typeof (candidate as Partial<CentralWebhooksTransport>).capabilities !== 'function'
+    ) {
+      return false;
+    }
+    return this.supportsWebhooks(candidate as CentralWebhooksTransport);
   }
 
   // -- reads ----------------------------------------------------------------
@@ -1189,6 +1233,7 @@ export class CentralWebhooksService {
     const offset = clampOffset(offsetRaw);
     const q = typeof queryRaw === 'string' ? queryRaw.trim().toLowerCase() : '';
     const gatewayBaseUrl = this.gatewayBaseUrlForDisplay();
+    const canWrite = this.canWriteWebhooks();
     let tenantFingerprint: string | null = null;
     let tenantBinding: string | null = null;
     try {
@@ -1204,6 +1249,7 @@ export class CentralWebhooksService {
         : items;
       const page = filtered.slice(offset, offset + limit);
       return {
+        canWrite,
         items: page,
         totalCount: filtered.length,
         count: page.length,
@@ -1217,6 +1263,7 @@ export class CentralWebhooksService {
       };
     };
     const emptyResult = (error: string, bindable = true): WebhookListEnvelope => ({
+      canWrite,
       items: [],
       totalCount: 0,
       count: 0,
@@ -1385,8 +1432,7 @@ export class CentralWebhooksService {
         : this.requireReviewedTenantBinding(reviewedTenantBindingRaw);
     return this.withHandoffLock(async () => {
       this.requireReviewedTenantBinding(reviewedTenantBinding);
-      const adapter = this.adapter();
-      if (!adapter) throw new CentralWebhooksError(409, 'central is not linked — cannot create a webhook');
+      const adapter = this.admittedMutationAdapter();
       if (!this.supportsWebhooks(adapter)) {
         const result: WebhookMutationResult = {
           ok: false,
@@ -1547,8 +1593,7 @@ export class CentralWebhooksService {
         this.log('webhook-patch', result);
         return result;
       }
-      const adapter = this.adapter();
-      if (!adapter) throw new CentralWebhooksError(409, 'central is not linked — cannot patch a webhook');
+      const adapter = this.admittedMutationAdapter();
       if (!this.supportsWebhooks(adapter)) {
         const result: WebhookMutationResult = {
           ok: false,
@@ -1642,8 +1687,7 @@ export class CentralWebhooksService {
       this.log('webhook-delete', result);
       return result;
     }
-    const adapter = this.adapter();
-    if (!adapter) throw new CentralWebhooksError(409, 'central is not linked — cannot delete a webhook');
+    const adapter = this.admittedMutationAdapter();
     if (!this.supportsWebhooks(adapter)) {
       const result: WebhookMutationResult = {
         ok: false,
@@ -1683,8 +1727,7 @@ export class CentralWebhooksService {
         : this.requireReviewedTenantBinding(reviewedTenantBindingRaw);
     return this.withHandoffLock(async () => {
       this.requireReviewedTenantBinding(reviewedTenantBinding);
-      const adapter = this.adapter();
-      if (!adapter) throw new CentralWebhooksError(409, 'central is not linked — cannot rotate a webhook HMAC key');
+      const adapter = this.admittedMutationAdapter();
       if (!this.supportsWebhooks(adapter)) {
         const result: WebhookMutationResult = {
           ok: false,

@@ -121,6 +121,7 @@ function makeService(
     pollerOpts?: Parameters<typeof fakePoller>[0];
     dataDir?: string;
     allowsLabDirectWrites?: () => boolean;
+    admitWrite?: import('../src/services/clearpassDirectWrite').ClearPassDirectWriteOptions['admitWrite'];
   } = {},
 ) {
   const { poller, syncCalls } = fakePoller(opts.pollerOpts);
@@ -131,6 +132,7 @@ function makeService(
     dataDir,
     demoMode: () => opts.demo ?? false,
     allowsLabDirectWrites: opts.allowsLabDirectWrites,
+    admitWrite: opts.admitWrite,
     nowMs: () => 1_753_000_000_000,
   });
   return { service, dataDir, syncCalls };
@@ -160,6 +162,33 @@ async function postJson(path: string, body: unknown, method = 'POST'): Promise<{
 // -- the review gate ------------------------------------------------------------
 
 describe('the review gate', () => {
+  it('refuses a live write when canonical ClearPass admission denies it, before adapter I/O', async () => {
+    let calls = 0;
+    const { service } = makeService(
+      stubPlane({
+        registerEndpoint: async () => {
+          calls += 1;
+          return { ...APPLIED };
+        },
+      }),
+      {
+        admitWrite: () => ({
+          ok: false,
+          status: 403,
+          code: 'scope-missing',
+          plane: 'clearpass',
+          message: 'clearpass connector does not grant the required write:direct scope',
+        }),
+      },
+    );
+
+    await expect(service.registerEndpoint(REGISTER_FORM, true)).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining('write:direct'),
+    });
+    expect(calls).toBe(0);
+  });
+
   it('applies without reviewConfirmed in lab-direct mode', async () => {
     const { service } = makeService(stubPlane(), { allowsLabDirectWrites: () => true });
     await expect(service.registerEndpoint(REGISTER_FORM, undefined)).resolves.toMatchObject({ ok: true, action: 'created' });

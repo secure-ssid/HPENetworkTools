@@ -1132,6 +1132,27 @@ describe('ClearPassAdapter OAuth', () => {
     expect(authHeaders).toContain('Bearer minted-2');
   });
 
+  it('invalidates a minted token after a one-shot endpoint-page 401 without auto-retrying that page', async () => {
+    let pageCalls = 0;
+    const { handler, minted } = oauthHandler((method, pathname) => {
+      if (method !== 'GET' || pathname !== '/api/endpoint') return undefined;
+      pageCalls += 1;
+      return pageCalls === 1
+        ? { status: 401, body: { detail: 'expired' } }
+        : { body: hal([{ id: 'ep-1', mac_address: 'aabbccddeeff' }], { count: 1 }) };
+    });
+    const { adapter, authHeaders } = makeAdapter(handler, OAUTH_CREDS);
+
+    await expect(adapter.endpointPage(0, 50)).resolves.toMatchObject({ kind: 'failed' });
+    expect(pageCalls).toBe(1);
+    expect(minted()).toBe(1);
+
+    await expect(adapter.endpointPage(0, 50)).resolves.toMatchObject({ kind: 'ok' });
+    expect(pageCalls).toBe(2);
+    expect(minted()).toBe(2);
+    expect(authHeaders).toContain('Bearer minted-2');
+  });
+
   it('fails the pull naming /api/oauth when the mint itself fails', async () => {
     const { adapter } = makeAdapter(
       (method, pathname) => (method === 'POST' && pathname === '/api/oauth' ? { status: 403, body: {} } : undefined),

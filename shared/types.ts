@@ -432,6 +432,8 @@ export interface PortObject {
 export interface VlanObject {
   kind: 'vlan';
   origin?: 'configured' | 'observed';
+  /** Exact owning plane when configuration inventory proves it. */
+  plane?: Plane;
   id: string;
   name: string;
   detail: string;
@@ -623,6 +625,8 @@ export interface PortForm {
 export type VlanScope = 'cx-campus-01' | 'cx-all' | 'core-only';
 
 export interface VlanForm {
+  /** Exact owning plane. Live generic writes fail closed when this is absent. */
+  plane?: Plane;
   id: string;
   name: string;
   helpers: string; // comma-separated DHCP helper addresses
@@ -2392,6 +2396,10 @@ export interface QueuedChangeRow {
 export interface CapabilityRow {
   plane: string;
   note: string;
+  /** Exact admission for the generic Central broker write surface. */
+  canBrokerWrite?: boolean;
+  /** Exact admission for the dedicated Central/Mist SSID write surface. */
+  canDirectWrite?: boolean;
   /** 'direct' is a reviewed direct write with no ticket/queue (Mist SSIDs,
    *  SSE object CRUD) — distinct from 'brokered' (ticketed) and from
    *  'read only', and still a write path for the purposes of the screen's

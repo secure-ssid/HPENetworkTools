@@ -89,7 +89,6 @@ import {
   deviceProfile,
   isRealSiteId,
   matchServingRadio,
-  scopeForPlane,
   siteIdFor,
   terminalBanner,
   terminalQuickCommands,
@@ -119,7 +118,6 @@ import {
   type MistSleDrillSection,
   type MistSleMetricDetail,
   type Plane,
-  type PlaneKey,
   type SearchIndexEntry,
   type ScreenSection,
   type ServingRadio,
@@ -157,6 +155,7 @@ import {
   type PlaneId,
 } from '../planes/types';
 import { normalizeMac } from '../planes/clearpass';
+import { evaluateWriteAdmission } from '../services/writeAdmission';
 
 import {
   liveAuthStats,
@@ -255,7 +254,6 @@ import {
   SYSTEM_HEALTH_TONE,
   liveSyncHistory,
   liveSystemRows,
-  effectiveScope,
 } from './screens/systemsModel';
 
 // Re-exported: resetDetailCache belongs to the detail cache, but tests reach
@@ -1147,6 +1145,7 @@ screensRouter.get('/clearpass', (_req, res) => {
   if (dataSource() === 'demo') {
     res.json({
       dataSource: 'demo',
+      canWrite: true,
       syncedAt: new Date().toISOString(),
       missingSources: [],
       endpointTotal: CLEARPASS_ENDPOINTS.length,
@@ -1175,6 +1174,7 @@ screensRouter.get('/clearpass', (_req, res) => {
   const cp = poller.contributionsByPlane().get('clearpass');
   res.json({
     dataSource: 'live',
+    canWrite: evaluateWriteAdmission({ operation: 'clearpass-object', plane: 'clearpass' }).ok,
     syncedAt: poller.lastSyncFor('endpoints', 'authEvents'),
     missingSources: missing,
     endpointTotal: registry.state('clearpass').deviceCount,
@@ -2837,22 +2837,10 @@ screensRouter.get('/licenses', (_req, res) => {
 });
 
 /**
- * What the portal can ACTUALLY do with a plane: the scope the operator
- * granted, crossed with the adapter's own capability claim.
- *
- * A credential scoped `write:brokered` against a plane whose adapter reports
- * `brokeredWrite: false` still cannot take a change — the grant describes the
- * token, the capability describes the code path. Only an EXPLICIT false
- * downgrades; a plane that makes no claim is trusted with what it was granted
- * (most adapters do not implement capabilities() at all).
- */
-
-/**
  * "Where a change can go" for the real deployment: one row per registry
- * plane, its mode taken from the SAME scope helper the Systems scope badge
- * reads, so the two screens can never disagree. An unlinked plane cannot
- * accept a change, and says so, instead of advertising the fixture estate's
- * brokered collector and AOS-8 master.
+ * plane. Configuration write modes come from the same server-side admission
+ * predicate that guards the mutation routes. SSH remains a separate local
+ * shell capability and never implies configuration-write admission.
  */
 function liveCapabilityMatrix(): CapabilityRow[] {
   const states = registry.states();
@@ -2860,44 +2848,31 @@ function liveCapabilityMatrix(): CapabilityRow[] {
   return PLANE_IDS.filter((id) => SYSTEM_DISPLAY[id]).map((id) => {
     const state = states[id];
     const linked = state.linked;
-    const granted = scopeForPlane(id as PlaneKey, {
-      linked,
-      scopes: stored[id]?.scopes ?? null,
-      // Mist's directWrite IS a Configure-screen write path (the reviewed
-      // SSID apply), so it is passed here; SSE's is not (its object CRUD lives
-      // on the Systems Configuration tab — see liveSystemRow), so it stays
-      // 'read only' in THIS matrix even with a write scope granted.
-      directWrite: id === 'mist' ? state.capabilities?.directWrite : undefined,
-    });
-    const scope = effectiveScope(state, granted);
+    const brokerAdmitted =
+      id === 'central' && evaluateWriteAdmission({ operation: 'central-broker', plane: 'central' }).ok;
+    const directSsidAdmitted =
+      (id === 'central' || id === 'mist') && evaluateWriteAdmission({ operation: 'ssid', plane: id }).ok;
+    const shellAdmitted =
+      linked && stored[id]?.scopes?.includes('ssh') === true && state.capabilities?.localShell === true;
     const mode: CapabilityRow['mode'] =
-      scope === 'read + broker'
-        ? 'brokered'
-        : scope === 'read + ssh'
-          ? 'ssh'
-          : scope === 'read + direct'
-            ? 'direct'
-            : 'read only';
+      brokerAdmitted ? 'brokered' : directSsidAdmitted ? 'direct' : shellAdmitted ? 'ssh' : 'read only';
     const note = !linked
       ? 'not linked — no credentials stored'
       : state.health === 'degraded'
         ? 'linked, but the plane is not answering'
         : mode === 'brokered'
-          ? 'brokered write, ticket required'
+          ? 'Central broker write admitted'
           : mode === 'ssh'
             ? 'recorded shell, window only'
             : mode === 'direct'
-              ? 'reviewed SSID writes, no ticket'
-              : granted === scope
-                ? 'payload pre-filled in the plane console'
-                : // The credential grants a write scope this plane's adapter says
-                  // it cannot carry out — the honest row is the capability, not
-                  // the grant, or Configure offers a push that cannot happen.
-                  'this plane reports no write path — payload pre-filled in its console';
+              ? 'direct SSID write admitted'
+              : 'payload pre-filled in the plane console';
     return {
       plane: stored[id]?.displayName ?? SYSTEM_DISPLAY[id]!,
       note,
       mode,
+      canBrokerWrite: brokerAdmitted,
+      canDirectWrite: directSsidAdmitted,
       tone: mode === 'read only' ? 'neutral' : 'accent',
       linked,
       planeId: id,

@@ -2707,18 +2707,33 @@ describe('live-mode screen contracts', () => {
     const { body } = await getJson('/api/configure');
     const rows = body.capabilities as any[];
     const local = rows.find((r) => r.plane === 'Local switch collector');
-    expect(local).toMatchObject({ mode: 'read only', note: 'not linked — no credentials stored' });
+    expect(local).toMatchObject({
+      mode: 'read only',
+      canBrokerWrite: false,
+      canDirectWrite: false,
+      note: 'not linked — no credentials stored',
+    });
     const aos8 = rows.find((r) => r.plane === 'AOS-8 mobility master');
     expect(aos8.mode).toBe('read only'); // the fixture matrix advertises an ssh write path
     expect(rows.every((r) => typeof r.plane === 'string' && r.note.length > 0)).toBe(true);
   });
 
   it('a granted write scope promotes the plane on BOTH the systems badge and the matrix', async () => {
-    await fetch(`${base}/api/settings`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ planes: { central: { scopes: 'read write:brokered' } } }),
+    const [{ settings }, { registry }] = await Promise.all([
+      import('../src/config/settings'),
+      import('../src/planes/registry'),
+    ]);
+    const previous = settings.get().connectors.central;
+    const writable = migrateLegacyPlaneRecord('central', {
+      gatewayBaseUrl: 'http://127.0.0.1:1',
+      clientId: 'stored-id',
+      clientSecret: 'stored-secret',
     });
+    if (!writable) throw new Error('expected a complete Central connector');
+    settings.update({
+      connectors: { central: { ...writable, scopes: [...writable.scopes, 'write:brokered'] } },
+    });
+    registry.reinitPlane('central');
     try {
       const systems = await getJson('/api/systems');
       const central = (systems.body.systems as any[]).find((s) => s.planeId === 'central');
@@ -2727,13 +2742,10 @@ describe('live-mode screen contracts', () => {
 
       const configure = await getJson('/api/configure');
       const row = (configure.body.capabilities as any[]).find((r) => r.plane === 'HPE Aruba Central');
-      expect(row).toMatchObject({ mode: 'brokered', tone: 'accent' });
+      expect(row).toMatchObject({ mode: 'brokered', canBrokerWrite: true, canDirectWrite: false, tone: 'accent' });
     } finally {
-      await fetch(`${base}/api/settings`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ planes: { central: { scopes: '' } } }),
-      });
+      settings.update({ connectors: { central: previous } });
+      registry.reinitPlane('central');
     }
   });
 
@@ -2746,7 +2758,13 @@ describe('live-mode screen contracts', () => {
     try {
       const configure = await getJson('/api/configure');
       const row = (configure.body.capabilities as any[]).find((r) => r.planeId === 'mist');
-      expect(row).toMatchObject({ mode: 'direct', tone: 'accent', note: 'reviewed SSID writes, no ticket' });
+      expect(row).toMatchObject({
+        mode: 'direct',
+        canBrokerWrite: false,
+        canDirectWrite: true,
+        tone: 'accent',
+        note: 'direct SSID write admitted',
+      });
 
       const systems = await getJson('/api/systems');
       const mist = (systems.body.systems as any[]).find((s) => s.planeId === 'mist');
@@ -5029,6 +5047,7 @@ describe('ClearPass policy inventories', () => {
     const { status, body } = await getJson('/api/clearpass');
     expect(status).toBe(200);
     expect(body.dataSource).toBe('demo');
+    expect(body.canWrite).toBe(true);
     expect(body.networkDevices).toEqual(CLEARPASS_NETWORK_DEVICES);
     expect(body.authSources).toEqual(CLEARPASS_AUTH_SOURCES);
     expect(body.roles).toEqual(CLEARPASS_ROLES);
@@ -5068,6 +5087,7 @@ describe('ClearPass policy inventories', () => {
     });
     const { body } = await getJson('/api/clearpass');
     expect(body.dataSource).toBe('live');
+    expect(body.canWrite).toBe(false);
     expect(body.networkDevices).toHaveLength(1);
     expect(body.networkDevices[0].name).toBe('sw-test-1');
     expect(body.roles).toEqual([{ id: 'role-1', name: 'Employee', description: null }]);

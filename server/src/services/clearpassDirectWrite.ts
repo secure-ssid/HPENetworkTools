@@ -50,6 +50,7 @@ import { poller as defaultPoller, type Poller } from './poller';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
 import { settings } from '../config/settings';
 import { allowsLabDirectWrites } from './labWritePolicy';
+import { evaluateWriteAdmission, type AdmitWrite } from './writeAdmission';
 
 export class ClearPassDirectWriteError extends Error {
   constructor(
@@ -80,6 +81,8 @@ export interface ClearPassDirectWriteOptions {
   demoMode?: () => boolean; // default: the settings store (coa.ts's own pattern)
   /** Test seam; production always reads the shared persisted lab policy. */
   allowsLabDirectWrites?: () => boolean;
+  /** Test seam. Production always evaluates canonical settings + registry. */
+  admitWrite?: AdmitWrite;
 }
 
 const STATUS_VALUES = new Set<string>(CLEARPASS_ENDPOINT_STATUSES);
@@ -265,6 +268,7 @@ export class ClearPassDirectWriteService {
   private readonly nowMs: () => number;
   private readonly demoMode: () => boolean;
   private readonly allowsLabDirectWrites: () => boolean;
+  private readonly admitWrite: AdmitWrite;
 
   constructor(opts: ClearPassDirectWriteOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
@@ -274,6 +278,11 @@ export class ClearPassDirectWriteService {
     this.nowMs = opts.nowMs ?? (() => Date.now());
     this.demoMode = opts.demoMode ?? (() => settings.get().demoMode);
     this.allowsLabDirectWrites = opts.allowsLabDirectWrites ?? allowsLabDirectWrites;
+    this.admitWrite =
+      opts.admitWrite ??
+      (opts.plane !== undefined
+        ? (request) => ({ ok: true, plane: request.plane, adapter: {} as never })
+        : (request) => evaluateWriteAdmission(request, { registry: this.registry }));
   }
 
   private adapter(): ClearPassWritePlane | null {
@@ -371,11 +380,21 @@ export class ClearPassDirectWriteService {
   }
 
   private requireAdapter(): ClearPassWritePlane {
-    const adapter = this.adapter();
-    if (!adapter) {
+    const admission = this.admitWrite({ operation: 'clearpass-object', plane: 'clearpass' });
+    if (!admission.ok) throw new ClearPassDirectWriteError(admission.status, admission.message);
+    const candidate = this.planeOverride !== undefined ? this.planeOverride : admission.adapter;
+    if (!candidate) {
       throw new ClearPassDirectWriteError(409, 'clearpass is not linked — connect it under Systems and retry');
     }
-    return adapter;
+    if (
+      typeof (candidate as Partial<ClearPassWritePlane>).registerEndpoint !== 'function' ||
+      typeof (candidate as Partial<ClearPassWritePlane>).updateEndpoint !== 'function' ||
+      typeof (candidate as Partial<ClearPassWritePlane>).createLocalUser !== 'function' ||
+      typeof (candidate as Partial<ClearPassWritePlane>).updateLocalUser !== 'function'
+    ) {
+      throw new ClearPassDirectWriteError(409, 'clearpass is linked but its adapter cannot perform direct object writes');
+    }
+    return candidate as ClearPassWritePlane;
   }
 
   /**

@@ -45,6 +45,11 @@ import { poller as defaultPoller, type Poller } from './poller';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
 import { effectiveSectionSource, settings } from '../config/settings';
 import { allowsLabDirectWrites } from './labWritePolicy';
+import {
+  evaluateWriteAdmission,
+  type AdmitWrite,
+  type WriteAdmissionResult,
+} from './writeAdmission';
 
 export class SsidDirectWriteError extends Error {
   constructor(
@@ -88,6 +93,8 @@ export interface SsidDirectWriteOptions {
   demoMode?: () => boolean; // backwards-compatible test override
   /** Test seam; production always reads the shared persisted lab policy. */
   allowsLabDirectWrites?: () => boolean;
+  /** Test seam. Production always evaluates canonical settings + registry. */
+  admitWrite?: AdmitWrite;
 }
 
 const SECURITY_VALUES = new Set(SSID_SECURITY_OPTIONS.map((o) => o.value));
@@ -198,6 +205,7 @@ export class SsidDirectWriteService {
   private readonly nowMs: () => number;
   private readonly effectiveDemoMode: () => boolean;
   private readonly allowsLabDirectWrites: () => boolean;
+  private readonly admitWrite: AdmitWrite;
 
   constructor(opts: SsidDirectWriteOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
@@ -210,12 +218,35 @@ export class SsidDirectWriteService {
       opts.demoMode ??
       (() => effectiveSectionSource(settings.get(), 'configure') === 'demo');
     this.allowsLabDirectWrites = opts.allowsLabDirectWrites ?? allowsLabDirectWrites;
+    this.admitWrite =
+      opts.admitWrite ??
+      (opts.plane !== undefined
+        ? (request) => ({ ok: true, plane: request.plane, adapter: {} as never })
+        : (request) => evaluateWriteAdmission(request, { registry: this.registry }));
   }
 
   private adapterFor(planeKey: SsidWritePlaneKey): SsidWritePlane | null {
     if (this.planeOverride !== undefined) return this.planeOverride;
     const a = this.registry.get(planeKey);
     return planeKey === 'mist' ? (a instanceof MistAdapter ? a : null) : a instanceof CentralAdapter ? a : null;
+  }
+
+  private admittedAdapterFor(planeKey: SsidWritePlaneKey): SsidWritePlane {
+    const admission: WriteAdmissionResult = this.admitWrite({ operation: 'ssid', plane: planeKey });
+    if (!admission.ok) {
+      throw new SsidDirectWriteError(admission.status, admission.message);
+    }
+    const candidate = this.planeOverride !== undefined ? this.planeOverride : admission.adapter;
+    if (!candidate) {
+      throw new SsidDirectWriteError(409, `${planeKey} is not linked — cannot apply`);
+    }
+    if (
+      typeof (candidate as Partial<SsidWritePlane>).ssidCatalog !== 'function' ||
+      typeof (candidate as Partial<SsidWritePlane>).applySsidProfile !== 'function'
+    ) {
+      throw new SsidDirectWriteError(409, `${planeKey} is linked but its adapter cannot perform direct SSID writes`);
+    }
+    return candidate as SsidWritePlane;
   }
 
   /** GET the editor's live catalog — demo mode never touches the registry.
@@ -290,10 +321,7 @@ export class SsidDirectWriteService {
       return result;
     }
 
-    const adapter = this.adapterFor(planeKey);
-    if (!adapter) {
-      throw new SsidDirectWriteError(409, `${planeKey} is not linked — cannot apply`);
-    }
+    const adapter = this.admittedAdapterFor(planeKey);
     if (form.noDfs) {
       throw new SsidDirectWriteError(
         400,

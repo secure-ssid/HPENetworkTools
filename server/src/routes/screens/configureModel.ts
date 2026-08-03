@@ -1,6 +1,7 @@
 /** Configure screen: observed inventory, queued changes and their stats. */
 
 import { type PlanePull } from '../../planes/types';
+import { PLANE_LABEL } from '../../services/reconcile';
 import { poller } from '../../services/poller';
 import { writeBroker } from '../../services/writeBroker';
 import {
@@ -113,6 +114,7 @@ export function observedConfigureInventory(clients: ClientRow[]): ObservedConfig
     return {
       kind: 'vlan',
       origin: 'observed',
+      ...(planes.length === 1 ? { plane: planes[0] } : {}),
       id: first.vlan.replace(/^vlan\s+/i, ''),
       name: 'Observed active VLAN',
       detail: `${countOf(rows.length, 'active client')} · ${planes.join(' + ')}`,
@@ -134,28 +136,33 @@ export interface LiveConfigureInventory extends ObservedConfigureInventory {
 export function liveConfigureInventory(): LiveConfigureInventory {
   const observedAvailable = datasetReported('clients');
   const observed = observedConfigureInventory(liveClients());
-  const configs = [...poller.contributionsByPlane().values()]
-    .map((pull) => pull.config)
-    .filter((config): config is NonNullable<PlanePull['config']> => config !== undefined);
+  const configs = [...poller.contributionsByPlane().entries()]
+    .map(([plane, pull]) => ({ plane, config: pull.config }))
+    .filter(
+      (entry): entry is { plane: keyof typeof PLANE_LABEL; config: NonNullable<PlanePull['config']> } =>
+        entry.config !== undefined,
+    );
 
-  const ssidsReported = configs.some((config) => config.ssids !== undefined);
-  const portsReported = configs.some((config) => config.ports !== undefined);
-  const vlansReported = configs.some((config) => config.vlans !== undefined);
+  const ssidsReported = configs.some(({ config }) => config.ssids !== undefined);
+  const portsReported = configs.some(({ config }) => config.ports !== undefined);
+  const vlansReported = configs.some(({ config }) => config.vlans !== undefined);
   const configured = ssidsReported || portsReported || vlansReported;
 
   const dedupe = <T>(rows: T[], key: (row: T) => string): T[] =>
     [...new Map(rows.map((row) => [key(row), row])).values()];
   const configuredSsids = dedupe(
-    configs.flatMap((config) => config.ssids ?? []),
+    configs.flatMap(({ config }) => config.ssids ?? []),
     (row) => `${row.plane}|${row.name}`.toLowerCase(),
   );
   const configuredPorts = dedupe(
-    configs.flatMap((config) => config.ports ?? []),
+    configs.flatMap(({ config }) => config.ports ?? []),
     (row) => `${row.device}|${row.port}`.toLowerCase(),
   );
   const configuredVlans = dedupe(
-    configs.flatMap((config) => config.vlans ?? []),
-    (row) => row.id.toLowerCase(),
+    configs.flatMap(({ plane, config }) =>
+      (config.vlans ?? []).map((row) => ({ ...row, plane: PLANE_LABEL[plane] })),
+    ),
+    (row) => `${row.plane}|${row.id}`.toLowerCase(),
   );
 
   const sections = [
@@ -163,7 +170,9 @@ export function liveConfigureInventory(): LiveConfigureInventory {
     portsReported ? 'configured ports' : observedAvailable ? 'observed ports' : null,
     vlansReported ? 'configured VLANs' : observedAvailable ? 'observed VLANs' : null,
   ].filter((section): section is string => section !== null);
-  const sources = [...new Set(configs.map((config) => config.source).filter((source): source is string => !!source))];
+  const sources = [
+    ...new Set(configs.map(({ config }) => config.source).filter((source): source is string => !!source)),
+  ];
 
   return {
     ssids: ssidsReported ? configuredSsids : observedAvailable ? observed.ssids : [],

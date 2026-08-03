@@ -140,6 +140,7 @@ describe('mistWebhookRegistrationStatus', () => {
       const receiver = isolatedReceiver(dir);
       const status = await mistWebhookRegistrationStatus({ demoMode: () => true, receiver });
       expect(status.demo).toBe(true);
+      expect(status.canWrite).toBe(true);
       expect(status.linked).toBe(true);
       expect(status.subscriptions).toHaveLength(1);
       expect(status.subscriptions[0].url).toContain('/api/hooks/mist');
@@ -176,6 +177,45 @@ describe('mistWebhookRegistrationStatus', () => {
     const status = await mistWebhookRegistrationStatus({ demoMode: () => false, plane });
     expect(status.subscriptions.map((s) => s.id)).toEqual(['wh-1', 'wh-3']);
     expect(status.totalSubscriptions).toBe(3);
+  });
+
+  it('publishes read-only status from the same admission predicate without blocking the list read', async () => {
+    const { plane, listCalls } = fakePlane({ list: [subscription()] });
+    const status = await mistWebhookRegistrationStatus({
+      demoMode: () => false,
+      plane,
+      admitWrite: () => ({
+        ok: false,
+        status: 403,
+        code: 'scope-missing',
+        plane: 'mist',
+        message: 'missing write:direct',
+      }),
+    });
+    expect(status.canWrite).toBe(false);
+    expect(status.subscriptions).toHaveLength(1);
+    expect(listCalls).toHaveLength(1);
+  });
+});
+
+describe('Mist webhook write admission', () => {
+  it('refuses a read-only connector before listing or writing org subscriptions', async () => {
+    const { plane, listCalls, writeCalls } = fakePlane({});
+    const result = await registerMistWebhook(form(), {
+      demoMode: () => false,
+      plane,
+      admitWrite: () => ({
+        ok: false,
+        status: 403,
+        code: 'scope-missing',
+        plane: 'mist',
+        message: 'mist connector does not grant the required write:direct scope',
+      }),
+    });
+
+    expect(result).toMatchObject({ ok: false, action: 'failed', message: expect.stringContaining('write:direct') });
+    expect(listCalls).toHaveLength(0);
+    expect(writeCalls).toHaveLength(0);
   });
 });
 
@@ -318,6 +358,16 @@ describe('registerMistWebhook', () => {
 // ---------------------------------------------------------------------------
 
 describe('the registration routes', () => {
+  it('rejects a mixed valid/invalid topic array atomically instead of stripping the typo', async () => {
+    const res = await fetch(`${base}/api/hooks/mist/registration`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: URL, topics: ['alarms', 'client-session-typo'] }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ ok: false, action: 'failed' });
+  });
+
   it('POST /api/hooks/mist/registration admits a lab registration without review confirmation', async () => {
     const res = await fetch(`${base}/api/hooks/mist/registration`, {
       method: 'POST',

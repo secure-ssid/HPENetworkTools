@@ -168,6 +168,37 @@ async function closeServer(serverToClose: Server): Promise<void> {
 }
 
 describe('SsidDirectWriteService — service level (every instance is given an explicit plane/null — never the real registry)', () => {
+  it('refuses a live write when the canonical connector admission denies it, before catalog or apply I/O', async () => {
+    let calls = 0;
+    const service = new SsidDirectWriteService({
+      dataDir: freshDataDir(),
+      demoMode: () => false,
+      plane: stubPlane({
+        ssidCatalog: async () => {
+          calls += 1;
+          return stubPlane().ssidCatalog();
+        },
+        applySsidProfile: async () => {
+          calls += 1;
+          return appliedResult();
+        },
+      }),
+      admitWrite: () => ({
+        ok: false,
+        status: 403,
+        code: 'scope-missing',
+        plane: 'central',
+        message: 'central connector does not grant the required write:direct scope',
+      }),
+    });
+
+    await expect(service.apply(READY_FORM, true)).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining('write:direct'),
+    });
+    expect(calls).toBe(0);
+  });
+
   it('demo mode never touches the plane: catalog and apply are both canned', async () => {
     let planeTouched = false;
     const service = new SsidDirectWriteService({
@@ -964,6 +995,7 @@ function mistBackedService(opts: { dataDir?: string; writes?: { method: string; 
     registry: mistRegistry(adapter),
     pollerRef: poller,
     allowsLabDirectWrites: () => false,
+    admitWrite: () => ({ ok: true, plane: 'mist', adapter: adapter as never }),
   });
   return { service, writes, syncCalls };
 }
@@ -1063,6 +1095,7 @@ describe('SsidDirectWriteService — Mist dispatch', () => {
       demoMode: () => false,
       registry: mistRegistry(adapter),
       pollerRef: fakeMistPoller().poller,
+      admitWrite: () => ({ ok: true, plane: 'mist', adapter: adapter as never }),
     });
     let caught: unknown;
     try {

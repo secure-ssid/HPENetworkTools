@@ -141,6 +141,19 @@ function gatedTransport() {
   return { transport, calls, putStarted, releasePut: () => releasePut() };
 }
 
+function throwingPutTransport(message = 'socket timed out after request bytes were sent'):
+  BrokerTransport & { calls: { method: string; path: string }[] } {
+  const calls: { method: string; path: string }[] = [];
+  return {
+    calls,
+    request: async (method, path) => {
+      calls.push({ method, path });
+      if (method === 'PUT') throw new Error(message);
+      return { status: 200, body: {} };
+    },
+  };
+}
+
 /** Tests not about the ticket gate inject a permissive one; the gate itself has its own describe. */
 const anyTicket = () => true;
 
@@ -319,13 +332,95 @@ describe('lab direct apply', () => {
       settings.update({ configMode: false });
     }
   });
+
+  it('reports a thrown PUT as outcome unknown instead of claiming it was not applied', async () => {
+    const transport = throwingPutTransport();
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: () => false });
+    settings.update({ configMode: true });
+
+    try {
+      const result = await broker.apply('vlan', DEFAULT_VLAN_FORM);
+      expect(result).toMatchObject({ ok: false, outcomeUnknown: true });
+      expect(result.applied).toBeUndefined();
+      expect(result.message).toMatch(/outcome unknown/i);
+      const audit = readFileSync(join((broker as any).dataDir, 'change-log.jsonl'), 'utf8');
+      expect(audit).toContain('outcome-unknown');
+    } finally {
+      settings.update({ configMode: false });
+    }
+  });
+
+  it.each([
+    ['MIST', 'MIST-SERIAL'],
+    ['LOCAL', 'LOCAL-SERIAL'],
+    ['AOS-8', 'AOS8-SERIAL'],
+  ] as const)('refuses a %s-owned port before any Central request', async (plane, serial) => {
+    const transport = transportWith(200);
+    const form = { ...DEFAULT_PORT_FORM, device: `${plane.toLowerCase()}-switch`, plane, serial };
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport,
+      knownTicket: anyTicket,
+      listDevices: () => [{ name: form.device, plane, serial }],
+    });
+    settings.update({ configMode: true });
+    try {
+      await expect(broker.apply('port', form)).rejects.toMatchObject({ status: 409 });
+      expect(() => broker.queue('port', form, 'NET-WRONG-PLANE')).toThrow(/Central-owned/i);
+      expect(transport.calls).toEqual([]);
+    } finally {
+      settings.update({ configMode: false });
+    }
+  });
+
+  it('refuses VLAN writes when exact Central ownership is absent or non-Central', async () => {
+    const transport = transportWith(200);
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    settings.update({ configMode: true });
+    try {
+      const { plane: _plane, ...withoutPlane } = DEFAULT_VLAN_FORM;
+      await expect(broker.apply('vlan', withoutPlane)).rejects.toMatchObject({ status: 409 });
+      await expect(broker.apply('vlan', { ...DEFAULT_VLAN_FORM, plane: 'MIST' })).rejects.toMatchObject({ status: 409 });
+      expect(transport.calls).toEqual([]);
+    } finally {
+      settings.update({ configMode: false });
+    }
+  });
+
+  it('enforces broker scope admission before direct transport I/O', async () => {
+    const transport = transportWith(200);
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport,
+      knownTicket: anyTicket,
+      admitWrite: () => ({
+        ok: false,
+        status: 403,
+        code: 'scope-missing',
+        plane: 'central',
+        message: 'central connector does not grant the required write:brokered scope',
+      }),
+    });
+    settings.update({ configMode: true });
+    try {
+      await expect(broker.apply('vlan', DEFAULT_VLAN_FORM)).rejects.toMatchObject({ status: 403 });
+      expect(transport.calls).toEqual([]);
+    } finally {
+      settings.update({ configMode: false });
+    }
+  });
 });
 
 describe('queue state by plane link status', () => {
   it('console for a mist-only SSID, needs window when central is unlinked, ready + lease when linked', () => {
     const store = new SettingsStore(join(tmpDir, 'link-settings.json'));
     const reg = new PlaneRegistry(store);
-    const broker = new WriteBroker({ registry: reg, dataDir: freshDataDir(), knownTicket: anyTicket });
+    const broker = new WriteBroker({
+      registry: reg,
+      dataDir: freshDataDir(),
+      knownTicket: anyTicket,
+      admitWrite: (request) => ({ ok: true, plane: request.plane, adapter: reg.get(request.plane) }),
+    });
 
     const unlinked = broker.queue('ssid', DEFAULT_SSID_FORM, 'NET-1');
     expect(unlinked.state).toBe('needs window');
@@ -333,7 +428,7 @@ describe('queue state by plane link status', () => {
 
     const consoleChange = broker.queue('ssid', { ...DEFAULT_SSID_FORM, plane: 'MIST' }, 'NET-1');
     expect(consoleChange.state).toBe('console');
-    expect(consoleChange.where).toMatch(/Mist · SSIDs write via the reviewed direct editor/);
+    expect(consoleChange.where).toMatch(/Mist · SSIDs write via the dedicated direct editor/);
     expect(consoleChange.expiresAt).toBeNull();
 
     store.update({
@@ -371,7 +466,12 @@ describe('queue state by plane link status', () => {
 describe('push', () => {
   it('a 404 on the push path is reported unverified — never success — and stays queued', async () => {
     const transport = transportWith(404, { error: 'not found' });
-    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport,
+      knownTicket: anyTicket,
+      listDevices: () => [{ name: DEFAULT_PORT_FORM.device, plane: 'CENTRAL', serial: 'CENTRAL-SERIAL' }],
+    });
     const change = broker.queue('ssid', DEFAULT_SSID_FORM, 'NET-3');
 
     const r = await broker.push(change.id);
@@ -391,7 +491,12 @@ describe('push', () => {
 
   it('a 500 from the plane is a failure, never success', async () => {
     const transport = transportWith(500, { error: 'boom' });
-    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport,
+      knownTicket: anyTicket,
+      listDevices: () => [{ name: DEFAULT_PORT_FORM.device, plane: 'CENTRAL', serial: 'CENTRAL-SERIAL' }],
+    });
     const change = broker.queue('port', DEFAULT_PORT_FORM, 'NET-4');
 
     const r = await broker.push(change.id);
@@ -655,6 +760,80 @@ describe('push concurrency + snapshot reuse', () => {
     await expect(broker.push(change.id)).rejects.toThrow(/not in the queue/);
   });
 
+  it('serializes different queued changes for the same exact target', async () => {
+    const { transport, putStarted, releasePut } = gatedTransport();
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    const first = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-LOCK-1');
+    const second = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-LOCK-2');
+
+    const pushing = broker.push(first.id);
+    await putStarted;
+    await expect(broker.push(second.id)).rejects.toMatchObject({ status: 409 });
+    expect(broker.list().find((row) => row.id === second.id)?.state).toBe('ready');
+    releasePut();
+    await pushing;
+    expect(transport.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+  });
+
+  it('shares the same exact-target lock between queued push and lab direct apply', async () => {
+    const { transport, putStarted, releasePut } = gatedTransport();
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: anyTicket });
+    const change = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-LOCK-3');
+    settings.update({ configMode: true });
+    try {
+      const pushing = broker.push(change.id);
+      await putStarted;
+      await expect(broker.apply('vlan', DEFAULT_VLAN_FORM)).rejects.toMatchObject({ status: 409 });
+      releasePut();
+      await pushing;
+      expect(transport.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+    } finally {
+      settings.update({ configMode: false });
+    }
+  });
+
+  it('keeps a thrown queued PUT fail-closed for reconciliation instead of making it retryable', async () => {
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport: throwingPutTransport(),
+      knownTicket: anyTicket,
+    });
+    const change = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-UNKNOWN');
+    const result = await broker.push(change.id);
+
+    expect(result).toMatchObject({ ok: false, outcomeUnknown: true });
+    expect(result.applied).toBeUndefined();
+    expect(result.message).toMatch(/reconciliation/i);
+    expect(broker.list().find((row) => row.id === change.id)?.state).toBe('applying');
+    await expect(broker.push(change.id)).rejects.toThrow(/only ready changes/);
+  });
+
+  it('rechecks broker admission at push so revoked scope cannot reach transport', async () => {
+    let admitted = true;
+    const transport = transportWith(200);
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport,
+      knownTicket: anyTicket,
+      admitWrite: () => admitted
+        ? ({ ok: true, plane: 'central', adapter: {} as any })
+        : ({
+            ok: false,
+            status: 403,
+            code: 'scope-missing',
+            plane: 'central',
+            message: 'central connector does not grant the required write:brokered scope',
+          }),
+    });
+    const change = broker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-REVOKED');
+    expect(change.state).toBe('ready');
+    admitted = false;
+
+    await expect(broker.push(change.id)).rejects.toMatchObject({ status: 403 });
+    expect(transport.calls).toEqual([]);
+    expect(broker.list().find((row) => row.id === change.id)?.state).toBe('ready');
+  });
+
   it('push reuses a fresh dry-run snapshot — no second read-back', async () => {
     const dataDir = freshDataDir();
     const transport = transportWith(200, { wlans: [{ name: 'MRDN-Staff' }] });
@@ -724,7 +903,12 @@ describe('dry run', () => {
   });
 
   it('unlinked target: honest render-only, no read-back attempted', async () => {
-    const broker = new WriteBroker({ dataDir: freshDataDir(), transport: null, knownTicket: anyTicket });
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport: null,
+      knownTicket: anyTicket,
+      listDevices: () => [{ name: DEFAULT_PORT_FORM.device, plane: 'CENTRAL', serial: 'CENTRAL-SERIAL' }],
+    });
     const r = await broker.dryRun('port', DEFAULT_PORT_FORM, 'NET-8');
     expect(r.ok).toBe(true);
     expect(r.reachable).toBeNull();

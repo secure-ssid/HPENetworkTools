@@ -536,6 +536,7 @@ export function seedFormFromRow(
   }
   const v = row as VlanObject;
   return {
+    plane: v.plane,
     id: v.id,
     name: v.name,
     helpers: opts.live ? '' : v.id === '812' ? '10.42.0.20' : '10.42.0.20, 10.44.0.20',

@@ -1,12 +1,11 @@
 /**
  * server/src/services/writeBroker.ts — the brokered-write pipeline.
  *
- * Design rule (README §"Integration model" rule 3): NO standing write access.
- * Every write needs a reference to a REAL ticket — a raised one from the
- * portal's store, or a fixture-queue id while demo mode is on; anything else
- * is rejected with a 400, never audit-logged as if it were real. A ready
- * change holds a 15-minute lease, is recorded to an append-only change log,
- * and keeps a rollback snapshot of the pre-change state for 24 hours.
+ * Hardened mode requires a REAL ticket for the queued workflow. Lab mode can
+ * apply supported Central objects immediately, bypassing only ticket/review/
+ * queue/lease/dry-run ceremony; exact ownership, stored-scope admission,
+ * target locking, validation, verification, audit and redaction remain.
+ * Hardened ready changes hold a 15-minute lease and a 24-hour snapshot.
  * Read-only planes (Mist per the shared CAPABILITY_MATRIX) get an honest
  * console hand-off — the broker renders the payload and never fakes a push.
  *
@@ -61,6 +60,7 @@ import { allowsLabDirectWrites } from './labWritePolicy';
 import { knownTicketId } from './tickets';
 import { resolveDeviceIdentity, safeDeviceCandidates } from './deviceIdentity';
 import { currentActor } from './auth';
+import { evaluateWriteAdmission, type AdmitWrite } from './writeAdmission';
 
 export const LEASE_MS = 15 * 60 * 1000;
 export const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -129,7 +129,9 @@ export interface PushResult {
    * into a green toast and the broker drops the change off the queue on it, so
    * anything less than a confirmed write must not set it.
    */
-  applied: boolean;
+  applied?: boolean;
+  /** The request may have reached Central; reconciliation is required before retry. */
+  outcomeUnknown?: boolean;
   /**
    * The plane took the request but has not said it is done (HTTP 202).
    *
@@ -163,7 +165,9 @@ export interface PushResult {
  * queue, lease, or dry-run fields: those belong to the hardened broker path. */
 export interface ImmediateApplyResult {
   ok: boolean;
-  applied: boolean;
+  applied?: boolean;
+  /** The request may have reached Central; reconciliation is required before retry. */
+  outcomeUnknown?: boolean;
   accepted?: boolean;
   changeId: string;
   kind: ConfigKind;
@@ -348,7 +352,7 @@ type WriteTarget = 'central' | 'console';
 /**
  * Where a change can go, per the shared capability matrix: an SSID whose
  * owning plane label is Mist-only is not writable THROUGH THIS BROKER — Mist
- * SSIDs write via the reviewed direct editor (ssidDirectWrite.ts), so the
+ * SSIDs write via the dedicated direct editor (ssidDirectWrite.ts), so the
  * ticketed queue hands off to the console. Everything else brokers through
  * Central in this build.
  */
@@ -459,7 +463,7 @@ function whatFor(kind: ConfigKind, form: ConfigForm): string {
 }
 
 function whereFor(kind: ConfigKind, form: ConfigForm, target: WriteTarget): string {
-  if (target === 'console') return 'Mist · SSIDs write via the reviewed direct editor — this payload opens in console';
+  if (target === 'console') return 'Mist · SSIDs write via the dedicated direct editor — this payload opens in console';
   if (kind === 'ssid') {
     const f = form as SsidForm;
     return `${f.plane || 'CENTRAL'} · target group ${f.group}`;
@@ -552,6 +556,8 @@ export interface WriteBrokerOptions {
     serial?: string;
     claimedBy?: Plane[];
   }>;
+  /** Process-side test seam. Production always evaluates canonical settings. */
+  admitWrite?: AdmitWrite;
 }
 
 // ---------------------------------------------------------------------------
@@ -577,9 +583,11 @@ export class WriteBroker {
   private readonly nowMs: () => number;
   private readonly knownTicket: (id: string) => boolean;
   private readonly listDevices: NonNullable<WriteBrokerOptions['listDevices']>;
+  private readonly admitWrite: AdmitWrite;
   private changes: BrokeredChange[] | null = null; // lazy-loaded from disk
   private readonly pushing = new Set<string>(); // change ids with a push in flight (double-apply guard)
-  private readonly applyingTargets = new Set<string>(); // direct applies in flight, keyed by exact Central target
+  /** One lock domain for every path that can mutate an exact Central target. */
+  private readonly mutatingTargets = new Set<string>();
 
   constructor(opts: WriteBrokerOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
@@ -597,9 +605,25 @@ export class WriteBroker {
         ...(device.claimedBy ? { claimedBy: device.claimedBy } : {}),
       }));
     });
+    const hasTransportTestSeam = Object.prototype.hasOwnProperty.call(opts, 'transport');
+    this.admitWrite = opts.admitWrite ?? (hasTransportTestSeam
+      ? ((request) => ({ ok: true, plane: request.plane, adapter: this.registry.get(request.plane) }))
+      : ((request) => evaluateWriteAdmission(request, { registry: this.registry })));
   }
 
   private actionForm(kind: ConfigKind, form: ConfigForm): ConfigForm {
+    if (kind === 'vlan') {
+      const vlan = form as VlanForm;
+      if (vlan.plane !== 'CENTRAL') {
+        throw new BrokerError(
+          409,
+          vlan.plane
+            ? `generic VLAN writes require a Central-owned target; received ${vlan.plane}`
+            : 'generic VLAN writes require proven Central ownership; target plane was not reported',
+        );
+      }
+      return form;
+    }
     if (kind !== 'port') return form;
     const port = form as PortForm;
     const hasPlane = typeof port.plane === 'string' && port.plane.trim().length > 0;
@@ -624,6 +648,12 @@ export class WriteBroker {
     }
     if (!resolution.device) {
       throw new BrokerError(404, `device '${port.device}' not found in inventory`);
+    }
+    if (resolution.device.plane !== 'CENTRAL') {
+      throw new BrokerError(
+        409,
+        `generic port writes require a Central-owned target; '${port.device}' belongs to ${resolution.device.plane}`,
+      );
     }
     const { plane: _plane, serial: _serial, ...rest } = port;
     return resolution.device.serial && resolution.device.plane
@@ -668,32 +698,30 @@ export class WriteBroker {
     if (targetFor(k, f) !== 'central') {
       throw new BrokerError(409, 'read-only plane — open the Mist console with the rendered payload; the portal cannot apply it');
     }
-    const transport = this.centralTransport();
-    if (!transport) {
-      throw new BrokerError(409, 'central is not linked — cannot apply directly; link the plane or use the ticketed workflow');
-    }
+    const transport = this.centralWriteTransport();
 
     const path = pushPathFor(k, f);
     const targetKey = `${k}:${path}`;
-    if (this.applyingTargets.has(targetKey)) {
-      throw new BrokerError(409, `direct apply already in flight for ${k} target — wait for it to finish`);
+    if (this.mutatingTargets.has(targetKey)) {
+      throw new BrokerError(409, `a write is already in flight for this ${k} target — wait for it to finish`);
     }
 
     const changeId = newChangeId('apply');
     const audit = { changeId, ticket: 'LAB', kind: k };
-    this.applyingTargets.add(targetKey);
+    this.mutatingTargets.add(targetKey);
     try {
       let res: BrokerResponse;
       try {
         res = await transport.request('PUT', path, pushBodyFor(k, f));
       } catch {
-        this.log({ event: 'apply', ...audit, result: 'network-error' });
+        this.log({ event: 'apply', ...audit, result: 'outcome-unknown (reconciliation required)' });
         return {
           changeId,
           kind: k,
           ok: false,
-          applied: false,
-          message: 'apply failed — Central request did not complete',
+          outcomeUnknown: true,
+          message:
+            'outcome unknown — the Central request lost transport confirmation and may have been applied; reconcile the target before any retry',
         };
       }
 
@@ -738,7 +766,7 @@ export class WriteBroker {
           : `apply failed — Central answered HTTP ${res.status}`,
       };
     } finally {
-      this.applyingTargets.delete(targetKey);
+      this.mutatingTargets.delete(targetKey);
     }
   }
 
@@ -855,7 +883,7 @@ export class WriteBroker {
     const f = this.actionForm(k, asForm(k, form));
     const ticket = requireKnownTicket(ticketRaw, this.knownTicket);
     const target = targetFor(k, f);
-    const writable = target === 'central' && this.centralTransport() !== null;
+    const writable = target === 'central' && this.canWriteCentral();
     const state: ChangeState = target === 'console' ? 'console' : writable ? 'ready' : 'needs window';
     const now = this.nowMs();
     const change: BrokeredChange = {
@@ -933,19 +961,27 @@ export class WriteBroker {
     if (this.pushing.has(id)) {
       throw new BrokerError(409, `push already in flight for change '${id}' — wait for it to finish`);
     }
+    const change = this.getChange(id);
+    const form = this.actionForm(change.object.kind, change.object.form);
+    const targetKey = `${change.object.kind}:${pushPathFor(change.object.kind, form)}`;
+    if (this.mutatingTargets.has(targetKey)) {
+      throw new BrokerError(409, `a write is already in flight for this ${change.object.kind} target — wait for it to finish`);
+    }
     this.pushing.add(id);
+    this.mutatingTargets.add(targetKey);
     try {
-      return await this.executePush(id);
+      return await this.executePush(id, form);
     } finally {
       this.pushing.delete(id);
+      this.mutatingTargets.delete(targetKey);
     }
   }
 
   /** The push pipeline itself — re-entry is guarded by push(). */
-  private async executePush(changeIdRaw: unknown): Promise<PushResult> {
+  private async executePush(changeIdRaw: unknown, resolvedForm?: ConfigForm): Promise<PushResult> {
     const change = this.getChange(changeIdRaw);
     const { kind } = change.object;
-    const form = this.actionForm(kind, change.object.form);
+    const form = resolvedForm ?? this.actionForm(kind, change.object.form);
     const base = { changeId: change.id, ticket: change.ticket, kind };
 
     if (!change.ticket.trim()) throw new BrokerError(400, 'change has no ticket reference — discard and re-queue with a ticket');
@@ -959,10 +995,9 @@ export class WriteBroker {
       this.log({ event: 'push', ...base, result: 'lease-expired' });
       throw new BrokerError(409, 'lease expired — re-queue');
     }
-    const transport = this.centralTransport();
-    if (!transport) {
-      throw new BrokerError(409, 'central is not linked — cannot push; re-link the plane and re-queue');
-    }
+    // Re-evaluated for every push: revoking the stored grant after queueing
+    // immediately closes the live mutation boundary.
+    const transport = this.centralWriteTransport();
 
     // Persist an in-progress state before external I/O. If the process dies
     // after Central applies the change, restart will not present it as ready
@@ -1011,14 +1046,16 @@ export class WriteBroker {
     try {
       res = await transport.request('PUT', pushPathFor(kind, form), pushBodyFor(kind, form));
     } catch (err) {
-      this.restoreQueuedChange(change);
-      this.log({ event: 'push', ...base, result: 'network-error' });
+      // Do not restore `ready`: the request may have reached Central. Keeping
+      // the durable `applying` marker prevents an unsafe replay after restart.
+      this.log({ event: 'push', ...base, result: 'outcome-unknown (reconciliation required)' });
       return {
         ...base,
         ok: false,
-        applied: false,
+        outcomeUnknown: true,
         snapshot,
-        message: `push failed — ${(err as Error).message}; the change stays queued`,
+        message:
+          'outcome unknown — Central transport confirmation was lost; the change remains applying and requires reconciliation before any retry',
       };
     }
 
@@ -1178,6 +1215,30 @@ export class WriteBroker {
     if (this.transportOverride !== undefined) return this.transportOverride;
     const adapter = this.registry.get('central');
     return adapter instanceof CentralAdapter ? adapter : null;
+  }
+
+  /** Admission and transport resolution are one operation at the write edge. */
+  private centralWriteTransport(): BrokerTransport {
+    const admission = this.admitWrite({ operation: 'central-broker', plane: 'central' });
+    if (!admission.ok) throw new BrokerError(admission.status, admission.message);
+    if (this.transportOverride !== undefined) {
+      if (this.transportOverride) return this.transportOverride;
+      throw new BrokerError(409, 'central is not linked — no admitted write transport is available');
+    }
+    const adapter = admission.adapter as unknown as Partial<BrokerTransport>;
+    if (typeof adapter.request !== 'function') {
+      throw new BrokerError(409, 'central adapter does not expose the admitted broker transport');
+    }
+    return adapter as BrokerTransport;
+  }
+
+  private canWriteCentral(): boolean {
+    try {
+      this.centralWriteTransport();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private getChange(raw: unknown): BrokeredChange {

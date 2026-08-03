@@ -83,6 +83,84 @@ const publicDns: WebhookHostnameResolver = async () => [
   { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 },
 ];
 
+describe('write admission', () => {
+  it('refuses a read-only Central connector before any webhook mutation I/O', async () => {
+    let calls = 0;
+    const service = new CentralWebhooksService({
+      dataDir: freshDataDir(),
+      effectiveDemoMode: () => false,
+      plane: okTransport({
+        request: async () => {
+          calls += 1;
+          return { status: 204, body: null };
+        },
+      }),
+      admitWrite: () => ({
+        ok: false,
+        status: 403,
+        code: 'scope-missing',
+        plane: 'central',
+        message: 'central connector does not grant the required write:direct scope',
+      }),
+    });
+
+    await expect(service.remove('wh-1', true)).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining('write:direct'),
+    });
+    expect(calls).toBe(0);
+  });
+
+  it('publishes canWrite false on a readable list when direct scope is denied', async () => {
+    const service = new CentralWebhooksService({
+      dataDir: freshDataDir(),
+      effectiveDemoMode: () => false,
+      plane: okTransport({ request: async () => ({ status: 200, body: { items: [] } }) }),
+      admitWrite: () => ({
+        ok: false,
+        status: 403,
+        code: 'scope-missing',
+        plane: 'central',
+        message: 'missing write:direct',
+      }),
+    });
+    const list = await service.list(10, 0, '');
+    expect(list.canWrite).toBe(false);
+    expect(list.source).toBe('central live');
+  });
+});
+
+describe('mode-truthful audit labels', () => {
+  it('records lab direct apply without falsely claiming review confirmation', async () => {
+    const dataDir = freshDataDir();
+    const service = new CentralWebhooksService({
+      dataDir,
+      plane: okTransport({ request: async () => ({ status: 204, body: null }) }),
+    });
+    settings.update({ configMode: true });
+    await service.remove('wh-1', undefined);
+
+    const audit = readFileSync(join(dataDir, 'change-log.jsonl'), 'utf8');
+    expect(audit).toContain('(none — lab direct apply)');
+    expect(audit).not.toContain('review-confirmed');
+  });
+
+  it('keeps the review-confirmed label in hardened mode', async () => {
+    const dataDir = freshDataDir();
+    const service = new CentralWebhooksService({
+      dataDir,
+      plane: okTransport({ request: async () => ({ status: 204, body: null }) }),
+    });
+    settings.update({ configMode: false });
+    try {
+      await service.remove('wh-1', true);
+      expect(readFileSync(join(dataDir, 'change-log.jsonl'), 'utf8')).toContain('review-confirmed');
+    } finally {
+      settings.update({ configMode: true });
+    }
+  });
+});
+
 function deferred(): { promise: Promise<void>; resolve: () => void; reject: (reason: unknown) => void } {
   let resolve = (): void => undefined;
   let reject = (_reason: unknown): void => undefined;

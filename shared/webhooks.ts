@@ -74,6 +74,8 @@ export interface WebhookDetail extends WebhookSummary {
 }
 
 export interface WebhookListEnvelope {
+  /** Effective server-side admission for Central webhook mutations. */
+  canWrite?: boolean;
   items: WebhookSummary[];
   totalCount: number;
   count: number;
@@ -942,6 +944,8 @@ export interface MistWebhookSubscription {
  *  and when a delivery last arrived. */
 export interface MistWebhookRegistrationStatus {
   demoMode: boolean;
+  /** Effective server-side admission for Mist subscription mutations. */
+  canWrite?: boolean;
   /** A Mist plane with complete credentials is linked. */
   linked: boolean;
   /** The fixed receiver path a subscription must point at ('/api/hooks/mist'). */
@@ -1001,6 +1005,7 @@ export function mistWebhookRegistrationDemoStatus(
 ): MistWebhookRegistrationStatus {
   return {
     demoMode,
+    canWrite: true,
     linked: true,
     receiverPath: '/api/hooks/mist',
     subscriptions: [

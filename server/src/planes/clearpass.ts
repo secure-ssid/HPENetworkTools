@@ -1769,12 +1769,15 @@ export class ClearPassAdapter implements PlaneAdapter {
   }
 
   /**
-   * One authenticated vendor GET, with neither transient backoff nor a 401
-   * token refresh. Interactive endpoint paging promises exactly one vendor
-   * request per page action; failure is surfaced to the screen for retry.
+   * One authenticated vendor GET, with neither transient backoff nor an
+   * automatic 401 retry. A rejected minted token is invalidated so the next
+   * explicit page action re-mints; the current action still makes exactly one
+   * vendor page request and surfaces failure to the screen.
    */
   private async authedGetOneShot(path: string): Promise<HttpResult> {
-    return this.http('GET', path, { token: await this.authToken() });
+    const res = await this.http('GET', path, { token: await this.authToken() });
+    if (res.status === 401 && this.tokens) this.tokens.invalidate();
+    return res;
   }
 
   /**

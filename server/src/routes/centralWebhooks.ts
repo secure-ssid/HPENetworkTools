@@ -6,11 +6,11 @@
  *   GET    /api/central/webhooks/handoff                                   → durable pending status
  *   POST   /api/central/webhooks/handoff/acknowledge                        secretStored:true
  *   POST   /api/central/webhooks/handoff/resolve                            reviewed manual reconciliation
- *   POST   /api/central/webhooks                        reviewed create
+ *   POST   /api/central/webhooks                        lab-direct or reviewed create
  *   PUT    /api/central/webhooks/:id                    disabled (501; no Central call)
  *   PATCH  /api/central/webhooks/:id                    {form: {expectedGeneration, ...}, reviewConfirmed}
  *   DELETE /api/central/webhooks/:id                     {reviewConfirmed}                → WebhookMutationResult
- *   POST   /api/central/webhooks/:id/rotate-hmac-key    reviewed rotation
+ *   POST   /api/central/webhooks/:id/rotate-hmac-key    lab-direct or reviewed rotation
  *
  * Every :id is checked against isWebhookId() (a bounded, URL-safe character
  * set) before it is ever placed on an outbound path segment, on top of
@@ -22,8 +22,9 @@
  * Reads never throw for an unlinked/Classic/denied Central — they answer
  * 200 with the honest reason named (list: `error`; single-object read: a
  * distinct 502, never collapsed into 404 — see CentralWebhooksService.get's
- * own doc comment). Mutations require a real CentralWebhooksError-status
- * response (400 missing review confirmation, 409 not linked/unsupported
+ * own doc comment). Mutations are direct in lab mode and review-confirmed in
+ * hardened mode. They require a real CentralWebhooksError-status response
+ * (400 missing hardened review confirmation, 409 not linked/unsupported
  * gateway is instead reported as an ok:false result — see the service) for
  * genuine request errors; a plane answer that is not 2xx is itself reported
  * as {ok:false, action:'failed', ...} at 200, not a 4xx/5xx.

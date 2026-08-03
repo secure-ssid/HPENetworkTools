@@ -5,11 +5,9 @@
  * A Mist org webhook subscription is what makes the inbound receiver
  * (services/webhookReceiver.ts, POST /api/hooks/mist) actually receive: it
  * tells the Mist org to POST signed events to this portal. Creating or
- * updating one is a CONFIG CHANGE TO THE ORG, so it goes through the same
- * reviewed-write discipline as the direct SSID apply (ssidDirectWrite.ts):
- * the route requires an explicit `reviewConfirmed` from the operator, every
- * landed write records ONE audit line in change-log.jsonl (no ticket — the
- * review checkbox is the gate, exactly like the SSID path), and the
+ * updating one is a CONFIG CHANGE TO THE ORG. Lab mode applies directly;
+ * hardened mode requires explicit review confirmation. Every landed write
+ * records ONE secret-free audit line, and the
  * subscription's signing secret is write-only — sent on the write, stored
  * in the receiver's secret store so deliveries verify, and never logged,
  * echoed, or displayed.
@@ -45,6 +43,7 @@ import {
 import { registry as defaultRegistry, type PlaneRegistry } from '../planes/registry';
 import { settings } from '../config/settings';
 import { appendBrokerLog, brokerDataDir } from './writeBroker';
+import { evaluateWriteAdmission, type AdmitWrite } from './writeAdmission';
 import {
   WEBHOOK_SECRET_MAX_CHARS,
   WEBHOOK_SECRET_MIN_CHARS,
@@ -79,6 +78,8 @@ export interface MistWebhooksOptions {
   nowMs?: () => number;
   /** Test override — undefined resolves the MistAdapter from the registry. */
   plane?: MistWebhookPlane | null;
+  /** Test seam. Production always evaluates canonical settings + registry. */
+  admitWrite?: AdmitWrite;
 }
 
 /** True when the URL's path ends with the receiver path (query and trailing
@@ -130,9 +131,27 @@ export async function mistWebhookRegistrationStatus(
   if (demoMode) return mistWebhookRegistrationDemoStatus(demoMode, lastReceivedAt);
 
   const { plane, linked } = planeFor(opts);
+  const admission =
+    opts.admitWrite?.({ operation: 'mist-webhook', plane: 'mist' }) ??
+    (opts.plane !== undefined
+      ? opts.plane !== null
+        ? { ok: true as const, plane: 'mist' as const, adapter: {} as never }
+        : {
+            ok: false as const,
+            status: 409 as const,
+            code: 'unlinked' as const,
+            plane: 'mist' as const,
+            message: 'Mist is not linked',
+          }
+      : evaluateWriteAdmission(
+          { operation: 'mist-webhook', plane: 'mist' },
+          { registry: opts.registry ?? defaultRegistry },
+        ));
+  const canWrite = linked && plane !== null && admission.ok;
   if (!linked) {
     return {
       demoMode,
+      canWrite,
       linked: false,
       receiverPath: MIST_RECEIVER_PATH,
       subscriptions: [],
@@ -144,6 +163,7 @@ export async function mistWebhookRegistrationStatus(
   if (plane === null) {
     return {
       demoMode,
+      canWrite,
       linked,
       receiverPath: MIST_RECEIVER_PATH,
       subscriptions: [],
@@ -156,6 +176,7 @@ export async function mistWebhookRegistrationStatus(
   if (list === null) {
     return {
       demoMode,
+      canWrite,
       linked,
       receiverPath: MIST_RECEIVER_PATH,
       subscriptions: [],
@@ -166,6 +187,7 @@ export async function mistWebhookRegistrationStatus(
   }
   return {
     demoMode,
+    canWrite,
     linked,
     receiverPath: MIST_RECEIVER_PATH,
     subscriptions: receiverSubscriptions(list),
@@ -176,8 +198,8 @@ export async function mistWebhookRegistrationStatus(
 }
 
 /**
- * The reviewed register/rotate write. `reviewConfirmed` is enforced by the
- * CALLER (the route); this service enforces everything else: the URL must be
+ * Register/rotate is lab-direct or review-confirmed by the route. This
+ * service enforces everything else: the URL must be
  * a valid HTTPS callback on the receiver path, the topics must be ones the
  * receiver normalizes, and the existing subscription list must be readable
  * before any write (a blind POST could duplicate a subscription the list
@@ -241,8 +263,20 @@ export async function registerMistWebhook(
         enabled: true,
         secretConfigured: true,
       },
-      message: 'demo mode — the reviewed registration is answered as authored; no subscription was written to a plane',
+      message: 'demo mode — the registration is answered as authored; no subscription was written to a plane',
     };
+  }
+
+  const admission =
+    opts.admitWrite?.({ operation: 'mist-webhook', plane: 'mist' }) ??
+    (opts.plane !== undefined
+      ? { ok: true as const, plane: 'mist' as const, adapter: {} as never }
+      : evaluateWriteAdmission(
+          { operation: 'mist-webhook', plane: 'mist' },
+          { registry: opts.registry ?? defaultRegistry },
+        ));
+  if (!admission.ok) {
+    return { ok: false, action: 'failed', message: admission.message };
   }
 
   const { plane, linked } = planeFor(opts);
