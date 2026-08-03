@@ -56,7 +56,7 @@ import type { AlertRow, DeviceRow, PlaneDatasetKey, Sev, SiteId, Tone, UxiSensor
 import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
   ageString,
   parseTimestamp,
@@ -65,6 +65,7 @@ import {
 } from './format';
 import {
   TokenManager,
+  httpsBase,
   mintedTokenInfo,
   parseRetryAfterMs,
   type FetchLike,
@@ -335,7 +336,7 @@ export class UxiAdapter implements PlaneAdapter {
     if (!UxiAdapter.isComplete(creds)) {
       throw new Error('uxi requires clientId and clientSecret');
     }
-    this.baseUrl = (creds.baseUrl?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.baseUrl = httpsBase(creds.baseUrl?.trim() || DEFAULT_BASE_URL, 'the UXI bearer token rides every sensor request').replace(/\/+$/, '');
     const basic = Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString('base64');
     this.tokens = new TokenManager(async () => {
       let res: Response;
@@ -392,6 +393,15 @@ export class UxiAdapter implements PlaneAdapter {
    */
   capabilities(): PlaneCapabilities {
     return { localShell: false, brokeredWrite: false, configRead: false };
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    const path = `${API_PREFIX}/sensors?limit=1`;
+    const res = await this.get(path);
+    if (res.status >= 200 && res.status < 300 && parseSensorsPage(res.body) !== null) return { ok: true, authenticated: true, dataset: 'sensors', message: 'UXI OAuth accepted; sensor roster readable', status: res.status };
+    if (res.status === 403) return { ok: false, authenticated: true, dataset: 'sensors', message: 'UXI OAuth is valid but lacks sensor roster privileges', status: 403 };
+    if (res.status === 401) return { ok: false, authenticated: false, dataset: 'sensors', message: 'UXI rejected the OAuth credentials', status: 401 };
+    return { ok: false, authenticated: false, dataset: 'sensors', message: `UXI sensor probe failed (HTTP ${res.status})`, status: res.status };
   }
 
   async pull(): Promise<PlanePull> {

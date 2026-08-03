@@ -114,7 +114,7 @@ beforeAll(async () => {
     }
     if (req.url?.startsWith('/api/endpoint')) {
       const token = typeof req.headers.authorization === 'string' ? req.headers.authorization.replace(/^Bearer /, '') : '';
-      if (token === 'good-token') {
+      if (token === 'good-token' || token === 'mock-cppm-token') {
         res.end('[]');
         return;
       }
@@ -168,42 +168,33 @@ describe('connection tests never disclose or dial stored secrets', () => {
   it('stored credentials with no host-ish field are a 400, not a reachability probe of a secret', async () => {
     const secret = 'clearpass-token-s3cr3t-value';
     const save = await postJson('/api/systems/clearpass/credentials', { token: secret });
-    expect(save.status).toBe(200);
-
-    const res = await fetch(`${base}/api/systems/clearpass/test`, { method: 'POST' });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as any;
-    expect(body.error).toMatch(/no credentials/);
-    expect(JSON.stringify(body)).not.toContain(secret);
+    expect(save.status).toBe(502);
+    expect(save.body.ok).toBe(false);
+    expect(settings.get().connectors.clearpass).toBeNull();
+    expect(JSON.stringify(save.body)).not.toContain(secret);
   });
 
   it('an unreachable CPPM reports the target only — never the token or the socket detail', async () => {
     const secret = 'clearpass-token-s3cr3t-value';
     const save = await postJson('/api/systems/clearpass/credentials', { host: '127.0.0.1:1', token: secret });
-    expect(save.status).toBe(200);
-
-    const res = await fetch(`${base}/api/systems/clearpass/test`, { method: 'POST' });
-    expect(res.status).toBe(502);
-    const body = (await res.json()) as any;
-    expect(body.message).toBe('cannot reach https://127.0.0.1:1 — connection failed');
-    expect(JSON.stringify(body)).not.toContain(secret);
-
-    await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' }); // restore
+    expect(save.status).toBe(502);
+    expect(save.body.ok).toBe(false);
+    expect(settings.get().connectors.clearpass).toBeNull();
+    expect(JSON.stringify(save.body)).not.toContain(secret);
   });
 
   it('non-http(s) targets are rejected instead of probed', async () => {
-    // Use aos10 (generic testReachable path) — classic now uses testCentral which expects
-    // { gatewayBaseUrl, clientId, clientSecret } rather than { host, token }.
+    // AOS-10 is Central-derived and must reject any independent target.
     const res = await postJson('/api/systems/aos10/test', { host: 'file:///etc/passwd', token: 'unused-secret' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/cannot parse a host/);
+    expect(res.body.error).toMatch(/discovered through Central/);
     expect(JSON.stringify(res.body)).not.toContain('unused-secret');
   });
 
   it('a failed fetch test keeps the error detail server-side', async () => {
     const res = await postJson('/api/systems/aos10/test', { host: 'http://127.0.0.1:1', token: 'body-secret' });
-    expect(res.status).toBe(502);
-    expect(res.body.message).toBe('cannot reach http://127.0.0.1:1');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/no independent connector probe/);
     expect(JSON.stringify(res.body)).not.toContain('body-secret');
   });
 });
@@ -229,7 +220,7 @@ describe('ClearPass connection validation', () => {
     });
     expect(result.status).toBe(502);
     expect(result.body.ok).toBe(false);
-    expect(result.body.message).toContain('The grant type is unauthorized for this client_id');
+    expect(result.body.message).toContain('rejected the credentials');
     expect(JSON.stringify(result.body)).not.toContain('cp-secret-never-echoed');
   });
 
@@ -324,7 +315,7 @@ describe('SSE connection validation', () => {
       },
     ]);
     const call = registry.recentCalls('sse')[0];
-    expect(call.path).toBe('GET /api/v1.0/Connectors?pagenumber=1&pagesize=1 (connection test)');
+    expect(call.path).toBe('GET /api/v1.0/Connectors?pagenumber=1&pagesize=1');
     expect(JSON.stringify(call)).not.toContain(token);
   });
 
@@ -347,7 +338,7 @@ describe('SSE connection validation', () => {
       },
     ]);
     const call = registry.recentCalls('sse')[0];
-    expect(call.code).toBe('fail');
+    expect(call.code).toBe('401');
     expect(JSON.stringify(call)).not.toContain(token);
   });
 
@@ -653,125 +644,49 @@ describe('poller tick guard', () => {
 });
 
 describe('manual systems sync', () => {
-  it('POST /api/systems/sync immediately polls linked planes even in demo mode', async () => {
-    const save = await postJson('/api/systems/classic/credentials', { host: 'classic.example.test' });
-    expect(save.status).toBe(200);
-    try {
-      const synced = await postJson('/api/systems/sync');
-      expect(synced.status).toBe(200);
-      // Incomplete legacy credentials do not create a linked stub. The typed
-      // connector set therefore has nothing to request or poll.
-      expect(synced.body).toEqual({
-        ok: true,
-        requested: [],
-        started: [],
-        synced: [],
-      });
-    } finally {
-      await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });
-    }
+  it('POST /api/systems/sync reports an empty estate without inventing work', async () => {
+    const synced = await postJson('/api/systems/sync');
+    expect(synced.status).toBe(200);
+    expect(synced.body).toEqual({ ok: true, requested: [], started: [], synced: [] });
   });
 
-  it('separates a plane that is mid-poll from one that has no adapter', async () => {
-    const { poller } = await import('../src/services/poller');
+  it('does not create a Classic connector from a host-only draft', async () => {
     const save = await postJson('/api/systems/classic/credentials', { host: 'classic.example.test' });
-    expect(save.status).toBe(200);
-    try {
-      // Two concurrent syncs: the second finds the first still in flight for
-      // every plane it wants, which is the one skip that really is progress.
-      const [, second] = await Promise.all([poller.syncNow(), poller.syncNow()]);
-      const reasons = new Set(Object.values(second.skippedReason));
-      expect(second.skipped.length + second.synced.length + second.failed.length).toBe(
-        second.requested.length,
-      );
-      // Whichever way the race lands, no skip is left unexplained.
-      expect(second.skipped.every((id) => second.skippedReason[id] !== undefined)).toBe(true);
-      expect([...reasons].every((r) => r === 'in-flight' || r === 'no-adapter')).toBe(true);
-    } finally {
-      await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });
-    }
+    expect(save.status).toBe(400);
+    expect(settings.get().connectors.classic).toBeNull();
   });
 });
 
-describe('saving credentials indexes the plane', () => {
-  it('polls the plane right away — even in demo mode — and reports what came back', async () => {
+describe('saving credentials authenticates before indexing', () => {
+  it('rejects an unreachable credential without persisting or polling it', async () => {
     const spy = vi.spyOn(poller, 'syncNowFor');
     try {
-      // 127.0.0.1:1 refuses instantly, so this is the shape of a real save
-      // against credentials the plane will not accept.
       const save = await postJson('/api/systems/clearpass/credentials', {
         host: '127.0.0.1:1',
         token: 'clearpass-token',
       });
+      expect(save.status).toBe(502);
+      expect(spy).not.toHaveBeenCalled();
+      expect(settings.get().connectors.clearpass).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('persists only after an authenticated ClearPass endpoint read', async () => {
+    const spy = vi.spyOn(poller, 'syncNowFor').mockResolvedValue('ok');
+    try {
+      const save = await postJson('/api/systems/clearpass/credentials', {
+        host: mockCppmBase,
+        token: 'good-token',
+      });
       expect(save.status).toBe(200);
-      // Storing the credentials is not the job; reading the plane with them is.
+      expect(save.body.indexed).toBe('ok');
       expect(spy).toHaveBeenCalledWith('clearpass');
-      expect(save.body.indexed).toBe('error');
+      expect(settings.get().connectors.clearpass?.enabled).toBe(true);
     } finally {
       spy.mockRestore();
       await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
-    }
-  });
-
-  it('returns the state the poll left, not the one from before it ran', async () => {
-    const spy = vi.spyOn(poller, 'syncNowFor').mockImplementation(async (id) => {
-      const state = registry.get(id).state();
-      state.note = 'the plane refused the new token';
-      return 'error';
-    });
-    try {
-      const save = await postJson('/api/systems/clearpass/credentials', {
-        host: '127.0.0.1:1',
-        token: 'clearpass-token',
-      });
-      // reinitPlane's state predates the attempt. Returning that one describes
-      // the moment before the credentials were ever tried, which is the moment
-      // nobody asked about.
-      expect(save.body.state.note).toBe('the plane refused the new token');
-    } finally {
-      spy.mockRestore();
-      await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
-    }
-  });
-
-  it('answers pending, not success, when the poll outlasts the wait', async () => {
-    // A host that does not route takes the full per-plane poll timeout to fail.
-    // The save must not hold the request open that long, and it must not round
-    // its own impatience up to an outcome: it did not wait for the result, so
-    // it says that, and the poll carries on without it.
-    let release: (() => void) | undefined;
-    const spy = vi.spyOn(poller, 'syncNowFor').mockImplementation(
-      () => new Promise((resolve) => (release = () => resolve('ok'))),
-    );
-    try {
-      const started = Date.now();
-      const save = await postJson('/api/systems/clearpass/credentials', {
-        host: '127.0.0.1:1',
-        token: 'clearpass-token',
-      });
-      expect(save.status).toBe(200);
-      expect(save.body.indexed).toBe('pending');
-      // Bounded by the budget, not by the poll it gave up on.
-      expect(Date.now() - started).toBeLessThan(4_000);
-    } finally {
-      release?.();
-      spy.mockRestore();
-      await fetch(`${base}/api/systems/clearpass`, { method: 'DELETE' });
-    }
-  });
-
-  it("calls a plane with no adapter 'skipped' rather than indexed", async () => {
-    try {
-      // 'classic' is still on the StubAdapter. Saving credentials for it stores
-      // them and reads nothing, and the reply has to be able to say so —
-      // otherwise a plane that will never index looks exactly like one that did.
-      const save = await postJson('/api/systems/classic/credentials', {
-        host: 'classic.example.test',
-      });
-      expect(save.status).toBe(200);
-      expect(save.body.indexed).toBe('skipped');
-    } finally {
-      await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });
     }
   });
 });

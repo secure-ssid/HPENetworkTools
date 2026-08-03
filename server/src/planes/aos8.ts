@@ -66,7 +66,7 @@ import * as https from 'node:https';
 import type { ClientRow, ClientType, ConfigInventory, DeviceRow, DeviceType, SsidObject, Tone } from '@hpe/shared';
 import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
   firmwareIsApproved,
   parseApprovedFirmware,
@@ -507,6 +507,19 @@ export class Aos8Adapter implements PlaneAdapter {
    */
   capabilities(): PlaneCapabilities {
     return { localShell: true, brokeredWrite: false, configRead: true };
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    try {
+      await this.showcommand(CMD_AP_DATABASE);
+      return { ok: true, authenticated: true, dataset: 'devices', message: 'AOS-8 login accepted; AP database readable', status: 200 };
+    } catch (err) {
+      const detail = (err as Error).message;
+      const status = Number(/HTTP (\d{3})/.exec(detail)?.[1] ?? 0) || undefined;
+      if (status === 403) return { ok: false, authenticated: true, dataset: 'devices', message: 'AOS-8 login is valid but lacks showcommand privileges', status };
+      if (status === 401 || detail.includes('credentials rejected')) return { ok: false, authenticated: false, dataset: 'devices', message: 'AOS-8 rejected the management credentials', ...(status ? { status } : {}) };
+      return { ok: false, authenticated: false, dataset: 'devices', message: 'AOS-8 AP database probe failed', ...(status ? { status } : {}) };
+    }
   }
 
   /**

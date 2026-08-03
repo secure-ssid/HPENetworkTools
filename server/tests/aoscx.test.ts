@@ -190,6 +190,19 @@ function adapter(fetchImpl: FetchLike, stateRef: PlaneState = state()): AosCxAda
   return new AosCxAdapter('local', stateRef, CREDS, () => {}, fetchImpl);
 }
 
+describe('AOS-CX authenticated connection probe', () => {
+  it('logs in and proves the REST session with GET /system', async () => {
+    const seen = seenLog();
+    const a = adapter(fakeFetch({ seen }));
+    await expect(a.validateConnection()).resolves.toMatchObject({
+      ok: true, authenticated: true, dataset: 'devices',
+    });
+    expect(seen.loginBodies).toHaveLength(1);
+    expect(seen.urls.some((url) => url.endsWith('/rest/v10.12/system'))).toBe(true);
+    expect(seen.cookies).toEqual(['session_id=token-sess-1']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // mapAosCxPort — the pure mapping, malformed and partial shapes included
 // ---------------------------------------------------------------------------

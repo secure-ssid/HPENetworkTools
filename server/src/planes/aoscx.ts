@@ -65,7 +65,7 @@ import type {
 } from '@hpe/shared';
 import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import { siteIdForName } from './format';
 import {
   type FetchLike,
@@ -328,6 +328,19 @@ export class AosCxAdapter implements PlaneAdapter {
    */
   capabilities(): PlaneCapabilities {
     return { localShell: true, brokeredWrite: false, configRead: false, alertFeed: false };
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    try {
+      await this.getJson('/system', 'GET /system');
+      return { ok: true, authenticated: true, dataset: 'devices', message: 'AOS-CX login accepted; system resource readable', status: 200 };
+    } catch (err) {
+      const detail = (err as Error).message;
+      const status = Number(/HTTP (\d{3})/.exec(detail)?.[1] ?? 0) || undefined;
+      if (status === 403) return { ok: false, authenticated: true, dataset: 'devices', message: 'AOS-CX login is valid but lacks system read privileges', status };
+      if (status === 401 || detail.includes('credentials rejected')) return { ok: false, authenticated: false, dataset: 'devices', message: 'AOS-CX rejected the management credentials', ...(status ? { status } : {}) };
+      return { ok: false, authenticated: false, dataset: 'devices', message: 'AOS-CX system probe failed', ...(status ? { status } : {}) };
+    }
   }
 
   /**

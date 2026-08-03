@@ -644,6 +644,10 @@ function makeState(): PlaneState {
   return { id: 'central', linked: true, health: 'warning', lastSync: null, deviceCount: null, callsToday: 0, note: null };
 }
 
+function makeClassicState(): PlaneState {
+  return { ...makeState(), id: 'classic' };
+}
+
 const CREDS = { gatewayBaseUrl: 'https://apigw-prod2.central.arubanetworks.com', clientId: 'id-1', clientSecret: 'shh-secret' };
 const NEW_CREDS = { gatewayBaseUrl: 'https://internal.api.central.arubanetworks.com', clientId: 'id-1', clientSecret: 'shh-secret' };
 
@@ -670,6 +674,50 @@ function makeNewAdapter(handler: Handler) {
   });
   return { adapter, state, recorded, calls, slept };
 }
+
+describe('Central authenticated connection probes', () => {
+  it('probes New Central monitoring before the Classic endpoint', async () => {
+    const { fn, calls } = fakeFetch((method, pathname) => {
+      if (method === 'POST' && pathname === '/as/token.oauth2') {
+        return { body: { access_token: 'new-token', expires_in: 3600 } };
+      }
+      if (method === 'GET' && pathname === '/network-monitoring/v1alpha1/aps') {
+        return { body: { items: [], count: 0 } };
+      }
+      return undefined;
+    });
+    const adapter = new CentralAdapter(NEW_CREDS, makeState(), () => {}, fn);
+
+    await expect(adapter.validateConnection()).resolves.toMatchObject({
+      ok: true, authenticated: true, dataset: 'devices',
+    });
+    expect(calls).toEqual([
+      'POST /as/token.oauth2',
+      'GET /network-monitoring/v1alpha1/aps?limit=1',
+    ]);
+  });
+
+  it('keeps Central Classic distinct and probes the Classic endpoint first', async () => {
+    const { fn, calls } = fakeFetch((method, pathname) => {
+      if (method === 'POST' && pathname === '/oauth2/token') {
+        return { body: { access_token: 'classic-token', expires_in: 3600 } };
+      }
+      if (method === 'GET' && pathname === '/monitoring/v1/aps') {
+        return { body: { aps: [], count: 0 } };
+      }
+      return undefined;
+    });
+    const adapter = new CentralAdapter(CREDS, makeClassicState(), () => {}, fn);
+
+    await expect(adapter.validateConnection()).resolves.toMatchObject({
+      ok: true, authenticated: true, dataset: 'devices',
+    });
+    expect(calls).toEqual([
+      'POST /oauth2/token',
+      'GET /monitoring/v1/aps?limit=1',
+    ]);
+  });
+});
 
 describe('Central active diagnostics capability', () => {
   it('is advertised only by a New Central gateway, never Classic Central', () => {

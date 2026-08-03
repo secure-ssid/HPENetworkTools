@@ -14,10 +14,25 @@ import { MistAdapter } from '../planes/mist';
 import { OpsRampAdapter } from '../planes/opsramp';
 import { SseAdapter } from '../planes/sse';
 import { UxiAdapter } from '../planes/uxi';
-import type { PlaneAdapter, PlaneState } from '../planes/types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneState } from '../planes/types';
 
 export type ConnectorRecord = Record<ConnectorId, ConnectorConfig | null>;
 export type RecordConnectorCall = (call: { path: string; ms: number; code: string }) => void;
+
+/** The bounded authenticated read each product must pass before persistence. */
+export const CONNECTOR_PROBE_DATASET = {
+  central: 'devices',
+  classic: 'devices',
+  mist: 'devices',
+  greenlake: 'subscriptions',
+  clearpass: 'endpoints',
+  uxi: 'sensors',
+  aos8: 'devices',
+  local: 'devices',
+  sse: 'sse',
+  edgeconnect: 'devices',
+  opsramp: 'devices',
+} as const satisfies Record<ConnectorId, ConnectionProbeResult['dataset']>;
 
 function assertNever(value: never): never {
   throw new Error(`unsupported connector configuration: ${JSON.stringify(value)}`);
@@ -150,6 +165,12 @@ export function createConnectorAdapter(
   const config = parseConnectorConfig(input.id, input) as ConnectorConfig;
   if (!config.enabled) throw new Error(`${config.id} connector is disabled`);
   const credentials = adapterCredentialsFor(config);
+  // Explicit loopback HTTP is the labelled lab exception accepted by the
+  // shared parser. The node:https transports cannot speak that scheme, so use
+  // the platform fetch only for this already-validated loopback case.
+  const labFetch = config.endpoint.startsWith('http://')
+    ? ((url: string, init?: RequestInit) => fetch(url, init))
+    : undefined;
   switch (config.id) {
     case 'central':
       return new CentralAdapter(credentials, state, recordCall);
@@ -177,17 +198,17 @@ export function createConnectorAdapter(
     case 'greenlake':
       return new GreenLakeAdapter(credentials, state, recordCall);
     case 'clearpass':
-      return new ClearPassAdapter(credentials, state, recordCall);
+      return new ClearPassAdapter(credentials, state, recordCall, labFetch);
     case 'uxi':
       return new UxiAdapter(credentials, state, recordCall);
     case 'aos8':
-      return new Aos8Adapter(credentials, state, recordCall);
+      return new Aos8Adapter(credentials, state, recordCall, labFetch);
     case 'local':
-      return new AosCxAdapter('local', state, credentials, recordCall);
+      return new AosCxAdapter('local', state, credentials, recordCall, labFetch);
     case 'sse':
       return new SseAdapter(credentials, state, recordCall);
     case 'edgeconnect':
-      return new EdgeConnectAdapter('edgeconnect', state, credentials, recordCall);
+      return new EdgeConnectAdapter('edgeconnect', state, credentials, recordCall, labFetch);
     case 'opsramp':
       return new OpsRampAdapter(credentials, state, recordCall);
     default:

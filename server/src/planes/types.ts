@@ -265,6 +265,17 @@ export interface PlanePull {
   partial?: PlaneDatasetKey[];
 }
 
+export interface ConnectionProbeResult {
+  ok: boolean;
+  /** True only when the product accepted the credential but denied this read. */
+  authenticated: boolean;
+  /** The real product dataset exercised by the bounded probe. */
+  dataset: PlaneDatasetKey | 'subscriptions' | 'sensors' | 'endpoints' | 'sse';
+  /** Secret-free operator-facing result. */
+  message: string;
+  status?: number;
+}
+
 export interface PlaneAdapter {
   id: PlaneId;
   state(): PlaneState;
@@ -273,6 +284,8 @@ export interface PlaneAdapter {
    *  not implement it claims nothing, and callers default every capability to
    *  false. */
   capabilities?(): PlaneCapabilities;
+  /** One authenticated, bounded read used before a connector can be saved. */
+  validateConnection?(): Promise<ConnectionProbeResult>;
 
   // -- ON-DEMAND DETAIL READS ------------------------------------------------
   //

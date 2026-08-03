@@ -7,17 +7,10 @@
  *   POST   /api/systems/:plane/credentials save creds, re-init the adapter
  *   DELETE /api/systems/:plane             clear creds, adapter becomes unlinked
  *
- * Connection tests are honest: for 'central' we attempt a real OAuth
- * client-credentials token fetch (GreenLake SSO for new-Central gateways,
- * the gateway's own /oauth2/token for classic — host shape decides, 8s) and,
- * if a token comes back, a best-effort device sample query. 'uxi' gets the
- * same treatment against HPE SSO (Basic client-credentials → token.oauth2,
- * then a sensor roster sample). 'sse' sends the real Admin API request the
- * adapter itself will send — a minimal paginated GET against Connectors with
- * the submitted Bearer token — and reports what came back. For other planes
- * we only prove reachability (HTTP GET when the endpoint has a scheme, TCP
- * connect for bare host[:port], 5s) and say exactly that — "credentials not
- * yet validated". Every attempt is recorded in the plane's API-call log.
+ * Connection tests are honest: every independently configurable product uses
+ * its adapter's real authentication path followed by one bounded read from a
+ * core API dataset. AOS-10 is Central-derived and therefore has no independent
+ * credentials or probe. Every attempt is recorded without credential values.
  *
  * Test-then-save: when the request body carries a complete credential set for
  * the plane, THOSE are tested (the connect flow tests before saving); only
@@ -25,8 +18,8 @@
  * exists. The result's `source` field says which set was exercised.
  */
 
-import * as net from 'node:net';
 import { Router } from 'express';
+import { connectorCatalogEntry, migrateLegacyPlaneRecord, type ConnectorConfig, type ConnectorId } from '@hpe/shared';
 import { h } from './handler';
 import { settings } from '../config/settings';
 import { CentralAdapter, GREENLAKE_CCS_TOKEN_URL, isNewCentralGateway } from '../planes/central';
@@ -47,6 +40,9 @@ import { poller, type TickResult } from '../services/poller';
 import { SseObjectsError, sseObjects, sseObjectsErrorBody } from '../services/sseObjects';
 import { CentralWebhooksError, centralWebhooks } from '../services/centralWebhooks';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
+import type { ConnectionProbeResult } from '../planes/types';
+import { adapterCredentialsFor, connectorConfigFor } from '../connectors/catalog';
+import { probeConnector } from '../planes/connectionProbe';
 
 export const systemsRouter = Router();
 
@@ -97,13 +93,14 @@ systemsRouter.post(
 
 // -- Connection test -----------------------------------------------------------
 
-interface TestResult {
-  ok: boolean;
+interface TestResult extends ConnectionProbeResult {
   plane: PlaneId;
-  message: string;
   ms: number;
   source: 'request' | 'stored';
 }
+
+type LegacyTestOutcome = { ok: boolean; message: string };
+const HOST_KEYS = ['host', 'baseUrl', 'publisher'];
 
 /**
  * Keep credential strings plus the scope UI's canonical token array.
@@ -128,39 +125,6 @@ function sanitizeCreds(input: unknown): Record<string, string> | null {
   return Object.keys(out).length > 0 ? out : null;
 }
 
-/** Credential keys that name a host/endpoint — what a reachability test can actually exercise. */
-const HOST_KEYS = ['host', 'baseUrl', 'url', 'endpoint', 'jumpHost', 'address', 'master', 'publisher', 'apiHost'];
-
-/**
- * Is this credential set complete enough to test on its own?
- *
- * Ask the ADAPTER, because the adapter is the thing that will refuse to build
- * without them — a plane that passes here but fails `isComplete()` later links
- * to a stub that never syncs, and a plane that fails here can never be
- * connected through the only UI the product offers.
- *
- * The old host-key heuristic did exactly that to GreenLake: it is a SaaS with a
- * fixed base URL, so it has no host to supply, and its identity is
- * `workspaceId` — which is not a HOST_KEY. A complete GreenLake set
- * (workspaceId + clientId + clientSecret) was therefore rejected as
- * "incomplete" while the same set plus any throwaway baseUrl sailed through.
- *
- * HOST_KEYS remains the fallback for planes with no adapter-side rule (local),
- * where a reachability check needs something real to dial.
- */
-function completeCredsFor(plane: PlaneId, creds: Record<string, string> | null): boolean {
-  if (!creds) return false;
-  if (plane === 'central') return CentralAdapter.isComplete(creds);
-  if (plane === 'classic') return CentralAdapter.isComplete(creds);
-  if (plane === 'uxi') return UxiAdapter.isComplete(creds);
-  if (plane === 'greenlake') return GreenLakeAdapter.isComplete(creds);
-  if (plane === 'mist') return MistAdapter.isComplete(creds);
-  if (plane === 'clearpass') return ClearPassAdapter.isComplete(creds);
-  if (plane === 'aos8') return Aos8Adapter.isComplete(creds);
-  if (plane === 'sse') return SseAdapter.isComplete(creds);
-  return HOST_KEYS.some((k) => typeof creds[k] === 'string' && creds[k].trim().length > 0);
-}
-
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<globalThis.Response> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
@@ -171,27 +135,11 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   }
 }
 
-function tcpCheck(host: string, port: number, timeoutMs: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const sock = net.connect({ host, port });
-    const timer = setTimeout(() => sock.destroy(new Error(`no response within ${timeoutMs}ms`)), timeoutMs);
-    sock.once('connect', () => {
-      clearTimeout(timer);
-      sock.end();
-      resolve();
-    });
-    sock.once('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-}
-
 /** HPE Aruba Networking Central: real OAuth client-credentials token fetch.
  *  New-Central gateways ({region}.api.central…) are minted by GreenLake SSO;
  *  classic *-apigw* gateways mint their own /oauth2/token — host shape picks
  *  the order, a 404 crosses over once (same rule as the adapter). */
-async function testCentral(creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
+async function testCentral(creds: Record<string, string>): Promise<LegacyTestOutcome> {
   const base = creds.gatewayBaseUrl?.replace(/\/+$/, '');
   if (!base || !creds.clientId || !creds.clientSecret) {
     return { ok: false, message: 'central requires gatewayBaseUrl, clientId and clientSecret' };
@@ -291,7 +239,7 @@ async function testCentral(creds: Record<string, string>): Promise<Omit<TestResu
 }
 
 /** HPE Aruba UXI: real SSO Basic client-credentials token fetch. */
-async function testUxi(creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
+async function testUxi(creds: Record<string, string>): Promise<LegacyTestOutcome> {
   if (!UxiAdapter.isComplete(creds)) {
     return { ok: false, message: 'uxi requires clientId and clientSecret' };
   }
@@ -361,7 +309,7 @@ async function testUxi(creds: Record<string, string>): Promise<Omit<TestResult, 
  * workspaceId + an SSO client-credentials pair, so the honest test is the same
  * token exchange the adapter itself performs — mirroring testUxi.
  */
-async function testGreenLake(creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
+async function testGreenLake(creds: Record<string, string>): Promise<LegacyTestOutcome> {
   if (!GreenLakeAdapter.isComplete(creds)) {
     return { ok: false, message: 'greenlake requires workspaceId, clientId and clientSecret' };
   }
@@ -404,7 +352,7 @@ async function testGreenLake(creds: Record<string, string>): Promise<Omit<TestRe
  * not the lower-case '/api/v1/connectors?pageSize=…' shape an earlier
  * assumption used before that source was read.
  */
-async function testSse(creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
+async function testSse(creds: Record<string, string>): Promise<LegacyTestOutcome> {
   if (!SseAdapter.isComplete(creds)) {
     return { ok: false, message: 'sse requires an Admin API token' };
   }
@@ -519,7 +467,7 @@ function buildSseCredentialRecord(
  * transport (verifyTls opt-in); plain-http targets (mock servers) use fetch.
  * Secrets are dialed, never echoed: messages carry status + CPPM detail only.
  */
-async function testClearPass(creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
+async function testClearPass(creds: Record<string, string>): Promise<LegacyTestOutcome> {
   const target = HOST_KEYS.map((k) => creds[k]).find((v) => typeof v === 'string' && v.length > 0);
   if (!target) {
     const err = new Error('no credentials/host for clearpass — pass a complete set in the request body or save credentials first') as Error & { status?: number };
@@ -574,42 +522,42 @@ async function testClearPass(creds: Record<string, string>): Promise<Omit<TestRe
   }
 }
 
-async function testReachable(plane: PlaneId, creds: Record<string, string>): Promise<Omit<TestResult, 'plane' | 'ms' | 'source'>> {
-  // Only a host-ish field may name a target — any other stored value (token,
-  // password, …) must never be dialed, and never echoed back in a message.
-  const target = HOST_KEYS.map((k) => creds[k]).find((v) => typeof v === 'string' && v.length > 0);
-  if (!target) {
-    const err = new Error(`no credentials/host for ${plane} — pass a complete set in the request body or save credentials first`) as Error & { status?: number };
+function connectorFromLegacy(
+  plane: PlaneId,
+  submitted: Record<string, string> | null,
+): { config: ConnectorConfig | null; source: 'request' | 'stored' } {
+  if (plane === 'aos10') {
+    const err = new Error('AOS-10 is discovered through Central and has no independent connector probe') as Error & { status?: number };
     err.status = 400;
     throw err;
   }
-
-  if (/^https?:\/\//i.test(target)) {
-    try {
-      const res = await fetchWithTimeout(target, { method: 'GET' }, 5000);
-      return { ok: true, message: `host reachable — HTTP ${res.status} from ${target}; credentials not yet validated` };
-    } catch (err) {
-      console.error(`${plane} connection test: GET ${target} failed: ${(err as Error).message}`);
-      return { ok: false, message: `cannot reach ${target}` };
+  const id = plane as ConnectorId;
+  const stored = connectorConfigFor(settings.get(), id);
+  if (!submitted) return { config: stored, source: 'stored' };
+  // A submitted record must stand on its own. Reusing stored secrets while
+  // testing a partial draft can validate a different identity than the user
+  // entered. SSE is the one intentional overlay: token rotation preserves its
+  // separately configured custom Admin API base URL and scope declaration.
+  let legacy = { ...submitted };
+  if (id === 'sse') legacy = buildSseCredentialRecord(stored ? adapterCredentialsFor(stored) : null, submitted);
+  if (legacy.scopes !== undefined) {
+    const allowed = new Set(connectorCatalogEntry(id).scopeOptions.map((scope) => scope.value));
+    const normalized = new Set<string>();
+    for (const scope of legacy.scopes.split(',').map((value) => value.trim()).filter(Boolean)) {
+      if (allowed.has(scope)) normalized.add(scope);
+      else if (scope.includes('write') && allowed.has('write:direct')) normalized.add('write:direct');
+      else if (scope.startsWith('read') && allowed.has('read:inventory')) normalized.add('read:inventory');
     }
+    legacy.scopes = [...normalized].join(',');
   }
-
-  // Anything that isn't a bare host[:port] (other schemes, embedded paths) is
-  // not a test target — reject it instead of parsing a host out of it.
-  const m = target.match(/^([a-z0-9._-]+)(?::(\d+))?$/i);
-  if (!m) {
-    const err = new Error(`cannot parse a host out of '${target}' — pass a bare host[:port] or an http(s) URL`) as Error & { status?: number };
+  try {
+    const config = migrateLegacyPlaneRecord(id, legacy);
+    if (!config) throw new Error('incomplete');
+    return { config: { ...config, enabled: true } as ConnectorConfig, source: 'request' };
+  } catch {
+    const err = new Error(`the submitted connector configuration for ${id} is incomplete or unsafe`) as Error & { status?: number };
     err.status = 400;
     throw err;
-  }
-  const host = m[1];
-  const port = m[2] ? Number(m[2]) : 443;
-  try {
-    await tcpCheck(host, port, 5000);
-    return { ok: true, message: `TCP connect to ${host}:${port} succeeded — host reachable; credentials not yet validated` };
-  } catch (err) {
-    console.error(`${plane} connection test: TCP connect to ${host}:${port} failed: ${(err as Error).message}`);
-    return { ok: false, message: `TCP connect to ${host}:${port} failed` };
   }
 }
 
@@ -627,66 +575,19 @@ systemsRouter.post(
     const bodyCreds = sanitizeCreds(
       raw && typeof raw === 'object' && raw.credentials !== undefined ? raw.credentials : raw,
     );
-    const stored = settings.get().planes[plane];
-    if (bodyCreds && !completeCredsFor(plane, bodyCreds)) {
-      res.status(400).json({ error: `the submitted credentials for ${plane} are incomplete` });
-      return;
-    }
-    const useBody = bodyCreds !== null;
-    let creds = useBody ? bodyCreds : stored && Object.keys(stored).length > 0 ? stored : null;
-    if (!creds) {
+    const resolved = connectorFromLegacy(plane, bodyCreds);
+    if (!resolved.config) {
       res
         .status(400)
         .json({ error: `no credentials for ${plane} — pass a complete set in the request body or save credentials first` });
       return;
     }
-    if (plane === 'sse' && useBody) {
-      // Test-then-save parity for a re-key: a submitted overlay (e.g. a new
-      // token alone) must be tested against the SAME canonical record
-      // /credentials will persist — the stored custom base URL, not the
-      // default one the submitted set alone would resolve to.
-      try {
-        creds = buildSseCredentialRecord(stored, bodyCreds);
-      } catch (err) {
-        if (err instanceof SseEndpointValidationError) {
-          res.status(err.status).json({ error: err.message });
-          return;
-        }
-        throw err;
-      }
-    }
 
     const started = Date.now();
-    const outcome =
-      plane === 'central' || plane === 'classic'
-        ? await testCentral(creds)
-        : plane === 'uxi'
-          ? await testUxi(creds)
-          : plane === 'greenlake'
-            ? await testGreenLake(creds)
-            : plane === 'sse'
-              ? await testSse(creds)
-              : plane === 'clearpass'
-                ? await testClearPass(creds)
-                : await testReachable(plane, creds);
+    const outcome = await probeConnector(resolved.config, (call) => registry.recordCall(plane, call));
     const ms = Date.now() - started;
 
-    registry.recordCall(plane, {
-      path:
-        plane === 'central' || plane === 'classic'
-          ? 'OAuth client-credentials (connection test)'
-          : plane === 'uxi' || plane === 'greenlake'
-            ? 'POST sso token.oauth2 (connection test)'
-            : plane === 'sse'
-              ? 'GET /api/v1.0/Connectors?pagenumber=1&pagesize=1 (connection test)'
-              : plane === 'clearpass'
-                ? 'POST /api/oauth or GET /api/endpoint (connection test)'
-                : 'reachability check (connection test)',
-      ms,
-      code: outcome.ok ? 'ok' : 'fail',
-    });
-
-    const result: TestResult = { ok: outcome.ok, plane, message: outcome.message, ms, source: useBody ? 'request' : 'stored' };
+    const result: TestResult = { ...outcome, plane, ms, source: resolved.source };
     res.status(outcome.ok ? 200 : 502).json(result);
   }),
 );
@@ -758,7 +659,11 @@ systemsRouter.post(
       return;
     }
 
-    let creds = submitted;
+    const resolved = connectorFromLegacy(plane, submitted);
+    if (!resolved.config) {
+      res.status(400).json({ error: `the submitted connector configuration for ${plane} is incomplete` });
+      return;
+    }
     if (plane === 'central') {
       try {
         centralWebhooks.assertCentralCredentialsMutable();
@@ -771,20 +676,6 @@ systemsRouter.post(
       }
     }
     if (plane === 'sse') {
-      // A submitted overlay (e.g. a token-only re-key) is merged onto whatever
-      // is already stored and canonicalized as ONE record — the same record
-      // /test would exercise — so the base URL that gets validated here is
-      // exactly the base URL that gets persisted, not a default that then
-      // silently coexists with a saved custom value.
-      try {
-        creds = buildSseCredentialRecord(settings.get().planes.sse, submitted);
-      } catch (err) {
-        if (err instanceof SseEndpointValidationError) {
-          res.status(err.status).json({ error: err.message });
-          return;
-        }
-        throw err;
-      }
       try {
         sseObjects.assertCredentialsMutable();
       } catch (err) {
@@ -796,7 +687,19 @@ systemsRouter.post(
         throw err;
       }
     }
-    settings.update({ planes: { [plane]: creds } });
+    const started = Date.now();
+    const probe = await probeConnector(resolved.config, (call) => registry.recordCall(plane, call));
+    registry.recordCall(plane, {
+      path: `authenticated ${probe.dataset} probe (credential save)`,
+      ms: Date.now() - started,
+      code: probe.ok ? 'ok' : 'fail',
+    });
+    if (!probe.ok) {
+      res.status(502).json({ ...probe, plane });
+      return;
+    }
+
+    settings.update({ connectors: { [plane]: resolved.config } });
     poller.clearPlane(plane);
     registry.reinitPlane(plane);
     const indexed = await firstPollOutcome(plane);
@@ -808,6 +711,7 @@ systemsRouter.post(
       state: registry.get(plane).state(),
       indexed,
       credentials: settings.maskedView().planes[plane],
+      connector: plane === 'aos10' ? null : settings.maskedView().connectors[plane as ConnectorId],
     });
   }),
 );

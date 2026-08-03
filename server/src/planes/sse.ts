@@ -73,7 +73,7 @@ import {
   type SseObjectSummary,
   formatCount,
 } from '@hpe/shared';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
   parseRetryAfterMs,
   type FetchLike,
@@ -396,6 +396,30 @@ export class SseAdapter implements PlaneAdapter {
    */
   capabilities(): PlaneCapabilities {
     return { localShell: false, brokeredWrite: false, configRead: false, directWrite: this.writeGranted };
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    const path = `${SSE_KIND_SPEC.connectors.path}?pagenumber=1&pagesize=1`;
+    let res: HttpResult;
+    try {
+      res = await this.authedGet(path);
+    } catch {
+      return { ok: false, authenticated: false, dataset: 'sse', message: 'SSE Connectors probe could not reach the Admin API' };
+    }
+    if (res.status === 403) return { ok: false, authenticated: true, dataset: 'sse', message: 'SSE token is valid but lacks Connectors privileges', status: 403 };
+    if (res.status === 401) return { ok: false, authenticated: false, dataset: 'sse', message: 'Admin API rejected the token — HTTP 401', status: 401 };
+    if (res.status < 200 || res.status >= 300) return { ok: false, authenticated: false, dataset: 'sse', message: `SSE Connectors probe failed (HTTP ${res.status})`, status: res.status };
+    const rows = extractRows(res.body);
+    if (rows === null) return {
+      ok: false,
+      authenticated: false,
+      dataset: 'sse',
+      message: res.body === null
+        ? 'SSE Connectors probe returned an unreadable (non-JSON) body'
+        : 'SSE Connectors probe returned an unrecognized response body',
+      status: res.status,
+    };
+    return { ok: true, authenticated: true, dataset: 'sse', message: `SSE token accepted; Connectors query ok — reported connectors: ${rows.length}`, status: res.status };
   }
 
   async pull(): Promise<PlanePull> {

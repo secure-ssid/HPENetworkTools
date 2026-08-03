@@ -23,6 +23,8 @@ import {
   CLEARPASS_ROLES,
   CLEARPASS_SERVICES,
   MAX_NOTE_CHARS,
+  migrateLegacyPlaneRecord,
+  type ConnectorId,
 } from '@hpe/shared';
 
 let server: Server;
@@ -181,36 +183,51 @@ describe('routes', () => {
   });
 
   it('credentials lifecycle: save re-inits the adapter, delete retires it', async () => {
+    const mistApi = createServer((req, res) => {
+      res.setHeader('content-type', 'application/json');
+      if (req.headers.authorization === 'Token mist-secret-token-1234' && req.url?.startsWith('/api/v1/orgs/org-1/stats/devices')) {
+        res.end(JSON.stringify({ results: [] }));
+        return;
+      }
+      res.statusCode = 401;
+      res.end('{}');
+    });
+    mistApi.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => mistApi.once('listening', resolve));
     const { poller } = await import('../src/services/poller');
     const contributions = (poller as unknown as { contributions: Map<string, unknown> }).contributions;
     contributions.set('mist', { devices: [{ name: 'stale-before-replacement' }] });
     const secret = 'mist-secret-token-1234';
-    const res = await fetch(`${base}/api/systems/mist/credentials`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ host: 'api.mist.example.com', token: secret }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.state.linked).toBe(false);
-    expect(body.state.health).toBe('unlinked');
-    expect(body.credentials).toBeNull();
-    expect(JSON.stringify(body)).not.toContain(secret);
-    expect(contributions.has('mist')).toBe(false);
+    try {
+      const mistBase = `http://127.0.0.1:${(mistApi.address() as AddressInfo).port}`;
+      const res = await fetch(`${base}/api/systems/mist/credentials`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ apiHost: mistBase, orgId: 'org-1', token: secret }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as any;
+      expect(body.state.linked).toBe(true);
+      expect(body.credentials.token).toBe('••••••');
+      expect(JSON.stringify(body)).not.toContain(secret);
+      expect(contributions.has('mist')).toBe(false);
 
-    const state = await getJson('/api/systems/state');
-    expect(state.status).toBe(200);
-    expect(state.body.planes.mist.linked).toBe(false);
-    expect(state.body.planes.central.linked).toBe(true); // saved via PUT /api/settings above
-    expect(Array.isArray(state.body.history)).toBe(true);
+      const state = await getJson('/api/systems/state');
+      expect(state.status).toBe(200);
+      expect(state.body.planes.mist.linked).toBe(true);
+      expect(state.body.planes.central.linked).toBe(true); // saved via PUT /api/settings above
+      expect(Array.isArray(state.body.history)).toBe(true);
 
-    contributions.set('mist', { devices: [{ name: 'stale-before-retire' }] });
-    const del = await fetch(`${base}/api/systems/mist`, { method: 'DELETE' });
-    expect(del.status).toBe(200);
-    const delBody = (await del.json()) as any;
-    expect(delBody.state.linked).toBe(false);
-    expect(delBody.state.health).toBe('unlinked');
-    expect(contributions.has('mist')).toBe(false);
+      contributions.set('mist', { devices: [{ name: 'stale-before-retire' }] });
+      const del = await fetch(`${base}/api/systems/mist`, { method: 'DELETE' });
+      expect(del.status).toBe(200);
+      const delBody = (await del.json()) as any;
+      expect(delBody.state.linked).toBe(false);
+      expect(delBody.state.health).toBe('unlinked');
+      expect(contributions.has('mist')).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => mistApi.close(() => resolve()));
+    }
   });
 
   it('POST /api/systems/:plane/test without credentials is a 400', async () => {
@@ -232,7 +249,7 @@ describe('routes', () => {
     const body = (await res.json()) as any;
     expect(body.ok).toBe(true);
     expect(body.source).toBe('request');
-    expect(body.message).toMatch(/authenticated via .+ — token received/);
+    expect(body.message).toContain('New Central OAuth accepted; AP inventory readable');
   });
 
   it('central test falls back to the new-Central sample path and names the generation', async () => {
@@ -263,25 +280,21 @@ describe('routes', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as any;
       expect(body.ok).toBe(true);
-      expect(body.message).toContain('new Central device sample ok');
+      expect(body.message).toContain('New Central OAuth accepted; AP inventory readable');
     } finally {
       await new Promise<void>((resolve) => newCentral.close(() => resolve()));
     }
   });
 
-  it('test-then-save: a generic plane tests body credentials it has nothing stored for', async () => {
-    // 'aos10' has nothing stored — without the body-creds path this is a 400.
-    // (classic now routes through testCentral which requires gatewayBaseUrl/clientId/clientSecret)
+  it('AOS-10 refuses an independent probe because its inventory is Central-derived', async () => {
     const res = await fetch(`${base}/api/systems/aos10/test`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ host: mockCentralBase }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.ok).toBe(true);
-    expect(body.source).toBe('request');
-    expect(body.message).toMatch(/host reachable/);
+    expect(body.error).toMatch(/discovered through Central/);
   });
 
   it('falls back to stored credentials when the body carries none', async () => {
@@ -319,7 +332,7 @@ describe('routes', () => {
     });
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error).toMatch(/submitted credentials.*incomplete/);
+    expect(body.error).toMatch(/submitted connector configuration.*incomplete/);
 
     // 'uxi' has nothing stored, and a clientId-only body is not testable.
     const none = await fetch(`${base}/api/systems/uxi/test`, {
@@ -329,7 +342,7 @@ describe('routes', () => {
     });
     expect(none.status).toBe(400);
     const noneBody = (await none.json()) as any;
-    expect(noneBody.error).toMatch(/submitted credentials.*incomplete/);
+    expect(noneBody.error).toMatch(/submitted connector configuration.*incomplete/);
   });
 
   it('GET /api/sites/:siteId resolves a canonical id to a profile', async () => {
@@ -592,12 +605,28 @@ describe('live-mode screen contracts', () => {
       body: JSON.stringify({ demoMode }),
     });
 
-  const saveCreds = (plane: string, creds: Record<string, string>) =>
-    fetch(`${base}/api/systems/${plane}/credentials`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(creds),
-    });
+  const saveCreds = async (plane: string, creds: Record<string, string>) => {
+    const id = plane as ConnectorId;
+    const seeded: Record<string, string> = {
+      ...creds,
+      ...(id === 'mist' && !creds.orgId ? { orgId: 'test-org' } : {}),
+      ...(id === 'local' && !creds.baseUrl ? { baseUrl: 'https://127.0.0.1:9' } : {}),
+      ...(id === 'aos8' && !creds.username ? { username: 'test-reader', password: 'test-password' } : {}),
+    };
+    if (id === 'aos8' && seeded.master?.startsWith('http')) {
+      const url = new URL(seeded.master);
+      seeded.master = url.origin;
+    }
+    const config = migrateLegacyPlaneRecord(id, seeded);
+    if (!config) return new Response('{}', { status: 400 });
+    const [{ settings }, { registry }] = await Promise.all([
+      import('../src/config/settings'),
+      import('../src/planes/registry'),
+    ]);
+    settings.update({ connectors: { [id]: config } });
+    registry.reinitPlane(id);
+    return new Response('{}', { status: 200 });
+  };
 
   const DEVICE = {
     name: 'sw-test-1',
@@ -4545,12 +4574,28 @@ describe('client 360 cross-plane sections', () => {
       body: JSON.stringify({ demoMode }),
     });
 
-  const saveCreds = (plane: string, creds: Record<string, string>) =>
-    fetch(`${base}/api/systems/${plane}/credentials`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(creds),
-    });
+  const saveCreds = async (plane: string, creds: Record<string, string>) => {
+    const id = plane as ConnectorId;
+    const seeded: Record<string, string> = {
+      ...creds,
+      ...(id === 'mist' && !creds.orgId ? { orgId: 'test-org' } : {}),
+      ...(id === 'local' && !creds.baseUrl ? { baseUrl: 'https://127.0.0.1:9' } : {}),
+      ...(id === 'aos8' && !creds.username ? { username: 'test-reader', password: 'test-password' } : {}),
+    };
+    if (id === 'aos8' && seeded.master?.startsWith('http')) {
+      const url = new URL(seeded.master);
+      seeded.master = url.origin;
+    }
+    const config = migrateLegacyPlaneRecord(id, seeded);
+    if (!config) return new Response('{}', { status: 400 });
+    const [{ settings }, { registry }] = await Promise.all([
+      import('../src/config/settings'),
+      import('../src/planes/registry'),
+    ]);
+    settings.update({ connectors: { [id]: config } });
+    registry.reinitPlane(id);
+    return new Response('{}', { status: 200 });
+  };
 
   const clientVia = (mac: string, plane: string, over: Record<string, unknown> = {}) => ({
     name: `client-via-${plane.toLowerCase()}`,
@@ -4782,7 +4827,7 @@ describe('client 360 cross-plane sections', () => {
     }
   });
 
-  it('live words a linked plane with no roster yet as unread, and a stub adapter as unimplemented', async () => {
+  it('live words linked planes with no roster yet as unread', async () => {
     await setDemoMode(false);
     try {
       // central answered its device read but has never reported a client
@@ -4799,7 +4844,7 @@ describe('client 360 cross-plane sections', () => {
         });
         expect(sectionOf(body, 'aos8')).toMatchObject({
           state: 'not-fetched',
-          reason: 'plane not linked',
+          reason: 'AOS-8 has not reported a client roster',
         });
         // A roster that does not contain the MAC still answers with
         // client: null — the sections are the point of the ask.

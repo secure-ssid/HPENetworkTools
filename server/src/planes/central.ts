@@ -169,7 +169,7 @@ import {
 } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
   ageString,
   durationString,
@@ -1706,6 +1706,27 @@ export class CentralAdapter implements PlaneAdapter {
       activeDiagnostics: newCentral,
       alertFeed: true,
     };
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    // Central and Central Classic share the transport, but they are separate
+    // configured products. The adapter's public id predates that split and is
+    // always `central`, so the live plane state is the source of truth here.
+    const classic = this.stateRef.id === 'classic';
+    const candidates = classic
+      ? ['/monitoring/v1/aps?limit=1', '/network-monitoring/v1alpha1/aps?limit=1']
+      : ['/network-monitoring/v1alpha1/aps?limit=1', '/monitoring/v1/aps?limit=1'];
+    for (const path of candidates) {
+      const res = await this.request('GET', path);
+      if (res.status === 404) continue;
+      if (res.status >= 200 && res.status < 300 && rowsFromResponse(res) !== null) {
+        return { ok: true, authenticated: true, dataset: 'devices', message: `${classic ? 'Central Classic' : 'New Central'} OAuth accepted; AP inventory readable`, status: res.status };
+      }
+      if (res.status === 403) return { ok: false, authenticated: true, dataset: 'devices', message: `${classic ? 'Central Classic' : 'New Central'} OAuth is valid but lacks monitoring privileges`, status: 403 };
+      if (res.status === 401) return { ok: false, authenticated: false, dataset: 'devices', message: `${classic ? 'Central Classic' : 'New Central'} rejected the OAuth credentials`, status: 401 };
+      return { ok: false, authenticated: false, dataset: 'devices', message: `${classic ? 'Central Classic' : 'New Central'} AP probe failed (HTTP ${res.status})`, status: res.status };
+    }
+    return { ok: false, authenticated: true, dataset: 'devices', message: `${classic ? 'Central Classic' : 'New Central'} OAuth accepted, but no supported AP monitoring endpoint was found`, status: 404 };
   }
 
   // -- ON-DEMAND DETAIL READS ------------------------------------------------

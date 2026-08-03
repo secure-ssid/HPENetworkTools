@@ -143,7 +143,7 @@ import type {
 } from '@hpe/shared';
 import { GREENLAKE_SECTION_KEYS, formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
   parseTimestamp,
 } from './format';
@@ -831,6 +831,16 @@ export class GreenLakeAdapter implements PlaneAdapter {
       configRead: false,
       directWrite: this.declaredScopes.includes('write'),
     };
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    const first = this.candidates[0];
+    const path = `${first.path}?offset=0&limit=1${first.extraQuery ?? ''}`;
+    const res = await this.authedGet(path);
+    if (res.status >= 200 && res.status < 300 && extractRows(res.body) !== null) return { ok: true, authenticated: true, dataset: 'subscriptions', message: 'GreenLake OAuth accepted; workspace subscriptions readable', status: res.status };
+    if (res.status === 403) return { ok: false, authenticated: true, dataset: 'subscriptions', message: 'GreenLake OAuth is valid but lacks workspace subscription privileges', status: 403 };
+    if (res.status === 401) return { ok: false, authenticated: false, dataset: 'subscriptions', message: 'GreenLake rejected the OAuth credentials', status: 401 };
+    return { ok: false, authenticated: false, dataset: 'subscriptions', message: `GreenLake subscription probe failed (HTTP ${res.status})`, status: res.status };
   }
 
   async pull(): Promise<PlanePull> {

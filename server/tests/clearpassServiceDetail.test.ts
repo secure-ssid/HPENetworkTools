@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { migrateLegacyPlaneRecord } from '@hpe/shared';
 
 let server: Server;
 let base: string;
@@ -194,14 +195,17 @@ describe('GET /api/clearpass/services/:id — live and blend', () => {
   });
 
   it('a plane at its stored daily call budget is not called, and the payload says why', async () => {
-    const saved = await fetch(`${base}/api/systems/clearpass/credentials`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ publisher: 'cppm-01.meridian.health', token: 'cppm-token-1234', callBudget: '1' }),
+    const config = migrateLegacyPlaneRecord('clearpass', {
+      publisher: 'cppm-01.meridian.health', token: 'cppm-token-1234', callBudget: '1',
     });
-    expect(saved.status).toBe(200);
+    expect(config).not.toBeNull();
+    const [{ settings }, { registry }] = await Promise.all([
+      import('../src/config/settings'),
+      import('../src/planes/registry'),
+    ]);
+    settings.update({ connectors: { clearpass: config } });
+    registry.reinitPlane('clearpass');
     try {
-      const { registry } = await import('../src/planes/registry');
       registry.recordCall('clearpass', { path: 'GET /api/endpoint', ms: 1, code: '200' });
       const { status, body } = await getJson('/api/clearpass/services/4');
       expect(status).toBe(200);

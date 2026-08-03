@@ -65,6 +65,38 @@ import {
 const SITE_A = { id: 'site-uuid-a', name: 'Campus A' };
 const SITE_B = { id: 'site-uuid-b', name: 'Lab B' };
 
+describe('Mist authenticated connection probe', () => {
+  it('uses Token auth for a bounded organisation device read', async () => {
+    const calls: Array<{ url: string; authorization: string | null }> = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({
+        url: String(url),
+        authorization: new Headers(init?.headers).get('authorization'),
+      });
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    };
+    const adapter = new MistAdapter(
+      { apiHost: 'https://api.mist.com', orgId: 'org-1', token: 'mist-secret' },
+      {
+        id: 'mist', linked: true, health: 'warning', lastSync: null,
+        deviceCount: null, callsToday: 0, note: '', callBudget: null, token: null,
+        consecutiveFailures: 0, nextAttemptAt: null,
+      },
+      () => undefined,
+      fetchImpl,
+      async () => undefined,
+    );
+
+    await expect(adapter.validateConnection()).resolves.toMatchObject({
+      ok: true, authenticated: true, dataset: 'devices',
+    });
+    expect(calls).toEqual([{
+      url: 'https://api.mist.com/api/v1/orgs/org-1/stats/devices?type=all&limit=1&page=1',
+      authorization: 'Token mist-secret',
+    }]);
+  });
+});
+
 const AP_CONNECTED = {
   name: 'ap-cam01-1',
   id: 'dev-uuid-1',

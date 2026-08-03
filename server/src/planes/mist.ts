@@ -204,7 +204,7 @@ import type {
 } from '@hpe/shared';
 import { formatCount, mistSsidSecurityRefusal } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
   ageString,
   durationString,
@@ -1743,6 +1743,17 @@ export class MistAdapter implements PlaneAdapter {
 
   state(): PlaneState {
     return this.stateRef;
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    const path = `/api/v1/orgs/${encodeURIComponent(this.orgId)}/stats/devices?type=all&limit=1&page=1`;
+    const res = await this.pacedGet(path);
+    if (res.status >= 200 && res.status < 300 && res.parsed && isRowContainer(res.body)) {
+      return { ok: true, authenticated: true, dataset: 'devices', message: 'Mist token accepted; organisation devices readable', status: res.status };
+    }
+    if (res.status === 403) return { ok: false, authenticated: true, dataset: 'devices', message: 'Mist token is valid but lacks organisation device privileges', status: 403 };
+    if (res.status === 401) return { ok: false, authenticated: false, dataset: 'devices', message: 'Mist rejected the API token', status: 401 };
+    return { ok: false, authenticated: false, dataset: 'devices', message: `Mist organisation device probe failed${res.status ? ` (HTTP ${res.status})` : ''}`, status: res.status };
   }
 
   async pull(): Promise<PlanePull> {

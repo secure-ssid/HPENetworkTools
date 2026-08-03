@@ -153,7 +153,7 @@ import type {
 import { formatCount } from '@hpe/shared';
 import * as https from 'node:https';
 import type { PlaneCredentials } from '../config/settings';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import {
   parseTimestamp,
 } from './format';
@@ -1008,6 +1008,15 @@ export class ClearPassAdapter implements PlaneAdapter {
       // through the reviewed flow in services/clearpassDirectWrite.ts.
       directWrite: true,
     };
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    const path = `${ENDPOINT_PATH}?offset=0&limit=1`;
+    const res = await this.authedGet(path);
+    if (res.status >= 200 && res.status < 300 && extractRows(res.body) !== null) return { ok: true, authenticated: true, dataset: 'endpoints', message: 'ClearPass authenticated; endpoint repository readable', status: res.status };
+    if (res.status === 403) return { ok: false, authenticated: true, dataset: 'endpoints', message: 'ClearPass credentials are valid but lack the required scope; the token lacks Endpoint repository privileges', status: 403 };
+    if (res.status === 401) return { ok: false, authenticated: false, dataset: 'endpoints', message: 'ClearPass rejected the credentials', status: 401 };
+    return { ok: false, authenticated: false, dataset: 'endpoints', message: `ClearPass endpoint repository probe failed (HTTP ${res.status})`, status: res.status };
   }
 
   async pull(): Promise<PlanePull> {

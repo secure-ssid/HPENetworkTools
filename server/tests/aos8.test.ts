@@ -162,6 +162,18 @@ function makeAdapter(fetchImpl: FetchLike): { adapter: Aos8Adapter; calls: Array
   return { adapter, calls, st };
 }
 
+describe('AOS-8 authenticated connection probe', () => {
+  it('logs in and proves showcommand access with the AP database read', async () => {
+    const seen = seenLog();
+    const { adapter } = makeAdapter(fakeFetch({ seen }));
+    await expect(adapter.validateConnection()).resolves.toMatchObject({
+      ok: true, authenticated: true, dataset: 'devices',
+    });
+    expect(seen.loginBodies).toHaveLength(1);
+    expect(seen.urls.some((url) => new URL(url).searchParams.get('command') === 'show ap database long')).toBe(true);
+  });
+});
+
 // -- mapping ---------------------------------------------------------------------
 
 describe('mapAos8Ap', () => {

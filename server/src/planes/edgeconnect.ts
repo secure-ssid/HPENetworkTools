@@ -55,7 +55,7 @@
 import * as https from 'node:https';
 import type { AlertRow, DeviceRow, Tone } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import { ageString, parseTimestamp, sevFor, siteIdForName } from './format';
 import { type FetchLike, type RecordCallFn, httpsBase } from './transport';
 
@@ -248,6 +248,19 @@ export class EdgeConnectAdapter implements PlaneAdapter {
    */
   capabilities(): PlaneCapabilities {
     return { localShell: false, brokeredWrite: false, configRead: false, alertFeed: true };
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    try {
+      await this.getArray('/appliances', 'GET /appliances');
+      return { ok: true, authenticated: true, dataset: 'devices', message: 'EdgeConnect credentials accepted; Appliances readable', status: 200 };
+    } catch (err) {
+      const message = (err as Error).message;
+      const status = Number(/HTTP (\d{3})/.exec(message)?.[1] ?? 0) || undefined;
+      if (status === 403) return { ok: false, authenticated: true, dataset: 'devices', message: 'EdgeConnect credentials are valid but lack Appliances privileges', status };
+      if (status === 401 || message.includes('credentials rejected')) return { ok: false, authenticated: false, dataset: 'devices', message: 'EdgeConnect rejected the credentials', ...(status ? { status } : {}) };
+      return { ok: false, authenticated: false, dataset: 'devices', message: 'EdgeConnect Appliances probe failed', ...(status ? { status } : {}) };
+    }
   }
 
   /**

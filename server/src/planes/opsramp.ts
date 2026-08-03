@@ -25,9 +25,9 @@ import type { AlertRow, DeviceRow, DeviceType, Sev, Tone } from '@hpe/shared';
 import { formatCount } from '@hpe/shared';
 import type { PlaneCredentials } from '../config/settings';
 import type { DeviceIdentityHints } from '../services/reconcile';
-import type { PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
 import { ageString, parseTimestamp, sevFor, siteIdForName } from './format';
-import { TokenManager, mintedTokenInfo, type FetchLike, type RecordCallFn } from './transport';
+import { TokenManager, httpsBase, mintedTokenInfo, type FetchLike, type RecordCallFn } from './transport';
 
 // Re-exported so tests can type an in-memory fake fetch against this adapter.
 export type { FetchLike } from './transport';
@@ -177,7 +177,7 @@ export class OpsRampAdapter implements PlaneAdapter {
     if (!OpsRampAdapter.isComplete(creds)) {
       throw new Error('opsramp requires tenantId, clientId and clientSecret');
     }
-    this.baseUrl = (creds.baseUrl?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.baseUrl = httpsBase(creds.baseUrl?.trim() || DEFAULT_BASE_URL, 'the OAuth client secret and tenant bearer token cross this connection').replace(/\/+$/, '');
     this.tenantId = creds.tenantId.trim();
     const clientId = creds.clientId;
     const clientSecret = creds.clientSecret;
@@ -239,6 +239,17 @@ export class OpsRampAdapter implements PlaneAdapter {
    */
   capabilities(): PlaneCapabilities {
     return { localShell: false, brokeredWrite: false, configRead: false, alertFeed: true };
+  }
+
+  async validateConnection(): Promise<ConnectionProbeResult> {
+    const path = `/api/v2/tenants/${encodeURIComponent(this.tenantId)}/resources?pageSize=1&pageNo=1`;
+    const res = await this.get(path);
+    if (res.status >= 200 && res.status < 300 && parsePage(res.body) !== null) {
+      return { ok: true, authenticated: true, dataset: 'devices', message: 'OpsRamp OAuth accepted; tenant Resources readable', status: res.status };
+    }
+    if (res.status === 403) return { ok: false, authenticated: true, dataset: 'devices', message: 'OpsRamp OAuth is valid but lacks tenant Resources privileges', status: 403 };
+    if (res.status === 401) return { ok: false, authenticated: false, dataset: 'devices', message: 'OpsRamp rejected the OAuth credentials', status: 401 };
+    return { ok: false, authenticated: false, dataset: 'devices', message: `OpsRamp tenant Resources probe failed (HTTP ${res.status})`, status: res.status };
   }
 
   async pull(): Promise<PlanePull> {
