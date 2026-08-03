@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isCodexModel } from '@hpe/shared';
 import type { AssistantProviderConfig, AssistantProviderId, CodexProviderConfig } from '../../config/settings';
+import { CodexAppServer, CodexAppServerFailure, type CodexAppServerLike } from './codexAppServer';
 import { createMcpLaunchConfig, type McpLaunchConfig } from './mcpLaunchConfig';
 import type {
   AssistantChatRequest,
@@ -28,6 +29,7 @@ type NativeProviderId = Extract<AssistantProviderId, 'codex' | 'claude' | 'kimi'
 
 export interface NativeCliAdapterDependencies {
   commandRunner?: CommandRunner;
+  codexAppServer?: CodexAppServerLike;
   createMcpLaunchConfig?: (input: { endpoint: string; authToken: string | null }) => Promise<McpLaunchConfig>;
   /** Creates an empty Codex workspace. It must never contain an MCP config or credential. */
   createEmptyDirectory?: () => Promise<DisposableWorkingDirectory>;
@@ -375,6 +377,7 @@ function isCopilotConfig(config: AssistantProviderConfig): config is Extract<Ass
 
 export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
   private readonly makeEmptyDirectory: () => Promise<DisposableWorkingDirectory>;
+  private readonly appServer: CodexAppServerLike;
 
   constructor(dependencies: NativeCliAdapterDependencies = {}) {
     super({
@@ -387,6 +390,7 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
       buildProbe: () => null,
     }, 'codex', dependencies);
     this.makeEmptyDirectory = dependencies.createEmptyDirectory ?? createEmptyCodexWorkspace;
+    this.appServer = dependencies.codexAppServer ?? new CodexAppServer();
   }
 
   override canChat(): boolean {
@@ -395,6 +399,42 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
 
   override async probeReadOnly(config: AssistantProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
     if (!isCodexConfig(config)) return unavailable();
+    let persistentTurnCompleted = false;
+    for (let attempt = 0; attempt < CODEX_PROBE_ATTEMPTS; attempt += 1) {
+      try {
+        const result = await this.appServer.probe({
+          endpoint: context.mcp.endpoint,
+          authToken: context.mcp.authToken,
+          writeEnabled: false,
+          model: config.model,
+          reasoningEffort: config.reasoningEffort,
+          prompt: READ_ONLY_PROBE_PROMPT,
+          timeoutMs: this.timeoutMs,
+        });
+        persistentTurnCompleted = true;
+        const transcript = Array.isArray(result.transcript) ? result.transcript : [];
+        const successfulFindTool = transcript.length === 1
+          && isRecord(transcript[0])
+          && transcript[0].tool === 'find_tool'
+          && transcript[0].ok === true;
+        if (successfulFindTool) {
+          context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
+          return resultFor(config);
+        }
+        if (transcript.length === 0 && attempt + 1 < CODEX_PROBE_ATTEMPTS) continue;
+        return unavailable();
+      } catch (error) {
+        await this.appServer.dispose().catch(() => undefined);
+        if (error instanceof CodexAppServerFailure && error.stage === 'before-turn' && !persistentTurnCompleted) {
+          return this.probeOneShot(config, context);
+        }
+        return unavailable();
+      }
+    }
+    return unavailable();
+  }
+
+  private async probeOneShot(config: CodexProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
     for (let attempt = 0; attempt < CODEX_PROBE_ATTEMPTS; attempt += 1) {
       const workspace = await this.createEmptyWorkspace();
       if (!workspace) return unavailable();
@@ -429,6 +469,28 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
   override async chat(request: AssistantChatRequest): Promise<AssistantChatResult> {
     if (!isCodexConfig(request.config)) throw new Error('Codex provider configuration is invalid.');
     if (!request.mcp) throw new Error('Codex centralmcp connection is unavailable.');
+    try {
+      return await this.appServer.chat({
+        endpoint: request.mcp.endpoint,
+        authToken: request.mcp.authToken,
+        writeEnabled: request.mcp.writeEnabled,
+        model: request.config.model,
+        reasoningEffort: request.config.reasoningEffort,
+        prompt: codexPrompt(request.messages, request.mcp.writeEnabled),
+        timeoutMs: request.timeoutMs,
+        signal: request.signal,
+      });
+    } catch (error) {
+      await this.appServer.dispose().catch(() => undefined);
+      if (!(error instanceof CodexAppServerFailure) || error.stage !== 'before-turn') {
+        throw new Error('Codex CLI did not complete the assistant request.');
+      }
+    }
+    return this.chatOneShot(request);
+  }
+
+  private async chatOneShot(request: AssistantChatRequest): Promise<AssistantChatResult> {
+    if (!isCodexConfig(request.config) || !request.mcp) throw new Error('Codex provider configuration is invalid.');
     const workspace = await this.createEmptyWorkspace();
     if (!workspace) throw new Error('Codex launch context is unavailable.');
     try {

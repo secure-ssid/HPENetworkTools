@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AssistantSettings } from '../src/config/settings';
 import { ClaudeAdapter, CodexAdapter, CopilotAdapter, KimiAdapter, type NativeCliAdapterDependencies } from '../src/services/assistant/cliAdapters';
+import { CodexAppServerFailure, type CodexAppServerLike } from '../src/services/assistant/codexAppServer';
 import { createMcpLaunchConfig } from '../src/services/assistant/mcpLaunchConfig';
 import { AssistantProviderRegistry, getAssistantDefaults } from '../src/services/assistant/registry';
 import type { AssistantProviderAdapter, CommandExecution, ProbeInvocation, ReadOnlyProbeContext } from '../src/services/assistant/types';
@@ -177,6 +178,12 @@ describe('centralmcp launch config', () => {
 describe('isolated native assistant CLI adapters', () => {
   const centralMcp = { endpoint: 'http://127.0.0.1:3000/mcp', authToken: 'centralmcp-test-token' };
 
+  const oneShotFallbackTransport: CodexAppServerLike = {
+    chat: async () => { throw new CodexAppServerFailure('before-turn'); },
+    probe: async () => { throw new CodexAppServerFailure('before-turn'); },
+    dispose: async () => {},
+  };
+
   function probeContext(): { context: ReadOnlyProbeContext; invocations: ProbeInvocation[] } {
     const invocations: ProbeInvocation[] = [];
     return {
@@ -194,6 +201,7 @@ describe('isolated native assistant CLI adapters', () => {
     const launchInputs: Array<Record<string, unknown>> = [];
     return {
       dependencies: {
+        codexAppServer: oneShotFallbackTransport,
         commandRunner: {
           run: async (command) => {
             commands.push(command);
@@ -275,6 +283,7 @@ describe('isolated native assistant CLI adapters', () => {
     const workspaceDispose = vi.fn(async () => {});
     const createEmptyDirectory = vi.fn(async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: workspaceDispose }));
     const adapter = new CodexAdapter({
+      codexAppServer: oneShotFallbackTransport,
       commandRunner: {
         run: async (command) => {
           commands.push(command);
@@ -334,6 +343,7 @@ describe('isolated native assistant CLI adapters', () => {
   ] as const)('omits the Codex effort override for %s and preserves explicit efforts', async (reasoningEffort, model, expectedOverride) => {
     const commands: CommandExecution[] = [];
     const adapter = new CodexAdapter({
+      codexAppServer: oneShotFallbackTransport,
       commandRunner: {
         run: async (command) => {
           commands.push(command);
@@ -361,6 +371,54 @@ describe('isolated native assistant CLI adapters', () => {
 
     const overrides = commands[0]!.args.filter((arg) => arg.startsWith('model_reasoning_effort='));
     expect(overrides).toEqual(expectedOverride ? [expectedOverride] : []);
+  });
+
+  it('falls back only before turn submission and never replays a turn that could have started', async () => {
+    const oneShotRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: [
+        '{"type":"thread.started","thread_id":"thread-fallback"}',
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"type":"agent_message","text":"fallback ready"}}',
+        '{"type":"turn.completed","status":"completed"}',
+      ].join('\n'),
+      stderr: '',
+    }));
+    const request = {
+      config: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+      timeoutMs: 5000,
+      messages: [{ role: 'user', content: 'Check readiness.' }],
+      mcp: { ...centralMcp, writeEnabled: false },
+    } as any;
+
+    const beforeTurn = new CodexAdapter({
+      codexAppServer: oneShotFallbackTransport,
+      commandRunner: { run: oneShotRunner },
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: async () => {} }),
+    });
+    await expect(beforeTurn.chat(request)).resolves.toMatchObject({ text: 'fallback ready' });
+    expect(oneShotRunner).toHaveBeenCalledTimes(1);
+
+    oneShotRunner.mockClear();
+    const afterTurnTransport: CodexAppServerLike = {
+      chat: async () => { throw new CodexAppServerFailure('after-turn'); },
+      probe: async () => { throw new CodexAppServerFailure('after-turn'); },
+      dispose: async () => {},
+    };
+    const afterTurn = new CodexAdapter({
+      codexAppServer: afterTurnTransport,
+      commandRunner: { run: oneShotRunner },
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: async () => {} }),
+    });
+
+    await expect(afterTurn.chat(request)).rejects.toThrow(/did not complete/i);
+    expect(oneShotRunner).not.toHaveBeenCalled();
+
+    const { context, invocations } = probeContext();
+    await expect(afterTurn.probeReadOnly(request.config, context))
+      .resolves.toEqual({ authenticated: false, modelReady: false });
+    expect(invocations).toEqual([]);
+    expect(oneShotRunner).not.toHaveBeenCalled();
   });
 
   it('rejects Copilot Auto with any persisted effort other than adaptive before executable discovery', async () => {

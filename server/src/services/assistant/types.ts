@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import type { AssistantProviderConfig, AssistantProviderId } from '../../config/settings';
+import type { AssistantProviderConfig, AssistantProviderId, CodexProviderConfig } from '../../config/settings';
 
 export type ProviderExecutionKind = 'cli' | 'openai-compatible';
 
@@ -92,6 +92,20 @@ export interface AssistantChatToolOutcome {
 export interface AssistantChatResult {
   text: string;
   transcript?: unknown[];
+}
+
+export type CodexTransportFailureStage = 'before-turn' | 'after-turn';
+
+/** Request-owned input for the private persistent Codex app-server process. */
+export interface CodexTransportRequest {
+  endpoint: string;
+  authToken: string | null;
+  writeEnabled: boolean;
+  model: string;
+  reasoningEffort: CodexProviderConfig['reasoningEffort'];
+  prompt: string;
+  timeoutMs: number;
+  signal?: AbortSignal;
 }
 
 export interface AssistantProviderAdapter {
