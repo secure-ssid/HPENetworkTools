@@ -1761,7 +1761,19 @@ describe('live-mode screen contracts', () => {
     }
   });
 
-  it('live clients dedupe across planes by normalised MAC; alerts by plane+id', async () => {
+  it('groups live client observations by normalised MAC without losing provenance', async () => {
+    const { registry } = await import('../src/planes/registry');
+    const central = registry.get('central').state();
+    const mist = registry.get('mist').state();
+    const aos8 = registry.get('aos8').state();
+    const previousCentral = { ...central };
+    const previousMist = { ...mist };
+    const previousAos8 = { ...aos8 };
+    Object.assign(central, { linked: true, health: 'healthy', stale: false, lastSync: '2026-08-02T10:00:00Z' });
+    Object.assign(mist, { linked: true, health: 'degraded', stale: true, lastSync: '2026-08-02T09:00:00Z' });
+    // A linked client-capable plane that has no clients key remains an
+    // explicit coverage gap, rather than silently becoming an empty source.
+    Object.assign(aos8, { linked: true, health: 'healthy', stale: false });
     contributions.set('central', {
       clients: [clientRow('AA:BB:CC:DD:EE:FF', 'CENTRAL')],
       alerts: [alertRow({ alertId: 'a-1' }), alertRow({ alertId: 'a-1' })],
@@ -1771,17 +1783,26 @@ describe('live-mode screen contracts', () => {
       alerts: [alertRow({ alertId: 'm-9', plane: 'MIST', title: 'Mist alarm', detail: 'mist detail' })],
     });
 
-    const clients = await getJson('/api/clients');
-    expect(clients.status).toBe(200);
-    expect(clients.body.dataSource).toBe('live');
-    expect(clients.body.clients).toHaveLength(1);
-    expect(clients.body.clients[0].mac).toBe('AA:BB:CC:DD:EE:FF'); // first plane's row wins
-    expect(clients.body.stats[0].value).toBe('1'); // stats count the deduped list
+    try {
+      const clients = await getJson('/api/clients');
+      expect(clients.status).toBe(200);
+      expect(clients.body.dataSource).toBe('live');
+      expect(clients.body.clients).toHaveLength(1);
+      expect(clients.body.clients[0].mac).toBe('AA:BB:CC:DD:EE:FF'); // fresh Central is primary
+      expect(clients.body.clients[0].sources.map((source: any) => source.plane)).toEqual(['central', 'mist']);
+      expect(clients.body.clients[0].sources[1].stale).toBe(true);
+      expect(clients.body.missingSources).toContain('AOS-8');
+      expect(clients.body.stats[0].value).toBe('1'); // stats count grouped endpoints
 
-    const alerts = await getJson('/api/alerts');
-    expect(alerts.body.dataSource).toBe('live');
-    expect(alerts.body.alerts).toHaveLength(2); // a-1 once + m-9
-    expect((alerts.body.alerts as any[]).filter((a) => a.alertId === 'a-1')).toHaveLength(1);
+      const alerts = await getJson('/api/alerts');
+      expect(alerts.body.dataSource).toBe('live');
+      expect(alerts.body.alerts).toHaveLength(2); // a-1 once + m-9
+      expect((alerts.body.alerts as any[]).filter((a) => a.alertId === 'a-1')).toHaveLength(1);
+    } finally {
+      Object.assign(central, previousCentral);
+      Object.assign(mist, previousMist);
+      Object.assign(aos8, previousAos8);
+    }
   });
 
   it("live overview's Devices reachable names down devices before 'all verified'", async () => {

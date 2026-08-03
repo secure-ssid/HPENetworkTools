@@ -6,8 +6,8 @@
  * browser's demo fallback runs the identical join. This module only assembles
  * the live inputs — which is where the live-mode honesty rules live:
  *
- *   - sessions are PRE-DEDUPE, per plane. The roster's cross-plane dedupe
- *     (liveCore.ts dedupeClients) would erase the very sightings the 360
+ *   - sessions are PRE-GROUP, per plane. The roster's unified grouping
+ *     (liveCore.ts groupClientObservations) retains the sightings, but this
  *     exists to show: "both Central and Mist report this MAC" is the answer,
  *     not a duplicate.
  *   - a stale plane's session is rewritten to 'unverified', the same rule

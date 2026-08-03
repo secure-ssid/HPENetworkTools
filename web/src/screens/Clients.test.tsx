@@ -190,9 +190,12 @@ function metricNoteFor(label: string): string {
   return drawer().getByText(label).parentElement?.lastElementChild?.textContent ?? '';
 }
 
-function renderDrawer(mac = '3c:a9:ab:7c:a9:51') {
+function renderDrawer(mac = '3c:a9:ab:7c:a9:51', diagnostics = true) {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[`/clients?mac=${encodeURIComponent(mac)}`]}>
+    <MemoryRouter
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      initialEntries={[`/clients?mac=${encodeURIComponent(mac)}${diagnostics ? '&diagnostics=1' : ''}`]}
+    >
       <ToastProvider>
         <SettingsProvider>
           <Clients />
@@ -237,7 +240,7 @@ afterEach(async () => {
 describe('Clients live sparse detail', () => {
   it('shows unavailable metrics honestly instead of a zero failure score or demo derivations', async () => {
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51&diagnostics=1']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -281,7 +284,7 @@ describe('Clients live sparse detail', () => {
       dataSource: 'live',
     });
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51&diagnostics=1']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -364,7 +367,7 @@ describe('Clients live sparse detail', () => {
       dataSource: 'demo',
     });
     render(
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients?mac=3c%3Aa9%3Aab%3A7c%3Aa9%3A51&diagnostics=1']}>
         <ToastProvider>
           <SettingsProvider>
             <Clients />
@@ -992,6 +995,32 @@ describe('Clients missing sources', () => {
 
     await waitFor(() => expect(screen.getByText('No sessions from any linked plane')).toBeTruthy());
     expect(screen.queryByText(/contributed no sessions/)).toBeNull();
+  });
+});
+
+describe('Clients unified source provenance and compact drawer', () => {
+  it('shows every contributing source on demand and keeps diagnostics closed initially', async () => {
+    const grouped: ClientRow = {
+      ...SPARSE_LIVE_CLIENT,
+      sources: [
+        { plane: 'central', observedAt: '2026-08-02T10:00:00Z', stale: false, row: SPARSE_LIVE_CLIENT },
+        {
+          plane: 'mist',
+          observedAt: '2026-08-02T09:00:00Z',
+          stale: true,
+          row: { ...SPARSE_LIVE_CLIENT, plane: 'MIST', health: 'unverified', healthTone: 'neutral' },
+        },
+      ],
+    };
+    mockGetClients.mockResolvedValue({ stats: [], clients: [grouped], dataSource: 'live' });
+    renderDrawer('3c:a9:ab:7c:a9:51', false);
+
+    const sources = await screen.findByRole('button', { name: /Central.*Mist.*show 2 sources/i });
+    fireEvent.click(sources);
+    expect(screen.getByText(/Central.*current/i)).toBeTruthy();
+    expect(screen.getByText(/Mist.*unverified/i)).toBeTruthy();
+    expect(screen.queryByText('Client 360')).toBeNull();
+    expect(screen.queryByText('Session timeline')).toBeNull();
   });
 });
 

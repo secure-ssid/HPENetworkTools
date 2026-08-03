@@ -1062,7 +1062,8 @@ export interface ClientRow extends Omit<Client, 'site'> {
 /** One product's observation of a client represented in a unified row. */
 export interface ClientObservation {
   row: Omit<ClientRow, 'sources'>;
-  sourcePlane: PlaneKey;
+  /** Registry plane id, retained separately from the display label on `row`. */
+  plane: PlaneKey;
   observedAt: string | null;
   stale: boolean;
 }

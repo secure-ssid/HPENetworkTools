@@ -627,6 +627,8 @@ export default function Clients() {
   const [group, setGroup] = useState('all');
   const [plane, setPlane] = useState(() => planeFilterForParam(searchParams.get('plane')));
   const [problemsOnly, setProblemsOnly] = useState(false);
+  const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
+  const [showDiagnostics, setShowDiagnostics] = useState(() => searchParams.get('diagnostics') === '1');
 
   /* The header stamps SYNCED hh:mm, so a NOC tab must not sit on a mount-time
      snapshot under it: poll on the settings cadence, the same pattern
@@ -693,6 +695,7 @@ export default function Clients() {
     setPrevMacParam(macParam);
     setCoaOpen(false);
     setCoaTicket('');
+    setShowDiagnostics(false);
   }
 
   /* Detail reads for the open drawer. Keyed by object, so a result that lands
@@ -800,7 +803,7 @@ export default function Clients() {
     (c) =>
       (medium === 'all' || c.medium === medium) &&
       (type === 'all' || c.type === type) &&
-      (plane === 'all' || c.plane === plane) &&
+      (plane === 'all' || c.plane === plane || c.sources?.some((source) => source.row.plane === plane)) &&
       (site === 'all' || c.siteName === site) &&
       (group === 'all' || c.group === group) &&
       (!problemsOnly || c.problem) &&
@@ -844,6 +847,38 @@ export default function Clients() {
           },
         ]
       : []),
+    {
+      key: 'Sources',
+      value: (c: ClientRow) => c.sources?.map((source) => source.row.plane).join(', ') ?? c.plane,
+      render: (c: ClientRow) => {
+        const sources = c.sources ?? [];
+        if (sources.length < 2) return <Badge tone={c.planeTone}>{c.plane}</Badge>;
+        const expanded = expandedSources[c.mac] === true;
+        const labels = sources.map((source) => source.row.plane);
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+            <button
+              type="button"
+              className="nt-clients-table__link"
+              aria-expanded={expanded}
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpandedSources((current) => ({ ...current, [c.mac]: !expanded }));
+              }}
+            >
+              {`${labels.map((label) => label[0] + label.slice(1).toLowerCase()).join(' · ')} · ${expanded ? 'hide' : 'show'} ${sources.length} sources`}
+            </button>
+            {expanded
+              ? sources.map((source) => (
+                  <span key={source.plane} className="nt-cell-mono nt-cell-dim">
+                    {`${source.row.plane[0] + source.row.plane.slice(1).toLowerCase()} · ${source.stale ? 'unverified' : 'current'}`}
+                  </span>
+                ))
+              : null}
+          </div>
+        );
+      },
+    },
     { key: 'Auth', value: (c) => reported(c.auth), mono: true, nowrap: true },
     { key: 'Auth by', value: (c) => reported(c.authBy), mono: true },
     { key: 'Role', value: (c) => reported(c.role) },
@@ -1655,6 +1690,37 @@ export default function Clients() {
               </div>
             ) : null}
 
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+              <div>
+                <SectionHeader label="Connection quality" meta={cur.quality === null ? 'NOT REPORTED' : `${cur.quality} / 100`} />
+                <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-secondary)' }}>
+                  {cur.quality === null ? cur.health : `${cur.health} · ${cur.quality} / 100`}
+                </span>
+              </div>
+              <div>
+                <SectionHeader label="Current attachment" />
+                <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-secondary)' }}>
+                  {`${cur.siteName} · ${cur.attach}${cur.where !== '—' ? ` · ${cur.where}` : ''}`}
+                </span>
+              </div>
+              <div>
+                <SectionHeader label="Primary IP / session" />
+                <span className="nt-cell-mono nt-cell-dim">{`${cur.ip} · ${cur.session}`}</span>
+              </div>
+            </div>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-expanded={showDiagnostics}
+              onClick={() => setShowDiagnostics((open) => !open)}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              {showDiagnostics ? 'Hide diagnostics' : 'More diagnostics'}
+            </Button>
+
+            {showDiagnostics ? (
+              <>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <SectionHeader label="Experience" meta={drawer.experienceMeta} />
               <div
@@ -2073,6 +2139,9 @@ export default function Clients() {
               ))
               )}
             </div>
+            ) : null}
+
+              </>
             ) : null}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

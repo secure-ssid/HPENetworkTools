@@ -43,6 +43,7 @@ import {
   type AlertRow,
   type AuthEventRow,
   type ClientRow,
+  type ClientObservation,
   type DeviceRow,
   type MistSleRow,
   type Plane,
@@ -126,19 +127,39 @@ export function sortLiveAlerts(alerts: AlertRow[]): AlertRow[] {
 }
 
 /**
- * One row per endpoint across planes: a session reported by both a cloud
- * plane and ClearPass is the same client. Keyed on the normalised 12-hex
- * MAC; rows without a real MAC ('—') cannot be matched and all stay.
+ * One unified row per endpoint, retaining every plane's original observation.
+ * Rows without a usable MAC remain independent: joining them would invent an
+ * identity. Fresh observations sort ahead of stale ones, then the stable
+ * catalog order, and the first source supplies the concise primary row.
  */
-export function dedupeClients(clients: ClientRow[]): ClientRow[] {
-  const seen = new Set<string>();
-  return clients.filter((c) => {
-    if (!c.mac || c.mac === '—') return true;
-    const key = normalizeMac(c.mac);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+export function groupClientObservations(observations: ClientObservation[]): ClientRow[] {
+  const groups = new Map<string, ClientObservation[]>();
+  observations.forEach((observation, index) => {
+    const mac = observation.row.mac;
+    const key = !mac || mac === '—' ? `unmatched:${index}` : `mac:${normalizeMac(mac)}`;
+    const group = groups.get(key);
+    if (group) group.push(observation);
+    else groups.set(key, [observation]);
   });
+  const rank = (plane: ClientObservation['plane']) => PLANE_IDS.indexOf(plane as PlaneId);
+  return [...groups.values()].map((sources) => {
+    const ordered = [...sources].sort(
+      (a, b) => Number(a.stale) - Number(b.stale) || rank(a.plane) - rank(b.plane),
+    );
+    return { ...ordered[0].row, sources: ordered };
+  });
+}
+
+/** Compatibility helper for consumers that only need a one-row client view. */
+export function dedupeClients(clients: ClientRow[]): ClientRow[] {
+  return groupClientObservations(
+    clients.map((row) => ({
+      row: { ...row, sources: undefined },
+      plane: planeIdForLabel(row.plane) ?? 'central',
+      observedAt: null,
+      stale: false,
+    })),
+  );
 }
 
 /**
@@ -186,24 +207,27 @@ export function liveCorrelation(alerts: AlertRow[]): AlertCorrelation | null {
 /**
  * Live client sessions with the same honesty rule the device path applies:
  * a session last reported by a plane that is now degraded cannot be asserted
- * as a healthy current session. Fresh planes' rows are deduped first so a
- * fresh row always outranks a stale one for the same endpoint.
+ * as a healthy current session. The grouped result keeps every observation;
+ * freshness decides only which one is shown as the primary summary.
  */
 export function liveClients(): ClientRow[] {
   const stale = stalePlanes();
-  const fresh: ClientRow[] = [];
-  const behind: ClientRow[] = [];
+  const observations: ClientObservation[] = [];
   for (const [id, pull] of poller.contributionsByPlane()) {
     if (!pull.clients) continue;
-    if (stale.has(id)) {
-      for (const client of pull.clients) {
-        behind.push({ ...client, health: 'unverified', healthTone: 'neutral', problem: false });
-      }
-    } else {
-      fresh.push(...pull.clients);
+    const behind = stale.has(id);
+    const observedAt = registry.state(id).lastSync;
+    for (const client of pull.clients) {
+      observations.push({
+        row: behind ? { ...client, health: 'unverified', healthTone: 'neutral', problem: false } : client,
+        plane: id,
+        observedAt,
+        stale: behind,
+      });
     }
   }
-  return enrichClientsWithAuth(dedupeClients([...fresh, ...behind]));
+  const enriched = enrichClientsWithAuth(observations.map((observation) => observation.row));
+  return groupClientObservations(observations.map((observation, index) => ({ ...observation, row: enriched[index] })));
 }
 
 /**
