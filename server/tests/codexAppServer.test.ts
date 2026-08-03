@@ -490,6 +490,10 @@ describe('CodexAppServer', () => {
     await fake.transport.chat({ ...request, reasoningEffort: 'auto' });
     await fake.transport.chat({ ...request, reasoningEffort: 'auto' });
     expect(fake.children).toHaveLength(1);
+    expect(fake.launches).toHaveLength(1);
+    const threadStarts = fake.children[0]?.sent.filter((message) => message.method === 'thread/start') ?? [];
+    expect(threadStarts).toHaveLength(2);
+    expect(new Set(threadStarts.map((message) => message.id)).size).toBe(2);
     const firstThreadConfig = fake.children[0]?.sent.find((message) => message.method === 'thread/start')?.params?.config;
     expect(firstThreadConfig).not.toHaveProperty('model_reasoning_effort');
 

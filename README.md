@@ -94,7 +94,7 @@ request explicitly selects another configured provider.
 
 | Provider | Speed-first default |
 |---|---|
-| Codex CLI | `gpt-5.6-terra`, low reasoning effort |
+| Codex CLI | `gpt-5.3-spark`, auto reasoning effort |
 | Claude CLI | `sonnet`, low reasoning effort |
 | Kimi CLI | `kimi-code/kimi-for-coding-highspeed`, thinking off |
 | GitHub Copilot CLI | `auto`, adaptive effort |
@@ -109,11 +109,17 @@ an executable alone is not readiness. A provider that cannot make that
 isolated `centralmcp` read remains unavailable; correct its installation,
 authentication, model configuration, or MCP endpoint and retest it.
 
-The Assistant is read-only by default. Enabling **Allow write tools** in
-Connected systems → Assistant is necessary but not sufficient: each chat
-session must also explicitly allow writes before a destructive `centralmcp`
-tool is exposed. Existing portal write flows retain their own review and
-confirmation gates; enabling Assistant writes never bypasses them.
+Codex uses the locally authenticated CLI through one isolated persistent
+app-server child for an unchanged CentralMCP scope. Each chat still starts a
+fresh ephemeral thread, and **Test provider** checks the saved selected model
+with an isolated read-only CentralMCP probe rather than treating a dropdown
+option as account availability.
+
+The Assistant's lab-access setting is persisted and defaults to read/write for
+new configurations; turn off **Lab assistant access** in Connected systems →
+Assistant to restrict it to read-only CentralMCP tools. Existing portal write
+flows retain their own review and confirmation gates; enabling Assistant
+writes never bypasses them.
 
 ## Documentation
 

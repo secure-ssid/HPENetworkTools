@@ -126,6 +126,37 @@ describe('assistant provider registry', () => {
     expect(result).toMatchObject({ installed: true, authenticated: true, modelReady: true, mcpReady: false });
   });
 
+  it('probes the persisted catalogued Codex model and leaves it unavailable when that model probe fails', async () => {
+    const input = settings();
+    input.providers.codex = { enabled: true, model: 'gpt-5.3-spark', reasoningEffort: 'auto' };
+    let probedModel: string | null = null;
+    const adapter: AssistantProviderAdapter = {
+      id: 'codex',
+      // Discovery can establish the local CLI exists, but it cannot establish
+      // that this account may use the selected picker value.
+      discover: async () => ({ installed: true, authenticated: true, modelReady: true }),
+      chat: async () => ({ text: '' }),
+      probeReadOnly: async (config, context) => {
+        probedModel = config.model;
+        context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
+        return { authenticated: true, modelReady: false, resolvedModel: config.model };
+      },
+    };
+
+    const result = await new AssistantProviderRegistry([adapter]).status(input, 'codex');
+
+    expect(probedModel).toBe('gpt-5.3-spark');
+    expect(result).toMatchObject({
+      installed: true,
+      authenticated: true,
+      mcpReady: true,
+      modelReady: false,
+      selected: true,
+      resolvedModel: 'gpt-5.3-spark',
+      message: 'Provider is unavailable.',
+    });
+  });
+
   it.each([
     { boundary: 'browser', tool: 'open' },
     { boundary: 'filesystem', tool: 'readFile' },
