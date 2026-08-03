@@ -369,7 +369,7 @@ git commit --only -m "feat: configure product connectors from one catalog" -- \
 
 **Interfaces:**
 - Consumes: raw per-plane `PlanePull.clients` and `ClientObservation`.
-- Produces: grouped `ClientRow.sources` ordered by freshness and source filters/details in the browser.
+- Produces: grouped `ClientRow.sources` ordered by freshness plus a compact browser drilldown with optional source diagnostics.
 
 - [ ] **Step 1: Write failing server grouping tests**
 
@@ -392,18 +392,20 @@ Expected: failure because `dedupeClients()` drops the second observation.
 
 Replace `dedupeClients()` with `groupClientObservations()`. Group normalized MACs, keep missing MACs independent, order sources by fresh state then catalog order, and use the first source as primary. Keep raw observations in `liveClient360World()`; do not add poll-time API calls.
 
-- [ ] **Step 4: Add failing browser source tests**
+- [ ] **Step 4: Add failing browser source and compact-drilldown tests**
 
 ```tsx
 expect(screen.getByRole('button', { name: /Central.*Mist/i })).toBeTruthy();
 await user.click(screen.getByRole('button', { name: /show 2 sources/i }));
 expect(screen.getByText(/Central.*current/i)).toBeTruthy();
 expect(screen.getByText(/Mist.*unverified/i)).toBeTruthy();
+expect(screen.queryByText('Client 360')).not.toBeInTheDocument();
+expect(screen.queryByText('Session timeline')).not.toBeInTheDocument();
 ```
 
-- [ ] **Step 5: Implement source-aware roster UI**
+- [ ] **Step 5: Implement source-aware roster and compact client drilldown**
 
-Default to all sources. Retain per-product filters, render source count/badges, and expose each source observation in an expandable client detail. Native Central, Classic, and Mist pages remain source-specific.
+Default to all sources and retain per-product filters. Render source count/badges and let the operator expand the compact source summary when provenance is needed. On client click, show only the current health, connection quality, current attachment/location, primary IP/session, and direct actions. Keep Client 360, topology diagnostics, and session timeline out of the default drawer; expose them only through one collapsed `More diagnostics` disclosure. Do not render raw timeline/API strings in the primary view. Native Central, Classic, and Mist pages remain source-specific.
 
 - [ ] **Step 6: Run client verification and commit**
 
@@ -419,7 +421,44 @@ git commit --only -m "feat: preserve client provenance across products" -- \
   web/src/screens/Clients.test.tsx shared/types.ts
 ```
 
-### Task 7: Document and Verify the Connector Foundation
+### Task 7: Hide irrelevant licence records from the operational view
+
+**Files:**
+- Modify: `web/src/screens/Licenses.tsx`
+- Modify: `web/src/screens/Licenses.test.tsx`
+
+**Interfaces:**
+- Consumes: `LicensesData.subscriptions` and existing screen statistics.
+- Produces: `isOperationalSubscription(row)` and `operationalSubscriptions(data)` for the licence table and export.
+
+- [ ] **Step 1: Write the failing unused-expired licence test**
+
+```tsx
+const unusedExpired = {
+  name: 'Retired AP pool', sku: 'OLD-AP', plane: 'GREENLAKE', planeTone: 'accent',
+  term: 'ended', qty: '20', assigned: '0', pct: '0%', expires: '01 Jan 25', status: 'expired', tone: 'danger',
+};
+mockGetLicenses.mockResolvedValue({ ...LIVE, subscriptions: [...LIVE.subscriptions, unusedExpired] });
+renderLicenses();
+expect(screen.queryByText('Retired AP pool')).not.toBeInTheDocument();
+```
+
+- [ ] **Step 2: Run `npm run test -w web -- src/screens/Licenses.test.tsx` and confirm the row is currently visible.**
+
+- [ ] **Step 3: Implement the operational-only selector**
+
+Add `isOperationalSubscription(row)` that returns false only when `row.status === 'expired'` and the comma-stripped `row.assigned` is numeric zero. Use `operationalSubscriptions(data)` for the subscriptions table and CSV export. Keep API data and non-expired unassigned capacity intact; `idle`, `retiring`, `expiring`, unknown assignment, and any positive assignment remain visible.
+
+- [ ] **Step 4: Run focused licence tests and typecheck, then commit.**
+
+```bash
+npm run test -w web -- src/screens/Licenses.test.tsx
+npm run typecheck -w web
+git add web/src/screens/Licenses.tsx web/src/screens/Licenses.test.tsx
+git commit --only -m "feat: hide unused expired licences" -- web/src/screens/Licenses.tsx web/src/screens/Licenses.test.tsx
+```
+
+### Task 8: Document and Verify the Connector Foundation
 
 **Files:**
 - Modify: `docs/configuration.md`
@@ -447,4 +486,3 @@ git add docs/configuration.md docs/user-guide.md scripts/smoke.sh
 git commit --only -m "docs: explain configurable product connectors" -- \
   docs/configuration.md docs/user-guide.md scripts/smoke.sh
 ```
-
