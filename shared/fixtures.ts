@@ -89,6 +89,7 @@ import type {
   SelectOption,
   WriteMode,
 } from './types';
+import { CONNECTOR_CATALOG, connectorCatalogEntry } from './connectors';
 import {
   byBytesDesc,
   normalizeSiteApp,
@@ -2393,198 +2394,40 @@ export const PERMISSIONS: PermissionRow[] = [
   { mode: 'none', tone: 'warning', what: 'No write access to Mist or Classic — changes go out in their consoles' },
 ];
 
-/** Connect-a-system: type select options — `typeOptions` (7). */
-export const CONNECT_TYPE_OPTIONS: SelectOption[] = [
-  { value: 'central', label: 'HPE Aruba Central (new)' },
-  { value: 'mist', label: 'Mist' },
-  { value: 'classic', label: 'Central Classic (legacy)' },
-  { value: 'greenlake', label: 'GreenLake platform' },
-  { value: 'aos8', label: 'AOS-8 mobility master' },
-  { value: 'local', label: 'Local switch collector (SSH)' },
-  { value: 'clearpass', label: 'ClearPass' },
-  { value: 'uxi', label: 'HPE Aruba UXI (sensors)' },
-  { value: 'sse', label: 'HPE Aruba Networking SSE' },
-  { value: 'edgeconnect', label: 'HPE Aruba EdgeConnect SD-WAN' },
-  { value: 'opsramp', label: 'HPE OpsRamp' },
-];
+/** Transitional flat-drawer exports, all derived from the typed product catalog. */
+export const CONNECT_TYPE_OPTIONS: SelectOption[] = CONNECTOR_CATALOG.map(({ id, label }) => ({
+  value: id,
+  label,
+}));
 
-/**
- * Juniper Mist regional API hostnames.
- * Source: tmunzer/mistapi_python README — "Available cloud regions"
- */
 export const MIST_REGIONS: SelectOption[] = [
-  { value: 'api.mist.com', label: 'Global (US) — api.mist.com' },
-  { value: 'api.eu.mist.com', label: 'Europe — api.eu.mist.com' },
-  { value: 'api.gc1.mist.com', label: 'Global 01 — api.gc1.mist.com' },
-  { value: 'api.gc2.mist.com', label: 'Global 02 — api.gc2.mist.com' },
-  { value: 'api.gc3.mist.com', label: 'Global 03 — api.gc3.mist.com' },
-  { value: 'api.gc4.mist.com', label: 'Global 04 — api.gc4.mist.com' },
-  { value: 'api.gc5.mist.com', label: 'Global 05 — api.gc5.mist.com' },
-  { value: 'api.gc7.mist.com', label: 'Global 07 — api.gc7.mist.com' },
-  { value: 'api.ac2.mist.com', label: 'APAC 02 — api.ac2.mist.com' },
-  { value: 'api.ac5.mist.com', label: 'APAC 05 — api.ac5.mist.com' },
-  { value: 'api.ac6.mist.com', label: 'APAC 06 — api.ac6.mist.com' },
+  ...(connectorCatalogEntry('mist').endpoint.options ?? []),
 ];
 
-/**
- * HPE Aruba Central regional API gateway base URLs.
- * Source: aruba/pycentral v2 — pycentral/utils/constants.py CLUSTER_BASE_URLS
- * Use the base URL as `gatewayBaseUrl` when connecting a Central plane.
- */
 export const CENTRAL_CLUSTERS: SelectOption[] = [
-  { value: 'https://us1.api.central.arubanetworks.com', label: 'US-1 (us1)' },
-  { value: 'https://us2.api.central.arubanetworks.com', label: 'US-2 (us2)' },
-  { value: 'https://us4.api.central.arubanetworks.com', label: 'US-WEST-4 (us4)' },
-  { value: 'https://us5.api.central.arubanetworks.com', label: 'US-WEST-5 (us5)' },
-  { value: 'https://us6.api.central.arubanetworks.com', label: 'US-East1 (us6)' },
-  { value: 'https://ca1.api.central.arubanetworks.com', label: 'Canada-1 (ca1)' },
-  { value: 'https://de1.api.central.arubanetworks.com', label: 'EU-1 / Germany (de1)' },
-  { value: 'https://de2.api.central.arubanetworks.com', label: 'EU-Central2 (de2)' },
-  { value: 'https://de3.api.central.arubanetworks.com', label: 'EU-Central3 (de3)' },
-  { value: 'https://gb1.api.central.arubanetworks.com', label: 'UK (gb1)' },
-  { value: 'https://in1.api.central.arubanetworks.com', label: 'APAC-1 / India (in1)' },
-  { value: 'https://jp1.api.central.arubanetworks.com', label: 'APAC-EAST1 / Japan (jp1)' },
-  { value: 'https://au1.api.central.arubanetworks.com', label: 'APAC-SOUTH1 / Australia (au1)' },
-  { value: 'https://ae1.api.central.arubanetworks.com', label: 'UAE (ae1)' },
-  { value: 'https://cn1.api.central.arubanetworks.com.cn', label: 'China (cn1)' },
-  { value: 'https://internal.api.central.arubanetworks.com', label: 'Internal / Lab' },
+  ...(connectorCatalogEntry('central').endpoint.options ?? []),
 ];
 
-/** Connect-a-system: type-dependent endpoint field — `endpoints` (7 variants). */
-export const CONNECT_ENDPOINTS: Record<SystemTypeKey, EndpointVariant> = {
-  central: {
-    label: 'Central region / base URL',
-    help: 'Pick a region or type a custom gateway hostname. Tokens are minted by HPE GreenLake SSO.',
-    hint: 'us4.api.central.arubanetworks.com',
-    options: CENTRAL_CLUSTERS,
-  },
-  mist: {
-    label: 'Mist cloud region',
-    help: 'Pick the cloud your Mist org is on, or enter a custom host.',
-    hint: 'api.mist.com',
-    options: MIST_REGIONS,
-  },
-  classic: { label: 'Classic tenant URL', help: 'Legacy tenant; expect a low rate limit.', hint: 'eu-central.classic.arubanetworks.com' },
-  greenlake: { label: 'GreenLake workspace ID', help: 'Platform workspace, not the application instance.', hint: 'wks-meridian-health' },
-  aos8: { label: 'Mobility master address', help: 'Portal reaches it through a jump host.', hint: '10.48.0.10:4343' },
-  local: { label: 'Collector agent address', help: 'The agent dials out; this is for verification only.', hint: '10.42.0.9:8443' },
-  clearpass: { label: 'ClearPass publisher URL', help: 'Publisher node, API client credentials.', hint: 'cppm-01.meridian.health' },
-  uxi: { label: 'UXI API base — optional', help: 'Defaults to api.capenetworks.com; auth is always HPE SSO client credentials.', hint: 'api.capenetworks.com' },
-  sse: {
-    label: 'SSE Admin API base — optional',
-    help: 'Defaults to admin-api.axissecurity.com; auth is a scoped static Admin API token (Settings → Admin API in the SSE console).',
-    hint: 'admin-api.axissecurity.com',
-  },
-  opsramp: {
-    label: 'OpsRamp tenant ID',
-    help: 'OpsRamp tenant ID from your account settings.',
-    hint: 'tenant-123',
-  },
-  edgeconnect: {
-    label: 'Orchestrator URL',
-    help: 'HTTPS URL of the EdgeConnect Orchestrator',
-    hint: 'https://orchestrator.example.com',
-  },
-};
+export const CONNECT_ENDPOINTS = Object.fromEntries(
+  CONNECTOR_CATALOG.map(({ id, endpoint }) => [id, {
+    label: connectorCatalogEntry(id).legacy.endpoint?.label ?? endpoint.label,
+    help: connectorCatalogEntry(id).legacy.endpoint?.help ?? endpoint.help,
+    hint: connectorCatalogEntry(id).legacy.endpoint?.hint ?? endpoint.hint,
+    ...(endpoint.options ? { options: [...endpoint.options] } : {}),
+  }]),
+) as Record<SystemTypeKey, EndpointVariant>;
 
-/**
- * The credential fields each plane needs BEYOND the endpoint variant above and
- * the shared clientId/clientSecret pair. Keys are the exact ones the adapters'
- * `isComplete()` reads (server/src/planes/*.ts) — a drawer that saves under any
- * other key produces a linked-but-stubbed plane that silently never syncs.
- *
- * The endpoint input itself must save under CONNECT_ENDPOINT_KEY below.
- */
-export const CONNECT_FIELDS: Record<SystemTypeKey, ConnectField[]> = {
-  central: [],
-  mist: [
-    { key: 'orgId', label: 'Org ID', help: 'Mist organisation UUID.' },
-    { key: 'token', label: 'API token', help: 'Org API token — sent as Authorization: Token.', secret: true },
-  ],
-  classic: [],
-  greenlake: [
-    { key: 'workspaceId', label: 'Workspace ID', help: 'Platform workspace, not the application instance.' },
-  ],
-  aos8: [
-    { key: 'username', label: 'Username', help: 'Read-only management account on the master.' },
-    { key: 'password', label: 'Password', help: 'Stored with the plane credentials.', secret: true },
-  ],
-  local: [
-    // Read by aoscx.ts's AosCxAdapter.isComplete(): baseUrl + username +
-    // password together turn the local plane's stub into a real read-only
-    // REST poll (system/interfaces/vlans) of one AOS-CX switch, on top of
-    // the recorded-SSH fields below. Optional here because the SSH-only
-    // path (no REST inventory) is still a valid, complete local plane.
-    { key: 'baseUrl', label: 'Switch URL', help: 'HTTPS URL of the switch management interface, e.g. https://10.0.0.1', optional: true },
-    { key: 'username', label: 'SSH username', help: 'Account the collector opens recorded sessions with.' },
-    { key: 'password', label: 'SSH password', help: 'Omit when a private key is supplied.', secret: true, optional: true },
-    { key: 'privateKey', label: 'SSH private key', help: 'PEM body; preferred over a password.', secret: true, optional: true },
-    { key: 'passphrase', label: 'Key passphrase', help: 'Only when the private key is encrypted.', secret: true, optional: true },
-    { key: 'port', label: 'Jump host port', help: 'Defaults to 22.', optional: true },
-  ],
-  clearpass: [
-    { key: 'token', label: 'API token', help: 'OAuth access token for the publisher API client.', secret: true },
-    // Read by clearpass.ts coaDisconnect(): sent as `enforcement_profile` on a
-    // CoA Disconnect-Request when set, omitted when not. Optional because an
-    // UNKNOWN profile name turns a working disconnect into a 422 — blank is
-    // the safe default, not a guess.
-    { key: 'coaEnforcementProfile', label: 'CoA enforcement profile', help: 'Sent on a CoA disconnect when set. Leave blank to use the publisher default — a wrong name fails the request.', optional: true },
-  ],
-  uxi: [],
-  sse: [
-    { key: 'token', label: 'Admin API token', help: 'Scoped static token from Settings → Admin API in the SSE console — sent as Authorization: Bearer.', secret: true },
-  ],
-  opsramp: [
-    { key: 'baseUrl', label: 'Base URL', help: 'Leave blank for app.opsramp.net.', optional: true },
-  ],
-  edgeconnect: [
-    {
-      key: 'apiKey',
-      label: 'API Key',
-      help: 'Preferred for automation — generate from Orchestrator Settings › API Keys. If set, username/password are not required.',
-      secret: true,
-    },
-    {
-      key: 'username',
-      label: 'Username',
-      help: 'Read-only management account on the Orchestrator (required if no API key).',
-    },
-    { key: 'password', label: 'Password', help: 'Stored with the plane credentials.', secret: true },
-  ],
-};
+export const CONNECT_FIELDS = Object.fromEntries(
+  CONNECTOR_CATALOG.map(({ id, legacy }) => [id, legacy.fields.map((field) => ({ ...field }))]),
+) as Record<SystemTypeKey, ConnectField[]>;
 
-/**
- * Planes whose adapter has no use for the shared Client ID / Client secret
- * pair the connect drawer otherwise always renders (a static-token plane) —
- * hidden so a save can never write a value under a key that plane's
- * `isComplete()` does not read.
- */
-export const CONNECT_HIDE_CLIENT_CREDENTIALS: readonly SystemTypeKey[] = ['sse', 'mist', 'local', 'edgeconnect'];
+export const CONNECT_HIDE_CLIENT_CREDENTIALS: readonly SystemTypeKey[] = CONNECTOR_CATALOG
+  .filter(({ legacy }) => legacy.hideClientCredentials)
+  .map(({ id }) => id);
 
-/**
- * Settings key the connect drawer's endpoint input must save under, per plane
- * — read straight off each adapter's `isComplete()` / constructor:
- *   central.ts:670 gatewayBaseUrl · mist.ts:181 apiHost · greenlake.ts:302
- *   workspaceId · aos8.ts:264 master · clearpass.ts:213 host · uxi.ts:190
- *   baseUrl (optional) · sse.ts baseUrl (optional) · terminal.ts:410 host
- *   (the collector's jump box).
- * `classic` reuses CentralAdapter (central.ts's isNewCentralGateway() already
- * tells New Central and Classic gateways apart per-call), so it saves under
- * the same gatewayBaseUrl key central does.
- */
-export const CONNECT_ENDPOINT_KEY: Record<SystemTypeKey, string> = {
-  central: 'gatewayBaseUrl',
-  mist: 'apiHost',
-  classic: 'gatewayBaseUrl',
-  greenlake: 'workspaceId',
-  aos8: 'master',
-  local: 'host',
-  clearpass: 'host',
-  uxi: 'baseUrl',
-  sse: 'baseUrl',
-  opsramp: 'tenantId',
-  edgeconnect: 'baseUrl',
-};
+export const CONNECT_ENDPOINT_KEY = Object.fromEntries(
+  CONNECTOR_CATALOG.map(({ id, legacy }) => [id, legacy.endpointKey]),
+) as Record<SystemTypeKey, string>;
 
 // ---------------------------------------------------------------------------
 // UXI sensor fleet (NtUxi) — demo data for the dedicated UXI screen.

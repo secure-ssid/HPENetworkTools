@@ -5,6 +5,7 @@
  * logic.ts: terminal, path diagram, and Configure preview behaviour.
  */
 export * from './types';
+export * from './connectors';
 export * from './fixtures';
 export * from './central';
 export * from './logic';

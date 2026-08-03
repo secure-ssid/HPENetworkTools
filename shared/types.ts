@@ -1055,6 +1055,16 @@ export interface ClientRow extends Omit<Client, 'site'> {
   siteName: string;
   planeTone: Tone;
   healthTone: Tone;
+  /** Every per-product row retained when this is a grouped unified client. */
+  sources?: ClientObservation[];
+}
+
+/** One product's observation of a client represented in a unified row. */
+export interface ClientObservation {
+  row: Omit<ClientRow, 'sources'>;
+  sourcePlane: PlaneKey;
+  observedAt: string | null;
+  stale: boolean;
 }
 
 /** Uplink wiring: AP name → access switch name (NT_AP_UPLINK). */
