@@ -19,7 +19,8 @@ import {
   countOf,
 } from '@hpe/shared';
 
-export type SystemCredentialPayload = Record<string, string | string[]>;
+/** Request bodies are intentionally broad at the boundary while callers submit ConnectorConfig. */
+export type SystemCredentialPayload = Record<string, unknown>;
 
 export interface SystemsData extends ScreenEnvelope {
   systems: SystemRow[];
@@ -150,6 +151,8 @@ export interface SystemMutationResult {
   message: string;
   ms?: number;
   source?: 'request' | 'stored';
+  authenticated?: boolean;
+  dataset?: string;
   /** How the first poll with the new credentials went, when one was run. */
   /** Outcome of the first poll the save ran. 'pending' means the save did
    *  not wait long enough to find out — not that nothing is happening. */
@@ -235,8 +238,17 @@ export async function testSystem(
         message: string;
         ms?: number;
         source?: 'request' | 'stored';
+        authenticated?: boolean;
+        dataset?: string;
       };
-      return { ok: true, message: body.message, ms: body.ms, source: body.source };
+      return {
+        ok: true,
+        message: body.message,
+        ms: body.ms,
+        source: body.source,
+        authenticated: body.authenticated,
+        dataset: body.dataset,
+      };
     }
     return { ok: false, message: await serverMessage(r, `test failed — HTTP ${r.status}`) };
   } catch (err) {

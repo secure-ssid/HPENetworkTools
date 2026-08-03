@@ -14,8 +14,8 @@ import {
   testSystem,
 } from '../api/client';
 import type { LivePlaneState, SystemsData, SystemsState } from '../api/client';
-import { hhmmLocal, PERMISSIONS, SYNC_HISTORY, SYSTEMS } from '@hpe/shared';
-import type { SystemRow } from '@hpe/shared';
+import { CONNECTOR_CATALOG, hhmmLocal, PERMISSIONS, SYNC_HISTORY, SYSTEMS } from '@hpe/shared';
+import type { ConnectorConfig, SystemRow } from '@hpe/shared';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -540,7 +540,86 @@ describe('Systems drawer actions', () => {
 });
 
 describe('Systems connect drawer', () => {
-  it('saves each credential under the key the chosen adapter reads', async () => {
+  it('renders every configurable product from the catalog without a standalone AOS-10 connector', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+
+    const selector = screen.getByLabelText('System type');
+    expect(screen.queryByRole('option', { name: /AOS-10/i })).toBeNull();
+
+    for (const entry of CONNECTOR_CATALOG) {
+      fireEvent.change(selector, { target: { value: entry.id } });
+      await waitFor(() => expect(screen.getByLabelText(entry.endpoint.label)).toBeTruthy());
+      for (const field of entry.auth[0]!.fields) {
+        expect(screen.getByLabelText(field.label)).toBeTruthy();
+      }
+    }
+
+    fireEvent.change(selector, { target: { value: 'edgeconnect' } });
+    await waitFor(() => expect(screen.getByLabelText('Authentication')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('Authentication'), {
+      target: { value: 'username_password' },
+    });
+    expect(screen.getByLabelText('Username')).toBeTruthy();
+    expect(screen.getByLabelText('Password')).toBeTruthy();
+    expect(screen.queryByLabelText('API Key')).toBeNull();
+  });
+
+  it('tests a typed connector draft and clears a completed probe when policy changes', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockTestSystem.mockResolvedValue({
+      ok: true,
+      authenticated: true,
+      dataset: 'devices',
+      message: 'authenticated devices read',
+    });
+
+    renderSystems();
+
+    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+    fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'opsramp' } });
+    await waitFor(() => expect(screen.getByLabelText('Tenant ID')).toBeTruthy());
+    expect(screen.getByDisplayValue('https://app.opsramp.net')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Tenant ID'), { target: { value: 'tenant-a' } });
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'client-a' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'secret-a' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
+    expect(mockTestSystem.mock.calls[0]![0]).toBe('opsramp');
+    expect(mockTestSystem.mock.calls[0]![1]).toMatchObject({
+      id: 'opsramp',
+      enabled: true,
+      endpoint: 'https://app.opsramp.net',
+      auth: {
+        kind: 'oauth_client_credentials',
+        tenantId: 'tenant-a',
+        clientId: 'client-a',
+        clientSecret: 'secret-a',
+      },
+      verifyTls: true,
+    } satisfies Partial<ConnectorConfig>);
+    expect(screen.getByText(/authenticated probe: devices/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Verify TLS certificate'));
+    expect(screen.getByText('Re-test required')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save and index' })).toHaveProperty('disabled', true);
+  });
+
+  it('saves the exact typed ClearPass connector that passed its authenticated probe', async () => {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
     mockGetSystemsState.mockResolvedValue(registry());
     mockGetPortalSettings.mockResolvedValue(null);
@@ -554,27 +633,24 @@ describe('Systems connect drawer', () => {
     await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
 
-    // ClearPass: publisher URL under 'host', plus the API token the adapter's
-    // isComplete() requires — neither was ever sent before.
     fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'clearpass' } });
     await waitFor(() => expect(screen.getByText('ClearPass publisher URL')).toBeTruthy());
     fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
       target: { value: 'cppm-01.meridian.health' },
     });
-    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tok-123' } });
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'client-123' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'secret-123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
 
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
     const [plane, creds] = mockTestSystem.mock.calls[0]!;
     expect(plane).toBe('clearpass');
-    expect(creds.host).toBe('cppm-01.meridian.health');
-    expect(creds.token).toBe('tok-123');
-    expect(creds.publisher).toBeUndefined();
-    // The optional CoA enforcement profile is rendered but left blank here,
-    // and a blank optional field is NOT sent — the adapter then uses the
-    // publisher default rather than a wrong profile name that fails the CoA.
-    expect(screen.getByLabelText('CoA enforcement profile — optional')).toBeTruthy();
-    expect(creds.coaEnforcementProfile).toBeUndefined();
+    expect(creds).toMatchObject({
+      id: 'clearpass',
+      endpoint: 'cppm-01.meridian.health',
+      auth: { kind: 'oauth_client_credentials', clientId: 'client-123', clientSecret: 'secret-123' },
+    });
+    expect(screen.getByLabelText('CoA enforcement profile')).toBeTruthy();
 
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Save and index' }).hasAttribute('disabled')).toBe(
@@ -605,7 +681,8 @@ describe('Systems connect drawer', () => {
     fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
       target: { value: 'cppm-01.meridian.health' },
     });
-    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tok-123' } });
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'client-123' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'secret-123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Save and index' }).hasAttribute('disabled')).toBe(
@@ -650,7 +727,7 @@ describe('Systems connect drawer', () => {
     expect(screen.getByText('credentials saved and the plane indexed')).toBeTruthy();
   });
 
-  it('sends the optional CoA enforcement profile under the key the adapter honours', async () => {
+  it('sends the optional CoA enforcement profile inside the selected auth shape', async () => {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
     mockGetSystemsState.mockResolvedValue(registry());
     mockGetPortalSettings.mockResolvedValue(null);
@@ -668,17 +745,19 @@ describe('Systems connect drawer', () => {
     fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
       target: { value: 'cppm-01.meridian.health' },
     });
-    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tok-123' } });
-    fireEvent.change(screen.getByLabelText('CoA enforcement profile — optional'), {
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'client-123' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'secret-123' } });
+    fireEvent.change(screen.getByLabelText('CoA enforcement profile'), {
       target: { value: 'Quarantine-Profile' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
 
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
     const [, creds] = mockTestSystem.mock.calls[0]!;
-    expect(creds.coaEnforcementProfile).toBe('Quarantine-Profile');
-    expect(creds.host).toBe('cppm-01.meridian.health');
-    expect(creds.token).toBe('tok-123');
+    expect(creds).toMatchObject({
+      endpoint: 'cppm-01.meridian.health',
+      auth: { coaEnforcementProfile: 'Quarantine-Profile' },
+    });
   });
 
   it('does not authorize credentials edited while their test is in flight', async () => {
@@ -703,11 +782,12 @@ describe('Systems connect drawer', () => {
     fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
       target: { value: 'cppm-01.meridian.health' },
     });
-    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tested-token' } });
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'client-123' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'tested-secret' } });
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
 
-    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'untested-token' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'untested-secret' } });
     resolveTest({ ok: true, message: 'authenticated' });
 
     await waitFor(() => expect(screen.getByText('Re-test required')).toBeTruthy());
@@ -753,8 +833,8 @@ describe('Systems connect drawer', () => {
   });
 });
 
-describe('Systems connect drawer — SSE (token-only plane)', () => {
-  it('hides the shared Client ID/secret pair and saves baseUrl + token under the keys the adapter reads', async () => {
+describe('Systems connect drawer — token authentication', () => {
+  it('renders only SSE token authentication and submits its typed config', async () => {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
     mockGetSystemsState.mockResolvedValue(registry());
     mockGetPortalSettings.mockResolvedValue(null);
@@ -769,11 +849,10 @@ describe('Systems connect drawer — SSE (token-only plane)', () => {
     fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'sse' } });
 
     await waitFor(() => expect(screen.getByLabelText('Admin API token')).toBeTruthy());
-    // Token-only plane: the generic Client ID / Client secret block never renders.
     expect(screen.queryByLabelText('Client ID')).toBeNull();
     expect(screen.queryByLabelText('Client secret')).toBeNull();
 
-    fireEvent.change(screen.getByLabelText('SSE Admin API base — optional'), {
+    fireEvent.change(screen.getByLabelText('SSE Admin API base'), {
       target: { value: 'admin-api.axissecurity.com' },
     });
     fireEvent.change(screen.getByLabelText('Admin API token'), { target: { value: 'sse-tok-123' } });
@@ -782,13 +861,12 @@ describe('Systems connect drawer — SSE (token-only plane)', () => {
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
     const [plane, creds] = mockTestSystem.mock.calls[0]!;
     expect(plane).toBe('sse');
-    expect(creds.baseUrl).toBe('admin-api.axissecurity.com');
-    expect(creds.token).toBe('sse-tok-123');
-    expect(creds.clientId).toBeUndefined();
-    expect(creds.clientSecret).toBeUndefined();
+    expect(creds).toMatchObject({
+      id: 'sse', endpoint: 'admin-api.axissecurity.com', auth: { kind: 'token', token: 'sse-tok-123' },
+    });
   });
 
-  it('hides the shared Client ID/secret pair for Mist and saves apiHost + orgId + token', async () => {
+  it('renders Mist org token authentication and submits its typed config', async () => {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
     mockGetSystemsState.mockResolvedValue(registry());
     mockGetPortalSettings.mockResolvedValue(null);
@@ -802,13 +880,11 @@ describe('Systems connect drawer — SSE (token-only plane)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
     fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'mist' } });
 
-    // Mist auth is a static API token (Authorization: Token) — the generic
-    // Client ID/secret pair the adapter never reads must not render.
     await waitFor(() => expect(screen.getByLabelText('Org ID')).toBeTruthy());
     expect(screen.queryByLabelText('Client ID')).toBeNull();
     expect(screen.queryByLabelText('Client secret')).toBeNull();
 
-    fireEvent.change(screen.getByLabelText('Mist cloud region'), { target: { value: 'api.mist.com' } });
+    fireEvent.change(screen.getByLabelText('Mist cloud region'), { target: { value: 'https://api.mist.com' } });
     fireEvent.change(screen.getByLabelText('Org ID'), { target: { value: 'org-uuid-1' } });
     fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'mist-tok-1' } });
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
@@ -816,11 +892,9 @@ describe('Systems connect drawer — SSE (token-only plane)', () => {
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
     const [plane, creds] = mockTestSystem.mock.calls[0]!;
     expect(plane).toBe('mist');
-    expect(creds.apiHost).toBe('api.mist.com');
-    expect(creds.orgId).toBe('org-uuid-1');
-    expect(creds.token).toBe('mist-tok-1');
-    expect(creds.clientId).toBeUndefined();
-    expect(creds.clientSecret).toBeUndefined();
+    expect(creds).toMatchObject({
+      id: 'mist', endpoint: 'https://api.mist.com', auth: { kind: 'token', orgId: 'org-uuid-1', token: 'mist-tok-1' },
+    });
   });
 
   it('re-keys against the stored custom base URL and saves the tested snapshot', async () => {
@@ -855,7 +929,7 @@ describe('Systems connect drawer — SSE (token-only plane)', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
     fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
 
-    expect(screen.getByLabelText('SSE Admin API base — optional')).toHaveProperty(
+    expect(screen.getByLabelText('SSE Admin API base')).toHaveProperty(
       'value',
       'https://sse.custom.example/api',
     );
@@ -863,12 +937,11 @@ describe('Systems connect drawer — SSE (token-only plane)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
 
     await waitFor(() =>
-      expect(mockTestSystem).toHaveBeenCalledWith('sse', {
-        displayName: 'HPE Aruba Networking SSE',
-        baseUrl: 'https://sse.custom.example/api',
-        token: 'new-token',
-        scopes: ['read:inventory', 'read:clients-auth', 'read:config-licences'],
-      }),
+      expect(mockTestSystem).toHaveBeenCalledWith('sse', expect.objectContaining({
+        id: 'sse',
+        endpoint: 'https://sse.custom.example/api',
+        auth: { kind: 'token', token: 'new-token' },
+      })),
     );
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Save and index' }).hasAttribute('disabled')).toBe(
@@ -918,9 +991,7 @@ describe('Systems connect drawer — credential hygiene', () => {
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
     const [plane, creds] = mockTestSystem.mock.calls[0]!;
     expect(plane).toBe('sse');
-    expect(creds.token).toBe('sse-tok-999');
-    expect(creds.clientId).toBeUndefined();
-    expect(creds.clientSecret).toBeUndefined();
+    expect(creds).toMatchObject({ auth: { kind: 'token', token: 'sse-tok-999' } });
   });
 
   it('clears the prior plane endpoint, extra fields and scope selection on a type switch', async () => {
@@ -936,43 +1007,35 @@ describe('Systems connect drawer — credential hygiene', () => {
     await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
 
-    // Central: set an endpoint, uncheck a default-on read scope, and check the
-    // write scope — all of this belongs to Central and must not survive.
     fireEvent.change(screen.getByLabelText('Central region / base URL'), {
       target: { value: 'https://us4.api.central.arubanetworks.com' },
     });
-    fireEvent.click(
-      screen.getByLabelText('Read configuration and licences'),
-    );
-    fireEvent.click(
-      screen.getByLabelText('Brokered write — config push, requires a ticket reference'),
-    );
-    expect(
-      screen.getByLabelText('Brokered write — config push, requires a ticket reference'),
-    ).toHaveProperty('checked', true);
+    fireEvent.click(screen.getByLabelText('Configuration and licences'));
+    fireEvent.click(screen.getByLabelText('Brokered configuration'));
+    expect(screen.getByLabelText('Brokered configuration')).toHaveProperty('checked', true);
 
     fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'clearpass' } });
     await waitFor(() => expect(screen.getByText('ClearPass publisher URL')).toBeTruthy());
 
-    // Endpoint is the clearpass variant, blank — not Central's leftover value.
-    expect(screen.getByLabelText('ClearPass publisher URL')).toHaveProperty('value', '');
-    // ClearPass has no write path — the write checkbox is gone, replaced by an
-    // honest note instead of a grant nothing can exercise.
-    expect(screen.queryByLabelText(/write —/)).toBeNull();
-    expect(screen.getByText('No write path for this plane — read scopes only.')).toBeTruthy();
+    expect(screen.getByLabelText('ClearPass publisher URL')).toHaveProperty('value', 'https://cppm.example.com');
+    expect(screen.getByLabelText('Reviewed direct write')).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText('ClearPass publisher URL'), {
       target: { value: 'cppm-01.meridian.health' },
     });
-    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tok-123' } });
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'client-123' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'secret-123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
 
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
     const [, creds] = mockTestSystem.mock.calls[0]!;
-    expect(creds.scopes).toEqual(['read:inventory', 'read:clients-auth', 'read:config-licences']);
+    expect(creds).toMatchObject({
+      id: 'clearpass',
+      scopes: ['read:inventory', 'read:clients-auth', 'read:config-licences'],
+    });
   });
 
-  it('offers Mist its real write scope — direct SSID writes, no ticket', async () => {
+  it('offers Mist its declared direct-write scope', async () => {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
     mockGetSystemsState.mockResolvedValue(registry());
     mockGetPortalSettings.mockResolvedValue(null);
@@ -985,12 +1048,10 @@ describe('Systems connect drawer — credential hygiene', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
     fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'mist' } });
 
-    // Mist's write path is reviewed direct SSID writes — the label says exactly
-    // that, never the brokered ticketed phrasing.
     await waitFor(() =>
-      expect(screen.getByLabelText('Direct write — reviewed SSID changes, no ticket')).toBeTruthy(),
+      expect(screen.getByLabelText('Reviewed direct write')).toBeTruthy(),
     );
-    expect(screen.queryByLabelText(/Brokered write/)).toBeNull();
+    expect(screen.queryByLabelText('Brokered configuration')).toBeNull();
   });
 
   it('re-keys a writable SSE plane with its write scope prefilled and preserved', async () => {
@@ -1030,29 +1091,17 @@ describe('Systems connect drawer — credential hygiene', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
     fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
 
-    // Token rotation must not silently downgrade directWrite: the write
-    // checkbox comes in already checked, reflecting the plane's real grant.
-    expect(
-      screen.getByLabelText(
-        'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
-      ),
-    ).toHaveProperty('checked', true);
+    expect(screen.getByLabelText('Reviewed direct write')).toHaveProperty('checked', true);
 
     fireEvent.change(screen.getByLabelText('Admin API token'), { target: { value: 'rotated-token' } });
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
 
     await waitFor(() =>
-      expect(mockTestSystem).toHaveBeenCalledWith('sse', {
-        displayName: 'HPE Aruba Networking SSE',
-        baseUrl: 'https://sse.custom.example/api',
-        token: 'rotated-token',
-        scopes: [
-          'read:inventory',
-          'read:clients-auth',
-          'read:config-licences',
-          'write:brokered',
-        ],
-      }),
+      expect(mockTestSystem).toHaveBeenCalledWith('sse', expect.objectContaining({
+        endpoint: 'https://sse.custom.example/api',
+        auth: { kind: 'token', token: 'rotated-token' },
+        scopes: ['read:config-licences', 'write:direct'],
+      })),
     );
   });
 
@@ -1093,12 +1142,8 @@ describe('Systems connect drawer — credential hygiene', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
     fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
 
-    const writeCheckbox = screen.getByLabelText(
-      'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
-    );
+    const writeCheckbox = screen.getByLabelText('Reviewed direct write');
     expect(writeCheckbox).toHaveProperty('checked', true);
-    // An explicit operator toggle — not the rotation itself — is what may
-    // downgrade directWrite.
     fireEvent.click(writeCheckbox);
     expect(writeCheckbox).toHaveProperty('checked', false);
 
@@ -1106,12 +1151,11 @@ describe('Systems connect drawer — credential hygiene', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
 
     await waitFor(() =>
-      expect(mockTestSystem).toHaveBeenCalledWith('sse', {
-        displayName: 'HPE Aruba Networking SSE',
-        baseUrl: 'https://sse.custom.example/api',
-        token: 'rotated-token',
-        scopes: ['read:inventory', 'read:clients-auth', 'read:config-licences'],
-      }),
+      expect(mockTestSystem).toHaveBeenCalledWith('sse', expect.objectContaining({
+        endpoint: 'https://sse.custom.example/api',
+        auth: { kind: 'token', token: 'rotated-token' },
+        scopes: ['read:config-licences'],
+      })),
     );
   });
 
@@ -1183,12 +1227,7 @@ describe('Systems connect drawer — credential hygiene', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
     fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
 
-    for (const label of [
-      'Read inventory, sites and topology',
-      'Read clients, sessions and auth events',
-      'Read configuration and licences',
-      'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
-    ]) {
+    for (const label of ['Configuration and licences', 'Reviewed direct write']) {
       const checkbox = screen.getByLabelText(label);
       expect(checkbox).toHaveProperty('checked', true);
       fireEvent.click(checkbox);
@@ -1200,10 +1239,10 @@ describe('Systems connect drawer — credential hygiene', () => {
 
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalledTimes(1));
     const testedPayload = mockTestSystem.mock.calls[0]![1];
-    expect(testedPayload).toEqual({
-      displayName: 'HPE Aruba Networking SSE',
-      baseUrl: 'https://sse.custom.example/api',
-      token: 'rotated-token',
+    expect(testedPayload).toMatchObject({
+      id: 'sse',
+      endpoint: 'https://sse.custom.example/api',
+      auth: { kind: 'token', token: 'rotated-token' },
       scopes: [],
     });
 
@@ -1220,12 +1259,7 @@ describe('Systems connect drawer — credential hygiene', () => {
     fireEvent.click(screen.getByText('HPE Aruba Networking SSE'));
     fireEvent.click(await screen.findByRole('tab', { name: 'Configuration' }));
     fireEvent.click(screen.getByRole('button', { name: 'Re-key credentials' }));
-    for (const label of [
-      'Read inventory, sites and topology',
-      'Read clients, sessions and auth events',
-      'Read configuration and licences',
-      'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
-    ]) {
+    for (const label of ['Configuration and licences', 'Reviewed direct write']) {
       expect(screen.getByLabelText(label)).toHaveProperty('checked', false);
     }
   });
@@ -1245,26 +1279,15 @@ describe('Systems connect drawer — credential hygiene', () => {
     fireEvent.change(screen.getByLabelText('System type'), { target: { value: 'sse' } });
     await waitFor(() => expect(screen.getByLabelText('Admin API token')).toBeTruthy());
 
-    expect(
-      screen.getByLabelText(
-        'Direct write — reviewed SSE object mutations followed by tenant-wide Commit',
-      ),
-    ).toHaveProperty('checked', false);
-    expect(
-      screen.getByText(
-        'Each reviewed mutation is sent directly to SSE, then the portal runs tenant-wide Commit.',
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.queryByLabelText('Brokered write — config push, requires a ticket reference'),
-    ).toBeNull();
+    expect(screen.getByLabelText('Reviewed direct write')).toHaveProperty('checked', false);
+    expect(screen.queryByLabelText('Brokered configuration')).toBeNull();
 
     fireEvent.change(screen.getByLabelText('Admin API token'), { target: { value: 'new-tok' } });
     fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
 
     await waitFor(() => expect(mockTestSystem).toHaveBeenCalled());
     const [, creds] = mockTestSystem.mock.calls[0]!;
-    expect(creds.scopes).toEqual(['read:inventory', 'read:clients-auth', 'read:config-licences']);
+    expect(creds).toMatchObject({ id: 'sse', scopes: ['read:config-licences'] });
   });
 });
 

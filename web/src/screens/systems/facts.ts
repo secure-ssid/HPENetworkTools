@@ -10,11 +10,12 @@
 
 import {
   type LivePlaneState,
-  type SystemCredentialPayload,
 } from '../../api/client';
 import {
+  connectorCatalogEntry,
+  type ConnectorConfig,
+  type ConnectorId,
   CLOCK_SKEW_TOLERANCE_MS,
-  CONNECT_ENDPOINT_KEY,
   hhmmLocal as hhmm,
   type Fact,
   type ScreenSection,
@@ -52,118 +53,41 @@ export const TAB_OPTIONS: Array<{ value: DetailTab; label: string }> = [
   { value: 'config', label: 'Configuration' },
 ];
 
-export interface ScopeFlags {
-  inventory: boolean;
-  clientsAuth: boolean;
-  configLicences: boolean;
-  write: boolean;
-}
-
-export const DEFAULT_SCOPES: ScopeFlags = {
-  inventory: true,
-  clientsAuth: true,
-  configLicences: true,
-  write: false,
-};
-
 export interface CredentialSnapshot {
-  plane: SystemTypeKey;
-  credentials: SystemCredentialPayload;
-}
-
-export function sameCredentialValue(
-  left: SystemCredentialPayload[string],
-  right: SystemCredentialPayload[string],
-): boolean {
-  if (typeof left === 'string' || typeof right === 'string') return left === right;
-  return left.length === right.length && left.every((value, index) => value === right[index]);
+  connector: ConnectorConfig;
 }
 
 export function sameCredentialSnapshot(
   left: CredentialSnapshot | null,
   right: CredentialSnapshot | null,
 ): boolean {
-  if (!left || !right || left.plane !== right.plane) return false;
-  const leftKeys = Object.keys(left.credentials).sort();
-  const rightKeys = Object.keys(right.credentials).sort();
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every(
-      (key, index) =>
-        key === rightKeys[index] &&
-        sameCredentialValue(left.credentials[key]!, right.credentials[key]!),
-    )
-  );
+  return Boolean(left && right && JSON.stringify(left.connector) === JSON.stringify(right.connector));
 }
 
-export function storedEndpoint(row: SystemRow, plane: SystemTypeKey): string {
-  const prefix = `${CONNECT_ENDPOINT_KEY[plane]}:`;
-  const line = row.configText.split('\n').find((candidate) => candidate.startsWith(prefix));
-  const value = line?.slice(prefix.length).trim() ?? '';
+export function storedEndpoint(row: SystemRow, id: ConnectorId): string {
+  const entry = connectorCatalogEntry(id);
+  const prefixes = [`endpoint:`, `${entry.legacy.endpointKey}:`];
+  const line = row.configText.split('\n').find((candidate) =>
+    prefixes.some((prefix) => candidate.startsWith(prefix)),
+  );
+  const prefix = prefixes.find((candidate) => line?.startsWith(candidate));
+  const value = prefix ? line?.slice(prefix.length).trim() ?? '' : '';
   return value.includes('••') ? '' : value;
 }
 
-/** credPayload()'s own scope tokens, keyed by the ScopeFlags field they came
- *  from — the one vocabulary storedScopes() reads back and selectedScopes()
- *  writes, so a re-key can never drift from what a save actually recorded. */
-export const SCOPE_TOKEN: Record<keyof ScopeFlags, string> = {
-  inventory: 'read:inventory',
-  clientsAuth: 'read:clients-auth',
-  configLicences: 'read:config-licences',
-  write: 'write:brokered',
-};
-
-export const BROKERED_WRITE_SCOPE_LABEL =
-  'Brokered write — config push, requires a ticket reference';
-
-export const SSE_WRITE_SCOPE_LABEL =
-  'Direct write — reviewed SSE object mutations followed by tenant-wide Commit';
-
-export const MIST_WRITE_SCOPE_LABEL =
-  'Direct write — reviewed SSID changes, no ticket';
-
-/**
- * The write scope the connect drawer may offer per plane, or null when the
- * plane has NO write path at all — offering a checkbox that stores a grant no
- * adapter can exercise is how operators end up believing GreenLake or
- * ClearPass are writable when nothing can push to them.
- */
-export function writeScopeLabelFor(plane: SystemTypeKey): string | null {
-  if (plane === 'central') return BROKERED_WRITE_SCOPE_LABEL;
-  if (plane === 'mist') return MIST_WRITE_SCOPE_LABEL;
-  if (plane === 'sse') return SSE_WRITE_SCOPE_LABEL;
-  return null;
-}
-
-/**
- * The scopes a linked plane actually has, read back for re-key so rotating a
- * token prefills — and, absent an explicit operator toggle, PRESERVES —
- * what was already granted rather than resetting to the connect-drawer's
- * safe-for-a-new-connection defaults (write off). The granular `scopes:`
- * line in configText (unmasked — it is not secret-shaped) carries the read
- * flags; the write bit additionally trusts the registry's own
- * `capabilities.directWrite` when the plane reports one, because SSE's write
- * grant lives ENTIRELY there (PLANE_WRITE_MODE says 'read only' for SSE
- * either way, so the coarse `scope:` line can never carry it) — that is the
- * one signal a rotated token must never silently contradict.
- */
-export function storedScopes(row: SystemRow, live: LivePlaneState | null): ScopeFlags {
+/** Read the catalog-owned scope values back without ever making a masked value editable. */
+export function storedScopes(row: SystemRow, id: ConnectorId, live: LivePlaneState | null): string[] {
+  const entry = connectorCatalogEntry(id);
   const line = row.configText.split('\n').find((candidate) => candidate.startsWith('scopes:'));
   const tokens = (line?.slice('scopes:'.length).trim() ?? '').split(',').map((t) => t.trim());
-  // An absent line is a legacy/unconfigured record and gets safe defaults.
-  // A present-but-empty line is different: it is the persisted representation
-  // of scopes: [] and must reopen with every checkbox still revoked.
-  const base: ScopeFlags = line !== undefined
-    ? {
-        inventory: tokens.includes(SCOPE_TOKEN.inventory),
-        clientsAuth: tokens.includes(SCOPE_TOKEN.clientsAuth),
-        configLicences: tokens.includes(SCOPE_TOKEN.configLicences),
-        write: tokens.includes(SCOPE_TOKEN.write),
-      }
-    : DEFAULT_SCOPES;
-  return live?.capabilities?.directWrite === undefined
-    ? base
-    : { ...base, write: live.capabilities.directWrite === true };
+  const allowed = new Set(entry.scopeOptions.map((scope) => scope.value));
+  const stored = line === undefined
+    ? entry.scopeOptions.filter((scope) => scope.value.startsWith('read:')).map((scope) => scope.value)
+    : tokens.filter((token) => allowed.has(token));
+  if (live?.capabilities?.directWrite === true && allowed.has('write:direct')) {
+    return [...new Set([...stored, 'write:direct'])];
+  }
+  return stored;
 }
 
 // -- formatting helpers -------------------------------------------------------

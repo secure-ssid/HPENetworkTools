@@ -64,20 +64,24 @@ import {
   testSystem,
 } from '../api/client';
 import type {
-  SystemCredentialPayload,
   SystemsData,
   SystemsState,
 } from '../api/client';
 import {
-  CONNECT_ENDPOINTS,
-  CONNECT_ENDPOINT_KEY,
-  CONNECT_FIELDS,
-  CONNECT_HIDE_CLIENT_CREDENTIALS,
-  CONNECT_TYPE_OPTIONS,
+  CONNECTOR_CATALOG,
+  connectorCatalogEntry,
   hhmmLocal as hhmm,
   countOf,
 } from '@hpe/shared';
-import type { SystemRow, SystemTypeKey } from '@hpe/shared';
+import type {
+  ConnectorAuth,
+  ConnectorAuthField,
+  ConnectorAuthKind,
+  ConnectorConfig,
+  ConnectorId,
+  SystemRow,
+  SystemTypeKey,
+} from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { useSettings } from '../app/SettingsContext';
@@ -98,17 +102,14 @@ import {
 import { PortalSection } from './systems/PortalSection';
 import {
   CredentialSnapshot,
-  DEFAULT_SCOPES,
   DetailTab,
   HEALTH_TONE,
   PLANE_ID_BY_NAME,
   PlaneView,
-  ScopeFlags,
   TAB_OPTIONS,
   mergedFacts,
   retryNote,
   sameCredentialSnapshot,
-  writeScopeLabelFor,
   staleTitle,
   storedEndpoint,
   storedScopes,
@@ -155,6 +156,41 @@ import '../app/app.css';
 
 
 
+const CONNECTOR_IDS = new Set<ConnectorId>(CONNECTOR_CATALOG.map((entry) => entry.id));
+
+function isConnectorId(value: string): value is ConnectorId {
+  return CONNECTOR_IDS.has(value as ConnectorId);
+}
+
+function endpointOptionValue(value: string): string {
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+function draftAuth(id: ConnectorId, kind = connectorCatalogEntry(id).auth[0]!.kind): ConnectorAuth {
+  return { kind } as ConnectorAuth;
+}
+
+function connectorDraft(id: ConnectorId, endpoint?: string, scopes?: string[]): ConnectorConfig {
+  const entry = connectorCatalogEntry(id);
+  return {
+    id,
+    enabled: true,
+    endpoint: endpoint || entry.endpoint.default,
+    auth: draftAuth(id),
+    verifyTls: true,
+    pollIntervalSec: entry.defaultPollIntervalSec,
+    callBudget: entry.defaultCallBudget,
+    datasets: [...entry.supportedDatasets],
+    scopes: scopes ?? entry.scopeOptions
+      .filter((scope) => scope.value.startsWith('read:'))
+      .map((scope) => scope.value),
+  } as ConnectorConfig;
+}
+
+function readableCapability(value: string): string {
+  return value.replace(/^direct_/, '').replace(/^brokered_/, '').replaceAll('_', ' ');
+}
+
 export default function Systems() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -169,20 +205,17 @@ export default function Systems() {
   const [showDormant, setShowDormant] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
-  const [newType, setNewType] = useState<SystemTypeKey>('central');
-  const [displayName, setDisplayName] = useState('');
-  const [endpoint, setEndpoint] = useState('');
+  const [draft, setDraft] = useState<ConnectorConfig>(() => connectorDraft('central'));
   /** True when the user has selected "Custom URL…" in a region-picker dropdown. */
   const [endpointCustomMode, setEndpointCustomMode] = useState(false);
-  const [clientId, setClientId] = useState('');
-  const [clientSecret, setClientSecret] = useState('');
-  // The per-plane credential fields CONNECT_FIELDS declares, keyed by the
-  // settings key the adapter's isComplete() actually reads.
-  const [extraCreds, setExtraCreds] = useState<Record<string, string>>({});
-  const [scopes, setScopes] = useState<ScopeFlags>(DEFAULT_SCOPES);
   const [testing, setTesting] = useState(false);
   const [testedOk, setTestedOk] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    message: string;
+    authenticated?: boolean;
+    dataset?: string;
+  } | null>(null);
   const [syncing, setSyncing] = useState(false);
   const credentialVersionRef = useRef(0);
   const currentCredentialSnapshotRef = useRef<CredentialSnapshot | null>(null);
@@ -191,47 +224,8 @@ export default function Systems() {
   // so a green-then-edited drawer never looks saved when it cannot be.
   const [retestNeeded, setRetestNeeded] = useState(false);
 
-  const selectedScopes = (): string[] => {
-    const out: string[] = [];
-    if (scopes.inventory) out.push('read:inventory');
-    if (scopes.clientsAuth) out.push('read:clients-auth');
-    if (scopes.configLicences) out.push('read:config-licences');
-    // A write grant is only stored when the selected plane actually has a
-    // write path — a tick left over from another type must not ride along.
-    if (scopes.write && writeScopeLabelFor(newType) !== null) out.push('write:brokered');
-    return out;
-  };
-
-  /* Saved under the exact keys each adapter's isComplete() reads (shared
-   * CONNECT_ENDPOINT_KEY / CONNECT_FIELDS) — a record written under any other
-   * key links the plane to a stub that never syncs. */
-  const credPayload = (): SystemCredentialPayload => {
-    const out: SystemCredentialPayload = {};
-    if (displayName.trim()) out.displayName = displayName.trim();
-    if (endpoint.trim()) out[CONNECT_ENDPOINT_KEY[newType]] = endpoint.trim();
-    // Token-only planes (CONNECT_HIDE_CLIENT_CREDENTIALS, e.g. SSE) never
-    // render this pair, so it must never be serialized for them either — a
-    // stale clientId/clientSecret left over from an earlier type selection
-    // is invisible in the drawer but would otherwise still ride along in the
-    // saved/tested payload.
-    if (!CONNECT_HIDE_CLIENT_CREDENTIALS.includes(newType)) {
-      if (clientId.trim()) out.clientId = clientId.trim();
-      if (clientSecret.trim()) out.clientSecret = clientSecret.trim();
-    }
-    CONNECT_FIELDS[newType].forEach((f) => {
-      const v = (extraCreds[f.key] ?? '').trim();
-      if (v) out[f.key] = v;
-    });
-    // Unlike optional credential fields, the scope controls are an explicit
-    // complete selection. Always serialize their exact array, including [],
-    // so test/save binding can distinguish full revocation from omission.
-    out.scopes = selectedScopes();
-    return out;
-  };
-
   const credentialSnapshot = (): CredentialSnapshot => ({
-    plane: newType,
-    credentials: credPayload(),
+    connector: draft,
   });
   /* The latest-form snapshot an in-flight test connection compares its request
      against. Mirrored after every commit rather than assigned during render
@@ -241,7 +235,7 @@ export default function Systems() {
      hook would be conditional, which React forbids outright. */
   useEffect(() => {
     currentCredentialSnapshotRef.current = credentialSnapshot();
-  });
+  }, [draft]);
 
   const refresh = async () => {
     const [d, s] = await Promise.all([getSystems(), getSystemsState()]);
@@ -400,25 +394,21 @@ export default function Systems() {
   };
 
   const openConnect = (prefill?: {
-    type: SystemTypeKey;
-    name: string;
+    type: ConnectorId;
     endpoint?: string;
-    scopes?: ScopeFlags;
+    scopes?: string[];
   }) => {
     credentialVersionRef.current += 1;
     successfulTestRef.current = null;
-    setNewType(prefill?.type ?? 'central');
-    setDisplayName(prefill?.name ?? '');
-    setEndpoint(prefill?.endpoint ?? '');
-    setEndpointCustomMode(false);
-    setClientId('');
-    setClientSecret('');
-    setExtraCreds({});
-    // A new connection always starts write-off (safe default); a re-key
-    // prefills — and thereby preserves — the plane's existing scopes unless
-    // the caller passed none (storedScopes() falls back to DEFAULT_SCOPES
-    // itself when nothing was ever recorded).
-    setScopes(prefill?.scopes ?? DEFAULT_SCOPES);
+    const id = prefill?.type ?? 'central';
+    const entry = connectorCatalogEntry(id);
+    const endpoint = prefill?.endpoint || entry.endpoint.default;
+    setDraft(connectorDraft(id, endpoint, prefill?.scopes));
+    setEndpointCustomMode(Boolean(
+      entry.endpoint.options && !entry.endpoint.options.some(
+        (option) => endpointOptionValue(option.value) === endpoint,
+      ),
+    ));
     setTesting(false);
     setTestedOk(false);
     setTestResult(null);
@@ -481,7 +471,7 @@ export default function Systems() {
     setTestedOk(false);
     setRetestNeeded(false);
     successfulTestRef.current = null;
-    const res = await testSystem(request.plane, request.credentials);
+    const res = await testSystem(request.connector.id, request.connector as unknown as Record<string, unknown>);
     setTesting(false);
     if (
       requestVersion !== credentialVersionRef.current ||
@@ -512,7 +502,10 @@ export default function Systems() {
       });
       return;
     }
-    const res = await saveSystemCredentials(tested.plane, tested.credentials);
+    const res = await saveSystemCredentials(
+      tested.connector.id,
+      tested.connector as unknown as Record<string, unknown>,
+    );
     if (!res.ok) {
       toast(res.message, { tone: 'danger' });
       return;
@@ -531,14 +524,46 @@ export default function Systems() {
     await refresh();
   };
 
-  const endpointVariant = CONNECT_ENDPOINTS[newType];
+  const selectedEntry = connectorCatalogEntry(draft.id);
+  const selectedAuth = selectedEntry.auth.find((option) => option.kind === draft.auth.kind)
+    ?? selectedEntry.auth[0]!;
+  const authRecord = draft.auth as unknown as Record<string, string | number | undefined>;
+  const selectedEndpointOption = selectedEntry.endpoint.options?.find(
+    (option) => endpointOptionValue(option.value) === draft.endpoint,
+  );
+
+  const updateDraft = (next: ConnectorConfig) => {
+    setDraft(next);
+    invalidate();
+  };
+
+  const updateAuthField = (field: ConnectorAuthField, value: string) => {
+    const nextAuth = { ...draft.auth } as Record<string, string | number | undefined>;
+    if (field.type === 'number') {
+      if (!value.trim()) delete nextAuth[field.key];
+      else nextAuth[field.key] = Number(value);
+    } else if (!value && !field.required) {
+      delete nextAuth[field.key];
+    } else {
+      nextAuth[field.key] = value;
+    }
+    updateDraft({ ...draft, auth: nextAuth as unknown as ConnectorAuth } as ConnectorConfig);
+  };
+
+  const togglePolicyValue = (key: 'datasets' | 'scopes', value: string, checked: boolean) => {
+    const current = draft[key] as string[];
+    updateDraft({
+      ...draft,
+      [key]: checked ? [...current, value] : current.filter((item) => item !== value),
+    } as ConnectorConfig);
+  };
 
   return (
     <div className="nt-systems">
       <ScreenHeader
         overline="Govern / Connected systems"
         title="Connected systems"
-        subtitle="Every plane the portal speaks to, what it is allowed to do there, and when it last succeeded."
+        subtitle="Live connector state and configuration."
         actions={
           <>
             {/* Design rule 1: the screen says which source answered and how
@@ -1185,15 +1210,15 @@ export default function Systems() {
                       variant="secondary"
                       size="sm"
                       onClick={() =>
-                        curView.planeId
+                        curView.planeId && isConnectorId(curView.planeId)
                           ? openConnect({
                               type: curView.planeId,
-                              name: cur.name,
                               endpoint: storedEndpoint(cur, curView.planeId),
-                              scopes: storedScopes(cur, curView.live),
+                              scopes: storedScopes(cur, curView.planeId, curView.live),
                             })
                           : undefined
                       }
+                      disabled={!curView.planeId || !isConnectorId(curView.planeId)}
                     >
                       Re-key credentials
                     </Button>
@@ -1238,72 +1263,59 @@ export default function Systems() {
         open={addOpen}
         onOpenChange={setAddOpen}
         width="lg"
-        title="Connect a system"
-        description={
-          newType === 'sse'
-            ? 'The portal needs read scope to index SSE objects. Direct write applies reviewed SSE object mutations followed by tenant-wide Commit.'
-            : 'The portal needs read scope to index devices, and an optional brokered write scope for changes.'
-        }
+        title={`Configure ${selectedEntry.label}`}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <FormField label="System type" help="Pick the plane this credential belongs to.">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} aria-label="Declared capabilities">
+            <Badge tone={selectedEntry.tone}>{selectedEntry.contributesClients ? 'client source' : 'inventory source'}</Badge>
+            {selectedEntry.writeCapabilities.length > 0 ? selectedEntry.writeCapabilities.map((capability) => (
+              <Badge key={capability} tone="accent">write · {readableCapability(capability)}</Badge>
+            )) : <Badge tone="neutral">read only</Badge>}
+            {draft.id === 'central' ? <Badge tone="info">AOS-10 derived</Badge> : null}
+          </div>
+
+          {testResult ? (
+            <Alert
+              tone={testResult.ok ? 'success' : 'danger'}
+              title={testResult.ok
+                ? `Authenticated probe: ${testResult.dataset ?? 'completed'}`
+                : 'Connection failed'}
+            >
+              <span style={{ fontSize: 13 }}>{testResult.message}</span>
+            </Alert>
+          ) : null}
+
+          <FormField label="System type">
             <Select
-              options={CONNECT_TYPE_OPTIONS}
-              value={newType}
+              options={CONNECTOR_CATALOG.map((entry) => ({ value: entry.id, label: entry.label }))}
+              value={draft.id}
               onValueChange={(v) => {
-                setNewType(v as SystemTypeKey);
-                // Another plane's fields would be saved under keys this one
-                // never reads, and a hidden-for-this-plane clientId/secret
-                // (e.g. switching onto SSE) must not silently ride along
-                // invisibly either — every shared and extra credential field,
-                // the endpoint, and the scope selection all belong to the
-                // PRIOR plane and must not leak onto the new one. A re-key's
-                // preserved scopes are prior-plane state too, so a mid-drawer
-                // type change resets to the safe connect-drawer defaults
-                // rather than carrying them across.
-                setEndpoint('');
+                if (!isConnectorId(v)) return;
+                setDraft(connectorDraft(v));
                 setEndpointCustomMode(false);
-                setClientId('');
-                setClientSecret('');
-                setExtraCreds({});
-                setScopes(DEFAULT_SCOPES);
                 invalidate();
               }}
             />
           </FormField>
 
-          <FormField label="Display name">
-            <Input
-              placeholder="Central — Meridian production"
-              value={displayName}
-              onChange={(e) => {
-                setDisplayName(e.target.value);
-                invalidate();
-              }}
-            />
-          </FormField>
-
-          <FormField label={endpointVariant.label} help={endpointVariant.help}>
-            {endpointVariant.options ? (
-              /* Region picker — pre-fills the URL so the operator never has to
-                 look it up. "Custom URL…" reveals a text field below. */
+          <FormField label={selectedEntry.endpoint.label}>
+            {selectedEntry.endpoint.options ? (
               <Select
-                value={endpointCustomMode ? '__custom__' : (endpoint || '')}
+                value={endpointCustomMode ? '__custom__' : (selectedEndpointOption
+                  ? endpointOptionValue(selectedEndpointOption.value)
+                  : '__custom__')}
                 onChange={(e) => {
                   const v = e.target.value;
                   if (v === '__custom__') {
                     setEndpointCustomMode(true);
-                    setEndpoint('');
                   } else {
                     setEndpointCustomMode(false);
-                    setEndpoint(v);
+                    updateDraft({ ...draft, endpoint: v });
                   }
-                  invalidate();
                 }}
               >
-                <option value="">— select a region —</option>
-                {endpointVariant.options.map((o) => (
-                  <option key={o.value} value={o.value}>
+                {selectedEntry.endpoint.options.map((o) => (
+                  <option key={o.value} value={endpointOptionValue(o.value)}>
                     {o.label}
                   </option>
                 ))}
@@ -1312,178 +1324,117 @@ export default function Systems() {
             ) : (
               <Input
                 mono
-                placeholder={endpointVariant.hint}
-                value={endpoint}
+                placeholder={selectedEntry.endpoint.hint}
+                value={draft.endpoint}
                 onChange={(e) => {
-                  setEndpoint(e.target.value);
-                  invalidate();
+                  updateDraft({ ...draft, endpoint: e.target.value });
                 }}
               />
             )}
           </FormField>
 
-          {/* Custom URL input — only shown when "Custom URL…" is selected in
-              a region-picker dropdown (e.g. for private/unlisted clusters). */}
-          {endpointVariant.options && endpointCustomMode && (
-            <FormField
-              label="Custom gateway URL"
-              help="Hostname or full URL for a private or unlisted cluster."
-            >
+          {selectedEntry.endpoint.options && endpointCustomMode ? (
+            <FormField label="Custom endpoint">
               <Input
                 mono
-                placeholder={endpointVariant.hint}
-                value={endpoint}
+                placeholder={selectedEntry.endpoint.hint}
+                value={draft.endpoint}
                 onChange={(e) => {
-                  setEndpoint(e.target.value);
-                  invalidate();
+                  updateDraft({ ...draft, endpoint: e.target.value });
                 }}
               />
             </FormField>
-          )}
+          ) : null}
 
-          {/* Token-only planes (e.g. SSE) have no use for the shared Client
-              ID/secret pair — hidden so a save can never write a value under
-              a key that plane's isComplete() does not read. */}
-          {!CONNECT_HIDE_CLIENT_CREDENTIALS.includes(newType) && (
-            <div
-              style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
-            >
-              <FormField label="Client ID">
-                <Input
-                  mono
-                  placeholder="a41f…"
-                  value={clientId}
-                  onChange={(e) => {
-                    setClientId(e.target.value);
-                    invalidate();
-                  }}
-                />
-              </FormField>
-              <FormField label="Client secret" help="Stored in the workspace vault, never shown again.">
-                <Input
-                  mono
-                  type="password"
-                  placeholder="••••••••••••"
-                  value={clientSecret}
-                  onChange={(e) => {
-                    setClientSecret(e.target.value);
-                    invalidate();
-                  }}
-                />
-              </FormField>
-            </div>
-          )}
-
-          {/* What this plane's adapter needs beyond the endpoint and the
-              client pair — without these the record saves, the plane links,
-              and the poller runs a stub that never returns a row. */}
-          {CONNECT_FIELDS[newType].map((f) => (
-            <FormField
-              key={f.key}
-              label={f.optional ? `${f.label} — optional` : f.label}
-              help={f.help}
-            >
-              <Input
-                mono
-                type={f.secret ? 'password' : undefined}
-                placeholder={f.secret ? '••••••••••••' : f.key}
-                value={extraCreds[f.key] ?? ''}
-                onChange={(e) => {
-                  setExtraCreds({ ...extraCreds, [f.key]: e.target.value });
-                  invalidate();
+          {selectedEntry.auth.length > 1 ? (
+            <FormField label="Authentication">
+              <Select
+                options={selectedEntry.auth.map((option) => ({ value: option.kind, label: option.label }))}
+                value={selectedAuth.kind}
+                onValueChange={(value) => {
+                  const kind = value as ConnectorAuthKind;
+                  if (!selectedEntry.auth.some((option) => option.kind === kind)) return;
+                  updateDraft({ ...draft, auth: draftAuth(draft.id, kind) } as ConnectorConfig);
                 }}
               />
             </FormField>
-          ))}
+          ) : null}
 
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              padding: '14px 0',
-              borderTop: '1px solid var(--nd-border-subtle)',
-              borderBottom: '1px solid var(--nd-border-subtle)',
-            }}
-          >
-            <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 10,
-                letterSpacing: '.12em',
-                textTransform: 'uppercase',
-                color: 'var(--nd-text-muted)',
-              }}
-            >
-              Scopes
-            </span>
-            <Checkbox
-              label="Read inventory, sites and topology"
-              checked={scopes.inventory}
-              onChange={(e) => {
-                setScopes({ ...scopes, inventory: e.target.checked });
-                invalidate();
-              }}
-            />
-            <Checkbox
-              label="Read clients, sessions and auth events"
-              checked={scopes.clientsAuth}
-              onChange={(e) => {
-                setScopes({ ...scopes, clientsAuth: e.target.checked });
-                invalidate();
-              }}
-            />
-            <Checkbox
-              label="Read configuration and licences"
-              checked={scopes.configLicences}
-              onChange={(e) => {
-                setScopes({ ...scopes, configLicences: e.target.checked });
-                invalidate();
-              }}
-            />
-            {writeScopeLabelFor(newType) !== null ? (
-              <Checkbox
-                label={writeScopeLabelFor(newType) as string}
-                checked={scopes.write}
-                onChange={(e) => {
-                  setScopes({ ...scopes, write: e.target.checked });
-                  invalidate();
-                }}
-              />
-            ) : (
-              <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
-                No write path for this plane — read scopes only.
-              </span>
-            )}
-            {newType === 'sse' ? (
-              <span
-                style={{
-                  marginLeft: 24,
-                  fontSize: 12,
-                  color: 'var(--nd-text-muted)',
-                }}
-              >
-                Each reviewed mutation is sent directly to SSE, then the portal runs tenant-wide
-                Commit.
-              </span>
-            ) : null}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+            {selectedAuth.fields.map((field) => (
+              <FormField key={field.key} label={field.label}>
+                <Input
+                  mono
+                  type={field.secret ? 'password' : field.type === 'number' ? 'number' : undefined}
+                  placeholder={field.secret ? 'Stored secret' : field.required ? field.key : 'Optional'}
+                  value={authRecord[field.key] ?? ''}
+                  onChange={(e) => updateAuthField(field, e.target.value)}
+                />
+              </FormField>
+            ))}
           </div>
 
-          {testResult ? (
-            <Alert
-              tone={testResult.ok ? 'success' : 'danger'}
-              title={testResult.ok ? 'Connection succeeded' : 'Connection failed'}
-            >
-              <span style={{ fontSize: 13 }}>{testResult.message}</span>
-            </Alert>
-          ) : null}
+          <details open>
+            <summary style={{ cursor: 'pointer', fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
+              Advanced policy
+            </summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 10 }}>
+              <Checkbox
+                label="Verify TLS certificate"
+                checked={draft.verifyTls}
+                onChange={(e) => updateDraft({ ...draft, verifyTls: e.target.checked })}
+              />
+              {!draft.verifyTls ? <Alert tone="warning" title="TLS verification disabled" /> : null}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+                <FormField label="Poll cadence (seconds)">
+                  <Input
+                    mono
+                    type="number"
+                    value={draft.pollIntervalSec}
+                    onChange={(e) => updateDraft({ ...draft, pollIntervalSec: Number(e.target.value) || 5 })}
+                  />
+                </FormField>
+                <FormField label="Daily call budget">
+                  <Input
+                    mono
+                    type="number"
+                    placeholder="Provider default"
+                    value={draft.callBudget ?? ''}
+                    onChange={(e) => updateDraft({
+                      ...draft,
+                      callBudget: e.target.value.trim() ? Number(e.target.value) : null,
+                    })}
+                  />
+                </FormField>
+              </div>
+              <div>
+                <SectionHeader label="Datasets" />
+                {selectedEntry.supportedDatasets.map((dataset) => (
+                  <Checkbox
+                    key={dataset}
+                    label={dataset}
+                    checked={draft.datasets.includes(dataset)}
+                    onChange={(e) => togglePolicyValue('datasets', dataset, e.target.checked)}
+                  />
+                ))}
+              </div>
+              <div>
+                <SectionHeader label="Scopes" />
+                {selectedEntry.scopeOptions.map((scope) => (
+                  <Checkbox
+                    key={scope.value}
+                    label={scope.label}
+                    checked={draft.scopes.includes(scope.value)}
+                    onChange={(e) => togglePolicyValue('scopes', scope.value, e.target.checked)}
+                  />
+                ))}
+              </div>
+            </div>
+          </details>
 
           {retestNeeded && !testResult ? (
             <Alert tone="warning" title="Re-test required">
-              <span style={{ fontSize: 13 }}>
-                The credentials changed after the successful test — nothing is saved yet. Run Test
-                connection again, then Save and index.
-              </span>
+              <span style={{ fontSize: 13 }}>Policy or credentials changed after the authenticated probe.</span>
             </Alert>
           ) : null}
 
@@ -1507,18 +1458,6 @@ export default function Systems() {
             <Button variant="ghost" size="md" onClick={() => setAddOpen(false)}>
               Cancel
             </Button>
-          </div>
-
-          <div
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 10.5,
-              color: 'var(--nd-text-muted)',
-              lineHeight: 1.6,
-            }}
-          >
-            Indexing a new plane takes 2–6 minutes. Devices already claimed elsewhere are flagged as
-            double-claimed rather than duplicated.
           </div>
         </div>
       </Drawer>
