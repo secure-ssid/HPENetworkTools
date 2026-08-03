@@ -471,7 +471,7 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
       ? ['find_tool', 'invoke_read_tool', 'invoke_tool']
       : ['find_tool', 'invoke_read_tool'];
     const overrides = [
-      `model_reasoning_effort=${JSON.stringify(config.reasoningEffort)}`,
+      ...(config.reasoningEffort === 'auto' ? [] : [`model_reasoning_effort=${JSON.stringify(config.reasoningEffort)}`]),
       `mcp_servers.centralmcp.url=${JSON.stringify(mcp.endpoint)}`,
       'mcp_servers.centralmcp.enabled=true',
       'mcp_servers.centralmcp.required=true',

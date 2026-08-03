@@ -326,6 +326,43 @@ describe('isolated native assistant CLI adapters', () => {
     expect(launch.env?.HPE_ASSISTANT_MCP_TOKEN).toBe('centralmcp-test-token');
   });
 
+  it.each([
+    ['auto', 'gpt-5.3-spark', null],
+    ['low', 'gpt-5.6-terra', 'model_reasoning_effort="low"'],
+    ['medium', 'gpt-5.6-luna', 'model_reasoning_effort="medium"'],
+    ['high', 'gpt-5.4', 'model_reasoning_effort="high"'],
+  ] as const)('omits the Codex effort override for %s and preserves explicit efforts', async (reasoningEffort, model, expectedOverride) => {
+    const commands: CommandExecution[] = [];
+    const adapter = new CodexAdapter({
+      commandRunner: {
+        run: async (command) => {
+          commands.push(command);
+          return {
+            exitCode: 0,
+            stdout: [
+              '{"type":"thread.started","thread_id":"thread_3"}',
+              '{"type":"turn.started"}',
+              '{"type":"item.completed","item":{"type":"agent_message","text":"ready"}}',
+              '{"type":"turn.completed","status":"completed"}',
+            ].join('\n'),
+            stderr: '',
+          };
+        },
+      },
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: async () => {} }),
+    });
+
+    await adapter.chat({
+      config: { enabled: true, model, reasoningEffort },
+      timeoutMs: 5000,
+      messages: [{ role: 'user', content: 'Check readiness.' }],
+      mcp: { ...centralMcp, writeEnabled: false },
+    } as any);
+
+    const overrides = commands[0]!.args.filter((arg) => arg.startsWith('model_reasoning_effort='));
+    expect(overrides).toEqual(expectedOverride ? [expectedOverride] : []);
+  });
+
   it('rejects Copilot Auto with any persisted effort other than adaptive before executable discovery', async () => {
     const fake = nativeDependencies(successfulClaudeProbe);
 
