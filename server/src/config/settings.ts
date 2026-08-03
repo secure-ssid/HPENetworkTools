@@ -251,6 +251,7 @@ function mergeLegacyAssistantSettings(
   current: AssistantSettings,
   input: Record<string, unknown>,
   legacy: Pick<Settings, 'mcp' | 'llm' | 'chatWriteMode'>,
+  previousLegacyLlm: LlmSettings | null,
 ): AssistantSettings {
   const patch: Record<string, unknown> = {};
   if (Object.prototype.hasOwnProperty.call(input, 'mcp')) {
@@ -261,16 +262,21 @@ function mergeLegacyAssistantSettings(
   if (typeof input.chatWriteMode === 'boolean') {
     patch.chatWriteMode = input.chatWriteMode ? 'enabled' : 'read-only';
   }
-  if (Object.prototype.hasOwnProperty.call(input, 'llm') && legacy.llm) {
-    const id: 'ollama' | 'openrouter' = isLocalHttpUrl(legacy.llm.baseUrl) ? 'ollama' : 'openrouter';
-    patch.providers = {
-      [id]: {
-        enabled: true,
-        baseUrl: legacy.llm.baseUrl,
-        model: legacy.llm.model,
-        ...(legacy.llm.apiKey ? { apiKey: legacy.llm.apiKey } : {}),
-      },
-    };
+  if (Object.prototype.hasOwnProperty.call(input, 'llm')) {
+    if (legacy.llm) {
+      const id: 'ollama' | 'openrouter' = isLocalHttpUrl(legacy.llm.baseUrl) ? 'ollama' : 'openrouter';
+      patch.providers = {
+        [id]: {
+          enabled: true,
+          baseUrl: legacy.llm.baseUrl,
+          model: legacy.llm.model,
+          ...(legacy.llm.apiKey ? { apiKey: legacy.llm.apiKey } : {}),
+        },
+      };
+    } else if (input.llm === null && previousLegacyLlm) {
+      const id: 'ollama' | 'openrouter' = isLocalHttpUrl(previousLegacyLlm.baseUrl) ? 'ollama' : 'openrouter';
+      patch.providers = { [id]: { enabled: false } };
+    }
   }
   return mergeAssistantSettings(current, patch);
 }
@@ -883,7 +889,7 @@ export class SettingsStore {
       // Old forms still update the compatible legacy fields, but those fields
       // are not a replacement source for a registry the operator already
       // configured. Patch only their canonical counterparts instead.
-      out.assistant = mergeLegacyAssistantSettings(base.assistant, p, out);
+      out.assistant = mergeLegacyAssistantSettings(base.assistant, p, out, base.llm);
     }
 
     if ('auth' in p) {

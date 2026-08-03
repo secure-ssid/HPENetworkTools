@@ -67,6 +67,28 @@ describe('SettingsStore', () => {
     });
   });
 
+  it('disables only the provider mapped from a cleared legacy LLM without erasing its canonical configuration', () => {
+    const { store } = tmpStore();
+    store.update({ assistant: {
+      activeProvider: 'openrouter',
+      providers: {
+        codex: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+        openrouter: { enabled: true, baseUrl: 'https://router.example/v1', model: 'router-fast', apiKey: 'router-key' },
+        ollama: { enabled: true, baseUrl: 'http://127.0.0.1:11434/v1', model: 'saved-local', apiKey: 'saved-local-key' },
+      },
+    } });
+    store.update({ llm: { baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'legacy-local-key', model: 'legacy-local' } });
+    store.update({ llm: null });
+
+    const saved = store.get();
+    expect(saved.llm).toBeNull();
+    expect(saved.assistant.activeProvider).toBe('openrouter');
+    expect(saved.assistant.providers.codex).toMatchObject({ enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' });
+    expect(saved.assistant.providers.openrouter).toMatchObject({ enabled: true, baseUrl: 'https://router.example/v1', model: 'router-fast', apiKey: 'router-key' });
+    expect(saved.assistant.providers.ollama).toMatchObject({ enabled: false, baseUrl: 'http://127.0.0.1:11434/v1', model: 'legacy-local', apiKey: 'legacy-local-key' });
+    expect(store.maskedView().assistant.providers.ollama).toMatchObject({ enabled: false, apiKey: '••••••' });
+  });
+
   it('uses canonical assistant defaults when legacy settings are blank', () => {
     const assistant = migrateAssistantSettings({
       mcp: { url: '', bearerToken: '' },
@@ -703,5 +725,13 @@ describe('PUT /api/settings assistant registry', () => {
     expect(writeMode.body.assistant.providers.openrouter).toMatchObject({ enabled: true, baseUrl: 'https://legacy-router.example/v1', model: 'legacy-fast', apiKey: '••••••' });
     expect(writeMode.body.assistant.mcp).toEqual({ enabled: true, endpoint: 'https://legacy-mcp.example/mcp', authToken: '••••••' });
     expect(writeMode.body.assistant.chatWriteMode).toBe('enabled');
+
+    const clearedLlm = await put({ llm: null });
+    expect(clearedLlm.status).toBe(200);
+    expect(clearedLlm.body.llm).toBeNull();
+    expect(clearedLlm.body.assistant.activeProvider).toBe('openrouter');
+    expect(clearedLlm.body.assistant.providers.codex).toMatchObject({ enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' });
+    expect(clearedLlm.body.assistant.providers.openrouter).toMatchObject({ enabled: false, baseUrl: 'https://legacy-router.example/v1', model: 'legacy-fast', apiKey: '••••••' });
+    expect(clearedLlm.body.assistant.mcp).toEqual({ enabled: true, endpoint: 'https://legacy-mcp.example/mcp', authToken: '••••••' });
   });
 });
