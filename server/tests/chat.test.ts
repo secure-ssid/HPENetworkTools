@@ -8,15 +8,15 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { SettingsStore } from '../src/config/settings';
 import type { ProviderStatus } from '../src/services/assistant/types';
 import { AssistantProviderTimeoutError } from '../src/services/assistant/openaiCompatible';
-import { AssistantProviderRegistry } from '../src/services/assistant/registry';
 import { ClaudeAdapter } from '../src/services/assistant/cliAdapters';
-import { classifyChatFailure } from '../src/routes/chat';
 
 let server: Server;
 let base: string;
 let tmpDir: string;
 let settings: SettingsStore;
 let createChatRouter: typeof import('../src/routes/chat').createChatRouter;
+let classifyChatFailure: typeof import('../src/routes/chat').classifyChatFailure;
+let AssistantProviderRegistry: typeof import('../src/services/assistant/registry').AssistantProviderRegistry;
 const requestFetch = globalThis.fetch;
 
 const ready: ProviderStatus = {
@@ -58,7 +58,8 @@ beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'hpe-chat-route-'));
   process.env.HPE_SETTINGS_PATH = join(tmpDir, 'settings.json');
   ({ settings } = await import('../src/config/settings'));
-  ({ createChatRouter } = await import('../src/routes/chat'));
+  ({ AssistantProviderRegistry } = await import('../src/services/assistant/registry'));
+  ({ createChatRouter, classifyChatFailure } = await import('../src/routes/chat'));
 });
 
 afterAll(() => {
