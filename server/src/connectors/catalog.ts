@@ -152,8 +152,26 @@ export function createConnectorAdapter(
   const credentials = adapterCredentialsFor(config);
   switch (config.id) {
     case 'central':
-    case 'classic':
       return new CentralAdapter(credentials, state, recordCall);
+    case 'classic': {
+      const adapter = new CentralAdapter(credentials, state, recordCall);
+      const capabilities = {
+        localShell: false,
+        brokeredWrite: false,
+        configRead: false,
+        directWrite: false,
+        activeDiagnostics: false,
+        alertFeed: true,
+      } as const;
+      // CentralAdapter chooses generation-specific paths from the endpoint,
+      // but product identity and write authority come from the connector the
+      // operator configured. A Classic record stays Classic/read-only even if
+      // a lab points it at a hostname shaped like New Central.
+      Object.defineProperty(adapter, 'id', { value: 'classic', enumerable: true });
+      Object.defineProperty(adapter, 'capabilities', { value: () => capabilities });
+      state.capabilities = capabilities;
+      return adapter;
+    }
     case 'mist':
       return new MistAdapter(credentials, state, recordCall);
     case 'greenlake':

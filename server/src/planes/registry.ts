@@ -531,7 +531,10 @@ export class PlaneRegistry {
     if (!isConnectorPlaneId(id)) throw new Error(`unknown connector plane '${id}'`);
     const config = connectorConfigFor(this.store.get(), id);
     const linked = config?.enabled === true;
-    const creds = config ? adapterCredentialsFor(config) : null;
+    // Disabled connector records are inert configuration. Never parse their
+    // endpoint or auth: an operator must be able to disable a broken draft
+    // without turning it into a linked degraded runtime.
+    const creds = linked && config ? adapterCredentialsFor(config) : null;
     const state: PlaneState = {
       id,
       linked,

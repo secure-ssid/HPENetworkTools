@@ -268,13 +268,16 @@ function mergeTypedConnector(
   const incomingAuth = raw.auth;
   let auth: unknown = incomingAuth ?? currentAuth;
   if (incomingAuth !== null && typeof incomingAuth === 'object' && !Array.isArray(incomingAuth)) {
+    const incomingRecord = incomingAuth as Record<string, unknown>;
+    const incomingKind = typeof incomingRecord.kind === 'string' ? incomingRecord.kind : undefined;
+    const sameKind = incomingKind === undefined || incomingKind === currentAuth?.kind;
     const mergedAuth: Record<string, unknown> = {
-      ...(currentAuth ?? {}),
-      ...(incomingAuth as Record<string, unknown>),
+      ...(sameKind ? (currentAuth ?? {}) : {}),
+      ...incomingRecord,
     };
     for (const [key, value] of Object.entries(mergedAuth)) {
       if (typeof value !== 'string' || !value.startsWith(MASK)) continue;
-      const stored = currentAuth?.[key];
+      const stored = sameKind ? currentAuth?.[key] : undefined;
       if (typeof stored !== 'string' || stored.length === 0) {
         throw new Error(`masked ${id} auth.${key} has no stored value to preserve`);
       }

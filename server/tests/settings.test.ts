@@ -140,6 +140,47 @@ describe('SettingsStore', () => {
     expect(store.get().connectors.opsramp?.auth).toMatchObject({ clientSecret: 'secret-a' });
   });
 
+  it('replaces auth on a kind switch instead of carrying masked fields across kinds', () => {
+    const { store } = tmpStore();
+    store.update({ connectors: { edgeconnect: {
+      id: 'edgeconnect', enabled: true, endpoint: 'https://orchestrator.example.com',
+      auth: { kind: 'api_key', apiKey: 'edge-key' },
+      verifyTls: true, pollIntervalSec: 60, callBudget: null,
+      datasets: ['devices'], scopes: ['read:inventory'],
+    } } });
+
+    store.update({ connectors: { edgeconnect: {
+      auth: { kind: 'username_password', username: 'operator', password: 'new-password' },
+    } } });
+    expect(store.get().connectors.edgeconnect?.auth).toEqual({
+      kind: 'username_password', username: 'operator', password: 'new-password',
+    });
+
+    expect(() => store.update({ connectors: { edgeconnect: {
+      auth: { kind: 'api_key', apiKey: '••••••' },
+    } } })).toThrow(/no stored value to preserve/);
+  });
+
+  it('supports both ClearPass auth transitions without retaining fields from the old kind', () => {
+    const { store } = tmpStore();
+    store.update({ connectors: { clearpass: {
+      id: 'clearpass', enabled: true, endpoint: 'https://cppm.example.com',
+      auth: { kind: 'oauth_client_credentials', clientId: 'client-a', clientSecret: 'secret-a' },
+      verifyTls: true, pollIntervalSec: 60, callBudget: null,
+      datasets: ['authEvents'], scopes: ['read:inventory'],
+    } } });
+
+    store.update({ connectors: { clearpass: { auth: { kind: 'token', token: 'token-a' } } } });
+    expect(store.get().connectors.clearpass?.auth).toEqual({ kind: 'token', token: 'token-a' });
+
+    store.update({ connectors: { clearpass: {
+      auth: { kind: 'oauth_client_credentials', clientId: 'client-b', clientSecret: 'secret-b' },
+    } } });
+    expect(store.get().connectors.clearpass?.auth).toEqual({
+      kind: 'oauth_client_credentials', clientId: 'client-b', clientSecret: 'secret-b',
+    });
+  });
+
   it('roundtrips save/load, deep-merging plane credentials', () => {
     const { file, store } = tmpStore();
     store.load();

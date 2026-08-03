@@ -142,6 +142,50 @@ describe('server connector catalog', () => {
     expect(registry.get('local')).not.toBeInstanceOf(StubAdapter);
   });
 
+  it('keeps a disabled malformed connector unlinked without parsing credentials or endpoint', () => {
+    const disabled = {
+      ...configFor('opsramp'),
+      enabled: false,
+      endpoint: 'http://unsafe.example.com',
+      auth: { kind: 'oauth_client_credentials', tenantId: '', clientId: '', clientSecret: '' },
+    } as ConnectorConfig;
+    const registry = registryFor({ opsramp: disabled });
+
+    expect(registry.state('opsramp')).toMatchObject({
+      linked: false,
+      health: 'unlinked',
+      note: 'connector disabled',
+    });
+    expect(registry.get('opsramp')).toBeInstanceOf(UnconfiguredAdapter);
+  });
+
+  it('binds Central identity and write capabilities to the configured product, not its hostname', () => {
+    const newCentral = createConnectorAdapter(configFor('central'), stateFor('central'), () => {});
+    const classicAtNewEndpoint = createConnectorAdapter(
+      parseConnectorConfig('classic', {
+        ...configFor('classic'),
+        endpoint: 'https://us4.api.central.arubanetworks.com',
+      }),
+      stateFor('classic'),
+      () => {},
+    );
+
+    expect(newCentral.id).toBe('central');
+    expect(newCentral.capabilities?.()).toMatchObject({
+      brokeredWrite: true,
+      configRead: true,
+      directWrite: true,
+      activeDiagnostics: true,
+    });
+    expect(classicAtNewEndpoint.id).toBe('classic');
+    expect(classicAtNewEndpoint.capabilities?.()).toMatchObject({
+      brokeredWrite: false,
+      configRead: false,
+      directWrite: false,
+      activeDiagnostics: false,
+    });
+  });
+
   it('derives AOS-10 visibility and capabilities from Central without an independent adapter', () => {
     const registry = registryFor({ central: configFor('central') });
 
