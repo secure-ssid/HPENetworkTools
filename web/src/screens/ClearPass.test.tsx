@@ -44,7 +44,7 @@
  *      material even when a payload tries to smuggle it.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import ClearPass from './ClearPass';
@@ -57,6 +57,7 @@ import {
   updateClearPassEndpoint,
   createClearPassLocalUser,
   updateClearPassLocalUser,
+  getClearPassEndpointPage,
 } from '../api/clearpass';
 import {
   AUTH_EVENTS,
@@ -107,6 +108,7 @@ vi.mock('../api/clearpass', () => ({
   updateClearPassEndpoint: vi.fn(),
   createClearPassLocalUser: vi.fn(),
   updateClearPassLocalUser: vi.fn(),
+  getClearPassEndpointPage: vi.fn(),
 }));
 
 const mockGetClearPass = vi.mocked(getClearPass);
@@ -115,6 +117,7 @@ const mockRegister = vi.mocked(registerClearPassEndpoint);
 const mockUpdateEndpoint = vi.mocked(updateClearPassEndpoint);
 const mockCreateUser = vi.mocked(createClearPassLocalUser);
 const mockUpdateUser = vi.mocked(updateClearPassLocalUser);
+const mockGetEndpointPage = vi.mocked(getClearPassEndpointPage);
 
 /** Demo envelope from the real fixtures — deviceGroups stays absent. */
 function demoData(over: Partial<ClearPassData> = {}): ClearPassData {
@@ -145,6 +148,20 @@ function liveData(over: Partial<ClearPassData> = {}): ClearPassData {
   };
 }
 
+function endpointPage(over: Partial<Awaited<ReturnType<typeof getClearPassEndpointPage>>> = {}) {
+  return {
+    dataSource: 'demo' as const,
+    state: 'ok' as const,
+    endpoints: CLEARPASS_ENDPOINTS,
+    offset: 0,
+    limit: 50,
+    total: CLEARPASS_ENDPOINTS.length,
+    nextOffset: null,
+    more: 'no' as const,
+    ...over,
+  };
+}
+
 function renderClearPass() {
   return render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -161,6 +178,10 @@ function openTab(name: string) {
   fireEvent.click(screen.getByRole('tab', { name }));
 }
 
+beforeEach(() => {
+  mockGetEndpointPage.mockResolvedValue(endpointPage());
+});
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -168,6 +189,45 @@ afterEach(() => {
 });
 
 describe('ClearPass', () => {
+  it('loads a separate 50-row endpoint page and labels filters as page-only', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ endpoints: [] }));
+    mockGetEndpointPage.mockResolvedValue(endpointPage({ endpoints: [CLEARPASS_ENDPOINTS[0]], total: 101, nextOffset: 50, more: 'yes' }));
+    renderClearPass();
+
+    await waitFor(() => expect(mockGetEndpointPage).toHaveBeenCalledWith(0, 50));
+    expect(screen.getByText('1 of 50 loaded endpoint rows')).toBeTruthy();
+    expect(screen.getByLabelText('Filter loaded endpoint page')).toBeTruthy();
+    expect(screen.getByText('Filters apply only to the 50 rows loaded on this page.')).toBeTruthy();
+    expect(screen.getByText('Ward 3E rounds iPad — Dr. Okonjo')).toBeTruthy();
+  });
+
+  it('loads exact next and previous offsets, and resets to the first page when a page-only filter changes', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ endpoints: [] }));
+    mockGetEndpointPage
+      .mockResolvedValueOnce(endpointPage({ endpoints: [CLEARPASS_ENDPOINTS[0]], total: 101, nextOffset: 50, more: 'yes' }))
+      .mockResolvedValueOnce(endpointPage({ endpoints: [CLEARPASS_ENDPOINTS[1]], offset: 50, total: 101, nextOffset: 51, more: 'yes' }))
+      .mockResolvedValueOnce(endpointPage({ endpoints: [CLEARPASS_ENDPOINTS[0]], total: 101, nextOffset: 50, more: 'yes' }));
+    renderClearPass();
+
+    await screen.findByRole('button', { name: 'Next endpoint page' });
+    fireEvent.click(screen.getByRole('button', { name: 'Next endpoint page' }));
+    await waitFor(() => expect(mockGetEndpointPage).toHaveBeenLastCalledWith(50, 50));
+    fireEvent.change(screen.getByLabelText('Filter loaded endpoint page'), { target: { value: 'ward' } });
+    await waitFor(() => expect(mockGetEndpointPage).toHaveBeenLastCalledWith(0, 50));
+    expect(screen.getByRole('button', { name: 'Previous endpoint page' })).toBeTruthy();
+  });
+
+  it('keeps unavailable, failed, and empty endpoint pages distinct and never shows fixture rows for a failed live page', async () => {
+    mockGetClearPass.mockResolvedValue(liveData({ endpoints: [] }));
+    mockGetEndpointPage.mockResolvedValue({
+      dataSource: 'live', state: 'failed', endpoints: [], offset: 0, limit: 50,
+      total: null, nextOffset: null, more: 'unknown',
+    });
+    renderClearPass();
+    expect(await screen.findByText('Endpoint page could not be loaded')).toBeTruthy();
+    expect(screen.queryByText('Ward 3E rounds iPad — Dr. Okonjo')).toBeNull();
+  });
+
   it('(a) the endpoints tab renders descriptions and Device Insight tags on the rows that carry them', async () => {
     mockGetClearPass.mockResolvedValue(demoData());
     renderClearPass();
@@ -530,7 +590,7 @@ describe('ClearPass reviewed writes', () => {
     mockGetClearPass.mockResolvedValue(demoData());
     mockRegister.mockResolvedValue(DEMO_OK);
     renderClearPass();
-    await screen.findByText('15 of 15 shown');
+    await screen.findByText('15 of 50 loaded endpoint rows');
     fireEvent.click(screen.getByRole('button', { name: 'Register endpoint' }));
     const dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
     fireEvent.change(within(dialog).getByLabelText('MAC address'), { target: { value: 'AABBCCDDEEFF' } });
@@ -543,7 +603,7 @@ describe('ClearPass reviewed writes', () => {
     mockGetClearPass.mockResolvedValue(demoData());
     mockRegister.mockResolvedValue({ ...DEMO_OK, message: 'demo endpoint aa:bb:cc:dd:ee:ff registered — no live CPPM was written' });
     renderClearPass();
-    await waitFor(() => expect(screen.getByText('15 of 15 shown')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('15 of 50 loaded endpoint rows')).toBeTruthy());
 
     fireEvent.click(screen.getByRole('button', { name: 'Register endpoint' }));
     const dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
@@ -563,7 +623,7 @@ describe('ClearPass reviewed writes', () => {
     expect(mockRegister.mock.calls[0][0]).toMatchObject({ mac: 'AABBCCDDEEFF', status: 'Known' });
     expect(mockRegister.mock.calls[0][1]).toBe(true); // reviewConfirmed
     // The demo world gained the row, and the outcome is shown verbatim.
-    await waitFor(() => expect(screen.getByText('16 of 16 shown')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('16 of 50 loaded endpoint rows')).toBeTruthy());
     expect(within(dialog).getByText(/no live CPPM was written/)).toBeTruthy();
   });
 
@@ -576,7 +636,7 @@ describe('ClearPass reviewed writes', () => {
       message: 'ClearPass refused the endpoint registration (HTTP 422)',
     });
     renderClearPass();
-    await waitFor(() => expect(screen.getByText('15 of 15 shown')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('15 of 50 loaded endpoint rows')).toBeTruthy());
 
     fireEvent.click(screen.getByRole('button', { name: 'Register endpoint' }));
     const dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
@@ -587,7 +647,7 @@ describe('ClearPass reviewed writes', () => {
     await waitFor(() => expect(within(dialog).getByText(/refused the endpoint registration/)).toBeTruthy());
     expect(within(dialog).getByText('Not applied')).toBeTruthy();
     // The table did not gain a row for a write the plane refused.
-    expect(screen.getByText('15 of 15 shown')).toBeTruthy();
+    expect(screen.getByText('15 of 50 loaded endpoint rows')).toBeTruthy();
   });
 
   it('(i) edit endpoint: only real changes apply, and the demo row follows', async () => {

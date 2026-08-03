@@ -1149,7 +1149,11 @@ screensRouter.get('/clearpass', (_req, res) => {
       dataSource: 'demo',
       syncedAt: new Date().toISOString(),
       missingSources: [],
-      endpoints: CLEARPASS_ENDPOINTS,
+      endpointTotal: CLEARPASS_ENDPOINTS.length,
+      // Endpoint rows belong to GET /api/clearpass/endpoints. Keeping this
+      // screen envelope empty prevents its initial mount from carrying the
+      // whole fixture repository alongside the on-demand page.
+      endpoints: [],
       authEvents: AUTH_EVENTS,
       networkDevices: CLEARPASS_NETWORK_DEVICES,
       authSources: CLEARPASS_AUTH_SOURCES,
@@ -1161,7 +1165,6 @@ screensRouter.get('/clearpass', (_req, res) => {
     });
     return;
   }
-  const endpoints = poller.getCache().endpoints as EndpointRow[];
   const authEvents = withOwningPlane(poller.getCache().authEvents as LiveAuthEvent[]);
   // A plane can be linked and contributing auth events without ever answering
   // the endpoint read (or vice versa) — union both gaps so the banner names
@@ -1174,7 +1177,10 @@ screensRouter.get('/clearpass', (_req, res) => {
     dataSource: 'live',
     syncedAt: poller.lastSyncFor('endpoints', 'authEvents'),
     missingSources: missing,
-    endpoints,
+    endpointTotal: registry.state('clearpass').deviceCount,
+    // The poller cache is a capped snapshot for joins and screen freshness,
+    // not a pageable repository. Do not mount it into this endpoint table.
+    endpoints: [],
     authEvents,
     ...(cp?.networkDevices !== undefined ? { networkDevices: cp.networkDevices } : {}),
     ...(cp?.authSources !== undefined ? { authSources: cp.authSources } : {}),
@@ -1186,6 +1192,94 @@ screensRouter.get('/clearpass', (_req, res) => {
     ...(cp?.deviceGroups !== undefined ? { deviceGroups: cp.deviceGroups } : {}),
   });
 });
+
+/** ClearPass's deliberately small, explicitly requested endpoint page. */
+const CLEARPASS_ENDPOINT_PAGE_DEFAULT_LIMIT = 50;
+const CLEARPASS_ENDPOINT_PAGE_MAX_LIMIT = 100;
+
+function clearPassPageInteger(value: unknown, fallback: number, min: number, max: number): number | null {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : null;
+}
+
+function clearPassEndpointPageEnvelope(
+  source: 'demo' | 'live',
+  state: 'ok' | 'empty' | 'failed' | 'unavailable',
+  endpoints: EndpointRow[],
+  offset: number,
+  limit: number,
+  total: number | null,
+  nextOffset: number | null,
+  more: 'yes' | 'unknown' | 'no',
+) {
+  // Keep this route's contract closed: mapped endpoints plus pagination facts,
+  // never vendor payloads, headers, transport errors, or configuration text.
+  return { dataSource: source, state, endpoints, offset, limit, total, nextOffset, more };
+}
+
+/**
+ * GET /api/clearpass/endpoints?offset=&limit=
+ *
+ * The main ClearPass envelope remains a small poller snapshot for its stats
+ * and other policy tabs. Endpoint rows come from this separate on-demand
+ * route so opening the endpoints tab neither walks nor mounts the repository.
+ */
+screensRouter.get('/clearpass/endpoints', (req, res) => {
+  const offset = clearPassPageInteger(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const limit = clearPassPageInteger(req.query.limit, CLEARPASS_ENDPOINT_PAGE_DEFAULT_LIMIT, 1, CLEARPASS_ENDPOINT_PAGE_MAX_LIMIT);
+  if (offset === null || limit === null) {
+    res.status(400).json({ error: 'offset must be an integer >= 0 and limit must be an integer from 1 to 100' });
+    return;
+  }
+  settle(res, serveClearPassEndpointPage(res, offset, limit));
+});
+
+async function serveClearPassEndpointPage(res: Response, offset: number, limit: number): Promise<void> {
+  if (dataSource() === 'demo') {
+    const endpoints = CLEARPASS_ENDPOINTS.slice(offset, offset + limit);
+    const total = CLEARPASS_ENDPOINTS.length;
+    const more = offset + endpoints.length < total ? 'yes' : 'no';
+    res.json(
+      clearPassEndpointPageEnvelope(
+        'demo',
+        endpoints.length === 0 ? 'empty' : 'ok',
+        endpoints,
+        offset,
+        limit,
+        total,
+        more === 'yes' ? offset + endpoints.length : null,
+        more,
+      ),
+    );
+    return;
+  }
+
+  // This read is user-driven rather than poller work, so it honours the same
+  // daily protection as other on-demand plane reads. No budget is an explicit
+  // unavailable answer; it never turns into the demo repository.
+  if (detailBudgetNote('clearpass')) {
+    res.json(clearPassEndpointPageEnvelope('live', 'unavailable', [], offset, limit, null, null, 'unknown'));
+    return;
+  }
+  const adapter = registry.get('clearpass');
+  const read = adapter.endpointPage;
+  if (typeof read !== 'function') {
+    res.json(clearPassEndpointPageEnvelope('live', 'unavailable', [], offset, limit, null, null, 'unknown'));
+    return;
+  }
+  try {
+    const page = await read.call(adapter, offset, limit);
+    res.json(
+      clearPassEndpointPageEnvelope('live', page.kind, page.endpoints, offset, limit, page.total, page.nextOffset, page.more),
+    );
+  } catch {
+    // An adapter seam or transport failure stays visibly failed, with no raw
+    // vendor body or error text crossing this boundary.
+    res.json(clearPassEndpointPageEnvelope('live', 'failed', [], offset, limit, null, null, 'unknown'));
+  }
+}
 
 /**
  * GET /api/clearpass/services/:id — ONE service's full definition for the

@@ -153,7 +153,14 @@ import type {
 import { formatCount } from '@hpe/shared';
 import * as https from 'node:https';
 import type { PlaneCredentials } from '../config/settings';
-import type { ConnectionProbeResult, PlaneAdapter, PlaneCapabilities, PlanePull, PlaneState } from './types';
+import type {
+  ClearPassEndpointPageRead,
+  ConnectionProbeResult,
+  PlaneAdapter,
+  PlaneCapabilities,
+  PlanePull,
+  PlaneState,
+} from './types';
 import {
   parseTimestamp,
 } from './format';
@@ -858,6 +865,24 @@ function extractTotal(body: unknown, rows: unknown[], pageLimit: number): number
   return null;
 }
 
+/**
+ * The total for one requested endpoint page. CPPM's `count` can mean the
+ * page size, so a full page with count === page length proves nothing. A
+ * named total, a count larger than the page, or a short page does prove the
+ * answer; anything else stays null rather than becoming a confident lie.
+ */
+function endpointPageTotal(body: unknown, rawRows: unknown[], offset: number, limit: number): number | null {
+  const r = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  const named = num(r.total ?? r.total_count ?? r.item_count);
+  if (named !== null && named >= offset + rawRows.length) return named;
+  const count = num(r.count);
+  if (count !== null && count > rawRows.length && count >= offset + rawRows.length) return count;
+  // A short vendor page is the end of this unfiltered collection. This is an
+  // exact total even if CPPM omitted calculate_count from its response.
+  if (rawRows.length < limit) return offset + rawRows.length;
+  return null;
+}
+
 function filled(v: unknown): boolean {
   return typeof v === 'string' && v.trim().length > 0;
 }
@@ -1150,6 +1175,39 @@ export class ClearPassAdapter implements PlaneAdapter {
     this.endpointRows = walk.rows;
     this.endpointRowsAtMs = now;
     return walk.rows;
+  }
+
+  /**
+   * One on-demand endpoint page. It intentionally bypasses `fetchEndpoints`
+   * and `walkHal`: the screen must not mount a 500-row cache merely to show
+   * page 1, and one click must issue one vendor request.
+   */
+  async endpointPage(offset: number, limit: number): Promise<ClearPassEndpointPageRead> {
+    const path = `${ENDPOINT_PATH}?offset=${offset}&limit=${limit}&calculate_count=true`;
+    try {
+      const res = await this.authedGet(path);
+      if (res.status < 200 || res.status >= 300) {
+        return { kind: 'failed', endpoints: [], total: null, nextOffset: null, more: 'unknown' };
+      }
+      const rawRows = extractRows(res.body);
+      if (rawRows === null) {
+        return { kind: 'failed', endpoints: [], total: null, nextOffset: null, more: 'unknown' };
+      }
+      const endpoints = rawRows.map(mapClearPassEndpoint).filter((row): row is EndpointRow => row !== null);
+      const total = endpointPageTotal(res.body, rawRows, offset, limit);
+      const more = total !== null ? (offset + rawRows.length < total ? 'yes' : 'no') : rawRows.length < limit ? 'no' : 'unknown';
+      return {
+        kind: rawRows.length === 0 ? 'empty' : 'ok',
+        endpoints,
+        total,
+        nextOffset: more === 'yes' ? offset + rawRows.length : null,
+        more,
+      };
+    } catch {
+      // A network/credential failure is a distinct screen envelope. Never
+      // let a vendor body, URL credentials, or transport message reach JSON.
+      return { kind: 'failed', endpoints: [], total: null, nextOffset: null, more: 'unknown' };
+    }
   }
 
   /**

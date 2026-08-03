@@ -14,6 +14,7 @@ import {
   updateClearPassEndpoint,
   createClearPassLocalUser,
   updateClearPassLocalUser,
+  getClearPassEndpointPage,
 } from './clearpass';
 import { isApiError } from './core';
 
@@ -98,5 +99,32 @@ describe('clearpass reviewed-write client', () => {
       expect(r.offline).toBe(true);
       expect(r.error).toContain('cannot reach the portal backend');
     }
+  });
+});
+
+describe('ClearPass endpoint-page client', () => {
+  it('requests exactly the selected bounded page and preserves the server’s explicit state', async () => {
+    const fetchMock = mockFetchCapture({
+      ok: true,
+      body: {
+        dataSource: 'live', state: 'failed', endpoints: [], offset: 50, limit: 25,
+        total: null, nextOffset: null, more: 'unknown',
+      },
+    });
+
+    await expect(getClearPassEndpointPage(50, 25)).resolves.toEqual({
+      dataSource: 'live', state: 'failed', endpoints: [], offset: 50, limit: 25,
+      total: null, nextOffset: null, more: 'unknown',
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/clearpass/endpoints?offset=50&limit=25');
+  });
+
+  it('reports an unreachable or malformed page as failed rather than substituting demo endpoints', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
+
+    await expect(getClearPassEndpointPage(0, 50)).resolves.toEqual({
+      dataSource: 'live', state: 'failed', endpoints: [], offset: 0, limit: 50,
+      total: null, nextOffset: null, more: 'unknown',
+    });
   });
 });

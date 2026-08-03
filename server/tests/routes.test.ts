@@ -12,10 +12,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PLANE_IDS } from '../src/planes/types';
 import {
   CLEARPASS_AUTH_SOURCES,
+  CLEARPASS_ENDPOINTS,
   CLEARPASS_ENFORCEMENT_POLICIES,
   CLEARPASS_ENFORCEMENT_PROFILES,
   CLEARPASS_LOCAL_USERS,
@@ -5042,16 +5043,17 @@ describe('ClearPass policy inventories', () => {
     expect('deviceGroups' in body).toBe(false);
   });
 
-  it('demo endpoint rows carry description + insight tags; local users carry exactly the whitelisted fields', async () => {
-    const { body } = await getJson('/api/clearpass');
+  it('demo endpoint-page rows carry description + insight tags; local users carry exactly the whitelisted fields', async () => {
+    const { body } = await getJson('/api/clearpass/endpoints');
     expect(body.endpoints.some((e: { description: string | null }) => e.description !== null)).toBe(true);
     expect(body.endpoints.some((e: { insightTags?: string[] }) => Array.isArray(e.insightTags))).toBe(true);
+    const { body: screen } = await getJson('/api/clearpass');
     // No-secret proof: nothing but id/userId/username/roleName/enabled may
     // ride a local-user row, in any mode.
-    for (const u of body.localUsers as Record<string, unknown>[]) {
+    for (const u of screen.localUsers as Record<string, unknown>[]) {
       expect(Object.keys(u).sort()).toEqual(['enabled', 'id', 'roleName', 'userId', 'username']);
     }
-    expect(JSON.stringify(body.localUsers)).not.toMatch(/password|secret|hash/i);
+    expect(JSON.stringify(screen.localUsers)).not.toMatch(/password|secret|hash/i);
   });
 
   it('live mode carries exactly the inventories the pull reported — absent keys stay absent', async () => {
@@ -5085,6 +5087,74 @@ describe('ClearPass policy inventories', () => {
     // …while the collections it never reported stay absent.
     expect('roles' in body).toBe(false);
     expect('networkDevices' in body).toBe(false);
+  });
+});
+
+describe('ClearPass endpoint paging', () => {
+  const setDemoMode = (demoMode: boolean) =>
+    fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ demoMode }),
+    });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await setDemoMode(true);
+  });
+
+  it('validates bounds and slices the demo repository without returning its full collection', async () => {
+    const first = await getJson('/api/clearpass/endpoints?offset=1&limit=2');
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({
+      dataSource: 'demo',
+      state: 'ok',
+      endpoints: CLEARPASS_ENDPOINTS.slice(1, 3),
+      offset: 1,
+      limit: 2,
+      total: CLEARPASS_ENDPOINTS.length,
+      nextOffset: 3,
+      more: 'yes',
+    });
+    for (const bad of ['?offset=-1', '?offset=1.5', '?limit=0', '?limit=101', '?limit=1.5']) {
+      expect((await getJson(`/api/clearpass/endpoints${bad}`)).status).toBe(400);
+    }
+  });
+
+  it('keeps live unavailable, failed, empty, and unknown-total page results distinct', async () => {
+    await setDemoMode(false);
+    const { registry } = await import('../src/planes/registry');
+
+    const unavailable = vi.spyOn(registry, 'get').mockReturnValue({} as never);
+    expect((await getJson('/api/clearpass/endpoints')).body).toEqual({
+      dataSource: 'live', state: 'unavailable', endpoints: [], offset: 0, limit: 50, total: null, nextOffset: null, more: 'unknown',
+    });
+    unavailable.mockRestore();
+
+    const failed = vi.spyOn(registry, 'get').mockReturnValue({
+      endpointPage: async () => ({ kind: 'failed', endpoints: [], total: null, nextOffset: null, more: 'unknown' }),
+    } as never);
+    expect((await getJson('/api/clearpass/endpoints')).body).toEqual({
+      dataSource: 'live', state: 'failed', endpoints: [], offset: 0, limit: 50, total: null, nextOffset: null, more: 'unknown',
+    });
+    failed.mockRestore();
+
+    const empty = vi.spyOn(registry, 'get').mockReturnValue({
+      endpointPage: async () => ({ kind: 'empty', endpoints: [], total: 0, nextOffset: null, more: 'no' }),
+    } as never);
+    expect((await getJson('/api/clearpass/endpoints')).body).toEqual({
+      dataSource: 'live', state: 'empty', endpoints: [], offset: 0, limit: 50, total: 0, nextOffset: null, more: 'no',
+    });
+    empty.mockRestore();
+
+    vi.spyOn(registry, 'get').mockReturnValue({
+      endpointPage: async () => ({
+        kind: 'ok', endpoints: [CLEARPASS_ENDPOINTS[0]], total: null, nextOffset: null, more: 'unknown',
+      }),
+    } as never);
+    expect((await getJson('/api/clearpass/endpoints?offset=50&limit=50')).body).toEqual({
+      dataSource: 'live', state: 'ok', endpoints: [CLEARPASS_ENDPOINTS[0]], offset: 50, limit: 50, total: null, nextOffset: null, more: 'unknown',
+    });
   });
 });
 

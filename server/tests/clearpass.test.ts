@@ -1212,6 +1212,92 @@ describe('ClearPassAdapter endpoints', () => {
     expect(state.deviceCount).toBeNull();
     expect(state.note).toBe('1 auth events · 0 rejects');
   });
+
+  it('reads one requested endpoint page, maps only the public row, and derives an exact next page from CPPM total', async () => {
+    const { adapter, calls, recorded } = makeAdapter((method, pathname, query) => {
+      if (method === 'GET' && pathname === '/api/endpoint') {
+        expect(query.toString()).toBe('offset=50&limit=25&calculate_count=true');
+        return {
+          body: hal(
+            [
+              {
+                id: 'ep-51',
+                mac_address: 'AABB.CCDD.EE51',
+                attributes: { 'Device Name': 'ward-tablet', Category: 'Computer' },
+                client_secret: 'must-never-leave-the-adapter',
+              },
+            ],
+            { count: 101 },
+          ),
+        };
+      }
+      return undefined;
+    });
+
+    const page = await adapter.endpointPage(50, 25);
+
+    expect(page).toEqual({
+      kind: 'ok',
+      endpoints: [
+        {
+          id: 'ep-51',
+          mac: 'aa:bb:cc:dd:ee:51',
+          description: null,
+          ip: null,
+          hostname: 'ward-tablet',
+          status: 'Unknown',
+          category: 'Computer',
+          family: null,
+          os: null,
+          profile: null,
+          updatedAt: null,
+        },
+      ],
+      total: 101,
+      nextOffset: 51,
+      more: 'yes',
+    });
+    expect(calls).toEqual(['GET /api/endpoint?offset=50&limit=25&calculate_count=true']);
+    expect(recorded).toHaveLength(1);
+    expect(JSON.stringify(page)).not.toContain('must-never-leave-the-adapter');
+  });
+
+  it('keeps a full page with no proven total unknown instead of inventing a next page', async () => {
+    const { adapter } = makeAdapter((method, pathname) => {
+      if (method === 'GET' && pathname === '/api/endpoint') {
+        return { body: hal(Array.from({ length: 2 }, (_, i) => ({ id: i + 1, mac_address: `aabbccdde${i}f` })), { count: 2 }) };
+      }
+      return undefined;
+    });
+
+    const page = await adapter.endpointPage(0, 2);
+
+    expect(page).toMatchObject({ kind: 'ok', total: null, nextOffset: null, more: 'unknown' });
+  });
+
+  it('keeps an empty page and a broken read distinct', async () => {
+    const empty = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === '/api/endpoint' ? { body: hal([]) } : undefined,
+    );
+    const failed = makeAdapter((method, pathname) =>
+      method === 'GET' && pathname === '/api/endpoint' ? { status: 500, body: { password: 'vendor-error-must-not-leak' } } : undefined,
+    );
+
+    await expect(empty.adapter.endpointPage(0, 50)).resolves.toMatchObject({
+      kind: 'empty',
+      endpoints: [],
+      total: 0,
+      nextOffset: null,
+      more: 'no',
+    });
+    await expect(failed.adapter.endpointPage(0, 50)).resolves.toMatchObject({
+      kind: 'failed',
+      endpoints: [],
+      total: null,
+      nextOffset: null,
+      more: 'unknown',
+    });
+  });
 });
 
 // -- The policy inventories (the plane's remaining datasets) ----------------------------

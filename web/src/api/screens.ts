@@ -239,6 +239,12 @@ export interface AuthEventsData extends ScreenEnvelope {
 }
 
 export interface ClearPassData extends ScreenEnvelope {
+  /** A separately proven repository total, when the ClearPass read supplied one. */
+  endpointTotal?: number | null;
+  /**
+   * Legacy compact snapshot retained for API compatibility. The ClearPass
+   * screen's endpoint table never reads it; it uses its own bounded page API.
+   */
   endpoints: EndpointRow[];
   authEvents: AuthEventRow[];
   /** Linked planes that contributed nothing to the endpoint or auth-event

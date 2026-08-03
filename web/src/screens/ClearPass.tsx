@@ -70,7 +70,9 @@ import {
   updateClearPassEndpoint,
   createClearPassLocalUser,
   updateClearPassLocalUser,
+  getClearPassEndpointPage,
 } from '../api/clearpass';
+import type { ClearPassEndpointPage } from '../api/clearpass';
 import { isApiError } from '../api/core';
 import { useSettings } from '../app/SettingsContext';
 import { useLabConfigMode } from '../hooks/useLabConfigMode';
@@ -132,6 +134,7 @@ export default function ClearPass() {
   const { density } = useSettings();
   const { lab } = useLabConfigMode();
   const [data, setData] = useState<ClearPassData | null>(null);
+  const [endpointPage, setEndpointPage] = useState<ClearPassEndpointPage | null>(null);
   const [tab, setTab] = useState<ClearPassTab>('endpoints');
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('all');
@@ -141,6 +144,9 @@ export default function ClearPass() {
     let live = true;
     void getClearPass().then((d) => {
       if (live) setData(d);
+    });
+    void getClearPassEndpointPage(0, 50).then((page) => {
+      if (live) setEndpointPage(page);
     });
     return () => {
       live = false;
@@ -170,8 +176,11 @@ export default function ClearPass() {
       setStatus={setStatus}
       category={category}
       setCategory={setCategory}
+      endpointPage={endpointPage}
+      loadEndpointPage={async (offset) => setEndpointPage(await getClearPassEndpointPage(offset, 50))}
       reload={async () => setData(await getClearPass())}
       mergeDemo={(fn) => setData((current) => (current ? fn(current) : current))}
+      mergeDemoEndpointPage={(fn) => setEndpointPage((current) => (current ? fn(current) : current))}
     />
   );
 }
@@ -197,8 +206,11 @@ function ClearPassView({
   setStatus,
   category,
   setCategory,
+  endpointPage,
+  loadEndpointPage,
   reload,
   mergeDemo,
+  mergeDemoEndpointPage,
 }: {
   data: ClearPassData;
   navigate: ReturnType<typeof useNavigate>;
@@ -212,16 +224,20 @@ function ClearPassView({
   setStatus: (v: string) => void;
   category: string;
   setCategory: (v: string) => void;
+  endpointPage: ClearPassEndpointPage | null;
+  loadEndpointPage: (offset: number) => Promise<void>;
   /** Live mode: re-fetch the whole envelope after a landed write. */
   reload: () => Promise<void>;
   /** Demo mode: apply the reviewed write to the fixture world on screen. */
   mergeDemo: (fn: (d: ClearPassData) => ClearPassData) => void;
+  mergeDemoEndpointPage: (fn: (page: ClearPassEndpointPage) => ClearPassEndpointPage) => void;
 }) {
   const [writeDrawer, setWriteDrawer] = useState<WriteDrawerState>(null);
   /** The service whose detail drawer is open (null = none). */
   const [serviceView, setServiceView] = useState<ClearPassServiceRow | null>(null);
   const demo = data.dataSource === 'demo';
-  const endpoints = data.endpoints;
+  /** The table only ever sees this one on-demand page, never the screen cache. */
+  const endpoints = endpointPage?.endpoints ?? [];
   const authEvents = data.authEvents;
   const missingSources = data.missingSources ?? [];
 
@@ -229,19 +245,18 @@ function ClearPassView({
     const known = endpoints.filter((e) => e.status === 'Known').length;
     const unknown = endpoints.filter((e) => e.status === 'Unknown').length;
     const disabled = endpoints.filter((e) => e.status === 'Disabled').length;
-    const total = endpoints.length;
-    const pct = total > 0 ? Math.round((known / total) * 100) : 0;
+    const total = endpointPage?.total ?? data.endpointTotal ?? null;
     return [
-      { label: 'Total endpoints', value: String(total), delta: 'endpoint repository', tone: 'neutral' },
-      { label: 'Known', value: String(known), delta: `${pct}% of repository`, tone: 'positive' },
-      { label: 'Unknown', value: String(unknown), delta: unknown > 0 ? 'needs profiling' : 'none unknown', tone: unknown > 0 ? 'negative' : 'neutral' },
-      { label: 'Disabled', value: String(disabled), delta: 'access revoked', tone: 'neutral' },
+      { label: 'Total endpoints', value: total === null ? '—' : String(total), delta: total === null ? 'not reported by ClearPass' : 'reported by ClearPass', tone: 'neutral' },
+      { label: 'Known (page)', value: String(known), delta: 'loaded endpoint page only', tone: 'positive' },
+      { label: 'Unknown (page)', value: String(unknown), delta: unknown > 0 ? 'needs profiling on this page' : 'none on this page', tone: unknown > 0 ? 'negative' : 'neutral' },
+      { label: 'Disabled (page)', value: String(disabled), delta: 'access revoked on this page', tone: 'neutral' },
       // A live count comes out of the poller's ≤200-event page — minutes of
       // traffic, not a day. Only the fixture feed is a 24h cut (the same rule
       // AuthEvents words its live fail-reason bars by).
       { label: 'Auth events', value: String(authEvents.length), delta: data.dataSource === 'live' ? 'current poller snapshot' : 'last 24h', tone: 'neutral' },
     ];
-  }, [endpoints, authEvents, data.dataSource]);
+  }, [endpoints, endpointPage?.total, data.endpointTotal, authEvents, data.dataSource]);
 
   const ql = q.trim().toLowerCase();
   const rows = endpoints.filter(
@@ -296,7 +311,10 @@ function ClearPassView({
 
       {tab === 'endpoints' ? (
         <>
-          <SectionHeader label="Endpoint repository" meta={`${rows.length} of ${endpoints.length} shown`} />
+          <SectionHeader
+            label="Endpoint repository"
+            meta={endpointPage ? `${rows.length} of ${endpointPage.limit} loaded endpoint rows` : 'LOADING PAGE'}
+          />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <div style={{ width: 250 }}>
@@ -305,20 +323,35 @@ function ClearPassView({
                 mono
                 placeholder="hostname, MAC, IP…"
                 value={q}
-                onChange={(e) => setQ(e.target.value)}
-                aria-label="Filter endpoints"
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  void loadEndpointPage(0);
+                }}
+                aria-label="Filter loaded endpoint page"
               />
             </div>
             <div style={{ width: 160 }}>
-              <Select options={statusOptions} value={status} onValueChange={setStatus} size="sm" aria-label="Status" />
+              <Select
+                options={statusOptions}
+                value={status}
+                onValueChange={(value) => {
+                  setStatus(value);
+                  void loadEndpointPage(0);
+                }}
+                size="sm"
+                aria-label="Status on loaded page"
+              />
             </div>
             <div style={{ width: 180 }}>
               <Select
                 options={categoryOptions}
                 value={category}
-                onValueChange={setCategory}
+                onValueChange={(value) => {
+                  setCategory(value);
+                  void loadEndpointPage(0);
+                }}
                 size="sm"
-                aria-label="Category"
+                aria-label="Category on loaded page"
               />
             </div>
             <div style={{ marginLeft: 'auto' }}>
@@ -328,26 +361,43 @@ function ClearPassView({
             </div>
           </div>
 
-          {rows.length === 0 ? (
+          <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+            Filters apply only to the 50 rows loaded on this page.
+          </span>
+
+          {endpointPage === null ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
+              <Spinner size="sm" />
+            </div>
+          ) : endpointPage.state === 'unavailable' ? (
+            <EmptyState
+              title="Endpoint page unavailable"
+              description="ClearPass cannot provide an on-demand endpoint page right now."
+            />
+          ) : endpointPage.state === 'failed' ? (
+            <EmptyState
+              title="Endpoint page could not be loaded"
+              description="ClearPass did not return a readable endpoint page."
+            >
+              <Button variant="secondary" size="sm" onClick={() => void loadEndpointPage(endpointPage.offset)}>
+                Retry page
+              </Button>
+            </EmptyState>
+          ) : endpointPage.state === 'empty' ? (
+            <EmptyState
+              title="ClearPass reports no endpoints"
+              description="The requested repository page contains no endpoint rows."
+            />
+          ) : rows.length === 0 ? (
             endpoints.length === 0 ? (
               <EmptyState
-                title="No endpoints from any policy plane"
-                description={
-                  data.dataSource === 'live'
-                    ? 'ClearPass has not returned endpoint rows yet — check Connected systems.'
-                    : 'No policy plane has an endpoint repository linked.'
-                }
-              >
-                {data.dataSource === 'live' ? (
-                  <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
-                    Connected systems
-                  </Button>
-                ) : null}
-              </EmptyState>
+                title="No readable endpoints on this page"
+                description="ClearPass returned endpoint records, but none contained the fields needed for a safe table row."
+              />
             ) : (
               <EmptyState
                 title="Nothing matches that filter"
-                description="Loosen the search, status or category filter to see more of the repository."
+                description="Loosen the search, status or category filter to see more of this loaded page."
               />
             )
           ) : (
@@ -377,6 +427,34 @@ function ClearPassView({
               </Table.Body>
             </Table>
           )}
+
+          {endpointPage !== null && endpointPage.state === 'ok' ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={endpointPage.offset === 0}
+                onClick={() => void loadEndpointPage(Math.max(0, endpointPage.offset - endpointPage.limit))}
+                aria-label="Previous endpoint page"
+              >
+                Previous
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={endpointPage.nextOffset === null}
+                onClick={() => endpointPage.nextOffset !== null && void loadEndpointPage(endpointPage.nextOffset)}
+                aria-label="Next endpoint page"
+              >
+                Next
+              </Button>
+              {endpointPage.more === 'unknown' ? (
+                <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+                  ClearPass did not provide a total, so another page cannot be requested safely.
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </>
       ) : null}
 
@@ -482,7 +560,13 @@ function ClearPassView({
           }}
           demo={demo}
           lab={lab}
-          onDemoApplied={(form) => mergeDemo((d) => ({ ...d, endpoints: [...d.endpoints, demoEndpointRowFor(form)] }))}
+          onDemoApplied={(form) =>
+            mergeDemoEndpointPage((page) => ({
+              ...page,
+              endpoints: [...page.endpoints, demoEndpointRowFor(form)].slice(0, page.limit),
+              total: page.total === null ? null : page.total + 1,
+            }))
+          }
           reload={reload}
         />
       ) : null}
@@ -496,9 +580,9 @@ function ClearPassView({
           demo={demo}
           lab={lab}
           onDemoApplied={(row, form) =>
-            mergeDemo((d) => ({
-              ...d,
-              endpoints: d.endpoints.map((e) =>
+            mergeDemoEndpointPage((page) => ({
+              ...page,
+              endpoints: page.endpoints.map((e) =>
                 e.id === row.id
                   ? {
                       ...e,

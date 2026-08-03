@@ -276,6 +276,21 @@ export interface ConnectionProbeResult {
   status?: number;
 }
 
+/**
+ * One requested ClearPass endpoint-repository page. This is deliberately an
+ * on-demand read rather than a PlanePull dataset: a screen asks for exactly
+ * one bounded vendor page, never a cached or walked repository.
+ */
+export interface ClearPassEndpointPageRead {
+  kind: 'ok' | 'empty' | 'failed';
+  endpoints: EndpointRow[];
+  /** Exact only when CPPM's response proves it; otherwise null. */
+  total: number | null;
+  /** Exact only when `more` is yes; an unknown continuation is not a guess. */
+  nextOffset: number | null;
+  more: 'yes' | 'unknown' | 'no';
+}
+
 export interface PlaneAdapter {
   id: PlaneId;
   state(): PlaneState;
@@ -388,6 +403,13 @@ export interface PlaneAdapter {
    * error. null = this plane cannot answer.
    */
   serviceDetail?(id: string): Promise<ClearPassServiceDetailLive | null>;
+
+  /**
+   * ClearPass-only: one bounded endpoint-repository page. Called only by the
+   * endpoints screen's explicit page controls; never from the poller and
+   * never backed by its capped endpoint cache.
+   */
+  endpointPage?(offset: number, limit: number): Promise<ClearPassEndpointPageRead>;
 
   /**
    * Release anything held on the far side before this adapter is dropped —
