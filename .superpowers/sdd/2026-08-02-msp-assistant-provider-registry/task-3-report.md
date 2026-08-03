@@ -29,6 +29,7 @@
 
 - `9178e29 refactor: route compatible chat through provider adapter`
 - `a1c4279 fix: preserve safe provider timeout errors`
+- `73fc25a fix: bound compatible provider response parsing`
 
 ## Concerns
 
@@ -41,3 +42,9 @@
 - Non-OK OpenAI-compatible responses now throw a status-only error. The route logs a fixed safe message for generic upstream failures, so neither provider response bodies nor credentials can reach browser responses or route logs.
 - `AssistantProviderAdapter.chat()` now has an explicit request contract carrying provider config, bounded timeout, tool executor, and cancellation signal. `chatLoop()` calls the registry-returned adapter through that contract; it no longer uses `instanceof` or a cast-only `compatible` property.
 - Review-fix tests: `npm --prefix server test -- chat.test.ts mcpChat.test.ts systems.test.ts` passed: 3 files, 60 tests. `npm --prefix server run typecheck` and `git diff --check` passed.
+
+## Rereview timeout-lifecycle fix
+
+- The compatible-provider deadline now owns one abort controller from request dispatch through `response.json()` completion. Headers no longer clear the deadline.
+- A stalled or aborted JSON body is converted to the same `AssistantProviderTimeoutError`, preserving the route's safe HTTP 504 timeout response.
+- Regression evidence: `npm --prefix server test -- chat.test.ts mcpChat.test.ts` passed: 2 files, 26 tests, including a response that delivers headers but blocks JSON parsing until the deadline. `npm --prefix server run typecheck` and `git diff --check` passed.
