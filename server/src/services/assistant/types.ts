@@ -152,6 +152,10 @@ export function createSpawnCommandRunner(): CommandRunner {
   return {
     run(command) {
       return new Promise<CommandResult>((resolve, reject) => {
+        if (command.signal?.aborted) {
+          resolve({ exitCode: null, stdout: '', stderr: '' });
+          return;
+        }
         const child = spawn(command.command, [...command.args], {
           cwd: command.cwd,
           env: minimalEnvironment(command.env),

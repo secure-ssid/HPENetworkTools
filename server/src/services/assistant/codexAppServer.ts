@@ -16,6 +16,21 @@ const APP_SERVER_ARGS = [
 ] as const;
 const READ_TOOLS = ['find_tool', 'invoke_read_tool'] as const;
 const WRITE_TOOLS = [...READ_TOOLS, 'invoke_tool'] as const;
+const OPT_OUT_NOTIFICATION_METHODS = [
+  'remoteControl/status/changed',
+  'mcpServer/startupStatus/updated',
+  'warning',
+  'thread/status/changed',
+  'thread/tokenUsage/updated',
+  'thread/started',
+  'turn/started',
+  'item/started',
+  'item/agentMessage/delta',
+  'item/mcpToolCall/progress',
+  'item/reasoning/summaryTextDelta',
+  'item/reasoning/summaryPartAdded',
+  'item/reasoning/textDelta',
+] as const;
 const MAX_JSONL_BUFFER = 1_048_576;
 const TRANSCRIPT_ARGS_CAP = 200;
 const TRANSCRIPT_RESULT_CAP = 300;
@@ -98,6 +113,9 @@ interface ActiveTurn {
   allowedTools: ReadonlySet<string>;
   text: string | null;
   transcript: ToolTranscript[];
+  items: Map<string, { type: 'userMessage' | 'agentMessage' | 'mcpToolCall' | 'reasoning'; completed: boolean }>;
+  prompt: string;
+  sensitiveToken: string | null;
   resolve(result: AssistantChatResult): void;
   reject(error: CodexAppServerFailure): void;
 }
@@ -145,6 +163,14 @@ function resultPreview(result: unknown): string {
     if (text) return compact(text, TRANSCRIPT_RESULT_CAP);
   }
   return compactJson(result, TRANSCRIPT_RESULT_CAP);
+}
+
+function containsSensitiveToken(value: unknown, token: string | null): boolean {
+  if (!token) return false;
+  if (typeof value === 'string') return value.includes(token);
+  if (Array.isArray(value)) return value.some((entry) => containsSensitiveToken(entry, token));
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, entry]) => key.includes(token) || containsSensitiveToken(entry, token));
 }
 
 function minimalEnvironment(source: NodeJS.ProcessEnv): Record<string, string | undefined> {
@@ -286,6 +312,9 @@ export class CodexAppServer implements CodexAppServerLike {
           allowedTools: new Set(allowedTools),
           text: null,
           transcript: [],
+          items: new Map(),
+          prompt: input.prompt,
+          sensitiveToken: input.authToken,
           resolve,
           reject,
         };
@@ -369,7 +398,10 @@ export class CodexAppServer implements CodexAppServerLike {
     try {
       await this.request(session, 'initialize', {
         clientInfo: { name: 'hpe-network-tools', title: 'HPE Network Tools', version: '1.0.0' },
-        capabilities: { experimentalApi: true },
+        capabilities: {
+          experimentalApi: true,
+          optOutNotificationMethods: OPT_OUT_NOTIFICATION_METHODS,
+        },
       });
       this.notify(session, 'initialized');
       return session;
@@ -419,6 +451,7 @@ export class CodexAppServer implements CodexAppServerLike {
       'mcp_servers.centralmcp.default_tools_approval_mode': 'auto',
       ...(input.authToken ? { 'mcp_servers.centralmcp.bearer_token_env_var': 'HPE_ASSISTANT_MCP_TOKEN' } : {}),
       ...(input.reasoningEffort === 'auto' ? {} : { model_reasoning_effort: input.reasoningEffort }),
+      hide_agent_reasoning: true,
     };
     return {
       ephemeral: true,
@@ -547,6 +580,16 @@ export class CodexAppServer implements CodexAppServerLike {
   }
 
   private onNotification(session: Session, method: string, params: unknown): void {
+    if (method === 'remoteControl/status/changed' && session.stage === 'before-turn') {
+      if (!isRecord(params)
+        || typeof params.installationId !== 'string'
+        || typeof params.serverName !== 'string'
+        || !['disabled', 'connecting', 'connected', 'errored'].includes(String(params.status))
+        || (params.environmentId !== undefined && params.environmentId !== null && typeof params.environmentId !== 'string')) {
+        this.invalidate(session, new CodexAppServerFailure('before-turn'));
+      }
+      return;
+    }
     if (method === 'thread/started' && session.stage === 'before-turn') {
       if (!isRecord(params) || !isRecord(params.thread) || typeof params.thread.id !== 'string') {
         this.invalidate(session, new CodexAppServerFailure('before-turn'));
@@ -564,6 +607,36 @@ export class CodexAppServer implements CodexAppServerLike {
     }
     if (method === 'turn/started') {
       if (!isRecord(params.turn) || typeof params.turn.id !== 'string' || !this.acceptTurnId(active, params.turn.id)) {
+        this.invalidate(session, new CodexAppServerFailure('after-turn'));
+      }
+      return;
+    }
+    if (method === 'item/started') {
+      if (typeof params.turnId !== 'string'
+        || !this.acceptTurnId(active, params.turnId)
+        || !Number.isSafeInteger(params.startedAtMs)
+        || !isRecord(params.item)
+        || !this.acceptStartedItem(active, params.item)) {
+        this.invalidate(session, new CodexAppServerFailure('after-turn'));
+      }
+      return;
+    }
+    if (method === 'item/agentMessage/delta' || method === 'item/mcpToolCall/progress') {
+      const expectedType = method === 'item/agentMessage/delta' ? 'agentMessage' : 'mcpToolCall';
+      const content = method === 'item/agentMessage/delta' ? params.delta : params.message;
+      if (!this.acceptStreamingItem(active, params, expectedType) || typeof content !== 'string') {
+        this.invalidate(session, new CodexAppServerFailure('after-turn'));
+      }
+      return;
+    }
+    if (method === 'item/reasoning/summaryTextDelta'
+      || method === 'item/reasoning/summaryPartAdded'
+      || method === 'item/reasoning/textDelta') {
+      const validIndex = method === 'item/reasoning/textDelta'
+        ? Number.isSafeInteger(params.contentIndex)
+        : Number.isSafeInteger(params.summaryIndex);
+      const validDelta = method === 'item/reasoning/summaryPartAdded' || typeof params.delta === 'string';
+      if (!this.acceptStreamingItem(active, params, 'reasoning') || !validIndex || !validDelta) {
         this.invalidate(session, new CodexAppServerFailure('after-turn'));
       }
       return;
@@ -602,20 +675,86 @@ export class CodexAppServer implements CodexAppServerLike {
     return active.turnId === turnId;
   }
 
-  private acceptCompletedItem(session: Session, active: ActiveTurn, item: JsonRecord): void {
+  private acceptStartedItem(active: ActiveTurn, item: JsonRecord): boolean {
+    if (typeof item.id !== 'string' || !item.id || active.items.has(item.id)) return false;
     if (item.type === 'agentMessage') {
-      if (typeof item.text !== 'string') {
+      if (typeof item.text !== 'string') return false;
+      active.items.set(item.id, { type: 'agentMessage', completed: false });
+      return true;
+    }
+    if (item.type === 'userMessage') {
+      if (!this.isSubmittedUserMessage(active, item)) return false;
+      active.items.set(item.id, { type: 'userMessage', completed: false });
+      return true;
+    }
+    if (item.type === 'mcpToolCall') {
+      if (item.server !== 'centralmcp'
+        || typeof item.tool !== 'string'
+        || !active.allowedTools.has(item.tool)
+        || !Object.hasOwn(item, 'arguments')
+        || !['inProgress', 'completed', 'failed'].includes(String(item.status))) return false;
+      active.items.set(item.id, { type: 'mcpToolCall', completed: false });
+      return true;
+    }
+    if (item.type === 'reasoning') {
+      const validStrings = (value: unknown) => value === undefined
+        || (Array.isArray(value) && value.every((entry) => typeof entry === 'string'));
+      if (!validStrings(item.content) || !validStrings(item.summary)) return false;
+      active.items.set(item.id, { type: 'reasoning', completed: false });
+      return true;
+    }
+    return false;
+  }
+
+  private acceptStreamingItem(
+    active: ActiveTurn,
+    params: JsonRecord,
+    expectedType: 'agentMessage' | 'mcpToolCall' | 'reasoning',
+  ): boolean {
+    if (typeof params.turnId !== 'string'
+      || !this.acceptTurnId(active, params.turnId)
+      || typeof params.itemId !== 'string'
+      || !params.itemId) return false;
+    const item = active.items.get(params.itemId);
+    return item?.type === expectedType && !item.completed;
+  }
+
+  private acceptCompletedItem(session: Session, active: ActiveTurn, item: JsonRecord): void {
+    if (typeof item.id !== 'string' || !item.id) {
+      this.invalidate(session, new CodexAppServerFailure('after-turn'));
+      return;
+    }
+    const started = active.items.get(item.id);
+    if (started?.completed || (started && started.type !== item.type)) {
+      this.invalidate(session, new CodexAppServerFailure('after-turn'));
+      return;
+    }
+    if (item.type === 'agentMessage') {
+      if (typeof item.text !== 'string' || containsSensitiveToken(item.text, active.sensitiveToken)) {
         this.invalidate(session, new CodexAppServerFailure('after-turn'));
         return;
       }
       const text = item.text.trim();
       if (text) active.text = text;
+      active.items.set(item.id, { type: 'agentMessage', completed: true });
+      return;
+    }
+    if (item.type === 'userMessage') {
+      if (!this.isSubmittedUserMessage(active, item)) {
+        this.invalidate(session, new CodexAppServerFailure('after-turn'));
+        return;
+      }
+      active.items.set(item.id, { type: 'userMessage', completed: true });
       return;
     }
     if (item.type === 'mcpToolCall') {
       if (item.server !== 'centralmcp'
         || typeof item.tool !== 'string'
         || !active.allowedTools.has(item.tool)
+        || !Object.hasOwn(item, 'arguments')
+        || containsSensitiveToken(item.arguments, active.sensitiveToken)
+        || containsSensitiveToken(item.result, active.sensitiveToken)
+        || containsSensitiveToken(item.error, active.sensitiveToken)
         || !['completed', 'failed'].includes(String(item.status))) {
         this.invalidate(session, new CodexAppServerFailure('after-turn'));
         return;
@@ -626,9 +765,31 @@ export class CodexAppServer implements CodexAppServerLike {
         resultPreview: resultPreview(item.result),
         ok: item.status === 'completed' && (item.error === undefined || item.error === null),
       });
+      active.items.set(item.id, { type: 'mcpToolCall', completed: true });
+      return;
+    }
+    if (item.type === 'reasoning') {
+      const validStrings = (value: unknown) => value === undefined
+        || (Array.isArray(value) && value.every((entry) => typeof entry === 'string'));
+      if (!validStrings(item.content) || !validStrings(item.summary)) {
+        this.invalidate(session, new CodexAppServerFailure('after-turn'));
+        return;
+      }
+      active.items.set(item.id, { type: 'reasoning', completed: true });
       return;
     }
     this.invalidate(session, new CodexAppServerFailure('after-turn'));
+  }
+
+  private isSubmittedUserMessage(active: ActiveTurn, item: JsonRecord): boolean {
+    if (!Array.isArray(item.content)
+      || item.content.length !== 1
+      || !isRecord(item.content[0])
+      || item.content[0].type !== 'text'
+      || item.content[0].text !== active.prompt
+      || (item.clientId !== undefined && item.clientId !== null && typeof item.clientId !== 'string')) return false;
+    const textElements = item.content[0].text_elements;
+    return textElements === undefined || (Array.isArray(textElements) && textElements.length === 0);
   }
 
   private invalidate(session: Session, failure: CodexAppServerFailure): void {

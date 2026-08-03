@@ -22,6 +22,7 @@ import { maintenance } from './services/maintenance';
 import { alertRulesService } from './services/alertRules';
 import { incidentAutomation } from './services/incidentAutomation';
 import { installLifecycle } from './services/lifecycle';
+import { closeAssistantProviders } from './services/mcpChat';
 import { chatRouter } from './routes/chat';
 import { alertsRouter } from './routes/alerts';
 import { clientsRouter } from './routes/clients';
@@ -400,6 +401,7 @@ export function startServer(
       { name: 'http server', run: () => new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       }) },
+      { name: 'assistant providers', run: () => closeAssistantProviders() },
     ],
   });
   return server;

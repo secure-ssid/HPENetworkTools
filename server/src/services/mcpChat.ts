@@ -511,11 +511,17 @@ export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = 
 }
 
 /** Native adapters are registered, but registry readiness excludes those without chat transport. */
+const codexAssistantAdapter = new CodexAdapter();
 export const assistantProviderRegistry = new AssistantProviderRegistry([
-  new CodexAdapter(),
+  codexAssistantAdapter,
   new ClaudeAdapter(),
   new KimiAdapter(),
   new CopilotAdapter(),
   new OpenAICompatibleAdapter('ollama'),
   new OpenAICompatibleAdapter('openrouter'),
 ]);
+
+/** Stops the warm native assistant process and removes its private auth copy. */
+export async function closeAssistantProviders(): Promise<void> {
+  await codexAssistantAdapter.dispose();
+}

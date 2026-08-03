@@ -19,7 +19,8 @@ class FakeChild implements CodexAppServerChild {
   readonly rawSent: string[] = [];
   killed = false;
   inventory = ['centralmcp'];
-  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' = 'complete';
+  emitRemoteStatus = false;
+  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' | 'streaming' | 'mismatched-stream' | 'token-result' | 'token-message' = 'complete';
   private readonly events = new EventEmitter();
   private sequence = 0;
 
@@ -58,6 +59,12 @@ class FakeChild implements CodexAppServerChild {
   private reply(message: SentMessage): void {
     if (message.method === 'initialize') {
       this.emit({ id: message.id, result: { userAgent: 'codex-app-server-test' } });
+      if (this.emitRemoteStatus) {
+        this.emit({
+          method: 'remoteControl/status/changed',
+          params: { installationId: 'local-install', serverName: 'local-server', status: 'disabled', environmentId: null },
+        });
+      }
       return;
     }
     if (message.method === 'thread/start') {
@@ -96,6 +103,81 @@ class FakeChild implements CodexAppServerChild {
       return;
     }
     const server = this.turnMode === 'foreign-tool' ? 'computer-use' : 'centralmcp';
+    if (this.turnMode === 'streaming' || this.turnMode === 'mismatched-stream') {
+      this.emit({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          startedAtMs: -1,
+          item: { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Check the lab inventory.' }] },
+        },
+      });
+      this.emit({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          completedAtMs: -1,
+          item: { id: 'user-1', type: 'userMessage', content: [{ type: 'text', text: 'Check the lab inventory.' }] },
+        },
+      });
+      this.emit({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          startedAtMs: 0,
+          item: { id: 'reasoning-1', type: 'reasoning', content: [], summary: [] },
+        },
+      });
+      this.emit({
+        method: 'item/reasoning/summaryPartAdded',
+        params: { threadId, turnId, itemId: 'reasoning-1', summaryIndex: 0 },
+      });
+      this.emit({
+        method: 'item/reasoning/summaryTextDelta',
+        params: { threadId, turnId, itemId: 'reasoning-1', summaryIndex: 0, delta: 'private summary' },
+      });
+      this.emit({
+        method: 'item/reasoning/textDelta',
+        params: { threadId, turnId, itemId: 'reasoning-1', contentIndex: 0, delta: 'private reasoning' },
+      });
+      this.emit({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          completedAtMs: 0,
+          item: { id: 'reasoning-1', type: 'reasoning', content: ['private reasoning'], summary: ['private summary'] },
+        },
+      });
+      this.emit({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          startedAtMs: 1,
+          item: {
+            id: 'tool-1',
+            type: 'mcpToolCall',
+            server: 'centralmcp',
+            tool: 'find_tool',
+            arguments: { query: 'switch inventory' },
+            status: 'inProgress',
+          },
+        },
+      });
+      this.emit({
+        method: 'item/mcpToolCall/progress',
+        params: {
+          threadId,
+          turnId: this.turnMode === 'mismatched-stream' ? 'wrong-turn' : turnId,
+          itemId: 'tool-1',
+          message: 'searching private inventory',
+        },
+      });
+    }
     this.emit({
       method: 'item/completed',
       params: {
@@ -108,19 +190,43 @@ class FakeChild implements CodexAppServerChild {
           server,
           tool: 'find_tool',
           arguments: { query: 'switch inventory' },
-          result: { content: [{ type: 'text', text: 'catalogue found' }] },
+          result: { content: [{ type: 'text', text: this.turnMode === 'token-result' ? 'secret-token' : 'catalogue found' }] },
           status: 'completed',
           error: null,
         },
       },
     });
+    if (this.turnMode === 'streaming') {
+      this.emit({
+        method: 'item/started',
+        params: {
+          threadId,
+          turnId,
+          startedAtMs: 2,
+          item: { id: 'message-1', type: 'agentMessage', text: '' },
+        },
+      });
+      this.emit({
+        method: 'item/agentMessage/delta',
+        params: {
+          threadId,
+          turnId,
+          itemId: 'message-1',
+          delta: 'This streamed text must not become the final output.',
+        },
+      });
+    }
     this.emit({
       method: 'item/completed',
       params: {
         threadId,
         turnId,
         completedAtMs: 2,
-        item: { id: 'message-1', type: 'agentMessage', text: 'CentralMCP is ready.' },
+        item: {
+          id: 'message-1',
+          type: 'agentMessage',
+          text: this.turnMode === 'token-message' ? 'Leaked secret-token' : 'CentralMCP is ready.',
+        },
       },
     });
     this.emit({
@@ -130,7 +236,7 @@ class FakeChild implements CodexAppServerChild {
   }
 }
 
-function testHarness(options: { inventory?: string[]; turnMode?: FakeChild['turnMode'] } = {}) {
+function testHarness(options: { inventory?: string[]; turnMode?: FakeChild['turnMode']; remoteStatus?: boolean } = {}) {
   const launches: CodexAppServerLaunch[] = [];
   const children: FakeChild[] = [];
   const chmodCalls: Array<{ path: string; mode: number }> = [];
@@ -151,6 +257,7 @@ function testHarness(options: { inventory?: string[]; turnMode?: FakeChild['turn
       const child = new FakeChild();
       if (options.inventory) child.inventory = options.inventory;
       if (options.turnMode) child.turnMode = options.turnMode;
+      if (options.remoteStatus) child.emitRemoteStatus = true;
       children.push(child);
       return child;
     },
@@ -176,7 +283,7 @@ describe('CodexAppServer', () => {
   });
 
   it('uses the installed JSONL lifecycle with a private auth copy and keeps the bearer token out of protocol text', async () => {
-    const fake = testHarness();
+    const fake = testHarness({ remoteStatus: true });
     transports.push(fake.transport);
 
     await expect(fake.transport.chat(request)).resolves.toEqual({
@@ -192,6 +299,25 @@ describe('CodexAppServer', () => {
     expect(fake.children[0]?.sentMethods()).toEqual([
       'initialize', 'initialized', 'thread/start', 'mcpServerStatus/list', 'turn/start',
     ]);
+    const initialize = fake.children[0]?.sent.find((message) => message.method === 'initialize');
+    expect(initialize?.params?.capabilities).toEqual({
+      experimentalApi: true,
+      optOutNotificationMethods: [
+        'remoteControl/status/changed',
+        'mcpServer/startupStatus/updated',
+        'warning',
+        'thread/status/changed',
+        'thread/tokenUsage/updated',
+        'thread/started',
+        'turn/started',
+        'item/started',
+        'item/agentMessage/delta',
+        'item/mcpToolCall/progress',
+        'item/reasoning/summaryTextDelta',
+        'item/reasoning/summaryPartAdded',
+        'item/reasoning/textDelta',
+      ],
+    });
     expect(fake.launches[0]).toMatchObject({
       command: 'codex',
       args: ['app-server', '--stdio', '--strict-config', '--disable', 'apps', '--disable', 'plugins', '--disable', 'computer_use', '--disable', 'browser_use'],
@@ -227,8 +353,13 @@ describe('CodexAppServer', () => {
         'mcp_servers.centralmcp.default_tools_approval_mode': 'auto',
         'mcp_servers.centralmcp.bearer_token_env_var': 'HPE_ASSISTANT_MCP_TOKEN',
         model_reasoning_effort: 'low',
+        hide_agent_reasoning: true,
       },
     });
+
+    await fake.transport.dispose();
+    expect(fake.children[0]?.killed).toBe(true);
+    expect(fake.removed).toContain('/private/hpe-codex-1');
   });
 
   it('requires the exact centralmcp inventory before a turn can start', async () => {
@@ -253,6 +384,40 @@ describe('CodexAppServer', () => {
       }));
       expect(fake.children[0]?.killed).toBe(true);
     }
+  });
+
+  it('accepts and discards only schema-backed start, reasoning, MCP progress, and agent delta events for the active turn', async () => {
+    const fake = testHarness({ turnMode: 'streaming' });
+    transports.push(fake.transport);
+
+    await expect(fake.transport.chat(request)).resolves.toEqual({
+      text: 'CentralMCP is ready.',
+      transcript: [{
+        tool: 'find_tool',
+        args: '{"query":"switch inventory"}',
+        resultPreview: 'catalogue found',
+        ok: true,
+      }],
+    });
+    expect(fake.children[0]?.killed).toBe(false);
+  });
+
+  it('rejects a schema-backed streaming event for a different turn', async () => {
+    const fake = testHarness({ turnMode: 'mismatched-stream' });
+    transports.push(fake.transport);
+
+    await expect(fake.transport.chat(request)).rejects.toMatchObject({ stage: 'after-turn' });
+    expect(fake.children[0]?.killed).toBe(true);
+  });
+
+  it.each(['token-result', 'token-message'] as const)('fails closed when CentralMCP or final output echoes the bearer token via %s', async (turnMode) => {
+    const fake = testHarness({ turnMode });
+    transports.push(fake.transport);
+
+    const failure = await fake.transport.chat(request).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ stage: 'after-turn', message: expect.stringMatching(/did not complete/i) });
+    expect(JSON.stringify(failure)).not.toContain('secret-token');
+    expect(fake.children[0]?.killed).toBe(true);
   });
 
   it('reuses an unchanged scoped child, replaces it when endpoint, token digest, or allowed tools change, and omits auto effort', async () => {

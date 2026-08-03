@@ -399,39 +399,32 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
 
   override async probeReadOnly(config: AssistantProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
     if (!isCodexConfig(config)) return unavailable();
-    let persistentTurnCompleted = false;
-    for (let attempt = 0; attempt < CODEX_PROBE_ATTEMPTS; attempt += 1) {
-      try {
-        const result = await this.appServer.probe({
-          endpoint: context.mcp.endpoint,
-          authToken: context.mcp.authToken,
-          writeEnabled: false,
-          model: config.model,
-          reasoningEffort: config.reasoningEffort,
-          prompt: READ_ONLY_PROBE_PROMPT,
-          timeoutMs: this.timeoutMs,
-        });
-        persistentTurnCompleted = true;
-        const transcript = Array.isArray(result.transcript) ? result.transcript : [];
-        const successfulFindTool = transcript.length === 1
-          && isRecord(transcript[0])
-          && transcript[0].tool === 'find_tool'
-          && transcript[0].ok === true;
-        if (successfulFindTool) {
-          context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
-          return resultFor(config);
-        }
-        if (transcript.length === 0 && attempt + 1 < CODEX_PROBE_ATTEMPTS) continue;
-        return unavailable();
-      } catch (error) {
-        await this.appServer.dispose().catch(() => undefined);
-        if (error instanceof CodexAppServerFailure && error.stage === 'before-turn' && !persistentTurnCompleted) {
-          return this.probeOneShot(config, context);
-        }
-        return unavailable();
+    try {
+      const result = await this.appServer.probe({
+        endpoint: context.mcp.endpoint,
+        authToken: context.mcp.authToken,
+        writeEnabled: false,
+        model: config.model,
+        reasoningEffort: config.reasoningEffort,
+        prompt: READ_ONLY_PROBE_PROMPT,
+        timeoutMs: this.timeoutMs,
+      });
+      const transcript = Array.isArray(result.transcript) ? result.transcript : [];
+      const successfulFindTool = transcript.length === 1
+        && isRecord(transcript[0])
+        && transcript[0].tool === 'find_tool'
+        && transcript[0].ok === true;
+      if (successfulFindTool) {
+        context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
+        return resultFor(config);
       }
+      return unavailable();
+    } catch (error) {
+      if (error instanceof CodexAppServerFailure && error.stage === 'before-turn') {
+        return this.probeOneShot(config, context);
+      }
+      return unavailable();
     }
-    return unavailable();
   }
 
   private async probeOneShot(config: CodexProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
@@ -481,12 +474,16 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
         signal: request.signal,
       });
     } catch (error) {
-      await this.appServer.dispose().catch(() => undefined);
       if (!(error instanceof CodexAppServerFailure) || error.stage !== 'before-turn') {
         throw new Error('Codex CLI did not complete the assistant request.');
       }
+      if (request.signal?.aborted) throw new Error('Codex CLI did not complete the assistant request.');
     }
     return this.chatOneShot(request);
+  }
+
+  async dispose(): Promise<void> {
+    await this.appServer.dispose();
   }
 
   private async chatOneShot(request: AssistantChatRequest): Promise<AssistantChatResult> {

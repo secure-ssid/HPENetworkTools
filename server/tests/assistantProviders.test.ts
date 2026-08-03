@@ -7,7 +7,7 @@ import { ClaudeAdapter, CodexAdapter, CopilotAdapter, KimiAdapter, type NativeCl
 import { CodexAppServerFailure, type CodexAppServerLike } from '../src/services/assistant/codexAppServer';
 import { createMcpLaunchConfig } from '../src/services/assistant/mcpLaunchConfig';
 import { AssistantProviderRegistry, getAssistantDefaults } from '../src/services/assistant/registry';
-import type { AssistantProviderAdapter, CommandExecution, ProbeInvocation, ReadOnlyProbeContext } from '../src/services/assistant/types';
+import { createSpawnCommandRunner, type AssistantProviderAdapter, type CommandExecution, type ProbeInvocation, type ReadOnlyProbeContext } from '../src/services/assistant/types';
 
 const temporaryPaths: string[] = [];
 
@@ -419,6 +419,63 @@ describe('isolated native assistant CLI adapters', () => {
       .resolves.toEqual({ authenticated: false, modelReady: false });
     expect(invocations).toEqual([]);
     expect(oneShotRunner).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a completed persistent probe turn that returned no tool evidence', async () => {
+    const probe = vi.fn(async () => ({ text: 'No tool call was made.', transcript: [] }));
+    const oneShotRunner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const adapter = new CodexAdapter({
+      codexAppServer: { chat: probe, probe, dispose: async () => {} },
+      commandRunner: { run: oneShotRunner },
+    });
+    const { context, invocations } = probeContext();
+
+    await expect(adapter.probeReadOnly(
+      { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+      context,
+    )).resolves.toEqual({ authenticated: false, modelReady: false });
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(oneShotRunner).not.toHaveBeenCalled();
+    expect(invocations).toEqual([]);
+  });
+
+  it('does not start one-shot fallback for an already-aborted request and tears down through the adapter lifecycle', async () => {
+    const dispose = vi.fn(async () => {});
+    const oneShotRunner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const adapter = new CodexAdapter({
+      codexAppServer: {
+        chat: async () => { throw new CodexAppServerFailure('before-turn'); },
+        probe: async () => { throw new CodexAppServerFailure('before-turn'); },
+        dispose,
+      },
+      commandRunner: { run: oneShotRunner },
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose: async () => {} }),
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(adapter.chat({
+      config: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+      timeoutMs: 5000,
+      messages: [{ role: 'user', content: 'Apply a write.' }],
+      mcp: { ...centralMcp, writeEnabled: true },
+      signal: controller.signal,
+    } as any)).rejects.toThrow(/did not complete/i);
+    expect(oneShotRunner).not.toHaveBeenCalled();
+
+    await adapter.dispose();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not spawn a shared command runner process when its signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(createSpawnCommandRunner().run({
+      command: '/definitely/not/a/real/executable',
+      args: [],
+      signal: controller.signal,
+    })).resolves.toEqual({ exitCode: null, stdout: '', stderr: '' });
   });
 
   it('rejects Copilot Auto with any persisted effort other than adaptive before executable discovery', async () => {
