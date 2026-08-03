@@ -904,4 +904,43 @@ describe('ClearPass reviewed writes', () => {
     await waitFor(() => expect(mockGetEndpointPage).toHaveBeenCalledTimes(2)); // the refreshed endpoint page
     await waitFor(() => expect(within(dialog).getByText(/confirmed in the repository read-back/)).toBeTruthy());
   });
+
+  it('keeps the newest full-envelope capability result and clears an open drawer when write access is revoked', async () => {
+    let resolveStaleWritable!: (data: ClearPassData) => void;
+    const staleWritable = new Promise<ClearPassData>((resolve) => {
+      resolveStaleWritable = resolve;
+    });
+    mockGetClearPass
+      .mockResolvedValueOnce(liveData({ roles: CLEARPASS_ROLES, canWrite: true }))
+      .mockReturnValueOnce(staleWritable)
+      .mockResolvedValueOnce(liveData({ roles: CLEARPASS_ROLES, canWrite: false }));
+    mockRegister.mockResolvedValue({
+      ...DEMO_OK,
+      message: 'endpoint registered and confirmed in the repository read-back (HTTP 201)',
+      cacheRefresh: { attempted: true, ok: true },
+    });
+    renderClearPass();
+    await screen.findByRole('button', { name: 'Register endpoint' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register endpoint' }));
+    let dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
+    fireEvent.change(within(dialog).getByLabelText('MAC address'), { target: { value: 'AABBCCDDEEFF' } });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /I have reviewed this write/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Register endpoint' }));
+    await waitFor(() => expect(mockGetClearPass).toHaveBeenCalledTimes(2));
+
+    dialog = screen.getByRole('dialog', { name: 'Register endpoint' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Register endpoint' }));
+    await waitFor(() => expect(mockGetClearPass).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Register endpoint' })).toBeNull());
+    expect(screen.queryByRole('button', { name: 'Register endpoint' })).toBeNull();
+    expect(screen.getByText(/read-only connector grant/i)).toBeTruthy();
+
+    await act(async () => {
+      resolveStaleWritable(liveData({ roles: CLEARPASS_ROLES, canWrite: true }));
+      await staleWritable;
+    });
+    expect(screen.queryByRole('button', { name: 'Register endpoint' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Register endpoint' })).toBeNull();
+  });
 });

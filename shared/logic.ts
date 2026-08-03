@@ -539,6 +539,7 @@ export function seedFormFromRow(
     plane: v.plane,
     id: v.id,
     name: v.name,
+    ...(v.scope ? { scope: v.scope } : {}),
     helpers: opts.live ? '' : v.id === '812' ? '10.42.0.20' : '10.42.0.20, 10.44.0.20',
   };
 }

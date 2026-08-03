@@ -1664,14 +1664,17 @@ describe('live-mode screen contracts', () => {
   });
 
   it('live configure exposes the broker queue and computed stats; compliance stays honest', async () => {
-    const { DEFAULT_VLAN_FORM } = await import('@hpe/shared');
+    const { DEFAULT_SSID_FORM } = await import('@hpe/shared');
     contributions.clear();
     contributions.set('central', { devices: [DEVICE] });
     await setDemoMode(true);
     const queued = await fetch(`${base}/api/configure/queue`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ kind: 'vlan', form: DEFAULT_VLAN_FORM, ticket: 'NET-4188' }),
+      // This test exercises the queue/list contract, not VLAN identity. Generic
+      // VLAN writes now require an exact configured Central inventory row, so
+      // use the kind-agnostic SSID fixture instead of forging a VLAN target.
+      body: JSON.stringify({ kind: 'ssid', form: DEFAULT_SSID_FORM, ticket: 'NET-4188' }),
     });
     expect(queued.status).toBe(200);
     const changeId = ((await queued.json()) as any).id as string;
@@ -2804,14 +2807,16 @@ describe('live-mode screen contracts', () => {
   });
 
   it('the live change log names what changed and where, in local time', async () => {
-    const { DEFAULT_VLAN_FORM } = await import('@hpe/shared');
+    const { DEFAULT_SSID_FORM } = await import('@hpe/shared');
     // A brokered write references a raised ticket; demo mode also accepts the
     // fixture queue, so the change is queued there and read back live.
     await setDemoMode(true);
     const queued = await fetch(`${base}/api/configure/queue`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ kind: 'vlan', form: DEFAULT_VLAN_FORM, ticket: 'NET-4188' }),
+      // Change-log rendering is kind-agnostic. Do not bypass the production
+      // VLAN resolver with a demo-only, unobserved target.
+      body: JSON.stringify({ kind: 'ssid', form: DEFAULT_SSID_FORM, ticket: 'NET-4188' }),
     });
     const changeId = ((await queued.json()) as any).id as string | undefined;
     await setDemoMode(false);

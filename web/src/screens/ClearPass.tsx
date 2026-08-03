@@ -139,8 +139,16 @@ export default function ClearPass() {
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('all');
   const [category, setCategory] = useState('all');
+  const dataRequestSeqRef = useRef(0);
+  const dataMountedRef = useRef(false);
   const endpointPageRequestSeqRef = useRef(0);
   const endpointPageMountedRef = useRef(false);
+
+  const requestData = async (): Promise<void> => {
+    const seq = ++dataRequestSeqRef.current;
+    const next = await getClearPass();
+    if (dataMountedRef.current && seq === dataRequestSeqRef.current) setData(next);
+  };
 
   const requestEndpointPage = async (offset: number, limit = 50): Promise<void> => {
     const seq = ++endpointPageRequestSeqRef.current;
@@ -149,14 +157,13 @@ export default function ClearPass() {
   };
 
   useEffect(() => {
-    let live = true;
+    dataMountedRef.current = true;
     endpointPageMountedRef.current = true;
-    void getClearPass().then((d) => {
-      if (live) setData(d);
-    });
+    void requestData();
     void requestEndpointPage(0, 50);
     return () => {
-      live = false;
+      dataMountedRef.current = false;
+      dataRequestSeqRef.current += 1;
       endpointPageMountedRef.current = false;
       endpointPageRequestSeqRef.current += 1;
     };
@@ -191,7 +198,7 @@ export default function ClearPass() {
         const page = endpointPage;
         await requestEndpointPage(page?.offset ?? 0, page?.limit ?? 50);
       }}
-      reload={async () => setData(await getClearPass())}
+      reload={requestData}
       mergeDemo={(fn) => setData((current) => (current ? fn(current) : current))}
       mergeDemoEndpointPage={(fn) => setEndpointPage((current) => (current ? fn(current) : current))}
     />
@@ -261,6 +268,11 @@ function ClearPassView({
   const [serviceView, setServiceView] = useState<ClearPassServiceRow | null>(null);
   const demo = data.dataSource === 'demo';
   const canWrite = demo || data.canWrite === true;
+  const [previousCanWrite, setPreviousCanWrite] = useState(canWrite);
+  if (previousCanWrite !== canWrite) {
+    setPreviousCanWrite(canWrite);
+    if (!canWrite && writeDrawer !== null) setWriteDrawer(null);
+  }
   /** The table only ever sees this one on-demand page, never the screen cache. */
   const endpoints = endpointPage?.endpoints ?? [];
   const loadedEndpointCount = endpoints.length;

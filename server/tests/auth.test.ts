@@ -24,7 +24,7 @@ import type { AddressInfo } from 'node:net';
 import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair, type JWK, type KeyLike } from 'jose';
-import { DEFAULT_VLAN_FORM } from '@hpe/shared';
+import { DEFAULT_SSID_FORM } from '@hpe/shared';
 
 let tmpDir: string;
 let idp: Server;
@@ -763,7 +763,9 @@ describe('audit attribution end to end', () => {
     const queued = await fetch(`${portalBase}/api/configure/queue`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ kind: 'vlan', form: { ...DEFAULT_VLAN_FORM, id: '931' }, ticket: 'NET-4188' }),
+      // Attribution is independent of object kind. Use the demo SSID fixture so
+      // this audit test does not forge a VLAN absent from Central inventory.
+      body: JSON.stringify({ kind: 'ssid', form: DEFAULT_SSID_FORM, ticket: 'NET-4188' }),
     });
     expect(queued.status).toBe(200);
 

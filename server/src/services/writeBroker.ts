@@ -46,6 +46,7 @@ import {
   type ConfigKind,
   type PortForm,
   type SsidForm,
+  type VlanObject,
   type VlanForm,
   type Plane,
   vlanIdProblem,
@@ -556,6 +557,8 @@ export interface WriteBrokerOptions {
     serial?: string;
     claimedBy?: Plane[];
   }>;
+  /** Canonical VLAN identities available to the Central broker. */
+  listVlans?: () => ReadonlyArray<Pick<VlanObject, 'id' | 'scope' | 'plane' | 'origin'>>;
   /** Process-side test seam. Production always evaluates canonical settings. */
   admitWrite?: AdmitWrite;
 }
@@ -583,6 +586,7 @@ export class WriteBroker {
   private readonly nowMs: () => number;
   private readonly knownTicket: (id: string) => boolean;
   private readonly listDevices: NonNullable<WriteBrokerOptions['listDevices']>;
+  private readonly listVlans: NonNullable<WriteBrokerOptions['listVlans']>;
   private readonly admitWrite: AdmitWrite;
   private changes: BrokeredChange[] | null = null; // lazy-loaded from disk
   private readonly pushing = new Set<string>(); // change ids with a push in flight (double-apply guard)
@@ -596,6 +600,7 @@ export class WriteBroker {
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.nowMs = opts.nowMs ?? (() => Date.now());
     this.knownTicket = opts.knownTicket ?? ((id) => knownTicketId(id, settings.get().demoMode));
+    const hasTransportTestSeam = Object.prototype.hasOwnProperty.call(opts, 'transport');
     this.listDevices = opts.listDevices ?? (() => {
       const devices = settings.get().demoMode ? DEVICES : defaultPoller.getCache().devices;
       return devices.map((device) => ({
@@ -605,7 +610,18 @@ export class WriteBroker {
         ...(device.claimedBy ? { claimedBy: device.claimedBy } : {}),
       }));
     });
-    const hasTransportTestSeam = Object.prototype.hasOwnProperty.call(opts, 'transport');
+    this.listVlans = opts.listVlans ?? (hasTransportTestSeam
+      ? (() => [{ id: '812', scope: 'cx-campus-01', plane: 'CENTRAL', origin: 'configured' }])
+      : (() => {
+          const config = this.pollerRef.contributionsByPlane().get('central')?.config;
+          if (config?.mode !== 'configured') return [];
+          return (config.vlans ?? []).map((vlan) => ({
+            id: vlan.id,
+            ...(vlan.scope ? { scope: vlan.scope } : {}),
+            plane: 'CENTRAL' as const,
+            origin: vlan.origin ?? 'configured',
+          }));
+        }));
     this.admitWrite = opts.admitWrite ?? (hasTransportTestSeam
       ? ((request) => ({ ok: true, plane: request.plane, adapter: this.registry.get(request.plane) }))
       : ((request) => evaluateWriteAdmission(request, { registry: this.registry })));
@@ -622,7 +638,20 @@ export class WriteBroker {
             : 'generic VLAN writes require proven Central ownership; target plane was not reported',
         );
       }
-      return form;
+      const target = this.listVlans().find(
+        (candidate) =>
+          candidate.origin === 'configured' &&
+          candidate.plane === 'CENTRAL' &&
+          candidate.id === vlan.id &&
+          candidate.scope === vlan.scope,
+      );
+      if (!target?.scope) {
+        throw new BrokerError(
+          404,
+          `VLAN ${vlan.id} in scope '${vlan.scope}' was not found in configured Central VLAN inventory`,
+        );
+      }
+      return { ...vlan, id: target.id, scope: target.scope, plane: 'CENTRAL' };
     }
     if (kind !== 'port') return form;
     const port = form as PortForm;

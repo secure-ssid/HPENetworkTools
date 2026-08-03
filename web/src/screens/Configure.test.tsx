@@ -92,6 +92,7 @@ const CENTRAL_VLAN_ROW = {
   kind: 'vlan' as const,
   origin: 'configured' as const,
   plane: 'CENTRAL' as const,
+  scope: 'cx-campus-01' as const,
   id: '812',
   name: 'guest-wifi',
   detail: 'configured',
@@ -268,15 +269,20 @@ describe('Configure — per-entry-source queue semantics', () => {
     expect(screen.getByText(/No exact configured Central VLAN row is available to apply/i)).toBeTruthy();
   });
 
-  it('keeps authored demo configuration controls usable without live admission fields', async () => {
+  it('keeps default demo VLANs preview-only when no Central connector admits the vendor write', async () => {
     mockGetPortalSettings.mockResolvedValue({ demoMode: true, pollIntervalSec: 60, configMode: true });
     mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, dataSource: 'demo', capabilities: [] });
     renderConfigure();
 
     await screen.findByRole('button', { name: 'New VLAN' });
+    expect(screen.getByText(/forms remain preview-only/i)).toBeTruthy();
+    expect(screen.queryByText('Lab writes apply immediately')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'New VLAN' }));
     fireEvent.change(screen.getByLabelText('ID'), { target: { value: '999' } });
-    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+    expect(screen.getByText(/no linked Central connector currently admits/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(mockApplyConfigDirect).not.toHaveBeenCalled();
   });
 
   it('only offers configured live rows and never seeds unknown port/VLAN fields from demo fixtures', async () => {
@@ -332,7 +338,7 @@ describe('Configure — per-entry-source queue semantics', () => {
     fireEvent.click(screen.getByText('clinical').closest('button') as HTMLButtonElement);
     fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
     expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
-    expect(screen.getByText(/connector grant is read-only/i)).toBeTruthy();
+    expect(screen.getByText(/does not currently admit this configuration write/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
 
     fireEvent.click(screen.getByRole('button', { name: /cx-core-1/i }));
@@ -470,7 +476,7 @@ describe('Configure — per-entry-source queue semantics', () => {
     expect(mockApplyConfigDirect).not.toHaveBeenCalled();
   });
 
-  it('a legacy settings response removes broker controls and immediately applies a valid VLAN with result evidence', async () => {
+  it('a legacy settings response applies only the configured VLAN id and scope with result evidence', async () => {
     // A returned, pre-configMode settings payload means the server will use
     // its lab-direct default. `null` still means unreachable and stays hard.
     mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60 });
@@ -487,7 +493,13 @@ describe('Configure — per-entry-source queue semantics', () => {
     expect(screen.queryByPlaceholderText('NET-4166')).toBeNull();
 
     fireEvent.click(vlanRow.closest('button') as HTMLButtonElement);
+    fireEvent.change(screen.getByLabelText('Apply to'), { target: { value: 'cx-all' } });
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+    fireEvent.change(screen.getByLabelText('Apply to'), { target: { value: 'cx-campus-01' } });
     fireEvent.change(screen.getByLabelText('ID'), { target: { value: '999' } });
+    expect(screen.getByRole('button', { name: 'Apply' })).toHaveProperty('disabled', true);
+    expect(screen.getByText(/immutable VLAN id and scope/i)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('ID'), { target: { value: '812' } });
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'lab-vlan' } });
     fireEvent.change(screen.getByLabelText('DHCP helpers'), { target: { value: '10.44.0.20' } });
     expect(screen.queryByRole('button', { name: 'Dry run' })).toBeNull();
@@ -497,7 +509,7 @@ describe('Configure — per-entry-source queue semantics', () => {
     await waitFor(() =>
       expect(mockApplyConfigDirect).toHaveBeenCalledWith(
         'vlan',
-        expect.objectContaining({ plane: 'CENTRAL', id: '999', name: 'lab-vlan' }),
+        expect.objectContaining({ plane: 'CENTRAL', id: '812', scope: 'cx-campus-01', name: 'lab-vlan' }),
       ),
     );
     expect(screen.getByText('Applied')).toBeTruthy();
@@ -875,6 +887,20 @@ describe('Configure — change history drawer', () => {
 
     const drawer = within(await screen.findByRole('dialog'));
     await waitFor(() => expect(drawer.getByText('No brokered changes recorded yet')).toBeTruthy());
+  });
+
+  it('uses direct-apply audit copy in lab mode without broker, ticket, queue, or dry-run claims', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: true });
+    mockGetChangeHistory.mockResolvedValue({ events: [], unreadable: [] });
+
+    renderConfigure();
+    await screen.findByRole('button', { name: 'Change history' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change history' }));
+
+    const drawer = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(drawer.getByText('No direct applies recorded yet')).toBeTruthy());
+    expect(drawer.getByText(/configuration audit log/i)).toBeTruthy();
+    expect(drawer.queryByText(/broker|ticket|queue|dry run/i)).toBeNull();
   });
 
   it('says the audit log could not be read instead of showing an empty history', async () => {

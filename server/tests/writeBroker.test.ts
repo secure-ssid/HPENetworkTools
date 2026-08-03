@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import express from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import {
   DEFAULT_PORT_FORM,
   DEFAULT_SSID_FORM,
@@ -304,6 +304,24 @@ describe('lab direct apply', () => {
     }
   });
 
+  it('the default demo install rejects a direct VLAN request with no configured Central inventory target', async () => {
+    // This suite starts from the product's default demoMode=true. Change only
+    // the workflow flag so parallel screen-contract tests never observe an
+    // unrelated portal-wide mode transition.
+    settings.update({ configMode: true });
+    try {
+      const response = await postJson('/api/configure/apply', {
+        kind: 'vlan',
+        form: DEFAULT_VLAN_FORM,
+      });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toMatch(/configured Central VLAN inventory/i);
+    } finally {
+      settings.update({ configMode: false });
+    }
+  });
+
   it('refuses SSIDs from the generic direct broker so they stay on the scoped profile writer', async () => {
     const transport = transportWith(200, {});
     const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: () => false });
@@ -381,6 +399,61 @@ describe('lab direct apply', () => {
       const { plane: _plane, ...withoutPlane } = DEFAULT_VLAN_FORM;
       await expect(broker.apply('vlan', withoutPlane)).rejects.toMatchObject({ status: 409 });
       await expect(broker.apply('vlan', { ...DEFAULT_VLAN_FORM, plane: 'MIST' })).rejects.toMatchObject({ status: 409 });
+      expect(transport.calls).toEqual([]);
+    } finally {
+      settings.update({ configMode: false });
+    }
+  });
+
+  it('resolves VLAN id and scope from configured Central inventory instead of trusting a forged plane claim', async () => {
+    const transport = transportWith(200);
+    const configuredVlan = {
+      id: DEFAULT_VLAN_FORM.id,
+      scope: DEFAULT_VLAN_FORM.scope,
+      plane: 'CENTRAL' as const,
+      origin: 'configured' as const,
+    };
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport,
+      knownTicket: anyTicket,
+      listVlans: () => [configuredVlan],
+    });
+    settings.update({ configMode: true });
+    try {
+      await expect(
+        broker.apply('vlan', { ...DEFAULT_VLAN_FORM, id: '813', plane: 'CENTRAL' }),
+      ).rejects.toMatchObject({ status: 404 });
+      await expect(
+        broker.apply('vlan', { ...DEFAULT_VLAN_FORM, scope: 'cx-all', plane: 'CENTRAL' }),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(transport.calls).toEqual([]);
+
+      await expect(broker.apply('vlan', DEFAULT_VLAN_FORM)).resolves.toMatchObject({ ok: true, applied: true });
+      expect(transport.calls).toEqual([
+        { method: 'PUT', path: '/configuration/v2/vlan/cx-campus-01/812' },
+      ]);
+    } finally {
+      settings.update({ configMode: false });
+    }
+  });
+
+  it('rejects an observed VLAN even when its caller claims Central ownership', async () => {
+    const transport = transportWith(200);
+    const broker = new WriteBroker({
+      dataDir: freshDataDir(),
+      transport,
+      knownTicket: anyTicket,
+      listVlans: () => [{
+        id: DEFAULT_VLAN_FORM.id,
+        scope: DEFAULT_VLAN_FORM.scope,
+        plane: 'CENTRAL',
+        origin: 'observed',
+      }],
+    });
+    settings.update({ configMode: true });
+    try {
+      await expect(broker.apply('vlan', DEFAULT_VLAN_FORM)).rejects.toMatchObject({ status: 404 });
       expect(transport.calls).toEqual([]);
     } finally {
       settings.update({ configMode: false });
@@ -694,7 +767,17 @@ describe('push', () => {
     const store = new SettingsStore(join(tmpDir, 'push-window-settings.json'));
     const reg = new PlaneRegistry(store);
     // No transport override + no central creds → unwritable → 'needs window'.
-    const windowBroker = new WriteBroker({ registry: reg, dataDir: freshDataDir(), knownTicket: anyTicket });
+    const windowBroker = new WriteBroker({
+      registry: reg,
+      dataDir: freshDataDir(),
+      knownTicket: anyTicket,
+      listVlans: () => [{
+        id: DEFAULT_VLAN_FORM.id,
+        scope: DEFAULT_VLAN_FORM.scope,
+        plane: 'CENTRAL',
+        origin: 'configured',
+      }],
+    });
     const windowChange = windowBroker.queue('vlan', DEFAULT_VLAN_FORM, 'NET-7');
     expect(windowChange.state).toBe('needs window');
     await expect(windowBroker.push(windowChange.id)).rejects.toThrow(/only ready changes/);
@@ -1012,37 +1095,60 @@ describe('configure routes', () => {
   });
 
   it('queue → list → push (409 not ready) → discard round trip', async () => {
-    const queued = await postJson('/api/configure/queue', {
-      kind: 'vlan',
-      form: DEFAULT_VLAN_FORM,
-      ticket: 'NET-4188', // a fixture-queue id — the gate accepts it in demo mode
+    const routeBroker = new WriteBroker({ dataDir: freshDataDir(), transport: null, knownTicket: anyTicket });
+    const app = express();
+    app.use(express.json());
+    app.use('/api', makeConfigureRouter(routeBroker));
+    app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction) => {
+      res.status(err.status ?? 500).json({ error: err.message });
     });
-    expect(queued.status).toBe(200);
-    expect(queued.body.state).toBe('needs window'); // no central creds in the test settings
-    expect(queued.body.where).toMatch(/local collector/);
-    expect(queued.body.rendered).toBe(configPreviewFor('vlan', DEFAULT_VLAN_FORM));
-    expect(queued.body.expiresAt).toBeNull();
+    const routeServer = app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => routeServer.once('listening', resolve));
+    const routeBase = `http://127.0.0.1:${(routeServer.address() as AddressInfo).port}`;
+    const routePost = async (path: string, payload: unknown) => {
+      const response = await fetch(`${routeBase}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return { status: response.status, body: await response.json() as any };
+    };
 
-    const list = await fetch(`${base}/api/configure/queue`);
-    const listBody = (await list.json()) as any;
-    expect(list.status).toBe(200);
-    expect(listBody.changes.map((c: any) => c.id)).toContain(queued.body.id);
+    try {
+      const queued = await routePost('/api/configure/queue', {
+        kind: 'vlan',
+        form: DEFAULT_VLAN_FORM,
+        ticket: 'NET-4188',
+      });
+      expect(queued.status).toBe(200);
+      expect(queued.body.state).toBe('needs window');
+      expect(queued.body.where).toMatch(/local collector/);
+      expect(queued.body.rendered).toBe(configPreviewFor('vlan', DEFAULT_VLAN_FORM));
+      expect(queued.body.expiresAt).toBeNull();
 
-    const push = await postJson('/api/configure/push', { changeId: queued.body.id });
-    expect(push.status).toBe(409);
-    expect(push.body.error).toMatch(/only ready changes/);
+      const list = await fetch(`${routeBase}/api/configure/queue`);
+      const listBody = (await list.json()) as any;
+      expect(list.status).toBe(200);
+      expect(listBody.changes.map((c: any) => c.id)).toContain(queued.body.id);
 
-    const missing = await postJson('/api/configure/push', { changeId: 'chg-nope' });
-    expect(missing.status).toBe(404);
-    expect(missing.body.error).toMatch(/not in the queue/);
+      const push = await routePost('/api/configure/push', { changeId: queued.body.id });
+      expect(push.status).toBe(409);
+      expect(push.body.error).toMatch(/only ready changes/);
 
-    const discarded = await postJson('/api/configure/discard', { changeId: queued.body.id });
-    expect(discarded.status).toBe(200);
-    expect(discarded.body.ok).toBe(true);
+      const missing = await routePost('/api/configure/push', { changeId: 'chg-nope' });
+      expect(missing.status).toBe(404);
+      expect(missing.body.error).toMatch(/not in the queue/);
 
-    const after = await fetch(`${base}/api/configure/queue`);
-    const afterBody = (await after.json()) as any;
-    expect(afterBody.changes).toHaveLength(0);
+      const discarded = await routePost('/api/configure/discard', { changeId: queued.body.id });
+      expect(discarded.status).toBe(200);
+      expect(discarded.body.ok).toBe(true);
+
+      const after = await fetch(`${routeBase}/api/configure/queue`);
+      const afterBody = (await after.json()) as any;
+      expect(afterBody.changes).toHaveLength(0);
+    } finally {
+      await new Promise<void>((resolve) => routeServer.close(() => resolve()));
+    }
   });
 });
 

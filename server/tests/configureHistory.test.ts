@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DEFAULT_VLAN_FORM } from '@hpe/shared';
+import { DEFAULT_SSID_FORM } from '@hpe/shared';
 import type { BrokerAuditEvent } from '@hpe/shared';
 
 let server: Server;
@@ -52,11 +52,14 @@ async function history(query = ''): Promise<BrokerAuditEvent[]> {
   return ((await r.json()) as { events: BrokerAuditEvent[] }).events;
 }
 
-async function queueVlan(id: string): Promise<void> {
+async function queueChange(id: string): Promise<void> {
   const r = await fetch(`${base}/api/configure/queue`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'vlan', form: { ...DEFAULT_VLAN_FORM, id }, ticket: TICKET }),
+    // History behavior is kind-agnostic. Use the broker's retained legacy SSID
+    // queue shape so this audit-route test does not forge a configured VLAN
+    // identity that the authoritative Central inventory never reported.
+    body: JSON.stringify({ kind: 'ssid', form: { ...DEFAULT_SSID_FORM, name: `history-${id}` }, ticket: TICKET }),
   });
   expect(r.status).toBe(200);
 }
@@ -73,9 +76,9 @@ describe('GET /api/configure/history', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ demoMode: true }),
     });
-    await queueVlan('900');
-    await queueVlan('901');
-    await queueVlan('902');
+    await queueChange('900');
+    await queueChange('901');
+    await queueChange('902');
 
     const events = await history();
     expect(events).toHaveLength(3);
@@ -94,7 +97,7 @@ describe('GET /api/configure/history', () => {
     // honestly rather than naming someone it cannot vouch for.
     expect(events[0].who).toBe('operator');
     expect(events[0].event).toBe('queue');
-    expect(events[0].kind).toBe('vlan');
+    expect(events[0].kind).toBe('ssid');
     expect(events[0].ticket).toBe(TICKET);
     expect(typeof events[0].changeId).toBe('string');
     // Newest first: the last change queued leads the list.

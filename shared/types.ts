@@ -434,6 +434,8 @@ export interface VlanObject {
   origin?: 'configured' | 'observed';
   /** Exact owning plane when configuration inventory proves it. */
   plane?: Plane;
+  /** Exact configuration scope when the inventory source reports it. */
+  scope?: VlanScope;
   id: string;
   name: string;
   detail: string;

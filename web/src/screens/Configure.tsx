@@ -299,6 +299,7 @@ export default function Configure() {
   const [port, setPort] = useState<PortForm>(DEFAULT_PORT_FORM);
   const [vlan, setVlan] = useState<VlanForm>(DEFAULT_VLAN_FORM);
   const [genericSource, setGenericSource] = useState<'configured' | 'observed' | 'new'>('new');
+  const [configuredVlanIdentity, setConfiguredVlanIdentity] = useState<{ id: string; scope: VlanScope } | null>(null);
   const [ticket, setTicket] = useState('');
   const [queued, setQueued] = useState(false);
   const [showDormantTargets, setShowDormantTargets] = useState(false);
@@ -477,7 +478,7 @@ export default function Configure() {
     : mistCapability?.canDirectWrite === true;
   const ssidTargetCanWrite =
     !liveMode || (mistSsid ? mistCapability?.canDirectWrite === true : centralCapability?.canDirectWrite === true);
-  const genericTargetCanWrite = !liveMode || centralCapability?.canBrokerWrite === true;
+  const genericTargetCanWrite = centralCapability?.canBrokerWrite === true;
   /** What the form's security mode cannot express on Mist — the shared
    *  sentence the adapter refuses with, so drawer and plane never disagree. */
   const mistRefusal = mistSsid ? mistSsidSecurityRefusal(ssid.security) : null;
@@ -546,13 +547,15 @@ export default function Configure() {
       : kind === 'vlan'
         ? vlan.id.trim().length > 0 && vlan.helpers.trim().length > 0 && vlan.scope.trim().length > 0
         : false;
-  const genericHasConfiguredProvenance = !liveMode || genericSource === 'configured';
+  const genericHasConfiguredProvenance = genericSource === 'configured';
   const genericHasExactIdentity =
-    !liveMode ||
     (kind === 'port'
       ? port.plane === 'CENTRAL' && (port.serial?.trim().length ?? 0) > 0
       : kind === 'vlan'
-        ? vlan.plane === 'CENTRAL'
+        ? vlan.plane === 'CENTRAL' &&
+          configuredVlanIdentity !== null &&
+          vlan.id === configuredVlanIdentity.id &&
+          vlan.scope === configuredVlanIdentity.scope
         : false);
   const directReplayBlocked = Boolean(
     directApply?.result &&
@@ -764,6 +767,7 @@ export default function Configure() {
       ...(liveMode ? LIVE_PORT_FORM : DEFAULT_PORT_FORM),
       ...(row ? seedFormFromRow('port', row, { live: liveMode }) : {}),
     });
+    setConfiguredVlanIdentity(null);
     setGenericSource(row?.origin === 'configured' ? 'configured' : row ? 'observed' : 'new');
     setKind('port');
   };
@@ -776,6 +780,11 @@ export default function Configure() {
           ? {}
           : { id: '', name: '', helpers: '10.42.0.20, 10.44.0.20' }),
     });
+    setConfiguredVlanIdentity(
+      row?.origin === 'configured' && row.plane === 'CENTRAL' && row.scope
+        ? { id: row.id, scope: row.scope }
+        : null,
+    );
     setGenericSource(row?.origin === 'configured' ? 'configured' : row ? 'observed' : 'new');
     setKind('vlan');
   };
@@ -1210,10 +1219,12 @@ export default function Configure() {
         ))}
       </div>
 
-      <Alert tone="info" title={labConfigMode ? 'Lab writes apply immediately' : 'Writes are brokered, never standing'}>
+      <Alert tone="info" title={labConfigMode ? 'Lab write workflow is enabled' : 'Writes are brokered, never standing'}>
         <span style={{ fontSize: 13 }}>
           {labConfigMode
-            ? 'Supported Central port and VLAN writes apply immediately. SSIDs keep their dedicated scope-aware apply path.'
+            ? genericTargetCanWrite
+              ? 'Admitted Central port and VLAN writes apply immediately. SSIDs keep their dedicated scope-aware apply path.'
+              : 'Only connector-admitted writes can apply. No generic Central port or VLAN write is currently admitted, so those forms remain preview-only. SSIDs keep their dedicated scope-aware path.'
             : writeSurfaceNote(data.capabilities)}
         </span>
       </Alert>
@@ -2246,17 +2257,23 @@ export default function Configure() {
               </div>
             ) : labConfigMode ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {!genericTargetCanWrite ? (
+                  <Alert tone="info" title="Central configuration writes are unavailable">
+                    {centralCapability
+                      ? 'The linked Central connector does not currently admit this configuration write. Its configured grant or product capability is read-only.'
+                      : 'No linked Central connector currently admits configuration writes. Apply remains disabled while the preview stays available.'}
+                  </Alert>
+                ) : null}
                 {!genericHasConfiguredProvenance ? (
                   <Alert tone="info" title="Exact configured target required">
                     Immediate apply requires a configured Central inventory row; observed or newly entered rows are not a safe write baseline.
                   </Alert>
-                ) : !genericHasExactIdentity ? (
+                ) : null}
+                {genericHasConfiguredProvenance && !genericHasExactIdentity ? (
                   <Alert tone="info" title="Exact Central identity required">
-                    This row does not carry the complete Central ownership identity required for an immediate write.
-                  </Alert>
-                ) : !genericTargetCanWrite ? (
-                  <Alert tone="info" title="Central configuration writes are unavailable">
-                    The linked Central connector grant is read-only. Apply remains disabled while inventory stays available.
+                    {kind === 'vlan'
+                      ? "This form must retain the configured row's exact Central ownership identity, including its immutable VLAN id and scope."
+                      : "This row does not carry the complete Central device and serial identity required for an immediate port write."}
                   </Alert>
                 ) : null}
                 {valueProblems.length > 0 ? (
@@ -2436,11 +2453,15 @@ export default function Configure() {
         }}
         width="lg"
         title="Change history"
-        description="The write broker's audit log: what happened to every brokered change, with the ticket it was raised against. Payload bodies are deliberately not recorded."
+        description={
+          labConfigMode
+            ? 'The configuration audit log: every direct apply attempt and its confirmation outcome. Payload bodies are deliberately not recorded.'
+            : "The write broker's audit log: what happened to every brokered change, with the ticket it was raised against. Payload bodies are deliberately not recorded."
+        }
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <SectionHeader
-            label="Brokered changes"
+            label={labConfigMode ? 'Direct applies' : 'Brokered changes'}
             // A bare count reads as "this is how many there are". When a
             // generation could not be read it is only how many we could see.
             meta={
@@ -2464,7 +2485,11 @@ export default function Configure() {
           {history.kind === 'offline' ? (
             <EmptyState
               title="The portal backend did not answer"
-              description="The audit log lives on the server with the write broker; there is no local copy to show. Reconnect the backend and open this again."
+              description={
+                labConfigMode
+                  ? 'The configuration audit log lives on the server; there is no local copy to show. Reconnect the backend and open this again.'
+                  : "The audit log lives on the server with the write broker; there is no local copy to show. Reconnect the backend and open this again."
+              }
             />
           ) : null}
           {/* The log came back short because part of it could not be read.
@@ -2534,8 +2559,12 @@ export default function Configure() {
             : null}
           {history.kind === 'ok' && history.events.length === 0 ? (
             <EmptyState
-              title="No brokered changes recorded yet"
-              description="Every dry run, queue, push and discard is written to the broker's audit log. Nothing has gone through it on this install."
+              title={labConfigMode ? 'No direct applies recorded yet' : 'No brokered changes recorded yet'}
+              description={
+                labConfigMode
+                  ? 'Every immediate configuration attempt and confirmation outcome is written to this audit log. Nothing has been applied on this install.'
+                  : "Every dry run, queue, push and discard is written to the broker's audit log. Nothing has gone through it on this install."
+              }
             />
           ) : null}
         </div>
