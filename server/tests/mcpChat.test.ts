@@ -452,6 +452,37 @@ describe('chatLoop tool round-trip', () => {
     expect(toolMsg.content).toBe('device_list tool found');
   });
 
+  it('replays assistant tool calls with string content for Ollama compatibility', async () => {
+    configureChat(false);
+    stubLlmAndMcp('device_list tool found');
+
+    const { transcript } = await chatLoop([{ role: 'user', content: 'how many switches?' }], {
+      client: freshClient(),
+    });
+
+    const secondLlm = requests.filter((r) => r.url === `${LLM_URL}/chat/completions`)[1];
+    const assistantMsg = secondLlm.body.messages.find((m: any) => m.role === 'assistant');
+    expect(assistantMsg).toEqual({
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        {
+          id: 'call-1',
+          type: 'function',
+          function: { name: 'find_tool', arguments: '{"query":"list devices"}' },
+        },
+      ],
+    });
+    expect(transcript).toEqual([
+      {
+        tool: 'find_tool',
+        args: '{"query":"list devices"}',
+        resultPreview: 'device_list tool found',
+        ok: true,
+      },
+    ]);
+  });
+
   it('caps tool output fed back to the LLM and previews in the transcript', async () => {
     configureChat(false);
     stubLlmAndMcp('x'.repeat(5000));

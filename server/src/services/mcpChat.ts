@@ -515,11 +515,11 @@ export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = 
     if (calls.length === 0) {
       const reply = (msg.content ?? '').trim();
       if (reply) return { reply, transcript };
-      conversation.push({ role: 'assistant', content: null });
+      conversation.push({ role: 'assistant', content: '' });
       conversation.push({ role: 'user', content: 'Empty reply. Answer the question directly, or call a tool.' });
       continue;
     }
-    conversation.push({ role: 'assistant', content: msg.content ?? null, tool_calls: calls });
+    conversation.push({ role: 'assistant', content: msg.content ?? '', tool_calls: calls });
     for (const call of calls) {
       const outcome = await runToolCall(client, call, writeEnabled, opts.signal);
       transcript.push(outcome.entry);
