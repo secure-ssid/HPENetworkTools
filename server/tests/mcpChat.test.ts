@@ -471,6 +471,37 @@ describe('chatLoop compatible provider routing', () => {
     await rejected;
     vi.useRealTimers();
   });
+
+  it('does not include a provider error body in the thrown failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('authorization failed for Bearer sk-provider-secret', { status: 401 })));
+    const pending = new OpenAICompatibleAdapter('openrouter').run({
+      config: { baseUrl: OPENROUTER_URL, model: 'router-model', apiKey: 'sk-provider-secret', timeoutMs: 10 },
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      executeTool: async () => { throw new Error('not reached'); },
+    });
+    let error: Error;
+    try {
+      await pending;
+      throw new Error('provider request unexpectedly succeeded');
+    } catch (reason) {
+      error = reason as Error;
+    }
+    expect(error.message).toBe('assistant provider HTTP 401');
+    expect(error.message).not.toContain('sk-provider-secret');
+  });
+
+  it('accepts declared registry chat configuration without an adapter-specific cast', async () => {
+    configureCompatibleProvider('ollama');
+    vi.stubGlobal('fetch', vi.fn(async () => llmMessage({ role: 'assistant', content: 'done.' })));
+
+    const result = await new OpenAICompatibleAdapter('ollama').chat({
+      config: settings.get().assistant.providers.ollama,
+      timeoutMs: 123,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(result).toEqual({ text: 'done.', transcript: [] });
+  });
 });
 
 describe('chatLoop tool round-trip', () => {

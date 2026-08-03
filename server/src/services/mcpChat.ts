@@ -321,6 +321,15 @@ export interface ChatLoopResult {
   transcript: ChatTranscriptEntry[];
 }
 
+function isTranscriptEntry(value: unknown): value is ChatTranscriptEntry {
+  if (value === null || typeof value !== 'object') return false;
+  const entry = value as Partial<ChatTranscriptEntry>;
+  return typeof entry.tool === 'string'
+    && typeof entry.args === 'string'
+    && typeof entry.resultPreview === 'string'
+    && typeof entry.ok === 'boolean';
+}
+
 const TOOL_RESULT_CAP = 4000;
 const PREVIEW_CAP = 300;
 const ARGS_CAP = 200;
@@ -483,16 +492,18 @@ export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = 
     ...messages.map((m) => ({ role: m.role, content: m.content })),
   ];
   const adapter = compatibleProviderRegistry.get(activeProvider);
-  if (!(adapter instanceof OpenAICompatibleAdapter)) {
+  if (!adapter) {
     throw new Error('The selected assistant provider is not available for chat yet.');
   }
-  return adapter.run({
-    config: { baseUrl: provider.baseUrl, model: provider.model, apiKey: provider.apiKey, timeoutMs: resolveProviderTimeoutMs('interactive') },
+  const result = await adapter.chat({
+    config: provider,
+    timeoutMs: resolveProviderTimeoutMs('interactive'),
     messages: conversation,
     tools,
     executeTool: (call) => runToolCall(client, call, writeEnabled, opts.signal),
     signal: opts.signal,
   });
+  return { reply: result.text, transcript: (result.transcript ?? []).filter(isTranscriptEntry) };
 }
 
 /** Registry-backed compatibility boundary; native providers join this registry in later tasks. */

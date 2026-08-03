@@ -2,6 +2,8 @@ import type { AssistantProviderConfig, AssistantProviderId } from '../../config/
 import type {
   AssistantChatRequest,
   AssistantChatResult,
+  AssistantChatToolCall,
+  AssistantChatToolOutcome,
   AssistantProviderAdapter,
   ProviderDiscovery,
   ReadOnlyProbeContext,
@@ -22,11 +24,14 @@ export interface OpenAICompatibleConfig {
   timeoutMs: number;
 }
 
-export interface OpenAICompatibleToolCall {
-  id: string;
-  type?: string;
-  function?: { name?: string; arguments?: string };
+export class AssistantProviderTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`assistant provider timed out after ${timeoutMs}ms`);
+    this.name = 'AssistantProviderTimeoutError';
+  }
 }
+
+export type OpenAICompatibleToolCall = AssistantChatToolCall;
 
 export interface OpenAICompatibleMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -69,7 +74,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
     return await fetch(url, { ...init, signal: ctl.signal });
   } catch (err) {
     if (init.signal?.aborted) throw new Error('request cancelled');
-    if (ctl.signal.aborted) throw new Error(`assistant provider timed out after ${timeoutMs}ms`);
+    if (ctl.signal.aborted) throw new AssistantProviderTimeoutError(timeoutMs);
     throw err;
   } finally {
     clearTimeout(timer);
@@ -93,9 +98,10 @@ async function complete(
   try {
     response = await fetchWithTimeout(url, { method: 'POST', headers, body: JSON.stringify(payload), signal }, config.timeoutMs);
   } catch (err) {
+    if (err instanceof AssistantProviderTimeoutError) throw err;
     throw new Error(`assistant provider request failed: ${(err as Error).message}`);
   }
-  if (!response.ok) throw new Error(`assistant provider HTTP ${response.status}: ${truncate(await response.text(), 200)}`);
+  if (!response.ok) throw new Error(`assistant provider HTTP ${response.status}`);
   const body = await response.json() as { choices?: Array<{ message?: OpenAICompatibleMessage }> };
   const message = body.choices?.[0]?.message;
   if (!message) throw new Error('assistant provider answered without choices[0].message');
@@ -107,8 +113,8 @@ export class OpenAICompatibleAdapter implements AssistantProviderAdapter {
   constructor(readonly id: Extract<AssistantProviderId, 'ollama' | 'openrouter'>) {}
 
   async discover(config: AssistantProviderConfig): Promise<ProviderDiscovery> {
-    const compatible = config as OpenAICompatibleConfig & { enabled: boolean };
-    return { installed: compatible.enabled, authenticated: compatible.enabled, modelReady: compatible.enabled, resolvedModel: compatible.model };
+    if (!this.matchesConfig(config)) return { installed: false, authenticated: false, modelReady: false };
+    return { installed: config.enabled, authenticated: config.enabled, modelReady: config.enabled, resolvedModel: config.model };
   }
 
   async probeReadOnly(_config: AssistantProviderConfig, _context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
@@ -116,15 +122,28 @@ export class OpenAICompatibleAdapter implements AssistantProviderAdapter {
   }
 
   async chat(request: AssistantChatRequest): Promise<AssistantChatResult> {
-    const compatible = request as AssistantChatRequest & { compatible?: OpenAICompatibleConfig };
-    if (!compatible.compatible) throw new Error('OpenAI-compatible provider configuration is required.');
+    const config = this.configFor(request.config, request.timeoutMs);
     const result = await this.run({
-      config: compatible.compatible,
-      messages: compatible.messages.map((message) => ({ role: message.role, content: message.content })),
-      tools: [],
-      executeTool: async () => { throw new Error('No tool executor was supplied.'); },
+      config,
+      messages: request.messages.map((message) => ({ role: message.role, content: message.content })),
+      tools: [...(request.tools ?? [])],
+      executeTool: async (call) => {
+        if (!request.executeTool) throw new Error('No tool executor was supplied.');
+        const outcome: AssistantChatToolOutcome = await request.executeTool(call);
+        return outcome;
+      },
+      signal: request.signal,
     });
-    return { text: result.reply };
+    return { text: result.reply, transcript: result.transcript };
+  }
+
+  private matchesConfig(config: AssistantProviderConfig): config is Extract<AssistantProviderConfig, { baseUrl: string }> {
+    return (this.id === 'ollama' || this.id === 'openrouter') && 'baseUrl' in config && 'model' in config;
+  }
+
+  private configFor(config: AssistantProviderConfig, timeoutMs: number): OpenAICompatibleConfig {
+    if (!this.matchesConfig(config)) throw new Error('Selected provider does not use the OpenAI-compatible protocol.');
+    return { baseUrl: config.baseUrl, model: config.model, apiKey: config.apiKey, timeoutMs };
   }
 
   async run<TTranscript>(input: OpenAICompatibleChatInput<TTranscript>): Promise<OpenAICompatibleChatResult<TTranscript>> {

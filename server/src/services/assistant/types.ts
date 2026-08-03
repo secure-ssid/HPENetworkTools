@@ -46,11 +46,37 @@ export interface ReadOnlyProbeContext {
 }
 
 export interface AssistantChatRequest {
-  messages: ReadonlyArray<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+  /** The saved configuration selected by the registry; adapters never read global settings. */
+  config: AssistantProviderConfig;
+  /** Caller-selected bounded operation timeout. */
+  timeoutMs: number;
+  messages: ReadonlyArray<AssistantChatMessage>;
+  tools?: readonly unknown[];
+  executeTool?(call: AssistantChatToolCall): Promise<AssistantChatToolOutcome>;
+  signal?: AbortSignal;
+}
+
+export interface AssistantChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: AssistantChatToolCall[];
+  tool_call_id?: string;
+}
+
+export interface AssistantChatToolCall {
+  id: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+export interface AssistantChatToolOutcome {
+  toolMessage: AssistantChatMessage;
+  transcript: unknown;
 }
 
 export interface AssistantChatResult {
   text: string;
+  transcript?: unknown[];
 }
 
 export interface AssistantProviderAdapter {

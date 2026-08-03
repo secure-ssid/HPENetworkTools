@@ -8,14 +8,15 @@
  *   POST /api/chat         { messages: [{role, content}], allowWrite? } →
  *                          { reply, transcript }. 400 when MCP/LLM are not
  *                          configured (the message points at Connected
- *                          systems → Assistant); 502 {error} on any MCP/LLM
- *                          failure.
+ *                          systems → Assistant); 504 for a bounded provider
+ *                          timeout and 502 {error} for other MCP/LLM failures.
  */
 
 import { Router } from 'express';
 import { h } from './handler';
 import { settings } from '../config/settings';
 import { chatLoop, chatMcpClient, type ChatMessage } from '../services/mcpChat';
+import { AssistantProviderTimeoutError } from '../services/assistant/openaiCompatible';
 
 export const chatRouter = Router();
 
@@ -44,6 +45,22 @@ chatRouter.get(
 
 const MAX_MESSAGES = 40;
 const MAX_CONTENT = 8000;
+
+export function classifyChatFailure(err: unknown): { status: number; error: string; logMessage: string } {
+  if (err instanceof AssistantProviderTimeoutError) {
+    return {
+      status: 504,
+      error: 'assistant provider timed out — try again shortly',
+      logMessage: err.message,
+    };
+  }
+  return {
+    status: 502,
+    error: 'assistant request failed upstream — check the MCP/LLM configuration',
+    // Provider and MCP errors may contain echoed credentials or target URLs.
+    logMessage: 'assistant upstream request failed',
+  };
+}
 
 chatRouter.post(
   '/chat',
@@ -93,9 +110,9 @@ chatRouter.post(
       res.json({ reply, transcript });
     } catch (err) {
       if (controller.signal.aborted) return;
-      // MCP/LLM error text embeds the configured URLs — log it, don't forward it.
-      console.error(`chat failed: ${(err as Error).message}`);
-      res.status(502).json({ error: 'assistant request failed upstream — check the MCP/LLM configuration' });
+      const failure = classifyChatFailure(err);
+      console.error(`chat failed: ${failure.logMessage}`);
+      res.status(failure.status).json({ error: failure.error });
     } finally {
       res.off('close', cancelOnDisconnect);
     }
