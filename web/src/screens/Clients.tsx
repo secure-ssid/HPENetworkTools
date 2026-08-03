@@ -953,8 +953,14 @@ export default function Clients() {
   const typeOptions = [{ value: 'all', label: 'All device types' }].concat(
     uniq(clients, 'type').map((v) => ({ value: v, label: v })),
   );
+  /* A unified row has a primary plane for its compact facts, but the normal
+     per-product filter must still offer every contributing observation. */
+  const sourcePlanes = [...new Set(clients.flatMap((client) => [
+    client.plane,
+    ...(client.sources?.map((source) => source.row.plane) ?? []),
+  ]))];
   const planeOptions = [{ value: 'all', label: 'All planes' }].concat(
-    uniq(clients, 'plane').map((v) => ({ value: v, label: v })),
+    sourcePlanes.map((v) => ({ value: v, label: v })),
   );
   /* A ?plane= deep-link can name a plane that has no rows in this feed.
      Without its own option the Select renders blank and the filter hiding
@@ -1662,6 +1668,15 @@ export default function Clients() {
               </Badge>
               <Badge tone={cur.planeTone}>{cur.plane}</Badge>
               <Badge tone="neutral">{cur.type}</Badge>
+              <span
+                style={{
+                  fontFamily: 'var(--nd-font-mono)',
+                  fontSize: 'var(--nd-text-11)',
+                  color: 'var(--nd-text-muted)',
+                }}
+              >
+                {`${cur.sources?.length ?? 1} source${(cur.sources?.length ?? 1) === 1 ? '' : 's'}`}
+              </span>
               <span
                 style={{
                   fontFamily: 'var(--nd-font-mono)',

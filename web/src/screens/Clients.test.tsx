@@ -1019,8 +1019,31 @@ describe('Clients unified source provenance and compact drawer', () => {
     fireEvent.click(sources);
     expect(screen.getByText(/Central.*current/i)).toBeTruthy();
     expect(screen.getByText(/Mist.*unverified/i)).toBeTruthy();
+    expect(screen.getByText('2 sources')).toBeTruthy();
     expect(screen.queryByText('Client 360')).toBeNull();
     expect(screen.queryByText('Session timeline')).toBeNull();
+  });
+
+  it('offers a product that only reported a secondary source in the normal Plane filter', async () => {
+    const grouped: ClientRow = {
+      ...SPARSE_LIVE_CLIENT,
+      sources: [
+        { plane: 'central', observedAt: '2026-08-02T10:00:00Z', stale: false, row: SPARSE_LIVE_CLIENT },
+        { plane: 'mist', observedAt: '2026-08-02T09:00:00Z', stale: true, row: { ...SPARSE_LIVE_CLIENT, plane: 'MIST' } },
+      ],
+    };
+    mockGetClients.mockResolvedValue({ stats: [], clients: [grouped], dataSource: 'live' });
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/clients']}>
+        <ToastProvider><SettingsProvider><Clients /></SettingsProvider></ToastProvider>
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('button', { name: /Central.*Mist.*show 2 sources/i });
+    const filter = screen.getByRole('combobox', { name: 'Plane' });
+    expect(within(filter).getByRole('option', { name: 'MIST' })).toBeTruthy();
+    fireEvent.change(filter, { target: { value: 'MIST' } });
+    expect(screen.getByText('1 of 1 sampled')).toBeTruthy();
   });
 });
 

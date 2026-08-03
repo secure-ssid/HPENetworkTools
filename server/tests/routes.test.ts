@@ -1775,11 +1775,17 @@ describe('live-mode screen contracts', () => {
     // explicit coverage gap, rather than silently becoming an empty source.
     Object.assign(aos8, { linked: true, health: 'healthy', stale: false });
     contributions.set('central', {
-      clients: [clientRow('AA:BB:CC:DD:EE:FF', 'CENTRAL')],
+      clients: [
+        clientRow('AA:BB:CC:DD:EE:FF', 'CENTRAL'),
+        clientRow('—', 'CENTRAL'),
+      ],
       alerts: [alertRow({ alertId: 'a-1' }), alertRow({ alertId: 'a-1' })],
     });
     contributions.set('mist', {
-      clients: [clientRow('aabb.ccdd.eeff', 'MIST')], // same endpoint, other notation
+      clients: [
+        clientRow('aabb.ccdd.eeff', 'MIST'), // same endpoint, other notation
+        clientRow('', 'MIST'),
+      ],
       alerts: [alertRow({ alertId: 'm-9', plane: 'MIST', title: 'Mist alarm', detail: 'mist detail' })],
     });
 
@@ -1787,12 +1793,16 @@ describe('live-mode screen contracts', () => {
       const clients = await getJson('/api/clients');
       expect(clients.status).toBe(200);
       expect(clients.body.dataSource).toBe('live');
-      expect(clients.body.clients).toHaveLength(1);
+      expect(clients.body.clients).toHaveLength(3);
       expect(clients.body.clients[0].mac).toBe('AA:BB:CC:DD:EE:FF'); // fresh Central is primary
       expect(clients.body.clients[0].sources.map((source: any) => source.plane)).toEqual(['central', 'mist']);
       expect(clients.body.clients[0].sources[1].stale).toBe(true);
       expect(clients.body.missingSources).toContain('AOS-8');
-      expect(clients.body.stats[0].value).toBe('1'); // stats count grouped endpoints
+      // Missing/blank MACs cannot be safely joined: each source remains its
+      // own endpoint instead of being collapsed into an invented identity.
+      expect(clients.body.clients.slice(1).map((row: any) => row.mac)).toEqual(['—', '']);
+      expect(clients.body.clients.slice(1).every((row: any) => row.sources)).toBe(true);
+      expect(clients.body.stats[0].value).toBe('3'); // stats count grouped endpoints
 
       const alerts = await getJson('/api/alerts');
       expect(alerts.body.dataSource).toBe('live');
