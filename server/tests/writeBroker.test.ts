@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import express from 'express';
 import {
   DEFAULT_PORT_FORM,
   DEFAULT_SSID_FORM,
@@ -32,8 +33,10 @@ import type { BrokerTransport } from '../src/services/writeBroker';
 
 let WriteBroker: typeof import('../src/services/writeBroker').WriteBroker;
 let SettingsStore: typeof import('../src/config/settings').SettingsStore;
+let settings: typeof import('../src/config/settings').settings;
 let PlaneRegistry: typeof import('../src/planes/registry').PlaneRegistry;
 let createApp: typeof import('../src/index').createApp;
+let makeConfigureRouter: typeof import('../src/routes/configure').makeConfigureRouter;
 
 let tmpDir: string;
 let server: Server;
@@ -64,8 +67,12 @@ beforeAll(async () => {
   process.env.HPE_SETTINGS_PATH = join(tmpDir, 'settings.json');
   process.env.HPE_DATA_DIR = join(tmpDir, 'data');
   ({ WriteBroker } = await import('../src/services/writeBroker'));
-  ({ SettingsStore } = await import('../src/config/settings'));
+  ({ SettingsStore, settings } = await import('../src/config/settings'));
   ({ PlaneRegistry } = await import('../src/planes/registry'));
+  ({ makeConfigureRouter } = await import('../src/routes/configure'));
+  // Most broker tests exercise the hardened compatibility path. Individual
+  // lab-direct tests opt in explicitly below.
+  settings.update({ configMode: false });
   ({ createApp } = await import('../src/index'));
   const { ticketStore } = await import('../src/services/tickets');
   raisedTicketId = ticketStore.raiseFromAlert(RAISE_ALERT).id;
@@ -231,6 +238,72 @@ describe('ticket gate', () => {
     const broker = new WriteBroker({ dataDir: freshDataDir(), transport: null });
     expect(broker.queue('ssid', DEFAULT_SSID_FORM, raisedTicketId).ticket).toBe(raisedTicketId);
     expect(broker.queue('ssid', DEFAULT_SSID_FORM, 'NET-4188').ticket).toBe('NET-4188'); // fixture, demo mode on
+  });
+});
+
+describe('lab direct apply', () => {
+  it('POST /api/configure/apply issues one Central write without a ticket, queue, lease, or dry run', async () => {
+    const transport = transportWith(200, {});
+    const dataDir = freshDataDir();
+    const broker = new WriteBroker({
+      dataDir,
+      transport,
+      pollerRef: fakePoller({ sections: { vlan: [] } }).poller,
+      knownTicket: () => false,
+    });
+    settings.update({ configMode: true });
+    let routeServer: Server | null = null;
+
+    try {
+      const app = express();
+      app.use(express.json());
+      app.use('/api', makeConfigureRouter(broker));
+      const startedServer = app.listen(0, '127.0.0.1');
+      routeServer = startedServer;
+      await new Promise<void>((resolve) => startedServer.once('listening', resolve));
+      const routeBase = `http://127.0.0.1:${(startedServer.address() as AddressInfo).port}`;
+      const response = await fetch(`${routeBase}/api/configure/apply`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'vlan',
+          form: DEFAULT_VLAN_FORM,
+          ticket: 'client-must-not-control-audit',
+          audit: { bypass: true },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body).toMatchObject({ ok: true, applied: true, kind: 'vlan', httpCode: 200 });
+      expect(body.ticket).toBeUndefined();
+      expect(transport.calls).toEqual([
+        { method: 'PUT', path: '/configuration/v2/vlan/cx-campus-01/812' },
+      ]);
+      expect(broker.list()).toEqual([]);
+      const audit = JSON.parse(readFileSync(join(dataDir, 'change-log.jsonl'), 'utf8')) as Record<string, unknown>;
+      expect(audit).toMatchObject({ event: 'apply', ticket: 'LAB', kind: 'vlan', result: 'applied', httpCode: 200 });
+      expect(JSON.stringify(audit)).not.toContain('dhcpHelpers');
+    } finally {
+      if (routeServer) await new Promise<void>((resolve) => routeServer!.close(() => resolve()));
+      settings.update({ configMode: false });
+    }
+  });
+
+  it('refuses immediate apply when hardened mode is explicitly enabled', async () => {
+    const transport = transportWith(200, {});
+    const broker = new WriteBroker({ dataDir: freshDataDir(), transport, knownTicket: () => false });
+    settings.update({ configMode: false });
+
+    try {
+      await expect((broker as InstanceType<typeof WriteBroker> & { apply(kind: unknown, form: unknown): Promise<unknown> }).apply(
+        'vlan',
+        DEFAULT_VLAN_FORM,
+      )).rejects.toMatchObject({ status: 409 });
+      expect(transport.calls).toEqual([]);
+    } finally {
+      settings.update({ configMode: false });
+    }
   });
 });
 

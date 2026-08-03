@@ -38,6 +38,13 @@ afterEach(() => {
 });
 
 describe('SettingsStore', () => {
+  it('defaults configuration writes to lab-direct mode, with an explicit hardened override', () => {
+    const { store } = tmpStore();
+
+    expect(store.get().configMode).toBe(true);
+    expect(store.update({ configMode: false }).configMode).toBe(false);
+  });
+
   it('migrates a local legacy OpenAI-compatible LLM into the Ollama provider and masks its key', () => {
     const { store } = tmpStore();
     store.update({

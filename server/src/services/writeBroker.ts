@@ -57,6 +57,7 @@ import { CentralAdapter } from '../planes/central';
 import { poller as defaultPoller, type Poller } from './poller';
 import { PlaneRegistry, registry as defaultRegistry } from '../planes/registry';
 import { settings } from '../config/settings';
+import { allowsLabDirectWrites } from './labWritePolicy';
 import { knownTicketId } from './tickets';
 import { resolveDeviceIdentity, safeDeviceCandidates } from './deviceIdentity';
 import { currentActor } from './auth';
@@ -155,6 +156,19 @@ export interface PushResult {
    * nothing had) and for every failure. That is NOT the same as a refresh that
    * was tried and did not land, and the screen must not conflate them.
    */
+  cacheRefresh?: WriteCacheRefresh;
+}
+
+/** Result of a lab-direct Central apply. It intentionally has no ticket,
+ * queue, lease, or dry-run fields: those belong to the hardened broker path. */
+export interface ImmediateApplyResult {
+  ok: boolean;
+  applied: boolean;
+  accepted?: boolean;
+  changeId: string;
+  kind: ConfigKind;
+  httpCode?: number;
+  message: string;
   cacheRefresh?: WriteCacheRefresh;
 }
 
@@ -306,24 +320,19 @@ function liveBlastFor(kind: ConfigKind, form: ConfigForm): BlastRadiusRow[] {
   ];
 }
 
-/** Lab config mode: writes go through without the brokered-change ceremony. */
-function configMode(): boolean {
-  return settings.get().configMode === true;
-}
-
 function requireTicket(raw: unknown): string {
   const ticket = typeof raw === 'string' ? raw.trim() : '';
   if (ticket) return ticket;
   // In a lab there is nothing to authorise against, so a write does not need a
   // ticket. Still stamp one so the change log stays readable.
-  if (configMode()) return 'LAB';
+  if (allowsLabDirectWrites()) return 'LAB';
   throw new BrokerError(400, 'ticket reference required — writes are brokered, never standing');
 }
 
 /** The reference must name a REAL ticket — presence alone is not enough. */
 function requireKnownTicket(raw: unknown, knownTicket: (id: string) => boolean): string {
   const ticket = requireTicket(raw);
-  if (configMode()) return ticket;
+  if (allowsLabDirectWrites()) return ticket;
   if (!knownTicket(ticket)) {
     throw new BrokerError(400, `unknown ticket '${ticket}' — writes reference a raised ticket (demo mode also accepts the fixture queue)`);
   }
@@ -570,6 +579,7 @@ export class WriteBroker {
   private readonly listDevices: NonNullable<WriteBrokerOptions['listDevices']>;
   private changes: BrokeredChange[] | null = null; // lazy-loaded from disk
   private readonly pushing = new Set<string>(); // change ids with a push in flight (double-apply guard)
+  private readonly applyingTargets = new Set<string>(); // direct applies in flight, keyed by exact Central target
 
   constructor(opts: WriteBrokerOptions = {}) {
     this.registry = opts.registry ?? defaultRegistry;
@@ -636,6 +646,97 @@ export class WriteBroker {
       return { rendered: livePreviewFor(k, f), meta: liveMetaFor(k, f), blastRadius: liveBlastFor(k, f) };
     }
     return { rendered: previewFor(k, f), meta: metaFor(k, f), blastRadius: blastFor(k, f) };
+  }
+
+  // -- immediate lab apply ----------------------------------------------------
+
+  /**
+   * Apply one supported Central object immediately in lab mode. This bypasses
+   * only the ticket/queue/lease/dry-run ceremony: validation, target
+   * selection, Central transport, post-write refresh, and audit logging stay
+   * on the same paths as the hardened broker workflow.
+   */
+  async apply(kind: unknown, form: unknown): Promise<ImmediateApplyResult> {
+    if (!allowsLabDirectWrites()) {
+      throw new BrokerError(409, 'immediate apply is disabled — use the ticketed dry-run, queue, and push workflow');
+    }
+    const k = asConfigKind(kind);
+    const f = this.actionForm(k, asForm(k, form));
+    if (targetFor(k, f) !== 'central') {
+      throw new BrokerError(409, 'read-only plane — open the Mist console with the rendered payload; the portal cannot apply it');
+    }
+    const transport = this.centralTransport();
+    if (!transport) {
+      throw new BrokerError(409, 'central is not linked — cannot apply directly; link the plane or use the ticketed workflow');
+    }
+
+    const path = pushPathFor(k, f);
+    const targetKey = `${k}:${path}`;
+    if (this.applyingTargets.has(targetKey)) {
+      throw new BrokerError(409, `direct apply already in flight for ${k} target — wait for it to finish`);
+    }
+
+    const changeId = newChangeId('apply');
+    const audit = { changeId, ticket: 'LAB', kind: k };
+    this.applyingTargets.add(targetKey);
+    try {
+      let res: BrokerResponse;
+      try {
+        res = await transport.request('PUT', path, pushBodyFor(k, f));
+      } catch {
+        this.log({ event: 'apply', ...audit, result: 'network-error' });
+        return {
+          changeId,
+          kind: k,
+          ok: false,
+          applied: false,
+          message: 'apply failed — Central request did not complete',
+        };
+      }
+
+      if (res.status >= 200 && res.status < 300) {
+        const accepted = res.status === 202;
+        this.log({
+          event: 'apply',
+          ...audit,
+          result: accepted ? 'accepted (unconfirmed)' : 'applied',
+          httpCode: res.status,
+        });
+        const cacheRefresh = await this.refreshCache(k, accepted);
+        return {
+          changeId,
+          kind: k,
+          ok: true,
+          applied: !accepted,
+          accepted,
+          httpCode: res.status,
+          cacheRefresh,
+          message: accepted
+            ? 'accepted for later action by Central — HTTP 202; Central has NOT confirmed the change is in effect, so verify it on the plane before relying on it'
+            : `accepted by Central — HTTP ${res.status}`,
+        };
+      }
+
+      const unverified = res.status === 404;
+      this.log({
+        event: 'apply',
+        ...audit,
+        result: unverified ? 'unverified-path' : 'rejected',
+        httpCode: res.status,
+      });
+      return {
+        changeId,
+        kind: k,
+        ok: false,
+        applied: false,
+        httpCode: res.status,
+        message: unverified
+          ? 'apply path unverified against this tenant — payload rendered, manual apply advised'
+          : `apply failed — Central answered HTTP ${res.status}`,
+      };
+    } finally {
+      this.applyingTargets.delete(targetKey);
+    }
   }
 
   // -- dry run ------------------------------------------------------------------
@@ -1136,7 +1237,7 @@ export class WriteBroker {
    * fail the pipeline; it is shouted to the server console instead.
    */
   private log(entry: {
-    event: 'dry-run' | 'queue' | 'push' | 'discard';
+    event: 'apply' | 'dry-run' | 'queue' | 'push' | 'discard';
     changeId: string;
     ticket: string;
     kind: ConfigKind;

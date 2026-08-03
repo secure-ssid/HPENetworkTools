@@ -316,10 +316,10 @@ export interface Settings {
   hiddenDemoDevices?: string[];
   /**
    * Lab config mode. This estate is a lab used to demonstrate what the portal
-   * can do, so writes do not need the brokered-change ceremony. With this on,
-   * a write no longer requires a raised ticket reference. Off by default.
+   * can do, so writes do not need the brokered-change ceremony. It defaults
+   * on; set it explicitly false to retain the hardened ticketed workflow.
    */
-  configMode?: boolean;
+  configMode: boolean;
   workspaceName: string;
   pollIntervalSec: number;
   /** Sole persisted connector source of truth. AOS-10 is derived from Central. */
@@ -367,6 +367,7 @@ function defaultSettings(): Settings {
   for (const id of CONNECTOR_IDS) connectors[id] = null;
   return {
     demoMode: true,
+    configMode: true,
     workspaceName: 'Meridian Health',
     pollIntervalSec: 60,
     connectors,

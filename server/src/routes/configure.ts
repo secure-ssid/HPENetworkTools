@@ -2,6 +2,7 @@
  * server/src/routes/configure.ts — the brokered-write API.
  *
  *   POST /api/configure/render   {kind, form}           → {rendered, meta, blastRadius} (no ticket — pure render)
+ *   POST /api/configure/apply    {kind, form}           → ImmediateApplyResult (lab direct mode only)
  *   POST /api/configure/dry-run  {kind, form, ticket}   → DryRunResult (400 without a ticket)
  *   POST /api/configure/queue    {kind, form, ticket}   → BrokeredChange (400 without a ticket)
  *   GET  /api/configure/queue                           → {changes: BrokeredChange[]}
@@ -35,6 +36,11 @@ import type { BrokerAuditEvent } from '@hpe/shared';
 const HISTORY_DEFAULT = 50;
 const HISTORY_MAX = 200;
 
+interface ConfigureApplyInput {
+  kind: unknown;
+  form: unknown;
+}
+
 function historyLimit(raw: unknown): number {
   const n = Number(Array.isArray(raw) ? raw[0] : raw);
   if (!Number.isFinite(n) || n < 1) return HISTORY_DEFAULT;
@@ -48,6 +54,19 @@ export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirect
     const body = (req.body ?? {}) as Record<string, unknown>;
     res.json(broker.renderPayload(body.kind, body.form));
   });
+
+  /**
+   * Lab's immediate Central writer. There is deliberately no ticket, queue,
+   * lease, dry-run, or client-controlled audit field here; the broker owns
+   * its admission policy and records the resulting write itself.
+   */
+  router.post(
+    '/configure/apply',
+    h(async (req, res) => {
+      const body = (req.body ?? {}) as Partial<ConfigureApplyInput>;
+      res.json(await broker.apply(body.kind, body.form));
+    }),
+  );
 
   router.post(
     '/configure/dry-run',
