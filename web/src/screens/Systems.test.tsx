@@ -227,6 +227,19 @@ describe('Systems assistant providers', () => {
     expect(screen.getByText('Lab assistant access')).toBeTruthy();
   });
 
+  it('marks a locally edited Codex model as a draft instead of showing stale green readiness', async () => {
+    assistantSetup();
+    renderSystems();
+
+    const model = await screen.findByLabelText('Model');
+    fireEvent.change(model, { target: { value: 'gpt-5.6-luna' } });
+
+    const codex = screen.getByRole('button', { name: /Codex.*selected/i });
+    expect(within(codex).getByText('draft')).toBeTruthy();
+    expect(within(codex).getByText('gpt-5.6-luna')).toBeTruthy();
+    expect(within(codex).queryByText('ready')).toBeNull();
+  });
+
   it('shows served readiness rather than claiming configured state', async () => {
     assistantSetup();
     renderSystems();

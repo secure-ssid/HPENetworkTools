@@ -61,6 +61,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const CLI_TRANSCRIPT_ARGS_CAP = 200;
 const CLI_TRANSCRIPT_RESULT_CAP = 300;
+const READ_FALLBACK_TOOLS = new Set(['find_tool', 'invoke_read_tool']);
+const WRITE_FALLBACK_TOOLS = new Set([...READ_FALLBACK_TOOLS, 'invoke_tool']);
 
 interface CodexToolTranscript {
   tool: string;
@@ -106,7 +108,11 @@ function containsSensitiveToken(value: unknown, token: string | null): boolean {
  * the one MCP server the portal supplied. Everything else is discarded; bad
  * JSON, another MCP server, or an unfinished turn means no answer is returned.
  */
-function parseCodexRun(stdout: string, sensitiveToken: string | null = null): ParsedCodexRun {
+function parseCodexRun(
+  stdout: string,
+  sensitiveToken: string | null = null,
+  allowedTools: ReadonlySet<string> = WRITE_FALLBACK_TOOLS,
+): ParsedCodexRun {
   const lines = stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (lines.length === 0) return { text: null, transcript: [], invalid: true };
 
@@ -145,6 +151,8 @@ function parseCodexRun(stdout: string, sensitiveToken: string | null = null): Pa
     if (item.server !== 'centralmcp'
       || typeof item.tool !== 'string'
       || item.tool.trim().length === 0
+      || !allowedTools.has(item.tool)
+      || containsSensitiveToken(item.tool, sensitiveToken)
       || containsSensitiveToken(item.arguments, sensitiveToken)
       || containsSensitiveToken(item.result, sensitiveToken)
       || containsSensitiveToken(item.error, sensitiveToken)) {
@@ -466,7 +474,7 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
     try {
       const result = await this.runner.run(this.commandFor(config, context.mcp, workspace, READ_ONLY_PROBE_PROMPT, false, this.timeoutMs));
       if (result.exitCode !== 0) return unavailable();
-      const parsed = parseCodexRun(result.stdout, context.mcp.authToken);
+      const parsed = parseCodexRun(result.stdout, context.mcp.authToken, READ_FALLBACK_TOOLS);
       const successfulFindTool = !parsed.invalid
         && parsed.transcript.length === 1
         && parsed.transcript[0]?.tool === 'find_tool'
@@ -525,7 +533,11 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
         request.signal,
       ));
       if (result.exitCode !== 0) throw new Error('Codex CLI did not complete the assistant request.');
-      const parsed = parseCodexRun(result.stdout, request.mcp.authToken);
+      const parsed = parseCodexRun(
+        result.stdout,
+        request.mcp.authToken,
+        request.mcp.writeEnabled ? WRITE_FALLBACK_TOOLS : READ_FALLBACK_TOOLS,
+      );
       if (parsed.invalid || !parsed.text) throw new Error('Codex CLI returned an invalid assistant response.');
       return { text: parsed.text, transcript: parsed.transcript };
     } finally {

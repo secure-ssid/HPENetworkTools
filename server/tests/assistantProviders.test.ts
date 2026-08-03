@@ -537,6 +537,7 @@ describe('isolated native assistant CLI adapters', () => {
     ['MCP arguments', '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{"query":"centralmcp-test-token"},"result":"safe"}}'],
     ['MCP result', '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{},"result":"centralmcp-test-token"}}'],
     ['MCP error', '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"find_tool","arguments":{},"result":null,"error":{"message":"centralmcp-test-token"},"status":"failed"}}'],
+    ['MCP tool name', '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"centralmcp","tool":"centralmcp-test-token","arguments":{},"result":"safe"}}'],
   ])('fails closed without returning the active bearer token when fallback output echoes it through %s', async (_surface, unsafeItem) => {
     const adapter = new CodexAdapter({
       codexAppServer: oneShotFallbackTransport,

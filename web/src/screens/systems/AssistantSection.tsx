@@ -60,13 +60,18 @@ export function AssistantSection() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<AssistantProviderStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [draftProviders, setDraftProviders] = useState<ReadonlySet<AssistantProviderId>>(new Set());
+  const [sharedStatusDraft, setSharedStatusDraft] = useState(false);
 
-  const refreshStatus = async () => {
+  const refreshStatus = async (): Promise<boolean> => {
     try {
-      setStatus(await getChatStatus());
+      const next = await getChatStatus();
+      setStatus(next);
       setLoadError(null);
+      return next !== null;
     } catch (error) {
       setLoadError(`Assistant status could not be loaded: ${(error as Error).message}`);
+      return false;
     }
   };
 
@@ -90,6 +95,7 @@ export function AssistantSection() {
   const selectedStatus = status?.providers?.find((item) => item.id === selected);
   const offline = settings === null;
   const busy = saving || testing;
+  const statusIsDraft = (id: AssistantProviderId) => sharedStatusDraft || draftProviders.has(id);
 
   const updateSelected = (patch: Record<string, unknown>) => {
     setSettings((current) => current ? {
@@ -97,11 +103,21 @@ export function AssistantSection() {
       providers: { ...current.providers, [selected]: { ...current.providers[selected], ...patch } } as AssistantSettings['providers'],
     } : current);
     if ('apiKey' in patch) setProviderKey(String(patch.apiKey ?? ''));
+    setDraftProviders((current) => new Set(current).add(selected));
+    setTestResult(null);
+  };
+
+  const updateSharedSettings = (update: (current: AssistantSettings) => AssistantSettings) => {
+    setSettings((current) => current ? update(current) : current);
+    setSharedStatusDraft(true);
     setTestResult(null);
   };
 
   const chooseProvider = (id: AssistantProviderId) => {
     setSelected(id);
+    if (id !== settings?.activeProvider) {
+      setDraftProviders((current) => new Set(current).add(id));
+    }
     setProviderKey('');
     setTestResult(null);
   };
@@ -138,7 +154,15 @@ export function AssistantSection() {
       setProviderKey('');
       setMcpToken('');
       if (announce) toast('Assistant settings saved', { tone: 'success' });
-      await refreshStatus();
+      const refreshed = await refreshStatus();
+      if (refreshed) {
+        setDraftProviders((current) => {
+          const next = new Set(current);
+          next.delete(selected);
+          return next;
+        });
+        setSharedStatusDraft(false);
+      }
       return true;
     } catch (error) {
       setSelected(settings.activeProvider);
@@ -176,7 +200,9 @@ export function AssistantSection() {
           const item = status?.providers?.find((provider) => provider.id === id);
           const active = settings?.activeProvider === id;
           const editing = selected === id;
-          const ready = providerReady(item);
+          const draft = statusIsDraft(id);
+          const ready = !draft && providerReady(item);
+          const model = draft ? settings?.providers[id].model : item?.resolvedModel;
           return (
             <button
               key={id}
@@ -189,8 +215,8 @@ export function AssistantSection() {
             >
               <span style={{ fontSize: 12 }}>{PROVIDERS[id].title}</span>
               {active ? <Badge tone="neutral">active</Badge> : null}
-              <Badge tone={ready ? 'success' : 'neutral'}>{ready ? 'ready' : 'unavailable'}</Badge>
-              <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}>{item?.resolvedModel ?? '—'}</span>
+              <Badge tone={ready ? 'success' : 'neutral'}>{draft ? 'draft' : ready ? 'ready' : 'unavailable'}</Badge>
+              <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}>{model ?? '—'}</span>
             </button>
           );
         })}
@@ -198,9 +224,9 @@ export function AssistantSection() {
 
       {selectedConfig ? <>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Badge tone={providerReady(selectedStatus) ? 'success' : 'neutral'} dot>{providerReady(selectedStatus) ? 'ready' : 'unavailable'}</Badge>
+          <Badge tone={!statusIsDraft(selected) && providerReady(selectedStatus) ? 'success' : 'neutral'} dot>{statusIsDraft(selected) ? 'draft' : providerReady(selectedStatus) ? 'ready' : 'unavailable'}</Badge>
           <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>
-            {selectedStatus?.resolvedModel ?? ('model' in selectedConfig ? selectedConfig.model : PROVIDERS[selected].defaultModel)}
+            {statusIsDraft(selected) ? selectedConfig.model : selectedStatus?.resolvedModel ?? selectedConfig.model ?? PROVIDERS[selected].defaultModel}
           </span>
         </div>
 
@@ -222,11 +248,11 @@ export function AssistantSection() {
       <div style={{ borderTop: '1px solid var(--nd-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <SectionHeader label="Tool access" meta="CENTRALMCP · LAB" />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
-          <FormField label="Endpoint"><Input mono aria-label="centralmcp endpoint" value={settings?.mcp.endpoint ?? ''} disabled={offline || busy} onChange={(event) => setSettings((current) => current ? { ...current, mcp: { ...current.mcp, endpoint: event.target.value } } : current)} /></FormField>
-          <FormField label="Auth token"><Input mono aria-label="centralmcp auth token" type="password" placeholder="Enter replacement token" value={mcpToken} disabled={offline || busy} onChange={(event) => setMcpToken(event.target.value)} /></FormField>
+          <FormField label="Endpoint"><Input mono aria-label="centralmcp endpoint" value={settings?.mcp.endpoint ?? ''} disabled={offline || busy} onChange={(event) => updateSharedSettings((current) => ({ ...current, mcp: { ...current.mcp, endpoint: event.target.value } }))} /></FormField>
+          <FormField label="Auth token"><Input mono aria-label="centralmcp auth token" type="password" placeholder="Enter replacement token" value={mcpToken} disabled={offline || busy} onChange={(event) => { setMcpToken(event.target.value); setSharedStatusDraft(true); setTestResult(null); }} /></FormField>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <Switch checked={settings?.chatWriteMode === 'enabled'} disabled={offline || busy} label="Lab assistant access" onCheckedChange={(enabled) => setSettings((current) => current ? { ...current, chatWriteMode: enabled ? 'enabled' : 'read-only' } : current)} />
+          <Switch checked={settings?.chatWriteMode === 'enabled'} disabled={offline || busy} label="Lab assistant access" onCheckedChange={(enabled) => updateSharedSettings((current) => ({ ...current, chatWriteMode: enabled ? 'enabled' : 'read-only' }))} />
           <Badge tone={settings?.chatWriteMode === 'enabled' ? 'success' : 'neutral'}>{settings?.chatWriteMode === 'enabled' ? 'READ / WRITE' : 'READ ONLY'}</Badge>
         </div>
       </div>
