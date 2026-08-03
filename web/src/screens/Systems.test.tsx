@@ -8,9 +8,11 @@ import {
   getChatSettings,
   getChatStatus,
   getPortalSettings,
+  saveChatSettings,
   getSystems,
   getSystemsState,
   saveSystemCredentials,
+  testChatProvider,
   testSystem,
 } from '../api/client';
 import type { LivePlaneState, SystemsData, SystemsState } from '../api/client';
@@ -39,6 +41,8 @@ vi.mock('../api/client', async (importOriginal) => {
     getPortalSettings: vi.fn(),
     getChatStatus: vi.fn(),
     getChatSettings: vi.fn(),
+    saveChatSettings: vi.fn(),
+    testChatProvider: vi.fn(),
     saveSystemCredentials: vi.fn(),
     testSystem: vi.fn(),
   };
@@ -49,6 +53,8 @@ const mockGetSystemsState = vi.mocked(getSystemsState);
 const mockGetPortalSettings = vi.mocked(getPortalSettings);
 const mockGetChatStatus = vi.mocked(getChatStatus);
 const mockGetChatSettings = vi.mocked(getChatSettings);
+const mockSaveChatSettings = vi.mocked(saveChatSettings);
+const mockTestChatProvider = vi.mocked(testChatProvider);
 const mockSaveSystemCredentials = vi.mocked(saveSystemCredentials);
 const mockTestSystem = vi.mocked(testSystem);
 
@@ -107,6 +113,103 @@ function SiteStub() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+describe('Systems assistant providers', () => {
+  const settings = {
+    activeProvider: 'codex' as const,
+    mcp: { enabled: true, endpoint: 'http://centralmcp.test/mcp', authToken: '••••••••' },
+    chatWriteMode: 'read-only' as const,
+    providers: {
+      codex: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' as const },
+      claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' as const },
+      kimi: { enabled: false, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false },
+      copilot: { enabled: false, model: 'auto', effort: 'adaptive' as const },
+      ollama: { enabled: false, baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5-coder:7b' },
+      openrouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4.1-mini', apiKey: '••••••••' },
+    },
+  };
+
+  const providerStatus = {
+    installed: true,
+    authenticated: true,
+    mcpReady: true,
+    modelReady: true,
+    selected: true,
+    resolvedModel: 'gpt-5.6-terra',
+    latencyMs: 18,
+    message: 'Provider is ready.',
+  };
+
+  function assistantSetup() {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue({ assistant: settings });
+    mockGetChatStatus.mockResolvedValue({
+      configured: { mcp: true, llm: true },
+      writeMode: false,
+      mcpReachable: true,
+      activeProvider: 'codex',
+      providers: [
+        { id: 'codex', ...providerStatus },
+        { id: 'claude', ...providerStatus, selected: false, resolvedModel: 'sonnet' },
+        { id: 'kimi', ...providerStatus, selected: false, resolvedModel: null },
+        { id: 'copilot', ...providerStatus, selected: false, resolvedModel: null },
+        { id: 'ollama', ...providerStatus, selected: false, resolvedModel: null },
+        { id: 'openrouter', ...providerStatus, selected: false, resolvedModel: null },
+      ],
+    });
+  }
+
+  it('selects a provider and renders only its relevant fields', async () => {
+    assistantSetup();
+    renderSystems();
+
+    await screen.findByLabelText('Model');
+    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'gpt-5.6-terra');
+    expect(screen.getByLabelText('Reasoning')).toHaveProperty('value', 'low');
+    expect(screen.queryByLabelText('Provider endpoint')).toBeNull();
+    expect(screen.queryByLabelText('API key')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenRouter/i }));
+    expect(screen.getByLabelText('Provider endpoint')).toHaveProperty('value', 'https://openrouter.ai/api/v1');
+    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'openai/gpt-4.1-mini');
+    expect(screen.getByLabelText('API key')).toHaveProperty('value', '');
+    expect(screen.queryByLabelText('Reasoning')).toBeNull();
+  });
+
+  it('keeps the chosen active provider after a failed save', async () => {
+    assistantSetup();
+    mockSaveChatSettings.mockResolvedValue({ ok: false, message: 'save rejected' });
+    renderSystems();
+
+    await screen.findByLabelText('Model');
+    fireEvent.click(screen.getByRole('button', { name: /Claude/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save assistant' }));
+
+    await waitFor(() => expect(mockSaveChatSettings).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: /Claude.*selected/i })).toBeTruthy();
+  });
+
+  it('shows served readiness rather than claiming configured state', async () => {
+    assistantSetup();
+    renderSystems();
+
+    await screen.findByLabelText('Model');
+    expect(screen.getByText('gpt-5.6-terra')).toBeTruthy();
+  });
+
+  it('runs the read-only provider test and reports its returned result', async () => {
+    assistantSetup();
+    mockTestChatProvider.mockResolvedValue(providerStatus);
+    renderSystems();
+
+    await screen.findByLabelText('Model');
+    fireEvent.click(screen.getAllByRole('button', { name: /Test provider/i }).at(-1)!);
+    await waitFor(() => expect(mockTestChatProvider).toHaveBeenCalledWith('codex'));
+    expect(screen.getByText(/18 ms.*gpt-5.6-terra/i)).toBeTruthy();
+  });
 });
 
 describe('Systems demo/live merge', () => {

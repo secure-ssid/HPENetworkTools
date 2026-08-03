@@ -17,6 +17,42 @@ export interface ChatStatus {
   writeMode: boolean;
   mcpUrl?: string;
   mcpReachable: boolean;
+  activeProvider?: AssistantProviderId;
+  providers?: Array<AssistantProviderStatus & { id: AssistantProviderId }>;
+}
+
+export const ASSISTANT_PROVIDER_IDS = ['codex', 'claude', 'kimi', 'copilot', 'ollama', 'openrouter'] as const;
+export type AssistantProviderId = typeof ASSISTANT_PROVIDER_IDS[number];
+
+export interface AssistantProviderStatus {
+  installed: boolean;
+  authenticated: boolean;
+  mcpReady: boolean;
+  modelReady: boolean;
+  selected: boolean;
+  resolvedModel: string | null;
+  latencyMs: number | null;
+  /** Server supplied and redacted: never substitute a browser-side diagnosis. */
+  message: string;
+}
+
+type NativeProvider = { enabled: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' };
+type KimiProvider = { enabled: boolean; model: string; thinking: boolean };
+type CopilotProvider = { enabled: boolean; model: string; effort: 'adaptive' | 'low' | 'medium' | 'high' };
+type CompatibleProvider = { enabled: boolean; baseUrl: string; model: string; apiKey?: string };
+
+export interface AssistantSettings {
+  activeProvider: AssistantProviderId;
+  mcp: { enabled: boolean; endpoint: string; authToken: string | null };
+  chatWriteMode: 'read-only' | 'confirm' | 'enabled';
+  providers: {
+    codex: NativeProvider;
+    claude: NativeProvider;
+    kimi: KimiProvider;
+    copilot: CopilotProvider;
+    ollama: CompatibleProvider;
+    openrouter: CompatibleProvider;
+  };
 }
 
 /** Live chat status; null when the backend is absent. */
@@ -71,11 +107,9 @@ export async function postChat(
   }
 }
 
-/** The assistant slice of the server settings (masked secrets, never raw). */
+/** The canonical server settings envelope; secrets are always masked or null. */
 export interface ChatSettings {
-  mcp: { url: string; bearerToken: string | null } | null;
-  llm: { baseUrl: string; apiKey: string; model: string } | null;
-  chatWriteMode: boolean;
+  assistant: AssistantSettings;
 }
 
 /** GET /api/settings, narrowed to the chat keys; null when backend absent. */
@@ -88,7 +122,7 @@ export async function getChatSettings(): Promise<ChatSettings | null> {
  * masked '••••••…' secrets written back unchanged are ignored, so a round
  * trip of the masked view keeps the stored secrets.
  */
-export async function saveChatSettings(patch: Partial<ChatSettings>): Promise<SystemMutationResult> {
+export async function saveChatSettings(patch: { assistant: Partial<AssistantSettings> }): Promise<SystemMutationResult> {
   try {
     const r = await apiFetch('/api/settings', {
       method: 'PUT',
@@ -100,4 +134,11 @@ export async function saveChatSettings(patch: Partial<ChatSettings>): Promise<Sy
   } catch (err) {
     return { ok: false, message: `cannot reach the portal backend: ${(err as Error).message}` };
   }
+}
+
+/** Runs the server-owned, read-only readiness probe for one provider. */
+export async function testChatProvider(id: AssistantProviderId): Promise<AssistantProviderStatus> {
+  const r = await apiFetch(`/api/chat/providers/${id}/test`, { method: 'POST' });
+  if (!r.ok) throw new Error(await serverMessage(r, `provider test failed — HTTP ${r.status}`));
+  return r.json() as Promise<AssistantProviderStatus>;
 }

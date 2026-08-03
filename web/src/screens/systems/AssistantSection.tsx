@@ -1,244 +1,199 @@
-/** Assistant settings: provider, model and connection test. */
+/** Compact assistant provider selection and tool-access settings. */
 
 import {
+  ASSISTANT_PROVIDER_IDS,
   getChatSettings,
   getChatStatus,
   saveChatSettings,
+  testChatProvider,
+  type AssistantProviderId,
+  type AssistantProviderStatus,
+  type AssistantSettings,
   type ChatStatus,
 } from '../../api/client';
-import {
-  Badge,
-  Button,
-  FormField,
-  Input,
-  SectionHeader,
-  Switch,
-  useToast,
-} from '../../nightdesk';
-import {
-  useEffect,
-  useState,
-} from 'react';
+import { Badge, Button, FormField, Input, SectionHeader, Select, Switch, useToast } from '../../nightdesk';
+import { useEffect, useState } from 'react';
 
-// -- assistant (chat) section ---------------------------------------------------
+const PROVIDERS: Record<AssistantProviderId, { title: string; defaultModel: string }> = {
+  codex: { title: 'Codex', defaultModel: 'gpt-5.6-terra' },
+  claude: { title: 'Claude', defaultModel: 'sonnet' },
+  kimi: { title: 'Kimi', defaultModel: 'kimi-code/kimi-for-coding-highspeed' },
+  copilot: { title: 'GitHub Copilot', defaultModel: 'auto' },
+  ollama: { title: 'Ollama', defaultModel: 'qwen2.5-coder:7b' },
+  openrouter: { title: 'OpenRouter', defaultModel: 'openai/gpt-4.1-mini' },
+};
 
-/**
- * The assistant's configuration surface: centralmcp endpoint + bearer and the
- * OpenAI-compatible LLM triple, saved through PUT /api/settings (deep-merged;
- * masked '••••••…' secrets written back unchanged are ignored, so prefilled
- * masked values preserve the stored secrets). Status comes from
- * GET /api/chat/status. The write-mode Switch saves chatWriteMode directly.
- */
+function providerReady(status: AssistantProviderStatus | undefined): boolean {
+  return Boolean(status?.installed && status.authenticated && status.mcpReady && status.modelReady);
+}
+
+function redactedSecret(value: string | null | undefined): string {
+  // A settings response may contain a mask to signal that a secret is saved.
+  // Never render it: a blank input means "enter a replacement" only.
+  return value?.includes('•') ? '' : value ?? '';
+}
+
 export function AssistantSection() {
   const { toast } = useToast();
-  const [loaded, setLoaded] = useState(false);
+  const [settings, setSettings] = useState<AssistantSettings | null>(null);
   const [status, setStatus] = useState<ChatStatus | null>(null);
-  const [mcpUrl, setMcpUrl] = useState('');
-  const [bearer, setBearer] = useState('');
-  const [llmBase, setLlmBase] = useState('');
-  const [llmKey, setLlmKey] = useState('');
-  const [llmModel, setLlmModel] = useState('');
-  const [writeMode, setWriteMode] = useState(false);
+  const [selected, setSelected] = useState<AssistantProviderId>('codex');
+  const [mcpToken, setMcpToken] = useState('');
+  const [providerKey, setProviderKey] = useState('');
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<AssistantProviderStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const refreshStatus = async () => {
     try {
       setStatus(await getChatStatus());
       setLoadError(null);
-    } catch (err) {
-      setStatus(null);
-      setLoadError(`Assistant status could not be loaded: ${(err as Error).message}`);
+    } catch (error) {
+      setLoadError(`Assistant status could not be loaded: ${(error as Error).message}`);
     }
   };
 
   useEffect(() => {
     let live = true;
-    void Promise.all([getChatStatus(), getChatSettings()])
-      .then(([st, cfg]) => {
+    void Promise.all([getChatSettings(), getChatStatus()])
+      .then(([loaded, currentStatus]) => {
         if (!live) return;
-        setStatus(st);
-        if (cfg) {
-          setMcpUrl(cfg.mcp?.url ?? '');
-          setBearer(cfg.mcp?.bearerToken ?? '');
-          setLlmBase(cfg.llm?.baseUrl ?? '');
-          setLlmKey(cfg.llm?.apiKey ?? '');
-          setLlmModel(cfg.llm?.model ?? '');
-          setWriteMode(cfg.chatWriteMode);
+        if (loaded) {
+          setSettings(loaded.assistant);
+          setSelected(loaded.assistant.activeProvider);
+          setMcpToken(redactedSecret(loaded.assistant.mcp.authToken));
         }
+        setStatus(currentStatus);
       })
-      .catch((err: Error) => {
-        if (live) setLoadError(`Assistant settings could not be loaded: ${err.message}`);
-      })
-      .finally(() => {
-        if (live) setLoaded(true);
-      });
-    return () => {
-      live = false;
-    };
+      .catch((error: Error) => live && setLoadError(`Assistant settings could not be loaded: ${error.message}`));
+    return () => { live = false; };
   }, []);
 
-  const offline = loaded && status === null;
+  const selectedConfig = settings?.providers[selected];
+  const selectedStatus = status?.providers?.find((item) => item.id === selected);
+  const offline = settings === null;
+
+  const updateSelected = (patch: Record<string, unknown>) => {
+    setSettings((current) => current ? {
+      ...current,
+      providers: { ...current.providers, [selected]: { ...current.providers[selected], ...patch } } as AssistantSettings['providers'],
+    } : current);
+    if ('apiKey' in patch) setProviderKey(String(patch.apiKey ?? ''));
+    setTestResult(null);
+  };
+
+  const chooseProvider = (id: AssistantProviderId) => {
+    setSelected(id);
+    setProviderKey('');
+    setTestResult(null);
+  };
 
   const save = async () => {
+    if (!settings || !selectedConfig) return;
     setSaving(true);
-    const res = await saveChatSettings({
-      mcp: mcpUrl.trim() ? { url: mcpUrl.trim(), bearerToken: bearer.trim() || null } : null,
-      llm:
-        llmBase.trim() && llmModel.trim()
-          ? { baseUrl: llmBase.trim(), apiKey: llmKey, model: llmModel.trim() }
-          : null,
-      chatWriteMode: writeMode,
+    const providerPatch = { ...selectedConfig } as Record<string, unknown>;
+    if ('apiKey' in providerPatch) {
+      if (providerKey.trim()) providerPatch.apiKey = providerKey.trim();
+      else delete providerPatch.apiKey;
+    }
+    const mcp = { ...settings.mcp, authToken: mcpToken.trim() || settings.mcp.authToken };
+    const response = await saveChatSettings({
+      assistant: {
+        activeProvider: selected,
+        mcp,
+        chatWriteMode: settings.chatWriteMode,
+        providers: { [selected]: providerPatch } as AssistantSettings['providers'],
+      },
     });
     setSaving(false);
-    if (!res.ok) {
-      toast(res.message, { tone: 'danger' });
+    if (!response.ok) {
+      toast(response.message, { tone: 'danger' });
       return;
     }
+    setSettings((current) => current ? { ...current, activeProvider: selected } : current);
+    setProviderKey('');
+    setMcpToken('');
     toast('Assistant settings saved', { tone: 'success' });
     await refreshStatus();
   };
 
-  const toggleWriteMode = async (next: boolean) => {
-    const prev = writeMode;
-    setWriteMode(next);
-    const res = await saveChatSettings({ chatWriteMode: next });
-    if (!res.ok) {
-      setWriteMode(prev);
-      toast(res.message, { tone: 'danger' });
-      return;
+  const runTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await testChatProvider(selected);
+      setTestResult(result);
+    } catch (error) {
+      setTestResult({ installed: false, authenticated: false, mcpReady: false, modelReady: false, selected: true, resolvedModel: null, latencyMs: null, message: (error as Error).message });
+    } finally {
+      setTesting(false);
     }
-    toast(next ? 'Write tools enabled' : 'Write tools disabled', {
-      description: next
-        ? 'invoke_tool is offered to the model — each chat session still opts in separately.'
-        : 'the assistant is read-only again.',
-      tone: next ? 'warning' : 'success',
-    });
-    await refreshStatus();
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <SectionHeader label="Assistant" meta="CENTRALMCP · LLM" />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        {status ? (
-          <>
-            {status.configured.mcp ? (
-              <Badge tone={status.mcpReachable ? 'success' : 'warning'} dot>
-                {status.mcpReachable ? 'mcp reachable' : 'mcp unreachable'}
-              </Badge>
-            ) : (
-              <Badge tone="neutral" dot>
-                mcp not configured
-              </Badge>
-            )}
-            <Badge tone={status.configured.llm ? 'success' : 'neutral'} dot>
-              {status.configured.llm ? 'llm configured' : 'llm not configured'}
-            </Badge>
-            <Badge tone={status.writeMode ? 'warning' : 'neutral'}>
-              {status.writeMode ? 'write mode on' : 'read-only'}
-            </Badge>
-            {status.mcpUrl ? (
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10.5,
-                  color: 'var(--nd-text-muted)',
-                }}
-              >
-                {status.mcpUrl}
-              </span>
-            ) : null}
-          </>
-        ) : (
-          <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 10.5,
-              color: 'var(--nd-text-muted)',
-            }}
-          >
-            {loadError ?? (offline ? 'backend offline — assistant settings unavailable' : 'checking chat status…')}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <SectionHeader label="Assistant" meta="PROVIDER · TOOL ACCESS" />
+      {loadError ? <span role="status" style={{ fontSize: 12, color: 'var(--nd-danger)' }}>{loadError}</span> : null}
+
+      <div aria-label="Assistant providers" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {ASSISTANT_PROVIDER_IDS.map((id) => {
+          const item = status?.providers?.find((provider) => provider.id === id);
+          const active = selected === id;
+          const ready = providerReady(item);
+          return (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={active}
+              aria-label={`${PROVIDERS[id].title}${active ? ', selected' : ''}`}
+              disabled={offline}
+              onClick={() => chooseProvider(id)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 7px', borderRadius: 4, border: active ? '1px solid var(--nd-accent)' : '1px solid var(--nd-border)', background: active ? 'var(--nd-surface-raised)' : 'transparent', color: 'var(--nd-text)', cursor: offline ? 'not-allowed' : 'pointer' }}
+            >
+              <span style={{ fontSize: 12 }}>{PROVIDERS[id].title}</span>
+              <Badge tone={ready ? 'success' : 'neutral'}>{ready ? 'ready' : 'unavailable'}</Badge>
+            </button>
+          );
+        })}
+      </div>
+
+      {selectedConfig ? <>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Badge tone={providerReady(selectedStatus) ? 'success' : 'neutral'} dot>{providerReady(selectedStatus) ? 'ready' : 'unavailable'}</Badge>
+          <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>
+            {selectedStatus?.resolvedModel ?? ('model' in selectedConfig ? selectedConfig.model : PROVIDERS[selected].defaultModel)}
           </span>
-        )}
-      </div>
+        </div>
 
-      <div
-        style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
-      >
-        <FormField label="MCP server URL" help="centralmcp streamable HTTP endpoint.">
-          <Input
-            mono
-            placeholder="http://127.0.0.1:8010/mcp"
-            value={mcpUrl}
-            disabled={offline}
-            onChange={(e) => setMcpUrl(e.target.value)}
-          />
-        </FormField>
-        <FormField label="MCP bearer token" help="Optional. A masked value is kept as stored.">
-          <Input
-            mono
-            type="password"
-            placeholder="••••••••••••"
-            value={bearer}
-            disabled={offline}
-            onChange={(e) => setBearer(e.target.value)}
-          />
-        </FormField>
-        <FormField label="LLM base URL" help="OpenAI-compatible; /chat/completions is appended.">
-          <Input
-            mono
-            placeholder="http://127.0.0.1:11434/v1"
-            value={llmBase}
-            disabled={offline}
-            onChange={(e) => setLlmBase(e.target.value)}
-          />
-        </FormField>
-        <FormField label="LLM API key" help="A masked value is kept as stored.">
-          <Input
-            mono
-            type="password"
-            placeholder="••••••••••••"
-            value={llmKey}
-            disabled={offline}
-            onChange={(e) => setLlmKey(e.target.value)}
-          />
-        </FormField>
-        <FormField label="LLM model">
-          <Input
-            mono
-            placeholder="qwen2.5:7b"
-            value={llmModel}
-            disabled={offline}
-            onChange={(e) => setLlmModel(e.target.value)}
-          />
-        </FormField>
-      </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+          {'baseUrl' in selectedConfig ? <FormField label="Provider endpoint"><Input mono aria-label="Provider endpoint" value={selectedConfig.baseUrl} disabled={offline} onChange={(event) => updateSelected({ baseUrl: event.target.value })} /></FormField> : null}
+          <FormField label="Model"><Input mono aria-label="Model" value={selectedConfig.model} disabled={offline} onChange={(event) => updateSelected({ model: event.target.value })} /></FormField>
+          {'reasoningEffort' in selectedConfig ? <FormField label="Reasoning"><Select aria-label="Reasoning" value={selectedConfig.reasoningEffort} disabled={offline} options={['low', 'medium', 'high'].map((value) => ({ value, label: value }))} onValueChange={(reasoningEffort) => updateSelected({ reasoningEffort })} /></FormField> : null}
+          {'thinking' in selectedConfig ? <Switch checked={selectedConfig.thinking} disabled={offline} label="Thinking" onCheckedChange={(thinking) => updateSelected({ thinking })} /> : null}
+          {'effort' in selectedConfig ? <FormField label="Mode"><Select aria-label="Mode" value={selectedConfig.model} disabled={offline} options={[{ value: 'auto', label: 'Auto · adaptive' }, { value: 'gpt-5.6-terra', label: 'Terra · alternate' }]} onValueChange={(model) => updateSelected({ model, effort: model === 'auto' ? 'adaptive' : 'low' })} /></FormField> : null}
+          {'apiKey' in selectedConfig || selected === 'ollama' || selected === 'openrouter' ? <FormField label="API key"><Input mono aria-label="API key" type="password" placeholder="Enter replacement key" value={providerKey} disabled={offline} onChange={(event) => updateSelected({ apiKey: event.target.value })} /></FormField> : null}
+        </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-        <Switch
-          checked={writeMode}
-          onCheckedChange={(v) => void toggleWriteMode(v)}
-          disabled={offline}
-          label="Allow write tools (invoke_tool)"
-        />
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={saving || offline}
-          onClick={() => void save()}
-        >
-          {saving ? 'Saving…' : 'Save assistant settings'}
-        </Button>
-        <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 10,
-            color: 'var(--nd-text-muted)',
-          }}
-        >
-          saved server-side · secrets never leave the portal unmasked
-        </span>
+        <details>
+          <summary>Advanced</summary>
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--nd-text-muted)' }}>Fast default: {PROVIDERS[selected].defaultModel}</div>
+        </details>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Button size="sm" variant="primary" disabled={saving || offline} onClick={() => void save()}>{saving ? 'Saving…' : 'Save assistant'}</Button>
+          <Button size="sm" variant="ghost" disabled={testing || offline} onClick={() => void runTest()}>{testing ? 'Testing…' : 'Test provider'}</Button>
+          {testResult ? <span role="status" style={{ fontSize: 11, color: providerReady(testResult) ? 'var(--nd-success)' : 'var(--nd-danger)' }}>{providerReady(testResult) ? `${testResult.latencyMs ?? 0} ms · ${testResult.resolvedModel ?? 'model resolved'}` : testResult.message}</span> : null}
+        </div>
+      </> : null}
+
+      <div style={{ borderTop: '1px solid var(--nd-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <SectionHeader label="Tool access" meta="CENTRALMCP" />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+          <FormField label="Endpoint"><Input mono aria-label="centralmcp endpoint" value={settings?.mcp.endpoint ?? ''} disabled={offline} onChange={(event) => setSettings((current) => current ? { ...current, mcp: { ...current.mcp, endpoint: event.target.value } } : current)} /></FormField>
+          <FormField label="Auth token"><Input mono aria-label="centralmcp auth token" type="password" placeholder="Enter replacement token" value={mcpToken} disabled={offline} onChange={(event) => setMcpToken(event.target.value)} /></FormField>
+        </div>
+        <Switch checked={settings?.chatWriteMode === 'enabled'} disabled={offline} label="Allow write tools" onCheckedChange={(enabled) => setSettings((current) => current ? { ...current, chatWriteMode: enabled ? 'enabled' : 'read-only' } : current)} />
       </div>
     </div>
   );
