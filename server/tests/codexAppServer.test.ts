@@ -20,7 +20,7 @@ class FakeChild implements CodexAppServerChild {
   killed = false;
   inventory = ['centralmcp'];
   emitRemoteStatus = false;
-  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' | 'streaming' | 'mismatched-stream' | 'incomplete-item' | 'terminal-start-completed' | 'terminal-start-failed' | 'missing-completed-at' | 'unsafe-completed-at' | 'token-arguments' | 'token-result' | 'token-error' | 'token-message' | 'completion-without-start' = 'complete';
+  turnMode: 'complete' | 'disconnect' | 'foreign-tool' | 'unknown-event' | 'hang' | 'streaming' | 'mismatched-stream' | 'incomplete-item' | 'terminal-start-completed' | 'terminal-start-failed' | 'missing-completed-at' | 'unsafe-completed-at' | 'token-arguments' | 'token-result' | 'token-error' | 'token-message' | 'completion-without-start' | 'rate-limits' = 'complete';
   private readonly events = new EventEmitter();
   private resolveExit!: () => void;
   private readonly exited = new Promise<void>((resolve) => { this.resolveExit = resolve; });
@@ -331,6 +331,12 @@ class FakeChild implements CodexAppServerChild {
         },
       },
     });
+    if (this.turnMode === 'rate-limits') {
+      this.emit({
+        method: 'account/rateLimits/updated',
+        params: { rateLimits: { remaining: 42 } },
+      });
+    }
     this.emit({
       method: 'turn/completed',
       params: { threadId, turn: { id: turnId, items: [], status: 'completed', error: null } },
@@ -489,6 +495,22 @@ describe('CodexAppServer', () => {
 
   it('accepts and discards only schema-backed start, reasoning, MCP progress, and agent delta events for the active turn', async () => {
     const fake = testHarness({ turnMode: 'streaming' });
+    transports.push(fake.transport);
+
+    await expect(fake.transport.chat(request)).resolves.toEqual({
+      text: 'CentralMCP is ready.',
+      transcript: [{
+        tool: 'find_tool',
+        args: '{"query":"switch inventory"}',
+        resultPreview: 'catalogue found',
+        ok: true,
+      }],
+    });
+    expect(fake.children[0]?.killed).toBe(false);
+  });
+
+  it('accepts and discards a schema-valid account rate-limit notification during an active turn', async () => {
+    const fake = testHarness({ turnMode: 'rate-limits' });
     transports.push(fake.transport);
 
     await expect(fake.transport.chat(request)).resolves.toEqual({

@@ -655,6 +655,12 @@ export class CodexAppServer implements CodexAppServerLike {
       }
       return;
     }
+    if (method === 'account/rateLimits/updated') {
+      if (params !== undefined && !isRecord(params)) {
+        this.invalidate(session, new CodexAppServerFailure(session.stage));
+      }
+      return;
+    }
     const active = session.activeTurn;
     if (!active || !isRecord(params)) {
       this.invalidate(session, new CodexAppServerFailure(session.stage));
