@@ -1583,6 +1583,30 @@ describe('Configure — Mist SSID direct write', () => {
     expect(screen.getByTestId('location-probe').textContent).toBe('/configure');
   });
 
+  it('uses the confirmed Mist link plane when the matched WLAN row is shared across planes', async () => {
+    mockCatalogsByPlane();
+    const sharedRow: SsidObject = { ...MIST_ROW, plane: 'CENTRAL + MIST' };
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      ssids: [sharedRow],
+      capabilities: MIST_DIRECT_CAPS,
+      inventoryMode: 'configured',
+    });
+    const query = new URLSearchParams({
+      edit: 'ssid',
+      plane: 'MIST',
+      name: sharedRow.name,
+      vlan: sharedRow.vlan,
+      targets: sharedRow.targets,
+    });
+    renderConfigure(`/configure?${query.toString()}`);
+
+    await screen.findByLabelText('SSID name');
+    await waitFor(() => expect(mockGetSsidCatalog).toHaveBeenCalledWith('mist'));
+    expect(screen.getByRole('combobox', { name: 'Plane' })).toHaveProperty('value', 'MIST');
+    expect(screen.queryByText('Default role')).toBeNull();
+  });
+
   it('warns and consumes a missing WLAN query without opening a writable form', async () => {
     mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, ssids: [MIST_ROW], inventoryMode: 'configured' });
     const query = new URLSearchParams({

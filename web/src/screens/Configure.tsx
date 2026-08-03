@@ -558,7 +558,9 @@ export default function Configure() {
     const row = identity ? locateSsidDeepLink(data.ssids, identity) : null;
     if (row) {
       setSsidDeepLinkWarning(null);
-      openSsid(row);
+      // The row supplies every writable value, while the already-validated
+      // link plane selects which owner flow/catalog opens for a shared row.
+      openSsid({ ...row, plane: identity!.plane });
     } else {
       setSsidDeepLinkWarning('The requested WLAN is no longer an exact loaded inventory row. Nothing was opened.');
     }
