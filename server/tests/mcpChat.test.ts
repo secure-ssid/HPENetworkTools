@@ -472,6 +472,27 @@ describe('chatLoop compatible provider routing', () => {
     vi.useRealTimers();
   });
 
+  it('keeps the provider deadline active while parsing a stalled response body', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: () => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('body aborted')), { once: true });
+      }),
+    } as Response)));
+    const pending = new OpenAICompatibleAdapter('ollama').run({
+      config: { baseUrl: LLM_URL, model: 'test-model', timeoutMs: 7 },
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      executeTool: async () => { throw new Error('not reached'); },
+    });
+    const rejected = expect(pending).rejects.toThrow('assistant provider timed out after 7ms');
+    await vi.advanceTimersByTimeAsync(7);
+    await rejected;
+    vi.useRealTimers();
+  });
+
   it('does not include a provider error body in the thrown failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('authorization failed for Bearer sk-provider-secret', { status: 401 })));
     const pending = new OpenAICompatibleAdapter('openrouter').run({

@@ -31,6 +31,8 @@ export class AssistantProviderTimeoutError extends Error {
   }
 }
 
+class AssistantProviderHttpError extends Error {}
+
 export type OpenAICompatibleToolCall = AssistantChatToolCall;
 
 export interface OpenAICompatibleMessage {
@@ -60,28 +62,6 @@ export interface OpenAICompatibleChatResult<TTranscript> {
 
 const MAX_ITERATIONS = 6;
 
-function truncate(text: string, cap: number): string {
-  return text.length <= cap ? text : `${text.slice(0, cap)}…`;
-}
-
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const ctl = new AbortController();
-  const abortFromCaller = () => ctl.abort();
-  if (init.signal?.aborted) ctl.abort();
-  else init.signal?.addEventListener('abort', abortFromCaller, { once: true });
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: ctl.signal });
-  } catch (err) {
-    if (init.signal?.aborted) throw new Error('request cancelled');
-    if (ctl.signal.aborted) throw new AssistantProviderTimeoutError(timeoutMs);
-    throw err;
-  } finally {
-    clearTimeout(timer);
-    init.signal?.removeEventListener('abort', abortFromCaller);
-  }
-}
-
 async function complete(
   config: OpenAICompatibleConfig,
   messages: OpenAICompatibleMessage[],
@@ -94,18 +74,29 @@ async function complete(
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`;
 
-  let response: Response;
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
-    response = await fetchWithTimeout(url, { method: 'POST', headers, body: JSON.stringify(payload), signal }, config.timeoutMs);
+    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
+    if (!response.ok) throw new AssistantProviderHttpError(`assistant provider HTTP ${response.status}`);
+    // The same signal guards both the headers and streamed response body.
+    const body = await response.json() as { choices?: Array<{ message?: OpenAICompatibleMessage }> };
+    const message = body.choices?.[0]?.message;
+    if (!message) throw new Error('assistant provider answered without choices[0].message');
+    return message;
   } catch (err) {
+    if (signal?.aborted) throw new Error('request cancelled');
     if (err instanceof AssistantProviderTimeoutError) throw err;
+    if (err instanceof AssistantProviderHttpError) throw err;
+    if (controller.signal.aborted) throw new AssistantProviderTimeoutError(config.timeoutMs);
     throw new Error(`assistant provider request failed: ${(err as Error).message}`);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
-  if (!response.ok) throw new Error(`assistant provider HTTP ${response.status}`);
-  const body = await response.json() as { choices?: Array<{ message?: OpenAICompatibleMessage }> };
-  const message = body.choices?.[0]?.message;
-  if (!message) throw new Error('assistant provider answered without choices[0].message');
-  return message;
 }
 
 /** Shared OpenAI Chat Completions loop for Ollama and OpenRouter. No global settings are read here. */
