@@ -256,12 +256,6 @@ describe('isolated native assistant CLI adapters', () => {
   });
 
   it('runs Codex chat through an empty lab workspace without creating a bearer-token config file', async () => {
-    const noToolProbeJsonl = [
-      '{"type":"thread.started","thread_id":"thread_0"}',
-      '{"type":"turn.started"}',
-      '{"type":"item.completed","item":{"type":"agent_message","text":"I cannot complete that check."}}',
-      '{"type":"turn.completed","status":"completed"}',
-    ].join('\n');
     const probeJsonl = [
       '{"type":"thread.started","thread_id":"thread_1"}',
       '{"type":"turn.started"}',
@@ -290,7 +284,7 @@ describe('isolated native assistant CLI adapters', () => {
           if (command.args.includes('--version')) return { exitCode: 0, stdout: 'codex 0.145.0', stderr: '' };
           return {
             exitCode: 0,
-            stdout: commands.length === 1 ? noToolProbeJsonl : commands.length === 2 ? probeJsonl : chatJsonl,
+            stdout: commands.length === 1 ? probeJsonl : chatJsonl,
             stderr: '',
           };
         },
@@ -318,7 +312,7 @@ describe('isolated native assistant CLI adapters', () => {
 
     expect(invocations).toEqual([{ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' }]);
     expect(createMcpLaunchConfig).not.toHaveBeenCalled();
-    expect(workspaceDispose).toHaveBeenCalledTimes(3);
+    expect(workspaceDispose).toHaveBeenCalledTimes(2);
     expect(commands[0]).toMatchObject({ timeoutMs: 30_000 });
     const launch = commands.at(-1)!;
     expect(launch).toMatchObject({ command: 'codex', cwd: '/private/tmp/hpe-codex-empty', timeoutMs: 5000 });
@@ -436,6 +430,39 @@ describe('isolated native assistant CLI adapters', () => {
     )).resolves.toEqual({ authenticated: false, modelReady: false });
     expect(probe).toHaveBeenCalledTimes(1);
     expect(oneShotRunner).not.toHaveBeenCalled();
+    expect(invocations).toEqual([]);
+  });
+
+  it('does not replay a completed one-shot probe turn that returned no tool evidence', async () => {
+    const commands: CommandExecution[] = [];
+    const dispose = vi.fn(async () => {});
+    const adapter = new CodexAdapter({
+      codexAppServer: oneShotFallbackTransport,
+      commandRunner: {
+        run: async (command) => {
+          commands.push(command);
+          return {
+            exitCode: 0,
+            stdout: [
+              '{"type":"thread.started","thread_id":"thread-no-tool"}',
+              '{"type":"turn.started"}',
+              '{"type":"item.completed","item":{"type":"agent_message","text":"No tool call was made."}}',
+              '{"type":"turn.completed","status":"completed"}',
+            ].join('\n'),
+            stderr: '',
+          };
+        },
+      },
+      createEmptyDirectory: async () => ({ directory: '/private/tmp/hpe-codex-empty', dispose }),
+    });
+    const { context, invocations } = probeContext();
+
+    await expect(adapter.probeReadOnly(
+      { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+      context,
+    )).resolves.toEqual({ authenticated: false, modelReady: false });
+    expect(commands).toHaveLength(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
     expect(invocations).toEqual([]);
   });
 

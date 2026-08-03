@@ -18,7 +18,6 @@ import type {
 import { createSpawnCommandRunner } from './types';
 
 const PROBE_TIMEOUT_MS = 30_000;
-const CODEX_PROBE_ATTEMPTS = 2;
 const READ_ONLY_PROBE_PROMPT = [
   'Perform one read-only centralmcp capability check.',
   'Call only the centralmcp find_tool tool once, then report that it completed.',
@@ -428,35 +427,26 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
   }
 
   private async probeOneShot(config: CodexProviderConfig, context: ReadOnlyProbeContext): Promise<ReadOnlyProbeResult> {
-    for (let attempt = 0; attempt < CODEX_PROBE_ATTEMPTS; attempt += 1) {
-      const workspace = await this.createEmptyWorkspace();
-      if (!workspace) return unavailable();
-      try {
-        const result = await this.runner.run(this.commandFor(config, context.mcp, workspace.directory, READ_ONLY_PROBE_PROMPT, false, this.timeoutMs));
-        if (result.exitCode !== 0) return unavailable();
-        const parsed = parseCodexRun(result.stdout);
-        const successfulFindTool = !parsed.invalid
-          && parsed.transcript.length === 1
-          && parsed.transcript[0]?.tool === 'find_tool'
-          && parsed.transcript[0]?.ok;
-        if (successfulFindTool) {
-          context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
-          return resultFor(config);
-        }
-        // The native CLI can occasionally complete a valid turn without calling
-        // an offered MCP tool. Retry exactly once in a fresh empty workspace;
-        // readiness remains true only after a real centralmcp read is observed.
-        if (!parsed.invalid && parsed.transcript.length === 0 && attempt + 1 < CODEX_PROBE_ATTEMPTS) {
-          continue;
-        }
-        return unavailable();
-      } catch {
-        return unavailable();
-      } finally {
-        await workspace.dispose().catch(() => undefined);
+    const workspace = await this.createEmptyWorkspace();
+    if (!workspace) return unavailable();
+    try {
+      const result = await this.runner.run(this.commandFor(config, context.mcp, workspace.directory, READ_ONLY_PROBE_PROMPT, false, this.timeoutMs));
+      if (result.exitCode !== 0) return unavailable();
+      const parsed = parseCodexRun(result.stdout);
+      const successfulFindTool = !parsed.invalid
+        && parsed.transcript.length === 1
+        && parsed.transcript[0]?.tool === 'find_tool'
+        && parsed.transcript[0]?.ok;
+      if (successfulFindTool) {
+        context.recordInvocation({ boundary: 'mcp', server: 'centralmcp', tool: 'find_tool', access: 'read-only' });
+        return resultFor(config);
       }
+      return unavailable();
+    } catch {
+      return unavailable();
+    } finally {
+      await workspace.dispose().catch(() => undefined);
     }
-    return unavailable();
   }
 
   override async chat(request: AssistantChatRequest): Promise<AssistantChatResult> {
