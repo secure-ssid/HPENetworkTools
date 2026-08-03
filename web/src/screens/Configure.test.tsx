@@ -211,6 +211,39 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('Configure — per-entry-source queue semantics', () => {
+  it('confirmed lab mode does not let an unavailable broker prevent direct configuration', async () => {
+    mockGetPortalSettings.mockResolvedValue({ demoMode: false, pollIntervalSec: 60, configMode: true });
+    mockGetChangeQueue.mockResolvedValue({ error: 'broker queue unavailable' });
+    renderConfigure();
+
+    await screen.findByRole('button', { name: 'New VLAN' });
+    expect(mockGetChangeQueue).not.toHaveBeenCalled();
+    expect(screen.queryByText('broker queue unavailable')).toBeNull();
+    expect(screen.queryByText('Queued changes')).toBeNull();
+  });
+
+  it('unavailable settings preserve hardened queue, ticket, dry-run, and SSID review controls', async () => {
+    mockGetPortalSettings.mockResolvedValue(null);
+    renderConfigure();
+
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'New VLAN' }));
+    expect(screen.getByPlaceholderText('NET-4166')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Queue the change' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Dry run' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'New SSID' }));
+    await screen.findByText('Campus-01');
+    expect(
+      screen.getByRole('checkbox', {
+        name: 'I have reviewed this profile and these scope assignments — apply directly, no ticket.',
+      }),
+    ).toBeTruthy();
+    expect(mockApplyConfigDirect).not.toHaveBeenCalled();
+  });
+
   it('a legacy settings response removes broker controls and immediately applies a valid VLAN with result evidence', async () => {
     // A returned, pre-configMode settings payload means the server will use
     // its lab-direct default. `null` still means unreachable and stays hard.

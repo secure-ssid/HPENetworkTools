@@ -324,9 +324,25 @@ export default function Configure() {
 
   useEffect(() => {
     let live = true;
-    void Promise.all([getConfigure(), getChangeQueue(), getPortalSettings()]).then(([d, serverQueue, portal]) => {
+    void (async () => {
+      // The settings response is the admission-mode boundary. Do not ask the
+      // broker about a queue that confirmed lab mode will neither show nor use.
+      const [d, portal] = await Promise.all([getConfigure(), getPortalSettings()]);
       if (!live) return;
-      setLabConfigMode(portal !== null && portal.configMode !== false);
+      const lab = portal !== null && portal.configMode !== false;
+      setLabConfigMode(lab);
+      if (lab) {
+        setData(d);
+        setQueue([]);
+        setQueueSource('local');
+        return;
+      }
+
+      // A missing/unreachable settings response remains hardened. Only that
+      // path reads the broker queue, so its existing failure semantics stay
+      // exactly where they protect ticketed configuration.
+      const serverQueue = await getChangeQueue();
+      if (!live) return;
       if (isApiError(serverQueue)) {
         setData({ ...d, apiError: serverQueue.error });
         setQueue([]);
@@ -345,7 +361,7 @@ export default function Configure() {
         // honour it rather than flattening every row to a local, id-less one.
         setQueue(d.queued.map((q) => ({ ...q, id: q.id ?? null })));
       }
-    });
+    })();
     return () => {
       live = false;
     };
