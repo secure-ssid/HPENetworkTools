@@ -36,7 +36,7 @@ function settings(): AssistantSettings {
 describe('assistant provider registry', () => {
   it('exposes the speed-first defaults and descriptors for every supported provider', () => {
     expect(getAssistantDefaults()).toEqual([
-      expect.objectContaining({ id: 'codex', title: 'Codex', executionKind: 'cli', requiredFields: ['model', 'reasoningEffort'], defaultConfig: { enabled: false, model: 'gpt-5.6-terra', reasoningEffort: 'low' } }),
+      expect.objectContaining({ id: 'codex', title: 'Codex', executionKind: 'cli', requiredFields: ['model', 'reasoningEffort'], defaultConfig: { enabled: false, model: 'gpt-5.3-spark', reasoningEffort: 'auto' } }),
       expect.objectContaining({ id: 'claude', title: 'Claude', executionKind: 'cli', requiredFields: ['model', 'reasoningEffort'], defaultConfig: { enabled: false, model: 'sonnet', reasoningEffort: 'low' } }),
       expect.objectContaining({ id: 'kimi', title: 'Kimi', executionKind: 'cli', requiredFields: ['model', 'thinking'], defaultConfig: { enabled: false, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false } }),
       expect.objectContaining({ id: 'copilot', title: 'GitHub Copilot', executionKind: 'cli', requiredFields: ['model', 'effort'], defaultConfig: { enabled: false, model: 'auto', effort: 'adaptive' } }),
@@ -211,6 +211,16 @@ describe('isolated native assistant CLI adapters', () => {
     };
   }
 
+  it('accepts catalogued Codex models and rejects unknown models before discovery', async () => {
+    const fake = nativeDependencies('codex 0.145.0');
+    const adapter = new CodexAdapter(fake.dependencies);
+
+    await expect(adapter.discover({ enabled: true, model: 'gpt-5.3-spark', reasoningEffort: 'auto' } as never))
+      .resolves.toMatchObject({ installed: true });
+    await expect(adapter.discover({ enabled: true, model: 'not-a-model', reasoningEffort: 'auto' } as never))
+      .resolves.toMatchObject({ installed: false });
+  });
+
   const successfulClaudeProbe = [
     '{"type":"system","subtype":"init"}',
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_centralmcp","name":"mcp__centralmcp__find_tool","input":{"query":"catalogue"}}]}}',
@@ -384,7 +394,7 @@ describe('isolated native assistant CLI adapters', () => {
 
     await expect(new ClaudeAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'opus', reasoningEffort: 'low' }, probeContext().context))
       .resolves.toEqual({ authenticated: false, modelReady: false });
-    await expect(new CodexAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'high' }, probeContext().context))
+    await expect(new CodexAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'not-a-model', reasoningEffort: 'auto' } as never, probeContext().context))
       .resolves.toEqual({ authenticated: false, modelReady: false });
     await expect(new KimiAdapter(fake.dependencies).probeReadOnly({ enabled: true, model: 'kimi-code/kimi-for-coding-highspeed', thinking: true }, probeContext().context))
       .resolves.toEqual({ authenticated: false, modelReady: false });

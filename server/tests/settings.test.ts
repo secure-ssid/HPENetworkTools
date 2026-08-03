@@ -105,7 +105,7 @@ describe('SettingsStore', () => {
     expect(assistant.mcp.enabled).toBe(false);
     expect(assistant.providers.ollama.enabled).toBe(false);
     expect(assistant.chatWriteMode).toBe('enabled');
-    expect(assistant.providers.codex).toMatchObject({ model: 'gpt-5.6-terra', reasoningEffort: 'low' });
+    expect(assistant.providers.codex).toMatchObject({ model: 'gpt-5.3-spark', reasoningEffort: 'auto' });
     expect(assistant.providers.kimi).toMatchObject({ model: 'kimi-code/kimi-for-coding-highspeed', thinking: false });
   });
 

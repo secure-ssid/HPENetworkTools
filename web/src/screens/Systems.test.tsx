@@ -121,7 +121,7 @@ describe('Systems assistant providers', () => {
     mcp: { enabled: true, endpoint: 'http://centralmcp.test/mcp', authToken: '••••••••' },
     chatWriteMode: 'enabled' as const,
     providers: {
-      codex: { enabled: true, model: 'gpt-5.6-terra', reasoningEffort: 'low' as const },
+      codex: { enabled: true, model: 'gpt-5.3-spark' as const, reasoningEffort: 'auto' as const },
       claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' as const },
       kimi: { enabled: false, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false },
       copilot: { enabled: false, model: 'auto', effort: 'adaptive' as const },
@@ -136,7 +136,7 @@ describe('Systems assistant providers', () => {
     mcpReady: true,
     modelReady: true,
     selected: true,
-    resolvedModel: 'gpt-5.6-terra',
+    resolvedModel: 'gpt-5.3-spark',
     latencyMs: 18,
     message: 'Provider is ready.',
   };
@@ -162,13 +162,18 @@ describe('Systems assistant providers', () => {
     });
   }
 
-  it('selects a provider and renders only its relevant fields', async () => {
+  it('renders the shared Codex model selector and only the selected provider fields', async () => {
     assistantSetup();
     renderSystems();
 
     await screen.findByLabelText('Model');
-    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'gpt-5.6-terra');
-    expect(screen.getByLabelText('Reasoning')).toHaveProperty('value', 'low');
+    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'gpt-5.3-spark');
+    expect(screen.getByRole('option', { name: /Spark.*fastest/i })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /Luna/i })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /Terra/i })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /GPT-5\.4 Mini/i })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /Auto.*normal/i })).toBeTruthy();
+    expect(screen.getByLabelText('Reasoning')).toHaveProperty('value', 'auto');
     expect(screen.queryByLabelText('Provider endpoint')).toBeNull();
     expect(screen.queryByLabelText('API key')).toBeNull();
 
@@ -209,15 +214,15 @@ describe('Systems assistant providers', () => {
     })));
   });
 
-  it('keeps the saved model editable in the compact provider form', async () => {
+  it('keeps the saved Codex model selectable in the compact provider form', async () => {
     assistantSetup();
     renderSystems();
 
     const model = await screen.findByLabelText('Model');
-    expect(model).toHaveProperty('value', 'gpt-5.6-terra');
+    expect(model).toHaveProperty('value', 'gpt-5.3-spark');
     expect(screen.queryByText('Advanced')).toBeNull();
-    fireEvent.change(model, { target: { value: 'gpt-5.6-terra-custom' } });
-    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'gpt-5.6-terra-custom');
+    fireEvent.change(model, { target: { value: 'gpt-5.6-terra' } });
+    expect(screen.getByLabelText('Model')).toHaveProperty('value', 'gpt-5.6-terra');
     expect(screen.getByText('Lab assistant access')).toBeTruthy();
   });
 
@@ -226,8 +231,8 @@ describe('Systems assistant providers', () => {
     renderSystems();
 
     await screen.findByLabelText('Model');
-    expect(screen.getAllByText('gpt-5.6-terra').length).toBeGreaterThan(1);
-    expect(within(screen.getByRole('button', { name: /Codex.*selected/i })).getByText('gpt-5.6-terra')).toBeTruthy();
+    expect(screen.getAllByText('gpt-5.3-spark').length).toBeGreaterThan(1);
+    expect(within(screen.getByRole('button', { name: /Codex.*selected/i })).getByText('gpt-5.3-spark')).toBeTruthy();
   });
 
   it('runs the read-only provider test and reports its returned result', async () => {
@@ -238,7 +243,7 @@ describe('Systems assistant providers', () => {
     await screen.findByLabelText('Model');
     fireEvent.click(screen.getAllByRole('button', { name: /Test provider/i }).at(-1)!);
     await waitFor(() => expect(mockTestChatProvider).toHaveBeenCalledWith('codex'));
-    expect(screen.getByText(/18 ms.*gpt-5.6-terra/i)).toBeTruthy();
+    expect(screen.getByText(/18 ms.*gpt-5.3-spark/i)).toBeTruthy();
   });
 });
 

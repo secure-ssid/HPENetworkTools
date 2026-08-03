@@ -21,3 +21,4 @@ export * from './appRisk';
 export * from './trends';
 export * from './expiry';
 export * from './topologyGraph';
+export * from './assistantModels';

@@ -39,6 +39,7 @@ import {
 import { adapterCredentialsFor, type ConnectorRecord } from '../connectors/catalog';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
 import { SCREEN_SECTIONS, type ScreenSection, type SectionMode } from '@hpe/shared';
+import { isCodexModel, type CodexModelId } from '@hpe/shared';
 
 export type PlaneCredentials = Record<string, string>;
 
@@ -69,8 +70,8 @@ const enabledSchema = z.boolean();
 
 export const codexProviderSchema = z.object({
   enabled: enabledSchema,
-  model: modelSchema,
-  reasoningEffort: z.enum(['low', 'medium', 'high']),
+  model: modelSchema.refine(isCodexModel, 'must be a supported Codex model').transform((model): CodexModelId => model),
+  reasoningEffort: z.enum(['auto', 'low', 'medium', 'high']),
 }).strict();
 export const claudeProviderSchema = z.object({
   enabled: enabledSchema,
@@ -125,6 +126,7 @@ export type AssistantProviderConfig =
   | z.infer<typeof copilotProviderSchema>
   | z.infer<typeof ollamaProviderSchema>
   | z.infer<typeof openrouterProviderSchema>;
+export type CodexProviderConfig = z.infer<typeof codexProviderSchema>;
 export type AssistantSettings = z.infer<typeof assistantSettingsSchema>;
 
 function defaultAssistantSettings(): AssistantSettings {
@@ -133,7 +135,7 @@ function defaultAssistantSettings(): AssistantSettings {
     mcp: { enabled: false, endpoint: 'http://127.0.0.1:3000/mcp', authToken: null },
     chatWriteMode: 'enabled',
     providers: {
-      codex: { enabled: false, model: 'gpt-5.6-terra', reasoningEffort: 'low' },
+      codex: { enabled: false, model: 'gpt-5.3-spark', reasoningEffort: 'auto' },
       claude: { enabled: false, model: 'sonnet', reasoningEffort: 'low' },
       kimi: { enabled: false, model: 'kimi-code/kimi-for-coding-highspeed', thinking: false },
       copilot: { enabled: false, model: 'auto', effort: 'adaptive' },

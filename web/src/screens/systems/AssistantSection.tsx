@@ -11,11 +11,12 @@ import {
   type AssistantSettings,
   type ChatStatus,
 } from '../../api/client';
+import { CODEX_MODEL_OPTIONS } from '@hpe/shared';
 import { Badge, Button, FormField, Input, SectionHeader, Select, Switch, useToast } from '../../nightdesk';
 import { useEffect, useState } from 'react';
 
 const PROVIDERS: Record<AssistantProviderId, { title: string; defaultModel: string }> = {
-  codex: { title: 'Codex', defaultModel: 'gpt-5.6-terra' },
+  codex: { title: 'Codex', defaultModel: 'gpt-5.3-spark' },
   claude: { title: 'Claude', defaultModel: 'sonnet' },
   kimi: { title: 'Kimi', defaultModel: 'kimi-code/kimi-for-coding-highspeed' },
   copilot: { title: 'GitHub Copilot', defaultModel: 'auto' },
@@ -192,8 +193,8 @@ export function AssistantSection() {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
           {'baseUrl' in selectedConfig ? <FormField label="Provider endpoint"><Input mono aria-label="Provider endpoint" value={selectedConfig.baseUrl} disabled={offline} onChange={(event) => updateSelected({ baseUrl: event.target.value })} /></FormField> : null}
-          {selected === 'copilot' ? <FormField label="Mode"><Select aria-label="Mode" value={selectedConfig.model} disabled={offline} options={[{ value: 'auto', label: 'Auto · adaptive' }, { value: 'gpt-5.6-terra', label: 'Terra · alternate' }]} onValueChange={(model) => updateSelected({ model, effort: model === 'auto' ? 'adaptive' : 'low' })} /></FormField> : <FormField label="Model"><Input mono aria-label="Model" value={selectedConfig.model} disabled={offline} onChange={(event) => updateSelected({ model: event.target.value })} /></FormField>}
-          {'reasoningEffort' in selectedConfig ? <FormField label="Reasoning"><Select aria-label="Reasoning" value={selectedConfig.reasoningEffort} disabled={offline} options={[{ value: 'low', label: 'low · fast' }]} onValueChange={(reasoningEffort) => updateSelected({ reasoningEffort })} /></FormField> : null}
+          {selected === 'codex' ? <FormField label="Model"><Select aria-label="Model" value={selectedConfig.model} disabled={offline} options={CODEX_MODEL_OPTIONS.map(({ id, label }) => ({ value: id, label }))} onValueChange={(model) => updateSelected({ model })} /></FormField> : selected === 'copilot' ? <FormField label="Mode"><Select aria-label="Mode" value={selectedConfig.model} disabled={offline} options={[{ value: 'auto', label: 'Auto · adaptive' }, { value: 'gpt-5.6-terra', label: 'Terra · alternate' }]} onValueChange={(model) => updateSelected({ model, effort: model === 'auto' ? 'adaptive' : 'low' })} /></FormField> : <FormField label="Model"><Input mono aria-label="Model" value={selectedConfig.model} disabled={offline} onChange={(event) => updateSelected({ model: event.target.value })} /></FormField>}
+          {'reasoningEffort' in selectedConfig ? <FormField label="Reasoning"><Select aria-label="Reasoning" value={selectedConfig.reasoningEffort} disabled={offline} options={selected === 'codex' ? [{ value: 'auto', label: 'Auto · normal' }, { value: 'low', label: 'low · fast' }, { value: 'medium', label: 'medium · balanced' }, { value: 'high', label: 'high · thorough' }] : [{ value: 'low', label: 'low · fast' }]} onValueChange={(reasoningEffort) => updateSelected({ reasoningEffort })} /></FormField> : null}
           {'thinking' in selectedConfig ? <Switch checked={selectedConfig.thinking} disabled={offline} label="Thinking" onCheckedChange={(thinking) => updateSelected({ thinking })} /> : null}
           {'apiKey' in selectedConfig || selected === 'ollama' || selected === 'openrouter' ? <FormField label="API key"><Input mono aria-label="API key" type="password" placeholder="Enter replacement key" value={providerKey} disabled={offline} onChange={(event) => updateSelected({ apiKey: event.target.value })} /></FormField> : null}
         </div>

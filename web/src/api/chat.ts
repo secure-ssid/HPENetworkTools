@@ -2,6 +2,7 @@
 
 import { apiFetch, fromApi, serverMessage } from './core';
 import { SystemMutationResult } from './systems';
+import type { CodexModelId } from '@hpe/shared';
 
 // ---------------------------------------------------------------------------
 // Chat (assistant) — /api/chat/* and the mcp/llm slice of /api/settings
@@ -38,7 +39,8 @@ export interface AssistantProviderStatus {
   message: string;
 }
 
-type NativeProvider = { enabled: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' };
+type CodexProvider = { enabled: boolean; model: CodexModelId; reasoningEffort: 'auto' | 'low' | 'medium' | 'high' };
+type ClaudeProvider = { enabled: boolean; model: string; reasoningEffort: 'low' | 'medium' | 'high' };
 type KimiProvider = { enabled: boolean; model: string; thinking: boolean };
 type CopilotProvider = { enabled: boolean; model: string; effort: 'adaptive' | 'low' | 'medium' | 'high' };
 type CompatibleProvider = { enabled: boolean; baseUrl: string; model: string; apiKey?: string };
@@ -48,8 +50,8 @@ export interface AssistantSettings {
   mcp: { enabled: boolean; endpoint: string; authToken: string | null };
   chatWriteMode: AssistantChatWriteMode;
   providers: {
-    codex: NativeProvider;
-    claude: NativeProvider;
+    codex: CodexProvider;
+    claude: ClaudeProvider;
     kimi: KimiProvider;
     copilot: CopilotProvider;
     ollama: CompatibleProvider;

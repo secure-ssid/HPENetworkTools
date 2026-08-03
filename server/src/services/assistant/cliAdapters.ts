@@ -1,7 +1,8 @@
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AssistantProviderConfig, AssistantProviderId } from '../../config/settings';
+import { isCodexModel } from '@hpe/shared';
+import type { AssistantProviderConfig, AssistantProviderId, CodexProviderConfig } from '../../config/settings';
 import { createMcpLaunchConfig, type McpLaunchConfig } from './mcpLaunchConfig';
 import type {
   AssistantChatRequest,
@@ -24,7 +25,6 @@ const READ_ONLY_PROBE_PROMPT = [
 ].join(' ');
 
 type NativeProviderId = Extract<AssistantProviderId, 'codex' | 'claude' | 'kimi' | 'copilot'>;
-type CodexProviderConfig = Extract<AssistantProviderConfig, { reasoningEffort: string }>;
 
 export interface NativeCliAdapterDependencies {
   commandRunner?: CommandRunner;
@@ -353,7 +353,9 @@ abstract class NativeCliAdapter<TConfig extends AssistantProviderConfig> impleme
 }
 
 function isCodexConfig(config: AssistantProviderConfig): config is CodexProviderConfig {
-  return 'reasoningEffort' in config && config.model === 'gpt-5.6-terra' && config.reasoningEffort === 'low';
+  return 'reasoningEffort' in config
+    && isCodexModel(config.model)
+    && ['auto', 'low', 'medium', 'high'].includes(config.reasoningEffort);
 }
 
 function isClaudeConfig(config: AssistantProviderConfig): config is Extract<AssistantProviderConfig, { reasoningEffort: string }> {
@@ -469,7 +471,7 @@ export class CodexAdapter extends NativeCliAdapter<CodexProviderConfig> {
       ? ['find_tool', 'invoke_read_tool', 'invoke_tool']
       : ['find_tool', 'invoke_read_tool'];
     const overrides = [
-      'model_reasoning_effort="low"',
+      `model_reasoning_effort=${JSON.stringify(config.reasoningEffort)}`,
       `mcp_servers.centralmcp.url=${JSON.stringify(mcp.endpoint)}`,
       'mcp_servers.centralmcp.enabled=true',
       'mcp_servers.centralmcp.required=true',
