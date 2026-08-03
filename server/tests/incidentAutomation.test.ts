@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AlertRow, DeviceDownEvent, WebhookReceivedEvent } from '@hpe/shared';
 import { IncidentAutomation, clientIncidentKey, deviceDownIncidentKey } from '../src/services/incidentAutomation';
 import { TicketStore } from '../src/services/tickets';
@@ -81,7 +81,7 @@ describe('TicketStore incident persistence', () => {
       observedAt: '2026-08-03T12:05:00.000Z',
       alert: ALERT,
     };
-    const first = store.upsertIncident(input);
+    const first = store.upsertIncident(input)!;
     expect(first.incident).toEqual({
       key: input.key,
       kind: 'device-down',
@@ -90,7 +90,7 @@ describe('TicketStore incident persistence', () => {
     });
 
     const afterRestart = new TicketStore(dir);
-    expect(afterRestart.upsertIncident(input).id).toBe(first.id);
+    expect(afterRestart.upsertIncident(input)!.id).toBe(first.id);
     expect(afterRestart.list()).toHaveLength(1);
   });
 
@@ -105,12 +105,12 @@ describe('TicketStore incident persistence', () => {
       ...base,
       key: 'device-down:SER-1@2026-08-03T12:00:00.000Z',
       episodeStartedAt: '2026-08-03T12:00:00.000Z',
-    });
+    })!;
     const second = store.upsertIncident({
       ...base,
       key: 'device-down:SER-1@2026-08-03T14:00:00.000Z',
       episodeStartedAt: '2026-08-03T14:00:00.000Z',
-    });
+    })!;
     const manual = store.raiseFromAlert(ALERT);
 
     expect(new Set([first.id, second.id, manual.id]).size).toBe(3);
@@ -127,7 +127,7 @@ describe('TicketStore incident persistence', () => {
         episodeStartedAt: key.slice('device-down:SER-1@'.length),
         observedAt: '2026-08-03T12:05:00.000Z',
         alert: ALERT,
-      });
+      })!;
     const exact = make('device-down:SER-1@2026-08-03T12:00:00.000Z');
     const other = make('device-down:SER-1@2026-08-03T14:00:00.000Z');
     const manual = store.raiseFromAlert(ALERT);
@@ -142,6 +142,7 @@ describe('TicketStore incident persistence', () => {
     expect(store.resolveIncident(exact.incident!.key, 'duplicate recovery')?.notes).toHaveLength(1);
     expect(store.resolveIncident('device-down:missing', 'not applicable')).toBeNull();
   });
+
 });
 
 describe('IncidentAutomation', () => {
@@ -152,7 +153,7 @@ describe('IncidentAutomation', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'hpe-incident-automation-'));
     store = new TicketStore(dir);
-    automation = new IncidentAutomation(store);
+    automation = new IncidentAutomation(store, { dataDir: dir, intervalMs: 10 });
   });
 
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -206,5 +207,98 @@ describe('IncidentAutomation', () => {
     );
     expect(store.list()).toEqual([]);
     expect(clientIncidentKey(webhookEvent({ clientFailure: undefined }))).toBeNull();
+  });
+
+  it('persists one terminal lifecycle command so recovery-before-open survives restart', () => {
+    const recovery = webhookEvent({ id: 'evt-clear-first', state: 'cleared' });
+    automation.handleWebhookEvent(recovery);
+
+    const restarted = new IncidentAutomation(new TicketStore(dir), { dataDir: dir });
+    restarted.handleWebhookEvent(webhookEvent({ id: 'evt-open-late', state: 'open' }));
+
+    expect(new TicketStore(dir).list()).toEqual([]);
+    expect(restarted.lifecycleSnapshot()).toEqual([
+      expect.objectContaining({
+        key: clientIncidentKey(recovery),
+        desiredState: 'resolved',
+        appliedState: 'resolved',
+        attempts: 1,
+        lastError: null,
+      }),
+    ]);
+    expect(statSync(join(dir, 'incident-lifecycle-outbox.json')).mode & 0o777).toBe(0o600);
+  });
+
+  it('keeps a failed ticket mutation durable and retries it independently on startup', () => {
+    let mutations = 0;
+    const failingTickets = {
+      upsertIncident: () => {
+        mutations += 1;
+        throw new Error('tickets disk unavailable');
+      },
+      resolveIncident: () => null,
+    };
+    const first = new IncidentAutomation(failingTickets, { dataDir: dir, intervalMs: 10 });
+    first.handleDeviceDownEvent(DEVICE_EVENT);
+    expect(first.lifecycleSnapshot()).toEqual([
+      expect.objectContaining({
+        key: deviceDownIncidentKey(DEVICE_EVENT),
+        desiredState: 'open',
+        appliedState: 'none',
+        attempts: 1,
+        lastError: 'tickets disk unavailable',
+      }),
+    ]);
+
+    const restarted = new IncidentAutomation(new TicketStore(dir), { dataDir: dir, intervalMs: 10 });
+    restarted.start(); // immediate drain, independent of alert sampling/notification
+    restarted.stop();
+
+    expect(mutations).toBe(1);
+    expect(new TicketStore(dir).list()).toHaveLength(1);
+    expect(restarted.lifecycleSnapshot()[0]).toMatchObject({
+      desiredState: 'open',
+      appliedState: 'open',
+      attempts: 2,
+      lastError: null,
+    });
+  });
+
+  it('drains pending commands on its own retry interval', async () => {
+    vi.useFakeTimers();
+    let fail = true;
+    const target = {
+      upsertIncident: (input: Parameters<TicketStore['upsertIncident']>[0]) => {
+        if (fail) throw new Error('tickets disk unavailable');
+        return store.upsertIncident(input);
+      },
+      resolveIncident: (key: string, note: string) => store.resolveIncident(key, note),
+    };
+    const timed = new IncidentAutomation(target, { dataDir: dir, intervalMs: 10 });
+    try {
+      timed.handleDeviceDownEvent(DEVICE_EVENT); // initial mutation fails, enqueue survives
+      timed.start(); // immediate retry also fails
+      fail = false;
+      await vi.advanceTimersByTimeAsync(10);
+      expect(store.list()).toHaveLength(1);
+      expect(timed.lifecycleSnapshot()[0]).toMatchObject({ appliedState: 'open', attempts: 3 });
+    } finally {
+      timed.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed when the outbox is unreadable instead of mutating tickets without a durable command', () => {
+    const file = join(dir, 'incident-lifecycle-outbox.json');
+    const first = new IncidentAutomation(store, { dataDir: dir });
+    first.handleDeviceDownEvent(DEVICE_EVENT);
+    expect(readFileSync(file, 'utf8')).toContain(deviceDownIncidentKey(DEVICE_EVENT));
+    rmSync(join(dir, 'tickets.json'));
+    // A new instance must not treat corrupted ordering state as empty.
+    writeFileSync(file, 'not json{');
+    const closed = new IncidentAutomation(new TicketStore(dir), { dataDir: dir });
+    expect(() => closed.handleDeviceDownEvent({ ...DEVICE_EVENT, dedupKey: 'SER-2@2026-08-03T12:00:00.000Z' }))
+      .toThrow(/unreadable incident lifecycle outbox/);
+    expect(new TicketStore(dir).list()).toEqual([]);
   });
 });

@@ -443,18 +443,86 @@ function canonicalFailureClass(raw: unknown): string | null {
   return canonical && canonical.length <= 80 ? canonical : null;
 }
 
-/** Extract only a structured client-failure episode. Generic event type,
- * title, detail, severity, and health-presentation fields are never inputs.
- * Warning/neutral lifecycle values do not qualify. */
-function explicitClientFailure(
+type CanonicalFailureState = 'open' | 'cleared';
+
+interface CanonicalClientFailure {
+  episode: WebhookClientFailureEpisode;
+  state: CanonicalFailureState;
+}
+
+function failureState(raw: string): CanonicalFailureState | null {
+  const value = raw.trim().toLowerCase();
+  if (/^(open|active|firing|failed|failure|down|acked)$/.test(value)) return 'open';
+  if (/^(cleared|resolved|recovered|healthy|closed)$/.test(value)) return 'cleared';
+  return null;
+}
+
+function canonicalIndicator(raw: unknown): string | null {
+  const value = str(raw);
+  return value ? value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') : null;
+}
+
+/** A client incident needs a positive machine-readable class. Failure fields
+ * attached to config/session/telemetry events are explicitly denied. */
+function isClientHealthEvent(
+  source: WebhookReceiverSource,
   event: Record<string, unknown>,
   topic: string | null,
-): WebhookClientFailureEpisode | null {
-  if (topic === 'client-sessions') return null;
-  const lifecycle = str(event.failure_state ?? event.failureState ?? event.state ?? event.status)?.toLowerCase();
-  if (!lifecycle || !/^(open|active|firing|failed|failure|down|cleared|resolved|recovered|healthy|closed)$/.test(lifecycle)) {
-    return null;
-  }
+): boolean {
+  const indicators = [
+    canonicalIndicator(topic),
+    canonicalIndicator(event.category),
+    canonicalIndicator(event.type),
+    canonicalIndicator(event.event_type),
+    canonicalIndicator(event.incident_type),
+    canonicalIndicator(event.incidentType),
+  ].filter((value): value is string => value !== null);
+  const pair = [canonicalIndicator(event.category), canonicalIndicator(event.type)].filter(Boolean).join('-');
+  if (pair) indicators.push(pair);
+  const denied = new Set(['config', 'configuration', 'session', 'sessions', 'telemetry', 'connect', 'disconnect', 'roam']);
+  if (indicators.some((indicator) => indicator.split('-').some((token) => denied.has(token)))) return false;
+  const positiveBySource: Record<WebhookReceiverSource, ReadonlySet<string>> = {
+    mist: new Set([
+      'client-health',
+      'client-health-failure',
+      'client-failure',
+      'client-connectivity',
+      'client-connectivity-failure',
+      'client-authentication',
+      'client-authentication-failure',
+    ]),
+    central: new Set([
+      'client-health',
+      'client-health-failure',
+      'client-connectivity',
+      'client-connectivity-failure',
+      'client-authentication',
+      'client-authentication-failure',
+      'client-assurance',
+      'client-assurance-failure',
+    ]),
+  };
+  const positive = positiveBySource[source];
+  return indicators.some((indicator) => positive.has(indicator));
+}
+
+/** Extract only a structured client-failure episode and its one canonical
+ * lifecycle. Generic title/detail/severity/health fields are never inputs;
+ * two supplied lifecycle fields that disagree fail closed. */
+function explicitClientFailure(
+  source: WebhookReceiverSource,
+  event: Record<string, unknown>,
+  topic: string | null,
+): CanonicalClientFailure | null {
+  if (!isClientHealthEvent(source, event, topic)) return null;
+  const lifecycleValues = [event.failure_state, event.failureState, event.state, event.status]
+    .map(str)
+    .filter((value): value is string => value !== null);
+  if (lifecycleValues.length === 0) return null;
+  const states = lifecycleValues.map(failureState);
+  if (states.some((state) => state === null)) return null;
+  const distinctStates = new Set(states as CanonicalFailureState[]);
+  if (distinctStates.size !== 1) return null;
   const mac = canonicalMac(
     event.client_mac ?? event.clientMac ?? event.client_mac_address ?? event.clientMacAddress ??
       event.mac_address ?? event.macAddress ?? event.mac,
@@ -464,7 +532,10 @@ function explicitClientFailure(
     event.episode_start ?? event.episodeStart ?? event.episode_started_at ?? event.episodeStartedAt,
   );
   if (!mac || !failureClass || episodeMs === null) return null;
-  return { mac, failureClass, episodeStartedAt: new Date(episodeMs).toISOString() };
+  return {
+    episode: { mac, failureClass, episodeStartedAt: new Date(episodeMs).toISOString() },
+    state: [...distinctStates][0]!,
+  };
 }
 
 /**
@@ -563,13 +634,15 @@ function normalizeMistGenericEvent(event: Record<string, unknown>, topic: string
   const sev = sevFor(str(event.severity ?? event.level));
   const ts = parseTimestamp(event.timestamp ?? event.last_seen ?? event.ts ?? event.time);
   const site = siteIdForName(str(event.site_name ?? event.site ?? event.siteName));
-  const clientFailure = explicitClientFailure(event, topic);
+  const clientFailure = explicitClientFailure('mist', event, topic);
+  const state = clientFailure?.state ?? stateFor(str(event.state ?? event.status));
+  const externalId = str(event.id);
   return {
     eventType: topic && type ? `${topic}:${type}` : (type ?? topic ?? 'event'),
     sev,
     title,
     detail: str(event.detail ?? event.message ?? event.description) ?? '',
-    state: stateFor(str(event.state ?? event.status)),
+    state,
     device:
       str(event.device_name ?? event.device ?? event.hostname ?? event.ap_name ?? event.switch) ??
       firstString(event.aps) ??
@@ -579,8 +652,8 @@ function normalizeMistGenericEvent(event: Record<string, unknown>, topic: string
     siteName: site.siteName,
     ...(str(event.id) ? { alertId: str(event.id)! } : {}),
     eventAt: ts !== null ? new Date(ts).toISOString() : null,
-    externalId: str(event.id),
-    ...(clientFailure ? { clientFailure } : {}),
+    externalId: externalId ? `${externalId}:${state}` : null,
+    ...(clientFailure ? { clientFailure: clientFailure.episode } : {}),
   };
 }
 
@@ -667,9 +740,9 @@ function normalizeCentralPayload(payload: unknown): NormalizedWebhookEvent[] | n
     const siteName = str(event.site ?? event.site_name ?? event.siteName) ?? siteFromAdditionalDetails(event.additionalDetails);
     const site = siteIdForName(siteName);
     const impacted = isRecord(event.impactedEntities) ? event.impactedEntities : null;
-    const state = stateFor(str(event.state ?? event.status));
+    const clientFailure = explicitClientFailure('central', event, null);
+    const state = clientFailure?.state ?? stateFor(str(event.state ?? event.status));
     const alertId = str(event.alertId ?? event.alert_id ?? event.id);
-    const clientFailure = explicitClientFailure(event, null);
     normalized.push({
       eventType: str(event.category ?? event.type) ?? 'alert',
       sev,
@@ -688,7 +761,7 @@ function normalizeCentralPayload(payload: unknown): NormalizedWebhookEvent[] | n
       // The same alert arriving in a new state (Open → Cleared) is a new
       // firing of the same problem — the group, not a duplicate.
       externalId: alertId ? `${alertId}:${state}` : null,
-      ...(clientFailure ? { clientFailure } : {}),
+      ...(clientFailure ? { clientFailure: clientFailure.episode } : {}),
     });
   }
   return normalized.length > 0 ? normalized : null;
@@ -732,15 +805,13 @@ export function webhookEventToAlertRow(event: WebhookReceivedEvent, nowMs: numbe
 /** The redelivery-dedupe key of a STORED event, derived the same way the
  *  normalizer derives externalId for a fresh one: the recorded `dedupeKey`
  *  wins; events recorded before that field existed fall back to the legacy
- *  rule (Mist keys on its event id, Central on alertId+state — an
- *  Open→Cleared transition is a new firing). Null when neither exists —
+ *  rule (alertId+state — an Open→Cleared transition is a new firing for
+ *  either source). Null when neither exists —
  *  such events are recorded every time. */
 function storedDedupeKey(event: WebhookReceivedEvent): string | null {
   if (event.dedupeKey) return `${event.source}:${event.dedupeKey}`;
   if (!event.alertId) return null;
-  return event.source === 'central'
-    ? `${event.source}:${event.alertId}:${event.state}`
-    : `${event.source}:${event.alertId}`;
+  return `${event.source}:${event.alertId}:${event.state}`;
 }
 
 export interface IngestOutcome {
@@ -906,19 +977,20 @@ export class WebhookReceiver {
     let deduplicated = 0;
     for (const n of normalized) {
       const key = n.externalId ? `${source}:${n.externalId}` : null;
-      if (key && this.events().some((e) => storedDedupeKey(e) === key)) {
+      const duplicate = key ? this.events().find((event) => storedDedupeKey(event) === key) : undefined;
+      if (duplicate) {
         deduplicated += 1;
         continue;
       }
-      const event = this.record(source, n, demo);
+      const event = this.toEvent(source, n, demo);
+      // Qualifying incidents must be in the durable lifecycle outbox before
+      // this receiver acknowledges or records acceptance. A ticket-store
+      // mutation failure is swallowed by the outbox; only enqueue persistence
+      // failure reaches this boundary as a 503.
+      const failure = this.enqueueIncident(event);
+      if (failure) return failure;
+      this.record(event);
       accepted.push(event);
-      try {
-        this.incidentAutomation.handleWebhookEvent(event);
-      } catch (err) {
-        // The delivery is already accepted and recorded. Do not invite a
-        // vendor retry that could multiply unrelated receiver history.
-        console.error(`incident automation failed for webhook ${event.id}: ${(err as Error).message}`);
-      }
     }
     return {
       status: 202,
@@ -930,8 +1002,21 @@ export class WebhookReceiver {
     };
   }
 
-  private record(source: WebhookReceiverSource, n: NormalizedWebhookEvent, demo: boolean): WebhookReceivedEvent {
-    const event: WebhookReceivedEvent = {
+  private enqueueIncident(event: WebhookReceivedEvent): IngestOutcome | null {
+    try {
+      this.incidentAutomation.handleWebhookEvent(event);
+      return null;
+    } catch (err) {
+      console.error(`incident lifecycle enqueue failed for webhook ${event.id}: ${(err as Error).message}`);
+      return {
+        status: 503,
+        body: { error: 'incident lifecycle could not be durably enqueued; retry this delivery' },
+      };
+    }
+  }
+
+  private toEvent(source: WebhookReceiverSource, n: NormalizedWebhookEvent, demo: boolean): WebhookReceivedEvent {
+    return {
       id: `evt-${this.nowMs().toString(36)}${randomBytes(3).toString('hex')}`,
       source,
       receivedAt: new Date(this.nowMs()).toISOString(),
@@ -949,10 +1034,12 @@ export class WebhookReceiver {
       eventAt: n.eventAt,
       ...(n.clientFailure ? { clientFailure: n.clientFailure } : {}),
     };
+  }
+
+  private record(event: WebhookReceivedEvent): void {
     this.events().unshift(event);
     if (this.ring && this.ring.length > this.ringSize) this.ring.length = this.ringSize;
     this.append(event);
-    return event;
   }
 
   private events(): WebhookReceivedEvent[] {

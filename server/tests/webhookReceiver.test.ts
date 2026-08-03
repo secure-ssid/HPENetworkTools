@@ -44,6 +44,8 @@ let ReceiverSecretStore: typeof import('../src/services/webhookReceiver').Receiv
 let signMistDelivery: typeof import('../src/services/webhookReceiver').signMistDelivery;
 let signCentralDelivery: typeof import('../src/services/webhookReceiver').signCentralDelivery;
 let webhookEventToAlertRow: typeof import('../src/services/webhookReceiver').webhookEventToAlertRow;
+let IncidentAutomation: typeof import('../src/services/incidentAutomation').IncidentAutomation;
+let TicketStore: typeof import('../src/services/tickets').TicketStore;
 let silenceStore: typeof import('../src/services/silences').silenceStore;
 let settings: typeof import('../src/config/settings').settings;
 type WebhookReceiverInstance = InstanceType<typeof WebhookReceiver>;
@@ -87,6 +89,8 @@ beforeAll(async () => {
   signMistDelivery = mod.signMistDelivery;
   signCentralDelivery = mod.signCentralDelivery;
   webhookEventToAlertRow = mod.webhookEventToAlertRow;
+  ({ IncidentAutomation } = await import('../src/services/incidentAutomation'));
+  ({ TicketStore } = await import('../src/services/tickets'));
   ({ silenceStore } = await import('../src/services/silences'));
   ({ settings } = await import('../src/config/settings'));
   const { createApp } = await import('../src/index');
@@ -345,7 +349,7 @@ describe('malformed deliveries', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalization', () => {
-  it('emits incident automation only for a newly accepted explicit client failure episode', () => {
+  it('enqueues only newly accepted explicit client-failure lifecycle states', () => {
     const automated: WebhookReceivedEvent[] = [];
     const { dir, receiver } = isolatedReceiver({
       demoMode: false,
@@ -371,19 +375,136 @@ describe('normalization', () => {
       const replay = ingestMist(receiver, payload);
       const recovered = ingestMist(receiver, {
         topic: 'alarms',
-        events: [{ ...payload.events[0], id: 'client-health-1-recovered', state: 'Recovered' }],
+        // Mist may retain the vendor id across lifecycle transitions. State
+        // must therefore be part of generic-alarm dedupe identity.
+        events: [{ ...payload.events[0], state: 'Recovered' }],
       });
 
       expect(first.body.accepted).toBe(1);
       expect(replay.body).toMatchObject({ accepted: 0, deduplicated: 1 });
       expect(recovered.body.accepted).toBe(1);
-      expect(automated).toHaveLength(2);
+      expect(automated).toHaveLength(2); // accepted open and accepted recovery; replay is receiver-only dedupe
       expect(automated[0].clientFailure).toEqual({
         mac: 'aa:bb:cc:dd:ee:ff',
         failureClass: 'authentication-failure',
         episodeStartedAt: '2026-08-03T12:00:00.000Z',
       });
       expect(automated[1]).toMatchObject({ state: 'cleared', clientFailure: automated[0].clientFailure });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 503 without recording when the qualifying incident cannot be durably enqueued', () => {
+    const { dir, receiver } = isolatedReceiver({
+      demoMode: false,
+      incidentAutomation: {
+        handleWebhookEvent: () => {
+          throw new Error('outbox disk unavailable');
+        },
+      },
+    });
+    try {
+      receiver.setSecret('mist', WEBHOOK_DEMO_RECEIVER_SECRET);
+      const payload = {
+        topic: 'alarms',
+        events: [{
+          id: 'client-health-retry-1',
+          type: 'client_health',
+          state: 'open',
+          mac: 'aa:bb:cc:dd:ee:ff',
+          failure_class: 'authentication',
+          episode_start: '2026-08-03T12:00:00.000Z',
+        }],
+      };
+      expect(ingestMist(receiver, payload)).toMatchObject({
+        status: 503,
+        body: { error: expect.stringContaining('incident lifecycle') },
+      });
+      expect(receiver.recent()).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 202 after a durable enqueue even when ticket mutation fails, then retries without redelivery', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-hooks-outbox-'));
+    const secrets = new ReceiverSecretStore(dir);
+    let attempts = 0;
+    const failingTickets = {
+      upsertIncident: () => {
+        attempts += 1;
+        throw new Error('tickets disk unavailable');
+      },
+      resolveIncident: () => null,
+    };
+    const automation = new IncidentAutomation(failingTickets, { dataDir: dir, intervalMs: 10 });
+    const receiver = new WebhookReceiver({
+      dataDir: dir,
+      secrets,
+      demoMode: () => false,
+      incidentAutomation: automation,
+    });
+    try {
+      receiver.setSecret('mist', WEBHOOK_DEMO_RECEIVER_SECRET);
+      const payload = {
+        topic: 'alarms',
+        events: [{
+          id: 'client-health-durable-1',
+          type: 'client_health',
+          state: 'open',
+          mac: 'aa:bb:cc:dd:ee:ff',
+          failure_class: 'authentication',
+          episode_start: '2026-08-03T12:00:00.000Z',
+        }],
+      };
+      expect(ingestMist(receiver, payload)).toMatchObject({ status: 202, body: { accepted: 1 } });
+      expect(attempts).toBe(1);
+      expect(automation.lifecycleSnapshot()[0]).toMatchObject({ appliedState: 'none', attempts: 1 });
+
+      const restarted = new IncidentAutomation(new TicketStore(dir), { dataDir: dir, intervalMs: 10 });
+      restarted.start();
+      restarted.stop();
+      expect(new TicketStore(dir).list()).toHaveLength(1);
+      expect(restarted.lifecycleSnapshot()[0]).toMatchObject({ appliedState: 'open', attempts: 2 });
+    } finally {
+      automation.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses one canonical failure lifecycle and fails closed on conflicting state fields', () => {
+    const automated: WebhookReceivedEvent[] = [];
+    const { dir, receiver } = isolatedReceiver({
+      incidentAutomation: { handleWebhookEvent: (event) => automated.push(event) },
+    });
+    try {
+      ingestMist(receiver, {
+        topic: 'alarms',
+        events: [{
+          id: 'failure-state-recovered',
+          type: 'client_health',
+          failure_state: 'recovered',
+          mac: 'aa:bb:cc:dd:ee:ff',
+          failure_class: 'authentication',
+          episode_start: '2026-08-03T12:00:00.000Z',
+        }],
+      });
+      ingestMist(receiver, {
+        topic: 'alarms',
+        events: [{
+          id: 'failure-state-conflict',
+          type: 'client_health',
+          failure_state: 'recovered',
+          state: 'open',
+          mac: 'aa:bb:cc:dd:ee:ff',
+          failure_class: 'authentication',
+          episode_start: '2026-08-03T12:00:00.000Z',
+        }],
+      });
+
+      expect(automated[0]).toMatchObject({ state: 'cleared', clientFailure: { failureClass: 'authentication' } });
+      expect(automated[1].clientFailure).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -419,8 +540,31 @@ describe('normalization', () => {
           timestamp: '2026-08-03T12:05:00.000Z',
         }],
       });
+      ingestMist(receiver, {
+        topic: 'alarms',
+        events: [{
+          id: 'configuration-shaped',
+          type: 'configuration_change',
+          state: 'open',
+          mac: 'AA-BB-CC-DD-EE-FF',
+          failure_class: 'authentication',
+          episode_start: '2026-08-03T12:00:00.000Z',
+          title: 'Client health failure',
+        }],
+      });
+      ingestMist(receiver, {
+        topic: 'telemetry',
+        events: [{
+          id: 'telemetry-shaped',
+          type: 'client_health',
+          state: 'open',
+          mac: 'AA-BB-CC-DD-EE-FF',
+          failure_class: 'authentication',
+          episode_start: '2026-08-03T12:00:00.000Z',
+        }],
+      });
 
-      expect(automated).toHaveLength(2); // newly accepted records still reach the automation boundary
+      expect(automated).toHaveLength(4); // newly accepted records still reach the automation boundary
       expect(automated.every((event) => event.clientFailure === undefined)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });

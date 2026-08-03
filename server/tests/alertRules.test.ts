@@ -415,6 +415,53 @@ describe('AlertRuleStore', () => {
 // ---------------------------------------------------------------------------
 
 describe('AlertRulesService', () => {
+  it('enqueues the incident before saving alerted state and leaves the transition retryable on enqueue failure', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hpe-arl-incident-order-'));
+    try {
+      const store = new AlertRuleStore(dir);
+      store.create({ offlineMinutes: 1, cooldownMinutes: 60 }, T0);
+      let clock = T0;
+      const devices = [dev()];
+      const order: string[] = [];
+      let failEnqueue = true;
+      const incidentAutomation = {
+        handleDeviceDownEvent: () => {
+          order.push('enqueue');
+          if (failEnqueue) throw new Error('outbox disk unavailable');
+        },
+      };
+      const saveState = store.saveState.bind(store);
+      store.saveState = (state) => {
+        order.push('state');
+        saveState(state);
+      };
+      const svc = new AlertRulesService({
+        store,
+        sampleDevices: () => devices,
+        demoMode: () => false,
+        nowMs: () => clock,
+        dispatch: () => {},
+        incidentAutomation,
+      });
+      await svc.evaluateNow();
+      devices[0] = dev({ state: 'down' });
+      clock = T0 + MIN;
+      await svc.evaluateNow();
+      order.length = 0;
+      clock = T0 + 2 * MIN;
+      await expect(svc.evaluateNow()).rejects.toThrow('outbox disk unavailable');
+      expect(order).toEqual(['enqueue']);
+
+      order.length = 0;
+      failEnqueue = false;
+      clock = T0 + 3 * MIN;
+      expect(await svc.evaluateNow()).toHaveLength(1);
+      expect(order).toEqual(['enqueue', 'state']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('baselines the first sample before it ever fires', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'hpe-arl-svc-'));
     try {

@@ -267,6 +267,8 @@ export interface AlertRulesServiceOptions {
   demoMode?: () => boolean; // default: the settings store
   /** Where fires/recoveries go. Default: bell + notifier + audit log. */
   dispatch?: (event: DeviceDownEvent) => Promise<void> | void;
+  /** Durable lifecycle enqueue target. */
+  incidentAutomation?: { handleDeviceDownEvent(event: DeviceDownEvent): void };
   intervalMs?: number; // default 60s, HPE_ALERT_RULES_INTERVAL_MS override
   nowMs?: () => number; // injected clock for tests
   /** How long the scripted demo device stays down after start (default 30s,
@@ -284,6 +286,7 @@ export class AlertRulesService {
   private readonly sampleDevices: () => ObservedDevice[];
   private readonly demoMode: () => boolean;
   private readonly dispatchEvent: (event: DeviceDownEvent) => Promise<void> | void;
+  private readonly incidentAutomation: { handleDeviceDownEvent(event: DeviceDownEvent): void };
   private readonly intervalMs: number;
   private readonly nowMs: () => number;
   private readonly demoOfflineMs: number;
@@ -301,6 +304,7 @@ export class AlertRulesService {
     this.sampleDevices = opts.sampleDevices ?? defaultSampleDevices;
     this.demoMode = opts.demoMode ?? (() => settings.get().demoMode);
     this.dispatchEvent = opts.dispatch ?? defaultDispatch;
+    this.incidentAutomation = opts.incidentAutomation ?? incidentAutomation;
     this.intervalMs = opts.intervalMs ?? defaultIntervalMs();
     this.nowMs = opts.nowMs ?? (() => Date.now());
     this.demoOfflineMs = opts.demoOfflineMs ?? 30_000;
@@ -311,10 +315,14 @@ export class AlertRulesService {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      void this.evaluateNow();
+      void this.evaluateNow().catch((err) => {
+        console.error(`alert rules evaluation failed: ${(err as Error).message}`);
+      });
     }, this.intervalMs);
     this.timer.unref();
-    void this.evaluateNow();
+    void this.evaluateNow().catch((err) => {
+      console.error(`alert rules evaluation failed: ${(err as Error).message}`);
+    });
   }
 
   stop(): void {
@@ -342,6 +350,10 @@ export class AlertRulesService {
       this.startedAtMs ??= now;
       const previous = new Map(Object.entries(this.store.stateSnapshot()));
       const result = evaluateDeviceDownRules(this.store.list(), this.sampleDevices(), previous, now);
+      // A real transition is durably queued before alertedFor is committed.
+      // If enqueue persistence fails, the state stays retryable on the next
+      // evaluation; ticket mutation failures are retained inside the outbox.
+      for (const event of result.events) this.incidentAutomation.handleDeviceDownEvent(event);
       if (result.changed) this.store.saveState(result.state);
       const events: DeviceDownEvent[] = [...result.events];
 
@@ -416,7 +428,9 @@ export function toNotificationEvent(event: DeviceDownEvent, now: number = Date.n
   };
 }
 
-/** One fire/recovery to all four destinations. Never throws into the
+/** One fire/recovery to the notification destinations. Durable incident
+ * delivery is owned by AlertRulesService after this canonical dispatch.
+ * Never throws into the
  *  evaluation loop — the bell store already degrades on its own failures,
  *  and the notifier swallows per-endpoint failures by design. */
 async function defaultDispatch(event: DeviceDownEvent): Promise<void> {
@@ -452,13 +466,6 @@ async function defaultDispatch(event: DeviceDownEvent): Promise<void> {
     serial: event.device.serial,
     ...(event.device.plane ? { plane: event.device.plane } : {}),
   });
-  try {
-    incidentAutomation.handleDeviceDownEvent(event);
-  } catch (err) {
-    // Bell/notifier/audit already received this canonical event. A ticket
-    // persistence fault is visible but cannot abort future evaluations.
-    console.error(`incident automation failed for device event ${event.dedupKey}: ${(err as Error).message}`);
-  }
 }
 
 /** One audit-log line for a rule create/update/delete. Never a payload body. */

@@ -20,6 +20,7 @@ import { notifier } from './services/notifier';
 import { reportService } from './services/reports';
 import { maintenance } from './services/maintenance';
 import { alertRulesService } from './services/alertRules';
+import { incidentAutomation } from './services/incidentAutomation';
 import { installLifecycle } from './services/lifecycle';
 import { chatRouter } from './routes/chat';
 import { alertsRouter } from './routes/alerts';
@@ -348,6 +349,7 @@ export function startServer(
   metricsHistory.start();
   notifier.start();
   maintenance.start();
+  incidentAutomation.start();
   alertRulesService.start();
   reportService.start();
   const app = createApp(authConfigured ? { auth: requireAuth() } : {});
@@ -391,6 +393,7 @@ export function startServer(
       { name: 'metrics history', run: () => metricsHistory.stop() },
       { name: 'notifier', run: () => notifier.stop() },
       { name: 'maintenance windows', run: () => maintenance.stop() },
+      { name: 'incident automation', run: () => incidentAutomation.stop() },
       { name: 'alert rules', run: () => alertRulesService.stop() },
       { name: 'report scheduler', run: () => reportService.stop() },
       { name: 'terminal sessions', run: () => closeTerminalWs(wss) },
