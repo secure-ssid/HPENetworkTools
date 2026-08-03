@@ -26,6 +26,7 @@
 
 import { settings, type McpSettings } from '../config/settings';
 import { AssistantProviderRegistry } from './assistant/registry';
+import { ClaudeAdapter, CodexAdapter, CopilotAdapter, KimiAdapter } from './assistant/cliAdapters';
 import {
   OpenAICompatibleAdapter,
   resolveProviderTimeoutMs,
@@ -314,6 +315,8 @@ export interface ChatLoopOptions {
   client?: McpClient;
   /** Cancels in-flight LLM and MCP requests when the browser disconnects. */
   signal?: AbortSignal;
+  /** A request-scoped provider override already validated by the chat route. */
+  providerId?: import('../config/settings').AssistantProviderId;
 }
 
 export interface ChatLoopResult {
@@ -467,12 +470,9 @@ async function runToolCall(
 export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = {}): Promise<ChatLoopResult> {
   const s = settings.get();
   const assistant = s.assistant;
-  const activeProvider = assistant.activeProvider;
-  if (activeProvider !== 'ollama' && activeProvider !== 'openrouter') {
-    throw new Error('The selected assistant provider is not available for chat yet.');
-  }
+  const activeProvider = opts.providerId ?? assistant.activeProvider;
   const provider = assistant.providers[activeProvider];
-  if (!provider.enabled || !provider.baseUrl || !provider.model) {
+  if (!provider.enabled || !provider.model) {
     if (!s.llm?.baseUrl || !s.llm.model) {
       throw new Error('LLM is not configured — set it in Connected systems → Assistant');
     }
@@ -491,7 +491,7 @@ export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = 
     { role: 'system', content: systemPrompt(writeEnabled) },
     ...messages.map((m) => ({ role: m.role, content: m.content })),
   ];
-  const adapter = compatibleProviderRegistry.get(activeProvider);
+  const adapter = assistantProviderRegistry.get(activeProvider);
   if (!adapter) {
     throw new Error('The selected assistant provider is not available for chat yet.');
   }
@@ -506,8 +506,12 @@ export async function chatLoop(messages: ChatMessage[], opts: ChatLoopOptions = 
   return { reply: result.text, transcript: (result.transcript ?? []).filter(isTranscriptEntry) };
 }
 
-/** Registry-backed compatibility boundary; native providers join this registry in later tasks. */
-const compatibleProviderRegistry = new AssistantProviderRegistry([
+/** The only provider registry used by chat routes and the compatibility façade. */
+export const assistantProviderRegistry = new AssistantProviderRegistry([
+  new CodexAdapter(),
+  new ClaudeAdapter(),
+  new KimiAdapter(),
+  new CopilotAdapter(),
   new OpenAICompatibleAdapter('ollama'),
   new OpenAICompatibleAdapter('openrouter'),
 ]);
