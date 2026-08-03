@@ -1,13 +1,10 @@
 /**
  * server/src/planes/types.ts — plane adapter contract.
  *
- * Every control plane (Central new, Classic, Mist, GreenLake, AOS-8, AOS-10,
- * the local SSH collector, ClearPass, UXI, HPE Aruba Networking SSE) has one
- * adapter. Adapters with complete credentials are real (central, greenlake,
- * clearpass, uxi, mist, aos8, sse today); adapters with partial credentials
- * are `StubAdapter`s (linked, but pull() returns nothing — real
- * implementations land later), adapters without credentials are
- * `UnconfiguredAdapter`s.
+ * Every independently configurable control plane has a real product adapter.
+ * AOS-10 is the exception by design: it is discovered through Central and has
+ * no separate connector. Invalid enabled configurations surface as degraded
+ * configuration errors; disabled or absent connectors are unconfigured.
  *
  * PlanePull datasets use the normalized shared row types so a real adapter's
  * output can flow straight into the poller cache and the screen endpoints.
@@ -57,6 +54,7 @@ import type {
   TrendWindow,
   UxiSensorRow,
 } from '@hpe/shared';
+import { CONNECTOR_IDS, type ConnectorId } from '@hpe/shared';
 
 export const PLANE_IDS = [
   'central',
@@ -74,6 +72,13 @@ export const PLANE_IDS = [
 ] as const;
 
 export type PlaneId = (typeof PLANE_IDS)[number];
+
+/** Independently configurable planes. AOS-10 is intentionally Central-derived. */
+export const CONFIGURABLE_PLANE_IDS = CONNECTOR_IDS;
+
+export function isConnectorPlaneId(id: PlaneId): id is ConnectorId {
+  return (CONFIGURABLE_PLANE_IDS as readonly string[]).includes(id);
+}
 
 export type PlaneHealth = 'healthy' | 'degraded' | 'warning' | 'unlinked';
 

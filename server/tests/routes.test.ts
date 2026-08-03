@@ -192,15 +192,15 @@ describe('routes', () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
-    expect(body.state.linked).toBe(true);
-    expect(body.state.health).toBe('warning'); // stub adapter, honest about it
-    expect(body.credentials.token).toBe('••••••');
+    expect(body.state.linked).toBe(false);
+    expect(body.state.health).toBe('unlinked');
+    expect(body.credentials).toBeNull();
     expect(JSON.stringify(body)).not.toContain(secret);
     expect(contributions.has('mist')).toBe(false);
 
     const state = await getJson('/api/systems/state');
     expect(state.status).toBe(200);
-    expect(state.body.planes.mist.linked).toBe(true);
+    expect(state.body.planes.mist.linked).toBe(false);
     expect(state.body.planes.central.linked).toBe(true); // saved via PUT /api/settings above
     expect(Array.isArray(state.body.history)).toBe(true);
 
@@ -4460,10 +4460,17 @@ describe('on-demand per-object detail reads', () => {
     const saved = await fetch(`${base}/api/systems/classic/credentials`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ host: 'airwave-01.meridian.health', callBudget: '0' }),
+      body: JSON.stringify({
+        gatewayBaseUrl: mockCentralBase,
+        clientId: 'classic-client',
+        clientSecret: 'classic-secret',
+        callBudget: '1',
+      }),
     });
     expect(saved.status).toBe(200);
     try {
+      const { registry } = await import('../src/planes/registry');
+      registry.recordCall('classic', { path: 'GET /monitoring/v1/aps', ms: 1, code: '200' });
       // Saved credentials clear that plane's contributions, so seed after.
       contributions.set('classic', { clients: [{ ...CLIENT, plane: 'CLASSIC', planeTone: 'info' }] });
       let calls = 0;
@@ -4792,7 +4799,7 @@ describe('client 360 cross-plane sections', () => {
         });
         expect(sectionOf(body, 'aos8')).toMatchObject({
           state: 'not-fetched',
-          reason: 'sync adapter not yet implemented',
+          reason: 'plane not linked',
         });
         // A roster that does not contain the MAC still answers with
         // client: null — the sections are the point of the ask.

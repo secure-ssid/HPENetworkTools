@@ -173,7 +173,7 @@ describe('connection tests never disclose or dial stored secrets', () => {
     const res = await fetch(`${base}/api/systems/clearpass/test`, { method: 'POST' });
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error).toMatch(/no credentials\/host/);
+    expect(body.error).toMatch(/no credentials/);
     expect(JSON.stringify(body)).not.toContain(secret);
   });
 
@@ -659,21 +659,13 @@ describe('manual systems sync', () => {
     try {
       const synced = await postJson('/api/systems/sync');
       expect(synced.status).toBe(200);
-      // The manual sync reaches the linked plane even though the portal is in
-      // demo mode — and reports honestly what happened to it. 'classic' is
-      // still on the StubAdapter: it makes no outbound call and reads nothing,
-      // so it is SKIPPED rather than counted as a synced plane.
+      // Incomplete legacy credentials do not create a linked stub. The typed
+      // connector set therefore has nothing to request or poll.
       expect(synced.body).toEqual({
         ok: true,
-        requested: ['classic'],
+        requested: [],
         started: [],
         synced: [],
-        skipped: ['classic'],
-        // And it says WHY. 'skipped' alone covered five different situations,
-        // only one of which is work in progress; the Systems toast read them
-        // all as "already syncing", so a plane that will never sync until an
-        // adapter is written was reported as one to wait for.
-        skippedReason: { classic: 'no-adapter' },
       });
     } finally {
       await fetch(`${base}/api/systems/classic`, { method: 'DELETE' });

@@ -9,12 +9,9 @@
  *   demoMode        — all screen endpoints serve shared fixtures when true
  *   workspaceName   — shown in the shell sidebar / breadcrumbs
  *   pollIntervalSec — per-plane poll cadence (default 60)
- *   planes          — per-plane credential records, null = not connected.
- *                     Known key shapes: central { gatewayBaseUrl, clientId,
- *                     clientSecret, approvedFirmware? }, greenlake
- *                     { workspaceId, clientId, clientSecret, baseUrl? },
- *                     clearpass { publisher (or host), clientId,
- *                     clientSecret } or legacy { publisher (or host), token }
+ *   connectors      — typed per-product configuration, null = not connected.
+ *   planes          — derived flat compatibility view for legacy consumers;
+ *                     never a second persisted source of connector truth.
  *   mcp / llm       — optional chat backend configuration
  *   chatWriteMode   — allow brokered writes from the chat surface
  *   tableColumns /  — the web shell's per-table column configs and per-screen
@@ -29,6 +26,16 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  CONNECTOR_IDS,
+  connectorCatalogEntry,
+  maskConnectorConfig,
+  migrateLegacyPlaneRecord,
+  parseConnectorConfig,
+  type ConnectorConfig,
+  type ConnectorId,
+} from '@hpe/shared';
+import { adapterCredentialsFor, type ConnectorRecord } from '../connectors/catalog';
 import { PLANE_IDS, type PlaneId } from '../planes/types';
 import { SCREEN_SECTIONS, type ScreenSection, type SectionMode } from '@hpe/shared';
 
@@ -86,6 +93,9 @@ export interface Settings {
   configMode?: boolean;
   workspaceName: string;
   pollIntervalSec: number;
+  /** Sole persisted connector source of truth. AOS-10 is derived from Central. */
+  connectors: ConnectorRecord;
+  /** Derived compatibility view for consumers that have not moved to connectors yet. */
   planes: Record<PlaneId, PlaneCredentials | null>;
   mcp: McpSettings | null;
   llm: LlmSettings | null;
@@ -114,7 +124,6 @@ export function effectiveSectionSource(
   return value.sectionMode?.[section] ?? (value.demoMode ? 'demo' : 'live');
 }
 
-const SECRET_KEY = /secret|token|key|password|passphrase/i;
 export const MASK = '••••••';
 
 /** Is this value the placeholder a masked view round-trips, rather than a secret? */
@@ -123,13 +132,14 @@ export function isMasked(value: string): boolean {
 }
 
 function defaultSettings(): Settings {
-  const planes = {} as Record<PlaneId, PlaneCredentials | null>;
-  for (const id of PLANE_IDS) planes[id] = null;
+  const connectors = {} as ConnectorRecord;
+  for (const id of CONNECTOR_IDS) connectors[id] = null;
   return {
     demoMode: true,
     workspaceName: 'Meridian Health',
     pollIntervalSec: 60,
-    planes,
+    connectors,
+    planes: derivedPlanes(connectors),
     mcp: null,
     llm: null,
     auth: null,
@@ -147,13 +157,137 @@ function maskSecret(): string {
   return MASK;
 }
 
-/** Mask secret-ish values of a flat string record; other keys pass through. */
-function maskRecord(rec: PlaneCredentials): PlaneCredentials {
-  const out: PlaneCredentials = {};
-  for (const [k, v] of Object.entries(rec)) {
-    out[k] = SECRET_KEY.test(k) ? maskSecret() : v;
+function derivedPlanes(connectors: ConnectorRecord): Record<PlaneId, PlaneCredentials | null> {
+  const planes = {} as Record<PlaneId, PlaneCredentials | null>;
+  for (const id of PLANE_IDS) planes[id] = null;
+  for (const id of CONNECTOR_IDS) {
+    const config = connectors[id];
+    if (!config?.enabled) continue;
+    try {
+      planes[id] = adapterCredentialsFor(config);
+    } catch {
+      // Keep the invalid typed record so the registry can expose its precise
+      // degraded configuration state. It must never become flat credentials.
+      planes[id] = null;
+    }
   }
-  return out;
+  // AOS-10 is inventory discovered through Central, never independently credentialed.
+  planes.aos10 = null;
+  return planes;
+}
+
+function parseConnectorForStore(id: ConnectorId, input: unknown): ConnectorConfig {
+  try {
+    return parseConnectorConfig(id, input) as ConnectorConfig;
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    const raw = input as Record<string, unknown> | null;
+    const endpoint = raw && typeof raw.endpoint === 'string' ? raw.endpoint : null;
+    // A syntactically complete connector with an unsafe public HTTP endpoint
+    // remains typed but invalid, so the registry can contain it as a degraded
+    // configuration error. It is never converted to adapter credentials.
+    if (!endpoint || !why.includes('endpoint must use HTTPS')) throw err;
+    const validated = parseConnectorConfig(id, {
+      ...raw,
+      endpoint: endpoint.replace(/^http:/i, 'https:'),
+    }) as ConnectorConfig;
+    return { ...validated, endpoint } as ConnectorConfig;
+  }
+}
+
+function migrateLegacyForStore(
+  id: ConnectorId,
+  legacy: Record<string, string>,
+): ConnectorConfig | null {
+  const normalized = { ...legacy };
+  // ClearPass has no safe implicit target: a token without publisher/host is
+  // incomplete compatibility input, not authority to dial the catalog's UI
+  // hint. Keep it unlinked until the operator supplies the endpoint.
+  if (id === 'clearpass' && ![normalized.publisher, normalized.host, normalized.baseUrl].some((v) => v?.trim())) {
+    return null;
+  }
+  if (normalized.scopes !== undefined) {
+    const entry = connectorCatalogEntry(id);
+    const allowed = new Set(entry.scopeOptions.map((scope) => scope.value));
+    const requested = normalized.scopes.split(/[\s,]+/).filter(Boolean);
+    const scopes = new Set<string>();
+    for (const scope of requested) {
+      if (allowed.has(scope)) scopes.add(scope);
+      else if (scope === 'read' && allowed.has('read:inventory')) scopes.add('read:inventory');
+      else if (scope.includes('write')) {
+        if (allowed.has('write:brokered')) scopes.add('write:brokered');
+        else if (allowed.has('write:direct')) scopes.add('write:direct');
+      }
+    }
+    normalized.scopes = [...scopes].join(',');
+  }
+  const endpointKeys = ['gatewayBaseUrl', 'apiHost', 'baseUrl', 'publisher', 'host', 'master'];
+  for (const key of endpointKeys) {
+    const value = normalized[key];
+    if (!value || !/^https?:\/\//i.test(value)) continue;
+    try {
+      const url = new URL(value);
+      if (url.username || url.password || url.search || url.hash) {
+        url.username = '';
+        url.password = '';
+        url.search = '';
+        url.hash = '';
+        normalized[key] = url.toString().replace(/\/$/, '');
+      }
+    } catch {
+      // Shared parsing below reports the useful validation error.
+    }
+  }
+  try {
+    return migrateLegacyPlaneRecord(id, normalized);
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    if (!why.includes('endpoint must use HTTPS')) throw err;
+    const endpointKey = endpointKeys.find((key) => /^http:/i.test(normalized[key] ?? ''));
+    if (!endpointKey) throw err;
+    const endpoint = normalized[endpointKey]!;
+    const migrated = migrateLegacyPlaneRecord(id, {
+      ...normalized,
+      [endpointKey]: endpoint.replace(/^http:/i, 'https:'),
+    });
+    return migrated ? ({ ...migrated, endpoint } as ConnectorConfig) : null;
+  }
+}
+
+function mergeTypedConnector(
+  id: ConnectorId,
+  current: ConnectorConfig | null,
+  input: unknown,
+): ConnectorConfig | null {
+  if (input === null) return null;
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error(`${id} connector must be an object or null`);
+  }
+  const raw = input as Record<string, unknown>;
+  const currentAuth = current?.auth as unknown as Record<string, unknown> | undefined;
+  const incomingAuth = raw.auth;
+  let auth: unknown = incomingAuth ?? currentAuth;
+  if (incomingAuth !== null && typeof incomingAuth === 'object' && !Array.isArray(incomingAuth)) {
+    const mergedAuth: Record<string, unknown> = {
+      ...(currentAuth ?? {}),
+      ...(incomingAuth as Record<string, unknown>),
+    };
+    for (const [key, value] of Object.entries(mergedAuth)) {
+      if (typeof value !== 'string' || !value.startsWith(MASK)) continue;
+      const stored = currentAuth?.[key];
+      if (typeof stored !== 'string' || stored.length === 0) {
+        throw new Error(`masked ${id} auth.${key} has no stored value to preserve`);
+      }
+      mergedAuth[key] = stored;
+    }
+    auth = mergedAuth;
+  }
+  return parseConnectorForStore(id, {
+    ...(current ?? {}),
+    ...raw,
+    id,
+    auth,
+  });
 }
 
 /** Keep only string-valued entries from an untrusted credential record. */
@@ -224,7 +358,7 @@ export class SettingsStore {
     } catch (err) {
       throw new Error(`settings file ${this.filePath} is not valid JSON: ${(err as Error).message}`);
     }
-    this.current = this.merged(defaultSettings(), parsed);
+    this.current = this.merged(defaultSettings(), parsed, false);
     return this.current;
   }
 
@@ -239,7 +373,7 @@ export class SettingsStore {
    */
   update(partial: unknown): Settings {
     const previous = this.get();
-    const next = this.merged(previous, partial);
+    const next = this.merged(previous, partial, true);
     // The environment overlay is the source of truth for auth while it is in
     // force. Silently accepting a change here would leave the API reporting
     // one identity provider and the login flow using another, so refuse and
@@ -317,13 +451,15 @@ export class SettingsStore {
   /** Settings as safe to send over the API — every secret masked. */
   maskedView(): Settings {
     const s = this.get();
-    const planes = {} as Record<PlaneId, PlaneCredentials | null>;
-    for (const id of PLANE_IDS) {
-      const creds = s.planes[id];
-      planes[id] = creds ? maskRecord(creds) : null;
+    const connectors = {} as ConnectorRecord;
+    for (const id of CONNECTOR_IDS) {
+      const config = s.connectors[id];
+      connectors[id] = config ? maskConnectorConfig(config) : null;
     }
+    const planes = derivedPlanes(connectors);
     return {
       ...s,
+      connectors,
       planes,
       mcp: s.mcp
         ? { ...s.mcp, bearerToken: s.mcp.bearerToken ? maskSecret() : null }
@@ -336,10 +472,11 @@ export class SettingsStore {
   // -- internals -------------------------------------------------------------
 
   /** Merge untrusted input over a base, keeping only known, well-typed keys. */
-  private merged(base: Settings, input: unknown): Settings {
+  private merged(base: Settings, input: unknown, translateLegacyUpdates: boolean): Settings {
     const out: Settings = {
       ...base,
-      planes: { ...base.planes },
+      connectors: { ...base.connectors },
+      planes: derivedPlanes(base.connectors),
       mcp: base.mcp ? { ...base.mcp } : null,
       llm: base.llm ? { ...base.llm } : null,
       auth: base.auth ? { ...base.auth } : null,
@@ -390,24 +527,45 @@ export class SettingsStore {
       out.savedViews = { ...(p.savedViews as Record<string, unknown>) };
     }
 
+    const typedIds = new Set<ConnectorId>();
+    if (p.connectors !== null && typeof p.connectors === 'object' && !Array.isArray(p.connectors)) {
+      for (const [id, value] of Object.entries(p.connectors as Record<string, unknown>)) {
+        if (!(CONNECTOR_IDS as readonly string[]).includes(id)) continue;
+        const connectorId = id as ConnectorId;
+        typedIds.add(connectorId);
+        out.connectors[connectorId] = mergeTypedConnector(connectorId, out.connectors[connectorId], value);
+      }
+    }
+
     if (p.planes !== null && typeof p.planes === 'object' && !Array.isArray(p.planes)) {
       for (const [id, value] of Object.entries(p.planes as Record<string, unknown>)) {
-        if (!(PLANE_IDS as readonly string[]).includes(id)) continue;
-        const planeId = id as PlaneId;
+        if (!(CONNECTOR_IDS as readonly string[]).includes(id)) continue;
+        const connectorId = id as ConnectorId;
+        if (typedIds.has(connectorId)) continue;
+        // On file load, a typed record always wins over the stale compatibility
+        // record saved beside it. During the transition, a legacy API update is
+        // translated one-way into the typed record and immediately re-derived.
+        if (!translateLegacyUpdates && out.connectors[connectorId]) continue;
         if (value === null) {
-          out.planes[planeId] = null;
+          if (translateLegacyUpdates) out.connectors[connectorId] = null;
           continue;
         }
         const incoming = sanitizeCreds(value);
         if (!incoming) continue;
-        const mergedCreds: PlaneCredentials = { ...(out.planes[planeId] ?? {}) };
+        const currentCreds = out.connectors[connectorId]
+          ? adapterCredentialsFor(out.connectors[connectorId]!)
+          : null;
+        const mergedCreds: PlaneCredentials = { ...(currentCreds ?? {}) };
         for (const [k, v] of Object.entries(incoming)) {
           if (v.startsWith(MASK)) continue; // masked write-back — keep stored secret
           mergedCreds[k] = v;
         }
-        out.planes[planeId] = mergedCreds;
+        const migrated = migrateLegacyForStore(connectorId, mergedCreds);
+        if (migrated) out.connectors[connectorId] = migrated;
       }
     }
+
+    out.planes = derivedPlanes(out.connectors);
 
     if ('mcp' in p) {
       if (p.mcp === null) {

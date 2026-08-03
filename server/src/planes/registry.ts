@@ -13,18 +13,13 @@
  *   - failure backoff: a plane that keeps failing is not re-polled at the same
  *     cadence against the quota it is already exceeding
  *
- * 'central', 'greenlake', 'clearpass', 'uxi', 'mist', 'aos8' and 'sse' with
- * complete credentials get their real adapters (CentralAdapter: gatewayBaseUrl +
- * clientId + clientSecret; GreenLakeAdapter: workspaceId + clientId +
- * clientSecret; ClearPassAdapter: publisher (or host) + clientId +
- * clientSecret, or a legacy pre-minted token; UxiAdapter: clientId +
- * clientSecret; MistAdapter: apiHost + orgId + token; Aos8Adapter: master +
- * username/password; SseAdapter: a static Admin API token, baseUrl optional).
- * Other planes with credentials get a StubAdapter
- * (linked, pull() returns {} — real implementations land later). Planes
- * without credentials get an UnconfiguredAdapter (unlinked, health
- * 'unlinked'). reinitPlane() swaps one plane's adapter after its credentials
- * change.
+ * Every enabled typed connector is exhaustively dispatched to its real
+ * product adapter. Invalid enabled configurations are contained as a degraded
+ * configuration-error state, never represented by a stub. AOS-10 has no
+ * independent adapter: its visibility and capabilities derive from Central.
+ * Disabled or absent connectors get an UnconfiguredAdapter (unlinked, health
+ * 'unlinked'). reinitPlane() swaps one product's adapter after configuration
+ * changes.
  *
  * Freshness EXPIRES here. `lastSync` is stamped on a successful pull, but a
  * plane can also go quiet without ever throwing — a tick skipped because the
@@ -41,6 +36,11 @@
  */
 
 import {
+  adapterCredentialsFor,
+  connectorConfigFor,
+  createConnectorAdapter,
+} from '../connectors/catalog';
+import {
   planeStaleness,
   staleAfterSecFor,
   type PlaneStaleReason,
@@ -48,18 +48,9 @@ import {
 } from '@hpe/shared';
 import { currentActor } from '../services/auth';
 import { settings, type PlaneCredentials, type SettingsStore } from '../config/settings';
-import { Aos8Adapter } from './aos8';
-import { AosCxAdapter } from './aoscx';
-import { CentralAdapter } from './central';
-import { ClearPassAdapter } from './clearpass';
-import { EdgeConnectAdapter } from './edgeconnect';
-import { GreenLakeAdapter } from './greenlake';
-import { MistAdapter } from './mist';
-import { OpsRampAdapter } from './opsramp';
-import { SseAdapter } from './sse';
-import { UxiAdapter } from './uxi';
 import {
   PLANE_IDS,
+  isConnectorPlaneId,
   type ApiCallLogEntry,
   type PlaneAdapter,
   type PlaneEventEntry,
@@ -111,7 +102,7 @@ export class UnconfiguredAdapter extends BaseAdapter {
   }
 }
 
-/** Credentials exist, but the real sync implementation has not landed yet. */
+/** Legacy test seam retained for poller honesty checks; the registry never emits it. */
 export class StubAdapter extends BaseAdapter {
   constructor(
     id: PlaneId,
@@ -226,10 +217,12 @@ export class PlaneRegistry {
     const out = {} as Record<PlaneId, PlaneStateView>;
     const nowMs = Date.now();
     for (const id of PLANE_IDS) out[id] = this.snapshot(this.runtime.get(id)!, nowMs);
+    out.aos10 = this.aos10Snapshot(nowMs);
     return out;
   }
 
   state(id: PlaneId): PlaneStateView {
+    if (id === 'aos10') return this.aos10Snapshot(Date.now());
     return this.snapshot(this.runtime.get(id)!, Date.now());
   }
 
@@ -265,6 +258,9 @@ export class PlaneRegistry {
    * saved or cleared). Call counters and the call log survive the swap.
    */
   reinitPlane(id: PlaneId): PlaneStateView {
+    // AOS-10 has no credentials or adapter of its own. Its visibility follows
+    // the Central runtime, so there is nothing independent to rebuild.
+    if (id === 'aos10') return this.aos10Snapshot(Date.now());
     const prev = this.runtime.get(id);
     const calls = prev ? prev.calls : [];
     const events = prev ? prev.events : [];
@@ -422,6 +418,35 @@ export class PlaneRegistry {
     };
   }
 
+  /** AOS-10 inventory and capabilities are surfaced by Central, not a connector. */
+  private aos10Snapshot(nowMs: number): PlaneStateView {
+    const central = this.snapshot(this.runtime.get('central')!, nowMs);
+    return {
+      id: 'aos10',
+      // Never make AOS-10 a second linked source: its datasets are Central's
+      // contribution. Capabilities/note provide visibility without causing
+      // missing-source and freshness logic to count the same API twice.
+      linked: false,
+      health: 'unlinked',
+      lastSync: central.lastSync,
+      deviceCount: null,
+      callsToday: central.callsToday,
+      note: central.linked
+        ? 'derived from HPE Aruba Central capabilities — no separate credentials'
+        : 'available through HPE Aruba Central — no separate credentials',
+      callBudget: central.callBudget,
+      token: central.token,
+      scope: central.scope,
+      scopeNote: central.scopeNote,
+      capabilities: central.capabilities,
+      consecutiveFailures: central.consecutiveFailures,
+      nextAttemptAt: central.nextAttemptAt,
+      stale: false,
+      ageSec: central.ageSec,
+      reason: null,
+    };
+  }
+
   /**
    * Build a plane's runtime, or degrade that ONE plane if its adapter refuses
    * to be constructed.
@@ -445,7 +470,10 @@ export class PlaneRegistry {
     try {
       return this.buildRuntimeOrThrow(id, calls, events);
     } catch (err) {
-      const why = err instanceof Error ? err.message : String(err);
+      const rawWhy = err instanceof Error ? err.message : String(err);
+      const why = rawWhy.includes('endpoint must use HTTPS')
+        ? 'endpoint must use https unless it is an explicit loopback lab endpoint; cleartext credential transport is refused'
+        : rawWhy;
       const state: PlaneState = {
         id,
         linked: true,
@@ -476,8 +504,34 @@ export class PlaneRegistry {
     calls: ApiCallLogEntry[],
     events: PlaneEventEntry[] = [],
   ): PlaneRuntime {
-    const creds = this.store.get().planes[id];
-    const linked = creds !== null && Object.keys(creds).length > 0;
+    if (id === 'aos10') {
+      const state: PlaneState = {
+        id,
+        linked: false,
+        health: 'unlinked',
+        lastSync: null,
+        deviceCount: null,
+        callsToday: 0,
+        note: 'available through HPE Aruba Central — no separate credentials',
+        callBudget: null,
+        token: null,
+        consecutiveFailures: 0,
+        nextAttemptAt: null,
+      };
+      return {
+        adapter: new UnconfiguredAdapter(id, state),
+        state,
+        baseHealth: 'unlinked',
+        calls,
+        events,
+        callsToday: 0,
+        day: localDayKey(),
+      };
+    }
+    if (!isConnectorPlaneId(id)) throw new Error(`unknown connector plane '${id}'`);
+    const config = connectorConfigFor(this.store.get(), id);
+    const linked = config?.enabled === true;
+    const creds = config ? adapterCredentialsFor(config) : null;
     const state: PlaneState = {
       id,
       linked,
@@ -486,7 +540,7 @@ export class PlaneRegistry {
       deviceCount: null,
       callsToday: 0,
       note: 'no credentials configured',
-      callBudget: linked ? callBudgetFor(id, creds) : null,
+      callBudget: linked ? config?.callBudget ?? callBudgetFor(id, creds) : null,
       token: linked ? tokenFor(creds) : null,
       // `scope` is deliberately NOT set here: shared/logic.ts scopeForPlane()
       // is the one definition and both the Systems badge and the capability
@@ -496,84 +550,15 @@ export class PlaneRegistry {
     };
     let adapter: PlaneAdapter;
     let baseHealth: PlaneHealth = 'unlinked';
-    if (id === 'central' && creds && CentralAdapter.isComplete(creds)) {
-      // Real adapter: 'warning' only until the first sync completes (the
-      // adapter promotes itself on success); failures degrade as usual.
+    if (config?.enabled) {
       baseHealth = 'healthy';
       state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new CentralAdapter(creds, state, (call) => this.recordCall(id, call));
-    } else if (id === 'classic' && creds && CentralAdapter.isComplete(creds)) {
-      // Classic Central is the SAME REST surface as New Central — central.ts's
-      // isNewCentralGateway() tells them apart per-call from the gateway URL
-      // alone (Classic just answers false: no direct-write, legacy config
-      // namespace). So 'classic' reuses CentralAdapter rather than a second
-      // adapter class; the two plane ids stay independently credentialed and
-      // independently linked in the registry.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new CentralAdapter(creds, state, (call) => this.recordCall(id, call));
-    } else if (id === 'greenlake' && creds && GreenLakeAdapter.isComplete(creds)) {
-      // Real adapter — same lifecycle as central above.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new GreenLakeAdapter(creds, state, (call) => this.recordCall(id, call));
-    } else if (id === 'clearpass' && creds && ClearPassAdapter.isComplete(creds)) {
-      // Real adapter — same lifecycle as central above.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new ClearPassAdapter(creds, state, (call) => this.recordCall(id, call));
-    } else if (id === 'uxi' && creds && UxiAdapter.isComplete(creds)) {
-      // Real adapter — same lifecycle as central above.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new UxiAdapter(creds, state, (call) => this.recordCall(id, call));
-    } else if (id === 'mist' && creds && MistAdapter.isComplete(creds)) {
-      // Real adapter — same lifecycle as central above.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new MistAdapter(creds, state, (call) => this.recordCall(id, call));
-    } else if (id === 'aos8' && creds && Aos8Adapter.isComplete(creds)) {
-      // Real adapter — same lifecycle as central above.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new Aos8Adapter(creds, state, (call) => this.recordCall(id, call));
-    } else if (id === 'local' && creds && AosCxAdapter.isComplete(creds)) {
-      // Real adapter — same lifecycle as central above.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new AosCxAdapter(id, state, creds, (call) => this.recordCall(id, call));
-    } else if (id === 'sse' && creds && SseAdapter.isComplete(creds)) {
-      // Real adapter — same lifecycle as central above.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new SseAdapter(creds, state, (call) => this.recordCall(id, call));
-    } else if (id === 'edgeconnect' && creds && EdgeConnectAdapter.isComplete(creds)) {
-      // Real adapter — same lifecycle as central above.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — connecting…';
-      adapter = new EdgeConnectAdapter(id, state, creds, (call) => this.recordCall(id, call));
-    } else if (id === 'opsramp' && creds && OpsRampAdapter.isComplete(creds)) {
-      // Real adapter — same lifecycle as central above.
-      baseHealth = 'healthy';
-      state.health = 'warning';
-      state.note = 'credentials saved — first sync pending';
-      adapter = new OpsRampAdapter(creds, state, (call) => this.recordCall(id, call));
-    } else if (linked) {
-      baseHealth = 'warning';
-      state.health = 'warning';
-      state.note = 'credentials saved — sync adapter not yet implemented (stub)';
-      adapter = new StubAdapter(id, state, creds);
+      state.note = id === 'edgeconnect'
+        ? 'credentials saved — connecting…'
+        : 'credentials saved — first sync pending';
+      adapter = createConnectorAdapter(config, state, (call) => this.recordCall(id, call));
     } else {
+      if (config) state.note = 'connector disabled';
       adapter = new UnconfiguredAdapter(id, state);
     }
     return { adapter, state, baseHealth, calls, events, callsToday: 0, day: localDayKey() };

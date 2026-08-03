@@ -197,10 +197,12 @@ describe('GET /api/clearpass/services/:id — live and blend', () => {
     const saved = await fetch(`${base}/api/systems/clearpass/credentials`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ publisher: 'cppm-01.meridian.health', token: 'cppm-token-1234', callBudget: '0' }),
+      body: JSON.stringify({ publisher: 'cppm-01.meridian.health', token: 'cppm-token-1234', callBudget: '1' }),
     });
     expect(saved.status).toBe(200);
     try {
+      const { registry } = await import('../src/planes/registry');
+      registry.recordCall('clearpass', { path: 'GET /api/endpoint', ms: 1, code: '200' });
       const { status, body } = await getJson('/api/clearpass/services/4');
       expect(status).toBe(200);
       expect(body.serviceDetail.service).toBeNull();

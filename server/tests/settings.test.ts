@@ -43,20 +43,115 @@ describe('SettingsStore', () => {
     const s = store.load();
     expect(s.demoMode).toBe(true);
     expect(s.pollIntervalSec).toBe(60);
+    expect(s.connectors.central).toBeNull();
     expect(s.planes.central).toBeNull();
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('migrates a complete legacy plane once and persists the typed connector on the next save', () => {
+    const { file, store } = tmpStore();
+    writeFileSync(file, JSON.stringify({
+      demoMode: false,
+      planes: {
+        opsramp: {
+          tenantId: 'tenant-a',
+          clientId: 'client-a',
+          clientSecret: 'secret-a',
+        },
+      },
+    }));
+
+    const loaded = store.load();
+    expect(loaded.connectors.opsramp).toMatchObject({
+      id: 'opsramp',
+      enabled: true,
+      endpoint: 'https://app.opsramp.net',
+      auth: {
+        kind: 'oauth_client_credentials',
+        tenantId: 'tenant-a',
+        clientId: 'client-a',
+        clientSecret: 'secret-a',
+      },
+    });
+    expect(loaded.planes.opsramp).toMatchObject({
+      baseUrl: 'https://app.opsramp.net',
+      tenantId: 'tenant-a',
+      clientId: 'client-a',
+      clientSecret: 'secret-a',
+    });
+
+    store.update({ workspaceName: 'Migrated workspace' });
+    const persisted = JSON.parse(readFileSync(file, 'utf8')) as Record<string, any>;
+    expect(persisted.connectors.opsramp).toMatchObject({ id: 'opsramp', endpoint: 'https://app.opsramp.net' });
+  });
+
+  it('treats a typed connector as authoritative over stale legacy plane credentials', () => {
+    const { file, store } = tmpStore();
+    writeFileSync(file, JSON.stringify({
+      connectors: {
+        opsramp: {
+          id: 'opsramp', enabled: true, endpoint: 'https://typed.opsramp.example',
+          auth: {
+            kind: 'oauth_client_credentials', tenantId: 'typed-tenant',
+            clientId: 'typed-client', clientSecret: 'typed-secret',
+          },
+          verifyTls: true, pollIntervalSec: 60, callBudget: null,
+          datasets: ['devices', 'alerts'], scopes: ['read:inventory'],
+        },
+      },
+      planes: {
+        opsramp: {
+          baseUrl: 'https://stale.opsramp.example', tenantId: 'stale-tenant',
+          clientId: 'stale-client', clientSecret: 'stale-secret',
+        },
+      },
+    }));
+
+    const loaded = store.load();
+    expect(loaded.connectors.opsramp?.endpoint).toBe('https://typed.opsramp.example');
+    expect(loaded.planes.opsramp?.baseUrl).toBe('https://typed.opsramp.example');
+    expect(JSON.stringify(loaded)).not.toContain('stale-secret');
+  });
+
+  it('masks typed connector secrets and preserves them across a masked round-trip', () => {
+    const { store } = tmpStore();
+    store.update({
+      connectors: {
+        opsramp: {
+          id: 'opsramp', enabled: true, endpoint: 'https://app.opsramp.net',
+          auth: {
+            kind: 'oauth_client_credentials', tenantId: 'tenant-a',
+            clientId: 'client-a', clientSecret: 'secret-a',
+          },
+          verifyTls: true, pollIntervalSec: 60, callBudget: null,
+          datasets: ['devices', 'alerts'], scopes: ['read:inventory'],
+        },
+      },
+    });
+
+    const masked = store.maskedView();
+    expect(masked.connectors.opsramp?.auth).toMatchObject({
+      kind: 'oauth_client_credentials',
+      clientSecret: '••••••',
+    });
+    expect(JSON.stringify(masked)).not.toContain('secret-a');
+
+    store.update({ connectors: { opsramp: masked.connectors.opsramp } });
+    expect(store.get().connectors.opsramp?.auth).toMatchObject({ clientSecret: 'secret-a' });
   });
 
   it('roundtrips save/load, deep-merging plane credentials', () => {
     const { file, store } = tmpStore();
     store.load();
-    store.update({ workspaceName: 'Test Org', planes: { central: { gatewayBaseUrl: 'https://gw.example.com', clientId: 'id-1' } } });
-    store.update({ planes: { central: { clientSecret: 'supersecretvalue' } } });
+    store.update({ workspaceName: 'Test Org', planes: { central: {
+      gatewayBaseUrl: 'https://gw.example.com', clientId: 'id-0', clientSecret: 'supersecretvalue',
+    } } });
+    store.update({ planes: { central: { clientId: 'id-1' } } });
 
     const again = new SettingsStore(file);
     const loaded = again.load();
     expect(loaded.workspaceName).toBe('Test Org');
-    expect(loaded.planes.central).toEqual({
+    expect(loaded.planes.central).toMatchObject({
       gatewayBaseUrl: 'https://gw.example.com',
       clientId: 'id-1',
       clientSecret: 'supersecretvalue',
@@ -119,7 +214,9 @@ describe('SettingsStore', () => {
 
   it('ignores masked values written back over stored secrets', () => {
     const { store } = tmpStore();
-    store.update({ planes: { central: { clientSecret: 'supersecretvalue' } } });
+    store.update({ planes: { central: {
+      gatewayBaseUrl: 'https://gw.example.com', clientId: 'id-1', clientSecret: 'supersecretvalue',
+    } } });
     const masked = store.maskedView().planes.central!;
     store.update({ planes: { central: masked } });
     expect(store.get().planes.central?.clientSecret).toBe('supersecretvalue');
@@ -127,7 +224,9 @@ describe('SettingsStore', () => {
 
   it('clears a plane when its credentials are set to null', () => {
     const { store } = tmpStore();
-    store.update({ planes: { central: { clientId: 'id-1' } } });
+    store.update({ planes: { central: {
+      gatewayBaseUrl: 'https://gw.example.com', clientId: 'id-1', clientSecret: 'supersecretvalue',
+    } } });
     expect(store.get().planes.central).not.toBeNull();
     store.update({ planes: { central: null } });
     expect(store.get().planes.central).toBeNull();

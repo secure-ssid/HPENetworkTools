@@ -2206,21 +2206,17 @@ describe('registry wiring', () => {
     });
   });
 
-  it('never stamps a stub plane as synced — no lastSync, no calls, no log entry', async () => {
+  it('keeps incomplete legacy credentials unlinked instead of creating a stub', async () => {
     await withRegistry({ classic: { baseUrl: 'classic.example.com' } }, async (reg) => {
-      const { StubAdapter } = await import('../src/planes/registry');
-      expect(reg.get('classic')).toBeInstanceOf(StubAdapter);
-      // Exactly what the poller does on a successful tick.
-      reg.recordCall('classic', { path: 'poll()', ms: 2, code: 'ok' });
-      reg.markSyncResult('classic', true, { deviceCount: 0 });
+      const { UnconfiguredAdapter } = await import('../src/planes/registry');
+      expect(reg.get('classic')).toBeInstanceOf(UnconfiguredAdapter);
       const st = reg.state('classic');
+      expect(st.linked).toBe(false);
+      expect(st.health).toBe('unlinked');
       expect(st.lastSync).toBeNull();
       expect(st.callsToday).toBe(0);
       expect(reg.recentCalls('classic')).toHaveLength(0);
-      expect(st.note).toBe('credentials saved — sync adapter not yet implemented (stub)');
-      // A real outbound call (a connection test) is still counted.
-      reg.recordCall('classic', { path: 'GET /ping', ms: 4, code: '200' });
-      expect(reg.state('classic').callsToday).toBe(1);
+      expect(st.note).toBe('no credentials configured');
     });
   });
 });
