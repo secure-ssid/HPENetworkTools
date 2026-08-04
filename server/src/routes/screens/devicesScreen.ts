@@ -1120,9 +1120,22 @@ export function registerDevicesRoutes(router: Router): void {
     );
   });
 
+  /** Most serials one bulk lookup will examine; the rest come back as `notExamined`. */
+  const BULK_SERIAL_LIMIT = 50;
+
   /**
    * GET /api/devices/bulk?serials=a,b&planes=mist,central
-   * Lookup by serial (max 50). Before /devices/:name so "bulk" is not a name.
+   * Lookup by serial. Before /devices/:name so "bulk" is not a name.
+   *
+   * The cap truncates rather than refuses, so an oversized ask still returns
+   * usable rows. That only stays honest if the response says so: `requested`
+   * counts what the caller asked for (not what survived the cap), and any
+   * serial past it comes back under `notExamined`.
+   *
+   * `missing` and `notExamined` are different answers and must not be merged.
+   * `missing` means looked up and not in the estate. `notExamined` means never
+   * looked up — the caller learned nothing about those serials. Folding them
+   * together would let a serial nobody read pass for one confirmed absent.
    */
   router.get('/devices/bulk', (req, res) => {
     const raw =
@@ -1131,14 +1144,16 @@ export function registerDevicesRoutes(router: Router): void {
         : Array.isArray(req.query.serials)
           ? req.query.serials.filter((v): v is string => typeof v === 'string').join(',')
           : '';
-    const serials = [
+    const requestedSerials = [
       ...new Set(
         raw
           .split(',')
           .map((s) => s.trim())
           .filter((s) => s.length > 0),
       ),
-    ].slice(0, 50);
+    ];
+    const serials = requestedSerials.slice(0, BULK_SERIAL_LIMIT);
+    const notExamined = requestedSerials.slice(BULK_SERIAL_LIMIT);
     if (serials.length === 0) {
       res.status(400).json({ error: 'serials query required (comma-separated)', code: 'BULK_SERIALS_REQUIRED' });
       return;
@@ -1175,7 +1190,8 @@ export function registerDevicesRoutes(router: Router): void {
       envelopeFor('devices', {
         devices,
         missing,
-        requested: serials.length,
+        requested: requestedSerials.length,
+        ...(notExamined.length > 0 ? { notExamined, limit: BULK_SERIAL_LIMIT } : {}),
       }) as Record<string, unknown>,
     );
   });

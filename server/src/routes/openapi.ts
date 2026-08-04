@@ -541,11 +541,14 @@ const SPEC = {
       get: {
         summary: 'Bulk device lookup by serial',
         parameters: [
-          { name: 'serials', in: 'query', required: true, schema: { type: 'string' }, description: 'Comma-separated serials (max 50)' },
+          { name: 'serials', in: 'query', required: true, schema: { type: 'string' }, description: 'Comma-separated serials; at most 50 are examined and the remainder are returned under notExamined' },
           { name: 'planes', in: 'query', schema: { type: 'string' }, description: 'Optional comma-separated plane filter' },
         ],
         responses: {
-          '200': { description: '{ devices, missing, requested }' },
+          '200': {
+            description:
+              '{ devices, missing, requested, notExamined?, limit? } — requested counts the serials asked for, not the number examined. missing means looked up and absent; notExamined means past the cap and never looked up. Both are present only when they apply, and devices+missing+notExamined accounts for every requested serial.',
+          },
           '400': { description: 'serials required' },
         },
       },
