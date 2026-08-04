@@ -22,6 +22,7 @@
  * while active), and **Clear** (Loop 163) so operators can hand off only the
  * sites they marked — full list export stays in the header. Keyboard shortcuts
  * help and filtered empty **Clear filters** ship with the bulk bar.
+ * Selection-empty `?ids=` offers **Clear selection filter** (Loop 214).
  * Data: getSites({ limit }) — live /api/sites when the server is up, fixtures
  * otherwise. Large estates page at SITE_PAGE and Load more via nextCursor.
  */
@@ -790,16 +791,33 @@ export default function Sites() {
           title={
             sites.length === 0 && missingSources.length > 0
               ? 'No sites from the planes that answered'
-              : 'Nothing matches that filter'
+              : idsFilter !== null
+                ? 'No sites match this selection'
+                : 'Nothing matches that filter'
           }
           description={
             sites.length === 0 && missingSources.length > 0
               ? `${missingSources.join(', ')} contributed no inventory, so any site there is unknown rather than absent.`
-              : 'No site matches that plane, health, name or selection combination.'
+              : idsFilter !== null
+                ? 'Clear the selection filter to restore the site list under the current plane / health / name filters.'
+                : 'No site matches that plane, health, name or selection combination.'
           }
         >
-          {sites.length > 0 &&
-          (q.trim() || plane !== 'all' || health !== 'all' || idsFilter !== null) ? (
+          {sites.length > 0 && idsFilter !== null ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.delete('ids');
+                setSearchParams(next, { replace: true });
+                setSelectedKeys([]);
+              }}
+            >
+              Clear selection filter
+            </Button>
+          ) : sites.length > 0 &&
+            (q.trim() || plane !== 'all' || health !== 'all') ? (
             <Button variant="secondary" size="sm" onClick={clearSiteFilters}>
               Clear filters
             </Button>

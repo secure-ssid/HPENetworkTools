@@ -52,6 +52,17 @@
   --nd-overlay-scrim: rgba(4, 6, 10, 0.72);
   --nd-opacity-disabled: 0.45;
 
+  /* Compat aliases used by densify layers (Copper NOC) */
+  --nd-surface-0: var(--nd-bg-canvas);
+  --nd-surface-1: var(--nd-bg-surface);
+  --nd-surface-2: var(--nd-bg-raised);
+  --nd-surface-3: var(--nd-bg-hover);
+  --nd-border: var(--nd-border-default);
+  --nd-text-tertiary: var(--nd-text-muted);
+  --nd-focus-ring: var(--nd-ring-color);
+  --nd-accent-fg: var(--nd-text-inverse);
+
+
   /* type families */
   --nd-font-display: "Inter", -apple-system, system-ui, sans-serif;
   --nd-font-body: "Inter", -apple-system, system-ui, sans-serif;
@@ -221,6 +232,17 @@ html[data-nd-theme='light'] {
 
   --nd-ring-color: rgba(196, 98, 48, 0.45);
   --nd-overlay-scrim: rgba(15, 23, 42, 0.45);
+
+  /* Compat aliases used by densify layers (Copper NOC) */
+  --nd-surface-0: var(--nd-bg-canvas);
+  --nd-surface-1: var(--nd-bg-surface);
+  --nd-surface-2: var(--nd-bg-raised);
+  --nd-surface-3: var(--nd-bg-hover);
+  --nd-border: var(--nd-border-default);
+  --nd-text-tertiary: var(--nd-text-muted);
+  --nd-focus-ring: var(--nd-ring-color);
+  --nd-accent-fg: var(--nd-text-inverse);
+
 
   --nd-shadow-sm: 0 1px 0 rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.06);
   --nd-shadow-raised: 0 8px 24px rgba(15, 23, 42, 0.08), 0 1px 0 rgba(255, 255, 255, 0.8) inset;

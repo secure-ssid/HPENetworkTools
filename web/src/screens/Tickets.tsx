@@ -27,8 +27,11 @@
  * CSV** passes the same filters and receives noteCount only (never note bodies).
  * Multi-select checkboxes on queue rows raise a bulk bar: **Export selected**,
  * **Copy IDs** (unique newline-joined ticket ids for paste into notes/handoffs —
- * Loop 171), **Copy selection link** (`?ids=` of marked ticket ids — Sites
+ * Loop 171), **Copy titles** (unique newline-joined ticket titles when ids alone
+ * are sparse for a handoff — Devices **Copy names** pattern; Loop 229),
+ * **Copy selection link** (`?ids=` of marked ticket ids — Sites
  * `?ids=` pattern; clearable chip while active; Loop 175), and **Clear**.
+ * Selection-empty `?ids=` offers **Clear selection filter** (Loop 210).
  * Queue header carries keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS —
  * Loop 196). Workspace click (`sel=`) stays independent of the bulk mark set. Data:
  * getTickets({ limit, q, pri, state, site }) — live /api/tickets when the
@@ -573,14 +576,35 @@ export default function Tickets() {
         ) : null}
         {selectionChip}
         <EmptyState
-          title={filtersActive ? 'No tickets match that filter' : 'No tickets in the queue'}
+          title={
+            idsFilter !== null
+              ? 'No tickets match this selection'
+              : filtersActive
+                ? 'No tickets match that filter'
+                : 'No tickets in the queue'
+          }
           description={
-            filtersActive
-              ? 'Loosen search, priority, state, site, or selection to see the rest of the queue.'
-              : 'Raised tickets appear here with their cross-plane evidence.'
+            idsFilter !== null
+              ? 'Clear the selection filter to restore the ticket queue under the current search / priority / state / site filters.'
+              : filtersActive
+                ? 'Loosen search, priority, state, or site to see the rest of the queue.'
+                : 'Raised tickets appear here with their cross-plane evidence.'
           }
         >
-          {filtersActive ? (
+          {idsFilter !== null ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.delete('ids');
+                setSearchParams(next, { replace: true });
+                setSelectedKeys([]);
+              }}
+            >
+              Clear selection filter
+            </Button>
+          ) : filtersActive ? (
             <Button variant="secondary" size="sm" onClick={clearTicketFilters}>
               Clear filters
             </Button>
@@ -957,7 +981,7 @@ export default function Tickets() {
             >
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy ids, or share a selection link for the tickets you marked — workspace click stays independent
+                export, copy ids/titles, or share a selection link for the tickets you marked — workspace click stays independent
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -1018,7 +1042,7 @@ export default function Tickets() {
                       }
                       if (ids.length === 0) {
                         toast('No ticket ids on the selection', {
-                          description: 'Export CSV for titles instead.',
+                          description: 'Use Copy titles or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -1052,6 +1076,52 @@ export default function Tickets() {
                         });
                         return;
                       }
+                      const titles = [
+                        ...new Set(
+                          picked
+                            .map((t) => String(t.title ?? '').trim())
+                            .filter((title) => title && title !== '—'),
+                        ),
+                      ];
+                      if (titles.length === 0) {
+                        toast('No titles on the selected tickets', {
+                          description: 'Those rows did not publish a title — export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = titles.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(titles.length, 'title')}`, {
+                          description:
+                            titles.length < picked.length
+                              ? `${picked.length - titles.length} selected without a title skipped`
+                              : 'newline-joined · paste into a note or handoff',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy titles', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy titles
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = tickets.filter((t) => selected.has(t.id));
+                      if (picked.length === 0) {
+                        toast('No selected tickets still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
                       const ids = [
                         ...new Set(
                           picked
@@ -1061,7 +1131,7 @@ export default function Tickets() {
                       ];
                       if (ids.length === 0) {
                         toast('No ticket ids on the selection', {
-                          description: 'Export CSV for titles instead.',
+                          description: 'Use Copy titles or export CSV instead.',
                           tone: 'info',
                         });
                         return;

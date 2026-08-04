@@ -21,11 +21,13 @@
  * up as a live sync). Header **LIVE** stamps pure live and sites blend feeds
  * alike (Loop 169). Devices multi-select raises **Export selected**, **Copy
  * serials** (unique newline-joined inventory serials — Devices **Copy serials**
- * pattern; Loop 174), **Copy selection link** (`?names=` of marked device
- * names — Devices `?names=` pattern; clearable chip while active; Loop 181),
- * and Clear. Selection-empty `?names=` offers **Clear selection filter**
- * (Loop 208). Header `KeyboardShortcuts` surfaces the devices (and rogue) grid
- * map (Loop 199). Its header actions are derived, never hardcoded: "Open in
+ * pattern; Loop 174), **Copy names** (unique newline-joined device names when
+ * serials are sparse — Devices / Topology pattern; Loop 225), **Copy selection
+ * link** (`?names=` of marked device names — Devices `?names=` pattern;
+ * clearable chip while active; Loop 181), and Clear. Selection-empty `?names=`
+ * offers **Clear selection filter** (Loop 208). Header `KeyboardShortcuts`
+ * surfaces the devices (and rogue) grid map (Loop 199). Its header actions are
+ * derived, never hardcoded: "Open in
  * <plane>" only when a plane claimed the site, "Local terminal" only when a
  * switch-like device row names a target — an AP is not silently promoted to a
  * terminal target — and, on the authored branch, only while the profile still
@@ -298,7 +300,7 @@ function SiteDeviceTable({
             >
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy serials, or share a selection link for only the devices you marked — full list export stays in the header
+                export, copy serials/names, or share a selection link for only the devices you marked — full list export stays in the header
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -358,7 +360,7 @@ function SiteDeviceTable({
                       ];
                       if (serials.length === 0) {
                         toast('No serials on the selected devices', {
-                          description: 'Those rows did not publish a serial — export CSV for names instead.',
+                          description: 'Those rows did not publish a serial — use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -383,6 +385,52 @@ function SiteDeviceTable({
                   }}
                 >
                   Copy serials
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((d) => selected.has(rowKeyOf(d)));
+                      if (picked.length === 0) {
+                        toast('No selected devices still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((d) => (d.name ?? '').trim())
+                            .filter((name) => name && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected devices', {
+                          description: 'Those rows did not publish a name — export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = names.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(names.length, 'name')}`, {
+                          description:
+                            names.length < picked.length
+                              ? `${picked.length - names.length} selected without a name skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy names', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy names
                 </Button>
                 <Button
                   variant="ghost"

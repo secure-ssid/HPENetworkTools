@@ -1038,3 +1038,79 @@ describe('AuthEvents range chips (Loop 156)', () => {
     expect(screen.getByTestId('search').textContent).not.toMatch(/range=/);
   });
 });
+
+/* Loop 219 — auth events selection-empty Clear selection filter CTA. */
+describe('AuthEvents Loop 219 residuals', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  it('offers Clear selection filter when macs deep link matches nothing', async () => {
+    mockGetAuthEvents.mockResolvedValue(
+      liveData({
+        events: [
+          { ...EVENT, who: 'kept.user', mac: 'aa:00:00:00:00:01' },
+          { ...EVENT, who: 'other.user', mac: 'aa:00:00:00:00:02' },
+        ],
+      }),
+    );
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={[`/auth-events?macs=${encodeURIComponent('ff:ff:ff:ff:ff:ff')}`]}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <AuthEvents />
+            <SearchProbe />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('No events match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('search').textContent).not.toMatch(/macs=/));
+    expect(await screen.findByText('kept.user')).toBeTruthy();
+    expect(screen.getByText('other.user')).toBeTruthy();
+    expect(screen.queryByText('No events match this selection')).toBeNull();
+  });
+});
+
+/* Loop 228 — bulk Copy names (who identities) beside Copy MACs. */
+describe('AuthEvents Loop 228 residuals', () => {
+  it('Copy names joins unique who identities from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetAuthEvents.mockResolvedValue(
+      liveData({
+        events: [
+          { ...EVENT, who: 'a.user', mac: 'aa:00:00:00:00:01' },
+          { ...EVENT, who: 'b.user', mac: 'aa:00:00:00:00:02' },
+          { ...EVENT, who: 'a.user', mac: 'aa:00:00:00:00:03' },
+        ],
+      }),
+    );
+    const { container } = renderAuthEvents();
+    await screen.findByText('3 of 3 shown');
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (let i = 0; i < 3; i++) {
+      (rows[i] as HTMLElement).focus();
+      fireEvent.keyDown(rows[i] as HTMLElement, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'Auth event selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    expect(await screen.findByText(/Copied 2 names/i)).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith('a.user\nb.user');
+  });
+});

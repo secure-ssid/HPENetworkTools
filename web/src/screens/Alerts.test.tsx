@@ -944,6 +944,34 @@ describe('Alerts bulk export of selection', () => {
     expect(text).toMatch(/gw-edge-1/i);
     expect(text.includes('\n')).toBe(false);
   });
+
+  /* Loop 232 — bulk Copy titles (unique latest titles beside fingerprints). */
+  it('Copy titles joins unique alert titles from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    mockGetAlerts.mockResolvedValue(liveData());
+
+    const { container } = renderAlerts();
+    await screen.findByText('2 of 2 alerts · live');
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    (rows[0] as HTMLElement).focus();
+    fireEvent.keyDown(rows[0] as HTMLElement, { key: 'x' });
+    (rows[1] as HTMLElement).focus();
+    fireEvent.keyDown(rows[1] as HTMLElement, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Alert selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy titles' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy titles' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0]).split('\n').sort()).toEqual(
+      ['gw-edge-1 unreachable', 'inventory 6h stale'].sort(),
+    );
+    expect(await screen.findByText(/Copied 2 titles/i)).toBeTruthy();
+  });
 });
 
 /* Loop 145 — Severity chip row toggles the same sev facet / ?sev= write-back. */
@@ -1236,5 +1264,29 @@ describe('Alerts Loop 204 residuals', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
     expect(await screen.findByText('gw-edge-1 unreachable')).toBeTruthy();
     expect(screen.getByText('inventory 6h stale')).toBeTruthy();
+  });
+});
+
+/* Loop 220 — selection-empty Clear selection filter CTA. */
+describe('Alerts Loop 220 residuals', () => {
+  it('offers Clear selection filter when fps deep link matches nothing', async () => {
+    mockGetAlerts.mockResolvedValue(liveData());
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={[`/alerts?fps=${encodeURIComponent('missing|fp|zzz')}`]}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Alerts />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('No alerts match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    expect(await screen.findByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.getByText('inventory 6h stale')).toBeTruthy();
+    expect(screen.queryByText('No alerts match this selection')).toBeNull();
   });
 });

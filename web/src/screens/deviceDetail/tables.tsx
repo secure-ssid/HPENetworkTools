@@ -493,9 +493,11 @@ function clientRowKey(client: DeviceClientRow, index: number): string {
  * into the wrong headings.
  *
  * Multi-select raises **Export selected**, **Copy MACs** (unique newline-joined
- * inventory MACs — ClearPass endpoints pattern), **Copy selection link**
- * (`?macs=` of unique session MACs — Clients pattern; clearable chip while
- * active; Loop 184), and Clear (Loop 180).
+ * inventory MACs — ClearPass endpoints pattern), **Copy names** (unique
+ * newline-joined client hostnames when MACs are sparse — Clients **Copy names**
+ * pattern; Loop 232), **Copy selection link** (`?macs=` of unique session MACs —
+ * Clients pattern; clearable chip while active; Loop 184), and Clear (Loop 180).
+ * Selection-empty `?macs=` offers **Clear selection filter** (Loop 217).
  */
 export function ClientTable({
   rows,
@@ -623,9 +625,23 @@ export function ClientTable({
         </div>
       ) : null}
       {viewRows.length === 0 && macsFilterLc !== null ? (
-        <div className="nt-service-note">
-          No clients match the selection deep link — clear the chip to restore the full session list.
-        </div>
+        <EmptyState
+          title="No clients match this selection"
+          description="Clear the selection filter to restore the full session list."
+        >
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete('macs');
+              setSearchParams(next, { replace: true });
+              setSelectedKeys([]);
+            }}
+          >
+            Clear selection filter
+          </Button>
+        </EmptyState>
       ) : (
         <DataTable
           ariaLabel="Clients on this device"
@@ -646,7 +662,7 @@ export function ClientTable({
         >
           <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
           <span className="nt-configure-bulk-bar__hint">
-            export, copy MACs, or share a selection link for only the sessions you marked — full list export stays above
+            export, copy MACs/names, or share a selection link for only the sessions you marked — full list export stays above
           </span>
           <span className="nt-configure-bulk-bar__actions">
             <Button
@@ -706,7 +722,7 @@ export function ClientTable({
                   ];
                   if (macs.length === 0) {
                     toast('No MACs on the selected clients', {
-                      description: 'Those rows did not publish a MAC — export CSV for names instead.',
+                      description: 'Those rows did not publish a MAC — use Copy names or export CSV instead.',
                       tone: 'info',
                     });
                     return;
@@ -743,6 +759,52 @@ export function ClientTable({
                     });
                     return;
                   }
+                  const names = [
+                    ...new Set(
+                      picked
+                        .map((c) => String(c.name ?? '').trim())
+                        .filter((name) => name && name !== '—'),
+                    ),
+                  ];
+                  if (names.length === 0) {
+                    toast('No names on the selected clients', {
+                      description: 'Those rows did not publish a hostname — export CSV instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const text = names.join('\n');
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast(`Copied ${countOf(names.length, 'name')}`, {
+                      description:
+                        names.length < picked.length
+                          ? `${picked.length - names.length} selected without a name skipped`
+                          : 'newline-joined · paste into a ticket or handoff',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy names', { description: text, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy names
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = viewRows.filter((c, i) => selected.has(clientRowKey(c, i)));
+                  if (picked.length === 0) {
+                    toast('No selected clients still in view', {
+                      description: 'Clear selection or refresh the device.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
                   const macs = [
                     ...new Set(
                       picked
@@ -752,7 +814,7 @@ export function ClientTable({
                   ];
                   if (macs.length === 0) {
                     toast('No MACs on the selected clients', {
-                      description: 'Those rows did not publish a MAC — export CSV for names instead.',
+                      description: 'Those rows did not publish a MAC — use Copy names or export CSV instead.',
                       tone: 'info',
                     });
                     return;

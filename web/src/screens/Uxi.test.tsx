@@ -490,3 +490,57 @@ describe('UXI Loop 192 residuals', () => {
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
   });
 });
+
+/* Loop 210 — sensors selection-empty Clear selection filter CTA. */
+describe('UXI Loop 210 residuals', () => {
+  it('offers Clear selection filter when ids deep link matches nothing', async () => {
+    mockGetUxi.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-08-04T12:00:00.000Z',
+      sensors: FLEET.slice(),
+    });
+    renderUxi(`/uxi?ids=${encodeURIComponent('sensor-missing-zzz')}`);
+    expect(await screen.findByText('No sensors match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/ids=/));
+    expect(await screen.findByText('Lobby sensor')).toBeTruthy();
+    expect(screen.queryByText('No sensors match this selection')).toBeNull();
+  });
+});
+
+/* Loop 226 — sensors bulk Copy names (non-selection-empty residual). */
+describe('UXI Loop 226 residuals', () => {
+  it('Copy names joins unique sensor names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetUxi.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-08-04T12:00:00.000Z',
+      sensors: [
+        sensor({ id: 'a', name: 'Lobby sensor', serial: 'UXI-100' }),
+        sensor({ id: 'b', name: 'Dup name sensor', serial: 'UXI-100' }),
+        sensor({ id: 'c', name: 'Lobby sensor', serial: null }),
+        sensor({ id: 'd', name: 'Warehouse probe', serial: 'UXI-200' }),
+      ],
+    });
+    const { container } = renderUxi();
+    expect((await screen.findAllByText('Lobby sensor')).length).toBeGreaterThanOrEqual(1);
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(4);
+    for (const row of Array.from(rows).slice(0, 4)) {
+      (row as HTMLElement).focus();
+      fireEvent.keyDown(row, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'UXI sensor selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]?.[0] ?? '')).toBe('Lobby sensor\nDup name sensor\nWarehouse probe');
+    expect(await screen.findByText(/Copied 3 names/)).toBeTruthy();
+  });
+});

@@ -45,7 +45,10 @@
  * selects, Esc clears — '?' lists them). A non-empty selection raises the
  * bulk bar: Export selected, Copy selection link (`?names=` of the marked
  * devices), **Copy serials** (newline-joined inventory serials for paste into
- * a ticket / RMA), and Clear. Filtered empties offer **Clear filters** (Loop 202).
+ * a ticket / RMA), **Copy names** (unique newline-joined device names when
+ * serials are sparse — Sites / Topology pattern; Loop 226), and Clear. Filtered
+ * empties offer **Clear filters** (Loop 202).
+ * Selection-empty `?names=` offers **Clear selection filter** (Loop 214).
  * Header **LIVE** stamps pure live and blend feeds
  * alike (Loop 163). No column tints because nothing here has a
  * meaningful threshold. The rollout guide for the other screens lives in
@@ -1294,7 +1297,7 @@ export default function Devices() {
             <div className="nt-configure-bulk-bar nt-bulk-glass" role="region" aria-label="Device selection actions">
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export or share only the devices you marked — full list export stays in the header
+                export, copy serials/names, or share a selection link for only the devices you marked — full list export stays in the header
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -1388,7 +1391,7 @@ export default function Devices() {
                         .filter(Boolean);
                       if (serials.length === 0) {
                         toast('No serials on the selected devices', {
-                          description: 'Those rows did not publish a serial — export CSV for names instead.',
+                          description: 'Those rows did not publish a serial — use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -1411,6 +1414,52 @@ export default function Devices() {
                 >
                   Copy serials
                 </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((d) => selected.has(`${d.name}:${d.serial ?? d.plane}`));
+                      if (picked.length === 0) {
+                        toast('No selected devices still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((d) => (d.name ?? '').trim())
+                            .filter((name) => name && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected devices', {
+                          description: 'Those rows did not publish a name — export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = names.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(names.length, 'name')}`, {
+                          description:
+                            names.length < picked.length
+                              ? `${picked.length - names.length} selected without a name skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy names', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy names
+                </Button>
                 <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
                   Clear
                 </Button>
@@ -1419,10 +1468,31 @@ export default function Devices() {
           ) : null}
           {rows.length === 0 ? (
             <EmptyState
-              title="Nothing matches that filter"
-              description="Loosen the search or the type filter and facets to see the rest of the inventory."
+              title={
+                nameFilter !== null
+                  ? 'No devices match this selection'
+                  : 'Nothing matches that filter'
+              }
+              description={
+                nameFilter !== null
+                  ? 'Clear the selection filter to restore the inventory under the current search / type / issues / facet filters.'
+                  : 'Loosen the search or the type filter and facets to see the rest of the inventory.'
+              }
             >
-              {devices.length > 0 && deviceFiltersActive ? (
+              {nameFilter !== null ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('names');
+                    setSearchParams(next, { replace: true });
+                    setSelectedKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              ) : devices.length > 0 && deviceFiltersActive ? (
                 <Button variant="secondary" size="sm" onClick={clearDeviceFilters}>
                   Clear filters
                 </Button>

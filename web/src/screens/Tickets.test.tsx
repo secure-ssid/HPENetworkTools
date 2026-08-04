@@ -808,3 +808,44 @@ describe('Tickets Loop 196 residuals', () => {
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
   });
 });
+
+/* Loop 210 — queue selection-empty Clear selection filter CTA. */
+describe('Tickets Loop 210 residuals', () => {
+  it('offers Clear selection filter when ids deep link matches nothing', async () => {
+    renderTickets(`/tickets?ids=${encodeURIComponent('TICKET-MISSING-ZZZ')}`);
+    expect(await screen.findByText('No tickets match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/ids=/));
+    await waitFor(() => expect(screen.getAllByText(FIRST.title).length).toBeGreaterThan(0));
+    expect(screen.queryByText('No tickets match this selection')).toBeNull();
+  });
+});
+
+/* Loop 229 — queue bulk Copy titles (non-selection-empty residual). */
+describe('Tickets Loop 229 residuals', () => {
+  it('Copy titles joins unique ticket titles from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderTickets('/tickets');
+    await waitFor(() => expect(screen.getAllByText(FIRST.title).length).toBeGreaterThan(0));
+
+    const second = TICKETS.find((t) => t.id !== FIRST.id && t.state !== 'resolved') ?? TICKETS[1];
+    expect(second).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText(`Select ticket ${FIRST.id}`));
+    fireEvent.click(screen.getByLabelText(`Select ticket ${second!.id}`));
+
+    const bar = await screen.findByRole('region', { name: 'Ticket selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy titles' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy titles' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0]).split('\n').sort()).toEqual(
+      [FIRST.title, second!.title].sort(),
+    );
+    expect(await screen.findByText(/Copied 2 titles/i)).toBeTruthy();
+  });
+});

@@ -99,14 +99,14 @@ describe('Input / Textarea', () => {
   it('maps size and mono onto classes and keeps size off the DOM attribute', () => {
     render(<Input size="sm" mono aria-label="Endpoint" defaultValue="apigw" />);
     const input = screen.getByLabelText('Endpoint');
-    expect(input.className.split(' ')).toEqual(['nd-input', 'nd-input--sm', 'nd-input--mono', 'nt-field']);
+    expect(input.className.split(' ')).toEqual(['nd-input', 'nd-input--sm', 'nd-input--mono', 'nt-input', 'nt-field']);
     // `size` is a nightdesk scale token, not the HTML character-width attribute.
     expect(input.hasAttribute('size')).toBe(false);
   });
 
   it('omits the mono class when not asked for and defaults to md', () => {
     render(<Input aria-label="Site" />);
-    expect(screen.getByLabelText('Site').className.split(' ')).toEqual(['nd-input', 'nd-input--md', 'nt-field']);
+    expect(screen.getByLabelText('Site').className.split(' ')).toEqual(['nd-input', 'nd-input--md', 'nt-input', 'nt-field']);
   });
 
   it('renders a masked credential value verbatim without unmasking it', () => {
@@ -127,6 +127,7 @@ describe('Input / Textarea', () => {
     expect(screen.getByLabelText('Config').className.split(' ')).toEqual([
       'nd-textarea',
       'nd-textarea--mono',
+      'nt-textarea',
       'nt-field',
       'nt-field--area',
     ]);

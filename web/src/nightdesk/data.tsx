@@ -18,12 +18,17 @@ export function Stat({
   deltaTone?: 'positive' | 'negative' | 'neutral';
 }) {
   return (
-    <div className="nd-stat nt-metric-tile nt-stat-tile" data-delta={deltaTone}>
+    <div className="nd-stat nt-stat nt-metric-tile nt-stat-tile" data-delta={deltaTone}>
       <div className="nd-stat__rule nt-metric-tile__rule" />
-      <div className="nd-micro-label nt-micro-label nt-metric-tile__k">{label}</div>
-      <div className="nd-stat__value nt-metric-tile__v">{value}</div>
+      <div className="nd-micro-label nt-micro-label nt-metric-tile__k nt-stat__label">{label}</div>
+      <div className="nd-stat__value nt-stat__value nt-metric-tile__v">{value}</div>
       {delta ? (
-        <div className={`nd-stat__delta nd-stat__delta--${deltaTone} nt-metric-tile__note`}>{delta}</div>
+        <div
+          className={`nd-stat__delta nd-stat__delta--${deltaTone} nt-stat__delta nt-metric-tile__note`}
+          data-tone={deltaTone}
+        >
+          {delta}
+        </div>
       ) : null}
     </div>
   );
@@ -170,7 +175,14 @@ export function Skeleton({
   className?: string;
   style?: CSSProperties;
 }) {
-  return <div className={cx('nd-skeleton', 'nt-skeleton-block', className)} style={{ width, height, ...style }} />;
+  const cssVars = {
+    width,
+    height,
+    ...(width !== undefined ? { ['--nd-skel-w' as string]: typeof width === 'number' ? `${width}px` : width } : {}),
+    ...(height !== undefined ? { ['--nd-skel-h' as string]: typeof height === 'number' ? `${height}px` : height } : {}),
+    ...style,
+  } as CSSProperties;
+  return <div className={cx('nd-skeleton', 'nt-skeleton-block', className)} style={cssVars} />;
 }
 
 /** Route/list first paint — copper-NOC skeleton choreography instead of a lone spinner. */

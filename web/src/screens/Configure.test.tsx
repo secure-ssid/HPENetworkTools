@@ -2636,3 +2636,15 @@ describe('Configure Loop 205 residuals', () => {
     expect(screen.getByTestId('location-probe').textContent).not.toMatch(/ids=/);
   });
 });
+
+/* Loop 223 — keyboard shortcuts help stays visible on an empty queue. */
+describe('Configure Loop 223 residuals', () => {
+  it('exposes keyboard shortcuts help even when the queue has no rows', async () => {
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, dataSource: 'live' });
+    mockGetChangeQueue.mockResolvedValue([]);
+    mockGetPortalSettings.mockResolvedValue({ configMode: false } as never);
+    renderConfigure('/configure?section=queue');
+    expect(await screen.findByText('Queued changes')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});

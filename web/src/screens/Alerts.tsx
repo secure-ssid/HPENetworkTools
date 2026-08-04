@@ -11,7 +11,8 @@
  * Sev/Alert/Site/Plane/State/Age/actions. Filters are local, instant and
  * additive (AND); an empty result shows the EmptyState. Filtered empties offer
  * **Clear filters** (Loop 204) — resets q / sev·plane·site facets / unacked /
- * fps selection deep link.
+ * fps selection deep link. Selection-empty `?fps=` offers **Clear selection
+ * filter** (Loop 220) — drops only the deep link so other triage stays put.
  * The queue table is a nightdesk DataTable, following the Devices reference:
  * the column manager (View options dropdown + header-edge resize) persists
  * its controlled config through SettingsContext under the 'alerts' table id,
@@ -21,7 +22,9 @@
  * non-empty selection raises Export selected, **Copy selection link**
  * (`?fps=` of the marked fingerprints — Devices `?names=` pattern), **Copy
  * fingerprints** (newline-joined fingerprints for paste — Devices **Copy
- * serials** pattern), and Clear; an active `fps=` deep link shows a clearable
+ * serials** pattern), **Copy titles** (unique newline-joined latest titles when
+ * fingerprints alone are sparse for a handoff — Tickets **Copy titles**
+ * pattern; Loop 232), and Clear; an active `fps=` deep link shows a clearable
  * chip. Header **LIVE** stamps pure live and alerts blend feeds alike
  * (Loop 166 — pure live used to omit the badge). Saved
  * views (the Views dropdown) capture the facet selection, free text, the two
@@ -1976,7 +1979,7 @@ export default function Alerts() {
         <div className="nt-configure-bulk-bar nt-bulk-glass" role="region" aria-label="Alert selection actions">
           <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
           <span className="nt-configure-bulk-bar__hint">
-            export, share, or copy fingerprints for the groups you marked — full queue export stays in the header
+            export, share, copy fingerprints, or copy titles for the groups you marked — full queue export stays in the header
           </span>
           <span className="nt-configure-bulk-bar__actions">
             <Button
@@ -2072,7 +2075,7 @@ export default function Alerts() {
                   ];
                   if (fps.length === 0) {
                     toast('No fingerprints on the selected groups', {
-                      description: 'Those rows did not publish a fingerprint — export CSV instead.',
+                      description: 'Those rows did not publish a fingerprint — use Copy titles or export CSV instead.',
                       tone: 'info',
                     });
                     return;
@@ -2094,6 +2097,55 @@ export default function Alerts() {
               }}
             >
               Copy fingerprints
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = rows.filter((g) => selected.has(g.fingerprint));
+                  if (picked.length === 0) {
+                    toast('No selected groups still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const titles = [
+                    ...new Set(
+                      picked
+                        .map((g) => String(g.latest.title ?? '').trim())
+                        .filter((title) => title && title !== '—'),
+                    ),
+                  ];
+                  if (titles.length === 0) {
+                    toast('No titles on the selected groups', {
+                      description: 'Those rows did not publish a title — export CSV instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const text = titles.join('\n');
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast(
+                      `Copied ${titles.length} title${titles.length === 1 ? '' : 's'}`,
+                      {
+                        description:
+                          titles.length < picked.length
+                            ? `${picked.length - titles.length} selected without a title skipped`
+                            : 'newline-joined · paste into a ticket or handoff',
+                        tone: 'success',
+                      },
+                    );
+                  } catch {
+                    toast('Could not copy titles', { description: text, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy titles
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
               Clear
@@ -2137,12 +2189,35 @@ export default function Alerts() {
           )
         ) : (
           <EmptyState
-            title="Nothing matches that filter"
-            description="Loosen the search or the severity, plane and site facets to see the rest of the queue."
+            title={
+              fpFilter !== null
+                ? 'No alerts match this selection'
+                : 'Nothing matches that filter'
+            }
+            description={
+              fpFilter !== null
+                ? 'Clear the selection filter to restore the queue under the current search / severity / plane / site / unacked filters.'
+                : 'Loosen the search or the severity, plane and site facets to see the rest of the queue.'
+            }
           >
-            <Button variant="secondary" size="sm" onClick={clearAlertFilters}>
-              Clear filters
-            </Button>
+            {fpFilter !== null ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.delete('fps');
+                  setSearchParams(next, { replace: true });
+                  setSelectedKeys([]);
+                }}
+              >
+                Clear selection filter
+              </Button>
+            ) : (
+              <Button variant="secondary" size="sm" onClick={clearAlertFilters}>
+                Clear filters
+              </Button>
+            )}
           </EmptyState>
         )
       ) : null}

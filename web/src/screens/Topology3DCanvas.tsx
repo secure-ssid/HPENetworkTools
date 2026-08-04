@@ -107,11 +107,15 @@ function createTextSprite(
     ctx.font = isSite
       ? 'Bold 30px Inter, -apple-system, system-ui, sans-serif'
       : '24px Inter, -apple-system, system-ui, sans-serif';
-    /* Copper NOC glass chips — live tokens when present. */
-    ctx.fillStyle = isSite ? 'rgba(24, 30, 42, 0.94)' : 'rgba(17, 22, 31, 0.92)';
+    /* Copper NOC glass chips — raised surface from live palette (no slate). */
+    const chip = isSite ? palette.canvas : ((palette.canvas >> 1) + (palette.edge >> 2));
+    const cr = (chip >> 16) & 255;
+    const cg = (chip >> 8) & 255;
+    const cb = chip & 255;
+    ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${isSite ? 0.94 : 0.92})`;
     ctx.strokeStyle = isSite
       ? toCssHex(palette.tones.accent)
-      : `rgba(${(palette.edge >> 16) & 255}, ${(palette.edge >> 8) & 255}, ${palette.edge & 255}, 0.24)`;
+      : `rgba(${(palette.edge >> 16) & 255}, ${(palette.edge >> 8) & 255}, ${palette.edge & 255}, 0.28)`;
     ctx.lineWidth = 3;
 
     const x = 16;

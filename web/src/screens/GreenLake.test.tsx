@@ -565,6 +565,62 @@ describe('GreenLake Loop 172 residuals', () => {
   });
 });
 
+/* Loop 231 — members bulk Copy names (display names) beside Copy emails. */
+describe('GreenLake Loop 231 residuals', () => {
+  it('Copy names joins unique member display names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { container } = renderScreen(
+      inventory({
+        users: [
+          USER,
+          {
+            id: 'u-2',
+            username: 'pending@example.com',
+            firstName: 'Pending',
+            lastName: 'User',
+            status: 'PENDING',
+            lastLogin: null,
+            createdAt: null,
+            roles: [],
+          },
+          {
+            id: 'u-3',
+            username: 'ops.alias@example.com',
+            firstName: 'Ops',
+            lastName: 'Person',
+            status: 'VERIFIED',
+            lastLogin: null,
+            createdAt: null,
+            roles: [],
+          },
+        ],
+      }),
+    );
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(await screen.findByText('pending@example.com')).toBeTruthy();
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (let i = 0; i < 3; i++) {
+      (rows[i] as HTMLElement).focus();
+      fireEvent.keyDown(rows[i] as HTMLElement, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'Workspace member selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    /* Ops Person appears twice (u-1 + u-3) — unique set is two display names. */
+    expect(String(writeText.mock.calls[0]![0])).toBe('Ops Person\nPending User');
+    expect(await screen.findByText(/Copied 2 names/)).toBeTruthy();
+  });
+});
+
 /* Loop 178 — members bulk Copy selection link (?ids=) + clearable chip. */
 describe('GreenLake Loop 178 residuals', () => {
   it('Copy selection link writes ids= and the deep link filters members', async () => {
@@ -793,6 +849,42 @@ describe('GreenLake Loop 196 residuals', () => {
     );
   });
 
+  /* Loop 235 — role-grant bulk Copy names (role labels) beside Copy principals. */
+  it('Loop 235 Copy names joins unique role labels from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const ROLE_DUP = {
+      ...ROLE_A,
+      id: 'ra-1-dup',
+      principal: 'user:u-9',
+      principalName: 'Grant Principal Dup',
+    };
+    renderScreen(
+      inventory({
+        roleAssignments: [ROLE_A, ROLE_DUP, ROLE_B],
+      }),
+    );
+    const table = await screen.findByRole('grid', { name: 'Role grants' });
+    const rows = table.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (let i = 0; i < 3; i++) {
+      (rows[i] as HTMLElement).focus();
+      fireEvent.keyDown(rows[i] as HTMLElement, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'Role grant selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = String(writeText.mock.calls[0]![0]);
+    expect(text.split('\n').sort()).toEqual(['ccs.observer', 'ccs.operator'].sort());
+    expect(await screen.findByText(/Copied 2 names/)).toBeTruthy();
+  });
+
   it('Copy selection link writes roleIds= and the deep link filters grants', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
@@ -943,7 +1035,7 @@ describe('GreenLake Loop 195 residuals', () => {
 
   it('offers Clear filters when members match nothing', async () => {
     renderScreen(inventory(), '/greenlake?q=zzz-no-match');
-    /* q= empties members, roles, and locations — three twin empty alerts. */
+    /* q= empties members (and any non-empty roles/locations) — filtered EmptyState. */
     const empties = await screen.findAllByText('Nothing matches that filter');
     expect(empties.length).toBeGreaterThanOrEqual(1);
     const members = document.getElementById(sectionDomId('users'));
@@ -951,5 +1043,55 @@ describe('GreenLake Loop 195 residuals', () => {
     fireEvent.click(within(members as HTMLElement).getByRole('button', { name: 'Clear filters' }));
     await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/q=/));
     expect(await screen.findByText('ops@example.com')).toBeTruthy();
+  });
+});
+
+/* Loop 216 — members/roles/locations selection-empty Clear selection filter CTAs. */
+describe('GreenLake Loop 216 residuals', () => {
+  it('offers Clear selection filter when member ids deep link matches nothing', async () => {
+    renderScreen(
+      inventory({
+        users: [USER, { ...USER, id: 'u-2', username: 'pending@example.com', status: 'UNVERIFIED' }],
+      }),
+      `/greenlake?ids=${encodeURIComponent('member-missing-zzz')}`,
+    );
+    expect(await screen.findByText('No members match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/ids=/));
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(screen.getByText('pending@example.com')).toBeTruthy();
+    expect(screen.queryByText('No members match this selection')).toBeNull();
+  });
+
+  it('offers Clear selection filter when roleIds deep link matches nothing', async () => {
+    renderScreen(
+      inventory({
+        roleAssignments: [ROLE_A, ROLE_B],
+      }),
+      `/greenlake?section=roles&roleIds=${encodeURIComponent('role-missing-zzz')}`,
+    );
+    expect(await screen.findByText('No role grants match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/roleIds=/));
+    const table = await screen.findByRole('grid', { name: 'Role grants' });
+    expect(within(table).getByText('Grant Principal A')).toBeTruthy();
+    expect(within(table).getByText('Grant Principal B')).toBeTruthy();
+    expect(screen.queryByText('No role grants match this selection')).toBeNull();
+  });
+
+  it('offers Clear selection filter when locationIds deep link matches nothing', async () => {
+    renderScreen(
+      inventory({
+        locations: [LOC_A, LOC_B],
+      }),
+      `/greenlake?section=locations&locationIds=${encodeURIComponent('loc-missing-zzz')}`,
+    );
+    expect(await screen.findByText('No locations match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/locationIds=/));
+    const table = await screen.findByRole('grid', { name: 'Locations' });
+    expect(within(table).getByText('Campus-01')).toBeTruthy();
+    expect(within(table).getByText('Campus-02')).toBeTruthy();
+    expect(screen.queryByText('No locations match this selection')).toBeNull();
   });
 });

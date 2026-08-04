@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigRecommendation } from '@hpe/shared';
 import { getRecommendations } from '../api/recommendations';
@@ -241,5 +241,73 @@ describe('ConfigRecommendationsPanel Loop 205 residuals', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
     expect(await screen.findByText(/firmware target 0.14.29/i)).toBeTruthy();
     expect(screen.queryByText('No recommendations match this selection')).toBeNull();
+  });
+});
+
+/* Loop 222 — scope-filter empty Clear filters CTA (not selection). */
+describe('ConfigRecommendationsPanel Loop 222 residuals', () => {
+  it('offers Clear filters when parent scope leaves the list empty', () => {
+    const onClearFilters = vi.fn();
+    render(
+      <MemoryRouter>
+        <ToastProvider>
+          <ConfigRecommendationsPanel
+            initialRecommendations={[]}
+            device="missing-device-zzz"
+            onClearFilters={onClearFilters}
+          />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('No recommendations match these filters')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Clear selection filter' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(onClearFilters).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears URL-owned scope filters when no parent pins the scope', async () => {
+    function Loc() {
+      const loc = useLocation();
+      return <div data-testid="loc">{`${loc.pathname}${loc.search}`}</div>;
+    }
+    render(
+      <MemoryRouter initialEntries={['/recommendations?device=missing-device-zzz']}>
+        <ToastProvider>
+          <ConfigRecommendationsPanel initialRecommendations={[]} />
+          <Loc />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('No recommendations match these filters')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/recommendations'));
+  });
+
+  it('does not offer Clear filters when a parent-pinned scope has no callback', () => {
+    renderPanel([], { device: 'ap-pinned' });
+    expect(screen.getByText('No recommendations match these filters')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull();
+  });
+});
+
+/* Loop 234 — bulk Copy titles beside Copy IDs. */
+describe('ConfigRecommendationsPanel Loop 234 residuals', () => {
+  it('Copy titles joins unique recommendation titles from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderPanel([sample]);
+    fireEvent.click(screen.getByRole('checkbox', { name: /select recommendation firmware target/i }));
+    const bar = await screen.findByRole('region', { name: 'Recommendation selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy titles' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy titles' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = String(writeText.mock.calls[0]![0] ?? '');
+    expect(text).toMatch(/firmware target/i);
+    expect(text).not.toMatch(/^rec-/);
+    expect(await screen.findByText(/Copied \d+ title/)).toBeTruthy();
   });
 });

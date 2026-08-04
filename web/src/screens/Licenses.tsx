@@ -34,8 +34,11 @@
  * `?q=` matches name/sku/plane/term/status. Filtered empties offer **Clear filters**.
  * Multi-select raises **Export selected**, **Copy SKUs** (unique newline-joined
  * product SKUs for paste into GreenLake / tickets — Devices **Copy serials**
- * pattern), **Copy selection link** (`?skus=` of unique product SKUs — Sites
- * `?ids=` pattern; clearable chip while active; Loop 172), and Clear (Loop 162).
+ * pattern), **Copy names** (unique newline-joined subscription names when SKUs
+ * are sparse — Sites / Auth events pattern; Loop 228), **Copy selection link**
+ * (`?skus=` of unique product SKUs — Sites `?ids=` pattern; clearable chip while
+ * active; Loop 172), and Clear (Loop 162).
+ * Selection-empty `?skus=` offers **Clear selection filter** (Loop 210).
  * Filters ride **Download server CSV**.
  * Header **LIVE** stamps pure live and licenses blend feeds alike (Loop 166).
  * Subscriptions table carries keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS
@@ -795,7 +798,7 @@ export default function Licenses() {
         >
           <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
           <span className="nt-configure-bulk-bar__hint">
-            export, copy SKUs, or share a selection link for only the subscriptions you marked — full list export stays in the header
+            export, copy SKUs, copy names, or share a selection link for only the subscriptions you marked — full list export stays in the header
           </span>
           <span className="nt-configure-bulk-bar__actions">
             <Button
@@ -857,7 +860,7 @@ export default function Licenses() {
                   ];
                   if (skus.length === 0) {
                     toast('No SKUs on the selected subscriptions', {
-                      description: 'Those rows did not publish a product SKU — export CSV for names instead.',
+                      description: 'Those rows did not publish a product SKU — use Copy names or export CSV instead.',
                       tone: 'info',
                     });
                     return;
@@ -894,6 +897,52 @@ export default function Licenses() {
                     });
                     return;
                   }
+                  const names = [
+                    ...new Set(
+                      picked
+                        .map((l) => (l.name ?? '').trim())
+                        .filter((name) => name && name !== '—'),
+                    ),
+                  ];
+                  if (names.length === 0) {
+                    toast('No names on the selected subscriptions', {
+                      description: 'Those rows did not publish a subscription name — export CSV instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const text = names.join('\n');
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast(`Copied ${countOf(names.length, 'name')}`, {
+                      description:
+                        names.length < picked.length
+                          ? `${picked.length - names.length} selected without a name skipped`
+                          : 'newline-joined · paste into GreenLake or a ticket',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy names', { description: text, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy names
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = subscriptions.filter((l) => selected.has(rowIds.get(l) ?? l.name));
+                  if (picked.length === 0) {
+                    toast('No selected subscriptions still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
                   const skus = [
                     ...new Set(
                       picked
@@ -903,7 +952,7 @@ export default function Licenses() {
                   ];
                   if (skus.length === 0) {
                     toast('No SKUs on the selected subscriptions', {
-                      description: 'Those rows did not publish a product SKU — export CSV for names instead.',
+                      description: 'Those rows did not publish a product SKU — use Copy names or export CSV instead.',
                       tone: 'info',
                     });
                     return;
@@ -934,19 +983,38 @@ export default function Licenses() {
       ) : null}
       {subscriptions.length === 0 ? (
         <EmptyState
-          title="No subscriptions to show"
+          title={
+            data.subscriptions.length > 0 && skusFilter !== null
+              ? 'No subscriptions match this selection'
+              : 'No subscriptions to show'
+          }
           description={
-            data.subscriptions.length > 0
-              ? q.trim() || plane !== 'all' || status !== 'all' || skusFilter !== null
-                ? 'No subscriptions match the active search / plane / status / selection filter (and idle hide, when on).'
-                : 'All reported subscriptions are idle with zero assigned seats.'
-              : sectionLive
-              ? 'GreenLake has not returned a subscription list yet — check the plane on Connected systems.'
-              : 'This payload carries no subscription rows.'
+            data.subscriptions.length > 0 && skusFilter !== null
+              ? 'Clear the selection filter to restore the subscription list under the current search / plane / status filters.'
+              : data.subscriptions.length > 0
+                ? q.trim() || plane !== 'all' || status !== 'all'
+                  ? 'No subscriptions match the active search / plane / status filter (and idle hide, when on).'
+                  : 'All reported subscriptions are idle with zero assigned seats.'
+                : sectionLive
+                  ? 'GreenLake has not returned a subscription list yet — check the plane on Connected systems.'
+                  : 'This payload carries no subscription rows.'
           }
         >
-          {data.subscriptions.length > 0 &&
-          (q.trim() || plane !== 'all' || status !== 'all' || skusFilter !== null) ? (
+          {data.subscriptions.length > 0 && skusFilter !== null ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.delete('skus');
+                setSearchParams(next, { replace: true });
+                setSelectedKeys([]);
+              }}
+            >
+              Clear selection filter
+            </Button>
+          ) : data.subscriptions.length > 0 &&
+            (q.trim() || plane !== 'all' || status !== 'all') ? (
             <Button variant="secondary" size="sm" onClick={clearLicenseFilters}>
               Clear filters
             </Button>

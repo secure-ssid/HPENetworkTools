@@ -8,10 +8,14 @@
  * surface with those filters.
  *
  * Multi-select (Loop 186) raises **Export selected**, **Copy IDs** (unique
- * newline-joined recommendation ids), **Copy selection link** (canonical
+ * newline-joined recommendation ids), **Copy titles** (unique newline-joined
+ * titles when ids alone are sparse for a handoff — Alerts / Tickets **Copy
+ * titles** pattern; Loop 234), **Copy selection link** (canonical
  * `/recommendations?ids=` plus active scope filters; clearable chip), and
  * **Clear**. Selection-empty deep links offer **Clear selection filter**
- * (Loop 205). Full-list CSV stays in the header.
+ * (Loop 205). Scope-filter empties (device/site/client/severity/category — not
+ * selection) offer **Clear filters** via `onClearFilters` or URL-owned scope
+ * (Loop 222). Full-list CSV stays in the header.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -72,6 +76,8 @@ export function ConfigRecommendationsPanel({
   initialRecommendations,
   /** When false, hide Copy panel context link (full-page owns share chrome). */
   showCopyLink = true,
+  /** Parent-owned scope clear (full-page Recommendations filter strip — Loop 222). */
+  onClearFilters,
 }: {
   device?: string;
   site?: string;
@@ -83,6 +89,7 @@ export function ConfigRecommendationsPanel({
   /** Test seam */
   initialRecommendations?: ConfigRecommendation[];
   showCopyLink?: boolean;
+  onClearFilters?: () => void;
 }) {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -261,6 +268,26 @@ export function ConfigRecommendationsPanel({
     setSelectedKeys([]);
   };
 
+  const scopeFiltersActive = Boolean(
+    effectiveDevice || effectiveSite || effectiveClient || effectiveSeverity || effectiveCategory,
+  );
+  /* Props pin a parent scope (device detail / client drawer) — only URL-owned or
+     parent-callback clears are honest empty-filter CTAs (Loop 222). */
+  const propsPinScope = Boolean(device || site || clientMac || severity || category);
+  const clearUrlScopeFilters = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('device');
+    next.delete('site');
+    next.delete('client');
+    next.delete('severity');
+    next.delete('category');
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+    setSelectedKeys([]);
+  };
+  const handleClearScopeFilters = onClearFilters ?? (!propsPinScope ? clearUrlScopeFilters : undefined);
+
   const recCsvRow = (r: ConfigRecommendation) => [
     r.id,
     r.ruleId,
@@ -329,7 +356,12 @@ export function ConfigRecommendationsPanel({
         </Alert>
       ) : null}
       {error ? null : rows === null ? (
-        <div className="nt-center-pad-16" role="status" aria-label="Loading recommendations">
+        <div
+          className="nt-center-pad-16"
+          role="status"
+          aria-busy="true"
+          aria-label="Loading recommendations"
+        >
           <div className="nt-stack nt-gap-6">
             <Skeleton height={12} width="40%" />
             <Skeleton height={28} />
@@ -338,9 +370,21 @@ export function ConfigRecommendationsPanel({
         </div>
       ) : rows.length === 0 ? (
         <EmptyState
-          title="No recommendations"
-          description="Nothing stood out from observed inventory state for this scope."
-        />
+          title={
+            scopeFiltersActive ? 'No recommendations match these filters' : 'No recommendations'
+          }
+          description={
+            scopeFiltersActive
+              ? 'Clear device / site / client / severity / category filters to widen the hygiene list.'
+              : 'Nothing stood out from observed inventory state for this scope.'
+          }
+        >
+          {scopeFiltersActive && handleClearScopeFilters ? (
+            <Button variant="secondary" size="sm" onClick={handleClearScopeFilters}>
+              Clear filters
+            </Button>
+          ) : null}
+        </EmptyState>
       ) : (
         <>
           {idsFilterLc !== null ? (
@@ -420,8 +464,8 @@ export function ConfigRecommendationsPanel({
             >
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy ids, or share a selection link for only the suggestions you marked —
-                full list export stays in the header · never auto-applies
+                export, copy ids or titles, or share a selection link for only the suggestions you
+                marked — full list export stays in the header · never auto-applies
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -467,7 +511,7 @@ export function ConfigRecommendationsPanel({
                       const ids = [...new Set(picked.map((r) => r.id.trim()).filter(Boolean))];
                       if (ids.length === 0) {
                         toast('No ids on the selected recommendations', {
-                          description: 'Export CSV for titles instead.',
+                          description: 'Use Copy titles or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -501,10 +545,56 @@ export function ConfigRecommendationsPanel({
                         });
                         return;
                       }
+                      const titles = [
+                        ...new Set(
+                          picked
+                            .map((r) => (r.title ?? '').trim())
+                            .filter((title) => title.length > 0 && title !== '—'),
+                        ),
+                      ];
+                      if (titles.length === 0) {
+                        toast('No titles on the selected recommendations', {
+                          description: 'Those rows did not publish a title — use Copy IDs or export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = titles.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(titles.length, 'title')}`, {
+                          description:
+                            titles.length < picked.length
+                              ? `${picked.length - titles.length} selected without a title skipped`
+                              : 'newline-joined · paste into a ticket or handoff',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy titles', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy titles
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = viewRows.filter((r) => selected.has(r.id));
+                      if (picked.length === 0) {
+                        toast('No selected recommendations still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
                       const ids = [...new Set(picked.map((r) => r.id.trim()).filter(Boolean))];
                       if (ids.length === 0) {
                         toast('No ids on the selected recommendations', {
-                          description: 'Export CSV for titles instead.',
+                          description: 'Use Copy titles or export CSV instead.',
                           tone: 'info',
                         });
                         return;

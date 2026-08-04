@@ -1466,3 +1466,48 @@ describe('SSE inventory Loop 201 residuals', () => {
     expect(screen.getByRole('button', { name: 'Clear selection filter' })).toBeTruthy();
   });
 });
+
+/* Loop 229 — SSE inventory bulk Copy names (non-selection-empty residual). */
+describe('SseInventoryPanel Loop 229 residuals', () => {
+  it('Copy names joins unique object names from the selection', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue({
+      rows: [
+        { kind: 'connectorZones', id: 'cz-1', name: 'HQ zone', raw: {} },
+        { kind: 'connectorZones', id: 'cz-2', name: 'Branch zone', raw: {} },
+      ],
+      total: 2,
+      truncated: false,
+      unavailable: false,
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { container } = renderPanel(false);
+    expect(await screen.findByText('HQ zone')).toBeTruthy();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Connector zones inventory"]') as HTMLElement | null;
+      if (!el) throw new Error('SSE inventory table missing');
+      return el;
+    });
+    const rows = table.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    (rows[0] as HTMLElement).focus();
+    fireEvent.keyDown(rows[0] as HTMLElement, { key: 'x' });
+    (rows[1] as HTMLElement).focus();
+    fireEvent.keyDown(rows[1] as HTMLElement, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'SSE object selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0]).split('\n').sort()).toEqual(
+      ['Branch zone', 'HQ zone'].sort(),
+    );
+    expect(await screen.findByText(/Copied 2 names/i)).toBeTruthy();
+  });
+});

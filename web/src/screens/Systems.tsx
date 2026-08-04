@@ -20,11 +20,14 @@
  * fixture state" note. The header carries the envelope's own provenance stamp
  * (DEMO FIXTURE vs LIVE · SYNCED hh:mm) plus a **LIVE** badge on pure live and
  * systems blend (Loop 169 — mono stamp alone is easy to miss). Plane roster
- * multi-select raises **Export selected**, **Copy plane ids**, and **Copy
- * selection link** (`?ids=` of registry plane ids — Sites pattern; clearable
- * chip — Loop 189); drawer open stays on `?plane=` and is independent of bulk
- * marks. Roster filter empties offer **Clear filters** (Loop 202). The Planes
- * meta counts what is actually on screen, never a literal.
+ * multi-select raises **Export selected**, **Copy plane ids**, **Copy names**
+ * (unique newline-joined plane display names when registry ids alone are sparse
+ * for a handoff — Devices pattern; Loop 229), and **Copy selection link**
+ * (`?ids=` of registry plane ids — Sites pattern; clearable chip — Loop 189);
+ * drawer open stays on `?plane=` and is independent of bulk marks. Roster filter
+ * empties offer **Clear filters** (Loop 202). Selection-empty `?ids=` offers
+ * **Clear selection filter** (Loop 219). The Planes meta counts what is actually
+ * on screen, never a literal.
  * The stamp is kept honest by polling on the settings cadence (the Overview
  * pattern, one fetch at a time) — suspended while the connect drawer is open,
  * because a refresh must never disturb in-flight credential entry or a
@@ -342,7 +345,7 @@ export default function Systems() {
     parseSystemsLinkedFilter(searchParams.get('linked')),
   );
   /* Keyboard/checkbox multi-select raises Export selected / Copy plane ids /
-   * Copy selection link. Independent of drawer open (?plane=). */
+   * Copy names / Copy selection link. Independent of drawer open (?plane=). */
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   /* Deep link: /systems?ids=central\nmist (bulk Copy selection link). */
   const idsFilter = namesFilterForParam(searchParams.get('ids'));
@@ -1152,10 +1155,28 @@ export default function Systems() {
           {activeViews.length === 0 && dormantViews.length === 0 ? (
             <div className="nt-hint-muted nt-p-12" role="status">
               <div>
-                Nothing matches this roster filter. Clear q / health / linked
-                {idsFilter !== null ? ' / selection' : ''} to see every plane.
+                {idsFilter !== null
+                  ? 'No planes match this selection. Clear the selection filter to restore the roster under the current q / health / linked filters.'
+                  : 'Nothing matches this roster filter. Clear q / health / linked to see every plane.'}
               </div>
-              {rosterFilterActive ? (
+              {idsFilter !== null ? (
+                <div className="nt-mt-8">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setSelectedKeys([]);
+                      const next = new URLSearchParams(searchParams);
+                      next.delete('ids');
+                      if (next.toString() !== searchParams.toString()) {
+                        setSearchParams(next, { replace: true });
+                      }
+                    }}
+                  >
+                    Clear selection filter
+                  </Button>
+                </div>
+              ) : rosterFilterActive ? (
                 <div className="nt-mt-8">
                   <Button
                     variant="secondary"
@@ -1171,7 +1192,6 @@ export default function Systems() {
                       next.delete('q');
                       next.delete('health');
                       next.delete('linked');
-                      next.delete('ids');
                       if (next.toString() !== searchParams.toString()) {
                         setSearchParams(next, { replace: true });
                       }
@@ -1229,7 +1249,7 @@ export default function Systems() {
           >
             <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
             <span className="nt-configure-bulk-bar__hint">
-              export, copy plane ids, or share a selection link for only the planes you marked —
+              export, copy plane ids/names, or share a selection link for only the planes you marked —
               drawer open stays independent
             </span>
             <span className="nt-configure-bulk-bar__actions">
@@ -1289,7 +1309,7 @@ export default function Systems() {
                     const ids = [...new Set(picked.map(systemsPlaneKey).filter(Boolean))];
                     if (ids.length === 0) {
                       toast('No plane ids on the selection', {
-                        description: 'Export CSV for names instead.',
+                        description: 'Use Copy names or export CSV instead.',
                         tone: 'info',
                       });
                       return;
@@ -1308,6 +1328,52 @@ export default function Systems() {
                 }}
               >
                 Copy plane ids
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const selected = new Set(selectedKeys);
+                    const picked = visibleViews.filter((v) => selected.has(systemsPlaneKey(v)));
+                    if (picked.length === 0) {
+                      toast('No selected planes still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const names = [
+                      ...new Set(
+                        picked
+                          .map((v) => (v.row.name ?? '').trim())
+                          .filter((name) => name && name !== '—'),
+                      ),
+                    ];
+                    if (names.length === 0) {
+                      toast('No names on the selected planes', {
+                        description: 'Those rows did not publish a name — export CSV instead.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const text = names.join('\n');
+                    try {
+                      await navigator.clipboard.writeText(text);
+                      toast(`Copied ${countOf(names.length, 'name')}`, {
+                        description:
+                          names.length < picked.length
+                            ? `${picked.length - names.length} selected without a name skipped`
+                            : 'newline-joined · paste into a ticket or change window',
+                        tone: 'success',
+                      });
+                    } catch {
+                      toast('Could not copy names', { description: text, tone: 'warning' });
+                    }
+                  })();
+                }}
+              >
+                Copy names
               </Button>
               <Button
                 variant="ghost"

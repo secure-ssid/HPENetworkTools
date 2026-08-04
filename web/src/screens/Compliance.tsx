@@ -37,9 +37,12 @@
  * ConfigRecommendations panels. Header **LIVE** stamps pure live and blend feeds
  * alike (Loop 159). Findings multi-select raises a bulk bar: **Export selected**,
  * **Copy rules** (unique newline-joined rule ids for ticket/playbook paste —
- * Devices **Copy serials** pattern; Loop 172), **Copy selection link** (`?rules=`
- * of unique rule ids — Licences `?skus=` pattern; clearable chip while active;
- * Loop 177), and Clear (Loop 165). Device-count
+ * Devices **Copy serials** pattern; Loop 172), **Copy names** (unique
+ * newline-joined finding titles when rule ids are sparse — Devices / Clients
+ * pattern; Loop 231), **Copy selection link** (`?rules=` of unique rule ids —
+ * Licences `?skus=` pattern; clearable chip while active; Loop 177), and Clear
+ * (Loop 165). Selection-empty `?rules=` offers **Clear selection filter**
+ * (Loop 213). Device-count
  * drill-down opens every device the finding counted (`findingDevicesPath`).
  * Data: getCompliance() — live /api/compliance when the server is up, fixtures otherwise.
  */
@@ -900,7 +903,7 @@ export default function Compliance() {
             >
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy rule ids, or share a selection link for only the findings you marked — full list export stays in the header
+                export, copy rule ids or finding titles, or share a selection link for only the findings you marked — full list export stays in the header
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -962,7 +965,7 @@ export default function Compliance() {
                       ];
                       if (rules.length === 0) {
                         toast('No rules on the selected findings', {
-                          description: 'Those rows did not publish a rule id — export CSV for titles instead.',
+                          description: 'Those rows did not publish a rule id — use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -999,6 +1002,52 @@ export default function Compliance() {
                         });
                         return;
                       }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((f) => (f.title ?? '').trim())
+                            .filter((name) => name && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected findings', {
+                          description: 'Those rows did not publish a title — export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = names.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(names.length, 'name')}`, {
+                          description:
+                            names.length < picked.length
+                              ? `${picked.length - names.length} selected without a title skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy names', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy names
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((f) => selected.has(findingIds.get(f) ?? f.title));
+                      if (picked.length === 0) {
+                        toast('No selected findings still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
                       const rules = [
                         ...new Set(
                           picked
@@ -1008,7 +1057,7 @@ export default function Compliance() {
                       ];
                       if (rules.length === 0) {
                         toast('No rules on the selected findings', {
-                          description: 'Those rows did not publish a rule id — export CSV for titles instead.',
+                          description: 'Those rows did not publish a rule id — use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -1039,16 +1088,37 @@ export default function Compliance() {
           ) : null}
           {rows.length === 0 ? (
             <EmptyState
-              title={findings.length === 0 ? 'No findings to report' : 'Nothing matches these filters'}
+              title={
+                findings.length === 0
+                  ? 'No findings to report'
+                  : rulesFilter !== null
+                    ? 'No findings match this selection'
+                    : 'Nothing matches these filters'
+              }
               description={
-                findings.length > 0
-                  ? 'Widen baseline, severity, plane, fix class, search, or selection to see more of the open findings.'
-                  : data.evidenceMode === 'unavailable'
-                    ? 'No linked plane returned device inventory, so no evidence check could run.'
-                    : 'Every check in this snapshot passed.'
+                findings.length > 0 && rulesFilter !== null
+                  ? 'Clear the selection filter to restore findings under the current baseline / severity / plane / fix / search filters.'
+                  : findings.length > 0
+                    ? 'Widen baseline, severity, plane, fix class, or search to see more of the open findings.'
+                    : data.evidenceMode === 'unavailable'
+                      ? 'No linked plane returned device inventory, so no evidence check could run.'
+                      : 'Every check in this snapshot passed.'
               }
             >
-              {findings.length > 0 && filtersActive ? (
+              {findings.length > 0 && rulesFilter !== null ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('rules');
+                    setSearchParams(next, { replace: true });
+                    setSelectedKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              ) : findings.length > 0 && filtersActive ? (
                 <Button variant="secondary" size="sm" onClick={clearComplianceFilters}>
                   Clear filters
                 </Button>

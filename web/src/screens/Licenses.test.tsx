@@ -952,3 +952,47 @@ describe('Licences Loop 192 residuals', () => {
     await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/systems'));
   });
 });
+
+/* Loop 210 — subscriptions selection-empty Clear selection filter CTA. */
+describe('Licences Loop 210 residuals', () => {
+  it('offers Clear selection filter when skus deep link matches nothing', async () => {
+    mockGetLicenses.mockResolvedValue(LIVE);
+    renderLicenses(`/licenses?skus=${encodeURIComponent('MISSING-SKU-ZZZ')}`);
+    expect(await screen.findByText('No subscriptions match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/skus=/));
+    expect(await screen.findByText('Foundation AP')).toBeTruthy();
+    expect(screen.queryByText('No subscriptions match this selection')).toBeNull();
+  });
+});
+
+/* Loop 228 — bulk Copy names (subscription names) beside Copy SKUs. */
+describe('Licences Loop 228 residuals', () => {
+  it('Copy names joins unique subscription names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetLicenses.mockResolvedValue(LIVE);
+    const { container } = renderLicenses('/licenses');
+    expect(await screen.findByText('Foundation AP')).toBeTruthy();
+    expect(screen.getByText('Advanced switch')).toBeTruthy();
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    for (let i = 0; i < 2; i++) {
+      (rows[i] as HTMLElement).focus();
+      fireEvent.keyDown(rows[i] as HTMLElement, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'Subscription selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = String(writeText.mock.calls[0]![0]);
+    expect(text.split('\n').sort()).toEqual(['Advanced switch', 'Foundation AP'].sort());
+    expect(await screen.findByText(/Copied 2 names/)).toBeTruthy();
+  });
+});

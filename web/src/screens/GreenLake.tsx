@@ -12,18 +12,23 @@
  * chip row (counts over the q universe) toggles the same `?status=` as the
  * Member status Select. Members multi-select raises **Export selected**,
  * **Copy emails** (unique newline-joined usernames — Devices **Copy serials**
- * pattern; Loop 172), **Copy selection link** (`?ids=` of marked member ids —
- * Sites `?ids=` pattern; clearable chip while active; Loop 177), and **Clear**.
- * Role grants multi-select raises **Export selected**, **Copy principals**
- * (unique newline-joined principal ids/names), **Copy selection link**
- * (`?roleIds=` of marked grant ids with `section=roles`; clearable chip —
- * Loop 196), and **Clear**. Locations multi-select raises **Export selected**,
- * **Copy names**, **Copy selection link** (`?locationIds=` with
- * `section=locations`; clearable chip — Loop 196), and **Clear**. Header
- * **LIVE** stamps a successful plane inventory read (Loop 168) — this screen
- * never serves authored fixtures; null is an explicit failure, not demo chrome. Members table carries keyboard
- * shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS — Loop 195). Filtered empties
- * offer **Clear filters** (Loop 195).
+ * pattern; Loop 172), **Copy names** (unique newline-joined first+last display
+ * names when emails are sparse — Devices / Clients pattern; Loop 231), **Copy
+ * selection link** (`?ids=` of marked member ids — Sites `?ids=` pattern;
+ * clearable chip while active; Loop 177), and **Clear**. Role grants multi-select
+ * raises **Export selected**, **Copy principals** (unique newline-joined
+ * principal ids/names), **Copy names** (unique newline-joined role labels when
+ * principals alone are sparse for a handoff — Devices **Copy names** pattern;
+ * Loop 235), **Copy selection link** (`?roleIds=` of marked grant ids with
+ * `section=roles`; clearable chip — Loop 196), and **Clear**. Locations
+ * multi-select raises **Export selected**, **Copy names**, **Copy selection
+ * link** (`?locationIds=` with `section=locations`; clearable chip — Loop 196),
+ * and **Clear**. Header **LIVE** stamps a successful plane inventory read
+ * (Loop 168) — this screen never serves authored fixtures; null is an explicit
+ * failure, not demo chrome. Members table carries keyboard shortcuts help
+ * (`?` / DATATABLE_ROW_SHORTCUTS — Loop 195). Filtered empties offer **Clear
+ * filters** (Loop 195). Selection-empty `?ids=` / `?roleIds=` / `?locationIds=`
+ * offer **Clear selection filter** (Loop 216).
  *
  * HONESTY RULES THIS SCREEN ENFORCES:
  *  - A section listed in `unavailable` renders as an explicit failure with its
@@ -54,6 +59,7 @@ import {
   Button,
   Card,
   Checkbox,
+  EmptyState,
   Input,
   SectionHeader,
   Select,
@@ -228,7 +234,7 @@ export default function GreenLake() {
   /** Hardened-mode review gate — must be true before reviewConfirmed is sent. */
   const [reviewed, setReviewed] = useState(false);
   /* Keyboard multi-select on workspace members raises Export selected /
-   * Copy emails / Copy selection link. */
+   * Copy emails / Copy names / Copy selection link. */
   const [selectedMemberKeys, setSelectedMemberKeys] = useState<string[]>([]);
   /* Role grants / locations multi-select (Loop 196) — separate mark sets so a
    * members bulk never collides with grant/location selection. */
@@ -905,34 +911,45 @@ export default function GreenLake() {
         </div>
         {has('users') ? (
           filteredUsers.length === 0 ? (
-            <Alert tone="info" title="Nothing matches that filter">
-              <div className="nt-stack nt-gap-8">
-                <span className="nt-body-sm">
-                  Loosen the search{idsFilter !== null ? ' or clear the selection link' : ''} to widen
-                  members, roles, and locations.
-                </span>
-                {q.trim() || userStatus !== 'all' || idsFilter !== null ? (
-                  <div>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => {
-                        setQ('');
-                        setUserStatus('all');
-                        if (idsFilter !== null) {
-                          const next = new URLSearchParams(searchParams);
-                          next.delete('ids');
-                          setSearchParams(next, { replace: true });
-                        }
-                        setSelectedMemberKeys([]);
-                      }}
-                    >
-                      Clear filters
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-            </Alert>
+            <EmptyState
+              title={
+                idsFilter !== null
+                  ? 'No members match this selection'
+                  : 'Nothing matches that filter'
+              }
+              description={
+                idsFilter !== null
+                  ? 'Clear the selection filter to restore workspace members under the current search / status filters.'
+                  : 'Loosen the search or status filter to widen members, roles, and locations.'
+              }
+            >
+              {data.users.length > 0 && idsFilter !== null ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('ids');
+                    setSearchParams(next, { replace: true });
+                    setSelectedMemberKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              ) : data.users.length > 0 && (q.trim() || userStatus !== 'all') ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setQ('');
+                    setUserStatus('all');
+                    setSelectedMemberKeys([]);
+                  }}
+                >
+                  Clear filters
+                </Button>
+              ) : null}
+            </EmptyState>
           ) : (
             <DataTable
               ariaLabel="Workspace members"
@@ -956,7 +973,7 @@ export default function GreenLake() {
           >
             <span className="nt-configure-bulk-bar__count">{`${selectedMemberKeys.length} SELECTED`}</span>
             <span className="nt-configure-bulk-bar__hint">
-              export, copy emails, or share a selection link for only the members you marked — full list export stays in the header
+              export, copy emails or display names, or share a selection link for only the members you marked — full list export stays in the header
             </span>
             <span className="nt-configure-bulk-bar__actions">
               <Button
@@ -1015,7 +1032,7 @@ export default function GreenLake() {
                     ];
                     if (emails.length === 0) {
                       toast('No emails on the selected members', {
-                        description: 'Those rows did not publish a username — export CSV for ids instead.',
+                        description: 'Those rows did not publish a username — use Copy names or export CSV instead.',
                         tone: 'info',
                       });
                       return;
@@ -1037,6 +1054,52 @@ export default function GreenLake() {
                 }}
               >
                 Copy emails
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const selected = new Set(selectedMemberKeys);
+                    const picked = filteredUsers.filter((u) => selected.has(u.id));
+                    if (picked.length === 0) {
+                      toast('No selected members still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const names = [
+                      ...new Set(
+                        picked
+                          .map((u) => [u.firstName, u.lastName].filter(Boolean).join(' ').trim())
+                          .filter((name) => name && name !== '—'),
+                      ),
+                    ];
+                    if (names.length === 0) {
+                      toast('No names on the selected members', {
+                        description: 'Those rows did not publish a display name — export CSV for emails instead.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const text = names.join('\n');
+                    try {
+                      await navigator.clipboard.writeText(text);
+                      toast(`Copied ${countOf(names.length, 'name')}`, {
+                        description:
+                          names.length < picked.length
+                            ? `${picked.length - names.length} selected without a display name skipped`
+                            : 'newline-joined · paste into a ticket or change window',
+                        tone: 'success',
+                      });
+                    } catch {
+                      toast('Could not copy names', { description: text, tone: 'warning' });
+                    }
+                  })();
+                }}
+              >
+                Copy names
               </Button>
               <Button
                 variant="ghost"
@@ -1130,33 +1193,44 @@ export default function GreenLake() {
         </div>
         {has('roleAssignments') ? (
           filteredRoles.length === 0 ? (
-            <Alert tone="info" title="Nothing matches that filter">
-              <div className="nt-stack nt-gap-8">
-                <span className="nt-body-sm">
-                  Loosen the search{roleIdsFilter !== null ? ' or clear the selection link' : ''} to
-                  widen role grants.
-                </span>
-                {q.trim() || roleIdsFilter !== null ? (
-                  <div>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => {
-                        setQ('');
-                        if (roleIdsFilter !== null) {
-                          const next = new URLSearchParams(searchParams);
-                          next.delete('roleIds');
-                          setSearchParams(next, { replace: true });
-                        }
-                        setSelectedRoleKeys([]);
-                      }}
-                    >
-                      Clear filters
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-            </Alert>
+            <EmptyState
+              title={
+                roleIdsFilter !== null
+                  ? 'No role grants match this selection'
+                  : 'Nothing matches that filter'
+              }
+              description={
+                roleIdsFilter !== null
+                  ? 'Clear the selection filter to restore role grants under the current search filter.'
+                  : 'Loosen the search to widen role grants.'
+              }
+            >
+              {data.roleAssignments.length > 0 && roleIdsFilter !== null ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('roleIds');
+                    setSearchParams(next, { replace: true });
+                    setSelectedRoleKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              ) : data.roleAssignments.length > 0 && q.trim() ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setQ('');
+                    setSelectedRoleKeys([]);
+                  }}
+                >
+                  Clear filters
+                </Button>
+              ) : null}
+            </EmptyState>
           ) : (
             <DataTable
               ariaLabel="Role grants"
@@ -1179,8 +1253,8 @@ export default function GreenLake() {
           >
             <span className="nt-configure-bulk-bar__count">{`${selectedRoleKeys.length} SELECTED`}</span>
             <span className="nt-configure-bulk-bar__hint">
-              export, copy principals, or share a selection link for only the grants you marked — full
-              list export stays in the header
+              export, copy principals or role names, or share a selection link for only the grants you
+              marked — full list export stays in the header
             </span>
             <span className="nt-configure-bulk-bar__actions">
               <Button
@@ -1250,7 +1324,8 @@ export default function GreenLake() {
                     ];
                     if (principals.length === 0) {
                       toast('No principals on the selected grants', {
-                        description: 'Those rows did not publish a principal — export CSV for ids instead.',
+                        description:
+                          'Those rows did not publish a principal — use Copy names or export CSV instead.',
                         tone: 'info',
                       });
                       return;
@@ -1272,6 +1347,53 @@ export default function GreenLake() {
                 }}
               >
                 Copy principals
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const selected = new Set(selectedRoleKeys);
+                    const picked = filteredRoles.filter((r) => selected.has(r.id));
+                    if (picked.length === 0) {
+                      toast('No selected role grants still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const names = [
+                      ...new Set(
+                        picked
+                          .map((r) => (r.role ?? '').trim())
+                          .filter((name) => name.length > 0 && name !== '—'),
+                      ),
+                    ];
+                    if (names.length === 0) {
+                      toast('No names on the selected grants', {
+                        description:
+                          'Those rows did not publish a role label — use Copy principals or export CSV instead.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const text = names.join('\n');
+                    try {
+                      await navigator.clipboard.writeText(text);
+                      toast(`Copied ${countOf(names.length, 'name')}`, {
+                        description:
+                          names.length < picked.length
+                            ? `${picked.length - names.length} selected without a role label skipped`
+                            : 'newline-joined role labels · paste into access reviews or a ticket',
+                        tone: 'success',
+                      });
+                    } catch {
+                      toast('Could not copy names', { description: text, tone: 'warning' });
+                    }
+                  })();
+                }}
+              >
+                Copy names
               </Button>
               <Button
                 variant="ghost"
@@ -1385,33 +1507,44 @@ export default function GreenLake() {
             </span>
           </Alert>
         ) : filteredLocations.length === 0 ? (
-          <Alert tone="info" title="Nothing matches that filter">
-            <div className="nt-stack nt-gap-8">
-              <span className="nt-body-sm">
-                Loosen the search{locationIdsFilter !== null ? ' or clear the selection link' : ''} to
-                widen locations.
-              </span>
-              {q.trim() || locationIdsFilter !== null ? (
-                <div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => {
-                      setQ('');
-                      if (locationIdsFilter !== null) {
-                        const next = new URLSearchParams(searchParams);
-                        next.delete('locationIds');
-                        setSearchParams(next, { replace: true });
-                      }
-                      setSelectedLocationKeys([]);
-                    }}
-                  >
-                    Clear filters
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-          </Alert>
+          <EmptyState
+            title={
+              locationIdsFilter !== null
+                ? 'No locations match this selection'
+                : 'Nothing matches that filter'
+            }
+            description={
+              locationIdsFilter !== null
+                ? 'Clear the selection filter to restore locations under the current search filter.'
+                : 'Loosen the search to widen locations.'
+            }
+          >
+            {data.locations.length > 0 && locationIdsFilter !== null ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.delete('locationIds');
+                  setSearchParams(next, { replace: true });
+                  setSelectedLocationKeys([]);
+                }}
+              >
+                Clear selection filter
+              </Button>
+            ) : data.locations.length > 0 && q.trim() ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setQ('');
+                  setSelectedLocationKeys([]);
+                }}
+              >
+                Clear filters
+              </Button>
+            ) : null}
+          </EmptyState>
         ) : (
           <DataTable
             ariaLabel="Locations"

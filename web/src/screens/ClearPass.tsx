@@ -24,17 +24,23 @@
  * write back with the tab so **Copy filter link** shares the same view.
  * Services also reuses `q` and server CSV uses `part=services`. Endpoint
  * multi-select raises **Export selected**, **Copy MACs** (unique newline-joined
- * inventory MACs for NAC paste — Devices **Copy serials** pattern), **Copy
- * selection link** (`?macs=` of unique inventory MACs — Clients `?macs=`
- * pattern; clearable chip while active; Loop 175), and Clear (Loop 162).
+ * inventory MACs for NAC paste — Devices **Copy serials** pattern), **Copy names**
+ * (unique newline-joined hostnames when MACs are sparse — Clients / Auth events
+ * pattern; Loop 228), **Copy selection link** (`?macs=` of unique inventory MACs —
+ * Clients `?macs=` pattern; clearable chip while active; Loop 175), and Clear
+ * (Loop 162).
  * Services multi-select raises **Export selected**, **Copy names**
  * (unique newline-joined service names for policy hand-offs — Devices **Copy
  * serials** pattern), **Copy selection link** (`?services=` of service ids with
  * `tab=services` — Sites `?ids=` pattern; clearable chip while active;
- * Loop 181), and Clear (Loop 174). Header **LIVE** stamps pure live and
- * clearpass blend feeds alike (Loop 168 — pure live used to omit blend honesty).
- * Endpoints table carries keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS —
- * Loop 195).
+ * Loop 181), and Clear (Loop 174). Selection-empty `?services=` offers **Clear
+ * selection filter** (Loop 213). Services filtered empties (q / enabled, not
+ * selection) offer **Clear filters** (Loop 222). Services table carries keyboard
+ * shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS — Loop 222). Selection-empty
+ * endpoints `?macs=` offers **Clear selection filter** (Loop 219). Header **LIVE**
+ * stamps pure live and clearpass blend feeds alike (Loop 168 — pure live used to
+ * omit blend honesty). Endpoints table carries keyboard shortcuts help
+ * (`?` / DATATABLE_ROW_SHORTCUTS — Loop 195).
  * Each collection rides the envelope only when the plane reported it, so every
  * tab keeps the three states distinct: reported rows / a real empty answer /
  * "not reported by this CPPM". Services populate wherever the box answers
@@ -1068,10 +1074,31 @@ function ClearPassView({
               />
             ) : (
               <EmptyState
-                title="Nothing matches that filter"
-                description="Loosen the search, status, category or selection filter — Next page still walks the repository when more rows exist."
+                title={
+                  macsFilter !== null
+                    ? 'No endpoints match this selection'
+                    : 'Nothing matches that filter'
+                }
+                description={
+                  macsFilter !== null
+                    ? 'Clear the selection filter to restore the endpoints list under the current search / status / category filters.'
+                    : 'Loosen the search, status or category filter — Next page still walks the repository when more rows exist.'
+                }
               >
-                {macsFilter !== null || q.trim() || status !== 'all' || category !== 'all' ? (
+                {macsFilter !== null ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const next = new URLSearchParams(searchParams);
+                      next.delete('macs');
+                      setSearchParams(next, { replace: true });
+                      setSelectedEndpointKeys([]);
+                    }}
+                  >
+                    Clear selection filter
+                  </Button>
+                ) : q.trim() || status !== 'all' || category !== 'all' ? (
                   <Button
                     variant="secondary"
                     size="sm"
@@ -1079,11 +1106,6 @@ function ClearPassView({
                       setQ('');
                       setStatus('all');
                       setCategory('all');
-                      if (macsFilter !== null) {
-                        const next = new URLSearchParams(searchParams);
-                        next.delete('macs');
-                        setSearchParams(next, { replace: true });
-                      }
                       setSelectedEndpointKeys([]);
                     }}
                   >
@@ -1144,7 +1166,7 @@ function ClearPassView({
                 >
                   <span className="nt-configure-bulk-bar__count">{`${selectedEndpointKeys.length} SELECTED`}</span>
                   <span className="nt-configure-bulk-bar__hint">
-                    export, copy MACs, or share a selection link for only the endpoints you marked — full list export stays in the header
+                    export, copy MACs, copy names, or share a selection link for only the endpoints you marked — full list export stays in the header
                   </span>
                   <span className="nt-configure-bulk-bar__actions">
                     <Button
@@ -1218,7 +1240,7 @@ function ClearPassView({
                           ];
                           if (macs.length === 0) {
                             toast('No MACs on the selected endpoints', {
-                              description: 'Those rows did not publish a MAC — export CSV instead.',
+                              description: 'Those rows did not publish a MAC — use Copy names or export CSV instead.',
                               tone: 'info',
                             });
                             return;
@@ -1255,6 +1277,52 @@ function ClearPassView({
                             });
                             return;
                           }
+                          const names = [
+                            ...new Set(
+                              picked
+                                .map((e) => (e.hostname ?? '').trim())
+                                .filter((name) => name && name !== '—'),
+                            ),
+                          ];
+                          if (names.length === 0) {
+                            toast('No names on the selected endpoints', {
+                              description: 'Those rows did not publish a hostname — export CSV instead.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
+                          const text = names.join('\n');
+                          try {
+                            await navigator.clipboard.writeText(text);
+                            toast(`Copied ${countOf(names.length, 'name')}`, {
+                              description:
+                                names.length < picked.length
+                                  ? `${picked.length - names.length} selected without a hostname skipped`
+                                  : 'newline-joined · paste into a ticket or change window',
+                              tone: 'success',
+                            });
+                          } catch {
+                            toast('Could not copy names', { description: text, tone: 'warning' });
+                          }
+                        })();
+                      }}
+                    >
+                      Copy names
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const selected = new Set(selectedEndpointKeys);
+                          const picked = rows.filter((e) => selected.has(e.id));
+                          if (picked.length === 0) {
+                            toast('No selected endpoints still in view', {
+                              description: 'Clear selection or adjust filters.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
                           const macs = [
                             ...new Set(
                               picked
@@ -1264,7 +1332,7 @@ function ClearPassView({
                           ];
                           if (macs.length === 0) {
                             toast('No MACs on the selected endpoints', {
-                              description: 'Those rows did not publish a MAC — export CSV instead.',
+                              description: 'Those rows did not publish a MAC — use Copy names or export CSV instead.',
                               tone: 'info',
                             });
                             return;
@@ -1448,6 +1516,19 @@ function ClearPassView({
             onView={setServiceView}
             onViewDeviceGroup={setInventoryView}
             selectionFilterActive={servicesFilter !== null}
+            onClearFilters={() => {
+              setQ('');
+              setEnabled('all');
+              setSelectedServiceKeys([]);
+              /* Drop URL-owned triage params in the same turn so the
+                 address-bar re-seed cannot restore a stale q/enabled. */
+              const next = new URLSearchParams(searchParams);
+              next.delete('q');
+              next.delete('enabled');
+              if (next.toString() !== searchParams.toString()) {
+                setSearchParams(next, { replace: true });
+              }
+            }}
           />
         </>
       ) : null}
@@ -2125,6 +2206,7 @@ function ServicesSection({
   onView,
   onViewDeviceGroup,
   selectionFilterActive = false,
+  onClearFilters,
 }: {
   services: ClearPassServiceRow[] | undefined;
   /** Unfiltered collection length when a filter is active (for honest meta). */
@@ -2137,9 +2219,11 @@ function ServicesSection({
   onViewDeviceGroup: (row: StaticInventoryDetail) => void;
   /** True while a `?services=` selection deep-link is narrowing the table. */
   selectionFilterActive?: boolean;
+  /** Reset services search / enabled filters (Loop 222 empty filter CTA). */
+  onClearFilters?: () => void;
 }) {
   const { toast } = useToast();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const filteredMeta =
     services === undefined
       ? 'NOT AVAILABLE'
@@ -2148,7 +2232,12 @@ function ServicesSection({
         : `${services.length}`;
   return (
     <>
-      <SectionHeader label="Services" meta={filteredMeta} />
+      <div className="nt-row-between">
+        <SectionHeader label="Services" meta={filteredMeta} />
+        {services && services.length > 0 ? (
+          <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
+        ) : null}
+      </div>
       {services === undefined ? (
         <EmptyState
           title="Services are not available on this CPPM"
@@ -2158,17 +2247,38 @@ function ServicesSection({
         <EmptyState
           title={
             servicesTotal && servicesTotal > 0
-              ? 'Nothing matches that filter'
+              ? selectionFilterActive
+                ? 'No services match this selection'
+                : 'Nothing matches that filter'
               : 'ClearPass reports no services'
           }
           description={
             servicesTotal && servicesTotal > 0
               ? selectionFilterActive
-                ? 'Clear the selection link or loosen the search/enabled filter to widen the services list.'
+                ? 'Clear the selection filter to restore the services list under the current search / enabled filters.'
                 : 'Loosen the search or enabled filter to widen the services list.'
               : undefined
           }
-        />
+        >
+          {servicesTotal && servicesTotal > 0 && selectionFilterActive ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.delete('services');
+                setSearchParams(next, { replace: true });
+                onServiceSelectionChange([]);
+              }}
+            >
+              Clear selection filter
+            </Button>
+          ) : servicesTotal && servicesTotal > 0 && !selectionFilterActive && onClearFilters ? (
+            <Button variant="secondary" size="sm" onClick={onClearFilters}>
+              Clear filters
+            </Button>
+          ) : null}
+        </EmptyState>
       ) : (
         <>
           <DataTable

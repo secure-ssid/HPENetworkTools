@@ -114,6 +114,7 @@ export default function Inventory() {
   const [query, setQuery] = useState(() => params.get('q') ?? '');
   const [results, setResults] = useState<InventoryTreeNode[]>([]);
   /* Keyboard multi-select on search hits raises Export selected / Copy serials /
+   * Copy names (unique newline-joined labels — Sites pattern; Loop 223) /
    * Copy selection link (?ids=; Loop 180/184). Selection-empty deep links offer
    * **Clear selection filter** (Loop 208); search empties offer **Clear search**
    * (Loop 204). */
@@ -554,7 +555,7 @@ export default function Inventory() {
                 >
                   <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
                   <span className="nt-configure-bulk-bar__hint">
-                    export, copy serials, or share a selection link for only the hits you marked — full page export stays in the header · Enter opens the focused row
+                    export, copy serials / names, or share a selection link for only the hits you marked — full page export stays in the header · Enter opens the focused row
                   </span>
                   <span className="nt-configure-bulk-bar__actions">
                     <Button
@@ -638,6 +639,52 @@ export default function Inventory() {
                       }}
                     >
                       Copy serials
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const selected = new Set(selectedKeys);
+                          const picked = viewResults.filter((node) => selected.has(node.id));
+                          if (picked.length === 0) {
+                            toast('No selected results still in view', {
+                              description: 'Clear selection or run the search again.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
+                          const names = [
+                            ...new Set(
+                              picked
+                                .map((node) => (node.label ?? '').trim())
+                                .filter((name) => name && name !== '—'),
+                            ),
+                          ];
+                          if (names.length === 0) {
+                            toast('No names on the selected results', {
+                              description: 'Those hits did not publish a label — export CSV instead.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
+                          const text = names.join('\n');
+                          try {
+                            await navigator.clipboard.writeText(text);
+                            toast(`Copied ${countOf(names.length, 'name')}`, {
+                              description:
+                                names.length < picked.length
+                                  ? `${picked.length - names.length} selected without a label skipped`
+                                  : 'newline-joined · paste into a ticket or change window',
+                              tone: 'success',
+                            });
+                          } catch {
+                            toast('Could not copy names', { description: text, tone: 'warning' });
+                          }
+                        })();
+                      }}
+                    >
+                      Copy names
                     </Button>
                     <Button
                       variant="ghost"

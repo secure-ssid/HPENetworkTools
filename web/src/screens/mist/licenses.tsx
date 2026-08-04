@@ -11,14 +11,23 @@
  * consumption as '—', because the row did not state it.
  *
  * Multi-select raises **Export selected**, **Copy site ids** (unique
- * newline-joined site ids — Sites `?ids=` pattern), **Copy selection link**
- * (`?siteIds=` of marked site ids with `section=licenses`; clearable chip
- * while active — Loop 187), and Clear.
+ * newline-joined site ids — Sites `?ids=` pattern), **Copy names** (unique
+ * newline-joined site names when ids are sparse — Devices / Clients pattern;
+ * Loop 231), **Copy selection link** (`?siteIds=` of marked site ids with
+ * `section=licenses`; clearable chip while active — Loop 187), and Clear.
+ * Selection-empty `?siteIds=` offers **Clear selection filter** (Loop 217).
  */
 
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Button, DataTable, SectionHeader, useToast, type DataTableColumn } from '../../nightdesk';
+import {
+  Button,
+  DataTable,
+  EmptyState,
+  SectionHeader,
+  useToast,
+  type DataTableColumn,
+} from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { MistLicenseUsageRow } from '@hpe/shared';
 import { namesFilterForParam } from '../../app/nav';
@@ -219,10 +228,29 @@ export function LicenseUsageSection({
             </div>
           ) : null}
           {rows.length === 0 ? (
-            <div className="nt-service-note">
-              No licence rows match the selection deep link — clear the chip to restore the full
-              usage table.
-            </div>
+            siteIdsFilter !== null ? (
+              <EmptyState
+                title="No licence rows match this selection"
+                description="Clear the selection filter to restore the full usage table."
+              >
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('siteIds');
+                    setSearchParams(next, { replace: true });
+                    setSelectedKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              </EmptyState>
+            ) : (
+              <div className="nt-service-note">
+                No licence rows match the current filter.
+              </div>
+            )
           ) : (
             <DataTable
               ariaLabel="Mist licence usage"
@@ -242,8 +270,8 @@ export function LicenseUsageSection({
             >
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy site ids, or share a selection link for only the sites you marked — full
-                list export stays in the header
+                export, copy site ids or site names, or share a selection link for only the sites you
+                marked — full list export stays in the header
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -295,7 +323,7 @@ export function LicenseUsageSection({
                       ];
                       if (ids.length === 0) {
                         toast('No site ids on the selected rows', {
-                          description: 'Those rows did not publish a site id — export CSV instead.',
+                          description: 'Those rows did not publish a site id — use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -332,6 +360,52 @@ export function LicenseUsageSection({
                         });
                         return;
                       }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((r) => (r.siteName ?? '').trim())
+                            .filter((name) => name && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected rows', {
+                          description: 'Those rows did not publish a site name — export CSV for site ids instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = names.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(names.length, 'name')}`, {
+                          description:
+                            names.length < picked.length
+                              ? `${picked.length - names.length} selected without a site name skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy names', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy names
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((r) => selected.has(r.siteId));
+                      if (picked.length === 0) {
+                        toast('No selected licence rows still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
                       const ids = [
                         ...new Set(
                           picked
@@ -341,7 +415,7 @@ export function LicenseUsageSection({
                       ];
                       if (ids.length === 0) {
                         toast('No site ids on the selected rows', {
-                          description: 'Export CSV for row detail instead.',
+                          description: 'Use Copy names or export CSV for row detail instead.',
                           tone: 'info',
                         });
                         return;

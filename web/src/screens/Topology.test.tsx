@@ -912,3 +912,59 @@ describe('Topology Loop 208 residuals', () => {
     expect(screen.queryByText(/No topology nodes match the selection deep link/i)).toBeNull();
   });
 });
+
+/* Loop 223 — nodes bulk Copy names (non-selection-empty residual). */
+describe('Topology Loop 223 residuals', () => {
+  function renderTopologyAt(entry: string) {
+    return render(
+      <MemoryRouter
+        initialEntries={[entry]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/topology"
+                element={
+                  <>
+                    <Topology />
+                    <LocationProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('Copy names joins unique node names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetTopology.mockResolvedValue({
+      ...demoPayload(),
+      dataSource: 'live',
+      syncedAt: '2026-07-26T11:59:00.000Z',
+    });
+    renderTopologyAt('/topology?view=2d');
+    const table = await screen.findByRole('grid', { name: 'Topology nodes' });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Topology node selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = String(writeText.mock.calls[0]![0] ?? '');
+    expect(text.trim().length).toBeGreaterThan(0);
+    expect(text).not.toMatch(/ids=/);
+    expect(await screen.findByText(/Copied \d+ name/)).toBeTruthy();
+  });
+});

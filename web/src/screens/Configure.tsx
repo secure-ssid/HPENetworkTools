@@ -10,7 +10,9 @@
  * checkbox column, a select-all header checkbox, and the controlled
  * selectedKeys/onSelectionChange pair (x toggles the focused row, Esc
  * clears). A selection raises a contextual action bar — "N selected —
- * Approve / Reject / Export selected / Copy IDs / Copy selection link
+ * Approve / Reject / Export selected / Copy IDs / Copy titles (unique
+ * newline-joined `what` summaries when broker ids alone are sparse —
+ * Tickets **Copy titles** pattern; Loop 232) / Copy selection link
  * (`?ids=` of queue row keys with `section=queue`; clearable chip — Loop 183)
  * / Clear" — Approve/Reject still apply the EXISTING per-item push/discard
  * flow in sequence: every change still goes through its own brokered review,
@@ -36,8 +38,9 @@
  * offline fallback.
  * Header **LIVE** stamps pure live and configure blend feeds alike (Loop 165).
  * Queue table carries keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS —
- * Loop 195). Port filter empties offer **Clear filters**; queue selection-empty
- * offers **Clear selection filter** (Loop 205).
+ * Loop 195) even when the queue is empty so operators can learn the map before
+ * rows land (Loop 223). Port filter empties offer **Clear filters**; queue
+ * selection-empty offers **Clear selection filter** (Loop 205).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -1885,7 +1888,7 @@ export default function Configure() {
             <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · change queue · review before broker</div>
             <div className="nt-row-between">
               <SectionHeader label="Queued changes" meta={String(queueView.length)} />
-              {queueView.length > 0 ? <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} /> : null}
+              <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
             </div>
             {queueIdsFilter !== null ? (
               <div className="nt-chip-row" role="group" aria-label="Selection deep link">
@@ -1995,7 +1998,7 @@ export default function Configure() {
               >
                 <span className="nt-configure-bulk-bar__count">{`${queueSel.length} SELECTED`}</span>
                 <span className="nt-configure-bulk-bar__hint">
-                  approve/reject still broker each change — export, copy ids, or share a selection link for the rows you marked
+                  approve/reject still broker each change — export, copy ids/titles, or share a selection link for the rows you marked
                 </span>
                 <span className="nt-configure-bulk-bar__actions">
                   <Button
@@ -2067,7 +2070,7 @@ export default function Configure() {
                         if (ids.length === 0) {
                           toast('No broker ids on the selection', {
                             description:
-                              'Local offline rows have no broker id — export CSV for ticket/what instead.',
+                              'Local offline rows have no broker id — use Copy titles or export CSV instead.',
                             tone: 'info',
                           });
                           return;
@@ -2089,6 +2092,53 @@ export default function Configure() {
                     }}
                   >
                     Copy IDs
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={bulkBusy !== null}
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(queueSel);
+                        const picked = queueView.filter((q) => selected.has(queueRowKey(q)));
+                        if (picked.length === 0) {
+                          toast('No selected changes still in view', {
+                            description: 'Clear selection or adjust the selection link.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const titles = [
+                          ...new Set(
+                            picked
+                              .map((q) => String(q.what ?? '').trim())
+                              .filter((title) => title && title !== '—'),
+                          ),
+                        ];
+                        if (titles.length === 0) {
+                          toast('No titles on the selected changes', {
+                            description: 'Those rows did not publish a what summary — export CSV instead.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const text = titles.join('\n');
+                        try {
+                          await navigator.clipboard.writeText(text);
+                          toast(`Copied ${countOf(titles.length, 'title')}`, {
+                            description:
+                              titles.length < picked.length
+                                ? `${picked.length - titles.length} selected without a title skipped`
+                                : 'newline-joined · paste into a ticket or change window',
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy titles', { description: text, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy titles
                   </Button>
                   <Button
                     variant="ghost"

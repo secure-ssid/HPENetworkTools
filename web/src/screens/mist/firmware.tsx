@@ -13,14 +13,17 @@
  *
  * Multi-select on behind rows raises **Export selected**, **Copy serials**
  * (unique newline-joined inventory serials — Devices **Copy serials**
- * pattern), **Copy selection link** (`?serials=` of unique inventory serials
- * with `section=devices` — Central firmware pattern; clearable chip while
- * active; Loop 184), and Clear (Loop 180).
+ * pattern), **Copy names** (unique newline-joined device names when serials
+ * are sparse — Devices / Topology pattern; Loop 225), **Copy selection link**
+ * (`?serials=` of unique inventory serials with `section=devices` — Central
+ * firmware pattern; clearable chip while active; Loop 184), and Clear
+ * (Loop 180). Selection-empty `?serials=` offers **Clear selection filter**
+ * (Loop 217).
  */
 
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Badge, Button, DataTable, SectionHeader, useToast } from '../../nightdesk';
+import { Badge, Button, DataTable, EmptyState, SectionHeader, useToast } from '../../nightdesk';
 import type { DataTableColumn } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { DeviceRow } from '@hpe/shared';
@@ -225,9 +228,29 @@ export function FirmwareSection({ devices }: { devices: DeviceRow[] }) {
                 </div>
               ) : null}
               {viewBehind.length === 0 ? (
-                <div className="nt-service-note">
-                  No firmware rows match the selection deep link — clear the chip to restore the behind-train list.
-                </div>
+                serialsFilterLc !== null ? (
+                  <EmptyState
+                    title="No firmware rows match this selection"
+                    description="Clear the selection filter to restore the behind-train list."
+                  >
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        const next = new URLSearchParams(searchParams);
+                        next.delete('serials');
+                        setSearchParams(next, { replace: true });
+                        setSelectedKeys([]);
+                      }}
+                    >
+                      Clear selection filter
+                    </Button>
+                  </EmptyState>
+                ) : (
+                  <div className="nt-service-note">
+                    No firmware rows match the current filter.
+                  </div>
+                )
               ) : (
                 <DataTable
                   ariaLabel="Mist firmware behind recommended trains"
@@ -247,7 +270,7 @@ export function FirmwareSection({ devices }: { devices: DeviceRow[] }) {
                 >
                   <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
                   <span className="nt-configure-bulk-bar__hint">
-                    export, copy serials, or share a selection link for only the behind devices you marked — full list export stays in the header
+                    export, copy serials/names, or share a selection link for only the behind devices you marked — full list export stays in the header
                   </span>
                   <span className="nt-configure-bulk-bar__actions">
                     <Button
@@ -321,7 +344,7 @@ export function FirmwareSection({ devices }: { devices: DeviceRow[] }) {
                           ];
                           if (serials.length === 0) {
                             toast('No serials on the selected devices', {
-                              description: 'Those rows did not publish a serial — export CSV for names instead.',
+                              description: 'Those rows did not publish a serial — use Copy names or export CSV instead.',
                               tone: 'info',
                             });
                             return;
@@ -358,6 +381,52 @@ export function FirmwareSection({ devices }: { devices: DeviceRow[] }) {
                             });
                             return;
                           }
+                          const names = [
+                            ...new Set(
+                              picked
+                                .map((d) => (d.name ?? '').trim())
+                                .filter((name) => name && name !== '—'),
+                            ),
+                          ];
+                          if (names.length === 0) {
+                            toast('No names on the selected devices', {
+                              description: 'Those rows did not publish a name — export CSV instead.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
+                          const text = names.join('\n');
+                          try {
+                            await navigator.clipboard.writeText(text);
+                            toast(`Copied ${countOf(names.length, 'name')}`, {
+                              description:
+                                names.length < picked.length
+                                  ? `${picked.length - names.length} selected without a name skipped`
+                                  : 'newline-joined · paste into a ticket or change window',
+                              tone: 'success',
+                            });
+                          } catch {
+                            toast('Could not copy names', { description: text, tone: 'warning' });
+                          }
+                        })();
+                      }}
+                    >
+                      Copy names
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const selected = new Set(selectedKeys);
+                          const picked = viewBehind.filter((d) => selected.has(mistDeviceRowKey(d)));
+                          if (picked.length === 0) {
+                            toast('No selected firmware rows still in view', {
+                              description: 'Clear selection or adjust filters.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
                           const serials = [
                             ...new Set(
                               picked
@@ -367,7 +436,7 @@ export function FirmwareSection({ devices }: { devices: DeviceRow[] }) {
                           ];
                           if (serials.length === 0) {
                             toast('No serials on the selected devices', {
-                              description: 'Those rows did not publish a serial — export CSV for names instead.',
+                              description: 'Those rows did not publish a serial — use Copy names or export CSV instead.',
                               tone: 'info',
                             });
                             return;

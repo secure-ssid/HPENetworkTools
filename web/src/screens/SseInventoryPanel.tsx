@@ -16,10 +16,11 @@
  * deep-link), client Export CSV of the filtered summary rows, and server
  * Download CSV via GET /api/sse/objects/:kind/export — never vendor `raw`.
  * Multi-select raises **Export selected**, **Copy IDs** (unique newline-joined
- * object ids), **Copy selection link** (`?sseIds=` of marked ids with kind/q;
- * clearable chip while active — Loop 183), and Clear. Toolbar
- * `KeyboardShortcuts` surfaces the object inventory grid map (Loop 201).
- * Filtered empties offer **Clear selection filter** / **Clear search**.
+ * object ids), **Copy names** (unique newline-joined object names when ids alone
+ * are sparse for a handoff — Devices pattern; Loop 229), **Copy selection link**
+ * (`?sseIds=` of marked ids with kind/q; clearable chip while active — Loop 183),
+ * and Clear. Toolbar `KeyboardShortcuts` surfaces the object inventory grid map
+ * (Loop 201). Filtered empties offer **Clear selection filter** / **Clear search**.
  *
  * `canWrite` is the plane's declared write scope (PlaneCapabilities.
  * directWrite, read off GET /api/systems/state) — every mutating control is
@@ -308,7 +309,7 @@ export function SseInventoryPanel({
   const [kind, setKind] = useState<SseObjectKind>(seededKind);
   const [q, setQ] = useState(seededQuery);
   /* Keyboard multi-select (x toggles focused row) raises Export selected /
-   * Copy IDs / Copy selection link. */
+   * Copy IDs / Copy names / Copy selection link. */
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   /* Deep link: /systems?plane=sse&sseIds=a\nb (bulk Copy selection link). */
   const idsFilter = namesFilterForParam(searchParams.get('sseIds'));
@@ -1055,7 +1056,7 @@ export function SseInventoryPanel({
         >
           <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
           <span className="nt-configure-bulk-bar__hint">
-            export, copy ids, or share a selection link for only the objects you marked — full list export stays in the header
+            export, copy ids/names, or share a selection link for only the objects you marked — full list export stays in the header
           </span>
           <span className="nt-configure-bulk-bar__actions">
             <Button
@@ -1107,7 +1108,7 @@ export function SseInventoryPanel({
                   ];
                   if (ids.length === 0) {
                     toast('No ids on the selected objects', {
-                      description: 'Export CSV for names instead.',
+                      description: 'Use Copy names or export CSV instead.',
                       tone: 'info',
                     });
                     return;
@@ -1129,6 +1130,52 @@ export function SseInventoryPanel({
               }}
             >
               Copy IDs
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = rows.filter((r) => selected.has(r.id));
+                  if (picked.length === 0) {
+                    toast('No selected objects still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const names = [
+                    ...new Set(
+                      picked
+                        .map((r) => (r.name ?? '').trim())
+                        .filter((name) => name && name !== '—'),
+                    ),
+                  ];
+                  if (names.length === 0) {
+                    toast('No names on the selected objects', {
+                      description: 'Those rows did not publish a name — export CSV instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const text = names.join('\n');
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast(`Copied ${countOf(names.length, 'name')}`, {
+                      description:
+                        names.length < picked.length
+                          ? `${picked.length - names.length} selected without a name skipped`
+                          : 'newline-joined · paste into a ticket or change window',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy names', { description: text, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy names
             </Button>
             <Button
               variant="ghost"

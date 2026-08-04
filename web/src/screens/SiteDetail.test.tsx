@@ -1259,3 +1259,63 @@ describe('SiteDetail Loop 208 residuals', () => {
     expect(screen.queryByText(/No devices match the selection deep link/i)).toBeNull();
   });
 });
+
+/* Loop 225 — site devices bulk Copy names (non-selection-empty residual). */
+describe('SiteDetail Loop 225 residuals', () => {
+  it('Copy names joins unique device names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      syncedAt: '2026-08-04T12:00:00.000Z',
+      devices: [
+        {
+          name: 'CX6300-CORE',
+          model: 'CX-6300M',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access switch',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '12d',
+          serial: 'SN-CORE-001',
+        },
+        {
+          name: 'AP-1',
+          model: 'AP-655',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access point',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '3d',
+          serial: 'SN-AP-001',
+        },
+      ],
+    } as SiteDetailData);
+
+    const { container } = renderDetail('/sites/SecureSSID');
+    expect(await screen.findByText('CX6300-CORE')).toBeTruthy();
+
+    const table = container.querySelector('[aria-label="Devices at this site"]') as HTMLElement;
+    expect(table).toBeTruthy();
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Site device selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = String(writeText.mock.calls[0]![0] ?? '');
+    expect(text).toContain('CX6300-CORE');
+    expect(text).not.toMatch(/names=/);
+    expect(await screen.findByText(/Copied \d+ name/)).toBeTruthy();
+  });
+});

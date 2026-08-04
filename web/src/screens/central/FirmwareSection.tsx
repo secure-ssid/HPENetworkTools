@@ -14,9 +14,11 @@
  *
  * Multi-select raises **Export selected**, **Copy serials** (unique
  * newline-joined inventory serials — Devices **Copy serials** pattern),
- * **Copy selection link** (`?serials=` of unique inventory serials with
- * `section=firmware` — Licences `?skus=` pattern; clearable chip while
- * active; Loop 181), and Clear (Loop 177).
+ * **Copy names** (unique newline-joined device names when serials are sparse —
+ * Devices / Topology pattern; Loop 225), **Copy selection link** (`?serials=`
+ * of unique inventory serials with `section=firmware` — Licences `?skus=`
+ * pattern; clearable chip while active; Loop 181), and Clear (Loop 177).
+ * Selection-empty `?serials=` offers **Clear selection filter** (Loop 211).
  */
 
 import { useState } from 'react';
@@ -184,8 +186,25 @@ export function FirmwareSection({
             </div>
           ) : null}
           {viewRows.length === 0 ? (
-            <div className="nt-service-note">
-              No firmware rows match the selection deep link — clear the chip to restore the behind-train list.
+            <div className="nt-stack nt-gap-8">
+              <div className="nt-service-note">
+                No firmware rows match the selection deep link — clear the selection filter to
+                restore the behind-train list.
+              </div>
+              <div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('serials');
+                    setSearchParams(next, { replace: true });
+                    setSelectedKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              </div>
             </div>
           ) : (
             <DataTable
@@ -206,7 +225,7 @@ export function FirmwareSection({
             >
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy serials, or share a selection link for only the behind devices you marked — full list export stays in the header
+                export, copy serials/names, or share a selection link for only the behind devices you marked — full list export stays in the header
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -267,7 +286,7 @@ export function FirmwareSection({
                       ];
                       if (serials.length === 0) {
                         toast('No serials on the selected devices', {
-                          description: 'Those rows did not publish a serial — export CSV for names instead.',
+                          description: 'Those rows did not publish a serial — use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -304,6 +323,52 @@ export function FirmwareSection({
                         });
                         return;
                       }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((r) => (r.name ?? '').trim())
+                            .filter((name) => name && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected devices', {
+                          description: 'Those rows did not publish a name — export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = names.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(names.length, 'name')}`, {
+                          description:
+                            names.length < picked.length
+                              ? `${picked.length - names.length} selected without a name skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy names', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy names
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = viewRows.filter((r) => selected.has(firmwareRowKey(r)));
+                      if (picked.length === 0) {
+                        toast('No selected firmware rows still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
                       const serials = [
                         ...new Set(
                           picked
@@ -313,7 +378,7 @@ export function FirmwareSection({
                       ];
                       if (serials.length === 0) {
                         toast('No serials on the selected devices', {
-                          description: 'Those rows did not publish a serial — export CSV for names instead.',
+                          description: 'Those rows did not publish a serial — use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;

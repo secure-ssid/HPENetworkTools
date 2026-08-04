@@ -453,7 +453,7 @@ export function DataTable<Row>({
         <tbody>
           {virtualized && virtualWindow.top > 0 ? (
             <tr aria-hidden="true" className="nd-table__tr--spacer nt-table__tr--spacer">
-              <td colSpan={colSpan} className="nd-table-spacer nt-table-spacer" style={{ height: virtualWindow.top }} />
+              <td colSpan={colSpan} className="nd-table-spacer nt-table-spacer" style={{ ['--nd-spacer-h' as string]: `${virtualWindow.top}px` }} />
             </tr>
           ) : null}
           {paintedRows.map((row, paintedIndex) => {
@@ -508,7 +508,7 @@ export function DataTable<Row>({
           })}
           {virtualized && virtualWindow.bottom > 0 ? (
             <tr aria-hidden="true" className="nd-table__tr--spacer nt-table__tr--spacer">
-              <td colSpan={colSpan} className="nd-table-spacer nt-table-spacer" style={{ height: virtualWindow.bottom }} />
+              <td colSpan={colSpan} className="nd-table-spacer nt-table-spacer" style={{ ['--nd-spacer-h' as string]: `${virtualWindow.bottom}px` }} />
             </tr>
           ) : null}
         </tbody>

@@ -2390,3 +2390,98 @@ describe('Systems Loop 202 residuals', () => {
     ).toBeTruthy();
   });
 });
+
+/* Loop 219 — roster selection-empty Clear selection filter CTA. */
+describe('Systems Loop 219 residuals', () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="loc">{`${location.pathname}${location.search}`}</div>;
+  }
+
+  function renderSystemsWithLoc(initialEntry: string) {
+    return render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={[initialEntry]}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/systems"
+                element={
+                  <>
+                    <Systems />
+                    <LocationProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('offers Clear selection filter when ids deep link matches nothing', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(null);
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystemsWithLoc(`/systems?ids=${encodeURIComponent('plane-missing-zzz')}`);
+    expect(await screen.findByText(/No planes match this selection/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/ids=/));
+    expect(await screen.findByText('HPE Aruba Central')).toBeTruthy();
+    expect(screen.queryByText(/No planes match this selection/i)).toBeNull();
+  });
+});
+
+/* Loop 229 — plane roster bulk Copy names (non-selection-empty residual). */
+describe('Systems Loop 229 residuals', () => {
+  it('Copy names joins unique plane display names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const central: SystemRow = {
+      ...SYSTEMS[0]!,
+      name: 'SecureSSID-LAB-Central',
+      planeId: 'central',
+      state: 'healthy',
+    };
+    const mist: SystemRow = {
+      ...SYSTEMS[1]!,
+      name: 'Mist',
+      planeId: 'mist',
+      state: 'healthy',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [central, mist],
+      syncHistory: SYNC_HISTORY,
+      permissions: PERMISSIONS,
+      dataSource: 'demo',
+    });
+    mockGetSystemsState.mockResolvedValue(null);
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems('/systems');
+    expect(await screen.findByText('SecureSSID-LAB-Central')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select plane SecureSSID-LAB-Central' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select plane Mist' }));
+
+    const bar = await screen.findByRole('region', { name: 'Plane selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toBe('SecureSSID-LAB-Central\nMist');
+    expect(await screen.findByText(/Copied 2 names/i)).toBeTruthy();
+  });
+});

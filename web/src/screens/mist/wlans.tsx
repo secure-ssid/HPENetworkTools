@@ -19,7 +19,8 @@
  * newline-joined SSID names — Central WLANs pattern), **Copy selection link**
  * (`?names=` of marked SSID names with `section=wlans`; clearable chip while
  * active — Loop 187), and Clear. Filtered empties (q / enabled) offer
- * **Clear filters** (Loop 204).
+ * **Clear filters** (Loop 204). Selection-empty `?names=` offers
+ * **Clear selection filter** (Loop 211).
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -390,9 +391,25 @@ export function WlanSummary({
               </div>
             </div>
           ) : rows.length === 0 ? (
-            <div className="nt-service-note">
-              No Mist WLANs match the selection deep link — clear the chip to restore the filtered
-              roster.
+            <div className="nt-stack nt-gap-8">
+              <div className="nt-service-note">
+                No Mist WLANs match the selection deep link — clear the selection filter to restore
+                the filtered roster.
+              </div>
+              <div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('names');
+                    setSearchParams(next, { replace: true });
+                    setSelectedKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              </div>
             </div>
           ) : (
             <DataTable

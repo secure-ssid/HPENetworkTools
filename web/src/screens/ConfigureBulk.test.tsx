@@ -437,3 +437,28 @@ describe('Configure queue bulk polish (Loop 183)', () => {
     await waitFor(() => expect(queueSection().getByText('NET-4101')).toBeTruthy());
   });
 });
+
+/* Loop 232 — Configure queue bulk Copy titles (what summaries beside Copy IDs). */
+describe('Configure queue bulk Copy titles (Loop 232)', () => {
+  it('Copy titles joins unique what summaries from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    await renderWithTwo();
+    selectAll();
+    const bar = await screen.findByRole('region', { name: 'Queued change selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy titles' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy titles' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0]).split('\n').sort()).toEqual(
+      [
+        'Add DHCP helper 10.44.0.20 to vlan 812',
+        'Port 1/1/12 on sw-core-1 — uplink to fw',
+      ].sort(),
+    );
+    expect(await screen.findByText(/Copied 2 titles/i)).toBeTruthy();
+  });
+});

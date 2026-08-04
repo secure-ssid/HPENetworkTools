@@ -2357,3 +2357,100 @@ describe('Clients group chips (Loop 156)', () => {
     expect(screen.getByTestId('search').textContent).not.toContain('group=');
   });
 });
+
+
+/* Loop 214 — clients selection-empty Clear selection filter CTA. */
+describe('Clients Loop 214 residuals', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path: string) {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/clients"
+                element={
+                  <>
+                    <Clients />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('offers Clear selection filter when macs deep link matches nothing', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:61', name: 'corp-client' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:62', name: 'guest-client' },
+      ],
+      dataSource: 'live' as const,
+    });
+    renderAt(`/clients?macs=${encodeURIComponent('ff:ff:ff:ff:ff:ff')}`);
+    expect(await screen.findByText('No sessions match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('search').textContent).not.toMatch(/macs=/));
+    expect(await screen.findByText('corp-client')).toBeTruthy();
+    expect(screen.getByText('guest-client')).toBeTruthy();
+    expect(screen.queryByText('No sessions match this selection')).toBeNull();
+  });
+});
+
+/* Loop 226 — clients bulk Copy names (non-selection-empty residual). */
+describe('Clients Loop 226 residuals', () => {
+  function renderClients() {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('Copy names joins unique session names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:01', name: 'sess-one' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:02', name: 'sess-two' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:03', name: 'sess-one' },
+      ],
+      dataSource: 'live',
+    });
+    const { container } = renderClients();
+    await screen.findByText('3 of 3 sampled');
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (const row of Array.from(rows).slice(0, 3)) {
+      (row as HTMLElement).focus();
+      fireEvent.keyDown(row as HTMLElement, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'Client selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]?.[0] ?? '')).toBe('sess-one\nsess-two');
+    expect(await screen.findByText(/Copied 2 names/i)).toBeTruthy();
+  });
+});

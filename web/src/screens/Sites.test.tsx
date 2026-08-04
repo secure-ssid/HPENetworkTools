@@ -616,3 +616,23 @@ describe('Sites bulk Copy names (Loop 186)', () => {
     expect(await screen.findByText(/Copied 1 name/)).toBeTruthy();
   });
 });
+
+
+/* Loop 214 — sites selection-empty Clear selection filter CTA. */
+describe('Sites Loop 214 residuals', () => {
+  it('offers Clear selection filter when ids deep link matches nothing', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite(), liveSite({ id: 'campus-02', name: 'Site B', devices: 9 })],
+    });
+    renderSites(`/sites?ids=${encodeURIComponent('site-missing-zzz')}`);
+    expect(await screen.findByText('No sites match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/ids=/));
+    await waitFor(() => expect(screen.getByText('Site A')).toBeTruthy());
+    expect(screen.getByText('Site B')).toBeTruthy();
+    expect(screen.queryByText('No sites match this selection')).toBeNull();
+  });
+});

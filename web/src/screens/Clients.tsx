@@ -33,8 +33,11 @@
  * row's one primary action — x selects, Esc clears; '?' lists them). A
  * non-empty selection raises **Export selected**, **Copy selection link**
  * (`?macs=` of the marked inventory MACs — Devices `?names=` / Alerts `?fps=`
- * pattern; clearable chip while active), and **Copy MACs** (newline-joined
- * inventory MACs — Devices **Copy serials** pattern).
+ * pattern; clearable chip while active), **Copy MACs** (newline-joined
+ * inventory MACs — Devices **Copy serials** pattern), and **Copy names**
+ * (unique newline-joined session / hostname labels when MACs are sparse —
+ * Sites / Topology pattern; Loop 226). Selection-empty `?macs=`
+ * offers **Clear selection filter** (Loop 214).
  * Header **LIVE** stamps pure live and blend feeds alike. No column tints: a
  * session's health already wears its tone as a Badge, and no other column has
  * a threshold that is the same fact down the column (the same call Devices made).
@@ -2243,7 +2246,7 @@ export default function Clients() {
         <div className="nt-configure-bulk-bar nt-bulk-glass" role="region" aria-label="Client selection actions">
           <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
           <span className="nt-configure-bulk-bar__hint">
-            export, share, or copy MACs for the sessions you marked — full list export stays in the header
+            export, share, or copy MACs/names for the sessions you marked — full list export stays in the header
           </span>
           <span className="nt-configure-bulk-bar__actions">
             <Button
@@ -2374,7 +2377,7 @@ export default function Clients() {
                   ];
                   if (macs.length === 0) {
                     toast('No MACs on the selected sessions', {
-                      description: 'Those rows did not publish a MAC — export CSV for names instead.',
+                      description: 'Those rows did not publish a MAC — use Copy names or export CSV instead.',
                       tone: 'info',
                     });
                     return;
@@ -2393,6 +2396,52 @@ export default function Clients() {
               }}
             >
               Copy MACs
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = rows.filter((c) => selected.has(c.mac));
+                  if (picked.length === 0) {
+                    toast('No selected sessions still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const names = [
+                    ...new Set(
+                      picked
+                        .map((c) => (c.name ?? '').trim())
+                        .filter((name) => name && name !== '—'),
+                    ),
+                  ];
+                  if (names.length === 0) {
+                    toast('No names on the selected sessions', {
+                      description: 'Those rows did not publish a name — export CSV instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const text = names.join('\n');
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast(`Copied ${countOf(names.length, 'name')}`, {
+                      description:
+                        names.length < picked.length
+                          ? `${picked.length - names.length} selected without a name skipped`
+                          : 'newline-joined · paste into a ticket or change window',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy names', { description: text, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy names
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
               Clear
@@ -2428,30 +2477,48 @@ export default function Clients() {
           </EmptyState>
         ) : (
           <EmptyState
-            title="Nothing matches that filter"
-            description="Loosen the filters or clear Problems only to see more sessions."
+            title={
+              macsFilter !== null
+                ? 'No sessions match this selection'
+                : 'Nothing matches that filter'
+            }
+            description={
+              macsFilter !== null
+                ? 'Clear the selection filter to restore the roster under the current medium / type / site / group / plane / health / problems filters.'
+                : 'Loosen the filters or clear Problems only to see more sessions.'
+            }
           >
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                setQ('');
-                setMedium('all');
-                setType('all');
-                setSite('all');
-                setGroup('all');
-                setPlane('all');
-                setHealth('all');
-                setProblemsFilter('all');
-                if (macsFilter) {
+            {macsFilter !== null ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
                   const next = new URLSearchParams(searchParams);
                   next.delete('macs');
                   setSearchParams(next, { replace: true });
-                }
-              }}
-            >
-              Clear filters
-            </Button>
+                  setSelectedKeys([]);
+                }}
+              >
+                Clear selection filter
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setQ('');
+                  setMedium('all');
+                  setType('all');
+                  setSite('all');
+                  setGroup('all');
+                  setPlane('all');
+                  setHealth('all');
+                  setProblemsFilter('all');
+                }}
+              >
+                Clear filters
+              </Button>
+            )}
           </EmptyState>
         )
       ) : null}

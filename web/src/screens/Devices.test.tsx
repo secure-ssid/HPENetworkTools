@@ -1650,3 +1650,95 @@ describe('Devices Loop 202 residuals', () => {
     expect(screen.getByText('ap-1')).toBeTruthy();
   });
 });
+
+
+/* Loop 214 — devices selection-empty Clear selection filter CTA. */
+describe('Devices Loop 214 residuals', () => {
+  function renderAt(entry: string) {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/devices"
+                element={
+                  <>
+                    <Devices />
+                    <LocationProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="loc">{`${location.pathname}${location.search}`}</div>;
+  }
+
+  it('offers Clear selection filter when names deep link matches nothing', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [
+        liveRow({ name: 'sw-core-a', type: 'switch' }),
+        liveRow({ name: 'ap-1', type: 'ap', plane: 'MIST' }),
+      ],
+      lanes: LANE_META,
+    });
+    renderAt(`/devices?names=${encodeURIComponent('device-missing-zzz')}`);
+    expect(await screen.findByText('No devices match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/names=/));
+    expect(await screen.findByText('sw-core-a')).toBeTruthy();
+    expect(screen.getByText('ap-1')).toBeTruthy();
+    expect(screen.queryByText('No devices match this selection')).toBeNull();
+  });
+});
+
+/* Loop 226 — devices bulk Copy names (non-selection-empty residual). */
+describe('Devices Loop 226 residuals', () => {
+  const THREE = {
+    dataSource: 'live' as const,
+    devices: [liveRow({ name: 'ap-1' }), liveRow({ name: 'ap-2' }), liveRow({ name: 'sw-3' })],
+    lanes: {},
+    reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+  };
+
+  function bodyRows(container: HTMLElement): HTMLTableRowElement[] {
+    return Array.from(container.querySelectorAll('tbody tr')) as HTMLTableRowElement[];
+  }
+
+  it('Copy names joins unique device names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    mockGetDevices.mockResolvedValue({
+      ...THREE,
+      devices: [
+        liveRow({ name: 'ap-1', serial: 'SN-AP-1' }),
+        liveRow({ name: 'ap-2', serial: 'SN-AP-2' }),
+        liveRow({ name: 'sw-3' }),
+      ],
+    });
+    const { container } = renderDevices();
+    await screen.findByText('3 of 3 indexed');
+    const [first, second, third] = bodyRows(container);
+
+    fireEvent.keyDown(first, { key: 'x' });
+    fireEvent.keyDown(second, { key: 'x' });
+    fireEvent.keyDown(third, { key: 'x' });
+
+    const bar = screen.getByRole('region', { name: 'Device selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toBe('ap-1\nap-2\nsw-3');
+    expect(await screen.findByText(/Copied 3 names/i)).toBeTruthy();
+  });
+});

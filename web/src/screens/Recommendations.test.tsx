@@ -178,3 +178,49 @@ describe('Recommendations category chips (Loop 146)', () => {
     expect((screen.getByLabelText(/filter by category/i) as HTMLSelectElement).value).toBe('all');
   });
 });
+
+/* Loop 220 — header Clear selection filter when only ids= is active. */
+describe('Recommendations Loop 220 residuals', () => {
+  it('offers Clear selection filter in the header when only ids deep link is active', async () => {
+    renderPage(`/recommendations?ids=${encodeURIComponent('missing-rec-zzz')}`);
+    expect(await screen.findByRole('heading', { name: 'Recommendations' })).toBeTruthy();
+    /* Header + panel both expose the CTA when only ids= is active — either clears. */
+    const clearButtons = await screen.findAllByRole('button', { name: 'Clear selection filter' });
+    expect(clearButtons.length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull();
+    fireEvent.click(clearButtons[0]!);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/recommendations'));
+    expect(screen.queryByRole('button', { name: 'Clear selection filter' })).toBeNull();
+  });
+});
+
+/* Loop 222 — panel scope-filter empty Clear filters CTA. */
+describe('Recommendations Loop 222 residuals', () => {
+  it('panel offers Clear filters when scope filters leave recommendations empty', async () => {
+    mockGetRecommendations.mockResolvedValue({
+      recommendations: [],
+      counts: {
+        total: 0,
+        bySeverity: { info: 0, suggestion: 0, warning: 0 },
+        byCategory: {},
+      },
+      readOnly: true as const,
+      note: 'Suggestions only — the portal never auto-applies configuration from this endpoint.',
+    });
+    renderPage('/recommendations?device=missing-device-zzz');
+    expect(await screen.findByText('No recommendations match these filters')).toBeTruthy();
+    const clearButtons = screen.getAllByRole('button', { name: 'Clear filters' });
+    expect(clearButtons.length).toBeGreaterThanOrEqual(1);
+    fireEvent.click(clearButtons[clearButtons.length - 1]!);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/recommendations'));
+  });
+});
+
+/* Loop 234 — header keyboard shortcuts help for the recommendations grid. */
+describe('Recommendations Loop 234 residuals', () => {
+  it('exposes keyboard shortcuts help on the recommendations header', async () => {
+    renderPage('/recommendations');
+    expect(await screen.findByRole('heading', { name: 'Recommendations' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});

@@ -954,3 +954,77 @@ describe('Inventory Loop 208 residuals', () => {
     expect(screen.queryByText(/No search hits match the selection deep link/i)).toBeNull();
   });
 });
+
+/* Loop 223 — search bulk Copy names (non-selection-empty residual). */
+describe('Inventory Loop 223 residuals', () => {
+  it('Copy names joins unique labels from the selected search hits', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetInventoryNode.mockRejectedValue(new Error('not selected'));
+    mockSearchInventory.mockResolvedValue({
+      nodes: [
+        {
+          id: 'device:central:one',
+          parentId: 'system-devices:central',
+          kind: 'device',
+          label: 'Switch one',
+          status: 'current',
+          tone: 'success',
+          hasChildren: false,
+          identity: { plane: 'CENTRAL', serial: 'SN-INV-1' },
+        },
+        {
+          id: 'device:central:two',
+          parentId: 'system-devices:central',
+          kind: 'device',
+          label: 'Switch two',
+          status: 'current',
+          tone: 'success',
+          hasChildren: false,
+          identity: { plane: 'CENTRAL', serial: 'SN-INV-2' },
+        },
+      ],
+      total: 2,
+      nextCursor: null,
+      query: 'switch',
+    });
+
+    const { container } = render(
+      <ToastProvider>
+        <MemoryRouter
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+          initialEntries={['/inventory']}
+        >
+          <Routes>
+            <Route path="/inventory" element={<Inventory />} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'switch' } });
+    expect(await screen.findByText('Switch one')).toBeTruthy();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector(
+        '[aria-label="Inventory search results"]',
+      ) as HTMLElement | null;
+      if (!el) throw new Error('Inventory search table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Inventory search selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('Switch one');
+    expect(await screen.findByText(/Copied 1 name/)).toBeTruthy();
+  });
+});

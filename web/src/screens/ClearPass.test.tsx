@@ -1450,3 +1450,100 @@ describe('ClearPass Loop 195 residuals', () => {
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
   });
 });
+
+/* Loop 213 — services selection-empty Clear selection filter CTA. */
+describe('ClearPass Loop 213 residuals', () => {
+  it('offers Clear selection filter when services deep link matches nothing', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ services: CLEARPASS_SERVICES }));
+    mockGetEndpointPage.mockResolvedValue(endpointPage());
+    const firstName = CLEARPASS_SERVICES[0]!.name;
+    renderClearPass(`/clearpass?tab=services&services=${encodeURIComponent('svc-missing-zzz')}`);
+    expect(await screen.findByText('No services match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/services=/));
+    expect(await screen.findByText(firstName)).toBeTruthy();
+    expect(screen.queryByText('No services match this selection')).toBeNull();
+  });
+});
+
+/* Loop 219 — endpoints selection-empty Clear selection filter CTA. */
+describe('ClearPass Loop 219 residuals', () => {
+  it('offers Clear selection filter when endpoints macs deep link matches nothing', async () => {
+    mockGetClearPass.mockResolvedValue(demoData());
+    mockGetEndpointPage.mockResolvedValue(
+      endpointPage({ dataSource: 'live', endpoints: CLEARPASS_ENDPOINTS }),
+    );
+    const firstMac = CLEARPASS_ENDPOINTS[0]!.mac;
+    renderClearPass(`/clearpass?macs=${encodeURIComponent('ff:ff:ff:ff:ff:ff')}`);
+    expect(await screen.findByText('No endpoints match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/macs=/));
+    expect(await screen.findByText(firstMac)).toBeTruthy();
+    expect(screen.queryByText('No endpoints match this selection')).toBeNull();
+  });
+});
+
+/* Loop 222 — services filtered-empty Clear filters + services keyboard help. */
+describe('ClearPass Loop 222 residuals', () => {
+  it('offers Clear filters when services q/enabled filters match nothing', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ services: CLEARPASS_SERVICES }));
+    mockGetEndpointPage.mockResolvedValue(endpointPage());
+    const firstName = CLEARPASS_SERVICES[0]!.name;
+    renderClearPass(`/clearpass?tab=services&q=${encodeURIComponent('__no_such_service_zzz__')}`);
+    expect(await screen.findByText('Nothing matches that filter')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Clear selection filter' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/[?&]q=/));
+    expect(await screen.findByText(firstName)).toBeTruthy();
+    expect(screen.queryByText('Nothing matches that filter')).toBeNull();
+  });
+
+  it('exposes keyboard shortcuts help beside the services table', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ services: CLEARPASS_SERVICES }));
+    mockGetEndpointPage.mockResolvedValue(endpointPage());
+    renderClearPass('/clearpass?tab=services');
+    expect(await screen.findByRole('grid', { name: 'ClearPass services' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});
+
+/* Loop 228 — endpoint bulk Copy names (hostnames) beside Copy MACs. */
+describe('ClearPass Loop 228 residuals', () => {
+  it('Copy names joins unique endpoint hostnames from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetClearPass.mockResolvedValue(
+      liveData({
+        endpoints: CLEARPASS_ENDPOINTS,
+        authEvents: AUTH_EVENTS,
+      }),
+    );
+    mockGetEndpointPage.mockResolvedValue(
+      endpointPage({ dataSource: 'live', endpoints: CLEARPASS_ENDPOINTS }),
+    );
+
+    const firstHost = CLEARPASS_ENDPOINTS[0]!.hostname!;
+    const secondHost = CLEARPASS_ENDPOINTS[1]!.hostname!;
+    const { container } = renderClearPass('/clearpass');
+    expect(await screen.findByText(CLEARPASS_ENDPOINTS[0]!.mac)).toBeTruthy();
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    for (let i = 0; i < 2; i++) {
+      (rows[i] as HTMLElement).focus();
+      fireEvent.keyDown(rows[i] as HTMLElement, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'Endpoint selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = String(writeText.mock.calls[0]![0]);
+    expect(text.split('\n').sort()).toEqual([firstHost, secondHost].sort());
+    expect(await screen.findByText(/Copied 2 names/)).toBeTruthy();
+  });
+});

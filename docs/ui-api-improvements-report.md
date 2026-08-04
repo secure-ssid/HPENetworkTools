@@ -2039,8 +2039,188 @@ Independent residual pass (three operator-visible **non-chip** selection-empty C
 | Docs | Done | user-guide selection-empty narrative + Topology/Site detail/Inventory cookbook; this Loop 208 row |
 | Typecheck + tests | Done | monorepo `npm run typecheck`; Topology / SiteDetail / Inventory Loop 208 tests |
 
+### Loop 211 (2026-08-04) — Mist rogues/WLANs · Central firmware selection-empty CTAs
+
+Independent residual pass (three operator-visible **non-chip** selection-empty CTAs; catalog stays **44** — avoided Topology/SiteDetail/Inventory selection-empty from Loop 208, Central sites/WLANs + DeviceDetail ports from Loop 207, Mist WLANs q/enabled Clear filters from Loop 204, and filter-chip work):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Mist rogues selection-empty CTA | Done + tested | Rogues `?bssids=` empty **Clear selection filter**; `mist/rogues.tsx` |
+| Mist WLANs selection-empty CTA | Done + tested | WLANs `?names=` empty **Clear selection filter**; `mist/wlans.tsx` |
+| Central firmware selection-empty CTA | Done + tested | Firmware `?serials=` empty **Clear selection filter**; `central/FirmwareSection.tsx` |
+| Docs | Done | user-guide selection-empty narrative + Mist/Central cookbook; this Loop 211 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Mist / Central Loop 211 tests |
+
+### Loop 213 (2026-08-04) — Compliance/ClearPass services/Mist audit selection-empty CTAs
+
+Independent residual pass (three operator-visible **non-chip** selection-empty CTAs; catalog stays **44** — avoided Licenses/Tickets/UXI selection-empty from Loop 210, Mist rogues/WLANs + Central firmware selection-empty from Loop 211, and filter-chip work):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Compliance selection-empty CTA | Done + tested | Findings `?rules=` empty **Clear selection filter**; `Compliance.tsx` |
+| ClearPass services selection-empty CTA | Done + tested | Services `?services=` empty **Clear selection filter**; `ClearPass.tsx` |
+| Mist audit selection-empty CTA | Done + tested | Audit `?auditIds=` empty **Clear selection filter**; `mist/audit.tsx` |
+| Docs | Done | user-guide selection-empty narrative + Compliance/ClearPass/Mist cookbook; this Loop 213 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Compliance / ClearPass / Mist Loop 213 tests |
+
+### Loop 210 (2026-08-04) — Licenses/Tickets/UXI selection-empty CTAs
+
+Independent residual pass (three operator-visible **non-chip** selection-empty CTAs; catalog stays **44** — avoided Topology/SiteDetail/Inventory selection-empty from Loop 208, Central sites/WLANs + DeviceDetail ports selection-empty from Loop 207, and filter-chip work):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Licenses selection-empty CTA | Done + tested | Subscriptions `?skus=` empty **Clear selection filter**; `Licenses.tsx` |
+| Tickets selection-empty CTA | Done + tested | Queue `?ids=` empty **Clear selection filter**; `Tickets.tsx` |
+| UXI selection-empty CTA | Done + tested | Sensors `?ids=` empty **Clear selection filter**; `Uxi.tsx` |
+| Docs | Done | user-guide selection-empty narrative + Licences/Tickets/UXI cookbook; this Loop 210 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Licenses / Tickets / Uxi Loop 210 tests |
+
+### Loop 214 (2026-08-04) — Sites/Devices/Clients selection-empty CTAs
+
+Independent residual pass (three operator-visible **non-chip** selection-empty CTAs; catalog stays **44** — avoided Licenses/Tickets/UXI selection-empty from Loop 210, Mist rogues/WLANs + Central firmware from Loop 211, Topology/SiteDetail/Inventory from Loop 208, ClearPass/GreenLake concurrent stream, and filter-chip work):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Sites selection-empty CTA | Done + tested | Sites `?ids=` empty **Clear selection filter**; `Sites.tsx` |
+| Devices selection-empty CTA | Done + tested | Inventory `?names=` empty **Clear selection filter**; `Devices.tsx` |
+| Clients selection-empty CTA | Done + tested | Roster `?macs=` empty **Clear selection filter**; `Clients.tsx` |
+| Docs | Done | user-guide selection-empty narrative + Sites/Devices/Clients cookbook; this Loop 214 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Sites / Devices / Clients Loop 214 tests |
+
+### Loop 216 (2026-08-04) — GreenLake members/roles/locations selection-empty CTAs
+
+Independent residual pass (three operator-visible **non-chip** selection-empty CTAs; catalog stays **44** — avoided Sites/Devices/Clients selection-empty from Loop 214, Compliance/ClearPass services/Mist audit from Loop 213, and filter-chip work):
+
+| Item | Status | Anchors |
+|---|---|---|
+| GreenLake members selection-empty CTA | Done + tested | Members `?ids=` empty **Clear selection filter**; `GreenLake.tsx` |
+| GreenLake roles selection-empty CTA | Done + tested | Role grants `?roleIds=` empty **Clear selection filter**; `GreenLake.tsx` |
+| GreenLake locations selection-empty CTA | Done + tested | Locations `?locationIds=` empty **Clear selection filter**; `GreenLake.tsx` |
+| Docs | Done | user-guide selection-empty narrative + Mist/GreenLake cookbook; this Loop 216 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; GreenLake Loop 216 tests |
 
 ---
+
+### Loop 217 (2026-08-04) — Mist firmware/licences · DeviceDetail clients selection-empty CTAs
+
+Independent residual pass (three operator-visible **non-chip** selection-empty CTAs; catalog stays **44** — avoided Sites/Devices/Clients selection-empty from Loop 214, Mist rogues/WLANs + Central firmware from Loop 211, Compliance/ClearPass/Mist audit from Loop 213, GreenLake members/roles/locations from Loop 216, and filter-chip work):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Mist firmware selection-empty CTA | Done + tested | Firmware `?serials=` empty **Clear selection filter**; `mist/firmware.tsx` |
+| Mist licences selection-empty CTA | Done + tested | Licence usage `?siteIds=` empty **Clear selection filter**; `mist/licenses.tsx` |
+| DeviceDetail clients selection-empty CTA | Done + tested | Clients `?macs=` empty **Clear selection filter**; `deviceDetail/tables.tsx` |
+| Docs | Done | user-guide selection-empty narrative + Mist/Device detail cookbook; this Loop 217 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Mist / DeviceDetail Loop 217 tests |
+
+### Loop 219 (2026-08-04) — Systems/AuthEvents/ClearPass endpoints selection-empty CTAs
+
+Independent residual pass (three operator-visible **non-chip** selection-empty CTAs; catalog stays **44** — avoided GreenLake members/roles/locations from Loop 216, Mist firmware/licences + DeviceDetail clients from Loop 217, and filter-chip work):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Systems selection-empty CTA | Done + tested | Plane roster `?ids=` empty **Clear selection filter**; `Systems.tsx` |
+| AuthEvents selection-empty CTA | Done + tested | Events `?macs=` empty **Clear selection filter**; `AuthEvents.tsx` |
+| ClearPass endpoints selection-empty CTA | Done + tested | Endpoints `?macs=` empty **Clear selection filter**; `ClearPass.tsx` |
+| Docs | Done | user-guide selection-empty narrative + Systems/Auth/ClearPass cookbook; this Loop 219 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Systems / AuthEvents / ClearPass Loop 219 tests |
+
+### Loop 220 (2026-08-04) — Alerts/Site rogues/Recommendations selection-empty CTAs
+
+Independent residual pass (three operator-visible **non-chip** selection-empty / selection-clear improvements; catalog stays **44** — avoided Systems/AuthEvents/ClearPass endpoints from Loop 219, Mist firmware/licences + DeviceDetail clients from Loop 217, and filter-chip work):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Alerts selection-empty CTA | Done + tested | Queue `?fps=` empty **Clear selection filter**; `Alerts.tsx` |
+| Site Rogues selection-empty CTA | Done + tested | Site rogues `?bssids=` empty **Clear selection filter**; `siteDetail/RogueAps.tsx` |
+| Recommendations selection-only header clear | Done + tested | Header **Clear selection filter** when only `?ids=` is active; `Recommendations.tsx` |
+| Docs | Done | user-guide selection-empty narrative + Alerts/Site detail/Recommendations cookbook; this Loop 220 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Alerts / SiteRogueAps / Recommendations Loop 220 tests |
+
+### Loop 222 (2026-08-04) — ClearPass services empty/keyboard · Recommendations scope empty
+
+Independent residual pass (three operator-visible **non-chip** empty-filter / keyboard / loading-honesty improvements; catalog stays **44** — avoided Systems/AuthEvents/ClearPass endpoints selection-empty from Loop 219, Alerts fps / Site Rogues / Recommendations ids from Loop 220, and filter-chip work; preferred empty-filter CTAs + keyboard remaining over saturated selection-empty):
+
+| Item | Status | Anchors |
+|---|---|---|
+| ClearPass services filtered-empty CTA | Done + tested | Services q/enabled empty **Clear filters** (not selection); `ClearPass.tsx` |
+| ClearPass services keyboard help | Done + tested | Services table `KeyboardShortcuts` (`DATATABLE_ROW_SHORTCUTS`); `ClearPass.tsx` |
+| Recommendations scope-filter empty CTA | Done + tested | Panel scope empty **Clear filters** + loading `aria-busy`; `ConfigRecommendationsPanel.tsx` / `Recommendations.tsx` |
+| Docs | Done | user-guide keyboard/empty narrative + ClearPass/Recommendations cookbook; this Loop 222 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; ClearPass / ConfigRecommendationsPanel / Recommendations Loop 222 tests |
+
+### Loop 223 (2026-08-04) — Topology/Inventory Copy names · Configure empty-queue keyboard help
+
+Independent residual pass (three operator-visible **non-chip** bulk/a11y improvements; catalog stays **44** — preferred non-selection-empty residuals; avoided selection-empty CTA streams from Loops 207–220 and ClearPass/Recommendations empty work from Loop 222):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Topology nodes **Copy names** | Done + tested | Bulk bar unique newline-joined node names beside **Copy serials**; `Topology.tsx` |
+| Inventory search **Copy names** | Done + tested | Bulk bar unique newline-joined labels beside **Copy serials**; `Inventory.tsx` |
+| Configure queue keyboard help (empty) | Done + tested | `KeyboardShortcuts` stays visible when queue has zero rows; `Configure.tsx` |
+| Docs | Done | user-guide Topology/Inventory/Configure cookbook + bulk narrative; this Loop 223 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Topology / Inventory / Configure Loop 223 tests |
+
+### Loop 225 (2026-08-04) — SiteDetail/Central/Mist firmware bulk Copy names
+
+Independent residual pass (three operator-visible **non-chip** bulk hand-off improvements; catalog stays **44** — preferred remaining bulk **Copy names**; avoided ClearPass/Recommendations from Loop 222, Topology/Inventory Copy names + Configure keyboard from Loop 223, and Devices/UXI/Clients Copy names from Loop 226):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Site detail devices **Copy names** | Done + tested | Bulk bar unique newline-joined device names beside **Copy serials**; `SiteDetail.tsx` |
+| Central firmware **Copy names** | Done + tested | Bulk bar unique newline-joined device names beside **Copy serials**; `central/FirmwareSection.tsx` |
+| Mist firmware **Copy names** | Done + tested | Bulk bar unique newline-joined device names beside **Copy serials**; `mist/firmware.tsx` |
+| Docs | Done | user-guide Site detail/Central/Mist cookbook + bulk narrative; this Loop 225 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; SiteDetail / Central / Mist Loop 225 tests |
+
+### Loop 226 (2026-08-04) — Devices/UXI/Clients bulk Copy names
+
+Independent residual pass (three operator-visible **non-chip** bulk hand-off improvements; catalog stays **44** — preferred non-selection-empty residuals; avoided selection-empty CTA streams from Loops 207–220 and Topology/Inventory Copy names from Loop 223):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Devices **Copy names** | Done + tested | Bulk bar unique newline-joined device names beside **Copy serials**; `Devices.tsx` |
+| UXI sensors **Copy names** | Done + tested | Bulk bar unique newline-joined sensor names beside **Copy serials**; `Uxi.tsx` |
+| Clients **Copy names** | Done + tested | Bulk bar unique newline-joined session/hostname labels beside **Copy MACs**; `Clients.tsx` |
+| Docs | Done | user-guide Devices/UXI/Clients cookbook + bulk narrative; this Loop 226 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Devices / UXI / Clients Loop 226 tests |
+
+### Loop 228 (2026-08-04) — AuthEvents/Licences/ClearPass endpoints bulk Copy names
+
+Independent residual pass (three operator-visible **non-chip** bulk hand-off improvements; catalog stays **44** — preferred remaining bulk **Copy names**; avoided Devices/UXI/Clients Copy names from Loop 226, SiteDetail/Central/Mist firmware Copy names from Loop 225, and Tickets/Systems/SSE from Loop 229):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Auth events **Copy names** | Done + tested | Bulk bar unique newline-joined `who` identities beside **Copy MACs**; `AuthEvents.tsx` |
+| Licences **Copy names** | Done + tested | Bulk bar unique newline-joined subscription names beside **Copy SKUs**; `Licenses.tsx` |
+| ClearPass endpoints **Copy names** | Done + tested | Bulk bar unique newline-joined hostnames beside **Copy MACs**; `ClearPass.tsx` |
+| Docs | Done | user-guide Auth/Licences/ClearPass cookbook + bulk narrative; this Loop 228 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; AuthEvents / Licenses / ClearPass Loop 228 tests |
+
+### Loop 229 (2026-08-04) — Tickets/Systems/SSE bulk Copy titles·names
+
+Independent residual pass (three operator-visible **non-chip** bulk hand-off improvements; catalog stays **44** — preferred non-selection-empty residuals; avoided selection-empty CTA streams from Loops 207–220 and Devices/UXI/Clients Copy names from Loop 226):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Tickets **Copy titles** | Done + tested | Bulk bar unique newline-joined ticket titles beside **Copy IDs**; `Tickets.tsx` |
+| Systems planes **Copy names** | Done + tested | Bulk bar unique newline-joined plane display names beside **Copy plane ids**; `Systems.tsx` |
+| SSE inventory **Copy names** | Done + tested | Bulk bar unique newline-joined object names beside **Copy IDs**; `SseInventoryPanel.tsx` |
+| Docs | Done | user-guide Tickets/Systems/SSE cookbook + bulk narrative; this Loop 229 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Tickets / Systems / SSE Loop 229 tests |
+
+### Loop 232 (2026-08-04) — Alerts/Configure/Device clients bulk Copy titles·names
+
+Independent residual pass (three operator-visible **non-chip** bulk hand-off improvements; catalog stays **44** — preferred remaining bulk **Copy titles** / **Copy names**; avoided Tickets/Systems/SSE from Loop 229, AuthEvents/Licences/ClearPass endpoints from Loop 228, and Devices/UXI/Clients estate Copy names from Loop 226):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Alerts **Copy titles** | Done + tested | Bulk bar unique newline-joined latest titles beside **Copy fingerprints**; `Alerts.tsx` |
+| Configure queue **Copy titles** | Done + tested | Bulk bar unique newline-joined `what` summaries beside **Copy IDs**; `Configure.tsx` |
+| Device detail clients **Copy names** | Done + tested | Bulk bar unique newline-joined client hostnames beside **Copy MACs**; `deviceDetail/tables.tsx` |
+| Docs | Done | user-guide Alerts/Configure/Device detail cookbook + bulk narrative; this Loop 232 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Alerts / ConfigureBulk / DeviceDetail Loop 232 tests |
+
 
 ## 2. Current architecture (baseline)
 

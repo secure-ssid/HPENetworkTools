@@ -32,9 +32,12 @@
  * toggles the same `plane` filter. A **Range** chip row (counts over
  * q+result+service+method+role+plane — Loop 156) toggles the same `?range=` as
  * the TimeRangeControl — click again to clear back to All.
- * A filtered empty state offers Clear filters. The table is a keyboard grid (`x` selects;
+ * A filtered empty state offers Clear filters. Selection-empty `?macs=` offers
+ *  **Clear selection filter** (Loop 219). The table is a keyboard grid (`x` selects;
  *  bulk **Export selected**, **Copy selection link** (`?macs=` of unique endpoint
- *  MACs — Devices `?names=` pattern; clearable chip while active), + **Copy MACs**);
+ *  MACs — Devices `?names=` pattern; clearable chip while active), **Copy MACs**,
+ *  and **Copy names** (unique newline-joined `who` identities when MACs are sparse —
+ *  Clients / Sites pattern; Loop 228));
  *  fail-reasons and policy-services each offer **Export CSV**. Header **LIVE** stamps
  *  pure live and blend feeds alike.
  * Data: getAuthEvents() — live /api/auth-events when the server is up, fixtures otherwise.
@@ -1012,7 +1015,7 @@ export default function AuthEvents() {
           <div className="nt-configure-bulk-bar nt-bulk-glass" role="region" aria-label="Auth event selection actions">
             <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
             <span className="nt-configure-bulk-bar__hint">
-              export, share, or copy MACs for the decisions you marked — full log export stays in the header
+              export, share, copy MACs, or copy names for the decisions you marked — full log export stays in the header
             </span>
             <span className="nt-configure-bulk-bar__actions">
               <Button
@@ -1128,7 +1131,7 @@ export default function AuthEvents() {
                     ];
                     if (macs.length === 0) {
                       toast('No MACs on the selected events', {
-                        description: 'Those rows did not publish a MAC — export CSV for identities instead.',
+                        description: 'Those rows did not publish a MAC — use Copy names or export CSV instead.',
                         tone: 'info',
                       });
                       return;
@@ -1147,6 +1150,54 @@ export default function AuthEvents() {
                 }}
               >
                 Copy MACs
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const selected = new Set(selectedKeys);
+                    const picked = rows.filter((e, i) =>
+                      selected.has(`${e.time}|${e.mac}|${e.nas}|${i}`),
+                    );
+                    if (picked.length === 0) {
+                      toast('No selected events still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const names = [
+                      ...new Set(
+                        picked
+                          .map((e) => (e.who ?? '').trim())
+                          .filter((name) => name && name !== '—'),
+                      ),
+                    ];
+                    if (names.length === 0) {
+                      toast('No names on the selected events', {
+                        description: 'Those rows did not publish a who identity — export CSV instead.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const text = names.join('\n');
+                    try {
+                      await navigator.clipboard.writeText(text);
+                      toast(`Copied ${names.length} name${names.length === 1 ? '' : 's'}`, {
+                        description:
+                          names.length < picked.length
+                            ? `${picked.length - names.length} selected without a name skipped`
+                            : 'newline-joined · paste into a ticket or NAC lookup',
+                        tone: 'success',
+                      });
+                    } catch {
+                      toast('Could not copy names', { description: text, tone: 'warning' });
+                    }
+                  })();
+                }}
+              >
+                Copy names
               </Button>
               <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
                 Clear
@@ -1189,16 +1240,37 @@ export default function AuthEvents() {
           </EmptyState>
         ) : (
           <EmptyState
-            title="Nothing matches that filter"
+            title={
+              macsFilter !== null
+                ? 'No events match this selection'
+                : 'Nothing matches that filter'
+            }
             description={
-              timeRange === 'all'
-                ? 'Loosen the result, service or plane filter to see more of the log.'
-                : 'Loosen the result, service or plane filter — or widen the time range — to see more of the log.'
+              macsFilter !== null
+                ? 'Clear the selection filter to restore the log under the current result / service / method / role / plane / range filters.'
+                : timeRange === 'all'
+                  ? 'Loosen the result, service or plane filter to see more of the log.'
+                  : 'Loosen the result, service or plane filter — or widen the time range — to see more of the log.'
             }
           >
-            <Button variant="secondary" size="sm" onClick={clearAuthFilters}>
-              Clear filters
-            </Button>
+            {macsFilter !== null ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.delete('macs');
+                  setSearchParams(next, { replace: true });
+                  setSelectedKeys([]);
+                }}
+              >
+                Clear selection filter
+              </Button>
+            ) : (
+              <Button variant="secondary" size="sm" onClick={clearAuthFilters}>
+                Clear filters
+              </Button>
+            )}
           </EmptyState>
         )
       ) : null}

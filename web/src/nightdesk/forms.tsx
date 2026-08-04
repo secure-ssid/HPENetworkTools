@@ -50,7 +50,7 @@ export function Input({ size = 'md', mono, className, id, ...rest }: InputProps)
   return (
     <input
       id={id ?? generatedId}
-      className={cx('nd-input', `nd-input--${size}`, mono && 'nd-input--mono', 'nt-field', className)}
+      className={cx('nd-input', `nd-input--${size}`, mono && 'nd-input--mono', 'nt-input', 'nt-field', className)}
       {...rest}
     />
   );
@@ -63,7 +63,7 @@ export function Textarea({
   ...rest
 }: TextareaHTMLAttributes<HTMLTextAreaElement> & { mono?: boolean }) {
   const generatedId = useId();
-  return <textarea id={id ?? generatedId} className={cx('nd-textarea', mono && 'nd-textarea--mono', 'nt-field', 'nt-field--area', className)} {...rest} />;
+  return <textarea id={id ?? generatedId} className={cx('nd-textarea', mono && 'nd-textarea--mono', 'nt-textarea', 'nt-field', 'nt-field--area', className)} {...rest} />;
 }
 
 /* ---------- Select ---------- */
@@ -118,7 +118,7 @@ export function Checkbox({
   ...rest
 }: Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> & { label?: ReactNode }) {
   return (
-    <label className={cx('nd-checkbox', 'nt-check', className)}>
+    <label className={cx('nd-checkbox', 'nt-check', 'nt-checkbox', className)}>
       <input type="checkbox" {...rest} />
       {label != null ? <span>{label}</span> : null}
     </label>

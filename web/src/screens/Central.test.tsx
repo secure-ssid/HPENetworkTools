@@ -979,3 +979,115 @@ describe('Central Loop 207 residuals', () => {
     ).toBeTruthy();
   });
 });
+
+/* Loop 211 — firmware selection-empty Clear selection filter CTA. */
+describe('Central Loop 211 residuals', () => {
+  it('offers Clear selection filter when firmware serials deep link matches nothing', async () => {
+    const payload: CentralData = {
+      ...demoPayload(),
+      firmware: [
+        {
+          name: 'ap-behind-1',
+          model: 'AP-635',
+          type: 'ap' as const,
+          siteId: 'campus-01' as CentralData['firmware'][number]['siteId'],
+          siteName: 'Campus-01 HQ',
+          serial: 'SN-BEHIND-1',
+          firmware: '10.5.0.0',
+          target: '10.6.0.2',
+          update: 'scheduled',
+        },
+        {
+          name: 'ap-behind-2',
+          model: 'AP-635',
+          type: 'ap' as const,
+          siteId: 'campus-01' as CentralData['firmware'][number]['siteId'],
+          siteName: 'Campus-01 HQ',
+          serial: 'SN-BEHIND-2',
+          firmware: '10.5.0.0',
+          target: '10.6.0.2',
+          update: null,
+        },
+      ],
+    };
+    mockGetCentral.mockResolvedValue(payload);
+    mockGetApps.mockResolvedValue({ kind: 'ok', applications: DEMO_APPS });
+    renderScreen(
+      `/central?section=firmware&serials=${encodeURIComponent('SN-MISSING')}`,
+    );
+    expect(
+      await screen.findByText(/No firmware rows match the selection deep link/i),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => {
+      expect(screen.queryByText(/No firmware rows match the selection deep link/i)).toBeNull();
+      expect(screen.getByTestId('path').textContent).not.toMatch(/serials=/);
+    });
+    expect(await screen.findByText('ap-behind-1')).toBeTruthy();
+    expect(await screen.findByText('ap-behind-2')).toBeTruthy();
+  });
+});
+
+/* Loop 225 — firmware bulk Copy names (non-selection-empty residual). */
+describe('Central Loop 225 residuals', () => {
+  it('Copy names joins unique firmware device names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const payload: CentralData = {
+      ...demoPayload(),
+      firmware: [
+        {
+          name: 'ap-behind-1',
+          model: 'AP-635',
+          type: 'ap' as const,
+          siteId: 'campus-01' as CentralData['firmware'][number]['siteId'],
+          siteName: 'Campus-01 HQ',
+          serial: 'SN-BEHIND-1',
+          firmware: '10.5.0.0',
+          target: '10.6.0.2',
+          update: 'scheduled',
+        },
+        {
+          name: 'ap-behind-2',
+          model: 'AP-635',
+          type: 'ap' as const,
+          siteId: 'campus-01' as CentralData['firmware'][number]['siteId'],
+          siteName: 'Campus-01 HQ',
+          serial: 'SN-BEHIND-2',
+          firmware: '10.5.0.0',
+          target: '10.6.0.2',
+          update: null,
+        },
+      ],
+    };
+    mockGetCentral.mockResolvedValue(payload);
+    mockGetApps.mockResolvedValue({ kind: 'ok', applications: DEMO_APPS });
+
+    const { container } = renderScreen('/central?section=firmware');
+    expect(await screen.findByText('ap-behind-1')).toBeTruthy();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector(
+        '[aria-label="Central firmware behind approved trains"]',
+      ) as HTMLElement | null;
+      if (!el) throw new Error('Central firmware table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Central firmware selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = String(writeText.mock.calls[0]![0] ?? '');
+    expect(text).toContain('ap-behind-1');
+    expect(text).not.toMatch(/serials=/);
+    expect(await screen.findByText(/Copied \d+ name/)).toBeTruthy();
+  });
+});

@@ -1385,6 +1385,41 @@ describe('Compliance Loop 172 residuals', () => {
   });
 });
 
+/* Loop 231 — findings bulk Copy names (titles) beside Copy rules. */
+describe('Compliance Loop 231 residuals', () => {
+  it('Copy names joins unique finding titles from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetCompliance.mockResolvedValue(LIVE_SAME_RULE_TWO_PLANES);
+    const { container } = renderCompliance();
+    expect(
+      (await screen.findAllByText(LIVE_SAME_RULE_TWO_PLANES.findings[0]!.title)).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByText('Device ownership needs reconciliation')).toBeTruthy();
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (let i = 0; i < 3; i++) {
+      (rows[i] as HTMLElement).focus();
+      fireEvent.keyDown(rows[i] as HTMLElement, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'Compliance finding selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    /* Two planes share the firmware title — unique set is two titles. */
+    expect(String(writeText.mock.calls[0]![0])).toBe(
+      'Firmware evidence not reported\nDevice ownership needs reconciliation',
+    );
+    expect(await screen.findByText(/Copied 2 names/)).toBeTruthy();
+  });
+});
+
 /* Loop 177 — bulk Copy selection link (?rules=) + clearable chip. */
 describe('Compliance Loop 177 residuals', () => {
   it('Copy selection link writes rules= and the deep link filters findings', async () => {
@@ -1438,5 +1473,20 @@ describe('Compliance Loop 199 residuals', () => {
       (await screen.findAllByText(LIVE_SAME_RULE_TWO_PLANES.findings[0]!.title)).length,
     ).toBeGreaterThanOrEqual(1);
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});
+
+/* Loop 213 — findings selection-empty Clear selection filter CTA. */
+describe('Compliance Loop 213 residuals', () => {
+  it('offers Clear selection filter when rules deep link matches nothing', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_SAME_RULE_TWO_PLANES);
+    renderCompliance(`/compliance?rules=${encodeURIComponent('missing.rule.zzz')}`);
+    expect(await screen.findByText('No findings match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/rules=/));
+    expect(
+      (await screen.findAllByText(LIVE_SAME_RULE_TWO_PLANES.findings[0]!.title)).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('No findings match this selection')).toBeNull();
   });
 });

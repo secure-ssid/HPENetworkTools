@@ -185,6 +185,36 @@ describe('SiteRogueAps bulk (Loop 193)', () => {
     );
   });
 
+  /* Loop 235 — site rogue bulk Copy names (broadcast SSIDs) beside Copy BSSIDs. */
+  it('Loop 235 Copy names joins unique SSIDs from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    const withDup = [
+      CAM02[0]!,
+      { ...CAM02[0]!, bssid: 'aa:bb:cc:dd:ee:01' },
+      CAM02[1]!,
+    ];
+    renderRogues(<SiteRogueAps rogues={withDup} mistClaimed />);
+
+    const table = screen.getByRole('grid', { name: 'Site rogue and neighbor APs' });
+    const rows = table.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (let i = 0; i < 3; i++) {
+      (rows[i] as HTMLElement).focus();
+      fireEvent.keyDown(rows[i] as HTMLElement, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'Site rogue selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = String(writeText.mock.calls[0]![0]);
+    const expected = [...new Set(withDup.map((r) => r.ssid).filter((s): s is string => !!s))].sort();
+    expect(text.split('\n').sort()).toEqual(expected);
+    expect(await screen.findByText(new RegExp(`Copied ${expected.length} name`))).toBeTruthy();
+  });
+
   it('deep-links ?bssids= and shows a clearable selection chip', async () => {
     const target = CAM02[0]!.bssid;
     render(
@@ -206,5 +236,29 @@ describe('SiteRogueAps bulk (Loop 193)', () => {
     await waitFor(() => {
       if (other?.ssid) expect(screen.getByText(other.ssid)).toBeTruthy();
     });
+  });
+});
+
+/* Loop 220 — selection-empty Clear selection filter CTA. */
+describe('SiteRogueAps Loop 220 residuals', () => {
+  it('offers Clear selection filter when bssids deep link matches nothing', async () => {
+    render(
+      <MemoryRouter
+        initialEntries={[`/sites/campus-02?bssids=${encodeURIComponent('ff:ff:ff:ff:ff:ff')}`]}
+      >
+        <ToastProvider>
+          <SiteRogueAps rogues={CAM02} mistClaimed />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    expect(
+      await screen.findByText(/No rogue BSSIDs match the selection deep link/i),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => {
+      expect(screen.getByText(CAM02[0]!.ssid ?? '')).toBeTruthy();
+    });
+    expect(screen.queryByText(/No rogue BSSIDs match the selection deep link/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Clear selection filter' })).toBeNull();
   });
 });

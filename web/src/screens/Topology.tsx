@@ -34,11 +34,13 @@
  *
  * Filtered **nodes** table multi-select (Loop 186) raises **Export selected**,
  * **Copy serials** (unique newline-joined inventory serials — Devices pattern),
- * **Copy selection link** (`?ids=` of marked node ids — Sites pattern; clearable
- * chip), and **Clear**. Full graph CSV stays in the header. Nodes table carries
- * keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS — Loop 192). Filtered /
- * bare empties offer **Clear filters** / **Inventory** / **Connected systems**
- * (Loop 192). Selection-empty `?ids=` offers **Clear selection filter** (Loop 208).
+ * **Copy names** (unique newline-joined node names for hand-offs when serials are
+ * sparse — Sites pattern; Loop 223), **Copy selection link** (`?ids=` of marked
+ * node ids — Sites pattern; clearable chip), and **Clear**. Full graph CSV stays
+ * in the header. Nodes table carries keyboard shortcuts help
+ * (`?` / DATATABLE_ROW_SHORTCUTS — Loop 192). Filtered / bare empties offer
+ * **Clear filters** / **Inventory** / **Connected systems** (Loop 192).
+ * Selection-empty `?ids=` offers **Clear selection filter** (Loop 208).
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -1370,7 +1372,7 @@ export default function Topology() {
               >
                 <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
                 <span className="nt-configure-bulk-bar__hint">
-                  export, copy serials, or share a selection link for only the nodes you marked — full
+                  export, copy serials / names, or share a selection link for only the nodes you marked — full
                   graph CSV stays in the header
                 </span>
                 <span className="nt-configure-bulk-bar__actions">
@@ -1433,7 +1435,7 @@ export default function Topology() {
                         if (serials.length === 0) {
                           toast('No serials on the selected nodes', {
                             description:
-                              'Those rows did not publish a serial — export CSV for names instead.',
+                              'Those rows did not publish a serial — use Copy names or export CSV instead.',
                             tone: 'info',
                           });
                           return;
@@ -1455,6 +1457,52 @@ export default function Topology() {
                     }}
                   >
                     Copy serials
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(selectedKeys);
+                        const picked = tableNodes.filter((n) => selected.has(n.id));
+                        if (picked.length === 0) {
+                          toast('No selected nodes still in view', {
+                            description: 'Clear selection or adjust filters.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const names = [
+                          ...new Set(
+                            picked
+                              .map((n) => (n.name ?? '').trim())
+                              .filter((name) => name && name !== '—'),
+                          ),
+                        ];
+                        if (names.length === 0) {
+                          toast('No names on the selected nodes', {
+                            description: 'Those rows did not publish a name — export CSV instead.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const text = names.join('\n');
+                        try {
+                          await navigator.clipboard.writeText(text);
+                          toast(`Copied ${countOf(names.length, 'name')}`, {
+                            description:
+                              names.length < picked.length
+                                ? `${picked.length - names.length} selected without a name skipped`
+                                : 'newline-joined · paste into a ticket or change window',
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy names', { description: text, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy names
                   </Button>
                   <Button
                     variant="ghost"

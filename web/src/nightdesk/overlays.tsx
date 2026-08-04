@@ -77,7 +77,7 @@ export function Modal({
       />
       <div
         ref={panelRef}
-        className={cx('nd-modal', 'nt-modal-panel', className)}
+        className={cx('nd-modal', 'nt-modal', 'nt-modal-panel', className)}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -232,7 +232,7 @@ export function Tabs({
 
 export function TabsList({ children, className, 'aria-label': ariaLabel }: { children: ReactNode; className?: string; 'aria-label'?: string }) {
   return (
-    <div className={cx('nd-tabs__list', className)} role="tablist" aria-label={ariaLabel}>
+    <div className={cx('nd-tabs__list', 'nt-tabs__list', className)} role="tablist" aria-label={ariaLabel}>
       {children}
     </div>
   );
@@ -352,7 +352,7 @@ export function MenuItem({
     <button
       type="button"
       role="menuitem"
-      className={cx('nd-menu__item', 'nt-menu__item', danger && 'nd-menu__item--danger')}
+      className={cx('nd-menu__item', 'nt-menu__item', danger && 'nd-menu__item--danger', danger && 'nt-menu__item--danger')}
       disabled={disabled}
       onClick={() => onSelect?.()}
     >

@@ -21,7 +21,8 @@
  * Main column: the class block, Active diagnostics, Clients on this device
  * (multi-select **Export selected** / **Copy MACs** / Clear — Loop 180;
  * header `KeyboardShortcuts` surfaces the ports/clients grid map — Loop 199;
- * ports selection-empty `?ports=` offers **Clear selection filter** — Loop 207),
+ *  ports selection-empty `?ports=` offers **Clear selection filter** — Loop 207;
+ *  clients selection-empty `?macs=` offers **Clear selection filter** — Loop 217),
  * then the Local terminal (web/src/lib/TerminalPane —
  * shell-capable devices first try the recorded-SSH WebSocket transport from
  * web/src/lib/wsTerminal.ts, falling back to the canned demo transport when

@@ -17,12 +17,15 @@
  * click again to clear. A **Severity** chip row (counts over q+site+status —
  * Loop 146) toggles the same `?severity=`. A **Site** chip row (counts over
  * loaded q+status+severity — Loop 151) toggles the same `?site=`. Filtered
- * empties offer **Clear filters**. Header **LIVE** stamps pure live and blend
+ * empties offer **Clear filters**. Selection-empty `?ids=` offers **Clear
+ * selection filter** (Loop 210). Header **LIVE** stamps pure live and blend
  * feeds alike. Multi-select raises **Export selected**, **Copy serials**
  * (unique newline-joined published serials for ticket/RMA paste — Devices
- * **Copy serials** pattern; Loop 169), **Copy selection link** (`?ids=` of
- * marked sensor ids — Sites `?ids=` pattern; clearable chip while active;
- * Loop 175), and **Clear** so operators can hand off only the sensors they marked.
+ * **Copy serials** pattern; Loop 169), **Copy names** (unique newline-joined
+ * sensor names when serials are sparse — Sites / Topology pattern; Loop 226),
+ * **Copy selection link** (`?ids=` of marked sensor ids — Sites `?ids=` pattern;
+ * clearable chip while active; Loop 175), and **Clear** so operators can hand
+ * off only the sensors they marked.
  * Sensors table carries keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS —
  * Loop 192).
  *
@@ -710,18 +713,59 @@ function UxiView({
         </Alert>
       ) : null}
 
+      {idsFilter !== null ? (
+        <div className="nt-chip-row" role="group" aria-label="Selection deep link">
+          <button
+            type="button"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete('ids');
+              setSearchParams(next, { replace: true });
+              setSelectedKeys([]);
+            }}
+            title={idsFilter.join(', ')}
+            className="nt-chip nt-chip--active"
+          >
+            {idsPresent === idsFilter.length
+              ? `${idsFilter.length} selected sensor${idsFilter.length === 1 ? '' : 's'}`
+              : `${idsPresent} of ${idsFilter.length} selected sensors present`}
+            {' — clear'}
+          </button>
+        </div>
+      ) : null}
       {rows.length === 0 ? (
         <EmptyState
-          title={filtersActive ? 'No sensors match this filter' : 'No UXI sensors'}
+          title={
+            idsFilter !== null
+              ? 'No sensors match this selection'
+              : filtersActive
+                ? 'No sensors match this filter'
+                : 'No UXI sensors'
+          }
           description={
-            filtersActive
-              ? 'Nothing in the filtered fleet matches. Clear filters to widen the view.'
-              : data.dataSource === 'live'
-                ? 'UXI has not returned any sensors yet — check Connected systems.'
-                : 'HPE Aruba UXI is not linked in this workspace.'
+            idsFilter !== null
+              ? 'Clear the selection filter to restore the sensor fleet under the current search / status / site / severity filters.'
+              : filtersActive
+                ? 'Nothing in the filtered fleet matches. Clear filters to widen the view.'
+                : data.dataSource === 'live'
+                  ? 'UXI has not returned any sensors yet — check Connected systems.'
+                  : 'HPE Aruba UXI is not linked in this workspace.'
           }
         >
-          {filtersActive ? (
+          {idsFilter !== null ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.delete('ids');
+                setSearchParams(next, { replace: true });
+                setSelectedKeys([]);
+              }}
+            >
+              Clear selection filter
+            </Button>
+          ) : filtersActive ? (
             <Button variant="secondary" size="sm" onClick={clearUxiFilters}>
               Clear filters
             </Button>
@@ -740,25 +784,6 @@ function UxiView({
                 ? countOf(rows.length, 'sensor')
                 : `${rows.length} of ${sensors.length} loaded sensors`}
           </div>
-          {idsFilter !== null ? (
-            <div className="nt-chip-row" role="group" aria-label="Selection deep link">
-              <button
-                type="button"
-                onClick={() => {
-                  const next = new URLSearchParams(searchParams);
-                  next.delete('ids');
-                  setSearchParams(next, { replace: true });
-                }}
-                title={idsFilter.join(', ')}
-                className="nt-chip nt-chip--active"
-              >
-                {idsPresent === idsFilter.length
-                  ? `${idsFilter.length} selected sensor${idsFilter.length === 1 ? '' : 's'}`
-                  : `${idsPresent} of ${idsFilter.length} selected sensors present`}
-                {' — clear'}
-              </button>
-            </div>
-          ) : null}
           <div className="nt-row-between">
             <span className="nd-micro-label nt-micro-label">Sensor fleet</span>
             <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
@@ -778,7 +803,7 @@ function UxiView({
             <div className="nt-configure-bulk-bar nt-bulk-glass" role="region" aria-label="UXI sensor selection actions">
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy serials, or share a selection link for the sensors you marked — full list export stays in the header
+                export, copy serials/names, or share a selection link for the sensors you marked — full list export stays in the header
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -853,7 +878,7 @@ function UxiView({
                       }
                       if (serials.length === 0) {
                         toast('No serials on the selected sensors', {
-                          description: 'Those rows did not publish a serial — export CSV for names instead.',
+                          description: 'Those rows did not publish a serial — use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -875,6 +900,52 @@ function UxiView({
                   }}
                 >
                   Copy serials
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((s) => selected.has(s.id));
+                      if (picked.length === 0) {
+                        toast('No selected sensors still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((s) => (s.name ?? '').trim())
+                            .filter((name) => name && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected sensors', {
+                          description: 'Those rows did not publish a name — export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = names.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(names.length, 'name')}`, {
+                          description:
+                            names.length < picked.length
+                              ? `${picked.length - names.length} selected without a name skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy names', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy names
                 </Button>
                 <Button
                   variant="ghost"

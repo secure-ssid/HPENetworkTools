@@ -17,8 +17,12 @@
  * demo world serves the authored registered state and says so.
  *
  * Audit multi-select (Loop 193) raises **Export selected**, **Copy admins**
- * (unique newline-joined), **Copy selection link** (`?auditIds=` + section=audit;
- * clearable chip), and Clear. before/after snapshots stay redacted-only.
+ * (unique newline-joined), **Copy messages** (unique newline-joined change
+ * summaries when admin emails alone are sparse for a handoff — Alerts **Copy
+ * titles** pattern; Loop 235), **Copy selection link** (`?auditIds=` +
+ * section=audit; clearable chip), and Clear. Selection-empty `?auditIds=`
+ * offers **Clear selection filter** (Loop 213). before/after snapshots stay
+ * redacted-only.
  */
 
 import { useEffect, useState } from 'react';
@@ -269,9 +273,25 @@ export function AuditLogSection({ audit, error }: { audit: MistAuditLogLive | nu
             </div>
           ) : null}
           {entries.length === 0 ? (
-            <div className="nt-service-note">
-              No audit entries match the selection deep link — clear the chip to restore the full
-              org trail.
+            <div className="nt-stack nt-gap-8">
+              <div className="nt-service-note">
+                No audit entries match the selection deep link — clear the selection filter to
+                restore the full org trail.
+              </div>
+              <div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('auditIds');
+                    setSearchParams(next, { replace: true });
+                    setSelectedKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              </div>
             </div>
           ) : (
             <DataTable
@@ -291,8 +311,8 @@ export function AuditLogSection({ audit, error }: { audit: MistAuditLogLive | nu
             >
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy admins, or share a selection link for only the entries you marked — full
-                list export stays in the header (secrets already redacted)
+                export, copy admins or messages, or share a selection link for only the entries you
+                marked — full list export stays in the header (secrets already redacted)
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -344,7 +364,8 @@ export function AuditLogSection({ audit, error }: { audit: MistAuditLogLive | nu
                       ];
                       if (admins.length === 0) {
                         toast('No admins on the selected entries', {
-                          description: 'Those rows did not publish an admin — export CSV instead.',
+                          description:
+                            'Those rows did not publish an admin — use Copy messages or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -381,6 +402,52 @@ export function AuditLogSection({ audit, error }: { audit: MistAuditLogLive | nu
                         });
                         return;
                       }
+                      const messages = [
+                        ...new Set(
+                          picked
+                            .map((e) => (e.message ?? '').trim())
+                            .filter((msg) => msg.length > 0),
+                        ),
+                      ];
+                      if (messages.length === 0) {
+                        toast('No messages on the selected entries', {
+                          description: 'Use Copy admins or export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = messages.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(messages.length, 'message')}`, {
+                          description:
+                            messages.length < picked.length
+                              ? `${picked.length - messages.length} selected without a message skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy messages', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy messages
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = entries.filter((e) => selected.has(auditRowKey(e)));
+                      if (picked.length === 0) {
+                        toast('No selected audit entries still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
                       const ids = [
                         ...new Set(
                           picked
@@ -390,7 +457,7 @@ export function AuditLogSection({ audit, error }: { audit: MistAuditLogLive | nu
                       ];
                       if (ids.length === 0) {
                         toast('No ids on the selected entries', {
-                          description: 'Export CSV for row detail instead.',
+                          description: 'Use Copy messages or export CSV instead.',
                           tone: 'info',
                         });
                         return;

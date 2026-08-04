@@ -2,7 +2,12 @@
  * web/src/screens/Recommendations.tsx — full-page read-only config hygiene.
  *
  * Deep-link filters: `?device=&site=&client=&severity=&category=` plus bulk
- * selection `?ids=` (Loop 186 — panel **Copy selection link**). Suggestions
+ * selection `?ids=` (Loop 186 — panel **Copy selection link**). When only
+ * `?ids=` is active the header offers **Clear selection filter** (Loop 220);
+ * mixed triage still says **Clear filters**. Panel selection-empty deep links
+ * keep their own CTA (Loop 205). Panel scope-filter empties offer **Clear filters**
+ * via the same strip reset (Loop 222). Header `KeyboardShortcuts` surfaces the
+ * multi-select grid map (`?` / DATATABLE_ROW_SHORTCUTS — Loop 234). Suggestions
  * never auto-apply; cards only hand off to existing screens. Server CSV via
  * `/api/recommendations/export` (same filters). Visual references attach
  * operator floorplans/docs beside the hygiene list (not telemetry).
@@ -11,7 +16,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { RecommendationCategory, RecommendationSeverity } from '@hpe/shared';
-import { Alert, Badge, Button, Input, Select, useToast } from '../nightdesk';
+import {
+  Alert,
+  Badge,
+  Button,
+  DATATABLE_ROW_SHORTCUTS,
+  Input,
+  KeyboardShortcuts,
+  Select,
+  useToast,
+} from '../nightdesk';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { recommendationsPath } from '../app/nav';
@@ -232,13 +246,15 @@ export default function Recommendations() {
   const scopedSeverity = severity !== 'all' ? severity : undefined;
   const scopedCategory = category !== 'all' ? category : undefined;
   const idsActive = Boolean((searchParams.get('ids') ?? '').trim());
-  const filtersActive =
+  const scopeFiltersActive =
     Boolean(device.trim()) ||
     Boolean(site.trim()) ||
     Boolean(client.trim()) ||
     severity !== 'all' ||
-    category !== 'all' ||
-    idsActive;
+    category !== 'all';
+  const filtersActive = scopeFiltersActive || idsActive;
+  /** Header labels selection-only clears apart from mixed triage (Loop 220). */
+  const selectionOnlyActive = idsActive && !scopeFiltersActive;
   const sevChips = SEV_CHIP_META.map((m) => ({
     ...m,
     count: sevCounts[m.key] ?? 0,
@@ -247,17 +263,19 @@ export default function Recommendations() {
     ...m,
     count: catCounts[m.key] ?? 0,
   })).filter((c) => c.count > 0 || category === c.key);
+  const clearSelectionFilter = () => {
+    if (!idsActive) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('ids');
+    setSearchParams(next, { replace: true });
+  };
   const clearFilters = () => {
     setDevice('');
     setSite('');
     setClient('');
     setSeverity('all');
     setCategory('all');
-    if (idsActive) {
-      const next = new URLSearchParams(searchParams);
-      next.delete('ids');
-      setSearchParams(next, { replace: true });
-    }
+    clearSelectionFilter();
   };
 
   return (
@@ -278,9 +296,14 @@ export default function Recommendations() {
             <Button variant="secondary" size="sm" onClick={downloadServerCsv}>
               Download server CSV
             </Button>
+            <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
             {filtersActive ? (
-              <Button variant="ghost" size="sm" onClick={clearFilters}>
-                Clear filters
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={selectionOnlyActive ? clearSelectionFilter : clearFilters}
+              >
+                {selectionOnlyActive ? 'Clear selection filter' : 'Clear filters'}
               </Button>
             ) : null}
           </>
@@ -402,6 +425,7 @@ export default function Recommendations() {
         category={scopedCategory}
         limit={50}
         showCopyLink={false}
+        onClearFilters={clearFilters}
       />
     </div>
   );

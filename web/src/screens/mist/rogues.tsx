@@ -12,8 +12,11 @@
  * rules as the site section (absent = not reported, empty = a real answer).
  *
  * Multi-select (Loop 193) raises **Export selected**, **Copy BSSIDs**
- * (unique newline-joined), **Copy selection link** (`?bssids=` + section=rogues;
- * clearable chip), and Clear.
+ * (unique newline-joined), **Copy names** (unique newline-joined SSIDs when
+ * BSSIDs alone are sparse for a handoff — Devices **Copy names** pattern;
+ * Loop 234), **Copy selection link** (`?bssids=` + section=rogues;
+ * clearable chip), and Clear. Selection-empty `?bssids=` offers
+ * **Clear selection filter** (Loop 211).
  */
 
 import { useState } from 'react';
@@ -262,9 +265,25 @@ export function EstateRogueAps({ rogues }: { rogues: MistRogueApRow[] | undefine
             </Alert>
           ) : null}
           {rows.length === 0 ? (
-            <div className="nt-service-note">
-              No rogue BSSIDs match the selection deep link — clear the chip to restore the full
-              estate list.
+            <div className="nt-stack nt-gap-8">
+              <div className="nt-service-note">
+                No rogue BSSIDs match the selection deep link — clear the selection filter to
+                restore the full estate list.
+              </div>
+              <div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('bssids');
+                    setSearchParams(next, { replace: true });
+                    setSelectedKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              </div>
             </div>
           ) : (
             <DataTable
@@ -285,8 +304,8 @@ export function EstateRogueAps({ rogues }: { rogues: MistRogueApRow[] | undefine
             >
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy BSSIDs, or share a selection link for only the rogues you marked — full
-                list export stays in the header
+                export, copy BSSIDs or SSIDs, or share a selection link for only the rogues you marked
+                — full list export stays in the header
               </span>
               <span className="nt-configure-bulk-bar__actions">
                 <Button
@@ -338,7 +357,7 @@ export function EstateRogueAps({ rogues }: { rogues: MistRogueApRow[] | undefine
                       ];
                       if (bssids.length === 0) {
                         toast('No BSSIDs on the selected rogues', {
-                          description: 'Export CSV for row detail instead.',
+                          description: 'Use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;
@@ -375,6 +394,53 @@ export function EstateRogueAps({ rogues }: { rogues: MistRogueApRow[] | undefine
                         });
                         return;
                       }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((r) => (r.ssid ?? '').trim())
+                            .filter((name) => name.length > 0 && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected rogues', {
+                          description:
+                            'Those rows did not publish an SSID — use Copy BSSIDs or export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = names.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(names.length, 'name')}`, {
+                          description:
+                            names.length < picked.length
+                              ? `${picked.length - names.length} selected without an SSID skipped`
+                              : 'newline-joined · paste into a ticket or handoff',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy names', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy names
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((r) => selected.has(rogueRowKey(r)));
+                      if (picked.length === 0) {
+                        toast('No selected rogues still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
                       const bssids = [
                         ...new Set(
                           picked
@@ -384,7 +450,7 @@ export function EstateRogueAps({ rogues }: { rogues: MistRogueApRow[] | undefine
                       ];
                       if (bssids.length === 0) {
                         toast('No BSSIDs on the selected rogues', {
-                          description: 'Export CSV for row detail instead.',
+                          description: 'Use Copy names or export CSV instead.',
                           tone: 'info',
                         });
                         return;
