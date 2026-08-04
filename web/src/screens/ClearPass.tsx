@@ -74,6 +74,7 @@ import {
 } from '../api/clearpass';
 import type { ClearPassEndpointPage } from '../api/clearpass';
 import { isApiError } from '../api/core';
+import { getSystemsState, type SystemsState } from '../api/systems';
 import { useSettings } from '../app/SettingsContext';
 import { useLabConfigMode } from '../hooks/useLabConfigMode';
 import { hhmmssLocal, hhmmLocal, formatCount, normalizeMac, detailState } from '@hpe/shared';
@@ -135,6 +136,7 @@ export default function ClearPass() {
   const { lab } = useLabConfigMode();
   const [data, setData] = useState<ClearPassData | null>(null);
   const [endpointPage, setEndpointPage] = useState<ClearPassEndpointPage | null>(null);
+  const [systemsState, setSystemsState] = useState<SystemsState | null>(null);
   const [tab, setTab] = useState<ClearPassTab>('endpoints');
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('all');
@@ -161,6 +163,9 @@ export default function ClearPass() {
     endpointPageMountedRef.current = true;
     void requestData();
     void requestEndpointPage(0, 50);
+    void getSystemsState().then((state) => {
+      if (dataMountedRef.current) setSystemsState(state);
+    });
     return () => {
       dataMountedRef.current = false;
       dataRequestSeqRef.current += 1;
@@ -193,6 +198,8 @@ export default function ClearPass() {
       category={category}
       setCategory={setCategory}
       endpointPage={endpointPage}
+      clearpassHealth={systemsState?.planes?.clearpass?.health ?? null}
+      clearpassNote={systemsState?.planes?.clearpass?.note ?? null}
       loadEndpointPage={(offset) => requestEndpointPage(offset, 50)}
       refreshEndpointPage={async () => {
         const page = endpointPage;
@@ -235,6 +242,8 @@ function ClearPassView({
   category,
   setCategory,
   endpointPage,
+  clearpassHealth,
+  clearpassNote,
   loadEndpointPage,
   refreshEndpointPage,
   reload,
@@ -254,6 +263,8 @@ function ClearPassView({
   category: string;
   setCategory: (v: string) => void;
   endpointPage: ClearPassEndpointPage | null;
+  clearpassHealth: 'healthy' | 'degraded' | 'warning' | 'unlinked' | null;
+  clearpassNote: string | null;
   loadEndpointPage: (offset: number) => Promise<void>;
   refreshEndpointPage: () => Promise<void>;
   /** Live mode: re-fetch the whole envelope after a landed write. */
@@ -274,7 +285,7 @@ function ClearPassView({
     if (!canWrite && writeDrawer !== null) setWriteDrawer(null);
   }
   /** The table only ever sees this one on-demand page, never the screen cache. */
-  const endpoints = endpointPage?.endpoints ?? [];
+  const endpoints = useMemo(() => endpointPage?.endpoints ?? [], [endpointPage?.endpoints]);
   const loadedEndpointCount = endpoints.length;
   const authEvents = data.authEvents;
   const missingSources = data.missingSources ?? [];
@@ -330,6 +341,30 @@ function ClearPassView({
       />
 
       <StatRow stats={stats} />
+
+      {data.dataSource === 'live' && clearpassHealth && clearpassHealth !== 'healthy' ? (
+        <Alert
+          tone={clearpassHealth === 'unlinked' ? 'info' : 'warning'}
+          title={
+            clearpassHealth === 'unlinked'
+              ? 'ClearPass is not linked'
+              : `ClearPass connector is ${clearpassHealth}`
+          }
+        >
+          <span style={{ fontSize: 13 }}>
+            {clearpassNote
+              ? clearpassNote
+              : clearpassHealth === 'unlinked'
+                ? 'Link ClearPass under Connected systems to pull the endpoint repository and auth feed.'
+                : 'Empty tables below are not proof that CPPM has no endpoints — the connector could not complete a healthy pull. Repair credentials or TLS on Connected systems, then retest.'}
+          </span>
+          <div style={{ marginTop: 10 }}>
+            <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
+              Open Connected systems
+            </Button>
+          </div>
+        </Alert>
+      ) : null}
 
       {missingSources.length > 0 ? (
         <Alert

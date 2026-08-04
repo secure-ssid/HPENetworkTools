@@ -431,7 +431,7 @@ function stateFor(raw: string | null): 'open' | 'acked' | 'cleared' {
 function canonicalMac(raw: unknown): string | null {
   const value = str(raw);
   if (!value) return null;
-  const compact = value.toLowerCase().replace(/[:.\-]/g, '');
+  const compact = value.toLowerCase().replace(/[:.-]/g, '');
   if (!/^[0-9a-f]{12}$/.test(compact)) return null;
   return compact.match(/.{2}/g)!.join(':');
 }

@@ -26,7 +26,7 @@ function validIso(value: string): boolean {
 }
 
 function compactMac(value: string): string | null {
-  const compact = value.trim().toLowerCase().replace(/[:.\-]/g, '');
+  const compact = value.trim().toLowerCase().replace(/[:.-]/g, '');
   return /^[0-9a-f]{12}$/.test(compact) ? compact : null;
 }
 

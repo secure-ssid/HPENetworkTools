@@ -63,6 +63,9 @@ import {
   liveTopologyLinkFact,
 } from './SiteTopology';
 import { SiteFloorPlan } from './siteDetail/FloorPlan';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
+import { ConfigActionPanel } from '../components/ConfigActionPanel';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { SiteRogueAps } from './siteDetail/RogueAps';
 import { SiteSle } from './siteDetail/Sle';
 import { SiteApplications } from './siteDetail/Applications';
@@ -750,6 +753,10 @@ export default function SiteDetail() {
 
         <SiteFloorPlan maps={sections.maps} clients={sections.mapClients} mistClaimed={mistClaimed} />
 
+        <VisualReferencePanel target={{ kind: 'site', id: String(site.id) }} />
+        <ConfigActionPanel targetKind="ssid" plane={mistClaimed ? 'MIST' : centralClaimed ? 'CENTRAL' : undefined} target={{ kind: 'site', id: String(site.id) }} />
+        <ConfigRecommendationsPanel site={String(site.name ?? site.id)} />
+
         <SiteRogueAps rogues={sections.rogues} mistClaimed={mistClaimed} />
 
         <SiteApplications centralClaimed={centralClaimed} siteKey={String(site.id)} />
@@ -967,6 +974,10 @@ export default function SiteDetail() {
           ) : null}
 
           <SiteFloorPlan maps={detail.maps} clients={detail.mapClients} mistClaimed={mistClaimed} />
+
+          <VisualReferencePanel target={{ kind: 'site', id: String(site.id) }} />
+          <ConfigActionPanel targetKind="ssid" plane={mistClaimed ? 'MIST' : centralClaimed ? 'CENTRAL' : undefined} target={{ kind: 'site', id: String(site.id) }} />
+          <ConfigRecommendationsPanel site={String(site.name ?? site.id)} />
 
           <SiteRogueAps rogues={sections.rogues} mistClaimed={mistClaimed} />
 

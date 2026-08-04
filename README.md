@@ -130,6 +130,7 @@ writes never bypasses them.
 | [User guide](docs/user-guide.md) | Daily navigation, SSIDs, diagnostics, SSE, and webhooks |
 | [Security](docs/security.md) | Secret handling, reviews, recovery, and operational safeguards |
 | [Design reference](docs/design-reference.md) | Archived interface specification and design notes |
+| [UI & API improvements](docs/ui-api-improvements-report.md) | Prioritized UI/API backlog and delivery sequence |
 
 ## Screenshots
 

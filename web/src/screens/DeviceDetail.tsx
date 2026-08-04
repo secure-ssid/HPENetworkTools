@@ -98,6 +98,10 @@ import { TerminalPane, createCannedTransport } from '../lib/TerminalPane';
 import { createWsTransport } from '../lib/wsTerminal';
 import type { AsyncTerminalTransport, TerminalSessionIdentity } from '../lib/wsTerminal';
 import { DiagnosticsPanel } from '../components/DiagnosticsPanel';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
+import { ConfigActionPanel } from '../components/ConfigActionPanel';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { DeviceTypeBadge } from '../components/DeviceTypeBadge';
 import { ApiErrorState } from './ApiErrorState';
 import { RecordedSessions } from './deviceDetail/RecordedSessions';
 import {
@@ -650,6 +654,7 @@ export default function DeviceDetail() {
               <Badge tone={device.stateTone} dot>
                 {device.state}
               </Badge>
+              <DeviceTypeBadge type={device.type} model={device.model} name={device.name} showFamily showRole />
               {showPlatformTags ? <Badge tone={device.planeTone}>{device.plane}</Badge> : null}
               <span
                 style={{
@@ -741,6 +746,24 @@ export default function DeviceDetail() {
               <SectionHeader label="Active diagnostics" meta="NEW CENTRAL · REVIEWED" />
               <DiagnosticsPanel deviceName={device.name} plane={device.plane} serial={device.serial ?? null} />
             </div>
+
+            <VisualReferencePanel
+              target={{
+                kind: 'device',
+                id: device.serial ?? device.name,
+                plane: device.plane,
+              }}
+            />
+            <ConfigActionPanel
+              plane={device.plane}
+              targetKind="device"
+              target={{
+                kind: 'device',
+                id: device.serial ?? device.name,
+                plane: device.plane,
+              }}
+            />
+            <ConfigRecommendationsPanel device={device.name} site={device.siteName} />
 
             <div>
               <SectionHeader label="Clients on this device" meta={clients?.meta} />
@@ -1103,6 +1126,24 @@ export default function DeviceDetail() {
               </Button>
             </div>
           </div>
+
+          <VisualReferencePanel
+            target={{
+              kind: 'device',
+              id: device?.serial ?? profile.name,
+              plane: device?.plane ?? profile.plane,
+            }}
+          />
+          <ConfigActionPanel
+            plane={device?.plane ?? profile.plane}
+            targetKind="device"
+            target={{
+              kind: 'device',
+              id: device?.serial ?? profile.name,
+              plane: device?.plane ?? profile.plane,
+            }}
+          />
+          <ConfigRecommendationsPanel device={profile.name} site={device?.siteName} />
 
           <TerminalPane
             key={profile.name}

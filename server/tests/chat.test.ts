@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

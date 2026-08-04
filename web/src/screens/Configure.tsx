@@ -30,7 +30,7 @@
  * offline fallback.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -324,7 +324,7 @@ export default function Configure() {
   const [ssidApplying, setSsidApplying] = useState(false);
   const [ssidApplyResult, setSsidApplyResult] = useState<{ result?: SsidApplyResult; error?: string } | null>(null);
   const [ssidDeepLinkWarning, setSsidDeepLinkWarning] = useState<string | null>(null);
-  const [handledSsidLocationKey, setHandledSsidLocationKey] = useState<string | null>(null);
+  const handledSsidLocationKeyRef = useRef<string | null>(null);
   // Blend mode swaps this screen's inventory to observed live rows while the
   // envelope still reads 'demo' (README §blendLive), so every live-flavoured
   // affordance follows the section, not the envelope's overall dataSource.
@@ -583,6 +583,66 @@ export default function Configure() {
       .filter((group) => group.device.toLowerCase().includes(query) || group.ports.length > 0);
   }, [portQuery, switchGroups]);
 
+  /** Load the editor's live scope/dependency catalog — called every time the
+   *  SSID drawer opens (and every time its plane changes), never cached
+   *  across opens (a stale catalog could offer a scope or profile id the
+   *  plane no longer has). */
+  const loadSsidCatalog = useCallback(async (plane: 'mist' | 'central') => {
+    setSsidCatalogLoading(true);
+    setSsidCatalogError(null);
+    const r = await getSsidCatalog(plane);
+    setSsidCatalogLoading(false);
+    if (isApiError(r)) {
+      setSsidCatalogError(r.error);
+      setSsidCatalog(null);
+      return;
+    }
+    if (r === null) {
+      setSsidCatalogError('The portal backend did not answer — reconnect it, then reopen this drawer.');
+      setSsidCatalog(null);
+      return;
+    }
+    setSsidCatalog(r);
+  }, []);
+
+  // -- drawer openers: seed the form over its current state ------------------
+  const openSsid = useCallback((row?: SsidObject) => {
+    const seeded: SsidForm = {
+      ...(liveMode ? LIVE_SSID_FORM : DEFAULT_SSID_FORM),
+      ...(row
+        ? seedFormFromRow('ssid', row)
+        : liveMode
+          ? {}
+          : { name: 'MRDN-New', vlan: '830', security: 'wpa3-enterprise' as SsidSecurity }),
+      // Never invent scope/dependency selections for an edited row — the
+      // catalog read above is what the operator picks from, not a guess.
+      scopeIds: [],
+      defaultRole: undefined,
+      authServerGroupId: undefined,
+      captivePortalProfileId: undefined,
+      passphrase: undefined,
+    };
+    setSsid(seeded);
+    setKind('ssid');
+    setSsidReviewed(false);
+    setSsidApplyResult(null);
+    void loadSsidCatalog(ssidPlaneOf(seeded));
+  }, [liveMode, loadSsidCatalog]);
+
+  const handleDeepLink = useCallback(
+    (params: URLSearchParams) => {
+      const identity = parseSsidDeepLink(params);
+      const row = identity && data ? locateSsidDeepLink(data.ssids, identity) : null;
+      if (row) {
+        setSsidDeepLinkWarning(null);
+        openSsid({ ...row, plane: identity!.plane });
+      } else {
+        setSsidDeepLinkWarning('The requested WLAN is no longer an exact loaded inventory row. Nothing was opened.');
+      }
+    },
+    [data, openSsid],
+  );
+
   /** A WLAN URL is a pointer to an already-loaded inventory row, never a form
    * payload. Resolve it once after data arrives; a stale or malformed pointer
    * gets an honest warning rather than query text becoming a writable SSID. */
@@ -591,24 +651,15 @@ export default function Configure() {
     // only after the loading return below. Wait for the full screen payload.
     if (!data || !queue) return;
     const params = new URLSearchParams(location.search);
-    if (!params.getAll('edit').includes('ssid') || handledSsidLocationKey === location.key) return;
+    if (!params.getAll('edit').includes('ssid') || handledSsidLocationKeyRef.current === location.key) return;
 
-    setHandledSsidLocationKey(location.key);
-    const identity = parseSsidDeepLink(params);
-    const row = identity ? locateSsidDeepLink(data.ssids, identity) : null;
-    if (row) {
-      setSsidDeepLinkWarning(null);
-      // The row supplies every writable value, while the already-validated
-      // link plane selects which owner flow/catalog opens for a shared row.
-      openSsid({ ...row, plane: identity!.plane });
-    } else {
-      setSsidDeepLinkWarning('The requested WLAN is no longer an exact loaded inventory row. Nothing was opened.');
-    }
+    handledSsidLocationKeyRef.current = location.key;
+    handleDeepLink(params);
 
     for (const key of ['edit', 'plane', 'name', 'vlan', 'targets']) params.delete(key);
     const search = params.toString();
     navigate({ pathname: location.pathname, search: search ? `?${search}` : '', hash: location.hash }, { replace: true });
-  }, [data, handledSsidLocationKey, location, navigate, queue]);
+  }, [data, handleDeepLink, location, navigate, queue]);
 
   const toggleSwitch = (key: string) => {
     setExpandedSwitches((current) => {
@@ -717,29 +768,6 @@ export default function Configure() {
     },
   ];
 
-  // -- drawer openers: seed the form over its current state ------------------
-  function openSsid(row?: SsidObject) {
-    const seeded: SsidForm = {
-      ...(liveMode ? LIVE_SSID_FORM : DEFAULT_SSID_FORM),
-      ...(row
-        ? seedFormFromRow('ssid', row)
-        : liveMode
-          ? {}
-          : { name: 'MRDN-New', vlan: '830', security: 'wpa3-enterprise' as SsidSecurity }),
-      // Never invent scope/dependency selections for an edited row — the
-      // catalog read above is what the operator picks from, not a guess.
-      scopeIds: [],
-      defaultRole: undefined,
-      authServerGroupId: undefined,
-      captivePortalProfileId: undefined,
-      passphrase: undefined,
-    };
-    setSsid(seeded);
-    setKind('ssid');
-    setSsidReviewed(false);
-    setSsidApplyResult(null);
-    void loadSsidCatalog(ssidPlaneOf(seeded));
-  }
   /**
    * The drawer's plane choice (offered only when the deployment reported a
    * Mist direct-write path). Switching planes clears every plane-scoped
@@ -787,28 +815,6 @@ export default function Configure() {
     );
     setGenericSource(row?.origin === 'configured' ? 'configured' : row ? 'observed' : 'new');
     setKind('vlan');
-  };
-
-  /** Load the editor's live scope/dependency catalog — called every time the
-   *  SSID drawer opens (and every time its plane changes), never cached
-   *  across opens (a stale catalog could offer a scope or profile id the
-   *  plane no longer has). */
-  const loadSsidCatalog = async (plane: 'mist' | 'central') => {
-    setSsidCatalogLoading(true);
-    setSsidCatalogError(null);
-    const r = await getSsidCatalog(plane);
-    setSsidCatalogLoading(false);
-    if (isApiError(r)) {
-      setSsidCatalogError(r.error);
-      setSsidCatalog(null);
-      return;
-    }
-    if (r === null) {
-      setSsidCatalogError('The portal backend did not answer — reconnect it, then reopen this drawer.');
-      setSsidCatalog(null);
-      return;
-    }
-    setSsidCatalog(r);
   };
 
   // -- queue actions ----------------------------------------------------------

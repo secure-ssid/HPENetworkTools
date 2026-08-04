@@ -44,6 +44,7 @@ import { deviceDetailPath } from '../app/nav';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
+import { Topology3DCanvas } from './Topology3DCanvas';
 
 export const UNFILED_KEY = '__filed-nowhere__';
 
@@ -717,10 +718,24 @@ function topologyStats(graph: TopologyGraph, dataSource: string): StatDef[] {
   ];
 }
 
+function hasWebGLSupport(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const canvas = document.createElement('canvas');
+    return Boolean(
+      window.WebGLRenderingContext &&
+        (canvas.getContext('webgl') || canvas.getContext('experimental-webgl'))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default function Topology() {
   const navigate = useNavigate();
   const { pollIntervalSec } = useSettings();
   const [data, setData] = useState<TopologyData | null>(null);
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>(() => (hasWebGLSupport() ? '3d' : '2d'));
 
   /* Same poll cadence as Sites: the footer stamps a sync time, so a NOC tab
      must not sit on a mount-time snapshot under it. One fetch at a time. */
@@ -767,6 +782,24 @@ export default function Topology() {
         overline="Operate / Topology"
         title="Topology"
         subtitle="Every reported neighbour fact across every plane — sites collapsed to cards, expanded on click, provenance on every edge."
+        actions={
+          <div style={{ display: 'flex', gap: 6, background: 'var(--nd-bg-raised)', padding: 3, borderRadius: 4, border: '1px solid var(--nd-border-subtle)' }}>
+            <Button
+              size="sm"
+              variant={viewMode === '3d' ? 'primary' : 'ghost'}
+              onClick={() => setViewMode('3d')}
+            >
+              3D Graph
+            </Button>
+            <Button
+              size="sm"
+              variant={viewMode === '2d' ? 'primary' : 'ghost'}
+              onClick={() => setViewMode('2d')}
+            >
+              2D Cards
+            </Button>
+          </div>
+        }
       />
       <StatRow stats={topologyStats(graph, data.dataSource)} />
       {graph.nodes.length === 0 ? (
@@ -785,19 +818,39 @@ export default function Topology() {
               </ul>
             </Alert>
           ) : null}
-          <TopologyGraphView
-            graph={graph}
-            onOpenSite={(siteId) => navigate(`/sites/${encodeURIComponent(siteId)}`)}
-            onOpenDevice={(node) =>
-              navigate(
-                deviceDetailPath({
-                  name: node.name,
-                  plane: node.planes[0],
-                  serial: node.serial ?? undefined,
-                }),
-              )
-            }
-          />
+          {viewMode === '3d' ? (
+            <Topology3DCanvas
+              graph={graph}
+              onSelectNode={(nodeId) => {
+                const node = graph.nodes.find((n) => n.id === nodeId);
+                if (node) {
+                  navigate(
+                    deviceDetailPath({
+                      name: node.name,
+                      plane: node.planes[0],
+                      serial: node.serial ?? undefined,
+                    }),
+                  );
+                } else if (graph.sites.some((s) => s.siteId === nodeId)) {
+                  navigate(`/sites/${encodeURIComponent(nodeId)}`);
+                }
+              }}
+            />
+          ) : (
+            <TopologyGraphView
+              graph={graph}
+              onOpenSite={(siteId) => navigate(`/sites/${encodeURIComponent(siteId)}`)}
+              onOpenDevice={(node) =>
+                navigate(
+                  deviceDetailPath({
+                    name: node.name,
+                    plane: node.planes[0],
+                    serial: node.serial ?? undefined,
+                  }),
+                )
+              }
+            />
+          )}
           <div
             style={{
               fontFamily: 'var(--nd-font-mono)',

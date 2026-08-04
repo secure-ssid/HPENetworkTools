@@ -16,7 +16,7 @@ import { OpsRampAdapter } from '../planes/opsramp';
 import { PlaneRegistry, StubAdapter, UnconfiguredAdapter } from '../planes/registry';
 import { SseAdapter } from '../planes/sse';
 import { UxiAdapter } from '../planes/uxi';
-import type { PlaneAdapter, PlaneState } from '../planes/types';
+import type { PlaneState } from '../planes/types';
 import type { SettingsStore } from '../config/settings';
 import {
   adapterCredentialsFor,

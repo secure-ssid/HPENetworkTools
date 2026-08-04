@@ -30,6 +30,7 @@ import {
   Table,
 } from '../nightdesk';
 import { getMetricsHistory, getOverview, metricsWindowLabel } from '../api/client';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { deviceDetailPath, pathForView } from '../app/nav';
@@ -309,6 +310,8 @@ export default function Overview() {
       />
 
       <StatRow stats={data.stats} linkForStat={statLinkFor} />
+
+      <ConfigRecommendationsPanel title="Top recommendations" limit={5} />
 
       <Divider variant="flair" />
 

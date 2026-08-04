@@ -22,3 +22,6 @@ export * from './trends';
 export * from './expiry';
 export * from './topologyGraph';
 export * from './assistantModels';
+export * from './visualReferences';
+export * from './taxonomy';
+export * from './configRecommendations';

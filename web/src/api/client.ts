@@ -40,3 +40,5 @@ export * from './terminal';
 export * from './settings';
 export * from './greenlake';
 export * from './metrics';
+export * from './visualReferences';
+export * from './recommendations';

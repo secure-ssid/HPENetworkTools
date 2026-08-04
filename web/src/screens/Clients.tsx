@@ -63,6 +63,12 @@ import {
   getTickets,
 } from '../api/client';
 import type { ClientDetailBlock, ClientsData, SiteApplicationsResult } from '../api/client';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
+import { ConfigActionPanel } from '../components/ConfigActionPanel';
+import { ClientCategoryBadges } from '../components/ClientCategoryBadges';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { getTaxonomySummary } from '../api/recommendations';
+import type { CategoryBucket } from '@hpe/shared';
 import { partitionColumns, SharedFacts } from './dataColumns';
 import type { DataColumn } from './dataColumns';
 import { useSettings } from '../app/SettingsContext';
@@ -638,6 +644,7 @@ export default function Clients() {
   const [problemsOnly, setProblemsOnly] = useState(false);
   const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
   const [showDiagnostics, setShowDiagnostics] = useState(() => searchParams.get('diagnostics') === '1');
+  const [clientTypeBuckets, setClientTypeBuckets] = useState<CategoryBucket[]>([]);
 
   /* The header stamps SYNCED hh:mm, so a NOC tab must not sit on a mount-time
      snapshot under it: poll on the settings cadence, the same pattern
@@ -655,6 +662,13 @@ export default function Clients() {
         })
         .finally(() => {
           inFlight = false;
+        });
+      void getTaxonomySummary()
+        .then((t) => {
+          if (live) setClientTypeBuckets(t.clients.byType);
+        })
+        .catch(() => {
+          /* optional enrichment */
         });
     };
     pull();
@@ -826,7 +840,12 @@ export default function Clients() {
      the same — one site, one plane, everything connected — are stated once
      under the table instead of repeated on all of them. */
   const columns: Array<DataColumn<ClientRow>> = [
-    { key: 'Type', value: (c) => reported(c.type), mono: true, nowrap: true },
+    {
+      key: 'Type',
+      value: (c) => reported(c.type),
+      nowrap: true,
+      render: (c) => <ClientCategoryBadges type={c.type} model={c.model} compact />,
+    },
     { key: 'Model', value: (c) => reported(c.model) },
     { key: 'IP', value: (c) => reported(c.ip), mono: true, nowrap: true },
     { key: 'Site', value: (c) => reported(c.siteName) },
@@ -1532,6 +1551,34 @@ export default function Clients() {
 
       <StatRow stats={data.stats} />
 
+      {clientTypeBuckets.length > 0 ? (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--nd-text-muted)' }}>
+            Categories
+          </span>
+          {clientTypeBuckets.map((b) => (
+            <button
+              key={b.key}
+              type="button"
+              onClick={() => setType(b.key === type ? 'all' : b.key)}
+              style={{
+                background: type === b.key ? 'var(--nd-bg-inset)' : 'none',
+                border: '1px solid var(--nd-border-default)',
+                borderRadius: 4,
+                padding: '2px 8px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                gap: 6,
+                alignItems: 'center',
+              }}
+            >
+              <Badge tone={b.tone ?? 'neutral'}>{b.label}</Badge>
+              <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>{b.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       {missingSources.length > 0 ? (
         <Alert
           tone="warning"
@@ -1689,7 +1736,7 @@ export default function Clients() {
                 {cur.health}
               </Badge>
               <Badge tone={cur.planeTone}>{cur.plane}</Badge>
-              <Badge tone="neutral">{cur.type}</Badge>
+              <ClientCategoryBadges type={cur.type} model={cur.model} />
               <span
                 style={{
                   fontFamily: 'var(--nd-font-mono)',
@@ -1745,6 +1792,14 @@ export default function Clients() {
                 <span className="nt-cell-mono nt-cell-dim">{`${cur.ip} · ${cur.session}`}</span>
               </div>
             </div>
+
+            <VisualReferencePanel target={{ kind: 'client', id: cur.mac, plane: cur.plane }} />
+            <ConfigActionPanel
+              plane={cur.plane}
+              targetKind="client"
+              target={{ kind: 'client', id: cur.mac, plane: cur.plane }}
+            />
+            <ConfigRecommendationsPanel clientMac={cur.mac} site={cur.siteName} />
 
             <Button
               variant="ghost"

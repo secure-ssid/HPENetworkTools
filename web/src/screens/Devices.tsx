@@ -76,6 +76,9 @@ import { UNKNOWN_LANE_META, countOf } from '@hpe/shared';
 import type { DeviceRow, MetricsHistoryEnvelope, Plane, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
+import { DeviceTypeBadge } from '../components/DeviceTypeBadge';
+import { getTaxonomySummary } from '../api/recommendations';
+import type { CategoryBucket } from '@hpe/shared';
 import '../app/app.css';
 
 function displayField(value: string): string {
@@ -191,6 +194,7 @@ export default function Devices() {
     return initial;
   });
   const [issuesOnly, setIssuesOnly] = useState(false);
+  const [typeBuckets, setTypeBuckets] = useState<CategoryBucket[]>([]);
   /* Deep link: /devices?names=a\nb\nc (a Compliance finding's count). Read
      straight off the URL rather than mirrored into state — a filter that
      narrows the estate this hard must not be able to drift from the address
@@ -250,6 +254,13 @@ export default function Devices() {
       void getDevices().then((d) => {
         if (live) setData(d);
       });
+      void getTaxonomySummary()
+        .then((t) => {
+          if (live) setTypeBuckets(t.devices.byType);
+        })
+        .catch(() => {
+          /* optional enrichment — inventory still works without it */
+        });
       void getMetricsHistory()
         .then((m) => {
           if (live) setMetrics(m);
@@ -445,18 +456,7 @@ export default function Devices() {
     {
       key: 'type',
       title: 'Type',
-      render: (d) => (
-        <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 10.5,
-            color: 'var(--nd-text-muted)',
-            textTransform: 'uppercase',
-          }}
-        >
-          {d.type}
-        </span>
-      ),
+      render: (d) => <DeviceTypeBadge type={d.type} model={d.model} name={d.name} showFamily />,
     },
     {
       key: 'site',
@@ -628,6 +628,34 @@ export default function Devices() {
           />
         }
       />
+
+      {typeBuckets.length > 0 ? (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--nd-text-muted)' }}>
+            Categories
+          </span>
+          {typeBuckets.map((b) => (
+            <button
+              key={b.key}
+              type="button"
+              onClick={() => setType(b.key === type ? 'all' : b.key)}
+              style={{
+                background: type === b.key ? 'var(--nd-bg-inset)' : 'none',
+                border: '1px solid var(--nd-border-default)',
+                borderRadius: 4,
+                padding: '2px 8px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                gap: 6,
+                alignItems: 'center',
+              }}
+            >
+              <Badge tone={b.tone ?? 'neutral'}>{b.label}</Badge>
+              <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>{b.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ width: 250 }}>

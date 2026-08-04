@@ -286,3 +286,16 @@ Audits intentionally omit:
 
 Review deployment log retention and access permissions before using the portal
 outside a lab.
+
+## Visual reference storage
+
+Operator visual references are stored under `HPE_DATA_DIR` (default `data/`):
+
+- `visual-references.json` — metadata only (mode 0600)
+- `visual-assets/<uuid>` — uploaded bytes (mode 0600; directory 0700)
+
+Asset identifiers are server-generated UUIDs. Upload titles may not contain path
+separators. MIME types are allow-listed. The asset stream sets
+`Content-Disposition: inline` and never reveals disk paths. Create/delete/upload
+events append to the shared change log (`change-log.jsonl`) with ticket `—`
+because nothing is pushed to a vendor plane.

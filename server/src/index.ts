@@ -45,6 +45,8 @@ import { systemsRouter } from './routes/systems';
 import { inventoryRouter } from './routes/inventory';
 import { authConfigRouter, authRouter } from './routes/auth';
 import { clearpassDirectWriteRouter } from './routes/clearpassDirectWrite';
+import { visualReferencesRouter } from './routes/visualReferences';
+import { recommendationsRouter } from './routes/recommendations';
 import { actorContext, authenticateUpgrade, requireAuth, requireSameOrigin, setAuthGuardInstalled, type AuthGuard } from './services/auth';
 import { SsidDirectWriteError } from './services/ssidDirectWrite';
 
@@ -68,7 +70,17 @@ export function createApp(opts: AppOptions = {}): express.Express {
   // sent, so just these two paths get the raw body — scoped this narrowly
   // (and ahead of the global JSON parser), nothing else changes.
   app.use(['/api/hooks/mist', '/api/hooks/central'], express.raw({ type: () => true, limit: '1mb' }));
+  // Visual asset uploads are raw bytes (MIME in Content-Type); keep them off
+  // the JSON parser the same way inbound webhooks are.
+  app.use('/api/visual-assets', express.raw({ type: () => true, limit: '10mb' }));
   app.use(express.json({ limit: '1mb' }));
+
+  // Authenticated JSON is private operator data. Never let a shared cache
+  // hold it; screens that need freshness still revalidate via the client.
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'private, no-cache');
+    next();
+  });
 
   // Request log: METHOD path status ms. req.path, never req.originalUrl — the
   // query string carries the OIDC authorization code and state through
@@ -242,10 +254,12 @@ export function createApp(opts: AppOptions = {}): express.Express {
   app.use('/api', notificationCenterRouter);
   app.use('/api', hooksRouter);
   app.use('/api', clearpassDirectWriteRouter);
+  app.use('/api', visualReferencesRouter);
+  app.use('/api', recommendationsRouter);
 
   // Unknown API route → consistent JSON 404
   app.use('/api', (_req, res) => {
-    res.status(404).json({ error: 'not found' });
+    res.status(404).json({ error: 'not found', code: 'NOT_FOUND' });
   });
 
   // Serve the built web app (single-port mode) with SPA fallback.
@@ -294,7 +308,17 @@ export function createApp(opts: AppOptions = {}): express.Express {
     if (res.headersSent) return;
     const status = err.status ?? 500;
     const safe5xxMessage = err instanceof SsidDirectWriteError ? err.message : undefined;
-    res.status(status).json({ error: status >= 500 ? (safe5xxMessage ?? 'internal error') : err.message || 'internal error' });
+    const errCode = (err as Error & { code?: unknown }).code;
+    const code =
+      typeof errCode === 'string'
+        ? errCode
+        : status >= 500
+          ? 'INTERNAL_ERROR'
+          : 'REQUEST_ERROR';
+    res.status(status).json({
+      error: status >= 500 ? (safe5xxMessage ?? 'internal error') : err.message || 'internal error',
+      code,
+    });
   });
 
   return app;

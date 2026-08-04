@@ -654,3 +654,33 @@ data directory. Unsupported commands are rejected.
 For configuration, diagnostic, SSE, or webhook operations, transport failure
 does not prove failure at the provider. The portal labels these states as
 unknown and supplies a reconciliation path. Always reconcile before retrying.
+
+## Visual references and configuration actions
+
+Site, device, and client detail surfaces carry an operator **Visual references**
+panel for floorplans, port maps, documents, and native console links. These are
+never treated as telemetry: each card shows source, owner/attribution, and
+updated time, and a missing upload is labelled unavailable rather than blank.
+
+Supported uploads are PNG, JPEG, WebP, PDF, plain text, and Markdown, up to
+10 MiB. External URL references must be HTTPS (loopback HTTP is allowed in the
+lab). Uploaded paths are generated server-side; client-supplied filesystem paths
+are rejected.
+
+**Configuration actions** on the same detail surfaces are capability-gated.
+Only products with a real preview → review → push path expose a handoff into
+Configure (or the product screen). OpsRamp, UXI, EdgeConnect, GreenLake, AOS-8,
+and local AOS-CX show an explicit read-only reason instead of a disabled fantasy
+Push button.
+
+## Licences table defaults
+
+The licences table hides idle zero-assignment subscriptions by default. Use the
+toggle above the table when you need to inspect spare capacity. Export CSV
+follows whatever the table currently shows.
+
+## ClearPass connector health
+
+When ClearPass is linked but degraded (auth/TLS failure, stale pull), the
+ClearPass screen shows a warning with the connector note and a link to
+**Connected systems** so empty tables are not mistaken for an empty CPPM.

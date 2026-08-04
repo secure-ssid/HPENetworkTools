@@ -38,6 +38,7 @@ import {
   EmptyState,
   SectionHeader,
   Spinner,
+  Switch,
   TableViewOptions,
   useToast,
 } from '../nightdesk';
@@ -47,6 +48,8 @@ import type { LicensesData } from '../api/client';
 import { hhmmLocal as hhmm, countOf } from '@hpe/shared';
 import type { MistLicenseUsageRow, SubscriptionRow, Tone } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
@@ -144,6 +147,8 @@ export default function Licenses() {
   const { density, showPlatformTags, tableColumns, setTableColumns } = useSettings();
   const { toast } = useToast();
   const [data, setData] = useState<LicensesData | null>(null);
+  /** Idle zero-assignment seats are clutter by default; operators can expand. */
+  const [showIdleCapacity, setShowIdleCapacity] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -164,7 +169,8 @@ export default function Licenses() {
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
-  const subscriptions = operationalSubscriptions(data);
+  const hiddenIdleCount = data.subscriptions.length - operationalSubscriptions(data).length;
+  const subscriptions = showIdleCapacity ? data.subscriptions : operationalSubscriptions(data);
 
   const exportCsv = () => {
     const header = 'name,sku,plane,term,qty,assigned,utilisation,expires,status';
@@ -342,6 +348,24 @@ export default function Licenses() {
       {/* Five tiles on the authored path; a payload that carries fewer lays them
           out evenly rather than leaving a dead track in the grid. */}
       <StatRow stats={data.stats} />
+
+      <VisualReferencePanel target={{ kind: 'estate', id: 'licenses' }} editable />
+      <ConfigRecommendationsPanel title="Licence / inventory recommendations" limit={8} />
+
+      {hiddenIdleCount > 0 ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Switch
+            checked={showIdleCapacity}
+            onCheckedChange={setShowIdleCapacity}
+            label={`Show ${hiddenIdleCount} idle unassigned ${hiddenIdleCount === 1 ? 'subscription' : 'subscriptions'}`}
+          />
+          {!showIdleCapacity ? (
+            <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+              Hidden by default — zero-assignment idle seats are not operational inventory.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {isDemo ? (
         <Alert tone="warning" title="Two reconciliation gaps worth money">

@@ -71,6 +71,24 @@ else
   fi
 fi
 check POST /api/configure/render 400                       # no body → validation
+check GET /api/visual-references
+check GET /api/recommendations
+check GET /api/taxonomy/summary
+# Malformed upload: path-like title + plain text must be refused (no product credentials needed).
+code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/visual-assets" \
+  -H "Content-Type: text/plain" \
+  -H "Origin: $BASE" \
+  -H "X-Visual-Target-Kind: device" \
+  -H "X-Visual-Target-Id: sw-01" \
+  -H "X-Visual-Kind: document" \
+  -H "X-Visual-Title: ../secrets" \
+  --data 'x')
+if [ "$code" = "400" ]; then
+  printf 'ok    %-6s %-32s %s\n' POST /api/visual-assets "$code"
+else
+  printf 'FAIL  %-6s %-32s %s (wanted 400)\n' POST /api/visual-assets "$code"
+  fail=1
+fi
 check GET /api/does-not-exist 404
 
 echo "== SPA =="
