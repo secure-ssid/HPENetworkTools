@@ -684,3 +684,9 @@ follows whatever the table currently shows.
 When ClearPass is linked but degraded (auth/TLS failure, stale pull), the
 ClearPass screen shows a warning with the connector note and a link to
 **Connected systems** so empty tables are not mistaken for an empty CPPM.
+
+## Categories and recommendations
+
+**Devices** and **Clients** list screens show category chips (switch/AP/gateway… and laptop/phone/…) derived from observed inventory types. Click a chip to filter; click again to clear. Device rows also show family hints (AOS-CX, Access point, …) inferred from model strings — labels only, never invented inventory.
+
+Detail surfaces (device, site, client, overview, licences, ClearPass) carry a **Recommendations** panel. These are read-only hygiene suggestions (firmware target gaps, reconciliation, uncategorized endpoints, pending IP, etc.). They never auto-apply configuration; actions only hand off to existing screens (Configure, Systems, ClearPass, device detail).

@@ -75,6 +75,8 @@ import {
 import type { ClearPassEndpointPage } from '../api/clearpass';
 import { isApiError } from '../api/core';
 import { getSystemsState, type SystemsState } from '../api/systems';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { useSettings } from '../app/SettingsContext';
 import { useLabConfigMode } from '../hooks/useLabConfigMode';
 import { hhmmssLocal, hhmmLocal, formatCount, normalizeMac, detailState } from '@hpe/shared';
@@ -341,6 +343,9 @@ function ClearPassView({
       />
 
       <StatRow stats={stats} />
+
+      <VisualReferencePanel target={{ kind: 'connector', id: 'clearpass', plane: 'CLEARPASS' }} />
+      <ConfigRecommendationsPanel title="ClearPass-related recommendations" limit={8} />
 
       {data.dataSource === 'live' && clearpassHealth && clearpassHealth !== 'healthy' ? (
         <Alert
