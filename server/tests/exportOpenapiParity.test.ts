@@ -205,7 +205,7 @@ describe('export catalog ↔ docs parity (Loop 103)', () => {
   function collectDocExportMentions(): string[] {
     const found = new Set<string>();
     // Paths appear as `/api/.../export` or `GET /api/.../export` in markdown.
-    const re = /\/api\/[A-Za-z0-9_{}\/-]*export/g;
+    const re = /\/api\/[A-Za-z0-9_{}/-]*export/g;
     for (const name of ['ui-api-improvements-report.md', 'user-guide.md']) {
       const text = readFileSync(join(DOCS_ROOT, name), 'utf8');
       for (const m of text.matchAll(re)) {

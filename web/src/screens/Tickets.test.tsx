@@ -27,12 +27,6 @@ vi.mock('../components/VisualReferencePanel', () => ({
   VisualReferencePanel: () => <div data-testid="visual-refs">Visual references</div>,
 }));
 
-vi.mock('../components/ConfigRecommendationsPanel', () => ({
-  ConfigRecommendationsPanel: ({ title }: { title?: string }) => (
-    <div data-testid="config-recs">{title ?? 'Recommendations'}</div>
-  ),
-}));
-
 const mockGetTickets = vi.mocked(getTickets);
 const mockAddTicketNote = vi.mocked(addTicketNote);
 const mockResolveTicket = vi.mocked(resolveTicket);
@@ -523,10 +517,12 @@ describe('Tickets — export, share, panels (live CSV)', () => {
     expect(screen.queryByRole('button', { name: 'Download server CSV' })).toBeNull();
   });
 
-  it('mounts VisualReference and ConfigRecommendations panels', async () => {
+  it('mounts VisualReference panel below the ticket queue', async () => {
     renderTickets();
     await waitFor(() => expect(screen.getByTestId('visual-refs')).toBeTruthy());
-    expect(screen.getByTestId('config-recs').textContent).toMatch(/Ticket workflow recommendations/i);
+    // Advisory ConfigRecommendations panel intentionally not mounted on Tickets —
+    // the queue is the primary surface; suggestions lived above-the-fold too long.
+    expect(screen.queryByTestId('config-recs')).toBeNull();
   });
 });
 

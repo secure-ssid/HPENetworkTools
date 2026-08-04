@@ -22,18 +22,18 @@ export function ScreenHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="nt-screen-header nt-sticky-title nt-toolbar-glass" data-path={overline}>
+    <div className="nt-screen-header nd-screen-header nt-sticky-title nt-toolbar-glass" data-path={overline}>
       <div className="nt-screen-header__copy nt-screen-header__titles">
-        <p className="nt-screen-header__brand nt-screen-kicker" aria-hidden>
-          NightDesk · Copper NOC
+        <p className="nt-screen-header__brand nd-screen-header__brand nt-screen-kicker nt-micro-label" aria-hidden>
+          HPE Network Tools
         </p>
-        <p className="nt-screen-header__overline">{overline}</p>
-        <Heading level={1} className="nt-screen-header__title">
+        <p className="nt-screen-header__overline nd-screen-header__overline">{overline}</p>
+        <Heading level={1} className="nt-screen-header__title nd-screen-header__title">
           {title}
         </Heading>
-        <p className="nt-screen-header__subtitle">{subtitle}</p>
+        <p className="nt-screen-header__subtitle nd-screen-header__subtitle">{subtitle}</p>
       </div>
-      {actions ? <div className="nt-screen-header__actions">{actions}</div> : null}
+      {actions ? <div className="nt-screen-header__actions nd-screen-header__actions">{actions}</div> : null}
     </div>
   );
 }

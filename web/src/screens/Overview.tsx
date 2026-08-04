@@ -5,7 +5,7 @@
  * own element — and a link — whenever the row carries `siteName`/`siteId`,
  * falling back to the authored `meta` prefix when it does not) + Sites table
  * with the 64×3px health bar and a **Health** chip row (same `?health=` as the
- * Sites Select). Right: Management planes, Launchpad, Change log.
+ * Sites Select). Right: Management planes, Launchpad. Below both: Change log.
  * A live section that reported nothing keeps its named empty state and drops its
  * "all N →" link rather than pointing at an empty screen.
  * The stat tiles are links (LibreNMS availability-map pattern): each one leads
@@ -16,11 +16,13 @@
  * Header **LIVE** stamps pure live (Loop 168 — pure live used to leave the
  * header quiet). Blend mode keeps per-section LIVE/DEMO badges instead.
  * Needs-you-now multi-select (Loop 190) raises **Export selected**, **Copy
- * devices** (unique newline-joined device names), **Copy selection link**
- * (`?devices=`; clearable chip), and **Clear**. Sites preview multi-select
- * raises **Export selected**, **Copy names**, **Copy selection link**
- * (`?siteIds=`; clearable chip), and **Clear**. Header `KeyboardShortcuts`
- * surfaces the alerts/sites grid map (Loop 201).
+ * devices** (unique newline-joined device names), **Copy titles** (unique
+ * newline-joined alert titles when device names alone are sparse — Alerts
+ * **Copy titles** pattern; Loop 237), **Copy selection link** (`?devices=`;
+ * clearable chip), and **Clear**. Sites preview multi-select raises **Export
+ * selected**, **Copy names**, **Copy selection link** (`?siteIds=`; clearable
+ * chip), and **Clear**. Header `KeyboardShortcuts` surfaces the alerts/sites
+ * grid map (Loop 201).
  * Data: getOverview() — live /api/overview when the server is up, shared
  * fixtures otherwise (header then shows the demo SYNCED stamp).
  */
@@ -49,10 +51,10 @@ import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { useIncident } from '../app/IncidentContext';
-import { deviceDetailPath, namesFilterForParam, pathForView } from '../app/nav';
+import { deviceDetailPath, namesFilterForParam } from '../app/nav';
+import { ActionOverflow } from '../components/ActionOverflow';
 import { hhmmLocal as hhmm, countOf, envelopeAnomalies, planeMetricsKey } from '@hpe/shared';
 import type {
-  LaunchpadRow,
   MetricsHistoryEnvelope,
   OverviewAlert,
   OverviewSiteRow,
@@ -61,7 +63,6 @@ import type {
 } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
-import '../app/app.css';
 import { StatRow } from './StatRow';
 import { exportTableCsv } from '../lib/csv';
 import { downloadApiCsv } from '../lib/downloadApiCsv';
@@ -341,10 +342,14 @@ export default function Overview() {
   }, [health, searchParams, setSearchParams]);
 
   /* Re-seed when the address bar changes externally (shared link / back). */
-  useEffect(() => {
+  const [prevParams, setPrevParams] = useState(searchParams);
+  if (prevParams !== searchParams) {
+    setPrevParams(searchParams);
     const fromUrl = parseOverviewHealthFilter(searchParams.get('health'));
-    setHealth((cur) => (cur === fromUrl ? cur : fromUrl));
-  }, [searchParams]);
+    if (health !== fromUrl) {
+      setHealth(fromUrl);
+    }
+  }
 
   /* The header states a cadence ("AUTO 60s") that the server poller really runs
    * at, so the screen has to honour it — a NOC-wall tab left open must not sit
@@ -548,14 +553,6 @@ export default function Overview() {
    * a localStorage-seeded first-paint stand-in, so the server value wins. */
   const overline = `${data.workspace ?? workspaceName} / Single pane`;
 
-  const runLaunch = (l: LaunchpadRow) => {
-    if (l.target.type === 'device') {
-      navigate(`/devices/${encodeURIComponent(l.target.device)}`);
-    } else {
-      navigate(pathForView(l.target.view));
-    }
-  };
-
   return (
     <div className="nt-stack nt-overview nt-recon-reveal nt-overview-shell nt-section-panel">
       <ScreenHeader
@@ -565,156 +562,158 @@ export default function Overview() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · war room
+              HPE Network Tools · war room
             </span>
             <span className="nt-mono-label">{synced}</span>
             {pureLive ? <Badge tone="info">LIVE</Badge> : null}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                void (async () => {
-                  const url = buildOverviewShareUrl({
-                    health,
-                    devices: devicesFilter,
-                    siteIds: siteIdsFilter,
-                  });
-                  try {
-                    await navigator.clipboard.writeText(url);
-                    const bits = [
-                      health !== 'all' ? `health=${health}` : null,
-                      devicesFilter ? 'devices=' : null,
-                      siteIdsFilter ? 'siteIds=' : null,
-                    ].filter(Boolean);
-                    toast('View link copied', {
-                      description: bits.length > 0 ? bits.join(' · ') : 'operations overview',
-                      tone: 'success',
-                    });
-                  } catch {
-                    toast('Could not copy link', { description: url, tone: 'warning' });
-                  }
-                })();
-              }}
-            >
-              Copy view link
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                const parts: string[] = [];
-                if (data.alerts.length > 0) {
-                  parts.push(
-                    `${exportTableCsv(
-                      'overview-alerts.csv',
-                      ['sev', 'title', 'plane', 'age', 'device', 'site', 'meta'],
-                      data.alerts.map((a) => [
-                        a.sev,
-                        a.title,
-                        a.plane,
-                        a.age,
-                        a.device,
-                        a.siteName ?? '',
-                        a.meta,
-                      ]),
-                    )} alerts`,
-                  );
-                }
-                if (data.sites.length > 0) {
-                  parts.push(
-                    `${exportTableCsv(
-                      'overview-sites.csv',
-                      ['name', 'siteId', 'plane', 'devices', 'clients', 'health', 'alerts'],
-                      data.sites.map((s) => [
-                        s.name,
-                        s.siteId,
-                        s.plane,
-                        s.devices,
-                        s.clients,
-                        s.health ?? '',
-                        s.alerts,
-                      ]),
-                    )} sites`,
-                  );
-                }
-                if (data.planes.length > 0) {
-                  parts.push(
-                    `${exportTableCsv(
-                      'overview-planes.csv',
-                      ['name', 'scope', 'state', 'sync', 'linked'],
-                      data.planes.map((p) => [
-                        p.name,
-                        p.scope,
-                        p.state,
-                        p.sync,
-                        p.linked ? 'yes' : 'no',
-                      ]),
-                    )} planes`,
-                  );
-                }
-                toast(parts.length ? `Exported ${parts.join(' · ')}` : 'Nothing to export', {
-                  description: parts.length
-                    ? 'Client-side CSV of the current Overview payload.'
-                    : 'Alerts, sites, and planes are empty.',
-                });
-              }}
-            >
-              Export CSV
-            </Button>
-            {data.dataSource === 'live' ? (
+            <ActionOverflow label="Overview actions">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => {
                   void (async () => {
-                    /* Multi-slice server CSV matches client Export (alerts +
-                     * planes + sites + changes). Sites honour the active
-                     * health filter so the CSV matches the Sites preview. */
-                    const slices: Array<{ part: string; file: string; qs?: string }> = [
-                      { part: 'alerts', file: 'overview-alerts.csv' },
-                      { part: 'planes', file: 'overview-planes.csv' },
-                      {
-                        part: 'sites',
-                        file: 'overview-sites.csv',
-                        qs: health !== 'all' ? `health=${encodeURIComponent(health)}` : undefined,
-                      },
-                      { part: 'changes', file: 'overview-changes.csv' },
-                    ];
-                    const ok: string[] = [];
-                    let fail: string | null = null;
-                    for (const s of slices) {
-                      const params = new URLSearchParams({ part: s.part });
-                      if (s.qs) {
-                        const extra = new URLSearchParams(s.qs);
-                        extra.forEach((v, k) => params.set(k, v));
-                      }
-                      const res = await downloadApiCsv(
-                        `/api/overview/export?${params.toString()}`,
-                        s.file,
-                      );
-                      if (res.ok) ok.push(s.part);
-                      else if (!fail) fail = res.error ?? `Could not download ${s.file}`;
-                    }
-                    if (ok.length > 0) {
-                      toast('Server CSV downloaded', {
-                        description: `${ok.join(' · ')}${
-                          health !== 'all' && ok.includes('sites') ? ` (sites health=${health})` : ''
-                        } — operator facts only, no secrets.`,
-                        tone: fail ? 'warning' : 'success',
+                    const url = buildOverviewShareUrl({
+                      health,
+                      devices: devicesFilter,
+                      siteIds: siteIdsFilter,
+                    });
+                    try {
+                      await navigator.clipboard.writeText(url);
+                      const bits = [
+                        health !== 'all' ? `health=${health}` : null,
+                        devicesFilter ? 'devices=' : null,
+                        siteIdsFilter ? 'siteIds=' : null,
+                      ].filter(Boolean);
+                      toast('View link copied', {
+                        description: bits.length > 0 ? bits.join(' · ') : 'operations overview',
+                        tone: 'success',
                       });
-                    }
-                    if (fail) {
-                      toast(ok.length > 0 ? 'Some server CSV slices failed' : 'Server CSV failed', {
-                        description: fail,
-                        tone: 'warning',
-                      });
+                    } catch {
+                      toast('Could not copy link', { description: url, tone: 'warning' });
                     }
                   })();
                 }}
               >
-                Download server CSV
+                Copy view link
               </Button>
-            ) : null}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const parts: string[] = [];
+                  if (data.alerts.length > 0) {
+                    parts.push(
+                      `${exportTableCsv(
+                        'overview-alerts.csv',
+                        ['sev', 'title', 'plane', 'age', 'device', 'site', 'meta'],
+                        data.alerts.map((a) => [
+                          a.sev,
+                          a.title,
+                          a.plane,
+                          a.age,
+                          a.device,
+                          a.siteName ?? '',
+                          a.meta,
+                        ]),
+                      )} alerts`,
+                    );
+                  }
+                  if (data.sites.length > 0) {
+                    parts.push(
+                      `${exportTableCsv(
+                        'overview-sites.csv',
+                        ['name', 'siteId', 'plane', 'devices', 'clients', 'health', 'alerts'],
+                        data.sites.map((s) => [
+                          s.name,
+                          s.siteId,
+                          s.plane,
+                          s.devices,
+                          s.clients,
+                          s.health ?? '',
+                          s.alerts,
+                        ]),
+                      )} sites`,
+                    );
+                  }
+                  if (data.planes.length > 0) {
+                    parts.push(
+                      `${exportTableCsv(
+                        'overview-planes.csv',
+                        ['name', 'scope', 'state', 'sync', 'linked'],
+                        data.planes.map((p) => [
+                          p.name,
+                          p.scope,
+                          p.state,
+                          p.sync,
+                          p.linked ? 'yes' : 'no',
+                        ]),
+                      )} planes`,
+                    );
+                  }
+                  toast(parts.length ? `Exported ${parts.join(' · ')}` : 'Nothing to export', {
+                    description: parts.length
+                      ? 'Client-side CSV of the current Overview payload.'
+                      : 'Alerts, sites, and planes are empty.',
+                  });
+                }}
+              >
+                Export CSV
+              </Button>
+              {data.dataSource === 'live' ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      /* Multi-slice server CSV matches client Export (alerts +
+                       * planes + sites + changes). Sites honour the active
+                       * health filter so the CSV matches the Sites preview. */
+                      const slices: Array<{ part: string; file: string; qs?: string }> = [
+                        { part: 'alerts', file: 'overview-alerts.csv' },
+                        { part: 'planes', file: 'overview-planes.csv' },
+                        {
+                          part: 'sites',
+                          file: 'overview-sites.csv',
+                          qs: health !== 'all' ? `health=${encodeURIComponent(health)}` : undefined,
+                        },
+                        { part: 'changes', file: 'overview-changes.csv' },
+                      ];
+                      const ok: string[] = [];
+                      let fail: string | null = null;
+                      for (const s of slices) {
+                        const params = new URLSearchParams({ part: s.part });
+                        if (s.qs) {
+                          const extra = new URLSearchParams(s.qs);
+                          extra.forEach((v, k) => params.set(k, v));
+                        }
+                        const res = await downloadApiCsv(
+                          `/api/overview/export?${params.toString()}`,
+                          s.file,
+                        );
+                        if (res.ok) ok.push(s.part);
+                        else if (!fail) fail = res.error ?? `Could not download ${s.file}`;
+                      }
+                      if (ok.length > 0) {
+                        toast('Server CSV downloaded', {
+                          description: `${ok.join(' · ')}${
+                            health !== 'all' && ok.includes('sites') ? ` (sites health=${health})` : ''
+                          } — operator facts only, no secrets.`,
+                          tone: fail ? 'warning' : 'success',
+                        });
+                      }
+                      if (fail) {
+                        toast(ok.length > 0 ? 'Some server CSV slices failed' : 'Server CSV failed', {
+                          description: fail,
+                          tone: 'warning',
+                        });
+                      }
+                    })();
+                  }}
+                >
+                  Download server CSV
+                </Button>
+              ) : null}
+            </ActionOverflow>
             <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
               Connected systems
             </Button>
@@ -723,30 +722,45 @@ export default function Overview() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · war-room spine · planes · freshness · P1 heat</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · war-room spine · planes · freshness · P1 heat</div>
+      <div className="nt-status-ribbon nt-overview-ribbon" role="status" aria-label="Overview status ribbon">
+        <span className="nt-status-ribbon__item">war-room · P1 heat</span>
+        <span className="nt-status-ribbon__item">freshness · shift strip</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
+      <nav className="nt-incident-spine nt-overview-spine" aria-label="Incident spine">
+        <span className="nt-incident-spine__step" data-active="true">War room</span>
+        <span className="nt-incident-spine__chev" aria-hidden>→</span>
+        <span className="nt-incident-spine__step">Alert</span>
+        <span className="nt-incident-spine__chev" aria-hidden>→</span>
+        <span className="nt-incident-spine__step">Device</span>
+        <span className="nt-incident-spine__chev" aria-hidden>→</span>
+        <span className="nt-incident-spine__step">Ticket</span>
+      </nav>
 
       <StatRow stats={data.stats} linkForStat={statLinkFor} />
 
       {actionChips.length > 0 ? (
         <div
-          className="nt-change-strip"
+          className={`nt-change-strip nd-change-strip${actionChips.some((c) => c.tone === 'negative') ? ' nt-change-strip--hot nd-change-strip--hot' : ''}`}
+          data-hot={actionChips.some((c) => c.tone === 'negative') ? '1' : '0'}
           role="region"
           aria-label="What needs attention now"
         >
-          <span className="nt-change-strip__kicker">
+          <span className="nt-change-strip__kicker nd-change-strip__kicker nt-micro-label">
             {actionChips.some((c) => c.id !== 'licences') ? 'Last hour' : 'Attention'}
           </span>
           {actionChips.map((chip) => (
             <button
               key={chip.id}
               type="button"
-              className={`nt-change-strip__chip nt-change-strip__chip--${chip.tone}`}
+              className={`nt-change-strip__chip nd-change-strip__chip nt-change-strip__chip--${chip.tone} nd-change-strip__chip--${chip.tone} nt-action-chip`}
               onClick={() => navigate(chip.href)}
             >
               {chip.label}
             </button>
           ))}
-          <span className="nt-change-strip__note">
+          <span className="nt-change-strip__note nd-change-strip__note nt-hint-muted">
             {actionChips.some((c) => c.id === 'licences') &&
             actionChips.every((c) => c.id === 'licences')
               ? 'from licence inventory · not a prediction'
@@ -758,7 +772,11 @@ export default function Overview() {
       ) : null}
 
       <VisualReferencePanel target={{ kind: 'estate', id: 'overview' }} editable={false} />
-      <ConfigRecommendationsPanel title="Top recommendations" limit={5} />
+      <ConfigRecommendationsPanel
+        title="Top recommendations"
+        limit={5}
+        excludeCategories={['performance']}
+      />
 
       <Divider variant="flair" />
 
@@ -845,8 +863,8 @@ export default function Overview() {
               >
                 <span className="nt-configure-bulk-bar__count">{`${selectedAlertKeys.length} SELECTED`}</span>
                 <span className="nt-configure-bulk-bar__hint">
-                  export, copy devices, or share a selection link for only the alerts you marked —
-                  full export stays in the header
+                  export, copy devices or titles, or share a selection link for only the alerts you
+                  marked — full export stays in the header
                 </span>
                 <span className="nt-configure-bulk-bar__actions">
                   <Button
@@ -906,7 +924,8 @@ export default function Overview() {
                         ];
                         if (devices.length === 0) {
                           toast('No devices on the selected alerts', {
-                            description: 'Those rows did not publish a device name — export CSV instead.',
+                            description:
+                              'Those rows did not publish a device name — use Copy titles or export CSV instead.',
                             tone: 'info',
                           });
                           return;
@@ -943,6 +962,53 @@ export default function Overview() {
                           });
                           return;
                         }
+                        const titles = [
+                          ...new Set(
+                            picked
+                              .map((a) => String(a.title ?? '').trim())
+                              .filter((title) => title && title !== '—'),
+                          ),
+                        ];
+                        if (titles.length === 0) {
+                          toast('No titles on the selected alerts', {
+                            description:
+                              'Those rows did not publish a title — use Copy devices or export CSV instead.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const text = titles.join('\n');
+                        try {
+                          await navigator.clipboard.writeText(text);
+                          toast(`Copied ${countOf(titles.length, 'title')}`, {
+                            description:
+                              titles.length < picked.length
+                                ? `${picked.length - titles.length} selected without a title skipped`
+                                : 'newline-joined · paste into a ticket or handoff',
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy titles', { description: text, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy titles
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(selectedAlertKeys);
+                        const picked = alertPreview.filter((a) => selected.has(overviewAlertKey(a)));
+                        if (picked.length === 0) {
+                          toast('No selected alerts still in view', {
+                            description: 'Clear selection or adjust filters.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
                         const devices = [
                           ...new Set(
                             picked
@@ -952,7 +1018,8 @@ export default function Overview() {
                         ];
                         if (devices.length === 0) {
                           toast('No devices on the selected alerts', {
-                            description: 'Those rows did not publish a device name — export CSV instead.',
+                            description:
+                              'Those rows did not publish a device name — use Copy titles or export CSV instead.',
                             tone: 'info',
                           });
                           return;
@@ -1355,115 +1422,87 @@ export default function Overview() {
             ) : null}
           </div>
 
-          <div className="nt-stack nt-gap-10">
-            <SectionHeader label="Launchpad" />
-            {data.launchpad.length === 0 ? (
-              <EmptyState
-                title="No launch targets"
-                description="Launchpad rows are built from the linked planes and the devices they report. Connect a plane or open Inventory once estate data is available."
-              >
-                <span className="nt-inline-center-8">
-                  <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
-                    Connected systems
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => navigate('/inventory')}>
-                    Inventory
-                  </Button>
-                </span>
-              </EmptyState>
-            ) : null}
-            <div className="nt-stack nt-gap-0">
-              <div className="nt-launchpad">{data.launchpad.map((l) => (
-                <button
-                  key={l.label}
-                  type="button"
-                  className="nt-rowlink nt-launchpad-row nt-launchpad__tile"
-                  onClick={() => runLaunch(l)}
-                >
-                  <span className="nt-launchpad-row__label">
-                    {l.label}
-                  </span>
-                  <span
-                    className="nt-mono-label"
-                  >
-                    {l.hint}
-                  </span>
-                </button>
-              ))}</div>
-            </div>
-          </div>
-
-          <div className="nt-stack nt-gap-10">
-            <SectionHeader label="Change log" meta={sourceBadge(changesLive)} />
-            {/* The change log is the write broker's audit tail — empty until the
-                first brokered change, which is a fact, not a failure. It stops
-                being a fact the moment a rotated generation cannot be opened:
-                the record exists and is unreachable, which is the opposite
-                claim to "nothing has happened here". */}
-            {data.changes.length === 0 ? (
-              (data.changesUnreadable ?? 0) > 0 ? (
-                <EmptyState
-                  title="Part of the change record could not be read"
-                  description={`${data.changesUnreadable} rotated log generation${
-                    data.changesUnreadable === 1 ? '' : 's'
-                  } could not be opened, so this is not a record of nothing happening. Check the portal's data directory.`}
-                />
-              ) : (
-                <EmptyState
-                  title="No brokered changes yet"
-                  description={
-                    changesLive
-                      ? 'Every write the portal makes lands here with its authorising ticket. Review or stage the next change under Configure.'
-                      : 'Every write the portal makes lands here with its authorising ticket.'
-                  }
-                >
-                  <Button variant="secondary" size="sm" onClick={() => navigate('/configure')}>
-                    Open Configure
-                  </Button>
-                </EmptyState>
-              )
-            ) : (data.changesUnreadable ?? 0) > 0 ? (
-              // A non-empty tail with a hole behind it: the rows shown are
-              // real, but they are not the whole history.
-              <Alert
-                tone="warning"
-                title={`${data.changesUnreadable} rotated log generation${
-                  data.changesUnreadable === 1 ? '' : 's'
-                } could not be read — this tail is short`}
-              />
-            ) : null}
-            {/* ChangeLogEntry is {time,text,who} — the broker's audit rows lose
-                their changeId/ticket in this projection, so two brokered writes
-                of the same kind in the same minute collide on time+text (live:
-                two "alert-ack alert — validated" rows at 19:33). Identity is the
-                position in the tail the server sent, not the prose. */}
-            {data.changes.map((c, i) => (
-              <div
-                key={`${c.time}|${c.text}|${c.who}|${i}`}
-                className="nt-changelog-row"
-              >
-                <span
-                  className="nt-sync-row__time"
-                >
-                  {hhmm(c.time)}
-                </span>
-                <div className="nt-flex-1">
-                  <div
-                    className="nt-fs-12-sec-lh"
-                  >
-                    {c.text}
-                  </div>
-                  <div
-                    className="nt-hint-muted"
-                  >
-                    {c.who}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+          {/* The Launchpad panel was removed: every row called
+              `navigate()` to a screen the left sidebar already links to,
+              while the "CONSOLE ↗" hint implied an external vendor
+              console. It cost a full panel to repeat the nav. */}
         </div>
       </div>
+
+        {/* The change log is wide prose — timestamps, a sentence per
+            entry, and an author. In the 388px rail each row wrapped to
+            four lines and ran the column 584px past the one beside it.
+            Full width below the split, the same entries read on one or
+            two lines and the dead space goes with them. */}
+        <div className="nt-stack nt-gap-10">
+          <SectionHeader label="Change log" meta={sourceBadge(changesLive)} />
+          {/* The change log is the write broker's audit tail — empty until the
+              first brokered change, which is a fact, not a failure. It stops
+              being a fact the moment a rotated generation cannot be opened:
+              the record exists and is unreachable, which is the opposite
+              claim to "nothing has happened here". */}
+          {data.changes.length === 0 ? (
+            (data.changesUnreadable ?? 0) > 0 ? (
+              <EmptyState
+                title="Part of the change record could not be read"
+                description={`${data.changesUnreadable} rotated log generation${
+                  data.changesUnreadable === 1 ? '' : 's'
+                } could not be opened, so this is not a record of nothing happening. Check the portal's data directory.`}
+              />
+            ) : (
+              <EmptyState
+                title="No brokered changes yet"
+                description={
+                  changesLive
+                    ? 'Every write the portal makes lands here with its authorising ticket. Review or stage the next change under Configure.'
+                    : 'Every write the portal makes lands here with its authorising ticket.'
+                }
+              >
+                <Button variant="secondary" size="sm" onClick={() => navigate('/configure')}>
+                  Open Configure
+                </Button>
+              </EmptyState>
+            )
+          ) : (data.changesUnreadable ?? 0) > 0 ? (
+            // A non-empty tail with a hole behind it: the rows shown are
+            // real, but they are not the whole history.
+            <Alert
+              tone="warning"
+              title={`${data.changesUnreadable} rotated log generation${
+                data.changesUnreadable === 1 ? '' : 's'
+              } could not be read — this tail is short`}
+            />
+          ) : null}
+          {/* ChangeLogEntry is {time,text,who} — the broker's audit rows lose
+              their changeId/ticket in this projection, so two brokered writes
+              of the same kind in the same minute collide on time+text (live:
+              two "alert-ack alert — validated" rows at 19:33). Identity is the
+              position in the tail the server sent, not the prose. */}
+          {data.changes.map((c, i) => (
+            <div
+              key={`${c.time}|${c.text}|${c.who}|${i}`}
+              className="nt-changelog-row"
+            >
+              <span
+                className="nt-sync-row__time"
+              >
+                {hhmm(c.time)}
+              </span>
+              <div className="nt-flex-1">
+                <div
+                  className="nt-fs-12-sec-lh"
+                >
+                  {c.text}
+                </div>
+                <div
+                  className="nt-hint-muted"
+                >
+                  {c.who}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
     </div>
   );
 }

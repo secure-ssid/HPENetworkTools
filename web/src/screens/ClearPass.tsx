@@ -704,7 +704,7 @@ function ClearPassView({
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · access
+              HPE Network Tools · access
             </span>
             <Badge plane>ClearPass</Badge>
             {/* LIVE on pure live and clearpass blend alike — stamp alone is easy to miss. */}
@@ -865,12 +865,15 @@ function ClearPassView({
 }
       />
 
-      <div className="nt-plane-theater" role="note">NightDesk · ClearPass ECG · policy · endpoints · identity</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · ClearPass ECG · policy · endpoints · identity</div>
+      <div className="nt-status-ribbon nt-clearpass-ribbon" role="status" aria-label="ClearPass status ribbon">
+        <span className="nt-status-ribbon__item">CPPM ECG · policy</span>
+        <span className="nt-status-ribbon__item">endpoints · identity</span>
+        <span className="nt-status-ribbon__item">plane monochrome</span>
+      </div>
 
       <StatRow stats={stats} />
 
-      <VisualReferencePanel target={{ kind: 'connector', id: 'clearpass', plane: 'CLEARPASS' }} />
-      <ConfigRecommendationsPanel title="ClearPass-related recommendations" limit={8} />
 
       {sectionLive && clearpassHealth && clearpassHealth !== 'healthy' ? (
         <Alert
@@ -1711,10 +1714,14 @@ function StaticInventoryDetailDrawer({
       width="md"
       title={row.title}
       description="Read-only inventory detail. No ClearPass changes can be made here."
+      className="nt-cppm-detail nt-drawer-cinema"
+      dataPhase="done"
     >
-      {row.fields.map((field) => (
-        <ReviewRow key={field.label} label={field.label} value={field.value} mono={field.mono} />
-      ))}
+      <div className="nt-drawer-stack nt-cppm-detail__body">
+        {row.fields.map((field) => (
+          <ReviewRow key={field.label} label={field.label} value={field.value} mono={field.mono} />
+        ))}
+      </div>
     </Drawer>
   );
 }
@@ -2799,17 +2806,21 @@ function ServiceDetailDrawer({
       width="lg"
       title={row.name}
       description="The service definition as ClearPass reports it — summary, match rules, authentication, authorization, enforcement and options."
+      className="nt-cppm-service nt-drawer-cinema"
+      dataPhase={result === null ? 'executing' : 'done'}
     >
       {result === null ? (
         <div className="nt-center-pad nt-pad-48">
-          <div role="status" aria-label="NightDesk · loading ClearPass" className="nt-stack nt-gap-8 nt-debug-wake nt-debug-wake--compact">
+          <div role="status" aria-label="HPE Network Tools · loading ClearPass" className="nt-stack nt-gap-8 nt-debug-wake nt-debug-wake--compact">
             <Skeleton height={14} width="36%" />
             <Skeleton height={36} />
             <Skeleton height={36} />
           </div>
         </div>
       ) : (
-        <ServiceDetailBody result={result} />
+        <div className="nt-cppm-service__body">
+          <ServiceDetailBody result={result} />
+        </div>
       )}
     </Drawer>
   );
@@ -2995,6 +3006,13 @@ function ReviewedWriteFooter({
       >
         Direct apply — no ticket, no queue. An audit event is still recorded for every attempt.
       </span>
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'connector', id: 'clearpass', plane: 'CLEARPASS' }} />
+      <ConfigRecommendationsPanel title="ClearPass-related recommendations" category="security" limit={8} />
     </div>
   );
 }
@@ -3075,6 +3093,7 @@ function RegisterEndpointDrawer({
       onOpenChange={onOpenChange}
       width="lg"
       className="nd-drawer--write-ritual nt-write-ritual"
+      dataPhase={applying ? 'executing' : reviewed ? 'confirm' : 'review'}
       title="Register endpoint"
       description={`Add one MAC to the ClearPass endpoint repository, with the profiling attributes you know. ${lab ? 'This lab write applies directly.' : 'The write goes to the linked CPPM only after your explicit review.'}`}
     >
@@ -3212,6 +3231,7 @@ function EditEndpointDrawer({
       onOpenChange={onOpenChange}
       width="lg"
       className="nd-drawer--write-ritual nt-write-ritual"
+      dataPhase={applying ? 'executing' : reviewed ? 'confirm' : 'review'}
       title={`Edit endpoint ${row.mac}`}
       description="Change the repository status and/or the operator note. The MAC is the endpoint's identity and is never rewritten."
     >
@@ -3375,6 +3395,7 @@ function LocalUserWriteDrawer({
       onOpenChange={onOpenChange}
       width="lg"
       className="nd-drawer--write-ritual nt-write-ritual"
+      dataPhase={applying ? 'executing' : reviewed ? 'confirm' : 'review'}
       title={title}
       description="A ClearPass local account. The password is write-only: it is sent to CPPM and never displayed, echoed, or read back — including here."
     >

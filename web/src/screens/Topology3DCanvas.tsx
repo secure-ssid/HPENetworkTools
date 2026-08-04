@@ -37,14 +37,14 @@ const TONE_FALLBACK: Record<string, number> = {
   success: 0x3dd68c,
   warning: 0xf0c34a,
   danger: 0xff6f7a,
-  neutral: 0x8a7a6c,
-  accent: 0xe08c62,
-  info: 0x5eb4ff,
+  neutral: 0x7f8ea8,
+  accent: 0x4a90ff,
+  info: 0x38bdf8,
 };
 
-const ND_CANVAS_FALLBACK = 0x0b0907;
-const ND_EDGE_FALLBACK = 0x3a2a20;
-const ND_COOL_FALLBACK = 0xc47a4a;
+const ND_CANVAS_FALLBACK = 0x070b13;
+const ND_EDGE_FALLBACK = 0x223350;
+const ND_COOL_FALLBACK = 0x2dd4bf;
 
 function cssHex(varName: string, fallback: number): number {
   if (typeof document === 'undefined') return fallback;
@@ -85,8 +85,8 @@ function ndPalette() {
     canvas: cssHex('--nd-bg-canvas', ND_CANVAS_FALLBACK),
     edge: cssHex('--nd-border-default', ND_EDGE_FALLBACK),
     cool: cssHex('--nd-accent', ND_COOL_FALLBACK),
-    siteInk: cssHex('--nd-text-primary', 0xf1f0ec),
-    deviceInk: cssHex('--nd-text-secondary', 0xb0a498),
+    siteInk: cssHex('--nd-text-primary', 0xeef2fa),
+    deviceInk: cssHex('--nd-text-secondary', 0xa3b3cd),
   };
 }
 
@@ -107,7 +107,7 @@ function createTextSprite(
     ctx.font = isSite
       ? 'Bold 30px Inter, -apple-system, system-ui, sans-serif'
       : '24px Inter, -apple-system, system-ui, sans-serif';
-    /* Copper NOC glass chips — raised surface from live palette (no slate). */
+    /* Glass chips — raised surface from live palette (no slate). */
     const chip = isSite ? palette.canvas : ((palette.canvas >> 1) + (palette.edge >> 2));
     const cr = (chip >> 16) & 255;
     const cg = (chip >> 8) & 255;
@@ -190,7 +190,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.72);
     scene.add(ambientLight);
 
-    const dirLight1 = new THREE.DirectionalLight(0xffe8dc, 1.15);
+    const dirLight1 = new THREE.DirectionalLight(0xdce9ff, 1.15);
     dirLight1.position.set(50, 100, 50);
     scene.add(dirLight1);
 
@@ -477,7 +477,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
 
   return (
     <div className="nt-topo3d nt-topo-host nt-topo3d-shell nt-panel-glass">
-      <div className="nt-topo3d__brand" aria-hidden>NightDesk · graph cinema · copper midnight</div>
+      <div className="nt-topo3d__brand" aria-hidden>HPE Network Tools · graph</div>
       <div ref={containerRef} className="nt-topo3d__canvas" />
 
       {/* Hover Info Tooltip */}

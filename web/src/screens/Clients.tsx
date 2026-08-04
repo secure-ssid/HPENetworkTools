@@ -968,21 +968,24 @@ export default function Clients() {
   useEffect(() => {
     if (!coaOpen) return;
     let live = true;
-    setCoaTicketsError(null);
-    void getTickets().then((d) => {
+    queueMicrotask(() => {
       if (!live) return;
-      if (d.apiError) {
-        setCoaTickets([]);
-        setCoaTicket('');
-        setCoaTicketsError(d.apiError);
-        return;
-      }
-      const open = d.tickets.filter((t) => !/resolved|closed/i.test(t.state));
-      const rest = d.tickets.filter((t) => /resolved|closed/i.test(t.state));
-      const sorted = [...open, ...rest];
-      setCoaTickets(sorted);
-      setCoaTicket((curId) => curId || (sorted[0]?.id ?? ''));
       setCoaTicketsError(null);
+      void getTickets().then((d) => {
+        if (!live) return;
+        if (d.apiError) {
+          setCoaTickets([]);
+          setCoaTicket('');
+          setCoaTicketsError(d.apiError);
+          return;
+        }
+        const open = d.tickets.filter((t) => !/resolved|closed/i.test(t.state));
+        const rest = d.tickets.filter((t) => /resolved|closed/i.test(t.state));
+        const sorted = [...open, ...rest];
+        setCoaTickets(sorted);
+        setCoaTicket((curId) => curId || (sorted[0]?.id ?? ''));
+        setCoaTicketsError(null);
+      });
     });
     return () => {
       live = false;
@@ -1871,7 +1874,7 @@ export default function Clients() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · clients
+              HPE Network Tools · clients
             </span>
             <span className="nt-mono-label">{stamp}</span>
             {/* LIVE when the sessions are live or blend-swapped — not only when
@@ -1965,7 +1968,12 @@ export default function Clients() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · session theater · association · roam · SNR</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · session theater · association · roam · SNR</div>
+      <div className="nt-status-ribbon nt-clients-ribbon" role="status" aria-label="Clients status ribbon">
+        <span className="nt-status-ribbon__item">sessions · estate</span>
+        <span className="nt-status-ribbon__item">state owns hue</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
 
       <StatRow stats={data.stats} />
 
@@ -2550,25 +2558,28 @@ export default function Clients() {
         width="lg"
         title={cur?.name}
         description={drawer?.summary}
+        className="nt-client-drawer nt-drawer-cinema"
+        dataPhase={coaOpen ? (coaBusy ? 'executing' : coaTicket ? 'confirm' : 'review') : undefined}
       >
         {cur && drawer ? (
           <div className="nt-drawer-stack">
-            <div className="nt-chip-row">
-              <Badge tone={cur.healthTone} dot>
-                {cur.health}
-              </Badge>
-              <Badge plane>{cur.plane}</Badge>
-              <ClientCategoryBadges type={cur.type} model={cur.model} />
-              <span
-                className="nt-hint-muted"
-              >
-                {`${cur.sources?.length ?? 1} source${(cur.sources?.length ?? 1) === 1 ? '' : 's'}`}
-              </span>
-              <span
-                className="nt-hint-muted"
-              >
-                session {cur.session}
-              </span>
+            <div className="nt-client-hero">
+              <div className="nt-client-hero__primary">
+                <div className="nt-chip-row">
+                  <Badge tone={cur.healthTone} dot>
+                    {cur.health}
+                  </Badge>
+                  <Badge plane>{cur.plane}</Badge>
+                  <ClientCategoryBadges type={cur.type} model={cur.model} />
+                </div>
+                <div className="nt-client-hero__meta">
+                  <span className="nt-hint-muted">
+                    {`${cur.sources?.length ?? 1} source${(cur.sources?.length ?? 1) === 1 ? '' : 's'}`}
+                  </span>
+                  <span className="nt-hint-muted">session {cur.session}</span>
+                </div>
+              </div>
+              <div className="nt-client-hero__rail" aria-hidden />
             </div>
 
             <div className="nt-row nt-gap-8">
@@ -3004,6 +3015,7 @@ export default function Clients() {
               {coaOpen ? (
                 <div
                   className="nt-client-toolbar nt-write-ritual"
+                  data-phase={coaBusy ? 'executing' : coaTicket ? 'confirm' : 'review'}
                 >
                   <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
                   <div className="nt-flex-1-wide">

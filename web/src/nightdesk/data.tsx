@@ -52,7 +52,8 @@ export function Badge({
     <span
       className={cx(
         'nd-badge',
-        plane ? 'nd-badge--plane nt-plane-chip' : `nd-badge--${tone}`,
+        'nt-badge',
+        plane ? 'nd-badge--plane nt-badge--plane nt-plane-chip' : `nd-badge--${tone} nt-badge--${tone}`,
         !plane && 'nt-status-chip',
       )}
       data-tone={plane ? undefined : tone}
@@ -141,9 +142,7 @@ export function EmptyState({
   className?: string;
 }) {
   return (
-    <div className={cx('nd-empty', 'nt-empty', 'nt-empty-cinema', className)}>
-      <div className="nt-empty-wake__mark" aria-hidden>ND</div>
-      <div className="nd-empty__kicker nt-empty-cinema__kicker">NightDesk · quiet lane</div>
+    <div className={cx('nd-empty', 'nt-empty', 'nt-empty-cinema', 'nt-empty-wake', className)}>
       <div className="nd-empty__title nt-empty-cinema__title">{title}</div>
       {description ? <div className="nd-empty__desc nt-empty-cinema__body">{description}</div> : null}
       {children}
@@ -194,7 +193,7 @@ export function PageSkeleton({
   if (variant === 'overview') {
     return (
       <div className="nd-page-skeleton nd-page-skeleton--war nt-page-skeleton nt-war-room-wake" aria-busy="true" aria-label="Loading overview">
-        <div className="nd-page-skeleton__kicker nt-page-skeleton__kicker">NightDesk · waking the war room</div>
+        <div className="nd-page-skeleton__kicker nt-page-skeleton__kicker">HPE Network Tools · waking the war room</div>
         <div className="nd-page-skeleton__header nt-page-skeleton__header">
           <Skeleton width={220} height={28} />
           <Skeleton width={140} height={28} />
@@ -223,7 +222,7 @@ export function PageSkeleton({
   if (variant === 'detail') {
     return (
       <div className="nd-page-skeleton nd-page-skeleton--war nt-page-skeleton nt-war-room-wake" aria-busy="true" aria-label="Loading detail">
-        <div className="nd-page-skeleton__kicker nt-page-skeleton__kicker">NightDesk · resolving device</div>
+        <div className="nd-page-skeleton__kicker nt-page-skeleton__kicker">HPE Network Tools · resolving device</div>
         <div className="nd-page-skeleton__header nt-page-skeleton__header">
           <Skeleton width={280} height={28} />
           <Skeleton width={180} height={28} />
@@ -239,8 +238,8 @@ export function PageSkeleton({
   }
 
   return (
-    <div className="nd-page-skeleton nd-page-skeleton--war nt-page-skeleton nt-war-room-wake" aria-busy="true" aria-label="Loading NightDesk">
-      <div className="nd-page-skeleton__kicker nt-page-skeleton__kicker">NightDesk · assembling the lane</div>
+    <div className="nd-page-skeleton nd-page-skeleton--war nt-page-skeleton nt-war-room-wake" aria-busy="true" aria-label="Loading HPE Network Tools">
+      <div className="nd-page-skeleton__kicker nt-page-skeleton__kicker">HPE Network Tools · assembling the lane</div>
       <div className="nd-page-skeleton__header nt-page-skeleton__header">
         <Skeleton width={200} height={28} />
         <Skeleton width={160} height={28} />

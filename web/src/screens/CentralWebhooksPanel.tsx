@@ -33,14 +33,16 @@
  * operation and are not gated by demo or config modes.
  *
  * List multi-select (Loop 190) raises **Export selected**, **Copy names**
- * (unique newline-joined webhook names), **Copy selection link**
+ * (unique newline-joined webhook names), **Copy endpoints** (unique
+ * newline-joined callback URLs when names alone are sparse — Devices **Copy
+ * names** pattern; Loop 237), **Copy selection link**
  * (`/systems?plane=central&tab=config&webhookIds=`; clearable chip), and
  * **Clear**. Header `KeyboardShortcuts` surfaces the webhooks multi-select
  * grid map (Loop 201). Search empties offer **Clear search**. Selection never
  * includes secrets or one-time HMAC material.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -111,62 +113,6 @@ import {
 } from '@hpe/shared';
 
 type DrawerMode = 'create' | 'edit' | 'delete' | 'rotate' | null;
-
-function webhookListColumns(opts: {
-  canWrite: boolean;
-  anyPendingHandoff: unknown;
-  openEdit: (row: WebhookSummary) => void;
-  openRotate: (row: WebhookSummary) => void;
-  openDelete: (row: WebhookSummary) => void;
-}): Array<DataTableColumn<WebhookSummary>> {
-  const { canWrite, anyPendingHandoff, openEdit, openRotate, openDelete } = opts;
-  return [
-    { key: 'name', title: 'Name', hideable: false, sortValue: (r) => r.name, render: (r) => r.name },
-    {
-      key: 'endpoint',
-      title: 'Endpoint',
-      sortValue: (r) => r.endpoint,
-      render: (r) => <span className="nt-mono-11">{r.endpoint}</span>,
-    },
-    {
-      key: 'auth',
-      title: 'Auth',
-      sortValue: (r) => r.authMechanism,
-      render: (r) => (
-        <Badge tone={r.authMechanism === 'OIDC' ? 'accent' : 'neutral'}>{r.authMechanism}</Badge>
-      ),
-    },
-    {
-      key: 'updated',
-      title: 'Updated',
-      sortValue: (r) => r.updatedAt,
-      render: (r) => fmtTime(r.updatedAt),
-    },
-    {
-      key: 'actions',
-      title: 'Actions',
-      render: (r) => (
-        <div className="nt-row nt-gap-6">
-          <Button variant="secondary" size="sm" disabled={!canWrite} onClick={() => void openEdit(r)}>
-            Edit
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            title="Rotate the one-time HMAC key"
-            disabled={!canWrite || anyPendingHandoff !== null}
-            onClick={() => openRotate(r)}
-          >
-            Rotate HMAC
-          </Button>
-          <Button variant="danger" size="sm" disabled={!canWrite} onClick={() => openDelete(r)}>
-            Delete
-          </Button>
-        </div>
-      ),
-    },
-  ];
-}
 
 const receiverColumns: Array<DataTableColumn<WebhookReceiverSourceStatus>> = [
   { key: 'source', title: 'Source', hideable: false, render: (r) => r.label },
@@ -372,7 +318,7 @@ function PanelSkeleton({ label }: { label: string }) {
   return (
     <div role="status" aria-label={label} className="nt-stack nt-gap-8 nt-panel-skel">
       <div className="nt-plane-theater" aria-hidden>
-        NightDesk · {label}
+        HPE Network Tools · {label}
       </div>
       <Skeleton height={14} width="36%" />
       <Skeleton height={32} />
@@ -689,7 +635,7 @@ export function CentralWebhooksPanel() {
     setOutcomeUnknown(pending !== null);
   };
 
-  const openEdit = async (row: WebhookSummary) => {
+  const openEdit = useCallback(async (row: WebhookSummary) => {
     const token = beginDrawerRequest(row.id);
     setDrawerMode('edit');
     setDrawerRow(row);
@@ -709,9 +655,9 @@ export function CentralWebhooksPanel() {
     }
     setExisting(result);
     setForm(formFromDetail(result));
-  };
+  }, []);
 
-  const openDelete = (row: WebhookSummary) => {
+  const openDelete = useCallback((row: WebhookSummary) => {
     beginDrawerRequest(row.id);
     setDrawerMode('delete');
     setDrawerRow(row);
@@ -719,9 +665,9 @@ export function CentralWebhooksPanel() {
     setOneTimeAcknowledged(false);
     setDrawerError(null);
     setOutcomeUnknown(false);
-  };
+  }, []);
 
-  const openRotate = (row: WebhookSummary) => {
+  const openRotate = useCallback((row: WebhookSummary) => {
     const pending = pendingReconciliations.rotations.find((item) => item.webhookId === row.id);
     beginDrawerRequest(row.id);
     setDrawerMode('rotate');
@@ -735,7 +681,7 @@ export function CentralWebhooksPanel() {
         : null,
     );
     setOutcomeUnknown(pending !== undefined);
-  };
+  }, [pendingReconciliations]);
 
   /** Refetch the current webhook's detail and repopulate the edit form from
    *  it — used both after a detected generation conflict (auto) and after
@@ -1401,9 +1347,63 @@ export function CentralWebhooksPanel() {
     })();
   };
 
+  const columns = useMemo<Array<DataTableColumn<WebhookSummary>>>(
+    () => [
+      { key: 'name', title: 'Name', hideable: false, sortValue: (r) => r.name, render: (r) => r.name },
+      {
+        key: 'endpoint',
+        title: 'Endpoint',
+        sortValue: (r) => r.endpoint,
+        render: (r) => <span className="nt-mono-11">{r.endpoint}</span>,
+      },
+      {
+        key: 'auth',
+        title: 'Auth',
+        sortValue: (r) => r.authMechanism,
+        render: (r) => (
+          <Badge tone={r.authMechanism === 'OIDC' ? 'accent' : 'neutral'}>{r.authMechanism}</Badge>
+        ),
+      },
+      {
+        key: 'updated',
+        title: 'Updated',
+        sortValue: (r) => r.updatedAt,
+        render: (r) => fmtTime(r.updatedAt),
+      },
+      {
+        key: 'actions',
+        title: 'Actions',
+        render: (r) => (
+          <div className="nt-row nt-gap-6">
+            <Button variant="secondary" size="sm" disabled={!canWrite} onClick={() => void openEdit(r)}>
+              Edit
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              title="Rotate the one-time HMAC key"
+              disabled={!canWrite || anyPendingHandoff !== null}
+              onClick={() => openRotate(r)}
+            >
+              Rotate HMAC
+            </Button>
+            <Button variant="danger" size="sm" disabled={!canWrite} onClick={() => openDelete(r)}>
+              Delete
+            </Button>
+          </div>
+        ),
+      },
+    ],
+    [canWrite, anyPendingHandoff, openEdit, openRotate, openDelete],
+  );
+
   return (
     <div className="nt-stack-14 nt-recon-reveal nt-webhooks-panel nt-webhooks-shell nt-section-panel">
-      <div className="nt-plane-theater" role="note">NightDesk · webhook theater · management · one-time HMAC ritual</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · webhook theater · management · one-time HMAC ritual</div>
+      <div className="nt-status-ribbon nd-status-ribbon" role="status" aria-label="HPE Network Tools webhook status ribbon">
+        <span className="nt-status-ribbon__mark nd-status-ribbon__mark" aria-hidden />
+        <span className="nt-status-ribbon__label nd-status-ribbon__label">Webhook theater · management plane · HMAC ritual · severity owns hue</span>
+      </div>
       <div className="nt-row-between-12">
         <SectionHeader label="Webhooks" meta="API GATEWAY \u00b7 NETWORK-SERVICES/V1" />
         <div className="nt-wrap-6">
@@ -1567,13 +1567,7 @@ export function CentralWebhooksPanel() {
           <DataTable
             ariaLabel="Central webhooks"
             density="compact"
-            columns={webhookListColumns({
-              canWrite,
-              anyPendingHandoff,
-              openEdit,
-              openRotate,
-              openDelete,
-            })}
+            columns={columns}
             rows={rows}
             rowKey={(row) => row.id}
             selectedKeys={selectedKeys}
@@ -1587,7 +1581,7 @@ export function CentralWebhooksPanel() {
             >
               <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
               <span className="nt-configure-bulk-bar__hint">
-                export, copy names, or share a selection link for only the webhooks you marked —
+                export, copy names or endpoints, or share a selection link for only the webhooks you marked —
                 summary fields only, never secrets
               </span>
               <span className="nt-configure-bulk-bar__actions">
@@ -1648,7 +1642,8 @@ export function CentralWebhooksPanel() {
                       ];
                       if (names.length === 0) {
                         toast('No names on the selected webhooks', {
-                          description: 'Those rows did not publish a name — export CSV for ids instead.',
+                          description:
+                            'Those rows did not publish a name — use Copy endpoints or export CSV for ids instead.',
                           tone: 'info',
                         });
                         return;
@@ -1670,6 +1665,53 @@ export function CentralWebhooksPanel() {
                   }}
                 >
                   Copy names
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((r) => selected.has(r.id));
+                      if (picked.length === 0) {
+                        toast('No selected webhooks still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const endpoints = [
+                        ...new Set(
+                          picked
+                            .map((r) => (r.endpoint ?? '').trim())
+                            .filter((endpoint) => endpoint && endpoint !== '—'),
+                        ),
+                      ];
+                      if (endpoints.length === 0) {
+                        toast('No endpoints on the selected webhooks', {
+                          description:
+                            'Those rows did not publish a callback URL — use Copy names or export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = endpoints.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(endpoints.length, 'endpoint')}`, {
+                          description:
+                            endpoints.length < picked.length
+                              ? `${picked.length - endpoints.length} selected without an endpoint skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy endpoints', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy endpoints
                 </Button>
                 <Button
                   variant="ghost"
@@ -1765,7 +1807,7 @@ export function CentralWebhooksPanel() {
           Download server CSV
         </Button>
       </div>
-      <div className="nt-plane-theater" role="note">NightDesk · webhook theater · ingress · severity owns hue</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · webhook theater · ingress · severity owns hue</div>
       {receiverEvents === null ? (
         <PanelSkeleton label="Loading" />
       ) : receiverEvents.length === 0 ? (
@@ -1796,6 +1838,7 @@ export function CentralWebhooksPanel() {
           }
         }}
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={applying ? 'executing' : reviewed ? 'confirm' : 'review'}
         title={
           drawerMode === 'create'
             ? 'Create webhook'
@@ -2155,6 +2198,7 @@ export function CentralWebhooksPanel() {
           if (!open) clearOneTimeSecret();
         }}
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase="confirm"
         title="Copy the one-time HMAC key now"
         description="This modal cannot be reopened after it closes."
       >

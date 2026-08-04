@@ -202,7 +202,7 @@ export function AuditLogSection({ audit, error }: { audit: MistAuditLogLive | nu
   return (
     <div id="mist-section-audit" className="nt-stack nt-gap-2">
       <div className="nt-row-between-12">
-        <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Mist audit cinema · org trail</div>
+        <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Mist audit cinema · org trail</div>
         <SectionHeader
           label="Org audit log"
           meta={
@@ -233,7 +233,7 @@ export function AuditLogSection({ audit, error }: { audit: MistAuditLogLive | nu
         <div className="nt-service-note">The audit log could not be read — {error}</div>
       ) : audit === undefined ? (
         <div className="nt-center-pad-24">
-          <div role="status" aria-label="NightDesk · loading audit" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
+          <div role="status" aria-label="HPE Network Tools · loading audit" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
             <Skeleton height={12} width="30%" />
             <Skeleton height={28} />
           </div>
@@ -582,7 +582,7 @@ export function MistOpsSections() {
           <div className="nt-service-note">The registration status could not be read — {statusError}</div>
         ) : status === null ? (
           <div className="nt-center-pad-24">
-            <div role="status" aria-label="NightDesk · loading audit" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
+            <div role="status" aria-label="HPE Network Tools · loading audit" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
             <Skeleton height={12} width="30%" />
             <Skeleton height={28} />
           </div>

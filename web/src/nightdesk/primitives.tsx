@@ -51,15 +51,22 @@ export function Card({
   variant = 'soft',
   className,
   style,
+  dataPhase,
   children,
 }: {
   variant?: 'soft' | 'plain';
   className?: string;
   style?: CSSProperties;
+  /** Brokered-write ritual phase for Copper NOC chrome. */
+  dataPhase?: 'review' | 'confirm' | 'executing' | 'done';
   children: ReactNode;
 }) {
   return (
-    <div className={cx('nd-card', `nd-card--${variant}`, 'nt-card-lift', 'nt-panel-glass', className)} style={style}>
+    <div
+      className={cx('nd-card', `nd-card--${variant}`, 'nt-card', `nt-card--${variant}`, 'nt-card-lift', 'nt-panel-glass', className)}
+      style={style}
+      data-phase={dataPhase}
+    >
       {children}
     </div>
   );

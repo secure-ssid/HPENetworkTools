@@ -17,7 +17,7 @@ function AppShellRoot({ sidebar, topbar, children, className }: AppShellProps) {
       </a>
       {sidebar ? <aside className="nd-shell__sidebar nt-shell__sidebar">{sidebar}</aside> : null}
       <div className="nd-shell__main nt-shell__main">
-        {topbar ? <header className="nd-shell__topbar nt-shell__topbar nt-toolbar-glass">{topbar}</header> : null}
+        {topbar ? <header className="nd-shell__topbar nt-shell__topbar nt-toolbar-glass nt-topbar">{topbar}</header> : null}
         <main id="nd-main" className="nd-shell__content nt-main-canvas nt-shell__content" tabIndex={-1}>
           {children}
         </main>

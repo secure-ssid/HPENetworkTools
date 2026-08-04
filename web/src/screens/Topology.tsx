@@ -43,7 +43,7 @@
  * Selection-empty `?ids=` offers **Clear selection filter** (Loop 208).
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { countOf, filterTopologyGraph, hhmmLocal as hhmm } from '@hpe/shared';
 import type {
@@ -493,15 +493,17 @@ export function TopologyGraphView({
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [focus, setFocusState] = useState<TopologyFocus | null>(initialFocus);
 
-  const setFocus = (next: TopologyFocus | null) => {
+  const setFocus = useCallback((next: TopologyFocus | null) => {
     setFocusState(next);
     onFocusChange?.(next);
-  };
+  }, [onFocusChange]);
 
   // Re-seed when the share URL changes (e.g. colleague paste / back-forward).
+  // Key by value — parent often rebuilds a fresh object with the same kind/id.
+  const initialFocusKey = initialFocus ? `${initialFocus.kind}:${initialFocus.id}` : '';
   useEffect(() => {
     setFocusState(initialFocus);
-  }, [initialFocus?.kind, initialFocus?.id]);
+  }, [initialFocusKey]); // eslint-disable-line react-hooks/exhaustive-deps -- value key, not object identity
 
   const nodeById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
   // Nodes filed nowhere the site list names: ghosts first (reported, never
@@ -581,7 +583,7 @@ export function TopologyGraphView({
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [focus]);
+  }, [focus, setFocus]);
 
   const toggle = (siteId: string) =>
     setExpanded((prev) => {
@@ -784,15 +786,16 @@ export default function Topology() {
    * Copy serials / Copy selection link (?ids=; Loop 186). */
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   /* Deep link: /topology?ids=a\nb (bulk Copy selection link). */
-  const idsFilter = namesFilterForParam(searchParams.get('ids'));
-  const idsFilterLc =
-    idsFilter === null
-      ? null
-      : idsFilter.map((id) => id.trim().toLowerCase()).filter(Boolean);
+  const idsFilterKey = searchParams.get('ids') ?? '';
+  const idsFilterLc = useMemo(() => {
+    const ids = namesFilterForParam(idsFilterKey);
+    return ids === null ? null : ids.map((id) => id.trim().toLowerCase()).filter(Boolean);
+  }, [idsFilterKey]);
 
+  const focusParamKey = focusParam ? `${focusParam.kind}:${focusParam.id}` : '';
   useEffect(() => {
     setFocus(focusParam);
-  }, [focusParam?.kind, focusParam?.id]);
+  }, [focusParamKey]); // eslint-disable-line react-hooks/exhaustive-deps -- value key, not object identity
 
   const patchParams = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams);
@@ -958,7 +961,7 @@ export default function Topology() {
         actions={
           <div className="nt-chip-wrap nt-chip-wrap--tight">
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · graph
+              HPE Network Tools · graph
             </span>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <Button
@@ -1105,7 +1108,12 @@ export default function Topology() {
           </div>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · graph theater · path · focus node</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · graph theater · path · focus node</div>
+      <div className="nt-status-ribbon nt-topology-ribbon" role="status" aria-label="Topology status ribbon">
+        <span className="nt-status-ribbon__item">graph · path focus</span>
+        <span className="nt-status-ribbon__item">node cinema</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
       <StatRow stats={topologyStats(graph, data.dataSource)} />
       <div className="nt-filter-bar nt-gap-10">
         <Input
@@ -1214,8 +1222,6 @@ export default function Topology() {
           ))}
         </div>
       ) : null}
-      <VisualReferencePanel target={{ kind: 'estate', id: 'topology' }} />
-      <ConfigRecommendationsPanel title="Topology-related recommendations" limit={6} />
       {graph.nodes.length === 0 ? (
         <EmptyState
           title={filtersActive ? 'Nothing matches that filter' : 'Nothing to draw yet'}
@@ -1311,7 +1317,7 @@ export default function Topology() {
                     patchParams({ ids: null });
                     setSelectedKeys([]);
                   }}
-                  title={idsFilter?.join(', ')}
+                  title={idsFilterLc?.join(', ')}
                   className="nt-chip nt-chip--active"
                 >
                   {idsPresent === idsFilterLc.length
@@ -1551,6 +1557,13 @@ export default function Topology() {
           </div>
         </>
       )}
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'estate', id: 'topology' }} />
+      <ConfigRecommendationsPanel title="Topology-related recommendations" category="redundancy" limit={6} />
     </div>
   );
 }

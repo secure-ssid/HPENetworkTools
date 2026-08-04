@@ -136,8 +136,31 @@ export function columnWidth<Row>(column: DataTableColumn<Row>, config?: TableCol
   return config?.widths?.[column.key] ?? column.width;
 }
 
-/* ---------- sorting ---------- */
+/**
+ * A wide table has to truncate somewhere, but a truncated cell with no way to
+ * read the rest is just missing data — a `Model` column showed
+ * "Debian/Ubuntu/Knoppix Li…" with no affordance at all. Measured across the
+ * app: 140 clipped cells, none of them hoverable.
+ *
+ * The title is resolved on hover/focus rather than on render because
+ * `column.render` returns arbitrary JSX, so the text is only knowable from the
+ * DOM — and because measuring every cell up front would cost a layout pass per
+ * row. Cells that fit are left alone, so no tooltip appears where the text is
+ * already fully visible.
+ */
+function applyTruncationTitle(event: { currentTarget: HTMLTableCellElement }): void {
+  const cell = event.currentTarget;
+  const clipped =
+    cell.scrollWidth > cell.clientWidth + 1 ||
+    Array.from(cell.querySelectorAll<HTMLElement>('*')).some(
+      (el) => el.children.length === 0 && el.scrollWidth > el.clientWidth + 1,
+    );
+  const text = (cell.textContent ?? '').trim();
+  if (clipped && text) cell.setAttribute('title', text);
+  else cell.removeAttribute('title');
+}
 
+/* ---------- sorting ---------- */
 export type SortDirection = 'asc' | 'desc';
 export type DataTableSort = { key: string; dir: SortDirection } | null;
 
@@ -493,6 +516,8 @@ export function DataTable<Row>({
                     <td
                       key={column.key}
                       role={keyboard ? 'gridcell' : undefined}
+                      onMouseEnter={applyTruncationTitle}
+                      onFocus={applyTruncationTitle}
                       className={cx(
                         'nd-table__td',
                         column.numeric && 'nd-table__td--numeric',

@@ -603,7 +603,7 @@ export default function GreenLake() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · platform
+              HPE Network Tools · platform
             </span>
             <Badge plane>GreenLake</Badge>
             {/* Inventory only lands from the linked plane — never fixtures. */}
@@ -736,10 +736,13 @@ export default function GreenLake() {
 }
       />
 
-      <div className="nt-plane-theater" role="note">NightDesk · GreenLake ECG · members · write ritual armed</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · GreenLake ECG · members · write ritual armed</div>
+      <div className="nt-status-ribbon nt-greenlake-ribbon" role="status" aria-label="GreenLake status ribbon">
+        <span className="nt-status-ribbon__item">cloud · ECG live</span>
+        <span className="nt-status-ribbon__item">write ritual armed</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
 
-      <VisualReferencePanel target={{ kind: 'connector', id: 'greenlake', plane: 'GREENLAKE' }} />
-      <ConfigRecommendationsPanel title="GreenLake / licence recommendations" limit={6} />
 
       {data.unavailable.length > 0 ? (
         <Alert
@@ -764,7 +767,7 @@ export default function GreenLake() {
       ) : null}
 
       {!readOnly && !lab ? (
-        <Card className="nt-card--write-ritual">
+        <Card className="nt-card--write-ritual" dataPhase={busy ? 'executing' : 'review'}>
           <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <Checkbox
             label="I have reviewed this write — apply with review confirmation (not a draft)."
@@ -1144,7 +1147,7 @@ export default function GreenLake() {
       </div>
 
       {readOnly ? null : (
-        <Card className="nt-card--write-ritual">
+        <Card className="nt-card--write-ritual" dataPhase={busy ? 'executing' : 'review'}>
           <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-wrap-6 nt-end-align">
             <Field
@@ -1437,7 +1440,7 @@ export default function GreenLake() {
       </div>
 
       {readOnly ? null : (
-        <Card className="nt-card--write-ritual">
+        <Card className="nt-card--write-ritual" dataPhase={busy ? 'executing' : 'review'}>
           <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-wrap-6 nt-end-align">
             <Field
@@ -1691,7 +1694,7 @@ export default function GreenLake() {
       ) : null}
 
       {readOnly ? null : (
-        <Card className="nt-card--write-ritual">
+        <Card className="nt-card--write-ritual" dataPhase={busy ? 'executing' : 'review'}>
           <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-wrap-6 nt-end-align">
             <Field label="Name" value={locName} onChange={setLocName} placeholder="Campus-01" />
@@ -1844,6 +1847,13 @@ export default function GreenLake() {
           </Card>
         </>
       )}
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'connector', id: 'greenlake', plane: 'GREENLAKE' }} />
+      <ConfigRecommendationsPanel title="GreenLake / licence recommendations" category="inventory" limit={6} />
     </div>
   );
 }

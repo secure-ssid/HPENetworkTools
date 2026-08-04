@@ -268,7 +268,7 @@ export function TabsContent({ value, children, className }: { value: string; chi
       role="tabpanel"
       id={`${ctx.idBase}-panel-${value}`}
       aria-labelledby={`${ctx.idBase}-tab-${value}`}
-      className={cx('nd-tabs__content', className)}
+      className={cx('nd-tabs__content', 'nt-tabs__content', className)}
     >
       {children}
     </div>

@@ -12,6 +12,7 @@ export function Drawer({
   title,
   description,
   className,
+  dataPhase,
   children,
 }: {
   open: boolean;
@@ -22,6 +23,8 @@ export function Drawer({
   description?: ReactNode;
   /** Extra classes on the panel (e.g. write-ritual chrome). */
   className?: string;
+  /** Brokered-write ritual phase for Copper NOC chrome (`review` | `confirm` | `executing` | `done`). */
+  dataPhase?: 'review' | 'confirm' | 'executing' | 'done';
   children: ReactNode;
 }) {
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -91,6 +94,7 @@ export function Drawer({
         ref={drawerRef}
         className={['nd-drawer', 'nd-drawer__panel', 'nt-drawer', 'nt-drawer__panel', `nd-drawer--${side}`, className].filter(Boolean).join(' ')}
         style={{ ['--nd-overlay-w' as string]: typeof w === 'number' ? `${w}px` : w }}
+        data-phase={dataPhase}
         role="dialog"
         aria-modal="true"
         aria-label={title ? undefined : 'Dialog'}
@@ -100,7 +104,7 @@ export function Drawer({
       >
         <div className="nd-drawer__header nt-drawer__header">
           <div>
-            <div className="nt-drawer-kicker" aria-hidden>NightDesk · drawer</div>
+            <div className="nt-drawer-kicker" aria-hidden>HPE Network Tools · drawer</div>
             {title ? <div id={titleId} className="nd-drawer__title nt-drawer__title">{title}</div> : null}
             {description ? <div id={descriptionId} className="nd-drawer__description nt-drawer__description">{description}</div> : null}
           </div>

@@ -1,0 +1,1348 @@
+/*
+ * Console layer 20 — tables.
+ *
+ * Tables are the primary voice of this product. A device list, a client grid,
+ * an alert feed — these are what the operator opens the portal to see. The
+ * historical wave layers gave each table a rounded, gradient-lit card frame:
+ * a border, a box-shadow, a frosted-glass sticky header. That frame competed
+ * with the data inside it. Fifty bordered cards on an alert screen look like
+ * UI chrome, not like information.
+ *
+ * This layer strips all of that. Structure comes from rules and alignment:
+ * the header hairline IS the top edge; the row separators ARE the grid;
+ * the left rail IS the state indicator. Think `column -t`, `ps aux`,
+ * a well-typeset financial tearsheet — not a SaaS dashboard template.
+ *
+ * Specificity policy: plain single-class selectors are enough in most places
+ * because this file loads after components.css. We escalate only where a late
+ * wave has set a value we need to undo. The sole `!important` use (selected-
+ * row background) is warranted because wave 19dr explicitly marks that
+ * property !important, confirmed at components.css line 12203.
+ *
+ * Light theme: token variables flip automatically via html[data-nd-theme='light']
+ * in tokens.css; explicit overrides here are only for structural properties
+ * (sticky header background) that a token cannot carry alone.
+ *
+ * Density: cell padding uses --nd-row-pad-y / --nd-row-pad-x set per density
+ * tier in 00-foundation.css. The per-table nd-table--compact class (DataTable
+ * density prop) adds a second tightening pass on top of the global token.
+ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   1. Scroll container — strip the card box entirely.
+
+   The scroll wrapper used to be the box. It supplied the rounded border,
+   the surface background, and the inset glow. Now it is purely a scroll
+   boundary: overflow containers and nothing more. The table's own header
+   rule and row lines define its edges visually.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-table-scroll,
+.nt-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  /* No border. No radius. No shadow. No background. The table is the edge. */
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: none;
+}
+
+/* Virtual table: needs a fixed height so the scrollport can do layout math. */
+.nd-table-scroll--virtual {
+  max-height: min(72vh, 760px);
+  overflow-y: auto;
+}
+
+/*
+ * Virtual-table row-count notice. The wave layer printed a sticky "HPE Network Tools ·
+ * virtualized · N rows" banner with a gradient-glass background. We keep the
+ * information — it is operationally useful when you know you're looking at
+ * a window into 4,000 rows — but render it as a plain mono caption that
+ * sits in the flow below the table rather than floating above the data.
+ */
+.nd-table-scroll--virtual[data-virtualized='true'] {
+  position: relative;
+}
+
+.nd-table-scroll--virtual[data-virtualized='true']::before {
+  background: none;
+  border-bottom: 0;
+  text-shadow: none;
+  /* Dim the notice to annotation-level weight. */
+  color: var(--nd-text-faint);
+  font-size: var(--nd-label-size);
+  letter-spacing: var(--nd-tracking-label);
+  padding: 3px var(--nd-row-pad-x);
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   2. Table element — collapse, no outer chrome.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-table {
+  width: 100%;
+  border-collapse: collapse;
+  /* No outer border, radius, or shadow — the scroll container stripped those. */
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: none;
+}
+
+/*
+ * nd-table--open is always present (both Table.tsx and DataTable.tsx add it).
+ * "Open" means the table bleeds to the parent's content edge; the screen's
+ * --nd-content-pad-x margin provides the left gutter. We remove inner padding
+ * on the first and last column so cells start and end flush with that margin.
+ */
+.nd-table--open .nd-table__th:first-child,
+.nd-table--open .nd-table__td:first-child {
+  padding-left: 0;
+}
+
+.nd-table--open .nd-table__th:last-child,
+.nd-table--open .nd-table__td:last-child {
+  padding-right: 0;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   3. Header row — mono micro-label, sticky, flat background.
+
+   The old header was a glass panel: backdrop-filter blur, inset box-shadow
+   glow, a surface-tinted background that lifted it off the page. All of that
+   made it look like a card floating above rows rather than the top rule of a
+   data set. Now it is: uppercase mono label at muted color, 1px hairline
+   below, sticky against the page canvas — invisible machinery, honest label.
+
+   Sticky z-index stays at var(--nd-z-sticky) = 10 so it scrolls under the
+   topbar (z-index 20) without fighting it.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-table__th,
+.nd-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: var(--nd-z-sticky);
+
+  /* Canvas background — the header IS the page, it just doesn't scroll.
+     No blur, no tint, no glow. The hairline below draws the line. */
+  background: var(--nd-bg-canvas);
+  backdrop-filter: none;
+
+  /* Mono micro-label: same voice as a man-page field name. */
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-label-size);
+  font-weight: 400;
+  letter-spacing: var(--nd-tracking-label);
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  white-space: nowrap;
+
+  /* Dense vertical padding; horizontal uses the density token. */
+  padding: var(--nd-row-pad-y) var(--nd-row-pad-x);
+  padding-top: calc(var(--nd-row-pad-y) + 2px);
+
+  /* The single hairline IS the structural bottom edge of the header. */
+  border-bottom: var(--nd-rule-strong);
+  /* No top border, no lateral borders. */
+  border-top: 0;
+  border-left: 0;
+  border-right: 0;
+  /* No glow, no shadow. */
+  box-shadow: none;
+
+  text-align: left;
+  vertical-align: bottom;
+}
+
+html[data-nd-theme='light'] .nd-table__th,
+html[data-nd-theme='light'] .nd-table thead th {
+  background: var(--nd-bg-canvas);
+}
+
+/* Numeric header: right-aligned, matching body cells. */
+.nd-table__th--numeric {
+  text-align: right;
+}
+
+/* Per-table compact class (DataTable density="compact" prop). */
+.nd-table--compact .nd-table__th {
+  padding-top: var(--nd-row-pad-y);
+  padding-bottom: var(--nd-row-pad-y);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   4. Body cells — hairline grid, dense padding, data typography.
+
+   Row height is ~28px at default density (--nd-row-h from 00-foundation).
+   Cells carry their own hairline bottom so 50 rows stay readable without
+   forming a heavy zebra fence: --nd-border-subtle is 10% opacity in dark,
+   7% in light — present but not loud.
+
+   Column alignment is the design. Numbers right, identifiers mono. That
+   alignment is what lets the eye scan down a column and compare values;
+   centered data cells prevent that.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-table__td {
+  padding: var(--nd-row-pad-y) var(--nd-row-pad-x);
+  border-bottom: 1px solid var(--nd-border-subtle);
+  border-top: 0;
+  border-left: 0;
+  border-right: 0;
+
+  font-size: var(--nd-data-size);
+  font-family: var(--nd-font-body);
+  color: var(--nd-text-primary);
+  line-height: var(--nd-data-leading);
+  vertical-align: middle;
+
+  /* Identifiers, names, and labels overflow with ellipsis; the title
+     attribute is already in the markup for the tooltip fallback. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Ellipsis cap. This was `max-width: 0` — the classic trick for
+     forcing ellipsis in a table — but `max-width: 0` also tells
+     `table-layout: auto` that the cell contributes NO preferred
+     width, so every column collapses to the width of its HEADER.
+     Measured on /clients: the IP column was sized by the 2-character
+     "IP" header to 42px and rendered "192.168.1.13" as "1…", and
+     385 of 1004 body cells across the table screens were clipped —
+     while the table already sits in a horizontal scroller and had
+     room to grow. I hit the same defect earlier on action columns
+     (see 85-panels.css) and lifted the cap there.
+     A real cap keeps one runaway value from pushing every other
+     column off-screen, and still ellipsizes when it bites. */
+  max-width: 20rem;
+}
+
+/* Per-table compact pass. */
+.nd-table--compact .nd-table__td {
+  padding-top: calc(var(--nd-row-pad-y) - 2px);
+  padding-bottom: calc(var(--nd-row-pad-y) - 2px);
+}
+
+/*
+ * Numeric cells: right-aligned, tabular figures so digits sit on identical
+ * horizontal positions down a column (no thousand-separator jitter). Mono
+ * so a 4-digit and 5-digit number differ by exactly one character width.
+ */
+.nd-table__th--numeric,
+.nd-table__td--numeric {
+  text-align: right;
+  font-family: var(--nd-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+/*
+ * Secondary / annotation value inside a cell: a dim mono trailing span that
+ * carries units, age, or source without adding a second line. Usage in .tsx:
+ *   <span className="nd-annot"> · 12h ago</span>
+ */
+.nd-table__td .nd-annot {
+  color: var(--nd-text-faint);
+  font-family: var(--nd-font-mono);
+  font-size: calc(var(--nd-data-size) - 1px);
+  margin-left: 5px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   5. Row states — hover, selected, keyboard focus, tone rail.
+
+   Hover: background lift only. No box-shadow accent bar on the left —
+   that bar belonged to the accent-on-every-hover aesthetic. The hover
+   lift is enough signal for a pointer, and the left rail stays reserved
+   for genuine state (selection, tone).
+
+   Selected: accent left rail (3px inset box-shadow) + faint accent-
+   subtle background. The !important on background matches the wave 19dr
+   rule at components.css line 12203 which also uses !important; without
+   it that rule wins because it appears later in the same sheet.
+
+   Keyboard focus: a 2px accent outline on the row element. DataTable
+   places tabIndex directly on <tr data-row-key> and the roving tabindex
+   moves it on j/k/↓/↑. We style :focus-visible so the ring only shows
+   for keyboard navigation, not pointer clicks.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-table__tr--interactive {
+  cursor: pointer;
+  /* Flat left rail, animated in on hover/select. */
+  box-shadow: inset 3px 0 0 transparent;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    box-shadow var(--nd-duration-fast) var(--nd-ease);
+}
+
+/* Hover: subtle lift, no accent bar, no transform. */
+.nd-table__tr--interactive:hover,
+.nd-table__tr--interactive:hover td,
+.nd-table tbody tr:hover td {
+  background: var(--nd-bg-hover);
+}
+
+/* Hover cancels the box-shadow from any leftover wave rules. */
+.nd-table__tr--interactive:hover {
+  box-shadow: none;
+}
+
+/*
+ * Selected row: the left accent rail marks ownership; the faint background
+ * confirms it across the full row width. The !important matches the wave
+ * rule it overrides (confirmed: components.css line 12203).
+ */
+.nd-table__tr--selected,
+.nd-table tbody tr[aria-selected='true'] {
+  background: var(--nd-accent-subtle) !important;
+  box-shadow: inset 3px 0 0 var(--nd-accent);
+}
+
+/* Selected + hover: hold the selection look, don't fade back to hover-lift. */
+.nd-table__tr--selected:hover,
+.nd-table__tr--selected:hover td {
+  background: var(--nd-accent-subtle) !important;
+}
+
+/*
+ * Keyboard-focused row (roving tabindex, j/k navigation). Focus-visible so
+ * the ring appears for keyboard but not pointer. Outline-offset negative
+ * so the ring draws inside the row bounds, not in the hairline gap between
+ * rows. No background change on focus alone — selection is the state.
+ */
+.nd-table__tr--interactive:focus-visible,
+.nd-table tbody tr[data-row-key]:focus-visible {
+  outline: 2px solid var(--nd-accent);
+  outline-offset: -2px;
+  background: var(--nd-bg-hover);
+  box-shadow: none;
+}
+
+/* Remove the legacy :focus (non-:focus-visible) ring that wave layers added. */
+.nd-table__tr--interactive:focus:not(:focus-visible),
+.nd-table tbody tr[data-row-key]:focus:not(:focus-visible) {
+  outline: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   6. Row tone (severity rail) — left rail only, no row flood.
+
+   State color belongs at the cell level (status cells) or as a 3px left
+   inset rail on the row. A full-row background wash turns the table into
+   a traffic light and loses the visual rhythm that makes 50 rows scannable.
+
+   The rail uses color-mix to knock the tone down to ~70–80% alpha so it
+   reads as "this row has a state" without shouting. Tone is applied via
+   data-tone on the <tr> and the nd-table__tr--tone class.
+
+   Aliases: the shared Tone type covers danger/critical/error,
+   warning/major/degraded, success/ok/healthy, info/accent — all mapped.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Row: no background flood. */
+.nd-table__tr--tone,
+.nd-table tbody tr[data-tone] {
+  background: transparent;
+}
+
+/* First cell carries the rail so the indicator aligns with the row's
+   primary identifier, not with a status chip buried mid-row. */
+.nd-table__tr--tone td:first-child,
+.nd-table tbody tr[data-tone] td:first-child {
+  box-shadow: inset 3px 0 0 var(--nd-row-rail, transparent);
+}
+
+/* Danger / critical / error */
+.nd-table__tr--tone[data-tone='danger'],
+.nd-table__tr--tone[data-tone='critical'],
+.nd-table__tr--tone[data-tone='error'],
+.nd-table tbody tr[data-tone='danger'],
+.nd-table tbody tr[data-tone='critical'],
+.nd-table tbody tr[data-tone='error'] {
+  --nd-row-rail: color-mix(in srgb, var(--nd-danger) 78%, transparent);
+}
+
+/* Warning / major / degraded */
+.nd-table__tr--tone[data-tone='warning'],
+.nd-table__tr--tone[data-tone='major'],
+.nd-table__tr--tone[data-tone='degraded'],
+.nd-table tbody tr[data-tone='warning'],
+.nd-table tbody tr[data-tone='major'],
+.nd-table tbody tr[data-tone='degraded'] {
+  --nd-row-rail: color-mix(in srgb, var(--nd-warning) 72%, transparent);
+}
+
+/* Success / ok / healthy */
+.nd-table__tr--tone[data-tone='success'],
+.nd-table__tr--tone[data-tone='ok'],
+.nd-table__tr--tone[data-tone='healthy'],
+.nd-table tbody tr[data-tone='success'],
+.nd-table tbody tr[data-tone='ok'],
+.nd-table tbody tr[data-tone='healthy'] {
+  --nd-row-rail: color-mix(in srgb, var(--nd-success) 60%, transparent);
+}
+
+/* Info / accent */
+.nd-table__tr--tone[data-tone='info'],
+.nd-table__tr--tone[data-tone='accent'],
+.nd-table tbody tr[data-tone='info'],
+.nd-table tbody tr[data-tone='accent'] {
+  --nd-row-rail: color-mix(in srgb, var(--nd-info) 65%, transparent);
+}
+
+/* Legacy short aliases used by port and alert tables. */
+.nd-table__tr--tone[data-tone='bad'],
+.nd-table tbody tr[data-tone='bad'] {
+  --nd-row-rail: color-mix(in srgb, var(--nd-danger) 80%, transparent);
+}
+
+.nd-table__tr--tone[data-tone='warn'],
+.nd-table tbody tr[data-tone='warn'] {
+  --nd-row-rail: color-mix(in srgb, var(--nd-warning) 72%, transparent);
+}
+
+.nd-table__tr--tone[data-tone='stale'],
+.nd-table tbody tr[data-tone='stale'] {
+  --nd-row-rail: color-mix(in srgb, var(--nd-border-strong) 80%, transparent);
+}
+
+/* Tone + hover: preserve the rail, lift the background slightly. */
+.nd-table__tr--tone.nd-table__tr--interactive:hover td:first-child,
+.nd-table tbody tr[data-tone].nd-table__tr--interactive:hover td:first-child {
+  box-shadow: inset 3px 0 0 var(--nd-row-rail, transparent);
+}
+
+/* Selected trumps tone rail — show accent + accent-subtle. */
+.nd-table__tr--tone.nd-table__tr--selected td:first-child,
+.nd-table tbody tr[data-tone].nd-table__tr--selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--nd-accent);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   7. Threshold-tint cells — cell-level state, not row floods.
+
+   A column opts in via its tint() definition. The cell background gets a
+   ~12%-alpha tone wash: enough to mark a threshold breach when scanning
+   a column, not enough to recolor the whole row. The -subtle token family
+   handles the alpha so the wash adapts to both themes.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-table__td--tint-success  { background: var(--nd-success-subtle); }
+.nd-table__td--tint-warning  { background: var(--nd-warning-subtle); }
+.nd-table__td--tint-danger   { background: var(--nd-danger-subtle);  }
+.nd-table__td--tint-info     { background: var(--nd-info-subtle);    }
+.nd-table__td--tint-neutral  { background: var(--nd-neutral-subtle); }
+.nd-table__td--tint-accent   { background: var(--nd-accent-subtle);  }
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   8. Sort control — header button that inherits the label's typography.
+
+   The button resets all button defaults and carries its parent header
+   cell's font/case/color. The sort-mark is a small mono glyph: dim and
+   nearly invisible when the column is unsorted (↕ as a hint), accent
+   and full-opacity when it drives the current sort order.
+
+   Only the active column's mark is visible at full weight; inactive marks
+   fade to near-zero so 10 sortable headers don't each display an ↕ icon
+   that fights for attention.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-table__sort,
+.nt-table__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+
+  /* Inherit everything from the th so the button looks like plain text. */
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+
+  /* No :hover ring — the color shift is the affordance. */
+  outline-offset: 2px;
+}
+
+.nd-table__sort:hover {
+  color: var(--nd-text-primary);
+}
+
+.nd-table__sort:focus-visible {
+  outline: 2px solid var(--nd-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* The sort-mark glyph. Dim when unsorted — just enough to hint that clicking
+   will do something. Accent and crisp when this column owns the sort. */
+.nd-table__sort-mark {
+  font-size: var(--nd-text-10);
+  font-family: var(--nd-font-mono);
+  color: var(--nd-text-faint);
+  opacity: 0.4;
+  transition: color var(--nd-duration-fast) var(--nd-ease),
+              opacity var(--nd-duration-fast) var(--nd-ease);
+  /* Prevent the glyph from contributing to the sort button's click area
+     in a way that looks like a separate control. */
+  pointer-events: none;
+  user-select: none;
+}
+
+.nd-table__sort-mark--active {
+  color: var(--nd-accent);
+  opacity: 1;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   9. Resize handle — invisible grip, visible only on hover/drag.
+
+   The handle parks on the right edge of the th. It is aria-hidden in the
+   markup, purely a pointer affordance. The ::after bar appears on hover
+   so the operator sees the grip without it cluttering every header edge.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-table__resize,
+.nt-table__resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: calc(var(--nd-z-sticky) + 1);
+  /* No visual by default. */
+}
+
+.nd-table__resize::after,
+.nt-table__resize::after {
+  content: '';
+  position: absolute;
+  top: 25%;
+  bottom: 25%;
+  right: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-table__resize:hover::after,
+.nd-table__resize:active::after {
+  background: var(--nd-accent);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   10. Virtual spacer rows — zero-height structural rows.
+
+   The virtualizer inserts spacer <tr>s above and below the painted window
+   to preserve scroll geometry. They must contribute height but produce no
+   visual output. The --nd-spacer-h custom property carries the px value
+   from the React component's inline style.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-table__tr--spacer,
+.nt-table__tr--spacer {
+  /* No visual output. */
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.nd-table-spacer,
+.nt-table-spacer {
+  height: var(--nd-spacer-h, 0px);
+  padding: 0;
+  border: 0;
+  line-height: 0;
+  font-size: 0;
+}
+
+/* The td inside the spacer row must not inherit any cell border. */
+.nd-table-spacer td,
+.nt-table-spacer td {
+  padding: 0;
+  border: 0;
+  height: var(--nd-spacer-h, 0px);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   11. View options panel — column manager popover.
+
+   The panel's structure (position, z-index, focus trap) is correct in
+   the base layer. We update its visual treatment to match the flat console
+   aesthetic: no glass tint, no border-radius XL, no glow. A thin default
+   border and the page-surface background is enough to lift it off the
+   content behind it.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-viewopts {
+  position: relative;
+  display: inline-flex;
+}
+
+.nd-viewopts__panel,
+.nt-view-options__panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: var(--nd-z-dropdown);
+  min-width: 208px;
+  padding: 8px;
+
+  /* Flat surface, not glass. */
+  background: var(--nd-bg-raised);
+  border: 1px solid var(--nd-border-default);
+  border-radius: var(--nd-radius-sm);
+  box-shadow: var(--nd-shadow-overlay);
+
+  /* Fade-in only — no slide, keeps it feeling instant. */
+  animation: nd-fade var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-viewopts__heading,
+.nt-view-options__heading {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-label-size);
+  letter-spacing: var(--nd-tracking-label);
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  padding: 0 6px 6px;
+  border-bottom: var(--nd-rule);
+  margin-bottom: 4px;
+}
+
+.nd-viewopts__list,
+.nt-view-options__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nd-viewopts__item,
+.nt-view-options__item {
+  display: flex;
+  align-items: center;
+  gap: var(--nd-space-2);
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+.nd-viewopts__item:hover,
+.nt-view-options__item:hover {
+  background: var(--nd-bg-hover);
+}
+
+.nd-viewopts__check,
+.nt-view-options__check {
+  flex: 1;
+  min-width: 0;
+  color: var(--nd-text-secondary);
+  font-size: var(--nd-data-size);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nd-viewopts__moves,
+.nt-view-options__moves {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.nd-viewopts__move,
+.nt-view-options__move {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--nd-border-subtle);
+  border-radius: 2px;
+  background: none;
+  color: var(--nd-text-muted);
+  font-size: var(--nd-text-11);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nd-viewopts__move:hover:not(:disabled),
+.nd-viewopts__move:focus-visible,
+.nt-view-options__move:hover:not(:disabled),
+.nt-view-options__move:focus-visible {
+  color: var(--nd-text-primary);
+  border-color: var(--nd-border-default);
+  background: var(--nd-bg-hover);
+}
+
+.nd-viewopts__move:disabled,
+.nt-view-options__move:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.nd-viewopts__reset,
+.nt-view-options__reset {
+  margin-top: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--nd-border-subtle);
+  border-radius: 2px;
+  background: none;
+  color: var(--nd-accent-text);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-label-size);
+  letter-spacing: var(--nd-tracking-label);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color var(--nd-duration-fast) var(--nd-ease),
+              color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-viewopts__reset:hover,
+.nd-viewopts__reset:focus-visible,
+.nt-view-options__reset:hover,
+.nt-view-options__reset:focus-visible {
+  border-color: var(--nd-accent);
+  color: var(--nd-accent);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   12. Pagination — mono row-count footer.
+
+   Pagination is not navigation chrome; it is a row-count annotation at
+   the bottom of a data set. Styled like any other mono control footer:
+   compact, muted, no surface background, no box-shadow.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-pagination {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  color: var(--nd-text-muted);
+  /* No background surface — just inline with the page. */
+  background: none;
+  border: 0;
+  box-shadow: none;
+}
+
+.nd-pagebtn {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 2px;
+  color: var(--nd-text-muted);
+  cursor: pointer;
+  font: inherit;
+  transition: background var(--nd-duration-fast) var(--nd-ease),
+              color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-pagebtn:hover:not(:disabled) {
+  color: var(--nd-text-primary);
+  background: var(--nd-bg-hover);
+}
+
+/* Current page: accent text, faint accent background. No bold, no border. */
+.nd-pagebtn--current,
+.nd-pagebtn--current:hover,
+.nd-pagination__btn[aria-current='page'],
+.nd-pagination__btn[aria-current='page']:hover {
+  color: var(--nd-accent-text);
+  background: var(--nd-accent-subtle);
+}
+
+.nd-pagebtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.nd-pagination__gap {
+  color: var(--nd-text-faint);
+  padding: 0 1px;
+  font-size: var(--nd-text-10);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   13. Inline health bar — .nt-health-bar / .nt-health-bar__fill
+
+   Health bars live inside cells: a thin horizontal track with a colored
+   fill. They are structural data, not decoration. The track is 3px tall
+   so it sits on the text baseline alongside a value without becoming its
+   own row. No radius pill needed — a sharp bar reads as a measurement
+   scale, not a progress game.
+
+   --nd-health is overloaded and that made every bar render empty. The React
+   markup writes it as a LENGTH — style="--nd-health: 33%" — while legacy
+   Wave 19kk writes it as a COLOR (.nt-fill-bad { --nd-health: var(--nd-danger) }).
+   Inline style beats the class rule on the same element, so on a real bar the
+   property is always the percentage. An earlier version of this block read it
+   as a colour (background: var(--nd-health)), which resolved to `background:
+   33%` — invalid, so the declaration was dropped and the fill painted
+   transparent. Measured: every fill on /overview had a computed background of
+   rgba(0,0,0,0), i.e. site health read as an empty grey box on every row.
+
+   So: --nd-health is treated as the width only, and the colour comes from the
+   .nt-fill-* tone class directly off the palette. Never route the colour
+   through --nd-health, or the inline percentage clobbers it again.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nt-health-bar {
+  display: inline-block;
+  width: 56px;
+  height: 4px;
+  background: var(--nd-border-subtle);
+  border-radius: 0; /* flat, not pill */
+  overflow: hidden;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+/* Fill spans the track's full height so the track height is the one knob. */
+.nt-health-bar__fill,
+.nt-health-fill {
+  display: block;
+  height: 100%;
+  width: var(--nd-health, 0%);
+  border-radius: 0;
+  background: var(--nd-accent);
+  box-shadow: none;
+  transition: width var(--nd-duration-base) var(--nd-ease);
+}
+
+.nt-health-bar__fill.nt-fill-ok,
+.nt-health-bar__fill.nt-fill-healthy,
+.nt-health-bar__fill.nt-fill-good,
+.nt-health-fill.nt-fill-ok,
+.nt-health-fill.nt-fill-healthy,
+.nt-health-fill.nt-fill-good {
+  background: var(--nd-success);
+}
+
+.nt-health-bar__fill.nt-fill-warn,
+.nt-health-bar__fill.nt-fill-warning,
+.nt-health-bar__fill.nt-fill-degraded,
+.nt-health-fill.nt-fill-warn,
+.nt-health-fill.nt-fill-warning,
+.nt-health-fill.nt-fill-degraded {
+  background: var(--nd-warning);
+}
+
+.nt-health-bar__fill.nt-fill-bad,
+.nt-health-bar__fill.nt-fill-danger,
+.nt-health-bar__fill.nt-fill-critical,
+.nt-health-bar__fill.nt-fill-down,
+.nt-health-fill.nt-fill-bad,
+.nt-health-fill.nt-fill-danger,
+.nt-health-fill.nt-fill-critical,
+.nt-health-fill.nt-fill-down {
+  background: var(--nd-danger);
+}
+
+.nt-health-bar__fill.nt-fill-unknown,
+.nt-health-bar__fill.nt-fill-muted,
+.nt-health-fill.nt-fill-unknown,
+.nt-health-fill.nt-fill-muted {
+  background: var(--nd-text-faint);
+}
+
+/* ECG / plane variant: wider track used in the plane-row component.
+   `.nt-plane-ecg` is also a legacy CARD selector (display:flex, padding:
+   8px 12px, border, radius) and the table markup carries both class names.
+   That padding inflated the 4px track to 18px and, because a percentage
+   height resolves against the content box, squeezed the fill to 0px — the
+   bar painted as an empty rounded box. Reset the card properties here. */
+.nt-health-bar.nt-plane-ecg {
+  display: inline-block;
+  width: 96px;
+  height: 4px;
+  padding: 0;
+  border: 0;
+  gap: 0;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   14. Sparkline cells — .nt-spark-frame / .nd-sparkline
+
+   Sparkline.tsx renders a span.nt-spark-frame wrapping an aria-hidden SVG.
+   The frame must display inline-flex and vertically center so the SVG
+   sits on the text baseline alongside numeric values.
+
+   .nd-sparkline covers an older SVG-path sparkline class that some screens
+   still reference directly. Both get the same baseline treatment.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Sparkline.tsx wrapper — inline, baseline-aligned. */
+.nt-spark-frame,
+.nt-inline-flex {
+  display: inline-flex;
+  align-items: center;
+}
+
+.nt-v-mid {
+  vertical-align: middle;
+}
+
+/* Legacy .nd-sparkline SVG: strip any decorative color mix and let the SVG's
+   own stroke property (set inline or via data-tone) do the work. */
+.nd-sparkline {
+  color: var(--nd-accent);
+  opacity: 1;
+}
+
+.nd-sparkline path,
+.nd-sparkline polyline {
+  stroke: currentColor;
+  fill: none;
+}
+
+/* Tone overrides: status color on the line only. */
+.nd-sparkline[data-tone='danger']  path,
+.nd-sparkline[data-tone='danger']  polyline { stroke: var(--nd-danger);  }
+.nd-sparkline[data-tone='warning'] path,
+.nd-sparkline[data-tone='warning'] polyline { stroke: var(--nd-warning); }
+.nd-sparkline[data-tone='success'] path,
+.nd-sparkline[data-tone='success'] polyline { stroke: var(--nd-success); }
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   15. Empty and loading table states.
+
+   When a table has no rows, the screen renders a .nd-empty block inside the
+   scroll container. The wave layers styled it as a centered gradient card.
+   A console renders it as plain text annotation — left-aligned, at the same
+   horizontal indent as column one, at the muted level. The visual weight
+   says "nothing here yet" without shouting.
+
+   Skeleton rows (.nd-skeleton, .nd-skeleton-line) are structural; they use
+   the shimmer animation from the base layer. We only set padding and sizing
+   here so the skeleton rows match the data row height.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nd-empty {
+  /* Reset the gradient card. */
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+
+  /* Annotation-level presentation: not centered, not large. */
+  padding: calc(var(--nd-row-pad-y) * 3) 0;
+  text-align: left;
+}
+
+.nd-empty::before {
+  /* Kill any pseudo-element gradient from the wave layers. */
+  display: none;
+}
+
+.nd-empty__title {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-data-size);
+  font-weight: 400;
+  color: var(--nd-text-muted);
+  letter-spacing: 0;
+  text-transform: none;
+  margin: 0;
+}
+
+.nd-empty__desc {
+  font-size: var(--nd-text-11);
+  color: var(--nd-text-faint);
+  margin-top: 4px;
+}
+
+/* Skeleton rows: match data row height so the table layout doesn't jump. */
+.nd-skeleton,
+.nd-skeleton-line,
+.nt-skeleton {
+  height: 10px;
+  border-radius: 2px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   16. Trend rows — .nt-trend-row
+
+   Used in sparkline-in-cell patterns. The wave layer already set these
+   correctly (label secondary, value mono muted, right-aligned). We leave
+   the layout alone and only ensure the font sizes are consistent with the
+   console data size.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nt-trend-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--nd-gutter);
+  min-width: 0;
+}
+
+.nt-trend-row__label {
+  font-size: var(--nd-data-size);
+  color: var(--nd-text-secondary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nt-trend-row__val {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-data-size);
+  color: var(--nd-text-muted);
+  text-align: right;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   17. Density pass — html[data-nd-density] from 00-foundation already
+   sets the token values. The table's td/th use those tokens for padding.
+   This section adds density-specific structural overrides that tokens
+   alone cannot express: for example, forcing max-height on virtual scroll
+   to use a smaller viewport in compact density.
+   ═══════════════════════════════════════════════════════════════════ */
+
+html[data-nd-density='compact'] .nd-table-scroll--virtual {
+  max-height: min(68vh, 640px);
+}
+
+html[data-nd-density='comfortable'] .nd-table-scroll--virtual {
+  max-height: min(76vh, 840px);
+}
+
+/* In comfortable density the header padding gets a little extra breathing. */
+html[data-nd-density='comfortable'] .nd-table__th {
+  padding-top: calc(var(--nd-row-pad-y) + 4px);
+  padding-bottom: calc(var(--nd-row-pad-y) + 2px);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   18. Light theme structural overrides.
+
+   Token variables handle colors automatically. Structural properties that
+   reference a token for their background — specifically the sticky header —
+   need explicit light-theme rules because the token value IS the light bg,
+   but older wave rules may have set a color-mix() that doesn't use the token.
+   ═══════════════════════════════════════════════════════════════════ */
+
+html[data-nd-theme='light'] .nd-table__th,
+html[data-nd-theme='light'] .nd-table thead th {
+  background: var(--nd-bg-canvas);
+  border-bottom-color: var(--nd-border-default);
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+html[data-nd-theme='light'] .nd-table__tr--interactive:hover,
+html[data-nd-theme='light'] .nd-table__tr--interactive:hover td,
+html[data-nd-theme='light'] .nd-table tbody tr:hover td {
+  background: var(--nd-bg-hover);
+}
+
+html[data-nd-theme='light'] .nd-table__td {
+  border-bottom-color: var(--nd-border-subtle);
+}
+
+html[data-nd-theme='light'] .nd-viewopts__panel,
+html[data-nd-theme='light'] .nt-view-options__panel {
+  background: var(--nd-bg-surface);
+  border-color: var(--nd-border-default);
+}
+
+
+/* ── The tone rail needs its own room ───────────────────────────────────
+ * The rail is an inset box-shadow on the first cell, and that cell has no
+ * left padding — so the 3px bar painted straight over the first glyph of
+ * the row's identifier. On Licences the SKU "UZ535-EVALS" read as
+ * "JZ535-EVALS", which is not a cosmetic problem: the operator is reading a
+ * part number.
+ *
+ * The cell clips its overflow (the truncation trick), so the rail cannot be
+ * moved out into the gutter — it would be cut off. The column is indented
+ * instead, and the header with it, so the rail becomes the table's left
+ * edge and the text starts clear of it.
+ *
+ * The indent is applied to the whole column via the table rather than to
+ * railed rows only: tone is per row, and padding that came and went row by
+ * row would leave the identifier column visibly ragged.
+ */
+
+.nd-table:has(tbody tr[data-tone]) th:first-child,
+.nd-table:has(tbody tr[data-tone]) td:first-child,
+.nd-table:has(tbody tr.nd-table__tr--tone) th:first-child,
+.nd-table:has(tbody tr.nd-table__tr--tone) td:first-child {
+  padding-left: 9px;
+}
+
+/* ── Truncation has to be visible to be honest ──────────────────────────
+ * A cell clips its overflow and asks for an ellipsis, but `text-overflow`
+ * is drawn by the block container over its own inline content. A child that
+ * is block, inline-block or flex is an atomic box: the cell clips it at the
+ * edge and no ellipsis is ever drawn.
+ *
+ * The result reads as data rather than as truncation — a Licences row
+ * showed "Aruba Central 25xx/6100 A EVA" with nothing to say the name
+ * continues. Measured 142 elements painting past their cell edge across the
+ * app, none of them marked.
+ *
+ * Leaves carry the contract themselves. `:not(:has(*))` restricts this to
+ * elements that hold text and no element children, so wrappers keep their
+ * own layout and only the text box clips. `min-width: 0` is required for
+ * the flex-item case, which otherwise refuses to shrink below max-content.
+ *
+ * DataTable's hover title still resolves the full value; it already tests
+ * leaf descendants for overflow, and this makes those leaves the thing that
+ * overflows.
+ */
+
+.nd-table :is(td, th) > * {
+  max-width: 100%;
+}
+
+.nd-table :is(td, th) :is(span, a, button, div, small, p, code):not(:has(*)) {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   Plane ECG trace — same collision as the health bar
+
+   .nt-plane-ecg is used for two different things: a padded card in some
+   wave layers and an inline sparkline trace in the connected-systems
+   plane row. The row markup carries the card class, so the trace picked
+   up `display: flex; padding: 8px 10px; border: 1px` and became an 18px
+   box. Its fill asks for `height: 100%`, which resolves against a
+   content box of 18 - 8 - 8 - 2 = 0px, so every plane row painted an
+   empty grey rectangle where its health trace should be.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nt-plane-ecg.nt-plane-row__ecg,
+.nt-plane-ecg.nt-ecg-trace {
+  display: block;
+  height: 4px;
+  /* The identity cell is a column flex container with no spare room, so a
+     4px height alone was shrunk straight back to 0. */
+  min-height: 4px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  gap: 0;
+  border-radius: 0;
+  overflow: hidden;
+  background: var(--nd-border-subtle);
+}
+
+.nt-plane-ecg.nt-plane-row__ecg > .nt-plane-ecg__fill,
+.nt-plane-ecg.nt-ecg-trace > .nt-plane-ecg__fill {
+  display: block;
+  /* An explicit length, not height:100%. The track's own 4px comes out of
+     min-height once the flex parent has shrunk it, and a percentage height
+     resolves against the specified height rather than the used one, so
+     100% kept computing to 0. */
+  height: 4px;
+  min-height: 4px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   Per-cell fallback labels are for the stacked layout only
+
+   .nt-plane-row__cell::before prints attr(data-label), so every cell in
+   the connected-systems roster repeated its own column heading — the
+   header row said LAST SYNC and then each row said "LAST SYNC 44s ago"
+   again. The label exists for the stacked single-column layout the row
+   drops into at 960px, where there is no header row to read. Above that
+   width the header is present and the repeat is pure noise, costing a
+   line of height in every cell of every row.
+   ═══════════════════════════════════════════════════════════════════ */
+
+@media (min-width: 961px) {
+  .nt-plane-row__cell::before {
+    content: none;
+  }
+}
+
+/* Tone must survive. The generic `.nt-plane-ecg__fill` gradient is declared
+   after the `--ok/--warn/--danger` tone rules at the same specificity, so it
+   won every time and a healthy plane and a failing plane drew the same accent
+   blue trace. Restate the tones so the colour carries the meaning. */
+
+.nt-plane-ecg__fill--ok {
+  background: var(--nd-success);
+}
+
+.nt-plane-ecg__fill--warn {
+  background: var(--nd-warning);
+}
+
+.nt-plane-ecg__fill--danger {
+  background: var(--nd-danger);
+}
+
+.nt-plane-ecg__fill--muted {
+  background: var(--nd-text-faint);
+}
+
+/* ------------------------------------------------------------
+   HEALTH TRACK / FILL  (second bar component)
+   `.nt-health-track` + `.nt-health-fill` is a separate component
+   from `.nt-health-bar` fixed in section 13, and it carries the
+   same `.nt-plane-ecg` class — so it hit the identical collision:
+   measured on /sites the track was 18px tall with 10px of card
+   padding (fill inset to x=880 inside a track at x=869, 26px wide
+   in a 48px track) and the fill computed `height: 0` because its
+   percentage height resolved against a specified height of auto.
+   Also the "100%" label was ellipsized to "10…": the track took
+   48 of the 85px cell and the label shrank to 29px.
+   ------------------------------------------------------------ */
+.nt-health-track.nt-plane-ecg,
+.nt-health-track {
+  display: block;
+  padding: 0;
+  border: 0;
+  gap: 0;
+  height: 4px;
+  min-height: 4px;
+  flex-shrink: 1;
+  min-width: 28px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.nt-health-fill,
+.nt-health-fill.nt-plane-ecg__fill {
+  display: block;
+  height: 4px;
+  min-height: 4px;
+  border-radius: inherit;
+}
+/* The reading must never be clipped in favour of the bar. */
+.nt-health-track + * {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------
+   ALL BAR TRACKS — generalised
+   Three separate bar components (`nt-health-track`,
+   `nt-license-track`, `nt-bar-track`) each carry `.nt-plane-ecg`,
+   and each independently inherited its card padding/height.
+   Match on the `-track` name so a fourth variant cannot
+   reintroduce the same defect, rather than listing them.
+   Measured: `/licenses` track was 121x18 with 8px 10px of card
+   padding around a 4px bar.
+   ------------------------------------------------------------ */
+[class*='-track'].nt-plane-ecg {
+  display: block;
+  padding: 0;
+  border: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+/* `/compliance`: the fill measured 362x0 inside a 2px track — the
+   width was right and the bar simply never painted. The track is a
+   flex row with a specified 2px height, so give the fill the same
+   explicit length instead of relying on stretch. */
+.nd-progress__track > .nd-progress__fill {
+  height: 100%;
+  min-height: 2px;
+  align-self: stretch;
+  flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------
+   NUMERIC COLUMN SIZING AND HEADER ALIGNMENT
+   Measured across 9 table screens: 433px of slack sat in columns
+   that did not need it while 36 cells wrapped to a second line
+   (/licenses "Term" x12, /clearpass "Updated" x12 + "Category" x8,
+   /compliance "Rule" x3, /sites "Mix"). On /sites the one-digit
+   "Devices" column held 112px while "Mix" wrapped
+   "6 ap · 1 gw · 1 sw" onto three lines inside 67px.
+   `width: 1%` in an auto-layout table resolves to the column's
+   min-content width, so the numeric columns stop hoarding and the
+   text columns absorb the slack.
+
+   Numeric headers also read left while their values read right,
+   leaving the label ~100px from the number it names. Align them.
+   ------------------------------------------------------------ */
+/* Specificity note: a bare `.nd-table__th--numeric` (0,1,0) loses to
+   legacy's `.nd-table thead th` style descendant selectors (0,1,2),
+   even unlayered — cascade layers only break ties at EQUAL
+   specificity. Measured: the bare selector changed nothing at all
+   (column stayed 111.75px, header stayed left). Qualify with the
+   element and the base class to reach 0,2,1. */
+th.nd-table__th.nd-table__th--numeric {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+  /* Note: the last column's header then sits flush with the table's
+     right edge. That is not a clipping bug — legacy deliberately
+     zeroes `padding-right` on `:last-child` (and `padding-left` on
+     `:first-child`) so the outer columns align with the page gutter,
+     and the values sit flush too. Verified they line up exactly.
+     Do not "fix" it with extra padding: measured, that only widened
+     the middle numeric columns by 12px each and left the last one
+     unchanged, since the `:last-child` rule (0,3,0) outranks this. */
+}
+th.nd-table__th.nd-table__th--numeric > * {
+  justify-content: flex-end;
+}
+td.nd-table__td.nd-table__td--numeric {
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------
+   LONG MESSAGE STRINGS MUST WRAP, NOT OVERRUN
+   Measured on /systems: `.nt-sync-row__what` holds
+   "poll failed — clearpass pull: <url>" in a 323px grid track but
+   painted 446px wide, running 123px over the "error" badge beside
+   it. `white-space` was already `normal`; the string simply has no
+   break opportunity, and the default `overflow-wrap: normal`
+   refuses to break inside a token.
+   ------------------------------------------------------------ */
+.nt-sync-row__what,
+.nt-queue-row__what,
+.nt-rec-card__desc,
+.nd-table__td,
+.nt-plane-row__cell {
+  overflow-wrap: anywhere;
+}

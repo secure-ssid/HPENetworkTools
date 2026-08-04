@@ -260,7 +260,7 @@ export function WlanSummary({
   return (
     <div id="mist-section-wlans" className="nt-mist-section nt-section-panel nt-stack nt-gap-2">
       <div className="nt-row-between-12">
-        <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Mist WLAN theater · SSID fabric</div>
+        <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Mist WLAN theater · SSID fabric</div>
         <SectionHeader label="WLANs" meta={meta} />
         <div className="nt-wrap-6">
           <Button

@@ -275,12 +275,12 @@ describe('EmptyState', () => {
     );
     const kids = Array.from((container.firstElementChild as HTMLElement).children);
     expect(kids.map((k) => k.className)).toEqual([
-      'nt-empty-wake__mark',
-      'nd-empty__kicker nt-empty-cinema__kicker',
       'nd-empty__title nt-empty-cinema__title',
       'nd-empty__desc nt-empty-cinema__body',
       '',
     ]);
+    expect(kids[0].textContent).toBe('No devices');
+    expect(kids[1].textContent).toBe('No devices');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });

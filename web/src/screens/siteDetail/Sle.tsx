@@ -468,7 +468,9 @@ export function SiteSle({
     if (drill?.metric === metricParam) return;
     const known = sle.metrics.some((m) => m.name === metricParam);
     if (!known) return;
-    setDrill({ metric: metricParam, result: null });
+    queueMicrotask(() => {
+      setDrill({ metric: metricParam, result: null });
+    });
   }, [metricParam, sle, drill?.metric]);
 
   useEffect(() => {
@@ -570,7 +572,7 @@ export function SiteSle({
 
   return (
     <div className="nt-stack nt-gap-2 nt-recon-reveal">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · wireless theater · SLE owns hue · Mist ECG</div>
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · wireless theater · SLE owns hue · Mist ECG</div>
       <div className="nt-row-between-8">
         <SectionHeader
           label="Wireless experience"
@@ -619,19 +621,21 @@ export function SiteSle({
         width="lg"
         title={drill ? metricLabel(drill.metric) : undefined}
         description={drill ? `${siteName} · Mist SLE drill-down` : undefined}
+        className="nt-sle-drill nt-drawer-cinema"
+        dataPhase={drill ? (drill.result === null ? 'executing' : 'done') : undefined}
       >
         {drill ? (
           drill.result === null ? (
             <div className="nt-center-pad nt-pad-48">
-              <div role="status" aria-label="NightDesk · loading SLE drill" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
+              <div role="status" aria-label="HPE Network Tools · loading SLE drill" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
                 <Skeleton height={14} width="36%" />
                 <Skeleton height={40} />
                 <Skeleton height={40} />
               </div>
             </div>
           ) : (
-            <div className="nt-stack nt-gap-10">
-              <div className="nt-wrap-6">
+            <div className="nt-stack nt-gap-10 nt-sle-drill__body">
+              <div className="nt-wrap-6 nt-sle-drill__actions">
                 <Button variant="ghost" size="sm" onClick={() => copySectionLink(drill.metric)}>
                   Copy drill link
                 </Button>

@@ -1,0 +1,238 @@
+/*
+ * Console layer 60 — de-box sweep.
+ *
+ * Layers 10–50 restyled every surface a console primitive owns. What remains is
+ * the long tail: screen-specific wrappers that only ever existed inside
+ * `components.css`, so no console layer had an opinion on them and the legacy
+ * frame survived. This file closes that gap.
+ *
+ * The selectors here are deliberately plain. `legacy.css` assigns the historical
+ * sheet to a cascade layer, and unlayered rules beat layered ones no matter how
+ * compound the layered selector is, so a single class is enough to win. That is
+ * why there is no `!important` and no specificity padding anywhere below — if a
+ * later change needs to reintroduce a frame somewhere, it can, without having to
+ * out-shout this file.
+ *
+ * The list was not guessed. It came from walking the rendered DOM of every
+ * screen and reporting each element still computing a radius above 3px or a
+ * shadow, which is why it reads as an inventory rather than a pattern.
+ */
+
+/* ── Screen and column wrappers ────────────────────────────────────────
+ * These are layout slots. A slot that draws its own frame turns a screen into
+ * a mosaic of panels, which is the exact read the redesign is removing.
+ */
+
+.nt-configure__col,
+.nt-configure__col.nt-recon-reveal,
+.nt-tickets__workspace,
+.nt-ticket-workspace,
+.nt-tickets__queue,
+.nt-ticket-body,
+.nt-shell-workspace,
+.nt-debug-card-left,
+.nt-switch-tree,
+.nt-switch-tree__group,
+.nt-visual-ref__composer {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+/* Columns that sit side by side still need to be told apart. A hairline gutter
+ * does that with one pixel; a card does it with sixteen. */
+.nt-configure__col + .nt-configure__col {
+  border-left: var(--nd-rule);
+  padding-left: 18px;
+}
+
+/* ── Sticky chrome ─────────────────────────────────────────────────────
+ * Screen headers, filter bars and status strips ride above scrolling data.
+ * They need to be legible, not elevated, so they take the page background and
+ * a single rule rather than a floating rounded slab.
+ */
+
+.nt-screen-header,
+.nt-sticky-title,
+.nt-incident-strip,
+.nt-shift-strip,
+.nt-change-strip,
+.nt-filter-bar {
+  background: var(--nd-bg-canvas);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.nt-screen-header,
+.nt-incident-strip,
+.nt-shift-strip,
+.nt-filter-bar {
+  border-bottom: var(--nd-rule);
+}
+
+.nt-change-strip {
+  border-top: var(--nd-rule);
+}
+
+.nt-screen-header__actions {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* ── Metric band ───────────────────────────────────────────────────────
+ * The band is a ledger line, not a tray the figures sit in.
+ */
+
+.nt-stat-band,
+.nt-stat-band--cinema,
+.nt-stat-link {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.nt-stat-band,
+.nt-stat-band--cinema {
+  border-bottom: var(--nd-rule);
+}
+
+/* ── List rows ─────────────────────────────────────────────────────────
+ * Management planes, tickets, recommendations and queue entries were each
+ * rendered as a stack of little cards. They are lists, so they read as lists:
+ * a hairline between entries and an accent rule when one is live or selected.
+ */
+
+.nt-plane-row,
+.nt-plane-row--link,
+.nt-plane-row--ecg,
+.nt-plane-dormant,
+.nt-plane-table,
+.nt-ticket-row,
+.nt-rec-card,
+.nt-rec-card.nt-card-lift,
+.nt-tickets__queue-item,
+.nt-queue-row,
+.nt-sync-row,
+.nt-perm-row {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.nt-plane-row,
+.nt-plane-dormant,
+.nt-ticket-row,
+.nt-rec-card,
+.nt-tickets__queue-item,
+.nt-queue-row,
+.nt-sync-row,
+.nt-perm-row {
+  border-bottom: var(--nd-rule);
+  border-left: 2px solid transparent;
+  padding-left: 8px;
+}
+
+.nt-plane-row--link:hover,
+.nt-ticket-row:hover,
+.nt-rec-card:hover,
+.nt-queue-row:hover {
+  background: var(--nd-bg-hover);
+  border-left-color: var(--nd-accent);
+}
+
+.nt-tickets__queue-item--active,
+.nt-queue-row[aria-current='true'] {
+  background: var(--nd-accent-subtle);
+  border-left-color: var(--nd-accent);
+}
+
+.nt-rec-card.nt-card-lift:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* ── Table rows ────────────────────────────────────────────────────────
+ * Tone-carrying rows were given a shadow to lift them off the sheet. In a
+ * dense table that reads as blur, so tone lives on the left rail instead,
+ * which the 20-tables layer already establishes.
+ */
+
+.nd-table__tr--tone,
+.nd-table__tr--interactive,
+.nd-table__tr--interactive.nd-table__tr--tone {
+  box-shadow: none;
+}
+
+/* ── Code and diff frames ──────────────────────────────────────────────
+ * Config backups and diffs are the one place a frame earns its keep: the
+ * operator needs to see where machine output starts and stops. It gets a
+ * hairline and an inset background, not a rounded floating card.
+ */
+
+.nt-backup-diff,
+.nt-diff-cinema,
+.nt-code-frame,
+.nd-code-block,
+.nt-diff-code {
+  background: var(--nd-bg-inset);
+  border: var(--nd-rule);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* ── Fields ────────────────────────────────────────────────────────────
+ * A focus halo drawn as a shadow bleeds into neighbouring rows at this
+ * density. Focus is an outline, which the foundation layer already sets.
+ */
+
+.nd-input,
+.nd-select,
+.nd-textarea,
+.nt-field,
+.nt-visual-ref__select,
+.nt-global-search,
+.nt-global-search__field,
+.nt-cmdk-cinema__field {
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.nt-global-search {
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+
+/* ── Tabs ──────────────────────────────────────────────────────────────
+ * Tabs are an underlined row, so the list itself carries no elevation.
+ */
+
+.nd-tabs__list,
+.nt-tabs__list {
+  box-shadow: none;
+  background: none;
+  border-radius: 0;
+  border-bottom: var(--nd-rule);
+}
+
+/* ── Motion ────────────────────────────────────────────────────────────
+ * The reveal animations these wrappers carried were tied to the card entrance.
+ * With the cards gone the motion has nothing left to describe.
+ */
+
+.nt-recon-reveal,
+.nt-cmdk-cinema,
+.nt-diff-cinema,
+.nt-stat-band--cinema {
+  animation: none;
+}

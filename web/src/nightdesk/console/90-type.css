@@ -1,0 +1,276 @@
+/*
+ * Console layer 90 — typography.
+ *
+ * The console redesign adopted monospace as the house voice and applied it to
+ * everything. That is the wrong reading of a terminal. A terminal uses one
+ * typeface because it has no choice; what makes its output legible is that
+ * every glyph occupies a known column, which matters for values and matters
+ * not at all for sentences. Setting prose in a monospace face — uppercased,
+ * and tracked out by more than a tenth of an em — is slower to read than the
+ * proportional face it replaced, and it is what makes an interface look
+ * generated rather than designed.
+ *
+ * An audit across six routes found the split had gone the wrong way: a
+ * thirty-five word hint in mono, nineteen-word screen subtitles uppercased at
+ * 1.4px of tracking, explanation paragraphs, empty-state copy and row labels
+ * all in the data face — while the things that genuinely benefit from fixed
+ * columns were already handled.
+ *
+ * The rule this layer restores:
+ *
+ *   Monospace is for values — numbers, identifiers, serials, addresses,
+ *   versions, timestamps, code. Things you compare, scan down a column, or
+ *   read character by character.
+ *
+ *   The proportional face is for language — titles, descriptions, hints,
+ *   empty states, navigation, controls. Things you read as words.
+ *
+ *   Uppercase with tracking is for short labels only, never for a sentence,
+ *   and it is a label style, not a way to add emphasis.
+ */
+
+/* ── Page titles ────────────────────────────────────────────────────────
+ * A screen title was set in uppercase monospace. It is the most-read string
+ * on the page and had the least readable treatment available.
+ */
+
+.nt-screen-header__title,
+.nt-screen-header__title .nd-heading,
+.nt-screen-header__title .nt-heading {
+  font-family: var(--nd-font-body);
+  font-size: 20px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+/*
+ * The subtitle is a full sentence — "Every reported neighbour fact across
+ * every plane, joined to inventory." Uppercased and tracked out, it read as
+ * a banner rather than as an explanation.
+ */
+.nt-screen-header__subtitle {
+  font-family: var(--nd-font-body);
+  font-size: 13px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  line-height: 1.45;
+  color: var(--nd-text-secondary);
+}
+
+/* ── Prose ──────────────────────────────────────────────────────────────
+ * Every one of these carries sentences: inline hints, the qualifying line
+ * under a metric ("7 down · GreenLake, ClearPass, SSE not counted"), empty
+ * state copy, per-row descriptions, footnotes. All were in the data face.
+ */
+
+.nt-hint-muted,
+.nt-hint,
+.nd-stat__delta,
+.nd-stat__hint,
+.nt-empty-lane,
+.nt-change-strip__note,
+.nt-launchpad-row__label,
+.nt-rowlink__desc,
+.nd-empty__title,
+.nd-empty__desc,
+.nt-empty-cinema__title,
+.nt-empty-cinema__body,
+.nd-alert__body,
+.nd-drawer__desc,
+.nt-note,
+.nt-caption {
+  font-family: var(--nd-font-body);
+  text-transform: none;
+  letter-spacing: normal;
+  line-height: 1.45;
+}
+
+/*
+ * Screen-reader-only text is read aloud, not scanned. Its casing leaks into
+ * how some assistive tech pronounces it, and it should never be uppercased.
+ */
+.nt-sr-only {
+  font-family: var(--nd-font-body);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* ── Labels ─────────────────────────────────────────────────────────────
+ * Short uppercase labels are worth keeping — they mark a field or a column
+ * without competing with the value beside them. They do not need to be
+ * monospace to do that, and at 10px with 1.2–1.4px of tracking they were
+ * losing word shape entirely. Proportional, a little larger, and tracked by
+ * a proportional amount reads as a label and stays legible.
+ */
+
+.nd-micro-label,
+.nt-micro-label,
+.nd-section-header__meta,
+.nt-chip-row__label,
+.nd-stat__label,
+.nt-stat__label,
+.nd-field__label,
+.nt-field__label,
+.nd-table thead th {
+  font-family: var(--nd-font-body);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--nd-text-tertiary);
+}
+
+/*
+ * Facet chips are labels with a count. The label half goes proportional; the
+ * count stays in the data face so the numbers line up down a column of rows.
+ */
+.nt-chip,
+.nt-toggle-chip {
+  font-family: var(--nd-font-body);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.nt-chip__count,
+.nt-chip .nd-badge__count {
+  font-family: var(--nd-font-mono);
+  letter-spacing: normal;
+}
+
+/* ── Values ─────────────────────────────────────────────────────────────
+ * These keep the monospace face, because fixed columns are the whole point:
+ * figures that must align down a table, identifiers read character by
+ * character, and clock times compared at a glance.
+ */
+
+.nd-stat__value,
+.nt-stat__value,
+.nt-cell-mono,
+.nt-mono,
+.nt-mono-label,
+.nt-shell-workspace__linked,
+.nd-kv__value,
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--nd-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Timestamps and sync counters stay monospace but lose the shouty tracking.
+ */
+.nt-mono-label,
+.nt-filter-bar__count,
+.nt-alerts__count {
+  letter-spacing: 0.03em;
+}
+
+/* ── Controls ───────────────────────────────────────────────────────────
+ * Buttons were sized at 11px, below the point where Inter's proportional
+ * forms stay comfortable. Nudged up; the buttons themselves stay compact.
+ */
+
+.nd-btn,
+.nt-btn,
+.nd-seg__btn,
+.nt-segmented__btn,
+.nd-tab,
+.nt-tab {
+  font-family: var(--nd-font-body);
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.nd-input,
+.nt-input,
+.nd-select,
+.nt-select,
+.nd-textarea {
+  font-family: var(--nd-font-body);
+  font-size: 12.5px;
+}
+
+/*
+ * A search box takes identifiers — serials, MACs, IP fragments. Those are
+ * values, so the field that receives them stays monospace.
+ */
+.nt-filter-bar .nd-input,
+.nt-filter-bar .nt-input {
+  font-family: var(--nd-font-mono);
+  font-size: 12px;
+}
+
+/* ── Table body ─────────────────────────────────────────────────────────
+ * Cells carrying names, sites and descriptions read as language; cells
+ * carrying measurements keep their columns via .nt-cell-mono above.
+ */
+
+.nd-table tbody td,
+.nt-table tbody td {
+  font-family: var(--nd-font-body);
+  font-size: 12.5px;
+  letter-spacing: normal;
+}
+
+.nd-table thead th,
+.nt-table thead th {
+  text-transform: uppercase;
+}
+
+/* ── Headings ───────────────────────────────────────────────────────────
+ * Section headings are language and should look like it.
+ */
+
+.nd-section-header__title,
+.nt-section-title,
+.nd-rulehead,
+.nd-heading,
+.nt-heading {
+  font-family: var(--nd-font-body);
+  text-transform: none;
+  letter-spacing: -0.005em;
+}
+
+/* ── Inline code is a single token ──────────────────────────────────────
+ * A `<code>` run in prose names one thing — a query parameter, a field, a
+ * flag. Line breaking treats `?` as a break opportunity, so the deep-link
+ * help on Recommendations rendered `?category=` as `?` at the end of one
+ * line and `category=` at the start of the next, splitting the token's
+ * background box in half. A reader cannot tell whether that is one
+ * parameter or two.
+ *
+ * Block code keeps its own wrapping: it lives in a <pre> and is the only
+ * place a newline inside `<code>` is meaningful.
+ */
+
+:not(pre) > code {
+  white-space: nowrap;
+}
+
+/* ── Status chips speak, they don't shout ────────────────────────
+   Chips were 10px JetBrains Mono 700, uppercased, with 0.6px tracking
+   and a fully saturated 1px border — five emphasis devices stacked on
+   a single word. Colour already carries the state, so the type can be
+   ordinary and the border can recede. `currentColor` keeps each tone's
+   hue without re-declaring the palette per variant. */
+.nd-badge.nt-status-chip,
+.nt-status-chip.nd-badge {
+  font-family: var(--nd-font-body);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  /* Source case is inconsistent ("Healthy", "warning", "clear"), so
+     normalise upward rather than leaving a mix of shouting and
+     whispering in the same row. */
+  text-transform: capitalize;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border-color: color-mix(in srgb, currentColor 32%, transparent);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}

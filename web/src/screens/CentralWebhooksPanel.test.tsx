@@ -1330,3 +1330,47 @@ describe('Central webhooks Loop 201 residuals', () => {
     expect(screen.getByRole('button', { name: 'Clear search' })).toBeTruthy();
   });
 });
+
+/* Loop 237 — webhooks bulk Copy endpoints beside Copy names. */
+describe('Central webhooks bulk Copy endpoints (Loop 237)', () => {
+  it('Copy endpoints joins unique callback URLs from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockList.mockResolvedValue(
+      envelope({
+        items: [
+          row(),
+          row({ id: 'wh-2', name: 'noc-pager', endpoint: 'https://noc.example/hook' }),
+          row({ id: 'wh-3', name: 'noc-pager-dup', endpoint: 'https://noc.example/hook' }),
+        ],
+        totalCount: 3,
+        count: 3,
+      }),
+    );
+    renderPanel();
+    expect(await screen.findByRole('grid', { name: 'Central webhooks' })).toBeTruthy();
+
+    const table = screen.getByRole('grid', { name: 'Central webhooks' });
+    const rows = table.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    (rows[0] as HTMLElement).focus();
+    fireEvent.keyDown(rows[0] as HTMLElement, { key: 'x' });
+    (rows[1] as HTMLElement).focus();
+    fireEvent.keyDown(rows[1] as HTMLElement, { key: 'x' });
+    (rows[2] as HTMLElement).focus();
+    fireEvent.keyDown(rows[2] as HTMLElement, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Webhook selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy endpoints' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy endpoints' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0]).split('\n').sort()).toEqual(
+      ['https://example.service-now.com/hooks', 'https://noc.example/hook'].sort(),
+    );
+    expect(await screen.findByText(/Copied 2 endpoints/i)).toBeTruthy();
+  });
+});

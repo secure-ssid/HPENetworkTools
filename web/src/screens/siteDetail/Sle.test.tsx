@@ -55,12 +55,14 @@ afterEach(() => {
 });
 
 function renderSle(
-  _sle?: Parameters<typeof SiteSle>[0]['sle'],
-  mistClaimed = true,
-  entry = '/sites/campus-02',
+  ...args: [
+    sle?: Parameters<typeof SiteSle>[0]['sle'],
+    mistClaimed?: boolean,
+    entry?: string,
+  ]
 ) {
-  // Prefer raw arguments so an explicit `undefined` is not collapsed by defaults.
-  const value = arguments.length === 0 ? SLE : (arguments[0] as Parameters<typeof SiteSle>[0]['sle']);
+  const [_sle = SLE, mistClaimed = true, entry = '/sites/campus-02'] = args;
+  const value = args.length === 0 ? SLE : args[0];
   return render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
       <ToastProvider>

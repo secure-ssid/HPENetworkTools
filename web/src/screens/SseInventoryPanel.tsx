@@ -28,7 +28,7 @@
  * (vendor system-defined) row never shows mutation controls regardless.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   ConfirmDialog,
@@ -106,62 +106,6 @@ function sseSummaryCsvRows(rows: SseObjectSummary[]): Array<Array<unknown>> {
     r.builtIn === true ? 'true' : r.builtIn === false ? 'false' : '',
     r.detail ?? '',
   ]);
-}
-
-function sseInventoryColumns(opts: {
-  canWrite: boolean;
-  onEdit: (row: SseObjectSummary) => void;
-  onDelete: (row: SseObjectSummary) => void;
-}): Array<DataTableColumn<SseObjectSummary>> {
-  const { canWrite, onEdit, onDelete } = opts;
-  return [
-    {
-      key: 'name',
-      title: 'Name',
-      hideable: false,
-      sortValue: (row) => row.name,
-      render: (row) => row.name,
-    },
-    {
-      key: 'detail',
-      title: 'Detail',
-      sortValue: (row) => row.detail ?? row.description ?? '',
-      render: (row) => row.detail ?? row.description ?? '—',
-    },
-    {
-      key: 'state',
-      title: 'State',
-      sortValue: (row) => (row.builtIn ? 'built-in' : row.enabled === false ? 'disabled' : 'enabled'),
-      render: (row) =>
-        row.builtIn ? (
-          <Badge tone="neutral">built-in</Badge>
-        ) : row.enabled === false ? (
-          <Badge tone="warning">disabled</Badge>
-        ) : (
-          <Badge tone="success">enabled</Badge>
-        ),
-    },
-    {
-      key: 'actions',
-      title: 'Actions',
-      numeric: true,
-      render: (row) =>
-        !row.builtIn && canWrite ? (
-          <div className="nt-end-gap-6">
-            <Button size="sm" variant="ghost" onClick={() => onEdit(row)}>
-              Edit
-            </Button>
-            <Button size="sm" variant="danger" onClick={() => onDelete(row)}>
-              Delete
-            </Button>
-          </div>
-        ) : (
-          <Button size="sm" variant="ghost" onClick={() => onEdit(row)}>
-            View
-          </Button>
-        ),
-    },
-  ];
 }
 
 const TENANT_WIDE_RECOVERY_WARNING =
@@ -467,7 +411,7 @@ export function SseInventoryPanel({
     setApplying(false);
   };
 
-  const fetchDrawerObject = async (rowKind: SseObjectKind, id: string, name: string, request: number) => {
+  const fetchDrawerObject = useCallback(async (rowKind: SseObjectKind, id: string, name: string, request: number) => {
     const res = await getSseObject(rowKind, id);
     if (!mountedRef.current || request !== drawerRequestRef.current) return;
     setDrawerLoading(false);
@@ -477,9 +421,9 @@ export function SseInventoryPanel({
       return;
     }
     setForm(formFromRaw(rowKind, res.object));
-  };
+  }, [toast]);
 
-  const openEditById = async (
+  const openEditById = useCallback(async (
     id: string,
     name: string,
     builtIn: boolean,
@@ -496,11 +440,11 @@ export function SseInventoryPanel({
     setApplying(false);
     setDrawerLoading(true);
     await fetchDrawerObject(rowKind, id, name, request);
-  };
+  }, [fetchDrawerObject]);
 
-  const openEdit = async (row: SseObjectSummary, rowKind: SseObjectKind, query: string) => {
+  const openEdit = useCallback(async (row: SseObjectSummary, rowKind: SseObjectKind, query: string) => {
     await openEditById(row.id, row.name, row.builtIn === true, rowKind, query);
-  };
+  }, [openEditById]);
 
   useEffect(() => {
     if (initialObjectId) {
@@ -818,9 +762,78 @@ export function SseInventoryPanel({
     })();
   };
 
+  const columns = useMemo<Array<DataTableColumn<SseObjectSummary>>>(
+    () => [
+      {
+        key: 'name',
+        title: 'Name',
+        hideable: false,
+        sortValue: (row) => row.name,
+        render: (row) => row.name,
+      },
+      {
+        key: 'detail',
+        title: 'Detail',
+        sortValue: (row) => row.detail ?? row.description ?? '',
+        render: (row) => row.detail ?? row.description ?? '—',
+      },
+      {
+        key: 'state',
+        title: 'State',
+        sortValue: (row) => (row.builtIn ? 'built-in' : row.enabled === false ? 'disabled' : 'enabled'),
+        render: (row) =>
+          row.builtIn ? (
+            <Badge tone="neutral">built-in</Badge>
+          ) : row.enabled === false ? (
+            <Badge tone="warning">disabled</Badge>
+          ) : (
+            <Badge tone="success">enabled</Badge>
+          ),
+      },
+      {
+        key: 'actions',
+        title: 'Actions',
+        numeric: true,
+        render: (row) =>
+          !row.builtIn && canWrite ? (
+            <div className="nt-end-gap-6">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => void openEdit(row, listingState.kind, listingState.query)}
+              >
+                Edit
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => remove(row, listingState.kind, listingState.query)}
+              >
+                Delete
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void openEdit(row, listingState.kind, listingState.query)}
+            >
+              View
+            </Button>
+          ),
+      },
+    ],
+    [canWrite, openEdit, listingState.kind, listingState.query],
+  );
+
   return (
     <div className="nt-stack nt-gap-12 nt-recon-reveal nt-sse-shell nt-section-panel">
-      <div className="nt-plane-theater" role="note">NightDesk · SSE inventory · brokered estate slice</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · SSE inventory · brokered estate slice</div>
+      <div className="nt-status-ribbon nt-sse-ribbon" role="status" aria-label="SSE inventory status ribbon">
+        <span className="nt-status-ribbon__item">SSE · brokered estate</span>
+        <span className="nt-status-ribbon__item">object inventory</span>
+        <span className="nt-status-ribbon__item">write scope gated</span>
+      </div>
       <SectionHeader
         label="Object inventory"
         meta={
@@ -1037,11 +1050,7 @@ export function SseInventoryPanel({
         <DataTable
           ariaLabel={`${SSE_OBJECT_KIND_LABELS[kind]} inventory`}
           density="compact"
-          columns={sseInventoryColumns({
-            canWrite,
-            onEdit: (row) => void openEdit(row, listingState.kind, listingState.query),
-            onDelete: (row) => void remove(row, listingState.kind, listingState.query),
-          })}
+          columns={columns}
           rows={rows}
           rowKey={(row) => row.id}
           selectedKeys={selectedKeys}
@@ -1236,6 +1245,15 @@ export function SseInventoryPanel({
         className={
           drawerMode === 'create' || (drawerMode === 'edit' && canWrite && !drawerBuiltIn)
             ? 'nd-drawer--write-ritual nt-write-ritual'
+            : undefined
+        }
+        dataPhase={
+          drawerMode === 'create' || (drawerMode === 'edit' && canWrite && !drawerBuiltIn)
+            ? applying
+              ? 'executing'
+              : reviewed
+                ? 'confirm'
+                : 'review'
             : undefined
         }
         title={

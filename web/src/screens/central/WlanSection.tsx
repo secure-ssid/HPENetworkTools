@@ -147,7 +147,11 @@ export function WlanSection({
   return (
     <div id="central-section-wlans" className="nt-stack nt-gap-2 nt-central-section nt-section-panel">
       <div className="nt-plane-theater nt-plane-theater--compact" role="note">
-        NightDesk · WLAN theater · SSID fabric
+        HPE Network Tools · WLAN theater · SSID fabric
+      </div>
+      <div className="nt-status-ribbon nt-status-ribbon--compact nt-wlan-ribbon" role="status" aria-label="WLAN status ribbon">
+        <span className="nt-status-ribbon__item">WLAN · SSID fabric</span>
+        <span className="nt-status-ribbon__item">security path</span>
       </div>
       <div className="nt-row-between-12">
         <SectionHeader label="WLANs" meta={meta} />

@@ -150,7 +150,7 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
   const lldp = row.lldpUplink;
   return (
     <div className="nt-stack nt-gap-2">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · AP RF theater · Mist stats</div>
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · AP RF theater · Mist stats</div>
       <SectionHeader label="AP health & RF" meta="MIST AP STATS" />
 
       <div

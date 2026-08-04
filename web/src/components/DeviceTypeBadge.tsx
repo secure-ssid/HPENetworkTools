@@ -15,11 +15,20 @@ export function DeviceTypeBadge({
   showRole?: boolean;
 }) {
   const tax = classifyDevice({ type, model, name });
+  const seen = new Set([tax.typeLabel.trim().toLowerCase()]);
+  const once = (label: string | null | undefined) => {
+    const key = label?.trim().toLowerCase();
+    if (!key || seen.has(key)) return null;
+    seen.add(key);
+    return label;
+  };
+  const family = showFamily ? once(tax.family) : null;
+  const role = showRole ? once(tax.roleHint) : null;
   return (
     <span className="nt-badge-row">
       <Badge tone={tax.typeTone}>{tax.typeLabel}</Badge>
-      {showFamily && tax.family ? <Badge tone="neutral">{tax.family}</Badge> : null}
-      {showRole && tax.roleHint ? <Badge tone="info">{tax.roleHint}</Badge> : null}
+      {family ? <Badge tone="neutral">{family}</Badge> : null}
+      {role ? <Badge tone="info">{role}</Badge> : null}
     </span>
   );
 }

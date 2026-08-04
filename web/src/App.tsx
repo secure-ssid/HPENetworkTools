@@ -30,12 +30,12 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
           <div
             className="nt-boot-error__kicker"
           >
-            NightDesk · render fault
+            HPE Network Tools · render fault
           </div>
           <div
             className="nt-boot-error__title"
           >
-            This screen failed to render. NightDesk is still running — reload returns to the last
+            This screen failed to render. HPE Network Tools is still running — reload returns to the last
             working state.
           </div>
           <div

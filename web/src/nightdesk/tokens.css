@@ -1,40 +1,40 @@
-/* Nightdesk tokens — Copper NOC / GreenLake midnight. */
+/* Nightdesk tokens — Signal Blue NOC / GreenLake midnight. */
 :root {
   color-scheme: dark;
 
   /* backgrounds — elevation ladder */
-  --nd-bg-canvas: #0b0907;
-  --nd-bg-surface: #14110e;
-  --nd-bg-raised: #1b1612;
-  --nd-bg-inset: #070504;
-  --nd-bg-panel: rgba(20, 17, 14, 0.84);
-  --nd-bg-hover: #241c16;
-  --nd-bg-glass: rgba(11, 9, 7, 0.74);
-  --nd-bg-glass-strong: rgba(20, 17, 14, 0.92);
+  --nd-bg-canvas: #070b13;
+  --nd-bg-surface: #0f1520;
+  --nd-bg-raised: #161e2c;
+  --nd-bg-inset: #04070d;
+  --nd-bg-panel: rgba(15, 21, 32, 0.84);
+  --nd-bg-hover: #1d2637;
+  --nd-bg-glass: rgba(7, 11, 19, 0.74);
+  --nd-bg-glass-strong: rgba(15, 21, 32, 0.92);
 
   /* borders (1px) */
-  --nd-border-subtle: rgba(180, 150, 130, 0.10);
-  --nd-border-default: rgba(180, 150, 130, 0.15);
-  --nd-border-strong: rgba(180, 150, 130, 0.26);
-  --nd-border-glow: rgba(232, 140, 98, 0.35);
+  --nd-border-subtle: rgba(138, 170, 220, 0.10);
+  --nd-border-default: rgba(138, 170, 220, 0.16);
+  --nd-border-strong: rgba(138, 170, 220, 0.28);
+  --nd-border-glow: rgba(74, 144, 255, 0.35);
 
   /* text */
-  --nd-text-primary: #f1f4fa;
-  --nd-text-secondary: #b0a498;
-  --nd-text-muted: #8a7d72;
-  --nd-text-faint: #5c524a;
-  --nd-text-inverse: #0c1018;
+  --nd-text-primary: #eef2fa;
+  --nd-text-secondary: #a3b3cd;
+  --nd-text-muted: #7f8ea8;
+  --nd-text-faint: #56637a;
+  --nd-text-inverse: #05080f;
 
-  /* accent (warm copper) — grammar, not confetti */
-  --nd-accent: #e08c62;
-  --nd-accent-hover: #eba07c;
-  --nd-accent-active: #cf7a52;
-  --nd-accent-text: #f0a27e;
-  --nd-accent-subtle: rgba(224, 140, 98, 0.16);
-  --nd-glow: rgba(224, 140, 98, 0.18);
-  --nd-glow-strong: rgba(224, 140, 98, 0.32);
-  --nd-cool: #6ea8ff;
-  --nd-cool-subtle: rgba(110, 168, 255, 0.12);
+  /* accent (signal blue) — grammar, not confetti */
+  --nd-accent: #4a90ff;
+  --nd-accent-hover: #6ba6ff;
+  --nd-accent-active: #2f78e6;
+  --nd-accent-text: #86b6ff;
+  --nd-accent-subtle: rgba(74, 144, 255, 0.16);
+  --nd-glow: rgba(74, 144, 255, 0.18);
+  --nd-glow-strong: rgba(74, 144, 255, 0.32);
+  --nd-cool: #2dd4bf;
+  --nd-cool-subtle: rgba(45, 212, 191, 0.12);
 
   /* semantic — state owns hue */
   --nd-success: #3dd68c;
@@ -43,16 +43,16 @@
   --nd-warning-subtle: rgba(240, 195, 74, 0.12);
   --nd-danger: #ff6f7a;
   --nd-danger-subtle: rgba(255, 111, 122, 0.12);
-  --nd-info: #5eb4ff;
-  --nd-info-subtle: rgba(94, 180, 255, 0.12);
+  --nd-info: #38bdf8;
+  --nd-info-subtle: rgba(56, 189, 248, 0.12);
   --nd-neutral-subtle: rgba(154, 166, 189, 0.12);
 
   /* focus / overlay */
-  --nd-ring-color: rgba(224, 140, 98, 0.5);
+  --nd-ring-color: rgba(74, 144, 255, 0.5);
   --nd-overlay-scrim: rgba(4, 6, 10, 0.72);
   --nd-opacity-disabled: 0.45;
 
-  /* Compat aliases used by densify layers (Copper NOC) */
+  /* Compat aliases used by densify layers (Signal Blue NOC) */
   --nd-surface-0: var(--nd-bg-canvas);
   --nd-surface-1: var(--nd-bg-surface);
   --nd-surface-2: var(--nd-bg-raised);
@@ -202,7 +202,7 @@ html[data-nd-theme='light'] {
   --nd-border-subtle: rgba(15, 23, 42, 0.07);
   --nd-border-default: rgba(15, 23, 42, 0.12);
   --nd-border-strong: rgba(15, 23, 42, 0.2);
-  --nd-border-glow: rgba(196, 98, 48, 0.28);
+  --nd-border-glow: rgba(37, 99, 235, 0.30);
 
   --nd-text-primary: #0f172a;
   --nd-text-secondary: #475569;
@@ -210,15 +210,15 @@ html[data-nd-theme='light'] {
   --nd-text-faint: #94a3b8;
   --nd-text-inverse: #f8fafc;
 
-  --nd-accent: #c46230;
-  --nd-accent-hover: #d4733f;
-  --nd-accent-active: #a85228;
-  --nd-accent-text: #b45309;
-  --nd-accent-subtle: rgba(196, 98, 48, 0.12);
-  --nd-glow: rgba(196, 98, 48, 0.14);
-  --nd-glow-strong: rgba(196, 98, 48, 0.24);
-  --nd-cool: #2563eb;
-  --nd-cool-subtle: rgba(37, 99, 235, 0.1);
+  --nd-accent: #2563eb;
+  --nd-accent-hover: #3b82f6;
+  --nd-accent-active: #1d4ed8;
+  --nd-accent-text: #1d4ed8;
+  --nd-accent-subtle: rgba(37, 99, 235, 0.12);
+  --nd-glow: rgba(37, 99, 235, 0.14);
+  --nd-glow-strong: rgba(37, 99, 235, 0.24);
+  --nd-cool: #0d9488;
+  --nd-cool-subtle: rgba(13, 148, 136, 0.12);
 
   --nd-success: #15803d;
   --nd-success-subtle: rgba(21, 128, 61, 0.1);
@@ -226,14 +226,14 @@ html[data-nd-theme='light'] {
   --nd-warning-subtle: rgba(180, 83, 9, 0.1);
   --nd-danger: #b91c1c;
   --nd-danger-subtle: rgba(185, 28, 28, 0.1);
-  --nd-info: #1d4ed8;
-  --nd-info-subtle: rgba(29, 78, 216, 0.1);
+  --nd-info: #0284c7;
+  --nd-info-subtle: rgba(2, 132, 199, 0.1);
   --nd-neutral-subtle: rgba(71, 85, 105, 0.1);
 
-  --nd-ring-color: rgba(196, 98, 48, 0.45);
+  --nd-ring-color: rgba(37, 99, 235, 0.45);
   --nd-overlay-scrim: rgba(15, 23, 42, 0.45);
 
-  /* Compat aliases used by densify layers (Copper NOC) */
+  /* Compat aliases used by densify layers (Signal Blue NOC) */
   --nd-surface-0: var(--nd-bg-canvas);
   --nd-surface-1: var(--nd-bg-surface);
   --nd-surface-2: var(--nd-bg-raised);

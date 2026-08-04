@@ -1,5 +1,5 @@
 /**
- * Global shift strip — always-on Copper NOC trust chrome.
+ * Global shift strip — always-on trust chrome.
  * env · Live/Demo · P1s · degraded planes · freshness
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -157,15 +157,15 @@ export function ShiftStrip() {
 
   return (
     <div
-      className={`nt-shift-strip${hot ? ' nt-shift-strip--hot' : ''}`}
+      className={`nt-shift-strip nd-shift-strip${hot ? ' nt-shift-strip--hot nd-shift-strip--hot' : ''}`}
       role="status"
       aria-label="Shift status"
       data-mode={snap.mode}
       data-p1={snap.p1Count > 0 ? '1' : '0'}
       data-degraded={snap.degraded.length > 0 ? '1' : '0'}
     >
-      <span className="nt-shift-strip__brand" aria-hidden>
-        NightDesk
+      <span className="nt-shift-strip__brand nd-shift-strip__brand" aria-hidden>
+        HPE Network Tools
       </span>
       <span className="nt-shift-strip__chip" title="Active workspace">
         <span className="nt-shift-strip__dot" aria-hidden />

@@ -129,7 +129,7 @@ export function KeyboardShortcuts({
               >
                 <div className="nd-shortcuts__header nt-hotkey-overlay__header">
                   <div className="nd-shortcuts__brand nt-hotkey-overlay__brand" aria-hidden>
-                    NightDesk · key map
+                    HPE Network Tools · key map
                   </div>
                   <div id={titleId} className="nd-shortcuts__title nt-hotkey-overlay__title">
                     {title}

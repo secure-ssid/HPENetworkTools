@@ -1,0 +1,967 @@
+/*
+ * Console layer 10 — shell chrome.
+ *
+ * The shell was a decorator: gradient sidebar, frosted-glass topbar, pulsing
+ * brand glow, rounded pill nav items. Every surface competed with the data it
+ * framed. Fifty glowing boxes is fifty distractions.
+ *
+ * This layer replaces decorative chrome with a flat ruled frame — the way a
+ * terminal draws columns with whitespace and a hairline `|`, not with beveled
+ * boxes. Accent appears only where it means "this is interactive" or "this is
+ * the active route". Everything else goes quiet so the values pop.
+ *
+ * File owns: shell grid, sidebar rail, brand/wordmark, nav groups + items,
+ * topbar status line, breadcrumb path, shift/status strip, skip link, and
+ * the identity / workspace footer. It does not touch .nt-toolbar (filter
+ * bars inside pages — that belongs to the 30/40 layers), the global search
+ * panel, or any content beyond the page scroll boundary.
+ *
+ * Cascade position: loaded after components.css, so plain single-class
+ * selectors win by source order at equal specificity.
+ */
+
+/* ── Shell geometry tokens ───────────────────────────────────────────────
+ * Tighten the chrome to hand vertical space back to the content being read.
+ * The old topbar was 52 px — a full navigation bar height for what is
+ * functionally a single status line. Cut it and the operator sees another
+ * full table row.
+ */
+
+:root {
+  --nd-topbar-h: 36px;
+  --nd-shift-h: 26px;
+  --nd-sidebar-w: 220px;
+}
+
+/* ── Shell frame ─────────────────────────────────────────────────────────
+ * Remove the radial accent washes. The canvas colour is the background;
+ * the content is the signal. Decorative background gradients visually
+ * merge with alert states and confuse the operator's eye.
+ */
+
+.nd-shell,
+.nt-shell {
+  background: var(--nd-bg-canvas);
+}
+
+/* The sticky accent hairline injected as ::before into the content area
+ * looks like a UI element and creates false visual affordance. Gone. */
+.nd-shell__content::before {
+  display: none;
+}
+
+/* ── Sidebar rail ────────────────────────────────────────────────────────
+ * A rail, not a panel. Background matches the surface tier so it reads as
+ * part of the same plane; a 1px hairline separates it from the canvas.
+ * The multi-layer gradient + outer shadow combination was pure decoration.
+ */
+
+.nd-shell__sidebar,
+.nt-shell__sidebar {
+  background: var(--nd-bg-surface);
+  border-right: var(--nd-rule-strong);
+  box-shadow: none;
+  padding: 14px 8px 12px;
+  gap: 6px;
+}
+
+/* ── Brand / wordmark ────────────────────────────────────────────────────
+ * Text gradients and glow filters read as "SaaS dashboard hero". This is
+ * an operator tool. The brand identifies the system; it does not market it.
+ * Kicker is a quiet mono label — upstream system, not a tagline.
+ */
+
+.nt-shell-brand {
+  padding: 0 6px 10px;
+  border-bottom: var(--nd-rule);
+  margin-bottom: 4px;
+  position: static; /* suppress the ::after pseudo-element positioning anchor */
+}
+
+/* Remove the gradient underline shimmer that bleeds below the brand block. */
+.nt-shell-brand::after {
+  display: none;
+}
+
+.nt-shell-brand__kicker {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+}
+
+.nt-shell-brand__name {
+  /* Kill the clipped text gradient and glow filter from wave 19bf. Plain
+   * text at this weight reads sharper and at WCAG AA without the glow. */
+  background: none;
+  -webkit-background-clip: unset;
+  background-clip: unset;
+  color: var(--nd-text-primary);
+  filter: none;
+  text-shadow: none;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  margin-top: 2px;
+}
+
+.nt-shell-brand__tagline {
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-faint);
+  font-family: var(--nd-font-mono);
+  letter-spacing: 0.06em;
+}
+
+/* Rail toggle — small, unobtrusive, lives in the brand row. */
+.nt-shell-rail-toggle {
+  border-radius: 0;
+  border: 0;
+  background: none;
+  color: var(--nd-text-faint);
+  width: 20px;
+  height: 20px;
+  transition: color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-shell-rail-toggle:hover {
+  color: var(--nd-text-secondary);
+  background: none;
+}
+
+/* ── Nav groups ──────────────────────────────────────────────────────────
+ * Group headers are micro-labels: uppercase mono, dim. They act like the
+ * section headers in `man` output — orientation, not hierarchy. No toggle
+ * chrome; the chevron alone is sufficient affordance for collapse.
+ */
+
+.nt-shell-navgroup {
+  gap: 1px;
+  padding-top: 4px;
+}
+
+.nt-shell-navgroup__label {
+  padding: 8px 8px 3px;
+  /* inherit the .nd-micro-label pattern from the foundation layer */
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* The navgroup toggle is just the group header; no extra chrome. */
+.nt-shell-navgroup__toggle {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-shell-navgroup__toggle:hover {
+  background: none;
+}
+
+.nt-shell-navgroup__toggle:hover .nd-micro-label,
+.nt-shell-navgroup__toggle:hover .nt-shell-navgroup__label {
+  color: var(--nd-text-muted);
+}
+
+.nt-shell-navgroup__chev {
+  color: var(--nd-text-faint);
+  transition: transform var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-shell-navgroup--collapsed .nt-shell-navgroup__chev {
+  transform: rotate(-90deg);
+}
+
+.nt-shell-navgroup--collapsed .nt-shell-navgroup__items {
+  display: none;
+}
+
+/* Platforms group has no special visual treatment in console mode;
+ * the label alone distinguishes it. */
+.nt-shell-navgroup--platforms {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding-top: 4px;
+}
+
+.nt-shell-navgroup--platforms .nt-shell-navgroup__label {
+  color: var(--nd-text-faint);
+}
+
+/* ── Nav items ───────────────────────────────────────────────────────────
+ * Items are dense rows: ~26 px, full-width, no pill. Structure comes from
+ * the 2px left rule on the active item — a technique borrowed from the
+ * traditional IDE's tree-view active state.
+ *
+ * Hover: background only, no border, no shadow — matches the idle rows in
+ * adjacent tables so the sidebar doesn't feel like a separate application.
+ *
+ * Active: 2px left accent rule + accent text + very subtle background wash.
+ * No gradient, no glow, no text-shadow. The rule is enough.
+ */
+
+.nd-navitem,
+.nt-navitem,
+.nt-sidebar-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--nd-row-h);
+  padding: var(--nd-row-pad-y) var(--nd-row-pad-x);
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--nd-text-secondary);
+  font-family: var(--nd-font-body);
+  font-size: var(--nd-text-12);
+  font-weight: 400;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    color var(--nd-duration-fast) var(--nd-ease);
+  /* left inset rule: invisible at rest, accent when active */
+  box-shadow: inset 2px 0 0 transparent;
+}
+
+.nd-navitem:hover,
+.nt-navitem:hover,
+.nt-sidebar-nav__item:hover {
+  background: var(--nd-bg-hover);
+  color: var(--nd-text-primary);
+  border: 0;
+  box-shadow: inset 2px 0 0 transparent;
+}
+
+.nd-navitem--active,
+.nd-navitem--active:hover,
+.nt-navitem--active,
+.nt-navitem--active:hover {
+  color: var(--nd-accent-text);
+  background: var(--nd-accent-subtle);
+  border: 0;
+  border-radius: 0;
+  box-shadow: inset 2px 0 0 var(--nd-accent);
+  text-shadow: none;
+  font-weight: 500;
+}
+
+/* Icon inherits the item's text colour so it shifts with state without
+ * needing its own state rules. Filter drop-shadows are removed. */
+.nd-navitem__icon,
+.nt-navitem__icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: inherit;
+  display: grid;
+  place-items: center;
+  opacity: 0.7;
+}
+
+.nd-navitem:hover .nd-navitem__icon,
+.nd-navitem--active .nd-navitem__icon,
+.nt-navitem:hover .nt-navitem__icon,
+.nt-navitem--active .nt-navitem__icon {
+  color: inherit;
+  filter: none;
+  opacity: 1;
+}
+
+.nd-navitem__label,
+.nt-navitem__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--nd-text-12);
+}
+
+/* Counts / badges beside nav items are mono + tabular-nums. Dim at nominal,
+ * state colour only when they cross a threshold the operator needs to act on. */
+.nt-badge-count {
+  font-family: var(--nd-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--nd-text-10);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--nd-text-faint);
+  padding: 0;
+  min-width: unset;
+  margin-left: auto;
+}
+
+/* ── Collapsed rail ──────────────────────────────────────────────────────
+ * Icon-only mode: sidebar shrinks to an icon column. Hairline rule stays.
+ * The nav items centre their icon; the group separators become subtle
+ * horizontal dividers instead of invisible gap fragments.
+ */
+
+.nd-shell--rail .nd-shell__sidebar {
+  --nd-sidebar-w: 44px;
+  padding-inline: 4px;
+  align-items: stretch;
+  overflow: visible;
+}
+
+.nd-shell--rail .nd-navitem,
+.nd-shell--rail .nt-navitem {
+  justify-content: center;
+  padding: var(--nd-row-pad-y) 0;
+}
+
+.nd-shell--rail .nd-navitem__icon,
+.nd-shell--rail .nt-navitem__icon {
+  width: 16px;
+  height: 16px;
+}
+
+.nd-shell--rail .nt-shell-navgroup {
+  gap: 2px;
+  padding-top: 6px;
+  border-top: var(--nd-rule);
+}
+
+.nd-shell--rail .nt-shell-navgroup:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.nd-shell--rail .nt-shell-brand {
+  justify-content: center;
+  padding: 0 0 10px;
+  border-bottom: var(--nd-rule);
+}
+
+.nd-shell--rail .nt-shell-workspace {
+  align-items: center;
+  padding: 10px 0 0;
+}
+
+.nd-shell--rail .nt-shell-workspace__row {
+  justify-content: center;
+}
+
+/* Hiding text in rail mode is unchanged from components.css — we just
+ * keep the rules so they load after and win. */
+.nd-shell--rail .nd-navitem__label,
+.nd-shell--rail .nt-navitem__label,
+.nd-shell--rail .nt-shell-brand__copy,
+.nd-shell--rail .nt-shell-navgroup__label,
+.nd-shell--rail .nt-shell-workspace__name,
+.nd-shell--rail .nt-shell-workspace__linked,
+.nd-shell--rail .nt-shell-workspace .nd-micro-label {
+  display: none;
+}
+
+/* ── Workspace / identity footer ─────────────────────────────────────────
+ * The sidebar footer holds the workspace switcher and the logged-in user.
+ * It does not need a box; a hairline top rule is enough to mark the
+ * boundary between navigation and context.
+ */
+
+.nt-shell-workspace {
+  margin-top: auto;
+  padding: 8px 6px 0;
+  border-top: var(--nd-rule);
+  background: none;
+  box-shadow: none;
+}
+
+.nt-shell-workspace__name {
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nt-shell-workspace__tag,
+.nt-shell-workspace__linked {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-faint);
+}
+
+/* Identity row: avatar + name + role. No decorative ::before bar. */
+.nt-shell-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px;
+  border-radius: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.nt-shell-identity::before {
+  display: none;
+}
+
+.nt-shell-identity__name {
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-secondary);
+  font-weight: 400;
+}
+
+.nt-shell-identity__meta {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-faint);
+  letter-spacing: 0.04em;
+}
+
+.nt-shell-assistant {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--nd-text-faint);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  padding: 4px 6px;
+  cursor: pointer;
+  transition: color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-shell-assistant:hover {
+  color: var(--nd-text-secondary);
+  background: none;
+}
+
+/* ── Topbar / status line ─────────────────────────────────────────────────
+ * The topbar is a status line, not a navigation bar. A single 36 px row
+ * holds: breadcrumb path on the left, action atoms on the right. No blur,
+ * no gradient wash — frosted glass signals "floating panel", which is the
+ * wrong affordance for a fixed chrome element.
+ *
+ * `nt-toolbar-glass` is the legacy class applied alongside nd-shell__topbar;
+ * the foundation layer already zeroes its ::before gradient, but we need to
+ * strip the other glass properties too.
+ */
+
+.nd-shell__topbar,
+.nt-shell__topbar,
+.nd-shell__topbar.nt-toolbar-glass,
+.nt-topbar.nt-toolbar-glass {
+  min-height: var(--nd-topbar-h);
+  padding: 0 var(--nd-content-pad-x);
+  background: var(--nd-bg-surface);
+  border-bottom: var(--nd-rule-strong);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  gap: 10px;
+  /* Remove the accent-tinted bottom edge from the wave-era rules. The plain
+   * hairline in var(--nd-rule-strong) is all the separation needed. */
+  border-bottom-color: var(--nd-border-default);
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+/* Topbar's .nt-topbar alias (used by older markup in some screens). */
+.nt-topbar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: var(--nd-bg-surface);
+  border-bottom: var(--nd-rule-strong);
+  box-shadow: none;
+  border-bottom-color: var(--nd-border-default);
+}
+
+/* ── Breadcrumb path ─────────────────────────────────────────────────────
+ * Rendered like a filesystem path: `section / subsection / current`.
+ * Low contrast for visited crumbs, primary for the current leaf.
+ * The decorative gradient underline from wave 19bf is removed.
+ */
+
+.nd-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  line-height: 1;
+}
+
+/* Kill the accent gradient rule that rendered under the breadcrumb. */
+.nd-breadcrumbs::after {
+  display: none;
+}
+
+.nd-breadcrumbs a {
+  color: var(--nd-text-faint);
+  text-decoration: none;
+  transition: color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-breadcrumbs a:hover {
+  color: var(--nd-text-secondary);
+}
+
+.nd-breadcrumb,
+.nt-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  color: var(--nd-text-faint);
+}
+
+/* The separator reads as a path delimiter. Rendered dim so the path
+ * segments are the signal; the slashes are just grammar. */
+.nd-breadcrumb__sep {
+  color: var(--nd-text-faint);
+  opacity: 0.5;
+  padding: 0 3px;
+  font-size: var(--nd-text-10);
+  user-select: none;
+}
+
+.nd-breadcrumb__current {
+  color: var(--nd-text-secondary);
+  font-weight: 500;
+}
+
+/* ── Topbar right: action atoms ──────────────────────────────────────────
+ * Density toggle, connection stamp, notification bell. All terse mono.
+ * Spacing is tighter than the old gap-6 row — these are status reads, not
+ * primary actions, so they recede to the margin.
+ */
+
+.nt-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.nt-density-toggle {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 3px 6px;
+  border-radius: 0;
+  border: 1px solid var(--nd-border-subtle);
+  color: var(--nd-text-faint);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color var(--nd-duration-fast) var(--nd-ease),
+    border-color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-density-toggle:hover {
+  color: var(--nd-text-secondary);
+  border-color: var(--nd-border-default);
+  background: transparent;
+}
+
+.nt-density-toggle[data-active='true'],
+.nt-density-toggle--active {
+  color: var(--nd-accent-text);
+  border-color: var(--nd-accent);
+  background: var(--nd-accent-subtle);
+}
+
+/* Notification bell: icon only, no chrome. The dot signals unread state. */
+.nt-notify-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--nd-text-faint);
+  transition: color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-notify-bell:hover {
+  color: var(--nd-text-secondary);
+}
+
+.nt-notify-bell__dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--nd-danger);
+  /* No outer ring — the dot itself is small enough to sit cleanly on the
+   * icon without needing a background-matching border. */
+  box-shadow: none;
+}
+
+/* ── Shift / status strip ────────────────────────────────────────────────
+ * A terse single row that announces: what mode (LIVE / DEMO), connection
+ * state, active incidents. The old design rendered it as a glossy accent
+ * band with blur. That reads as a CTA, not as ambient telemetry.
+ *
+ * Console version: hairline-bordered row, flat surface, mono atoms. State
+ * colours apply only to the chip that carries the state — no wash across
+ * the whole strip.
+ */
+
+.nt-shift-strip {
+  position: sticky;
+  top: 0;
+  z-index: var(--nd-z-shift);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-height: var(--nd-shift-h);
+  padding: 3px var(--nd-content-pad-x);
+  background: var(--nd-bg-surface);
+  border-bottom: var(--nd-rule);
+  border-bottom-color: var(--nd-border-default);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* When the strip is inside the content stage (bleed variant), keep the
+ * negative margin offset but still use a flat surface. */
+.nd-shell__content > .nt-shift-strip {
+  margin: calc(var(--nd-content-pad-y) * -1) calc(var(--nd-content-pad-x) * -1) var(--nd-block-gap);
+  width: calc(100% + var(--nd-content-pad-x) * 2);
+  max-width: none;
+}
+
+/* Chips: flat mono atoms, no pill, no shadow. The border is the only
+ * frame — a thin rule rather than a rounded pill screams "button". */
+.nt-shift-strip__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+  padding: 1px 6px;
+  border-radius: 0;
+  border: 1px solid var(--nd-border-subtle);
+  background: transparent;
+  cursor: default;
+  box-shadow: none;
+}
+
+button.nt-shift-strip__chip {
+  appearance: none;
+  font: inherit;
+  color: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  transition: border-color var(--nd-duration-fast) var(--nd-ease);
+}
+
+button.nt-shift-strip__chip:hover {
+  border-color: var(--nd-border-default);
+  background: transparent;
+  box-shadow: none;
+}
+
+/* LIVE stamp: accent border + accent text. No glow; the word is enough. */
+.nt-shift-strip__chip--accent {
+  color: var(--nd-accent-text);
+  border-color: var(--nd-accent);
+  background: var(--nd-accent-subtle);
+  box-shadow: none;
+}
+
+/* Danger chip (P1 incidents): danger colour, no animation by default.
+ * Animation is retained when [data-p1="1"] because the motion carries
+ * genuine urgency signal — it's not decoration. Reduced-motion override
+ * is already in tokens.css. */
+.nt-shift-strip__chip--danger {
+  color: var(--nd-danger);
+  border-color: color-mix(in srgb, var(--nd-danger) 40%, var(--nd-border-subtle));
+  background: var(--nd-danger-subtle);
+  animation: none; /* re-enabled below under the data-p1 condition */
+  box-shadow: none;
+}
+
+.nt-shift-strip__chip--warning {
+  color: var(--nd-warning);
+  border-color: color-mix(in srgb, var(--nd-warning) 35%, var(--nd-border-subtle));
+  background: var(--nd-warning-subtle);
+  box-shadow: none;
+}
+
+.nt-shift-strip__chip--ok {
+  color: var(--nd-success);
+  border-color: color-mix(in srgb, var(--nd-success) 30%, var(--nd-border-subtle));
+  background: var(--nd-success-subtle);
+  box-shadow: none;
+}
+
+/* Dot: solid circle, inherits chip colour. */
+.nt-shift-strip__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+  /* No glow pulse at rest — the animation below fires only when urgent. */
+  animation: none;
+}
+
+/* LIVE dot pulses to communicate data freshness, not to decorate.
+ * Reduced-motion eliminates the animation via the tokens.css rule. */
+.nt-shift-strip__dot--live {
+  animation: nd-console-pulse 2s var(--nd-ease) infinite;
+}
+
+@keyframes nd-console-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+
+/* P1-active: danger chip re-enables a mild pulse. Reduced-motion off. */
+.nt-shift-strip[data-p1='1'] .nt-shift-strip__chip--danger {
+  animation: nd-console-heat 2.4s var(--nd-ease) infinite;
+}
+
+@keyframes nd-console-heat {
+  0%, 100% { border-color: color-mix(in srgb, var(--nd-danger) 40%, var(--nd-border-subtle)); }
+  50%       { border-color: var(--nd-danger); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nt-shift-strip__dot--live,
+  .nt-shift-strip[data-p1='1'] .nt-shift-strip__chip--danger {
+    animation: none;
+  }
+}
+
+.nt-shift-strip__spacer {
+  flex: 1 1 auto;
+  min-width: 4px;
+}
+
+/* Meta text — timestamp, operator on-call, connection latency. Quieter
+ * than the chips so it doesn't draw attention from state chips. */
+.nt-shift-strip__meta,
+.nt-shift-meta {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-faint);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Brand stamp inside the strip (legacy node): dim and small; the main
+ * wordmark in the sidebar is the canonical identity. */
+.nt-shift-strip__brand {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-faint);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: none;
+  box-shadow: none;
+}
+
+/* Freshness indicator: a small age timestamp that dims when data is stale.
+ * No special colour when fresh — only contrast when it falls behind. */
+.nt-shift-strip__fresh {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-faint);
+  letter-spacing: 0.04em;
+}
+
+/* HOT mode strip: strip background nudges warm only when there is an
+ * unacknowledged P1. The nudge is enough; the chip carries the text. */
+.nt-shift-strip--hot {
+  background: color-mix(in srgb, var(--nd-danger-subtle) 30%, var(--nd-bg-surface));
+  border-bottom-color: color-mix(in srgb, var(--nd-danger) 25%, var(--nd-border-default));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* DEMO mode dims the accent chip so it reads as "not production".
+ * Already handled by data-mode; this block just strips the glow. */
+.nt-shift-strip[data-mode='demo'] .nt-shift-strip__chip--accent,
+.nt-shift-strip[data-mode='demo'] [data-chip='mode'] {
+  box-shadow: none;
+}
+
+/* LIVE mode: dot is coloured; no glow added here. */
+.nt-shift-strip[data-mode='live'] .nt-shift-strip__dot--live {
+  background: var(--nd-success);
+}
+
+/* ── Content area ────────────────────────────────────────────────────────
+ * Scroll container. Padding stays from the tokens; only the positional
+ * pseudo-element accent line (::before) is already removed above.
+ */
+
+.nd-shell__content,
+.nt-shell__content,
+.nt-main-canvas {
+  flex: 1;
+  min-width: 0;
+  padding: var(--nd-content-pad-y) var(--nd-content-pad-x) 40px;
+  overflow-x: clip;
+}
+
+/* Main focus ring: not visible at :focus, only at :focus-visible.
+ * The foundation layer already handles :focus-visible globally; this
+ * just suppresses the outline on programmatic focus (tabIndex=-1). */
+#nd-main:focus {
+  outline: none;
+}
+
+/* ── Skip link ───────────────────────────────────────────────────────────
+ * Keyboard escape hatch. Off-screen until focused; then appears as a
+ * terse mono label in the top-left corner. Flat rectangle matches the
+ * console aesthetic. */
+
+.nt-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: var(--nd-z-toast);
+  padding: 5px 10px;
+  background: var(--nd-accent);
+  color: var(--nd-text-inverse);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.nt-skip-link:focus {
+  left: 0;
+  top: 0;
+  outline: 2px solid var(--nd-text-primary);
+  outline-offset: -2px;
+}
+
+/* ── Light theme ─────────────────────────────────────────────────────────
+ * Light mode uses the same structural rules; only surface colours change.
+ * The tokens.css already defines light values for --nd-bg-surface,
+ * --nd-border-default, etc., so most rules above pick up the right values
+ * automatically. We only need to override places where the dark theme
+ * applied a hardcoded value or a dark-specific gradient.
+ */
+
+html[data-nd-theme='light'] .nd-shell,
+html[data-nd-theme='light'] .nt-shell {
+  background: var(--nd-bg-canvas);
+}
+
+html[data-nd-theme='light'] .nd-shell__sidebar,
+html[data-nd-theme='light'] .nt-shell__sidebar {
+  background: var(--nd-bg-surface);
+  border-right: var(--nd-rule-strong);
+  box-shadow: none;
+}
+
+html[data-nd-theme='light'] .nd-shell__topbar,
+html[data-nd-theme='light'] .nt-shell__topbar,
+html[data-nd-theme='light'] .nd-shell__topbar.nt-toolbar-glass,
+html[data-nd-theme='light'] .nt-topbar.nt-toolbar-glass {
+  background: var(--nd-bg-surface);
+  border-bottom-color: var(--nd-border-default);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+html[data-nd-theme='light'] .nt-shift-strip {
+  background: var(--nd-bg-surface);
+  border-bottom-color: var(--nd-border-default);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+html[data-nd-theme='light'] .nd-navitem--active,
+html[data-nd-theme='light'] .nt-navitem--active {
+  background: var(--nd-accent-subtle);
+  box-shadow: inset 2px 0 0 var(--nd-accent);
+  text-shadow: none;
+}
+
+html[data-nd-theme='light'] .nt-shell-brand__name {
+  background: none;
+  -webkit-background-clip: unset;
+  background-clip: unset;
+  color: var(--nd-text-primary);
+  filter: none;
+  text-shadow: none;
+}
+
+html[data-nd-theme='light'] .nt-shell-brand__kicker {
+  color: var(--nd-text-faint);
+}
+
+/* ── Responsive: narrow screens ──────────────────────────────────────────
+ * Below the sidebar breakpoint the shell becomes a single column; the
+ * topbar wraps. Padding collapses to keep readable line lengths on mobile.
+ */
+
+@media (max-width: 820px) {
+  .nd-shell,
+  .nt-shell {
+    display: block;
+  }
+
+  .nd-shell__sidebar,
+  .nt-shell__sidebar {
+    display: none;
+  }
+
+  .nd-shell__topbar,
+  .nt-shell__topbar {
+    flex-wrap: wrap;
+    min-height: auto;
+    padding: 6px 14px;
+    gap: 6px;
+  }
+
+  .nd-shell__content,
+  .nt-shell__content {
+    padding: 12px 14px 32px;
+  }
+
+  .nt-shift-strip {
+    padding-inline: 14px;
+  }
+}
+
+@media (max-width: 1320px) {
+  .nd-shell__sidebar,
+  .nt-shell__sidebar {
+    --nd-sidebar-w: 200px;
+  }
+}
+

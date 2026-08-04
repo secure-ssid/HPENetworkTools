@@ -1,0 +1,879 @@
+/*
+ * Console layer 80 — density.
+ *
+ * Every rule in this file was written against a measurement, not a hunch.
+ * A DOM audit across eleven routes ranked elements by the vertical space they
+ * spend on nothing (padding + margin + row-gap x child count). The worst
+ * offenders were not the data — they were the containers around it: the main
+ * canvas spending 56px of padding and 22px between blocks, recommendation
+ * cards spending 20px of padding each across 68 instances, list rows spending
+ * 18px, and screen headers repeating the breadcrumb the topbar already shows.
+ *
+ * A terminal fits more on a screen than a dashboard does, and not because its
+ * type is smaller. It is because it does not put a margin around every fact.
+ * This layer reclaims that space. Type sizes are left alone — legibility is
+ * not the thing being traded away here, whitespace is.
+ */
+
+/* ── Density scale ──────────────────────────────────────────────────────
+ * The foundation layer sized these for the card era, when generous gaps
+ * were doing the work of separating frames. Hairline rules do that job now,
+ * so the gaps can come down without the layout collapsing into mush.
+ */
+
+:root {
+  --nd-screen-gap: 14px;
+  --nd-block-gap: 8px;
+  --nd-content-pad-x: 16px;
+  --nd-content-pad-y: 10px;
+  --nd-gutter: 12px;
+
+  /* Shared step scale, so screens stop inventing their own spacing. */
+  --nd-pad-tight: 6px;
+  --nd-pad-snug: 8px;
+  --nd-pad-loose: 12px;
+}
+
+html[data-nd-density='compact'] {
+  --nd-screen-gap: 10px;
+  --nd-block-gap: 6px;
+  --nd-content-pad-y: 8px;
+  --nd-pad-loose: 10px;
+}
+
+/* ── Shell frame ────────────────────────────────────────────────────────
+ * The legacy sheet contradicts itself about what the shell is. Wave 19fh
+ * (line ~14528) declares the two-column grid that puts the sidebar beside the
+ * content; Wave 20xy (line ~59175) later re-declares the same element as a
+ * flex column. Both are in the legacy layer, so the last one wins and the
+ * sidebar drops to a full-width band above the page with the grid template
+ * still computing behind it — a layout that reads as broken at every width.
+ *
+ * Stating the frame here settles it. This layer is unlayered, so it outranks
+ * every legacy wave no matter which order they accreted in, and no future
+ * wave can silently take the shell apart again.
+ */
+
+.nd-shell,
+.nt-shell {
+  display: grid;
+  grid-template-columns: var(--nd-sidebar-w, 220px) minmax(0, 1fr);
+  align-items: stretch;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.nd-shell__sidebar,
+.nt-shell__sidebar {
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow: auto;
+  /* Legacy pins an explicit 240px here, which overhangs the grid column. */
+  width: 100%;
+}
+
+.nd-shell__main,
+.nt-shell__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+@media (max-width: 820px) {
+  .nd-shell,
+  .nt-shell {
+    display: block;
+  }
+}
+
+/* ── Main canvas ────────────────────────────────────────────────────────
+ * Measured at 56px vertical padding and a 22px gap between every block.
+ * On a 900px viewport that is most of a table's worth of rows spent on
+ * emptiness before the first fact is drawn.
+ *
+ * The density tokens have to be restated on the content element itself, not
+ * only on :root. Legacy re-declares --nd-screen-gap further down the tree
+ * (`html[data-nd-density='comfortable'] .nd-shell__content`), and a variable
+ * redefined on an ancestor of the stacks wins over the document root no
+ * matter what the root says.
+ */
+
+.nd-shell__content,
+.nt-main-canvas,
+.nt-shell__content {
+  --nd-screen-gap: 14px;
+  --nd-block-gap: 8px;
+  padding: var(--nd-content-pad-y) var(--nd-content-pad-x);
+  gap: var(--nd-screen-gap);
+}
+
+html[data-nd-density='compact'] .nd-shell__content,
+html[data-nd-density='compact'] .nt-main-canvas {
+  --nd-screen-gap: 10px;
+  --nd-block-gap: 6px;
+}
+
+html[data-nd-density='comfortable'] .nd-shell__content,
+html[data-nd-density='comfortable'] .nt-main-canvas {
+  --nd-screen-gap: 18px;
+  --nd-block-gap: 10px;
+}
+
+.nt-page,
+.nt-stack,
+.nt-stack-col,
+.nt-stack-12,
+.nt-sites-stack,
+.nt-tickets,
+.nt-configure {
+  gap: var(--nd-screen-gap);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.nt-stack-12 {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Nested stacks are grouping facts, not sections — they need less air. */
+.nt-stack .nt-stack,
+.nt-page .nt-stack,
+.nt-stack-col .nt-stack {
+  gap: var(--nd-block-gap);
+}
+
+/* ── Screen header ──────────────────────────────────────────────────────
+ * The header carried four stacked lines before the title: a product brand
+ * kicker, a breadcrumb overline, the title, then a subtitle — and the
+ * topbar directly above it already renders the same breadcrumb and the same
+ * product name. Two of those four lines were pure duplication, costing 40px
+ * at the top of every screen. The remaining pair still says everything the
+ * operator needs: what this screen is, and what it shows.
+ */
+
+.nt-screen-header__brand,
+.nt-screen-header__overline {
+  display: none;
+}
+
+.nt-screen-header {
+  padding: var(--nd-pad-snug) 0 var(--nd-pad-tight);
+  margin: 0;
+  gap: var(--nd-pad-tight) 18px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+/*
+ * Title block and actions were stacking even when the window had room for
+ * both, spending a whole row on a button strip that fits beside the heading.
+ */
+.nt-screen-header__copy,
+.nt-screen-header__titles {
+  gap: 2px;
+  padding-left: 0;
+  flex: 1 1 460px;
+  min-width: 0;
+}
+
+/*
+ * The subtitle is the one long string in the header, and legacy pins it to
+ * `white-space: nowrap` with a content-derived max-width. Sharing a line with
+ * the action strip, it overflowed its own column and printed through the
+ * buttons. Cap it to the column and let it wrap; the flex basis below is set
+ * so a full-width action strip pushes the copy onto its own line first, and
+ * truncation only ever happens as a last resort.
+ */
+.nt-screen-header__subtitle {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.nt-screen-header__actions {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+.nt-screen-header__title {
+  margin-bottom: 0;
+}
+
+.nt-screen-header__subtitle {
+  margin-top: 1px;
+}
+
+/*
+ * The actions row sat in its own padded, tinted slab. Buttons do not need a
+ * tray to sit in when a hairline already closes the header.
+ */
+.nt-screen-header__actions {
+  padding: 0;
+  margin: 0;
+  gap: var(--nd-pad-tight);
+  background: none;
+  border: 0;
+}
+
+/*
+ * A 28px circular product mark, repeated inside the actions row of every
+ * screen. Its label overflowed the circle and printed straight through the
+ * adjacent buttons at common window widths. It is decoration that duplicates
+ * the sidebar wordmark, so it goes rather than gets patched.
+ */
+.nt-screen-header__actions .nt-systems-brand,
+.nt-chip-wrap .nt-systems-brand,
+.nt-screen-header .nt-screen-kicker {
+  display: none;
+}
+
+/* ── Filter bars ────────────────────────────────────────────────────────
+ * Fields were stretching to the full content width, so a search box and two
+ * short selects stacked into three rows and 169px of height. A filter row is
+ * a command line: it should read left to right on one line, with each field
+ * only as wide as the values it holds.
+ */
+
+.nt-filter-bar,
+.nt-alerts__toolbar,
+.nt-table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nd-pad-tight) var(--nd-pad-snug);
+  padding: var(--nd-pad-tight) 0;
+  margin: 0;
+}
+
+.nt-filter-bar > *,
+.nt-alerts__toolbar > *,
+.nt-table-toolbar > * {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+}
+
+.nt-filter-bar .nd-input,
+.nt-filter-bar .nt-input,
+.nt-filter-bar .nt-field,
+.nt-alerts__toolbar .nd-input,
+.nt-table-toolbar .nd-input {
+  width: 260px;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.nt-filter-field--xl .nd-input,
+.nt-filter-field--xl .nt-input {
+  width: 320px;
+}
+
+.nt-filter-bar .nd-select-wrap,
+.nt-filter-bar .nt-select-wrap,
+.nt-alerts__toolbar .nd-select-wrap,
+.nt-table-toolbar .nd-select-wrap {
+  width: auto;
+}
+
+.nt-filter-bar .nd-select,
+.nt-filter-bar .nt-select,
+.nt-alerts__toolbar .nd-select,
+.nt-table-toolbar .nd-select {
+  width: auto;
+  min-width: 132px;
+  max-width: 200px;
+  margin-bottom: 0;
+}
+
+/* Search fields earn more room than a two-value select, but not the page. */
+.nt-filter-bar > .nd-input:first-child,
+.nt-filter-bar > .nt-field:first-child {
+  flex: 1 1 240px;
+  max-width: 380px;
+}
+
+/*
+ * The toggle label wrapped to two lines because the switch was laid out as a
+ * column. Keep switch and label on one baseline.
+ */
+.nt-filter-bar .nd-switch,
+.nt-filter-bar .nt-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nd-pad-tight);
+  width: auto;
+}
+
+.nt-filter-bar .nd-switch__label,
+.nt-filter-bar .nt-switch__label {
+  white-space: nowrap;
+  height: auto;
+}
+
+/* ── Chip rows ──────────────────────────────────────────────────────────
+ * Facet counts are reference material sitting under the filters. They were
+ * separated by 16px margins as if each row were its own section.
+ *
+ * Devices renders five of these back to back — Type, Issues, State, Plane,
+ * Site. At section spacing that is a 270px block of counts standing between
+ * the operator and the inventory. They are one legend, not five sections, so
+ * consecutive rows close up to a tight group.
+ */
+
+.nt-chip-row,
+.nt-chip-wrap {
+  margin: 0;
+  padding: 2px 0;
+  gap: 4px var(--nd-pad-tight);
+  align-items: center;
+}
+
+.nt-chip-row + .nt-chip-row {
+  margin-top: calc(var(--nd-screen-gap) * -1 + 2px);
+}
+
+/*
+ * That cancellation is only correct where the parent's row-gap really is
+ * --nd-screen-gap. A negative margin cannot read the gap it is cancelling, and
+ * two containers stack chip rows on their own terms: the tab body is
+ * block-formatted so there is no gap at all, and the Systems list runs its own
+ * 10px. In both the margin cancelled space that was never there and the rows
+ * printed through each other — on /alerts the four facet rows ran at a 12px
+ * pitch with 28px of content, so SEVERITY, PLANE, SITE and ACK overlapped.
+ *
+ * Both are stated at their real gap rather than left to an assumption.
+ */
+
+.nd-tabs__content > .nt-chip-row + .nt-chip-row {
+  margin-top: 2px;
+}
+
+.nt-system-list > .nt-chip-row + .nt-chip-row {
+  margin-top: calc(2px - 10px);
+}
+
+/*
+ * A facet chip is a label and a count. It was boxed at 28px tall to look like
+ * a button; it is not one, it is a legend entry that happens to be clickable.
+ */
+.nt-chip,
+.nt-toggle-chip {
+  min-height: 0;
+  padding: 1px var(--nd-pad-tight);
+  line-height: 1.5;
+}
+
+/* ── Section taglines ───────────────────────────────────────────────────
+ * Each section carried a byline in the house voice — "HPE Network Tools · fleet
+ * theater · health owns the row", "HPE Network Tools · visual lane · operator
+ * sketches", "HPE Network Tools · recommendation lane · severity first". Three of
+ * them on Devices alone, 28px each, none of them a fact about the network.
+ * Section headings already say what a section is; this is the copy that made
+ * the product read as generated rather than built.
+ */
+
+.nt-plane-theater {
+  display: none;
+}
+
+/* ── Stat bands ─────────────────────────────────────────────────────────
+ * Four numbers were occupying 137px. The figures themselves are worth their
+ * size; the band around them was not.
+ */
+
+.nt-stat-band,
+.nt-stat-band--cinema {
+  padding: 0;
+  margin: 0;
+}
+
+.nt-stat-grid {
+  padding: var(--nd-pad-tight) 0;
+  margin: 0;
+  gap: 0 var(--nd-gutter);
+}
+
+.nd-stat,
+.nt-stat {
+  padding: var(--nd-pad-tight) var(--nd-gutter) var(--nd-pad-tight) 0;
+  gap: 1px;
+}
+
+/* ── Lists and cards ────────────────────────────────────────────────────
+ * 68 recommendation cards at 20px of padding each, and 39 list rows at 18px.
+ * These are the densest surfaces in the product and were paying the highest
+ * per-item tax. A hairline between rows separates them just as clearly as a
+ * ring of empty space, and costs one pixel instead of forty.
+ */
+
+.nt-rowlink,
+.nt-rec-card,
+.nt-plane-mini,
+.nt-configure-capability {
+  padding: var(--nd-pad-snug) 0;
+  gap: 2px var(--nd-gutter);
+  margin: 0;
+}
+
+.nt-rec-list,
+.nt-launchpad {
+  gap: 0;
+  padding: 0;
+}
+
+.nt-rec-list > * + *,
+.nt-rowlink + .nt-rowlink {
+  border-top: var(--nd-rule);
+}
+
+/* ── Dividers ───────────────────────────────────────────────────────────
+ * The "flair" divider carried 43px of margin above and below — 86px of empty
+ * page to draw one line, in a stack that already separates its children with
+ * a gap. The line itself is worth keeping as a section break; the margins
+ * around it are not.
+ */
+
+.nd-divider,
+.nt-divider,
+.nd-divider--flair,
+.nt-divider--flair {
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Empty states ───────────────────────────────────────────────────────
+ * "No results" does not need a hero block, and it does not need a byline.
+ * The kicker above these read "NIGHTDESK · QUIET LANE" — house voice again,
+ * carrying no information about why the panel is empty.
+ */
+
+.nd-empty,
+.nt-empty {
+  padding: var(--nd-pad-loose) 0;
+  gap: 2px;
+}
+
+.nd-empty__kicker,
+.nt-empty-cinema__kicker,
+.nt-empty-wake__mark {
+  display: none;
+}
+
+/* ── Visual references ──────────────────────────────────────────────────
+ * A 30px margin above and below each reference block, plus 24px of internal
+ * padding on the composer.
+ */
+
+.nt-visual-ref {
+  margin: 0;
+  gap: var(--nd-pad-snug);
+}
+
+.nt-visual-ref__composer {
+  padding: var(--nd-pad-snug) 0;
+  margin: 0;
+  gap: var(--nd-pad-snug);
+}
+
+/* ── Configure ──────────────────────────────────────────────────────────
+ * Columns were spending 24px padding and 26px between capability blocks.
+ */
+
+.nt-configure__col {
+  padding: 0;
+  gap: var(--nd-screen-gap);
+}
+
+/* ── Sidebar and chrome ─────────────────────────────────────────────────
+ * Navigation groups were spending 24px each on padding and margin; with six
+ * groups that is a nav that scrolls when it should not.
+ */
+
+.nt-shell-navgroup {
+  padding: var(--nd-pad-tight) 0 0;
+  margin: 0 0 var(--nd-pad-snug);
+}
+
+.nd-shell__sidebar,
+.nt-shell__sidebar {
+  padding: var(--nd-pad-loose) 0;
+}
+
+.nt-shell-brand {
+  padding: 0 var(--nd-pad-loose) var(--nd-pad-snug);
+  margin: 0;
+  gap: var(--nd-pad-snug);
+}
+
+.nt-shift-strip {
+  padding: 3px var(--nd-content-pad-x);
+  margin: 0;
+}
+
+/* ── Narrow windows ─────────────────────────────────────────────────────
+ * Below the point where a filter line can stay a line, let fields grow back
+ * so they remain usable rather than clipped.
+ */
+
+@media (max-width: 900px) {
+  .nt-filter-bar .nd-input,
+  .nt-filter-bar .nt-input,
+  .nt-filter-bar .nt-field,
+  .nt-filter-field--xl .nd-input {
+    width: 100%;
+  }
+
+  .nt-filter-bar > .nd-input:first-child,
+  .nt-filter-bar > .nt-field:first-child {
+    max-width: none;
+  }
+}
+
+/* ── Topbar wrap ────────────────────────────────────────────────────────
+ * Legacy narrows the topbar at `max-width: 1320px` by giving the search
+ * `flex: 1 0 100%; width: 100% !important`. The grow/shrink pair is the
+ * problem: shrink 0 in a `nowrap` row means the search takes the entire
+ * width and refuses to give any back, so the breadcrumb is squeezed to 0px
+ * and the bell, theme, assistant and identity controls — all `flex: 0 0 auto`
+ * — pile on top of it. A 1332px window is 1317px of viewport once the
+ * scrollbar is counted, so this fired on an ordinary laptop.
+ *
+ * The `width: 100% !important` cannot be outranked from here — an important
+ * declaration inside a layer beats an unlayered one — but it does not need to
+ * be. For a flex item a definite `flex-basis` is what sizes the box, and
+ * `width` is only consulted when the basis is `auto`. Restoring a shrinkable
+ * basis therefore sidesteps the `!important` entirely and puts the row back on
+ * one line. `flex-wrap` stays on as a safety net for genuinely narrow windows,
+ * where wrapping is preferable to overlap.
+ */
+.nd-shell__topbar.nt-toolbar-glass {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  align-items: center;
+}
+
+.nd-shell__topbar.nt-toolbar-glass .nt-global-search {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+/* Never let the breadcrumb collapse to nothing — it is the only thing telling
+ * the operator which screen they are on. */
+.nd-shell__topbar.nt-toolbar-glass .nd-crumbs {
+  flex: 0 1 auto;
+  min-width: max-content;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   Double-counted separation: child margins on top of container gap
+
+   The wave layers predate `gap` and still set margin-top / margin-bottom
+   on elements that now sit inside a flex or grid container which already
+   declares a row gap. The two add up, so a stack asking for 14px of
+   separation renders 26px and one asking for 18px renders 30px.
+
+   Measured across 21 routes: 4,409px of child margin inside gap-bearing
+   containers. Zeroing it only where the container's own gap is 8px or
+   more — a gap that already reads as separation — reclaims 772px of
+   scroll with no new element overlaps (189 before, 189 after on the same
+   detector). Small-gap containers (nt-gap-2 .. nt-gap-6, .nd-stat,
+   .nt-shell-navgroup) are deliberately left alone: there the margin is
+   the separation, and removing it would crowd the text.
+
+   Containers are listed explicitly rather than matched with a substring,
+   because [class*="nt-gap-"] would also catch nt-gap-2.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nt-stack > *,
+.nt-gap-8 > *,
+.nt-gap-10 > *,
+.nt-gap-12 > *,
+.nt-gap-14 > *,
+.nt-gap-16 > *,
+.nt-gap-18 > *,
+.nt-gap-20 > *,
+.nt-gap-22 > *,
+.nt-gap-24 > *,
+.nt-gap-26 > *,
+.nt-grid-2 > *,
+.nt-grid-3 > *,
+.nt-grid-4 > *,
+.nt-grid-160 > *,
+.nt-grid-auto > *,
+.nt-grid-2-10 > *,
+.nt-grid-2-14 > *,
+.nt-grid-3-14 > *,
+.nt-grid-gap-8 > *,
+.nt-grid-gap-10 > *,
+.nt-grid-gap-14 > *,
+.nt-systems > *,
+.nt-mist-section > *,
+.nt-shell-workspace > *,
+.nt-visual-ref > *,
+.nt-row > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   Wrapped rows start at the left edge
+
+   Toolbars, filter bars and header action rows are wrapping flex rows
+   that distribute their free space (space-between, or a trailing item
+   with margin-left:auto). That is right for a row that fits on one line
+   and wrong the moment it wraps: the overflow items land on line two
+   still pushed to the far end, so a primary action like "Reconcile with
+   GreenLake" floats alone 900px from anything it relates to.
+
+   Measured across 21 routes: 134 wrapped lines starting more than 120px
+   in from their container's left edge, 77,193px of horizontal hole in
+   total. Pinning these rows to flex-start and clearing the auto margins
+   that beat justify-content leaves 38,120px, and drops total scroll
+   height from 38,347px to 35,118px because rows that no longer stretch
+   to the far edge stop wrapping at all.
+
+   Deliberately not applied to .nd-shell__topbar: the topbar's right-hand
+   cluster (search, operator, theme) is a fixed landmark and operators
+   look for it in a constant place.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nt-filter-bar,
+.nt-screen-header__actions,
+.nt-wrap-6,
+.nt-row-between-12,
+.nt-row-between-8,
+.nt-incident-strip {
+  justify-content: flex-start;
+}
+
+.nt-filter-bar > *,
+.nt-screen-header__actions > *,
+.nt-wrap-6 > *,
+.nt-row-between-12 > *,
+.nt-row-between-8 > * {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* ------------------------------------------------------------
+   ACCENT-RAIL CLEARANCE
+   The "Lists and cards" reset above collapses padding to
+   `var(--nd-pad-snug) 0`, which also wiped the `padding-left: 8px`
+   that 60-debox.css pairs with each row's 2px left accent rail.
+   Measured on /devices: `.nt-rec-card` computed `padding: 8px 0`,
+   so its description started at x=236 — the card's own left edge —
+   and printed underneath the rail. Restore the inline start
+   padding for exactly the rail-bearing rows.
+   ------------------------------------------------------------ */
+.nt-rec-card,
+.nt-plane-row,
+.nt-plane-dormant,
+.nt-ticket-row,
+.nt-tickets__queue-item,
+.nt-queue-row,
+.nt-sync-row,
+.nt-perm-row {
+  padding-left: 8px;
+}
+
+/* ------------------------------------------------------------
+   DECORATIVE FLAIR DIVIDERS COST A WHOLE STACK SLOT
+   `.nd-divider--flair` renders a 48x1px dash. It carries no
+   information and the `.nd-micro-label` immediately after it
+   already names the section. Because it is a stack child it also
+   claims a gap slot on each side: measured 34px above + 18px
+   below on /sites/ext-lab and /devices/LAB-AP47 to render one
+   1px line. Removing it reclaims ~53px per occurrence (12 across
+   the app, 6 of them on /systems alone).
+   ------------------------------------------------------------ */
+.nd-divider--flair,
+.nt-divider-flair {
+  display: none;
+}
+
+/* Tab strip sat 38px above the filter bar it controls on /alerts. */
+.nd-tabs + *,
+.nt-tabs + * {
+  margin-top: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DOUBLE SPACING, ROUND 2 — FAMILY MATCH INSTEAD OF ENUMERATION
+   The earlier reset listed containers one by one, so every shell
+   added since kept stacking margin on top of its own `gap`.
+   Measured across 20 routes: 292px of additive child margin in 17
+   container shapes — e.g. /alerts `.nd-tabs` gap 12 + list
+   margin-bottom 14 + content margin-top 12 = 38px between a tab
+   strip and the filters it drives; `.nt-device-detail-shell`
+   gap 18 + margin-bottom 16 = 34px between every section.
+
+   Matched by family so new shells inherit the fix. The three
+   containers that measured gap: 0 and genuinely separate their
+   children with margins are excluded by name — zeroing those
+   would collapse them.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.nt-section-panel:not(.nt-alerts-shell) > *,
+.nt-recon-reveal:not(.nt-alerts-shell):not(.nt-global-search) > *,
+[class*="nt-stack-"]:not(.nt-stack--tight) > *,
+.nd-tabs > *,
+.nt-system-list > *,
+.nt-switch-tree__toolbar > *,
+.nt-ticket-note-row > *,
+.nt-row-between-16 > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DESIGN-LANGUAGE TAGLINE RIBBONS ARE NOT DATA
+   Every screen carried a full-width chip bar describing the design
+   system rather than the network: "planes monochrome", "state owns
+   hue", "AP cinema", "blast radius armed", "layers monochrome".
+   Audited all 17 routes: every ribbon that carries a screen-specific
+   modifier class is a tagline; the two that carry real readings are
+   bare `.nt-status-ribbon` (site detail "health · 100% | devices · 8
+   | alerts · clear", device detail "state · up | fw · … | plane · …").
+
+   So: hide modified ribbons, keep bare ones. Matching on the class
+   attribute rather than listing screens means a new screen's tagline
+   ribbon is suppressed automatically, while a new *data* ribbon
+   (rendered bare, like the two above) still shows.
+   ═══════════════════════════════════════════════════════════════════ */
+[class*="nt-status-ribbon nt-"],
+[class*="nt-status-ribbon--"] {
+  display: none;
+}
+
+/* ------------------------------------------------------------
+   COLLAPSED NAV GROUP MUST LOOK COLLAPSIBLE
+   "Platforms" is a collapsible group that starts closed, but its
+   disclosure chevron was laid out at x=213..227 inside a 220px
+   sidebar and squashed to 6px tall, so it was clipped away. The
+   group read as a section label with nothing under it — the five
+   plane screens behind it looked missing rather than collapsed.
+   ------------------------------------------------------------ */
+.nt-shell-navgroup__label,
+button.nt-shell-navgroup__label {
+  padding-right: 12px;
+}
+
+.nt-shell-navgroup__chev {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 10px;
+  height: auto;
+  line-height: 1;
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------
+   THE "INCIDENT SPINE" IS A DIAGRAM, NOT NAVIGATION
+   `War room → Alert → Device → Ticket` renders on four screens as a
+   <nav aria-label="Incident spine"> containing only plain <span>
+   steps — no links, no handlers. It teaches the app's own workflow
+   rather than reporting the network, so it is pure extraneous load
+   at the top of the page, above the KPIs that do drive decisions.
+   It also announces a navigation landmark to assistive tech that
+   contains nothing to navigate to; display:none removes it from the
+   a11y tree as well as the page.
+
+   The real incident context strip (.nt-incident-strip) is a
+   different component and stays: it only renders when an incident
+   is active and it carries working actions.
+   ------------------------------------------------------------ */
+.nt-incident-spine {
+  display: none;
+}
+
+/* ── Tab wrapper must not shrink-wrap its panel ──────────────────
+   `Wave 20af` sets `.nd-tabs { width: fit-content }`, which is right
+   for a pill tab strip that should hug its labels. A later wave
+   redefined `.nd-tabs.nt-tabs` as a flex *column* wrapper holding both
+   the tab list and the active panel — so fit-content began measuring
+   the panel's content instead. On /alerts that shrank the queue table
+   to 1048px inside a 1657px shell and left 609px of dead console.
+   The pill hugging belongs on the list, not the wrapper. */
+.nd-tabs.nt-tabs {
+  width: auto;
+}
+
+.nd-tabs.nt-tabs > .nd-tabs__list,
+.nd-tabs.nt-tabs > .nt-tabs__list {
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* ── Empty-table cue must not live inside table layout ───────────
+   `Wave 19mi` puts the cue on `.nd-table tbody:empty::after`. A block
+   pseudo inside a tbody is wrapped in an anonymous table-cell, so it
+   lands in column 1 — on /alerts that is a 76px `<col>`, which wrapped
+   "No rows in this view" to one word per line. Hoist it to the scroll
+   container, where it can use the table's full width. */
+.nd-table tbody:empty::after {
+  content: none;
+}
+
+.nd-table-scroll:has(.nd-table tbody:empty)::after {
+  content: 'No rows in this view';
+  display: block;
+  padding: 20px 12px;
+  text-align: center;
+  color: var(--nd-text-muted);
+  font-size: 13px;
+}
+
+/* …but never alongside a screen's own empty state, which carries
+   real copy about why the view is empty. /alerts renders one. */
+.nd-table-scroll:has(.nd-table tbody:empty):has(+ .nd-empty)::after {
+  content: none;
+}
+
+/* ── Section headers must not shrink-wrap their own rule ─────────
+   `.nd-section-header` carries a bottom rule that is meant to close
+   the header across the panel. When the header is a flex item beside
+   sibling actions it shrink-wraps to its text, so the rule became a
+   dangling stub ending mid-panel — 58 of them across 19 routes.
+   `flex-grow` is inert on non-flex-items, so this fixes the 58 and
+   leaves the 44 already-full-width headers untouched. */
+.nd-section-header {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* `.nd-section-header.nt-toolbar-glass` is authored as a row —
+   `align-items: baseline; justify-content: space-between` only make
+   sense with the label left and the meta right. A later generic
+   `.nd-section-header { flex-direction: column }` overrode it (it
+   declares direction; the toolbar rule does not), so every header
+   stacked its meta under its label and space-between distributed
+   them vertically instead. Restore the authored intent. */
+.nd-section-header.nt-toolbar-glass {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  /* The meta is often a column label ("LAST SYNC" over the sync
+     column), so it belongs at the header's right edge. That is the
+     authored `space-between`; it only failed because the auto margins
+     below out-rank justify-content. */
+  justify-content: space-between;
+  column-gap: 12px;
+}
+
+/* A wave gives every header child `margin-right: auto`, so the two
+   children split the free space and the meta stranded itself ~429px
+   from the label it qualifies. Auto margins beat justify-content, so
+   the flex-start above could not win on its own. */
+.nd-section-header.nt-toolbar-glass > *,
+.nd-section-header.nt-toolbar-glass > .nd-section-header__meta,
+.nd-section-header.nt-toolbar-glass > .nt-table-toolbar__meta,
+.nd-section-header.nt-toolbar-glass > .nd-micro-label {
+  margin-right: 0;
+}
+

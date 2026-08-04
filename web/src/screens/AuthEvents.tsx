@@ -586,7 +586,7 @@ export default function AuthEvents() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · identity
+              HPE Network Tools · identity
             </span>
             <Badge plane>ClearPass</Badge>
             <span className="nt-mono-label">
@@ -703,11 +703,14 @@ export default function AuthEvents() {
 }
       />
 
-      <div className="nt-plane-theater" role="note">NightDesk · identity theater · auth outcome owns hue</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · identity theater · auth outcome owns hue</div>
+      <div className="nt-status-ribbon nt-auth-ribbon" role="status" aria-label="Auth events status ribbon">
+        <span className="nt-status-ribbon__item">identity · outcome owns hue</span>
+        <span className="nt-status-ribbon__item">RADIUS · CoA path</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
 
       <StatRow stats={data.stats} />
-      <VisualReferencePanel target={{ kind: 'service', id: 'auth-events' }} />
-      <ConfigRecommendationsPanel title="Auth / policy recommendations" limit={5} />
 
       {resultChips.length > 0 ? (
         <div className="nt-chip-row" role="group" aria-label="Auth result">
@@ -717,7 +720,7 @@ export default function AuthEvents() {
               key={c.key}
               type="button"
               onClick={() => setResult(result === c.key ? 'all' : c.key)}
-              className={result === c.key ? 'nt-chip nt-chip--active' : 'nt-chip'}
+              className={result === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'}
               aria-pressed={result === c.key}
             >
               <Badge tone={c.tone}>{c.label}</Badge>
@@ -1388,6 +1391,13 @@ export default function AuthEvents() {
           ))}
         </div>
       </div>
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'service', id: 'auth-events' }} />
+      <ConfigRecommendationsPanel title="Auth / policy recommendations" category="security" limit={5} />
     </div>
   );
 }

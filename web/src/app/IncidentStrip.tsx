@@ -29,7 +29,7 @@ export function IncidentStrip() {
       data-has-ticket={incident.ticketId ? '1' : '0'}
     >
       <span className="nt-incident-strip__brand" aria-hidden>
-        NightDesk · spine
+        HPE Network Tools · spine
       </span>
       <span className="nt-incident-strip__label">alert → device → ticket</span>
       <span className="nt-incident-strip__title">{crumbs.join('  →  ')}</span>

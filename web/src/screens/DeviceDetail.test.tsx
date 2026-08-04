@@ -3184,6 +3184,106 @@ describe('DeviceDetail Loop 207 residuals', () => {
   });
 });
 
+/* Loop 237 — ports bulk Copy neighbours beside Copy ports. */
+describe('DeviceDetail ports bulk Copy neighbours (Loop 237)', () => {
+  it('Copy neighbours joins unique far-end names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const ports: DevicePort[] = [
+      {
+        name: '1/1/2',
+        status: 'Connected',
+        adminStatus: 'Up',
+        operStatus: 'Up',
+        speedBps: 1_000_000_000,
+        duplex: 'Full',
+        vlanMode: 'Access',
+        nativeVlan: 200,
+        allowedVlanIds: [],
+        neighbour: 'SS_9004_Gateway-LTE',
+        neighbourType: 'Gateway',
+        neighbourHealth: 'Poor',
+      },
+      {
+        name: '1/1/3',
+        status: 'Connected',
+        adminStatus: 'Up',
+        operStatus: 'Up',
+        speedBps: 5_000_000_000,
+        duplex: 'Full',
+        vlanMode: 'Trunk',
+        nativeVlan: 5,
+        allowedVlanIds: [5, 200],
+        neighbour: 'Office-655',
+        neighbourType: 'Access Point',
+        neighbourHealth: 'Good',
+      },
+      {
+        name: '1/1/4',
+        status: 'Connected',
+        adminStatus: 'Up',
+        operStatus: 'Up',
+        speedBps: 1_000_000_000,
+        duplex: 'Full',
+        vlanMode: 'Access',
+        nativeVlan: 200,
+        allowedVlanIds: [],
+        neighbour: 'Office-655',
+        neighbourType: 'Access Point',
+        neighbourHealth: 'Good',
+      },
+    ];
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing: sw-core-a');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+      detail: {
+        serial: device.serial ?? 'SG30LMR164',
+        kind: 'switch',
+        ports,
+        source: { plane: 'central', at: '2026-07-28T15:47:00.000Z', sections: { ports: 'ok' } },
+      },
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    const { container } = renderDeviceDetail('sw-core-a');
+    expect(await screen.findByText('Ports of interest')).toBeTruthy();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Device ports"]') as HTMLElement | null;
+      if (!el) throw new Error('Ports table missing');
+      return el;
+    });
+    const rows = table.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    (rows[0] as HTMLElement).focus();
+    fireEvent.keyDown(rows[0] as HTMLElement, { key: 'x' });
+    (rows[1] as HTMLElement).focus();
+    fireEvent.keyDown(rows[1] as HTMLElement, { key: 'x' });
+    (rows[2] as HTMLElement).focus();
+    fireEvent.keyDown(rows[2] as HTMLElement, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Device port selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy neighbours' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy neighbours' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0]).split('\n').sort()).toEqual(
+      ['Office-655', 'SS_9004_Gateway-LTE'].sort(),
+    );
+    expect(await screen.findByText(/Copied 2 neighbours/i)).toBeTruthy();
+  });
+});
+
 /* Loop 217 — clients selection-empty Clear selection filter CTA. */
 describe('DeviceDetail Loop 217 residuals', () => {
   it('offers Clear selection filter when clients macs deep link matches nothing', async () => {

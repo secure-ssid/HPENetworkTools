@@ -106,7 +106,6 @@ import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsP
 import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { getTaxonomySummary } from '../api/recommendations';
 import type { CategoryBucket } from '@hpe/shared';
-import '../app/app.css';
 
 /** `?issues=` triage — 1/true = issues only, 0/false = clean only, else all. */
 export function parseDevicesIssuesFilter(raw: string | null): 'all' | '1' | '0' {
@@ -451,9 +450,11 @@ export default function Devices() {
   useEffect(() => {
     const parsed = parsePaletteAction(searchParams.get('action'));
     if (parsed !== 'diagnostics') return;
-    setActionCue(parsed);
-    const stripped = stripActionParam(searchParams);
-    if (stripped) setSearchParams(stripped, { replace: true });
+    queueMicrotask(() => {
+      setActionCue(parsed);
+      const stripped = stripActionParam(searchParams);
+      if (stripped) setSearchParams(stripped, { replace: true });
+    });
   }, [searchParams, setSearchParams]);
 
   /* Keep filter-row params aligned with local state so a refresh or shared URL
@@ -933,7 +934,7 @@ export default function Devices() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · fleet
+              HPE Network Tools · fleet
             </span>
             {!isDemo ? <Badge tone="info">LIVE</Badge> : null}
             <Button
@@ -1043,7 +1044,11 @@ export default function Devices() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · fleet theater · health owns hue · monochrome planes</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · fleet theater · health owns hue · monochrome planes</div>
+      <div className="nt-status-ribbon nt-devices-ribbon" role="status" aria-label="Devices status ribbon">
+        <span className="nt-status-ribbon__item">fleet · health owns hue</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
 
       {typeChips.length > 0 ? (
         <div className="nt-chip-row" role="group" aria-label="Device type">
@@ -1146,9 +1151,6 @@ export default function Devices() {
           ))}
         </div>
       ) : null}
-
-      <VisualReferencePanel target={{ kind: 'service', id: 'devices' }} editable={false} />
-      <ConfigRecommendationsPanel title="Device recommendations" limit={6} />
 
       {diagnosticsCue ? (
         <Alert
@@ -1608,6 +1610,13 @@ export default function Devices() {
           })}
         </div>
       )}
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'service', id: 'devices' }} editable={false} />
+      <ConfigRecommendationsPanel title="Device recommendations" category="firmware" limit={6} />
     </div>
   );
 }

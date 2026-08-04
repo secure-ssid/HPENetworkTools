@@ -69,7 +69,6 @@ import { ApiErrorState } from './ApiErrorState';
 import { exportTableCsv } from '../lib/csv';
 import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { VisualReferencePanel } from '../components/VisualReferencePanel';
-import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 
 /** Queue page size — raised tickets accumulate; optional server `page` envelope. */
 const TICKET_PAGE = 50;
@@ -297,16 +296,18 @@ export default function Tickets() {
   }, [q, pri, state, site, searchParams, setSearchParams]);
 
   /* Re-seed when the address bar changes externally (shared link / back). */
-  useEffect(() => {
+  const [prevParams, setPrevParams] = useState(searchParams);
+  if (prevParams !== searchParams) {
+    setPrevParams(searchParams);
     const fromUrl = searchParams.get('q')?.trim() ?? '';
-    setQ((cur) => (cur === fromUrl ? cur : fromUrl));
+    if (q !== fromUrl) setQ(fromUrl);
     const fromPri = parsePriFilter(searchParams.get('pri'));
-    setPri((cur) => (cur === fromPri ? cur : fromPri));
+    if (pri !== fromPri) setPri(fromPri);
     const fromState = parseStateFilter(searchParams.get('state'));
-    setState((cur) => (cur === fromState ? cur : fromState));
+    if (state !== fromState) setState(fromState);
     const fromSite = searchParams.get('site')?.trim() || 'all';
-    setSite((cur) => (cur === fromSite ? cur : fromSite));
-  }, [searchParams]);
+    if (site !== fromSite) setSite(fromSite);
+  }
 
   /* Workspace ticket id under the current filter/selection — used so draft
    * notes clear when the operator moves to another row (filter or click),
@@ -324,9 +325,11 @@ export default function Tickets() {
   /* Draft notes belong to one ticket. Changing the workspace ticket must
    * empty the box so a half-written incident note cannot land on the next
    * row under Log note — the store would accept it honestly against the wrong id. */
-  useEffect(() => {
+  const [prevTicketId, setPrevTicketId] = useState(workspaceTicketId);
+  if (prevTicketId !== workspaceTicketId) {
+    setPrevTicketId(workspaceTicketId);
     setNote('');
-  }, [workspaceTicketId]);
+  }
 
   /* Keep the global incident spine on the open ticket so triage carries
    * alert → device → ticket context across screens. */
@@ -716,7 +719,7 @@ export default function Tickets() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · queue
+              HPE Network Tools · queue
             </span>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <div className="nt-w-180">
@@ -851,7 +854,12 @@ export default function Tickets() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · queue theater · priority owns hue</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · queue theater · priority owns hue</div>
+      <div className="nt-status-ribbon nt-tickets-ribbon" role="status" aria-label="Tickets status ribbon">
+        <span className="nt-status-ribbon__item">queue · priority owns hue</span>
+        <span className="nt-status-ribbon__item">alert → device → ticket</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
       <nav className="nt-incident-spine" aria-label="Incident spine">
         <span className="nt-incident-spine__step">Alert</span>
         <span className="nt-incident-spine__chev" aria-hidden>→</span>
@@ -859,9 +867,6 @@ export default function Tickets() {
         <span className="nt-incident-spine__chev" aria-hidden>→</span>
         <span className="nt-incident-spine__step" data-active="true">Ticket</span>
       </nav>
-
-      <VisualReferencePanel target={{ kind: 'service', id: 'tickets' }} editable={false} />
-      <ConfigRecommendationsPanel title="Ticket workflow recommendations" limit={5} />
 
       {priChips.length > 0 ? (
         <div className="nt-severity-chips nt-chip-row" role="group" aria-label="Ticket priority">
@@ -1368,6 +1373,12 @@ export default function Tickets() {
           </div>
         </div>
       </div>
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'service', id: 'tickets' }} editable={false} />
     </div>
   );
 }

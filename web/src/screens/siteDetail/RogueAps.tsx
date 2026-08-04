@@ -147,7 +147,11 @@ export function SiteRogueAps({
 
   return (
     <div className="nt-site-section nt-section-panel nt-stack nt-gap-2">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · RF theater · rogue · neighbor APs</div>
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · RF theater · rogue · neighbor APs</div>
+      <div className="nt-status-ribbon nt-status-ribbon--compact nt-rogue-ribbon" role="status" aria-label="Rogue AP status ribbon">
+        <span className="nt-status-ribbon__item">RF · rogue</span>
+        <span className="nt-status-ribbon__item">neighbor APs</span>
+      </div>
       <div className="nt-row-between-8">
         <SectionHeader label="Rogue & neighbor APs" meta={meta} />
         <div className="nt-wrap-6">

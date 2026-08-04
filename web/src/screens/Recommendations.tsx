@@ -287,7 +287,7 @@ export default function Recommendations() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · hygiene
+              HPE Network Tools · hygiene
             </span>
             <Badge tone="neutral">READ ONLY</Badge>
             <Button variant="ghost" size="sm" onClick={copyFilterLink}>
@@ -309,7 +309,12 @@ export default function Recommendations() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · recommendation theater · severity owns hue · never auto-applied</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · recommendation theater · severity owns hue · never auto-applied</div>
+      <div className="nt-status-ribbon nt-reco-ribbon" role="status" aria-label="Recommendations status ribbon">
+        <span className="nt-status-ribbon__item">reco · severity owns hue</span>
+        <span className="nt-status-ribbon__item">never auto-applied</span>
+        <span className="nt-status-ribbon__item">human confirm required</span>
+      </div>
 
       <Alert tone="info" title="Suggestions only">
         <span className="nt-fs-13">

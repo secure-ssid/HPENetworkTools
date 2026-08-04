@@ -127,7 +127,11 @@ export function SiteApplications({
 
   return (
     <div className="nt-site-section nt-section-panel nt-stack nt-gap-10">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · applications theater · DPI visibility</div>
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · applications theater · DPI visibility</div>
+      <div className="nt-status-ribbon nt-status-ribbon--compact nt-apps-ribbon" role="status" aria-label="Applications status ribbon">
+        <span className="nt-status-ribbon__item">apps · DPI</span>
+        <span className="nt-status-ribbon__item">share owns attention</span>
+      </div>
       <div className="nt-row-between-8">
         <SectionHeader label="Application visibility" meta={meta} />
         <div className="nt-wrap-6">
@@ -203,7 +207,7 @@ export function SiteApplications({
       {!centralClaimed ? (
         <div className="nt-service-note">No linked plane publishes DPI application data for this site.</div>
       ) : result === null ? (
-        <div className="nt-center-pad-24" role="status" aria-label="NightDesk · loading applications">
+        <div className="nt-center-pad-24" role="status" aria-label="HPE Network Tools · loading applications">
           <div className="nt-stack nt-gap-6">
             <Skeleton height={12} width="40%" />
             <Skeleton height={28} />

@@ -279,8 +279,10 @@ export function RuntimeDebugSection() {
   // Deep-link: open plane health once when ?rtPlane= is present.
   useEffect(() => {
     if (!rtPlane || openedFromLink === rtPlane) return;
-    setOpenedFromLink(rtPlane);
-    void loadPlaneHealth(rtPlane);
+    queueMicrotask(() => {
+      setOpenedFromLink(rtPlane);
+      void loadPlaneHealth(rtPlane);
+    });
   }, [rtPlane, openedFromLink, loadPlaneHealth]);
 
   const loadHealthDeep = async () => {
@@ -320,7 +322,12 @@ export function RuntimeDebugSection() {
     <div className="nt-systems-section nt-section-panel nt-stack nt-gap-12" id={systemsSectionDomId('runtime-debug')} data-legacy-id="runtime-debug">
       <div className="nt-filter-bar nt-gap-10">
         <SectionHeader label="Runtime debug" meta="PROCESS · PLANES · INTEGRITY · NO SECRETS" />
-        <div className="nt-plane-theater" role="note">NightDesk · runtime theater · process · integrity · no secrets</div>
+        <div className="nt-plane-theater" role="note">HPE Network Tools · runtime theater · process · integrity · no secrets</div>
+      <div className="nt-status-ribbon nt-runtime-ribbon" role="status" aria-label="Runtime status ribbon">
+        <span className="nt-status-ribbon__item">runtime · process</span>
+        <span className="nt-status-ribbon__item">integrity · no secrets</span>
+        <span className="nt-status-ribbon__item">debug lane</span>
+      </div>
         <Select
           size="sm"
           aria-label="Filter planes"
@@ -517,7 +524,7 @@ export function RuntimeDebugSection() {
               <Skeleton height={56} />
             </div>
           </div>
-          <span className="nt-hint-muted nt-chat-pending__label">NightDesk · runtime wake…</span>
+          <span className="nt-hint-muted nt-chat-pending__label">HPE Network Tools · runtime wake…</span>
         </div>
       ) : null}
 

@@ -982,7 +982,7 @@ export default function SiteDetail() {
           actions={
             <>
               <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-                NightDesk · site
+                HPE Network Tools · site
               </span>
               <ProvenanceNote label={source} />
               {/* LIVE on pure live and sites blend alike — provenance mono stamp alone is easy to miss. */}
@@ -1092,7 +1092,33 @@ export default function SiteDetail() {
             </>
           }
         />
-      <div className="nt-plane-theater" role="note">NightDesk · site detail · topology · estate slice</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · site detail · topology · estate slice</div>
+        <div
+          className="nt-status-ribbon"
+          role="status"
+          aria-label="Site status ribbon"
+          data-state={site.tone === 'bad' ? 'danger' : site.tone === 'warn' ? 'warning' : undefined}
+        >
+          <span
+            className={`nt-status-ribbon__item${
+              site.tone === 'bad'
+                ? ' nt-status-ribbon__item--danger'
+                : site.tone === 'warn'
+                  ? ' nt-status-ribbon__item--warn'
+                  : ''
+            }`}
+          >
+            {`health · ${site.health ?? '—'}`}
+          </span>
+          <span className="nt-status-ribbon__item">{`devices · ${site.devices}`}</span>
+          <span
+            className={`nt-status-ribbon__item${
+              site.alertTone === 'warning' ? ' nt-status-ribbon__item--warn' : ''
+            }`}
+          >
+            {`alerts · ${site.alerts}`}
+          </span>
+        </div>
 
         <div className="nt-stat-grid">
           <Stat label="Devices" value={String(site.devices)} delta="reported inventory rows" deltaTone="neutral" />
@@ -1252,7 +1278,7 @@ export default function SiteDetail() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · site
+              HPE Network Tools · site
             </span>
             <ProvenanceNote label={source} />
             {/* LIVE on pure live and sites blend alike — provenance mono stamp alone is easy to miss. */}
@@ -1383,6 +1409,25 @@ export default function SiteDetail() {
         </EmptyState>
       ) : (
         <>
+          <div className="nt-plane-theater" role="note">HPE Network Tools · site cinema · health owns hue · monochrome planes</div>
+          <div
+            className="nt-status-ribbon"
+            role="status"
+            aria-label="Site status ribbon"
+            data-state={profile.healthTone === 'negative' ? 'danger' : undefined}
+          >
+            <span
+              className={`nt-status-ribbon__item${
+                profile.healthTone === 'negative' ? ' nt-status-ribbon__item--danger' : ''
+              }`}
+            >
+              {`health · ${profile.health ?? '—'}`}
+            </span>
+            <span className="nt-status-ribbon__item">{`devices · ${profile.deviceCount}`}</span>
+            <span className="nt-status-ribbon__item nt-status-ribbon__item--warn">
+              {`alerts · ${profile.alertCount}`}
+            </span>
+          </div>
           <div className="nt-stat-grid">
             <Stat
               label="Devices"

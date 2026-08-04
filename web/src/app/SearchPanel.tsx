@@ -15,7 +15,7 @@
  * and **Remove selected** beside the existing Clear-all control. Panel
  * `KeyboardShortcuts` surfaces the ⌘K / arrow / Enter / Esc map (Loop 202).
  *
- * NightDesk 2.0: glass “cinema” panel, kind gutter, copper active rule.
+ * HPE Network Tools 2.0: glass “cinema” panel, kind gutter, copper active rule.
  */
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
@@ -345,7 +345,7 @@ export function SearchPanel() {
   };
 
   return (
-    <div className="nt-global-search nt-recon-reveal nt-cmdk-cinema" ref={rootRef}>
+    <div className="nt-global-search nt-recon-reveal nt-cmdk-cinema nt-cmdk" ref={rootRef}>
       <Input
         mono
         className="nt-global-search__field nt-cmdk-cinema__input"
@@ -376,7 +376,7 @@ export function SearchPanel() {
       </div>
       {open ? (
         <div className="nt-global-search__panel nt-panel-glass">
-          <div className="nt-global-search__brand" aria-hidden>NightDesk · device cinema · ⌘K</div>
+          <div className="nt-global-search__brand nt-cmdk__kicker" aria-hidden>HPE Network Tools · device cinema · ⌘K</div>
           <div className="nt-global-search__hint">
             <span>Jump · actions · screens · estate</span>
             <span className="nt-wrap-6">
@@ -513,7 +513,7 @@ export function SearchPanel() {
                     />
                     <button
                       type="button"
-                      className="nt-global-search__hit"
+                      className="nt-global-search__hit nt-cmdk__item"
                       onClick={() => applyRecent(r)}
                     >
                       <span className="nt-global-search__kind" data-kind="recent">
@@ -635,7 +635,8 @@ export function SearchPanel() {
                 role="option"
                 aria-selected={i === activeIndex}
                 data-kind={kindKey}
-                className={`nt-global-search__hit${i === activeIndex ? ' nt-global-search__hit--active' : ''}`}
+                className={`nt-global-search__hit nt-cmdk__item${i === activeIndex ? ' nt-global-search__hit--active nt-cmdk__item--active' : ''}`}
+                data-active={i === activeIndex ? 'true' : undefined}
                 onClick={() => openHit(r)}
                 onMouseEnter={() => setActiveIndex(i)}
               >

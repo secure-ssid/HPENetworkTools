@@ -180,7 +180,7 @@ export function ApHealthSection({ apStats }: { apStats: MistApStatsRow[] | undef
   return (
     <div id="mist-section-ap-health" className="nt-stack nt-gap-2 nt-ap-health nt-section-panel">
       <div className="nt-row-between-12">
-        <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Mist AP health · RF owns hue</div>
+        <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Mist AP health · RF owns hue</div>
         <SectionHeader label="AP health" meta={meta} />
         <Button
           variant="ghost"

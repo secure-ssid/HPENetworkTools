@@ -520,6 +520,7 @@ export default function DeviceDetail() {
       onOpenChange={setRebootOpen}
       width="md"
       className="nd-drawer--write-ritual nt-write-ritual"
+      dataPhase={rebooting ? 'executing' : rebootTicket ? 'confirm' : 'review'}
       title={`Reboot ${name}`}
       description="A reboot drops every client on this device. It is a brokered write: ticket-stamped, audit-logged, and only ever claimed when the plane accepts it."
     >
@@ -706,7 +707,7 @@ export default function DeviceDetail() {
         <div
           className="nt-hero-split nt-device-hero nt-panel-glass"
         >
-          <div>
+          <div className="nt-device-hero__primary">
             <Heading level={2} overline={`Devices / ${device.name}`}>
               {device.name}
             </Heading>
@@ -725,9 +726,9 @@ export default function DeviceDetail() {
               </span>
             </div>
           </div>
-          <div className="nt-row nt-gap-8">
+          <div className="nt-row nt-gap-8 nt-device-hero__rail">
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · device
+              HPE Network Tools · device
             </span>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
@@ -815,7 +816,7 @@ export default function DeviceDetail() {
             <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
           </div>
         </div>
-        <div className="nt-plane-theater" role="note">NightDesk · device cinema · facts · trends · plane ECG</div>
+        <div className="nt-plane-theater" role="note">HPE Network Tools · device cinema · facts · trends · plane ECG</div>
         <nav className="nt-incident-spine" aria-label="Incident spine">
           <span className="nt-incident-spine__step">Alert</span>
           <span className="nt-incident-spine__chev" aria-hidden>→</span>
@@ -823,6 +824,35 @@ export default function DeviceDetail() {
           <span className="nt-incident-spine__chev" aria-hidden>→</span>
           <span className="nt-incident-spine__step">Ticket</span>
         </nav>
+        <div
+          className="nt-status-ribbon"
+          role="status"
+          aria-label="Device status ribbon"
+          data-state={device.stateTone || undefined}
+        >
+          <span
+            className={`nt-status-ribbon__item${
+              device.stateTone === 'danger'
+                ? ' nt-status-ribbon__item--danger'
+                : device.stateTone === 'warning'
+                  ? ' nt-status-ribbon__item--warn'
+                  : ''
+            }`}
+          >
+            {`state · ${device.state}`}
+          </span>
+          <span
+            className={`nt-status-ribbon__item${
+              device.firmwareApproved === false ? ' nt-status-ribbon__item--warn' : ''
+            }`}
+          >
+            {`fw · ${device.firmware || '—'}`}
+          </span>
+          <span className="nt-status-ribbon__item">{`plane · ${device.plane}`}</span>
+          {device.siteName ? (
+            <span className="nt-status-ribbon__item">{`site · ${device.siteName}`}</span>
+          ) : null}
+        </div>
 
         {reconciliationAlert}
 
@@ -897,7 +927,6 @@ export default function DeviceDetail() {
                 plane: device.plane,
               }}
             />
-            <ConfigRecommendationsPanel device={device.name} site={device.siteName} />
 
             <div className="nt-stack nt-gap-2">
               <SectionHeader label="Clients on this device" meta={clients?.meta} />
@@ -1087,6 +1116,9 @@ export default function DeviceDetail() {
         </div>
 
         {rebootDrawer}
+
+        {/* Advisory panel sits below the data it describes, not above it. */}
+        <ConfigRecommendationsPanel device={device.name} site={device.siteName} />
       </div>
     );
   }
@@ -1154,7 +1186,7 @@ export default function DeviceDetail() {
       <div
         className="nt-hero-split nt-device-hero"
       >
-        <div>
+        <div className="nt-device-hero__primary">
           <Heading level={2} overline={`Devices / ${profile.name}`}>
             {profile.name}
           </Heading>
@@ -1172,9 +1204,9 @@ export default function DeviceDetail() {
             </span>
           </div>
         </div>
-        <div className="nt-row nt-gap-8">
+        <div className="nt-row nt-gap-8 nt-device-hero__rail">
           <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-            NightDesk · device
+            HPE Network Tools · device
           </span>
           {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
           <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
@@ -1256,6 +1288,27 @@ export default function DeviceDetail() {
           {/* Ports / clients tables are keyboard grids — surface the map (Loop 199). */}
           <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
         </div>
+      </div>
+
+      <div
+        className="nt-status-ribbon"
+        role="status"
+        aria-label="Device status ribbon"
+        data-state={headerStateTone || undefined}
+      >
+        <span
+          className={`nt-status-ribbon__item${
+            headerStateTone === 'danger'
+              ? ' nt-status-ribbon__item--danger'
+              : headerStateTone === 'warning'
+                ? ' nt-status-ribbon__item--warn'
+                : ''
+          }`}
+        >
+          {`state · ${headerState}`}
+        </span>
+        <span className="nt-status-ribbon__item">{`plane · ${headerPlane}`}</span>
+        {headerSite ? <span className="nt-status-ribbon__item">{`site · ${headerSite}`}</span> : null}
       </div>
 
       {reconciliationAlert}
@@ -1638,7 +1691,6 @@ export default function DeviceDetail() {
               plane: device?.plane ?? profile.plane,
             }}
           />
-          <ConfigRecommendationsPanel device={profile.name} site={device?.siteName} />
 
           <TerminalPane
             key={profile.name}
@@ -1734,6 +1786,12 @@ export default function DeviceDetail() {
 
       {/* ---------------- ticket-gated reboot ---------------- */}
       {rebootDrawer}
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <ConfigRecommendationsPanel device={profile.name} site={device?.siteName} />
     </div>
   );
 }

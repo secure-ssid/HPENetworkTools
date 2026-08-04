@@ -211,7 +211,12 @@ export function AssistantSection() {
           Copy section link
         </Button>
       </div>
-      <div className="nt-plane-theater" role="note">NightDesk · assistant providers · lab write gated</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · assistant providers · lab write gated</div>
+      <div className="nt-status-ribbon nt-assistant-cfg-ribbon" role="status" aria-label="Assistant config status ribbon">
+        <span className="nt-status-ribbon__item">providers · MCP</span>
+        <span className="nt-status-ribbon__item">lab write gated</span>
+        <span className="nt-status-ribbon__item">tools path</span>
+      </div>
       {loadError ? <span role="status" className="nt-danger-12">{loadError}</span> : null}
 
       <div aria-label="Assistant providers" className="nt-wrap-6">

@@ -1789,7 +1789,22 @@ export class ClearPassAdapter implements PlaneAdapter {
    */
   private async authedGet(path: string): Promise<HttpResult> {
     for (let attempt = 0; ; attempt += 1) {
-      const res = await this.authed('GET', path);
+      let res: HttpResult;
+      try {
+        res = await this.authed('GET', path);
+      } catch (err) {
+        /* A connection that never became a request is the same class of fault
+           as a 503 and deserves the same budget. CPPM drops TLS handshakes
+           under load ("Client network socket disconnected before secure TLS
+           connection was established"), which arrives here as a throw rather
+           than a status, so before this it skipped the retry ladder entirely
+           and failed the whole section on the first blip. The budget is still
+           finite: once it is spent the error propagates and the section is
+           reported failed, never silently emptied. */
+        if (attempt >= RATE_LIMIT_RETRIES) throw err;
+        await this.sleep(Math.min(RATE_LIMIT_BASE_MS * 2 ** attempt, RATE_LIMIT_CAP_MS));
+        continue;
+      }
       if (!TRANSIENT_STATUSES.has(res.status) || attempt >= RATE_LIMIT_RETRIES) return res;
       const backoffMs = RATE_LIMIT_BASE_MS * 2 ** attempt;
       await this.sleep(Math.min(res.retryAfterMs ?? backoffMs, RATE_LIMIT_CAP_MS));

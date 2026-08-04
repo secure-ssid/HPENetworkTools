@@ -1,0 +1,256 @@
+/*
+ * Console layer 00 — foundation.
+ *
+ * The portal used to render every group of facts as a rounded, bordered,
+ * gradient-lit card. Fifty cards on a screen is fifty frames competing with
+ * the data inside them, and it reads as decoration rather than instrumentation.
+ * This layer takes the frames away. Structure comes from alignment, hairline
+ * rules and a monospace column grid — the way a terminal separates fields —
+ * so the operator's eye lands on values, not on chrome.
+ *
+ * Loaded last, so it overrides the historical component waves without
+ * rewriting them. Rules here are deliberately broad; later console layers
+ * narrow behaviour per surface.
+ */
+
+:root {
+  /* Console density — tighter than the card era, tuned for long tables. */
+  --nd-row-h: 28px;
+  --nd-row-pad-y: 4px;
+  --nd-row-pad-x: 10px;
+  --nd-screen-gap: 22px;
+  --nd-block-gap: 10px;
+  --nd-panel-pad: 0px;
+  --nd-content-pad-x: 22px;
+  --nd-content-pad-y: 16px;
+
+  /* Console rhythm — hairlines and gutters used by every later layer. */
+  --nd-rule: 1px solid var(--nd-border-subtle);
+  --nd-rule-strong: 1px solid var(--nd-border-default);
+  --nd-gutter: 14px;
+  --nd-label-w: 148px;
+
+  /* Data type — monospace is the default voice for anything measured. */
+  --nd-data-size: 12.5px;
+  --nd-data-leading: 1.35;
+  --nd-label-size: 10.5px;
+}
+
+html[data-nd-density='compact'] {
+  --nd-row-h: 24px;
+  --nd-row-pad-y: 2px;
+  --nd-content-pad-y: 12px;
+  --nd-data-size: 12px;
+}
+
+html[data-nd-density='comfortable'] {
+  --nd-row-h: 32px;
+  --nd-row-pad-y: 6px;
+  --nd-data-size: 13px;
+}
+
+/* ── De-box ─────────────────────────────────────────────────────────────
+ * Kill the card frame wherever it was applied. Panels keep their layout
+ * role (a block that groups facts) and lose their picture-frame role.
+ */
+
+.nd-card,
+.nd-card--soft,
+.nd-card--plain,
+.nt-section-panel,
+.nt-panel,
+.nd-panel,
+.nt-card,
+.nt-surface-card {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  overflow: visible;
+  min-width: 0;
+}
+
+/* A panel is a stack with breathing room above it, not a box around it. */
+.nd-card + .nd-card,
+.nt-section-panel + .nt-section-panel {
+  margin-top: var(--nd-screen-gap);
+}
+
+/* Anything that leaned on a gradient sheen for depth goes flat. */
+.nd-card--soft::before,
+.nd-card--soft::after,
+.nt-section-panel::before,
+.nt-glass::before,
+.nt-toolbar-glass::before,
+.nt-bulk-glass::before {
+  display: none;
+}
+
+/* ── Typography ────────────────────────────────────────────────────────
+ * Sans for prose the operator reads in sentences. Mono for everything the
+ * operator compares down a column: counts, IDs, MACs, timestamps, deltas.
+ */
+
+body {
+  font-size: var(--nd-data-size);
+  line-height: var(--nd-data-leading);
+  letter-spacing: 0;
+}
+
+.nd-mono,
+.nt-mono,
+.nt-mono-11,
+.nt-mono-label,
+.nd-stat__value,
+.nd-kv__value,
+code,
+kbd,
+samp,
+time,
+.nt-num {
+  font-family: var(--nd-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+/* Labels are quiet, uppercase, letter-spaced — the header row of a report. */
+.nd-micro-label,
+.nt-micro-label,
+.nt-screen-kicker,
+.nd-section-header .nd-micro-label,
+.nt-chip-row__label,
+.nd-kv__key,
+.nt-launchpad-row__label {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-label-size);
+  font-weight: 400;
+  letter-spacing: var(--nd-tracking-label);
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+}
+
+/* Headings stop shouting; a console titles a section, it doesn't brand it. */
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  margin: 0;
+}
+
+/* ── Accent discipline ─────────────────────────────────────────────────
+ * Accent means "you can act on this" (link, focus, active). It is not a
+ * decorative wash. Glow effects are removed outright.
+ */
+
+.nd-stat::before,
+.nd-stat__rule,
+.nt-copper-glow,
+.nt-copper-hairline,
+.nt-copper-stamp,
+.nt-copper-rule {
+  background: none;
+  box-shadow: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--nd-accent);
+  outline-offset: 1px;
+  border-radius: 0;
+}
+
+/* ── Scroll + selection ───────────────────────────────────────────────── */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--nd-border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--nd-border-default);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--nd-border-strong);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: var(--nd-accent-subtle);
+  color: var(--nd-text-primary);
+}
+
+/* ── Console primitives shared by later layers ─────────────────────────
+ * A rule with a label riding on it, the way `--- section ---` reads in a
+ * terminal. Later layers apply `.nd-rulehead` to real section headers.
+ */
+
+.nd-rulehead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border-bottom: var(--nd-rule);
+  padding-bottom: 5px;
+  margin-bottom: 9px;
+}
+
+/* Key/value list — man-page alignment instead of a grid of tiles. */
+.nd-kv {
+  display: grid;
+  grid-template-columns: minmax(0, var(--nd-label-w)) minmax(0, 1fr);
+  column-gap: var(--nd-gutter);
+  row-gap: 2px;
+  align-items: baseline;
+}
+
+.nd-kv__key {
+  white-space: nowrap;
+}
+
+.nd-kv__value {
+  color: var(--nd-text-primary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Dim inline annotation that trails a value — units, age, source. */
+.nd-annot {
+  color: var(--nd-text-faint);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+}
+
+/* ------------------------------------------------------------
+   NO STRING MAY OVERRUN ITS COLUMN
+   Plane errors are echoed verbatim — that is the honesty contract,
+   and they contain URLs and query strings with no break
+   opportunity. Measured: a `.nt-hint-muted` on /devices holding
+   "poll failed: clearpass pull: ... GET /api/session?filter=..."
+   painted 428px wide inside a 191px lane, straight over the lane
+   beside it. `.nt-sync-row__what` on /systems did the same at
+   123px over its badge.
+   `break-word` is NOT enough: per spec it does not change an
+   element's intrinsic min-content width, so a flex/grid item whose
+   `min-width: auto` floor is set by an unbreakable token still
+   refuses to shrink — measured, the span stayed 428px with
+   `break-word` applied. `anywhere` does lower the min-content
+   floor, which is what actually lets the item fit its column. For
+   ordinary line breaking the two behave identically: a word is only
+   broken when it cannot fit on a line by itself.
+   ------------------------------------------------------------ */
+.nd-shell__content {
+  overflow-wrap: anywhere;
+}

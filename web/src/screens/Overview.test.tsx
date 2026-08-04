@@ -434,7 +434,8 @@ describe('Overview', () => {
     expect(screen.getByText('No sites reported yet')).toBeTruthy();
     expect(screen.getByText('No management planes linked')).toBeTruthy();
     expect(screen.getByText('No brokered changes yet')).toBeTruthy();
-    expect(screen.getByText('No launch targets')).toBeTruthy();
+    // Launchpad panel removed — object-first nav owns plane consoles; no duplicate empty.
+    expect(screen.queryByText('No launch targets')).toBeNull();
   });
 
   it('(j) change-log rows sharing a time and text both render', async () => {
@@ -1303,7 +1304,7 @@ describe('Overview bulk (Loop 190)', () => {
 
 /* Loop 189 — empty-state CTAs on Overview sections. */
 describe('Overview Loop 189 empty polish', () => {
-  it('offers actionable empty CTAs for alerts, launchpad, change log, and planes', async () => {
+  it('offers actionable empty CTAs for alerts, change log, and planes', async () => {
     mockGetOverview.mockResolvedValue(
       liveData({ alerts: [], sites: [], planes: [], changes: [], launchpad: [] }),
     );
@@ -1314,7 +1315,8 @@ describe('Overview Loop 189 empty polish', () => {
     expect(screen.getByRole('button', { name: 'Open Alerts' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Open Configure' })).toBeTruthy();
     expect(screen.getAllByRole('button', { name: 'Connected systems' }).length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole('button', { name: 'Inventory' })).toBeTruthy();
+    // Launchpad removed — inventory lives under object-first nav, not a war-room duplicate.
+    expect(screen.queryByRole('button', { name: 'Inventory' })).toBeNull();
     expect(screen.getByText(/Alerts queue still carries history/i)).toBeTruthy();
     expect(screen.getByText(/Review or stage the next change under Configure/i)).toBeTruthy();
   });
@@ -1328,5 +1330,70 @@ describe('Overview Loop 201 residuals', () => {
     renderOverview();
     expect(await screen.findByRole('heading', { name: 'Operations' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});
+
+/* Loop 237 — Needs-you-now bulk Copy titles beside Copy devices. */
+describe('Overview bulk Copy titles (Loop 237)', () => {
+  it('Copy titles joins unique alert titles from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        alerts: [
+          {
+            sev: 'P1',
+            tone: 'danger',
+            title: 'Gateway gw-edge-1 unreachable',
+            meta: 'CENTRAL · campus-01 · gw-edge-1',
+            plane: 'CENTRAL',
+            age: '4m',
+            device: 'gw-edge-1',
+          },
+          {
+            sev: 'P2',
+            tone: 'warning',
+            title: 'AP offline',
+            meta: 'MIST · campus-02',
+            plane: 'MIST',
+            age: '12m',
+            device: 'ap-3f-12',
+          },
+          {
+            sev: 'P2',
+            tone: 'warning',
+            title: 'Gateway gw-edge-1 unreachable',
+            meta: 'CENTRAL · campus-01 · gw-edge-2',
+            plane: 'CENTRAL',
+            age: '9m',
+            device: 'gw-edge-2',
+          },
+        ],
+      }),
+    );
+    renderOverview();
+    expect(await screen.findByRole('grid', { name: 'Needs you now' })).toBeTruthy();
+
+    const table = screen.getByRole('grid', { name: 'Needs you now' });
+    const rows = table.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (const row of Array.from(rows).slice(0, 3)) {
+      (row as HTMLElement).focus();
+      fireEvent.keyDown(row as HTMLElement, { key: 'x' });
+    }
+
+    const bar = await screen.findByRole('region', { name: 'Overview alert selection actions' });
+    await waitFor(() => expect(within(bar).getByText('3 SELECTED')).toBeTruthy());
+    expect(within(bar).getByRole('button', { name: 'Copy titles' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy titles' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0]).split('\n').sort()).toEqual(
+      ['AP offline', 'Gateway gw-edge-1 unreachable'].sort(),
+    );
+    expect(await screen.findByText(/Copied 2 titles/i)).toBeTruthy();
   });
 });

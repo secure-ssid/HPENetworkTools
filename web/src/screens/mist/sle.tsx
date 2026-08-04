@@ -72,7 +72,7 @@ export function SleAcrossSites({ sleBySiteId }: { sleBySiteId: Partial<Record<st
   return (
     <div id="mist-section-sle" className="nt-mist-section nt-section-panel nt-stack nt-gap-2">
       <div className="nt-row-between-12">
-        <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Mist SLE theater · experience owns hue</div>
+        <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Mist SLE theater · experience owns hue</div>
         <SectionHeader label="Wireless experience across sites" meta={meta} />
         <Button
           variant="ghost"

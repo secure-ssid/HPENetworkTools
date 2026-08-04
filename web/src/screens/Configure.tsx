@@ -167,7 +167,6 @@ import {
   rowForChange,
 } from './configure/queue';
 import { locateSsidDeepLink, parseSsidDeepLink } from './configure/deepLink';
-import '../app/app.css';
 
 
 
@@ -1398,7 +1397,7 @@ export default function Configure() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · write lane
+              HPE Network Tools · write lane
             </span>
             {liveMode ? <Badge tone="info">LIVE</Badge> : null}
             <Button
@@ -1436,7 +1435,12 @@ export default function Configure() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · write lane · brokered ritual armed</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · write lane · brokered ritual armed</div>
+      <div className="nt-status-ribbon nt-configure-ribbon" role="status" aria-label="Configure status ribbon">
+        <span className="nt-status-ribbon__item">write lane · brokered</span>
+        <span className="nt-status-ribbon__item">ritual · review → confirm</span>
+        <span className="nt-status-ribbon__item">blast radius armed</span>
+      </div>
 
       <div className="nt-stat-grid nt-configure__stats">
         {data.stats.map((s) => (
@@ -1454,8 +1458,6 @@ export default function Configure() {
         </span>
       </Alert>
 
-      <VisualReferencePanel target={{ kind: 'service', id: 'configure' }} />
-      <ConfigRecommendationsPanel title="Config hygiene recommendations" limit={8} />
       <ConfigActionPanel target={{ kind: 'service', id: 'configure' }} targetKind="configure" />
 
       {ssidDeepLinkWarning ? (
@@ -1885,7 +1887,7 @@ export default function Configure() {
           {!labConfigMode ? (
             <div id="configure-section-queue" className="nt-configure__queue nt-config-queue nt-write-ritual">
             <div className="nt-configure__queue-title nt-write-ritual__title">Brokered write ritual</div>
-            <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · change queue · review before broker</div>
+            <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · change queue · review before broker</div>
             <div className="nt-row-between">
               <SectionHeader label="Queued changes" meta={String(queueView.length)} />
               <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
@@ -2245,6 +2247,13 @@ export default function Configure() {
         }}
         width="lg"
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={
+          pushing || directApplying || ssidApplying || dryRunning
+            ? 'executing'
+            : dryRun || directApply || ssidApplyResult
+              ? 'confirm'
+              : 'review'
+        }
         title={kind ? CONFIG_EDIT_TITLES[kind] : ''}
         description={
           kind
@@ -2341,7 +2350,7 @@ export default function Configure() {
                     and the section itself disappears when the Mist mode needs nothing (Open). */}
                 {!mistSsid || ssidRequirement.passphrase ? (
                 <div className="nt-stack nt-gap-12">
-                  <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · SSID dependencies · security fabric</div>
+                  <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · SSID dependencies · security fabric</div>
                   <SectionHeader label="Security dependencies" meta={ssidCatalogLoading ? 'loading…' : undefined} />
                   {/* FormField only clones an id onto a SINGLE child element for the
                       label's htmlFor — the "unavailable" note is a sibling below it,
@@ -2641,13 +2650,13 @@ export default function Configure() {
             ) : null}
 
             <div className="nt-stack nt-gap-10">
-              <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · write preview · plane truth</div>
+              <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · write preview · plane truth</div>
               <SectionHeader label={labConfigMode ? 'What will be applied' : 'What gets pushed'} meta={previewMeta} />
               <Code block>{preview}</Code>
             </div>
 
             <div className="nt-stack nt-gap-2">
-              <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · blast radius · impact owns hue</div>
+              <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · blast radius · impact owns hue</div>
               <SectionHeader label={liveMode ? 'Impact evidence' : 'Blast radius'} />
               {radius.map((r) => (
                 <div
@@ -2969,8 +2978,12 @@ export default function Configure() {
             ? 'The configuration audit log: every direct apply attempt and its confirmation outcome. Payload bodies are deliberately not recorded.'
             : "The write broker's audit log: what happened to every brokered change, with the ticket it was raised against. Payload bodies are deliberately not recorded."
         }
+        className="nt-config-history nt-drawer-cinema"
+        dataPhase={
+          history.kind === 'loading' ? 'executing' : history.kind === 'ok' ? 'done' : 'review'
+        }
       >
-        <div className="nt-stack nt-gap-2">
+        <div className="nt-stack nt-gap-2 nt-config-history__body">
           <div className="nt-filter-bar nt-gap-8">
             <div className="nt-flex-1-wide nt-min-w-160">
               <SectionHeader
@@ -3214,6 +3227,13 @@ export default function Configure() {
           ) : null}
         </div>
       </Drawer>
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'service', id: 'configure' }} />
+      <ConfigRecommendationsPanel title="Config hygiene recommendations" category="configuration" limit={8} />
     </div>
   );
 }

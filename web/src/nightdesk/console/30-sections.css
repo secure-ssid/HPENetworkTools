@@ -1,0 +1,1430 @@
+/*
+ * Console layer 30 — sections, metrics, status vocabulary.
+ *
+ * The original components.css rendered every group of facts as a bordered,
+ * gradient-lit, rounded card, and every metric as an identical tile in a
+ * symmetric grid. That uniformity kills at-a-glance reading: the operator's
+ * eye scans identical chrome instead of values. This layer takes the frames
+ * away from section headers, stat groups, badges, alerts, empty states, and
+ * skeletons — replacing cosmetic boxes with typographic structure.
+ *
+ * Design vocabulary (think systemctl status, a man page, a financial tearsheet):
+ *   - Section headings: uppercase mono micro-label + hairline rule below.
+ *   - Stats: labelled figures in a row, separated by hairline gutters. No tile.
+ *   - Badges: text token with a colored dot or 1px left-rule. No pill.
+ *   - Alerts: left-rule inline banner. No radius, no background fill.
+ *   - Empty states: one dim mono sentence. No hero block.
+ *   - Skeletons: hairline shimmer bars that match real row heights exactly.
+ *   - KV blocks: man-page fixed-width key column, mono value column, ~2px rows.
+ *
+ * Loads after components.css — plain single-class selectors are sufficient.
+ * No !important. No hardcoded hex (transparent is the only exception).
+ * Both themes supported: dark default, light via html[data-nd-theme='light'].
+ */
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § SECTION HEADERS
+   A section heading is not a header bar — it's a labelled rule. The operator
+   reads the label, the eye continues right to the data. Glass, backgrounds,
+   and padding-boxes all come from the old card era and are removed here.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * Primary section heading: micro-label rides on a hairline rule.
+ * The `.nd-rulehead` shared primitive in 00-foundation has the same shape;
+ * we apply it here to the section-header without inheriting glass chrome.
+ */
+.nd-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--nd-gutter, 14px);
+  /* No padding-box, no background — just the rule at the bottom. */
+  padding: 0 0 5px;
+  margin-bottom: 10px;
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule-strong);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* The label is already styled by 00-foundation's .nd-micro-label rule.
+   Override any toolbar-glass overline accent colour so it stays muted. */
+.nd-section-header .nd-micro-label,
+.nd-section-header .nt-micro-label {
+  color: var(--nd-text-muted);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-label-size, 10.5px);
+  letter-spacing: var(--nd-tracking-label);
+  text-transform: uppercase;
+}
+
+/* Meta sits right-aligned, dim — counts, timestamps, source notes. */
+.nd-section-header__meta {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-faint);
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Kill any background/glow the toolbar-glass composite added to headers. */
+.nd-section-header.nt-toolbar-glass,
+.nd-section-header.nt-table-toolbar {
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0 0 5px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § SCREEN HEADERS  (.nt-screen-header, .nd-screen-header)
+   A screen title is a h1 with a route kicker above it and optional actions
+   to the right. Nothing in it should look like a panel — it IS the page.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-screen-header,
+.nd-screen-header {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 18px;
+  padding-bottom: 10px;
+  margin-bottom: var(--nd-screen-gap, 22px);
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule-strong);
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Glass chrome applied by wave overrides — removed. */
+.nt-screen-header.nt-toolbar-glass,
+.nd-screen-header.nt-toolbar-glass {
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* Overline / kicker above the title. */
+.nt-screen-header__overline,
+.nd-screen-header__overline,
+.nt-screen-kicker {
+  display: block;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  margin-bottom: 3px;
+}
+
+/* The decorative ::before dot on .nt-screen-kicker — keep it but make it
+   a plain muted rule instead of an accent bullet. */
+.nt-screen-kicker::before {
+  background: var(--nd-text-faint);
+  box-shadow: none;
+}
+
+/* Brand / product label above the title. */
+.nt-screen-header__brand {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+  background: none;
+  box-shadow: none;
+  margin-bottom: 3px;
+}
+
+.nt-screen-header__title,
+.nd-screen-header__title {
+  font-size: var(--nd-text-18);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--nd-text-primary);
+}
+
+.nt-screen-header__subtitle,
+.nd-screen-header__subtitle {
+  font-size: var(--nd-data-size, 12.5px);
+  color: var(--nd-text-secondary);
+  margin-top: 3px;
+}
+
+.nt-screen-header__titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nt-screen-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+}
+
+/* Remove the after-line accent gradient some waves added. */
+.nt-screen-header::after {
+  display: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § DIVIDERS
+   A divider is a hairline. The flair variant gets a subtle mid-accent
+   gradient — not a glowing animation, just a hint of structure.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-divider {
+  border: 0;
+  height: 1px;
+  margin: var(--nd-screen-gap, 22px) 0;
+}
+
+.nd-divider--default {
+  background: var(--nd-border-subtle);
+}
+
+/*
+ * Flair dividers appear between major content areas (e.g. overview / detail
+ * split). A centered gradient reads as intentional rhythm, not decoration.
+ */
+.nd-divider--flair,
+.nt-divider-flair {
+  background:
+    linear-gradient(
+      90deg,
+      transparent,
+      var(--nd-border-default) 20%,
+      var(--nd-border-default) 80%,
+      transparent
+    );
+  margin: calc(var(--nd-screen-gap, 22px) * 1.4) 0;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § STAT TILES / METRIC BAND
+   The original card: padded box, rounded corners, gradient fill, hover glow,
+   left accent bar — five identical frames competing with the data inside them.
+   The replacement: a labelled figure. Big mono value, small uppercase label,
+   dim delta inline. The gutter between figures is either a hairline right
+   border (in grid contexts) or simply generous gap.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * Kill every decorative frame property on the stat tile.
+ * Layout (flex-column, padding for breathing room) is preserved so the label
+ * and value stack correctly; only cosmetic chrome goes away.
+ */
+.nd-stat,
+.nt-stat,
+.nt-metric-tile,
+.nt-stat-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 14px 4px 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+  transition: none;
+}
+
+/* Right hairline separates adjacent figures; last-child has no rule. */
+.nd-stat + .nd-stat,
+.nt-metric-tile + .nt-metric-tile {
+  padding-left: 14px;
+  border-left: var(--nd-rule);
+}
+
+/* Hover: no glow, just a very slight text lift so the operator knows focus. */
+.nd-stat:hover,
+.nt-metric-tile:hover {
+  background: none;
+  border-color: inherit;
+  box-shadow: none;
+}
+
+/* The decorative top rule bar (colored accent tick above the value).
+   In the old card it was a 2px wide accent stub used to brand the tile.
+   We have no use for it; kill it. */
+.nd-stat__rule,
+.nt-metric-tile__rule {
+  display: none;
+}
+
+/* Also kill the left accent gradient ::before that some waves added. */
+.nd-stat::before {
+  display: none;
+}
+
+/* Label: uppercase mono, muted — it names the measurement, it doesn't shout. */
+.nd-stat .nd-micro-label,
+.nt-metric-tile .nd-micro-label,
+.nt-metric-tile .nt-micro-label,
+.nt-stat__label,
+.nt-metric-tile__k {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: var(--nd-tracking-label);
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  line-height: 1.3;
+  order: 0;
+}
+
+/* Value: the centrepiece — tabular mono, large but not ballooned. */
+.nd-stat__value,
+.nt-stat__value,
+.nt-metric-tile__v {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-22);
+  font-weight: 400;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  color: var(--nd-text-primary);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+  margin: 2px 0 0;
+  order: 1;
+}
+
+/* Warn state — a single token change, not an accent wash. */
+.nt-metric-tile__v[data-warn='true'] {
+  color: var(--nd-warning);
+}
+
+/*
+ * Delta: meaning only when direction matters. Positive = success hue,
+ * negative = danger, neutral = muted. Inline, small, no border.
+ */
+.nd-stat__delta,
+.nt-stat__delta,
+.nt-metric-tile__note {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  margin-top: 2px;
+  order: 2;
+}
+
+.nd-stat__delta--positive {
+  color: var(--nd-success);
+}
+
+.nd-stat__delta--negative {
+  color: var(--nd-danger);
+}
+
+.nd-stat__delta--neutral {
+  color: var(--nd-text-muted);
+}
+
+/* [data-delta] attribute mirrors tone on the container for potential overrides. */
+.nd-stat[data-delta='positive'] .nd-stat__delta { color: var(--nd-success); }
+.nd-stat[data-delta='negative'] .nd-stat__delta { color: var(--nd-danger); }
+
+/*
+ * Stat band: wraps a row of metrics above a table or overview section.
+ * Previously a raised card with a gradient top ledge. Now just a flex row
+ * with a bottom hairline that aligns it with the section header below.
+ */
+.nt-stat-band {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  align-items: flex-start;
+  padding: 0 0 10px;
+  margin: 0 0 12px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  border-bottom: var(--nd-rule);
+  box-shadow: none;
+}
+
+/* Kill the accent top-ledge pseudo-element on the band. */
+.nt-stat-band::before {
+  display: none;
+}
+
+/* Note line below a stat band (e.g. "as of last poll"). */
+.nt-stat-band__note {
+  width: 100%;
+  margin: 6px 0 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+}
+
+/*
+ * Stat grid: a CSS grid wrapping .nd-stat cells.
+ * Gap replaces the old bordered-tile spacing; no tile frames remain.
+ */
+.nt-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 0;
+  align-items: start;
+}
+
+/* Each stat in a grid context gets its right separator via border-right. */
+.nt-stat-grid .nd-stat {
+  padding: 4px 14px 4px 14px;
+  border-left: var(--nd-rule);
+  border-right: 0;
+}
+
+.nt-stat-grid .nd-stat:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+/*
+ * .nt-metrics-3 — a named 3-column variant used on overview screens.
+ * Keeps a three-way split without tile borders.
+ */
+.nt-metrics-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  align-items: start;
+}
+
+.nt-metrics-3 .nd-stat {
+  padding: 4px 14px;
+  border-left: var(--nd-rule);
+}
+
+.nt-metrics-3 .nd-stat:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+/*
+ * .nt-metric-grid-auto — fluid auto-fill grid, same treatment.
+ */
+.nt-metric-grid-auto {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 0;
+}
+
+.nt-metric-grid-auto > .nd-stat,
+.nt-metric-grid-auto > * {
+  padding: 4px 14px;
+  border-left: var(--nd-rule);
+}
+
+.nt-metric-grid-auto > .nd-stat:first-child,
+.nt-metric-grid-auto > *:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+/*
+ * Stat-band cinema variant used on empty overviews — no special framing.
+ */
+.nt-stat-band--cinema {
+  border-bottom: 0;
+}
+
+/*
+ * Stat link: a stat wrapped in an anchor. Hover shows a subtle dim underline
+ * on the value rather than a card lift + glow.
+ */
+.nt-stat-link {
+  text-decoration: none;
+  border-radius: 0;
+  transition: none;
+}
+
+.nt-stat-link:hover .nd-stat__value,
+.nt-stat-link:hover .nt-stat__value {
+  color: var(--nd-accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+.nt-stat-link:hover .nd-stat {
+  background: none;
+  box-shadow: none;
+  transform: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § BADGES + STATUS CHIPS
+   State owns hue; nothing else gets hue. A badge is text, not a pill.
+   We keep a subtle filled background but collapse border-radius to 2px and
+   shrink horizontal padding so badges read as labels, not buttons.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.4;
+  padding: 1px 5px;
+  /* 2px max radius — enough to distinguish from raw text, not a pill shape. */
+  border-radius: 2px;
+  border: 0;
+  white-space: nowrap;
+}
+
+/* Keep hue-coded fills but use subtle tokens only — background carries state. */
+.nd-badge--success {
+  color: var(--nd-success);
+  background: var(--nd-success-subtle);
+}
+
+.nd-badge--warning {
+  color: var(--nd-warning);
+  background: var(--nd-warning-subtle);
+}
+
+.nd-badge--danger {
+  color: var(--nd-danger);
+  background: var(--nd-danger-subtle);
+}
+
+.nd-badge--info {
+  color: var(--nd-info);
+  background: var(--nd-info-subtle);
+}
+
+.nd-badge--neutral {
+  color: var(--nd-text-secondary);
+  background: var(--nd-neutral-subtle);
+}
+
+.nd-badge--accent {
+  color: var(--nd-accent-text);
+  background: var(--nd-accent-subtle);
+}
+
+/*
+ * Plane/source badge — the comment in data.tsx says "Plane / source chips stay
+ * monochrome — state owns hue." No fill, just a dim border.
+ */
+.nd-badge--plane {
+  color: var(--nd-text-secondary);
+  background: none;
+  border: 1px solid var(--nd-border-default);
+  border-radius: 2px;
+}
+
+/*
+ * Status dot: small coloured circle that precedes a badge label.
+ * Kept at 5px — small enough to be punctuation, not an icon.
+ */
+.nd-badge__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+/*
+ * .nt-status-dot — the standalone coloured dot used in tables and headers.
+ * Sized to sit on the text baseline without disturbing line height.
+ */
+.nt-status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
+
+.nt-status-dot[data-tone='success'] {
+  background: var(--nd-success);
+}
+
+.nt-status-dot[data-tone='warning'] {
+  background: var(--nd-warning);
+}
+
+.nt-status-dot[data-tone='danger'] {
+  background: var(--nd-danger);
+}
+
+.nt-status-dot[data-tone='info'] {
+  background: var(--nd-info);
+}
+
+.nt-status-dot[data-tone='neutral'],
+.nt-status-dot[data-tone='muted'] {
+  background: var(--nd-text-faint);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § LIVE / DEMO / SYNCED HONESTY STAMPS
+   These stamps tell the operator whether data is from a live feed, a demo
+   seed, or a cached snapshot. They must be visible without being loud.
+   Old style: rounded pill with gradient background + glow animation.
+   New style: uppercase mono token with a coloured dot. No pill border.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * .nt-live-chip — the environment mode indicator in the shift strip / toolbar.
+ * Strip the pill shape; keep the dot and the color semantics.
+ */
+.nt-live-chip,
+.nt-env-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--nd-text-secondary);
+}
+
+.nt-live-chip[data-live='true'] {
+  color: var(--nd-success);
+  background: none;
+  border: 0;
+}
+
+.nt-live-chip[data-live='false'] {
+  color: var(--nd-warning);
+  background: none;
+  border: 0;
+}
+
+/*
+ * .nt-sse-badge / .nd-sse-badge — server-sent-event connection badge.
+ * .nt-live-dot — standalone live indicator used inline in rows.
+ * Strip pill shape; keep the ::before dot and animation.
+ */
+.nt-sse-badge,
+.nd-sse-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 400;
+  color: var(--nd-text-muted);
+}
+
+/* The dot ::before is defined upstream and carries animation — preserve it,
+   but remove any pill wrapping so it's just dot + text. */
+.nt-sse-badge::before,
+.nd-sse-badge::before {
+  /* upstream defines content:'', size, border-radius, background — keep those;
+     just ensure no outline frame around the badge itself affects it. */
+  flex: 0 0 auto;
+}
+
+/*
+ * .nt-live-pill — text + dot used in the shift strip for live/demo mode.
+ * No pill; just dot + uppercase text.
+ */
+.nt-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  font-size: var(--nd-text-10);
+  font-family: var(--nd-font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Dot ring removed — just a solid 6px dot is enough. */
+.nt-live-pill::before {
+  box-shadow: none;
+}
+
+/*
+ * .nt-provenance / .nt-provenance-chip — source annotation (live/demo/cache).
+ * These trail a header or stat value to state where data came from.
+ */
+.nt-provenance,
+.nd-provenance,
+.nt-provenance-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+}
+
+.nt-provenance[data-source='live'],
+.nt-provenance-chip[data-source='live'] {
+  color: var(--nd-success);
+}
+
+.nt-provenance[data-source='demo'],
+.nt-provenance-chip[data-source='demo'] {
+  color: var(--nd-warning);
+}
+
+.nt-provenance[data-source='cache'],
+.nt-provenance-chip[data-source='cache'] {
+  color: var(--nd-text-muted);
+}
+
+/*
+ * .nt-demo-badge — bold DEMO stamp used on seeded / non-production data.
+ * Must be visible but not decorative. Left rule instead of filled pill.
+ */
+.nt-demo-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 0 1px 6px;
+  border-left: 2px solid var(--nd-warning);
+  background: none;
+  border-radius: 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--nd-warning);
+}
+
+/*
+ * .nt-live-dot / .nd-live-dot — standalone animated live dot in rows.
+ * Animation and colours defined upstream; we just clip sizing to 6px and
+ * remove any border or background that may come from a glass composite.
+ */
+.nt-live-dot,
+.nd-live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  vertical-align: middle;
+  /* No pill, no border, no background override — upstream colours remain. */
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § ALERT BANNERS
+   An alert is an honest message: tone left-rule says how serious, title and
+   body say what. No rounded card box, no background fill, no drop shadow.
+   The left-rule IS the visual affordance — nothing else needed.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-alert {
+  display: flex;
+  gap: var(--nd-gutter, 14px);
+  align-items: flex-start;
+  padding: 7px 10px 7px 12px;
+  background: none;
+  border: 0;
+  border-left: 3px solid var(--nd-border-default);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Tone colours come from left-border only. */
+.nd-alert--success { border-left-color: var(--nd-success); }
+.nd-alert--warning { border-left-color: var(--nd-warning); }
+.nd-alert--danger  { border-left-color: var(--nd-danger); }
+.nd-alert--info    { border-left-color: var(--nd-info); }
+.nd-alert--neutral { border-left-color: var(--nd-border-strong); }
+
+/* Very subtle background tint so alerts sit above the page floor visually
+   without looking like a card. Using inset-inline for the tinted strip only. */
+.nd-alert--success { background: var(--nd-success-subtle); }
+.nd-alert--warning { background: var(--nd-warning-subtle); }
+.nd-alert--danger  { background: var(--nd-danger-subtle); }
+.nd-alert--info    { background: var(--nd-info-subtle); }
+.nd-alert--neutral { background: var(--nd-neutral-subtle); }
+
+.nd-alert__content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Title is mid-weight body text; no need to shout. */
+.nd-alert__title {
+  font-size: var(--nd-data-size, 12.5px);
+  font-weight: 500;
+  color: var(--nd-text-primary);
+  line-height: 1.3;
+}
+
+.nd-alert__body {
+  font-size: var(--nd-data-size, 12.5px);
+  color: var(--nd-text-secondary);
+  line-height: var(--nd-data-leading, 1.35);
+  margin-top: 3px;
+  max-width: 72ch;
+}
+
+/* Dismiss link: mono uppercase, minimal. */
+.nd-alert__dismiss {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+  line-height: 1.4;
+  transition: color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-alert__dismiss:hover {
+  color: var(--nd-text-primary);
+}
+
+/* Callout glass compound class used by wave overrides — flatten it. */
+.nd-alert.nt-callout-glass {
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.nd-alert--success.nt-callout-glass { background: var(--nd-success-subtle); }
+.nd-alert--warning.nt-callout-glass { background: var(--nd-warning-subtle); }
+.nd-alert--danger.nt-callout-glass  { background: var(--nd-danger-subtle); }
+.nd-alert--info.nt-callout-glass    { background: var(--nd-info-subtle); }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § EMPTY STATES
+   "Nothing found" is a data state, not a design opportunity.
+   Show a dim mono sentence stating what reported nothing, plus the action
+   link. No illustration, no ND monogram hero, no centred 240px block.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * Base empty state: compact, left-aligned, honest.
+ * The old components.css had a 48px top/bottom padding centered block with
+ * a before-element cinema animation. We replace with a simple indented row.
+ */
+.nd-empty,
+.nt-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 0;
+  background: none;
+  text-align: left;
+}
+
+/* Remove the radiating vignette / cinema animation pseudo. */
+.nd-empty::before,
+.nd-empty::after,
+.nt-empty-cinema::before,
+.nt-empty-cinema::after {
+  display: none;
+}
+
+/*
+ * The "ND" monogram mark: the cinema variant renders a dim sigil centered
+ * on the empty state. We don't need a brand watermark on every empty screen
+ * — it makes nothing clear and fills space that should be blank.
+ */
+.nt-empty-wake__mark {
+  display: none;
+}
+
+/* Kicker line — e.g. "HPE Network Tools · quiet lane". Dim mono, small. */
+.nd-empty__kicker,
+.nt-empty-cinema__kicker {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+  line-height: 1.4;
+}
+
+/* Title: what was searched/requested that found nothing. */
+.nd-empty__title,
+.nt-empty-cinema__title {
+  font-size: var(--nd-data-size, 12.5px);
+  font-weight: 400;
+  color: var(--nd-text-secondary);
+  line-height: 1.4;
+  font-family: var(--nd-font-mono);
+  margin: 0;
+  max-width: 72ch;
+}
+
+/* Description / action suggestion — even dimmer. */
+.nd-empty__desc,
+.nt-empty-cinema__body {
+  font-size: var(--nd-data-size, 12.5px);
+  color: var(--nd-text-muted);
+  line-height: var(--nd-data-leading, 1.35);
+  margin: 0;
+  max-width: 72ch;
+}
+
+/* Children of empty (usually a CTA button) sit with normal spacing. */
+.nd-empty > *,
+.nt-empty-cinema > * {
+  position: relative;
+  z-index: 1;
+}
+
+/*
+ * Inline empty lane — used in table views when a filtered result is empty.
+ * Even more compact than the page empty state.
+ */
+.nt-empty-lane {
+  padding: 10px 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.06em;
+  color: var(--nd-text-faint);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Cinema / wake compound class: the full-screen empty overlay. Same treatment. */
+.nt-empty-cinema.nd-empty,
+.nt-empty-wake.nt-empty-cinema {
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  border: 0;
+  border-radius: 0;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § LOADING SKELETONS
+   Skeletons must match the height and width of the real content they replace
+   so first paint doesn't cause layout reflow. They are NOT decorative placeholders
+   — they are structural approximations. No rounded corners, no bright shimmer.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * Base skeleton: a thin shimmer bar in the canvas hue range.
+ * Width/height are set via --nd-skel-w / --nd-skel-h CSS variables from
+ * the Skeleton component's style prop.
+ */
+.nd-skeleton {
+  display: block;
+  width: var(--nd-skel-w, 100%);
+  height: var(--nd-skel-h, var(--nd-row-h, 28px));
+  border-radius: 0;
+  /* Shimmer travels left-to-right — matches the reading direction. */
+  background:
+    linear-gradient(
+      90deg,
+      var(--nd-bg-raised) 0%,
+      var(--nd-bg-hover) 40%,
+      var(--nd-bg-raised) 80%
+    );
+  background-size: 300% 100%;
+  animation: nd-skeleton-scan 1.8s var(--nd-ease) infinite;
+  box-shadow: none;
+}
+
+@keyframes nd-skeleton-scan {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/*
+ * Reduce motion: static bar, no animation. The bar still reserves space,
+ * which is the structural job — just no moving light.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .nd-skeleton {
+    background: var(--nd-bg-raised);
+    animation: none;
+  }
+}
+
+/*
+ * Page skeleton — the first-paint layout approximation for list / overview /
+ * detail routes. The old style had a war-room fadeIn + accent pulse.
+ * New: plain stack of skeleton bars, no animation entry, no glow.
+ */
+.nd-page-skeleton,
+.nd-page-skeleton--war {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nd-block-gap, 10px);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  animation: none;
+}
+
+/* Remove the war-room entry animation and the after-line accent sweep. */
+.nd-page-skeleton::before,
+.nd-page-skeleton::after,
+.nd-page-skeleton--war::before,
+.nd-page-skeleton--war::after {
+  display: none;
+}
+
+/* Kicker line above the skeleton (e.g. "HPE Network Tools · assembling the lane"). */
+.nd-page-skeleton__kicker {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+  margin-bottom: 8px;
+  background: none;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+
+/* Header pair of skeletons — title + actions approximation. */
+.nd-page-skeleton__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: var(--nd-rule);
+  margin-bottom: 4px;
+}
+
+/* Stats block — horizontal row of equal bars approximating the metric band. */
+.nd-page-skeleton__stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.nd-page-skeleton__stats .nd-skeleton {
+  flex: 1 1 100px;
+  height: 44px;
+}
+
+/* Individual row bars — match the real row height. */
+.nd-page-skeleton__row {
+  width: 100%;
+  height: var(--nd-row-h, 28px);
+}
+
+/* Two-column grid approximation used on overview variant. */
+.nd-page-skeleton__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--nd-screen-gap, 22px);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § KEY / VALUE DETAIL BLOCKS
+   The operator needs to scan 20+ facts about a device without scrolling.
+   Man-page layout: fixed-width uppercase mono key column, mono value column,
+   rows 2px apart. No background, no borders, no box.
+   00-foundation already defines .nd-kv — we extend it and add .nt-kv for the
+   legacy class and dl/dt/dd when used as detail blocks.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * .nt-kv mirrors the .nd-kv grid defined in 00-foundation.
+ * Some screens use the nt- namespace for the same pattern.
+ */
+.nt-kv {
+  display: grid;
+  grid-template-columns: minmax(0, var(--nd-label-w, 148px)) minmax(0, 1fr);
+  column-gap: var(--nd-gutter, 14px);
+  row-gap: 2px;
+  align-items: baseline;
+}
+
+.nt-kv dt {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-label-size, 10.5px);
+  font-weight: 400;
+  letter-spacing: var(--nd-tracking-label);
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  white-space: nowrap;
+}
+
+.nt-kv dd {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-data-size, 12.5px);
+  color: var(--nd-text-primary);
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* dl/dt/dd used directly as KV blocks on detail screens. */
+dl.nd-kv,
+dl.nt-kv {
+  margin: 0;
+}
+
+/*
+ * Consecutive KV blocks (e.g. multiple sections on a device detail page).
+ * A thin top border separates them so the eye knows where one section ends.
+ */
+.nd-kv + .nd-kv,
+.nt-kv + .nt-kv {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: var(--nd-rule);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § SPARKLINES
+   The Sparkline SVG is aria-hidden, decorative, meant to sit inline with
+   text and numbers. It should be baseline-aligned and not add height to
+   the row it lives in.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-spark-frame {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  line-height: 0;
+  /* A small nudge upward so the sparkline optical centre matches the text cap. */
+  position: relative;
+  top: -1px;
+}
+
+/* Ensure the SVG inside doesn't add extra inline box height. */
+.nt-spark-frame svg {
+  display: block;
+  overflow: visible;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § PROGRESS BARS
+   Progress conveys a ratio, not a design element. A 2px track is enough;
+   the fill tone carries the signal.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-progress__track {
+  height: 3px;
+  border-radius: 0;
+  background: var(--nd-bg-raised);
+  overflow: hidden;
+}
+
+.nd-progress__fill {
+  height: 100%;
+  width: var(--nd-health, 0%);
+  border-radius: 0;
+  transition: width var(--nd-duration-base) var(--nd-ease);
+}
+
+.nd-progress__fill--accent  { background: var(--nd-accent); }
+.nd-progress__fill--success { background: var(--nd-success); }
+.nd-progress__fill--warning { background: var(--nd-warning); }
+.nd-progress__fill--danger  { background: var(--nd-danger); }
+
+.nd-progress__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.nd-progress__note {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-muted);
+  letter-spacing: 0.05em;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   § LIGHT THEME OVERRIDES  [data-nd-theme='light']
+   Token values already flip in tokens.css — border-subtle, bg-raised, etc.
+   adjust automatically. A few structural adjustments needed:
+   - Section rules use a slightly stronger border for legibility on white.
+   - Stat-band bottom rule needs to be visible against white canvas.
+   - Badge fills remain subtle but shift to the light palette values.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+html[data-nd-theme='light'] .nd-section-header {
+  border-bottom-color: var(--nd-border-default);
+}
+
+html[data-nd-theme='light'] .nt-screen-header,
+html[data-nd-theme='light'] .nd-screen-header {
+  border-bottom-color: var(--nd-border-default);
+}
+
+html[data-nd-theme='light'] .nt-stat-band {
+  border-bottom-color: var(--nd-border-default);
+}
+
+html[data-nd-theme='light'] .nd-alert {
+  background: none;
+}
+
+html[data-nd-theme='light'] .nd-alert--success { background: var(--nd-success-subtle); }
+html[data-nd-theme='light'] .nd-alert--warning { background: var(--nd-warning-subtle); }
+html[data-nd-theme='light'] .nd-alert--danger  { background: var(--nd-danger-subtle); }
+html[data-nd-theme='light'] .nd-alert--info    { background: var(--nd-info-subtle); }
+html[data-nd-theme='light'] .nd-alert--neutral { background: var(--nd-neutral-subtle); }
+
+html[data-nd-theme='light'] .nd-skeleton {
+  background:
+    linear-gradient(
+      90deg,
+      var(--nd-bg-inset) 0%,
+      var(--nd-bg-hover) 40%,
+      var(--nd-bg-inset) 80%
+    );
+  background-size: 300% 100%;
+  animation: nd-skeleton-scan 1.8s var(--nd-ease) infinite;
+}
+
+html[data-nd-theme='light'] .nd-empty__title,
+html[data-nd-theme='light'] .nt-empty-cinema__title {
+  color: var(--nd-text-secondary);
+}
+
+html[data-nd-theme='light'] .nt-screen-header__brand,
+html[data-nd-theme='light'] .nt-screen-kicker {
+  color: var(--nd-text-muted);
+}
+
+html[data-nd-theme='light'] .nd-stat + .nd-stat,
+html[data-nd-theme='light'] .nt-metric-tile + .nt-metric-tile,
+html[data-nd-theme='light'] .nt-stat-grid .nd-stat,
+html[data-nd-theme='light'] .nt-metrics-3 .nd-stat {
+  border-left-color: var(--nd-border-default);
+}
+
+html[data-nd-theme='light'] .nd-divider--default {
+  background: var(--nd-border-default);
+}
+
+html[data-nd-theme='light'] .nd-page-skeleton__header {
+  border-bottom-color: var(--nd-border-default);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-nd-theme='light'] .nd-skeleton {
+    background: var(--nd-bg-inset);
+    animation: none;
+  }
+}
+
+
+/* ------------------------------------------------------------
+   STACKED-PANEL SPACING MUST NOT LEAK INTO A SIDE-BY-SIDE ROW
+   Legacy declares `.nt-section-panel + .nt-section-panel
+   { padding-top: 22px }` to separate panels stacked vertically.
+   Inside a horizontal metric grid every cell except the first is
+   an adjacent sibling, so measured on /devices/LAB-AP47 the CPU
+   cell had `padding: 0 14px 0 0` while Memory / Uptime / Clients
+   had `padding: 22px 14px 0` — the first metric sat 22px above the
+   other four in the same row.
+   ------------------------------------------------------------ */
+.nt-metric-grid-auto > .nt-section-panel + .nt-section-panel,
+.nt-metrics-3 > .nt-section-panel + .nt-section-panel,
+.nt-metric-grid-auto > * + * {
+  padding-top: 4px;
+}
+
+/* The first cell also loses its top padding to a `.nt-stack`
+   reset, leaving its label 4px above the rest of the row. */
+.nt-metric-grid-auto > :first-child,
+.nt-metrics-3 > :first-child {
+  padding-top: 4px;
+}
+
+/* ------------------------------------------------------------
+   METRIC TILE — DELTA BESIDE THE VALUE, NOT WRAPPED UNDER IT
+   The tile was a flex column: micro-label / 22px value / delta.
+   Measured on /overview the value box was 161px wide holding a
+   ~50px number, while the delta ("▼ 7 down · GREENLAKE, CLEARPASS,
+   SSE not counted") was pushed onto its own line and wrapped to two,
+   making an 88px tile with ~110px of dead space next to every
+   number. Value and delta now share a baseline row, so the delta
+   uses the room the value was reserving and never sits alone.
+   ------------------------------------------------------------ */
+.nd-stat.nt-metric-tile,
+.nt-stat.nt-metric-tile {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 1px;
+  /* legacy pinned every tile to a uniform 88px poster height */
+  min-height: 0;
+}
+
+.nd-stat.nt-metric-tile > .nd-stat__rule {
+  display: none;
+}
+
+.nd-stat.nt-metric-tile > .nd-micro-label {
+  grid-column: 1 / -1;
+}
+
+.nd-stat.nt-metric-tile > .nd-stat__value {
+  grid-column: 1;
+  grid-row: 2;
+  margin-top: 0;
+  align-self: baseline;
+  white-space: nowrap;
+}
+
+/* Deltas are sentences ("GREENLAKE, CLEARPASS, SSE not counted"),
+   not glyphs. Beside a 76px value in a 203px column the delta got
+   77px and legacy's `-webkit-line-clamp: 2` cut it to "GREENLAKE,…"
+   while its own scrollHeight was 73px — five lines of clipped text.
+   Give it the full tile width on its own row and let it finish. */
+.nd-stat.nt-metric-tile > [class*="nd-stat__delta"] {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  margin-top: 0;
+  align-self: baseline;
+  -webkit-line-clamp: none;
+  overflow: visible;
+}
+
+/* Stat band chrome: the cells carried 12px of vertical padding and
+   the grid another 14px below, so a 59px tile sat inside a 99px cell
+   inside a 133px band — 40px of the band was frame. */
+.nt-stat-grid.nt-stat-grid.nt-stat-grid {
+  padding-bottom: 6px;
+}
+
+.nt-stat-grid > .nt-stat-link {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+/* ------------------------------------------------------------
+   STAT GRID MUST FILL THE BAND
+   The grid was five fixed 216px tracks. At 1280px that happens to
+   fill the row, but at 1920 the grid measured 1080px inside a
+   1657px band — 577px of empty console to the right of the last
+   metric, under a divider that ran the full width. auto-fit + 1fr
+   spends whatever width the band actually has, at any window size,
+   and adapts when a screen renders a different number of metrics.
+   ------------------------------------------------------------ */
+.nt-stat-grid.nt-stat-grid.nt-stat-grid,
+.nt-metrics-3.nt-metrics-3 {
+  /* the actual culprit — the tracks were already `repeat(5, 1fr)`,
+     but a hard cap stopped the grid growing past 1080px. The
+     screen-specific rules keep their responsive 5/3/2 breakpoints;
+     only the cap is lifted. */
+  max-width: none;
+}
+
+/* Label and value read as one line — "DEVICES REACHABLE  9 / 16" —
+   instead of stacking a micro-caps label over an oversized number.
+   The 22px display value was the loudest thing on the screen while
+   carrying the least text; at 17px it still leads the tile. */
+/*
+ * Label and value share a line only where the tile is wide enough to
+ * hold both. At 1280 a five-across band gives each tile 175px, and
+ * "Devices reachable" (112px) + gap + "9 / 16" (59px) does not fit —
+ * the label wrapped, which pushed that tile's delta a line below its
+ * neighbours' and broke the row's alignment. Below the breakpoint the
+ * tile keeps the stacked arrangement, which has room to spare there;
+ * above it the pair reads as one line and stops reserving a column of
+ * empty space beside every number.
+ */
+@media (min-width: 1500px) {
+  .nd-stat.nt-metric-tile {
+    /* Both tracks are content-sized so the value sits directly after
+       its label. With `1fr` for the label the value was pushed to the
+       tile's right edge, opening a ~150px gap mid-tile at 1920 and
+       separating the number from the thing it counts. */
+    grid-template-columns: auto max-content;
+    justify-content: start;
+    align-items: baseline;
+    column-gap: 10px;
+  }
+
+  .nd-stat.nt-metric-tile > .nd-micro-label {
+    grid-column: 1;
+    grid-row: 1;
+    /* The label is a flex container, so its max-content contribution
+       does not reliably size an `auto` track — the widest label
+       collapsed to ~30px and wrapped one syllable per line. At this
+       breakpoint every tile has room for the label on one line
+       (~112px of 250px at the 1500px boundary), so say so. */
+    white-space: nowrap;
+  }
+
+  .nd-stat.nt-metric-tile > .nd-stat__value {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}
+
+.nd-stat.nt-metric-tile > .nd-stat__value {
+  font-size: 17px;
+  line-height: 1.15;
+}

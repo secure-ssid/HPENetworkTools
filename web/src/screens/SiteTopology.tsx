@@ -584,7 +584,12 @@ export function SiteTopologyDiagram({
       }}
     >
       <div className="nt-plane-theater" role="note">
-        NightDesk · site topology · path owns attention · state owns hue
+        HPE Network Tools · site topology · path owns attention · state owns hue
+      </div>
+      <div className="nt-status-ribbon nt-site-topo-ribbon" role="status" aria-label="Site topology status ribbon">
+        <span className="nt-status-ribbon__item">path · owns attention</span>
+        <span className="nt-status-ribbon__item">state owns hue</span>
+        <span className="nt-status-ribbon__item">layers monochrome</span>
       </div>
       <div className="nt-row-wrap-10 nt-toolbar-glass" onClick={(event) => event.stopPropagation()}>
         <Button variant="ghost" size="sm" onClick={copyViewLink}>

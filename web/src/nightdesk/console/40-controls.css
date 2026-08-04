@@ -1,0 +1,1598 @@
+/*
+ * Console layer 40 — controls
+ *
+ * The historical component waves dressed every interactive control as a rounded,
+ * gradient-lit, glowing widget. A filter chip looked like a pill from a design
+ * template; a button cast a coloured shadow; a modal floated behind blur glass.
+ * Fifty of those on one screen and the chrome competes with the data it wraps.
+ *
+ * This layer replaces that visual grammar entirely. The model is the operator
+ * terminal: fzf, lazygit, a well-configured Neovim statusline. Every control
+ * is a command or a data field — it reads that way.
+ *
+ * Rules of the layer:
+ *   • Buttons are rectangular commands: 1px hairline border, 2px radius, flat
+ *     fill. Hover changes border and bg only; no transform, no glow, no shadow.
+ *   • Inputs read as a prompt line: flat bg, hairline border, monospace where
+ *     the operator types data (search, IDs, filters), sans for prose. Focus is
+ *     a plain accent outline, not a halo.
+ *   • Filter chips are binary toggles, not confetti: uppercase mono, hairline
+ *     border, transparent off; accent border + subtle fill on.
+ *   • Overlays (drawer, modal, menu, shortcuts) are panels with a single
+ *     hairline border and one drop shadow for z-order. No blur, no gradient
+ *     header, no glow edge.
+ *   • Toasts are status lines with a state-coloured left rule.
+ *   • kbd looks like an actual keycap: mono, hairline border, 2px radius.
+ *   • Accent tokens appear on interactive/active/focus states only — not on
+ *     every control at rest.
+ *
+ * Design tokens supply all colour; no hex/rgb values below except `transparent`.
+ * Both dark (default) and light (html[data-nd-theme='light']) themes are
+ * supported via the token layer — structural overrides here cover the few cases
+ * where form changes with theme.
+ *
+ * File loads after components.css, so single-class selectors win without
+ * needing !important. Specificity is intentionally kept low.
+ */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 1 — BUTTONS
+   The existing nd-btn has: border-radius: var(--nd-radius-md) (8px), a
+   gradient primary, a transform on active, and a box-shadow glow on focus.
+   All of those communicate "polished product UI". We want "command prompt".
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * Base reset — strip radius, shadows, and the transform-on-active.
+ * Transitions cover only the two properties that actually change: background
+ * and border-color. Box-shadow and transform are removed from the transition
+ * list so the browser never interpolates a glow or a lift.
+ */
+.nd-btn {
+  border-radius: 2px;
+  font-weight: 500;
+  font-size: var(--nd-text-12);
+  letter-spacing: 0.01em;
+  box-shadow: none;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    border-color var(--nd-duration-fast) var(--nd-ease),
+    color var(--nd-duration-fast) var(--nd-ease);
+}
+
+/* Sizes — slim down a touch for console density. */
+.nd-btn--sm {
+  height: 26px;
+  padding: 0 9px;
+  font-size: var(--nd-text-11);
+}
+
+.nd-btn--md {
+  height: 30px;
+  padding: 0 11px;
+}
+
+.nd-btn--lg {
+  height: 36px;
+  padding: 0 14px;
+  font-size: var(--nd-text-13);
+}
+
+/*
+ * Primary — accent fill, accent-fg text. The filled primary is the one place
+ * we use a background that isn't transparent, because it needs to visually
+ * outrank secondary/ghost at a glance. Hover lightens slightly; no shadow.
+ */
+.nd-btn--primary {
+  background: var(--nd-accent);
+  border-color: var(--nd-accent);
+  color: var(--nd-accent-fg);
+  box-shadow: none;
+}
+
+.nd-btn--primary:hover:not(:disabled) {
+  background: var(--nd-accent-hover);
+  border-color: var(--nd-accent-hover);
+}
+
+.nd-btn--primary:active:not(:disabled) {
+  background: var(--nd-accent-active);
+  border-color: var(--nd-accent-active);
+  transform: none;
+}
+
+/*
+ * Secondary — hairline border, transparent fill. The default command button.
+ * Hover adds a very faint bg so it reads as interactive without screaming.
+ */
+.nd-btn--secondary {
+  background: transparent;
+  border-color: var(--nd-border-default);
+  color: var(--nd-text-primary);
+  box-shadow: none;
+}
+
+.nd-btn--secondary:hover:not(:disabled) {
+  background: var(--nd-bg-hover);
+  border-color: var(--nd-border-strong);
+}
+
+/*
+ * Ghost — text only at rest, a faint bg on hover so the button's hit area
+ * becomes visible without adding visual weight. Useful for tertiary actions
+ * in a toolbar row that already has two bordered peers.
+ */
+.nd-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--nd-text-secondary);
+}
+
+.nd-btn--ghost:hover:not(:disabled) {
+  background: var(--nd-bg-hover);
+  border-color: transparent;
+  color: var(--nd-text-primary);
+}
+
+/*
+ * Danger — hairline danger border at rest, subtle fill on hover. The border
+ * carries the semantic; no red fill until hover so it doesn't look alarming
+ * in a form that has Cancel / Delete as standard footer choices.
+ */
+.nd-btn--danger {
+  background: transparent;
+  border-color: var(--nd-danger);
+  color: var(--nd-danger);
+  box-shadow: none;
+}
+
+.nd-btn--danger:hover:not(:disabled) {
+  background: var(--nd-danger-subtle);
+}
+
+.nd-btn--danger:active:not(:disabled) {
+  background: var(--nd-danger-subtle);
+  border-color: var(--nd-danger);
+  transform: none;
+}
+
+/*
+ * Disabled — reduce opacity, show non-color cue (cursor) and kill pointer.
+ * Using the token so the whole app can adjust density in one place.
+ */
+.nd-btn:disabled {
+  opacity: var(--nd-opacity-disabled);
+  cursor: not-allowed;
+}
+
+/*
+ * Focus — a crisp accent outline replaces the old box-shadow ring. Outline
+ * lives outside the element so it never displaces layout; offset of 2px keeps
+ * it visually separated from the border without touching adjacent controls.
+ */
+.nd-btn:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 2 — LINK BUTTONS  (.nd-link, .nt-link-btn, .nt-linkish, .nt-text-link)
+   Text-only interactive elements. Accent at rest, underline on hover.
+   No box-shadow, no pseudo-button chrome.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-link {
+  font-size: var(--nd-text-12);
+  font-family: var(--nd-font-mono);
+  letter-spacing: 0.04em;
+  color: var(--nd-accent-text);
+  text-transform: none;
+}
+
+.nd-link:hover {
+  color: var(--nd-accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.nd-link:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+
+.nt-link-btn,
+button.nt-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--nd-text-12);
+  color: var(--nd-accent-text);
+  text-align: left;
+}
+
+.nt-link-btn:hover {
+  color: var(--nd-accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.nt-link-btn:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+
+.nt-linkish,
+button.nt-linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--nd-text-secondary);
+  text-align: left;
+}
+
+.nt-linkish:hover {
+  color: var(--nd-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.nt-linkish:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+
+.nt-text-link,
+.nd-link.nt-text-link {
+  font-family: inherit;
+  font-size: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--nd-accent-text);
+}
+
+.nt-text-link:hover,
+.nd-link.nt-text-link:hover {
+  color: var(--nd-accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 3 — TEXT INPUTS, TEXTAREAS, SELECTS
+   Prompt-line aesthetic: flat inset bg, hairline border, no radius rounding.
+   The monospace variant (--mono) applies to anything the operator types as
+   data — search queries, filter expressions, identifiers. Placeholder stays
+   at --nd-text-faint so the hint is readable without masking the value.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-input,
+.nd-textarea,
+.nd-select {
+  border-radius: 2px;
+  background: var(--nd-bg-inset);
+  border: 1px solid var(--nd-border-default);
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-primary);
+  transition:
+    border-color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-input::placeholder,
+.nd-textarea::placeholder {
+  color: var(--nd-text-faint);
+}
+
+/*
+ * Focus — accent border + outline. The outline is separate from the border
+ * so it appears outside the box without widening it, keeping input widths
+ * stable and adjacent labels aligned across form rows.
+ */
+.nd-input:focus,
+.nd-textarea:focus,
+.nd-select:focus {
+  border-color: var(--nd-accent);
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 0;
+  box-shadow: none;
+}
+
+.nd-input:disabled,
+.nd-textarea:disabled,
+.nd-select:disabled {
+  opacity: var(--nd-opacity-disabled);
+  cursor: not-allowed;
+}
+
+/* Monospace data fields — mono font, tabular nums for anything measurable. */
+.nd-input--mono,
+.nd-textarea--mono {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-12);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Select wrapper — custom chevron, no radius rounding.
+
+   Sized to its own content rather than to whatever container it lands in.
+   Several wrappers were being stretched by a block/flex parent far past
+   anything they could ever display: a ten-character "All health" select ran
+   608px on /overview and a three-character "Lab" select ran the full 1017px
+   canvas width on /central. A control that wide reads as a text field and
+   puts its chevron a screen away from its value. Measured across 18 routes:
+   5 selects over 260px before, 0 after, average width 222px -> 143px, with
+   no select clipping its own selected option (scrollWidth == clientWidth on
+   all 34). max-width keeps it shrinking normally in narrow containers. */
+.nd-select-wrap {
+  border-radius: 2px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.nd-select-wrap::after {
+  content: "▾";
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-muted);
+}
+
+.nd-select {
+  border-radius: 2px;
+}
+
+/* Form field layout — tighter gap for dense forms. */
+.nd-field {
+  gap: 4px;
+}
+
+.nd-field__help {
+  font-size: var(--nd-text-11);
+  color: var(--nd-text-muted);
+  line-height: 1.4;
+}
+
+/* Micro-label — the "what column is this" uppercase mono label above a field
+   or table section. Keep it barely visible — it annotates, it doesn't shout. */
+.nd-micro-label {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: var(--nd-tracking-micro);
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 4 — CHECKBOX
+   Square, flat. No rounded container. Checked state uses the accent fill
+   directly; the checkmark is drawn with a CSS border-rotate trick.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-checkbox {
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-secondary);
+  gap: var(--nd-space-2);
+  cursor: pointer;
+  /* Ensure the row is tall enough to meet 24px minimum hit target. */
+  min-height: 24px;
+  align-items: center;
+}
+
+.nd-checkbox input {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border-radius: 2px;
+  border: 1px solid var(--nd-border-strong);
+  background: transparent;
+  cursor: pointer;
+}
+
+.nd-checkbox input:checked {
+  background: var(--nd-accent);
+  border-color: var(--nd-accent);
+}
+
+.nd-checkbox input:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+.nd-checkbox:has(input:disabled) {
+  opacity: var(--nd-opacity-disabled);
+  cursor: not-allowed;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 5 — SWITCH / TOGGLE
+   Capsule track stays — the pill shape communicates binary on/off in a way
+   a rectangle can't. But: the on-state drops its glow completely (glows are
+   decoration, not data), and the track uses the same hairline border as every
+   other control at rest. Focus follows the unified outline pattern.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-switch {
+  min-height: 24px;
+  align-items: center;
+  gap: var(--nd-space-2);
+}
+
+.nd-switch__track {
+  border: 1px solid var(--nd-border-strong);
+  background: transparent;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    border-color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-switch__track--on {
+  background: var(--nd-accent);
+  border-color: var(--nd-accent);
+  /* No glow — the accent fill is sufficient to communicate state. */
+  box-shadow: none;
+}
+
+.nd-switch__track:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+}
+
+.nd-switch__knob {
+  background: var(--nd-text-muted);
+  transition: transform var(--nd-duration-fast) var(--nd-ease), background var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-switch__track--on .nd-switch__knob {
+  background: var(--nd-text-inverse);
+  box-shadow: none;
+}
+
+.nd-switch--disabled {
+  opacity: var(--nd-opacity-disabled);
+}
+
+.nd-switch__label {
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-secondary);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 6 — SEGMENTED CONTROL
+   Old design: a pill container with glass bg and inner glow, buttons with
+   glowing active state. New design: a flat row of bordered toggles. The
+   container becomes invisible (just a flex row); each button is its own
+   bordered unit. Active = accent border + accent text + subtle fill.
+   This matches how a terminal's view-switching bar works (lazygit's tabs).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-seg {
+  gap: 2px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.nd-seg__btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--nd-border-default);
+  border-radius: 2px;
+  background: transparent;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  font-weight: 500;
+  letter-spacing: var(--nd-tracking-micro);
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  cursor: pointer;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    border-color var(--nd-duration-fast) var(--nd-ease),
+    color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-seg__btn:hover:not(.nd-seg__btn--active) {
+  color: var(--nd-text-secondary);
+  border-color: var(--nd-border-strong);
+  background: transparent;
+}
+
+.nd-seg__btn--active,
+.nd-seg__btn--active:hover {
+  background: var(--nd-accent-subtle);
+  border-color: var(--nd-accent);
+  color: var(--nd-accent-text);
+  box-shadow: none;
+}
+
+.nd-seg__btn:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 7 — TABS
+   Old design: a pill tab list with glass bg; active tab had a glow.
+   New design: underline tabs — the list is a plain flex row with a single
+   hairline bottom rule; the active trigger gets a 2px accent underline and
+   full-opacity text. This is the native terminal / IDE tab idiom.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-tabs__list {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--nd-border-default);
+  border-radius: 0;
+  width: auto;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.nd-tabs__trigger {
+  height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 0;
+  /* 2px bottom slot reserved for the active underline — transparent at rest. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px; /* sit the active underline on top of the list border */
+  background: transparent;
+  color: var(--nd-text-muted);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--nd-duration-fast) var(--nd-ease),
+    border-color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-tabs__trigger:hover {
+  color: var(--nd-text-secondary);
+  background: transparent;
+}
+
+.nd-tabs__trigger--active,
+.nd-tabs__trigger--active:hover {
+  color: var(--nd-text-primary);
+  background: transparent;
+  border-bottom-color: var(--nd-accent);
+}
+
+.nd-tabs__trigger:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: -2px;
+}
+
+.nd-tabs__content {
+  margin-top: var(--nd-space-3);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 8 — FILTER BAR, TABLE TOOLBAR, TOOLBAR GLASS
+   These are the dense single-row zones at the top of every table surface.
+   Old design: glassy bg with a subtle glow edge. New design: flat, anchored
+   by a single bottom hairline. Content density is the feature, not the frame.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-height: var(--nd-shift-h);
+  padding: 0 var(--nd-content-pad-x);
+  background: var(--nd-bg-canvas);
+  border-bottom: var(--nd-rule);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+.nt-table-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--nd-shift-h);
+  background: transparent;
+  border-bottom: var(--nd-rule);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* The glass toolbar (topbar, section headers that carry actions). */
+.nt-toolbar-glass,
+.nd-section-header.nt-toolbar-glass {
+  background: var(--nd-bg-surface);
+  border-bottom: var(--nd-rule);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 9 — FILTER CHIPS  (.nt-chip, .nt-chip--active, .nt-chip__count)
+   Filter chips are binary toggles used to slice a table. Old design: pillowed,
+   gradient-tinted, status-coloured. New design: flat uppercase mono with a
+   hairline border. Off = border + muted text; on = accent border + accent
+   text + very faint accent fill. Count suffix is tabular mono, dim.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  background: transparent;
+  border: 1px solid var(--nd-border-default);
+  border-radius: 2px;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  font-weight: 500;
+  letter-spacing: var(--nd-tracking-micro);
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    border-color var(--nd-duration-fast) var(--nd-ease),
+    color var(--nd-duration-fast) var(--nd-ease);
+  /* Chips are often used as buttons — ensure they have no default button chrome. */
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.nt-chip:hover:not(.nt-chip--active) {
+  border-color: var(--nd-border-strong);
+  color: var(--nd-text-secondary);
+}
+
+.nt-chip--active {
+  background: var(--nd-accent-subtle);
+  border-color: var(--nd-accent);
+  color: var(--nd-accent-text);
+}
+
+.nt-chip--active:hover {
+  background: var(--nd-accent-subtle);
+  border-color: var(--nd-accent-hover);
+}
+
+.nt-chip:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+}
+
+/* Count suffix — tabular mono in a dim tone; never as bright as the chip label. */
+.nt-chip__count {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  font-variant-numeric: tabular-nums;
+  color: var(--nd-text-faint);
+  letter-spacing: 0;
+}
+
+.nt-chip--active .nt-chip__count {
+  color: var(--nd-accent-text);
+  opacity: 0.7;
+}
+
+/* Chip row — label + chip group. The label is an annotation, not a header. */
+.nt-chip-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.nt-chip-row__label {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: var(--nd-tracking-micro);
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+  white-space: nowrap;
+  padding-right: 2px;
+}
+
+/* Chip wrap — wrapping container for multiple chip rows / loose chips. */
+.nt-chip-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Chip filter variant — same as nt-chip, aria-pressed semantics. */
+.nt-chip-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  background: transparent;
+  border: 1px solid var(--nd-border-default);
+  border-radius: 2px;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  font-weight: 500;
+  letter-spacing: var(--nd-tracking-micro);
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    border-color var(--nd-duration-fast) var(--nd-ease),
+    color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-chip-filter[aria-pressed='true'],
+.nt-chip-filter.nt-chip--active {
+  background: var(--nd-accent-subtle);
+  border-color: var(--nd-accent);
+  color: var(--nd-accent-text);
+}
+
+.nt-chip-filter:hover:not([aria-pressed='true']):not(.nt-chip--active) {
+  border-color: var(--nd-border-strong);
+  color: var(--nd-text-secondary);
+}
+
+.nt-chip-filter:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+}
+
+/* End-of-row chip zone — no special visual treatment, just alignment. */
+.nt-chip-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 10 — BULK-ACTION BARS  (.nt-bulk-glass, .nt-configure-bulk-bar)
+   A selection bulk-bar should feel like a mode the UI entered, not a card
+   that appeared. Old design: glass card with blur. New design: a dense
+   single-row bar pinned to the table, anchored by a top hairline, with a
+   faint accent fill to communicate "selection mode is active".
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-bulk-glass,
+.nt-configure-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--nd-shift-h);
+  padding: 0 var(--nd-content-pad-x);
+  background: var(--nd-accent-subtle);
+  border-top: 1px solid var(--nd-accent);
+  border-bottom: var(--nd-rule);
+  border-radius: 0;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+.nt-configure-bulk-bar__count {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  font-weight: 600;
+  letter-spacing: var(--nd-tracking-micro);
+  text-transform: uppercase;
+  color: var(--nd-accent-text);
+}
+
+.nt-configure-bulk-bar__hint {
+  font-size: var(--nd-text-11);
+  color: var(--nd-text-secondary);
+}
+
+.nt-configure-bulk-bar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* Light theme: invert the accent-subtle so it reads against white canvas. */
+html[data-nd-theme='light'] .nt-bulk-glass,
+html[data-nd-theme='light'] .nt-configure-bulk-bar {
+  background: var(--nd-accent-subtle);
+  border-top-color: var(--nd-accent);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 11 — MENU / DROPDOWN PANEL
+   Old design: rounded card with `nd-shadow-overlay` + backdrop blur.
+   New design: flat panel, `--nd-bg-raised` bg, 1px border, same shadow
+   but no blur (blur communicates glassmorphism, not layering). Minimal radius.
+   Items have a plain text layout; hover = faint bg only.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-menu__panel {
+  border-radius: 2px;
+  background: var(--nd-bg-raised);
+  border: 1px solid var(--nd-border-strong);
+  box-shadow: var(--nd-shadow-overlay);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 3px;
+}
+
+.nd-menu__item {
+  border-radius: 1px;
+  padding: 6px 10px;
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-primary);
+  gap: 8px;
+  cursor: pointer;
+  transition: background var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-menu__item:hover:not(:disabled) {
+  background: var(--nd-bg-hover);
+}
+
+.nd-menu__item:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: -2px;
+}
+
+.nd-menu__item--danger {
+  color: var(--nd-danger);
+}
+
+.nd-menu__item:disabled {
+  opacity: var(--nd-opacity-disabled);
+  cursor: not-allowed;
+}
+
+.nd-menu__sep {
+  height: 1px;
+  margin: 3px 6px;
+  background: var(--nd-border-subtle);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 12 — MODAL
+   Old design: rounded xl glass panel with glow box-shadow and backdrop blur.
+   New design: flat surface panel. Border-radius 3px — enough to anchor the
+   corner without reading as decorative. One drop-shadow for z-order. No blur,
+   no gradient header, no glow edge.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-modal {
+  border-radius: 3px;
+  background: var(--nd-bg-surface);
+  border: 1px solid var(--nd-border-strong);
+  box-shadow: var(--nd-shadow-overlay);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 18px 20px;
+}
+
+.nd-modal__header {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--nd-border-subtle);
+  margin-bottom: 0;
+}
+
+.nd-modal__title {
+  font-size: var(--nd-text-14);
+  font-weight: 600;
+  color: var(--nd-text-primary);
+  font-family: var(--nd-font-body);
+  letter-spacing: -0.01em;
+}
+
+.nd-modal__desc {
+  margin-top: 4px;
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-secondary);
+  line-height: 1.45;
+}
+
+/*
+ * Close button — 24x24 minimum, text-muted at rest. The × is a typographic
+ * character, not an SVG, so font-size controls its visual weight.
+ */
+.nd-modal__close {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: none;
+  color: var(--nd-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: color var(--nd-duration-fast) var(--nd-ease), background var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-modal__close:hover {
+  color: var(--nd-text-primary);
+  background: var(--nd-bg-hover);
+  border-color: var(--nd-border-subtle);
+}
+
+.nd-modal__close:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+}
+
+.nd-modal__body {
+  margin-top: 14px;
+}
+
+.nd-modal__footer {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--nd-border-subtle);
+}
+
+/* Scrim — flat dark overlay, no blur. Positioned absolute in the fixed root. */
+.nd-modal__scrim {
+  background: var(--nd-overlay-scrim);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 13 — DRAWER
+   Same panel treatment as modal. The drawer covers a side edge so it needs
+   a stronger left/right border to separate it from the canvas it slides over.
+   No backdrop blur on the panel itself; the scrim provides depth.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-drawer {
+  background: var(--nd-bg-surface);
+  box-shadow: var(--nd-shadow-overlay);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.nd-drawer--right {
+  border-left: 1px solid var(--nd-border-strong);
+}
+
+.nd-drawer--left {
+  border-right: 1px solid var(--nd-border-strong);
+}
+
+/*
+ * Drawer header — the kicker ("HPE Network Tools · drawer") is a dim annotation,
+ * not a brand splash. The gradient wash from the old design is gone; the
+ * header is anchored by a bottom rule only.
+ */
+.nd-drawer__header {
+  padding: 16px 20px 12px;
+  background: transparent;
+  border-bottom: var(--nd-rule-strong);
+}
+
+.nd-drawer__title {
+  font-family: var(--nd-font-body);
+  font-size: var(--nd-text-16);
+  font-weight: 600;
+  color: var(--nd-text-primary);
+  letter-spacing: -0.01em;
+}
+
+.nd-drawer__description {
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-muted);
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+.nd-drawer__close {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: none;
+  color: var(--nd-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: color var(--nd-duration-fast) var(--nd-ease), background var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-drawer__close:hover {
+  color: var(--nd-text-primary);
+  background: var(--nd-bg-hover);
+  border-color: var(--nd-border-subtle);
+}
+
+.nd-drawer__close:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+}
+
+.nd-drawer__body {
+  padding: 16px 20px 28px;
+}
+
+.nd-drawer-overlay {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 14 — TOOLTIP
+   Minimal inline callout. Flat surface, hairline border, no box-shadow on
+   the bubble (too noisy next to data). Small radius so it reads as a label
+   annotation, not a floating card.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-tooltip__bubble {
+  border-radius: 2px;
+  background: var(--nd-bg-raised);
+  border: 1px solid var(--nd-border-strong);
+  box-shadow: none;
+  color: var(--nd-text-secondary);
+  font-size: var(--nd-text-11);
+  padding: 4px 7px;
+  line-height: 1.4;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 15 — TOAST
+   Toasts should feel like CLI output: a single status line, not a floating
+   card. The state is encoded in a 2px left rule whose colour matches the tone
+   token. No radius rounding, no blur, flat raised surface.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-toast-region {
+  right: 16px;
+  bottom: 16px;
+  gap: var(--nd-space-1);
+}
+
+.nd-toast {
+  min-width: min(260px, calc(100vw - 32px));
+  max-width: min(380px, calc(100vw - 32px));
+  background: var(--nd-bg-raised);
+  border: 1px solid var(--nd-border-default);
+  border-left: 3px solid var(--nd-accent);
+  border-radius: 2px;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: var(--nd-shadow-overlay);
+  padding: 8px 12px;
+}
+
+.nd-toast--success {
+  border-left-color: var(--nd-success);
+}
+
+.nd-toast--warning {
+  border-left-color: var(--nd-warning);
+}
+
+.nd-toast--danger {
+  border-left-color: var(--nd-danger);
+}
+
+.nd-toast--info {
+  border-left-color: var(--nd-info);
+}
+
+/* accent tone — keep the default accent rule */
+.nd-toast--accent {
+  border-left-color: var(--nd-accent);
+}
+
+.nd-toast__title {
+  font-size: var(--nd-text-12);
+  font-weight: 500;
+  color: var(--nd-text-primary);
+  line-height: 1.35;
+}
+
+.nd-toast__desc {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  color: var(--nd-text-muted);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 16 — ALERT / INLINE CALLOUT
+   The left-rule structure is already correct in components.css — this layer
+   tightens the radius and removes the box-shadow so it reads as an inline
+   region, not a floating card.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-alert {
+  border-radius: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--nd-border-subtle);
+  border-left: 3px solid transparent;
+  box-shadow: none;
+}
+
+.nd-alert__title {
+  font-size: var(--nd-text-13);
+  font-weight: 500;
+}
+
+.nd-alert__body {
+  font-size: var(--nd-text-12);
+  margin-top: 2px;
+}
+
+.nd-alert__dismiss {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  color: var(--nd-text-muted);
+  min-height: 24px;
+  align-self: center;
+}
+
+.nd-alert__dismiss:hover {
+  color: var(--nd-text-primary);
+}
+
+.nd-alert__dismiss:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 17 — KBD (keyboard key cap)
+   Rendered as a physical keycap: mono font, hairline border on all sides
+   with a slightly darker bottom edge (the "depth" of the key), tight padding.
+   No border-radius above 2px — keycaps are not pills.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  line-height: 1;
+  color: var(--nd-text-secondary);
+  background: var(--nd-bg-raised);
+  /* Top/sides hairline, bottom edge slightly stronger — simulates key depth. */
+  border: 1px solid var(--nd-border-default);
+  border-bottom: 2px solid var(--nd-border-strong);
+  border-radius: 2px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 18 — KEYBOARD SHORTCUTS OVERLAY
+   Panel treatment: flat surface, hairline border, single shadow. The brand
+   kicker ("HPE Network Tools · key map") and title are dimmer/smaller; the shortcut
+   rows are the content, not the chrome.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* The trigger is a small '?' button. Keep it as an inline square. */
+.nd-shortcuts__trigger {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--nd-border-default);
+  border-radius: 2px;
+  background: none;
+  color: var(--nd-text-muted);
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  cursor: pointer;
+  transition:
+    color var(--nd-duration-fast) var(--nd-ease),
+    border-color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-shortcuts__trigger:hover,
+.nd-shortcuts__trigger:focus-visible {
+  color: var(--nd-text-primary);
+  border-color: var(--nd-border-strong);
+  outline: none;
+}
+
+.nd-shortcuts__trigger:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+}
+
+/* The overlay panel itself. */
+.nd-shortcuts {
+  position: relative;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  padding: 16px 20px 20px;
+  background: var(--nd-bg-surface);
+  border: 1px solid var(--nd-border-strong);
+  border-radius: 3px;
+  box-shadow: var(--nd-shadow-overlay);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.nd-shortcuts__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: var(--nd-rule);
+}
+
+/* Brand kicker — annotation, not a headline. */
+.nd-shortcuts__brand {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: var(--nd-tracking-micro);
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+  margin-bottom: 2px;
+}
+
+.nd-shortcuts__title {
+  font-family: var(--nd-font-body);
+  font-size: var(--nd-text-14);
+  font-weight: 600;
+  color: var(--nd-text-primary);
+}
+
+.nd-shortcuts__close {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: none;
+  color: var(--nd-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nd-shortcuts__close:hover {
+  color: var(--nd-text-primary);
+  background: var(--nd-bg-hover);
+}
+
+.nd-shortcuts__close:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+}
+
+.nd-shortcuts__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Each row is a table-like layout: kbd left-aligned, action right of it. */
+.nd-shortcuts__item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 5px 0;
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-secondary);
+  border-bottom: 1px solid var(--nd-border-subtle);
+}
+
+.nd-shortcuts__item:last-child {
+  border-bottom: none;
+}
+
+/* kbd inside the shortcut list — wider fixed column for key alignment. */
+.nd-shortcuts__item .nd-kbd {
+  flex: 0 0 auto;
+  min-width: 72px;
+  height: auto;
+  padding: 3px 8px;
+  text-align: center;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 19 — BREADCRUMBS
+   Already mono uppercase in components.css. Tighten the current-item glow
+   (a text-shadow signals nothing in a terminal) to a plain accent colour.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-crumbs__item--current {
+  color: var(--nd-text-secondary);
+  text-shadow: none;
+}
+
+.nd-crumbs__link {
+  cursor: pointer;
+  color: var(--nd-text-muted);
+}
+
+.nd-crumbs__link:hover {
+  color: var(--nd-accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.nd-crumbs__link:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+
+.nd-crumbs__sep {
+  opacity: 0.5;
+  text-shadow: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 20 — PAGINATION
+   Consistent with the segmented/tab mono treatment. Current page = accent
+   text + subtle fill, no pill radius rounding.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-pagebtn {
+  border-radius: 2px;
+  min-height: 24px;
+}
+
+.nd-pagebtn:hover:not(:disabled) {
+  background: var(--nd-bg-hover);
+  color: var(--nd-text-primary);
+}
+
+.nd-pagebtn--current,
+.nd-pagebtn--current:hover {
+  color: var(--nd-accent-text);
+  background: var(--nd-accent-subtle);
+  border-radius: 2px;
+}
+
+.nd-pagebtn:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 21 — VIEW-OPTIONS PANEL (column manager popover)
+   Uses the same flat panel treatment as menus/modals.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.nd-viewopts__panel {
+  border-radius: 2px;
+  background: var(--nd-bg-raised);
+  border: 1px solid var(--nd-border-strong);
+  box-shadow: var(--nd-shadow-overlay);
+}
+
+.nd-viewopts__move {
+  border-radius: 2px;
+}
+
+.nd-viewopts__reset {
+  border-radius: 2px;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+}
+
+.nd-viewopts__reset:focus-visible,
+.nd-viewopts__move:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SECTION 22 — FOCUS RING CONSOLIDATION
+   The base nd-btn focus-visible is overridden in section 1 above. Here we
+   unify the outline pattern across all interactive controls that were given
+   box-shadow focus rings in components.css.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * Nav items and page buttons inherit from the old shared rule in components.css
+ * (which uses box-shadow). Override with the outline pattern so focus is
+ * consistent whether keyboard-navigating buttons, tabs, or nav items.
+ */
+.nd-navitem:focus-visible,
+.nd-seg__btn:focus-visible,
+.nd-pagebtn:focus-visible {
+  outline: 2px solid var(--nd-ring-color);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+
+/* ------------------------------------------------------------
+   FILTER FIELD / CONTROL CONTAINMENT
+   Measured defect: `.nt-filter-field--xl` declares `width: 240px`
+   but the `.nd-input` inside it declares `width: 320px`. The
+   wrapper is `flex: 0 0 auto`, so the flex bar lays the NEXT
+   field out at x=484 while the input paints to x=556 — a 72px
+   overlap on /clients, /devices, /licenses and /auth-events.
+   The empty input carries no text, so the text-overlap sweep
+   never saw it.
+   A control must never be wider than the field that measures it.
+   ------------------------------------------------------------ */
+.nt-filter-field > .nd-input,
+.nt-filter-field > input,
+.nt-filter-field > .nd-field,
+.nt-filter-field > .nd-search {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.nt-filter-field > * {
+  max-width: 100%;
+}
+
+/* The same 260px input also appears inside plain `.nt-w-180` /
+   `.nt-w-230` width utilities (/systems, /alerts), overlapping the
+   button that follows by 72px. Clamp every control to its
+   container — a field can be narrower than its declared width, but
+   it must never paint outside the box the layout measured. */
+.nd-input,
+.nd-select,
+.nd-field {
+  max-width: 100%;
+}
+
+/* ------------------------------------------------------------
+   A GRID TRACK GROWS TO ITS ITEM, SO max-width:100% CANNOT HOLD IT
+   `.nt-filter-field` is `display: grid` with an implicit `auto`
+   column. The 320px `.nd-input` inside made that column 320px wide,
+   so the input's own `max-width: 100%` resolved against 320px and
+   held nothing — the input painted 100px past a 220px field on
+   /clients, /devices, /licenses and /auth-events. The percentage
+   was never the problem; the track was. minmax(0, 1fr) refuses to
+   grow past the field, and then 100% means what it looks like.
+   ------------------------------------------------------------ */
+.nt-filter-field {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ── Panel action overflow ───────────────────────────────────────
+   Secondary panel actions (copy link / export CSV / download server
+   CSV) repeated verbatim on every section, costing a header row each.
+   Folded behind a "···" in the section corner. */
+.nt-action-overflow {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.nt-action-overflow__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  color: var(--nd-text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+/* Safari still paints the default disclosure triangle without this. */
+.nt-action-overflow__trigger::-webkit-details-marker {
+  display: none;
+}
+
+.nt-action-overflow__trigger:hover,
+.nt-action-overflow[open] > .nt-action-overflow__trigger {
+  color: var(--nd-text);
+  border-color: color-mix(in srgb, var(--nd-border) 80%, transparent);
+  background: color-mix(in srgb, var(--nd-surface-2) 60%, transparent);
+}
+
+.nt-action-overflow__trigger:focus-visible {
+  outline: 2px solid var(--nd-accent);
+  outline-offset: 1px;
+}
+
+/* A closed <details> hides its content with `content-visibility`, which
+   skips painting but still lays out absolutely-positioned descendants —
+   so the menu kept a real box (and stayed keyboard-focusable) while
+   invisible. Hide it outright. */
+.nt-action-overflow:not([open]) .nt-action-overflow__menu {
+  display: none;
+}
+
+.nt-action-overflow__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 180px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--nd-border);
+  background: var(--nd-surface-1);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 34%);
+}
+
+/* Actions inside the menu read as a list, not a button cluster. */
+.nt-action-overflow__menu > * {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+  margin: 0;
+}

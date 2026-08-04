@@ -32,14 +32,10 @@ export function InventoryTree({
   const navigate = useNavigate();
   const branchKey = (parentId: string | null) => parentId ?? '__root__';
   const [branches, setBranches] = useState<Record<string, BranchPage>>({});
-  const seededExpand = useRef(false);
-  const [expanded, setExpanded] = useState<Set<string>>(() => {
-    if (expandedIds && expandedIds.length > 0) {
-      seededExpand.current = true;
-      return new Set(expandedIds);
-    }
-    return new Set();
-  });
+  const seededExpand = useRef(Boolean(expandedIds && expandedIds.length > 0));
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    expandedIds && expandedIds.length > 0 ? new Set(expandedIds) : new Set(),
+  );
   // The root read starts out marked: the mount effect below owns it, and a
   // synchronous setState from an effect body is a cascading render. Seeding
   // the mark here means the first committed frame already shows the spinner
@@ -49,7 +45,9 @@ export function InventoryTree({
   const [focusId, setFocusId] = useState<string | null>(null);
   const refs = useRef(new Map<string, HTMLDivElement>());
   const onExpandedChangeRef = useRef(onExpandedChange);
-  onExpandedChangeRef.current = onExpandedChange;
+  useEffect(() => {
+    onExpandedChangeRef.current = onExpandedChange;
+  }, [onExpandedChange]);
 
   const publishExpanded = (next: Set<string>) => {
     onExpandedChangeRef.current?.([...next]);
@@ -241,7 +239,7 @@ export function InventoryTree({
           <Skeleton height={22} width="62%" />
           <Skeleton height={22} width="70%" />
         </div>
-        <span className="nt-hint-muted nt-chat-pending__label">NightDesk · inventory tree…</span>
+        <span className="nt-hint-muted nt-chat-pending__label">HPE Network Tools · inventory tree…</span>
       </div>
     );
   }

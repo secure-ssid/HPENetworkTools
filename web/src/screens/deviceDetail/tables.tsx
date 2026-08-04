@@ -121,8 +121,10 @@ export function DetailRow({
  *
  * Multi-select raises **Export selected**, **Copy ports** (unique
  * newline-joined port names — Devices **Copy serials** pattern), **Copy
- * selection link** (`?ports=` of marked port names; clearable chip while
- * active — Loop 187), and Clear.
+ * neighbours** (unique newline-joined LLDP/CDP far-end names when port names
+ * alone are sparse for a handoff — Overview/Alerts **Copy titles** pattern;
+ * Loop 237), **Copy selection link** (`?ports=` of marked port names;
+ * clearable chip while active — Loop 187), and Clear.
  */
 export function PortTable({
   rows,
@@ -323,7 +325,7 @@ export function PortTable({
         >
           <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
           <span className="nt-configure-bulk-bar__hint">
-            export, copy port names, or share a selection link for only the interfaces you marked —
+            export, copy port or neighbour names, or share a selection link for only the interfaces you marked —
             full list export stays above
           </span>
           <span className="nt-configure-bulk-bar__actions">
@@ -398,7 +400,8 @@ export function PortTable({
                   ];
                   if (ports.length === 0) {
                     toast('No names on the selected ports', {
-                      description: 'Those rows did not publish a port name — export CSV instead.',
+                      description:
+                        'Those rows did not publish a port name — use Copy neighbours or export CSV instead.',
                       tone: 'info',
                     });
                     return;
@@ -420,6 +423,53 @@ export function PortTable({
               }}
             >
               Copy ports
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = viewRows.filter((p) => selected.has(p.name));
+                  if (picked.length === 0) {
+                    toast('No selected ports still in view', {
+                      description: 'Clear selection or refresh the device.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const neighbours = [
+                    ...new Set(
+                      picked
+                        .map((p) => (p.neighbour ?? '').trim())
+                        .filter((name) => name && name !== '—'),
+                    ),
+                  ];
+                  if (neighbours.length === 0) {
+                    toast('No neighbours on the selected ports', {
+                      description:
+                        'Those rows did not publish a far-end name — use Copy ports or export CSV instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const text = neighbours.join('\n');
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast(`Copied ${countOf(neighbours.length, 'neighbour')}`, {
+                      description:
+                        neighbours.length < picked.length
+                          ? `${picked.length - neighbours.length} selected without a neighbour skipped`
+                          : 'newline-joined · paste into a ticket or change window',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy neighbours', { description: text, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy neighbours
             </Button>
             <Button
               variant="ghost"

@@ -496,7 +496,7 @@ export default function Licenses() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · entitlement
+              HPE Network Tools · entitlement
             </span>
             <Badge plane>GreenLake</Badge>
             {/* LIVE on pure live and licenses blend alike — stamp alone is easy to miss. */}
@@ -604,14 +604,17 @@ export default function Licenses() {
         }
       />
 
-      <div className="nt-plane-theater" role="note">NightDesk · entitlement theater · subscription health owns hue</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · entitlement theater · subscription health owns hue</div>
+      <div className="nt-status-ribbon nt-licenses-ribbon" role="status" aria-label="Licenses status ribbon">
+        <span className="nt-status-ribbon__item">entitlements · health owns hue</span>
+        <span className="nt-status-ribbon__item">subscription capacity</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
 
       {/* Five tiles on the authored path; a payload that carries fewer lays them
           out evenly rather than leaving a dead track in the grid. */}
       <StatRow stats={data.stats} />
 
-      <VisualReferencePanel target={{ kind: 'estate', id: 'licenses' }} editable />
-      <ConfigRecommendationsPanel title="Licence / inventory recommendations" limit={8} />
 
       <div className="nt-filter-bar">
         <div className="nt-filter-field nt-filter-field--xl nt-w-220">
@@ -1168,6 +1171,13 @@ export default function Licenses() {
           ) : null}
         </div>
       </div>
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'estate', id: 'licenses' }} editable />
+      <ConfigRecommendationsPanel title="Licence / inventory recommendations" category="inventory" limit={8} />
     </div>
   );
 }

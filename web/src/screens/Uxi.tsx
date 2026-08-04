@@ -60,7 +60,6 @@ import { StatRow } from './StatRow';
 import { exportTableCsv } from '../lib/csv';
 import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { VisualReferencePanel } from '../components/VisualReferencePanel';
-import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 
 const UXI_PAGE = 100;
 
@@ -537,7 +536,7 @@ function UxiView({
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · experience
+              HPE Network Tools · experience
             </span>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <div className="nt-filter-field nt-min-w-160">
@@ -640,7 +639,12 @@ function UxiView({
         }
       />
 
-      <div className="nt-plane-theater" role="note">NightDesk · UXI ECG · sensor fleet · synthetic issues</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · UXI ECG · sensor fleet · synthetic issues</div>
+      <div className="nt-status-ribbon nt-uxi-ribbon" role="status" aria-label="UXI status ribbon">
+        <span className="nt-status-ribbon__item">UXI ECG · sensors</span>
+        <span className="nt-status-ribbon__item">synthetic issues</span>
+        <span className="nt-status-ribbon__item">plane monochrome</span>
+      </div>
 
       <StatRow stats={stats} />
 
@@ -701,8 +705,6 @@ function UxiView({
         </div>
       ) : null}
 
-      <VisualReferencePanel target={{ kind: 'connector', id: 'uxi', plane: 'UXI' }} />
-      <ConfigRecommendationsPanel title="UXI sensor recommendations" limit={6} />
 
       {missingSources.length > 0 ? (
         <Alert tone="warning" title="UXI is linked but contributed no sensor read this cycle">
@@ -1005,7 +1007,7 @@ function UxiView({
                   data-tone={issuesTone(sensor)}
                 >
                   <div className="nt-uxi-detail__brand" aria-hidden>
-                    NightDesk · UXI spine
+                    HPE Network Tools · UXI spine
                   </div>
                   <div className="nt-fs-13-primary nt-pad-bottom-6">{sensor.name}</div>
                   {sensor.issues.length === 0 ? (
@@ -1032,6 +1034,12 @@ function UxiView({
           )}
         </div>
       )}
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'connector', id: 'uxi', plane: 'UXI' }} />
     </div>
   );
 }

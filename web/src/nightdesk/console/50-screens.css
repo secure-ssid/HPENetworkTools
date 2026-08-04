@@ -1,0 +1,1171 @@
+/*
+ * console/50-screens.css — per-screen layout and composition.
+ *
+ * The problem this file solves: the historical components.css rendered every
+ * screen as the same symmetric grid of rounded, bordered, gradient-lit cards.
+ * Fifty cards on one screen reads as decoration, not instrumentation. Worse,
+ * it reads as *generated* — a template instantiated without judgment about
+ * what the data actually needs.
+ *
+ * The replacement approach: each screen's layout follows the shape of its own
+ * data. Structure comes from hairline rules, whitespace and column asymmetry —
+ * the way a man page or `systemctl status` separates sections — so the eye
+ * lands on values, not on chrome.
+ *
+ * Rules this file obeys (enforced by the task brief):
+ *   - Only screen-scoped classes (.nt-overview*, .nt-device*, .nt-site*,
+ *     .nt-topology*, .nt-topo*, .nt-alerts*, .nt-launchpad*, .nt-plane-mini,
+ *     .nt-change-strip*, .nt-changelog-row, .nt-rowlink, .nt-incident-spine*,
+ *     .nt-stat-grid, .nt-fact-row*, .nt-hero-split, .nt-split-site,
+ *     .nt-configure__col, and the spacing utilities those screens use).
+ *   - No hardcoded hex/rgb except transparent.
+ *   - No !important.
+ *   - Both themes: dark default, light via html[data-nd-theme='light'].
+ *   - Do NOT restyle .nd-btn, .nd-table, .nd-stat, .nd-card — other layers
+ *     own those; touching them here would silently override that work.
+ *
+ * Loaded last (after components.css and all earlier console layers), so
+ * specificity wins come free — use them only where the old card era actively
+ * fought the new direction.
+ *
+ * Organisation: Overview → Row-links (shared) → Management planes → Change log
+ * → Launchpad → Section labels → Device detail → Site detail → Topology →
+ * Alerts → Devices/Sites lists → Utility density fixes → Responsive →
+ * Light theme.
+ */
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 1. OVERVIEW — single pane of glass
+ *
+ * Reading order: stat bar → "needs you now" + estate (wide) → planes + log
+ * + launchpad (narrow). The right column is support context, not equal peer.
+ * Dropping the equal 50/50 split is what makes the screen stop looking
+ * templated.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Shell wrapper — no box, just breathing room at the top. */
+.nt-overview-shell {
+  padding-top: 4px;
+}
+
+/* Primary two-column layout. Left gets ~62% — the alerts and site table are
+   the evidence; right is the management rail and changelog. The 340px floor
+   keeps the rail legible on the narrowest supported viewport. */
+.nt-overview__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(320px, 1fr);
+  gap: 0 40px;
+  align-items: start;
+}
+
+/* Stat grid — a horizontal ledger, not a tile mosaic. Enough columns to show
+   all five stats without wrapping; each stat gets equal width. No shadow wash. */
+.nt-overview .nt-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  padding: 0 0 14px;
+  filter: none;
+  border-bottom: var(--nd-rule);
+  margin-bottom: 18px;
+}
+
+/* When the stat row is inside a section panel that adds its own spacing,
+   pull the bottom divider back so sections don't double-stack whitespace. */
+.nt-overview .nt-stat-grid + * {
+  margin-top: 0;
+}
+
+/* Section kicker (the brand micro-label above each major block) */
+.nt-overview-shell .nt-systems-brand {
+  display: none; /* redundant context — the section heading is enough */
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 2. ROW LINKS — shared across all screens
+ *
+ * A rowlink is a list entry in a TUI: full-width hit area, hairline separator,
+ * quiet by default, accent left-rule on hover/focus. No card, no shadow,
+ * no border-radius, no transform. The outer border-radius from the wave era
+ * is the key thing to remove — it's what makes every row read as a tile.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-rowlink,
+button.nt-rowlink,
+a.nt-rowlink {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: var(--nd-rule);
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  padding: 8px 8px 8px 10px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    border-left-color var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-rowlink:hover,
+.nt-rowlink:focus-visible {
+  background: color-mix(in srgb, var(--nd-accent) 6%, transparent);
+  border-left-color: var(--nd-accent);
+  outline: none;
+  box-shadow: none;
+}
+
+/* Tone indicators remain as accent left-rule, overriding the previous
+   box-shadow approach (which required a card to be visible). */
+.nt-rowlink[data-tone="danger"] {
+  border-left-color: color-mix(in srgb, var(--nd-danger) 75%, transparent);
+}
+.nt-rowlink[data-tone="warning"] {
+  border-left-color: color-mix(in srgb, var(--nd-warning) 70%, transparent);
+}
+
+/* Launchpad rows are rowlinks — inherit the TUI style, override the
+   residual border-radius and box-shadow the wave era added. */
+.nt-rowlink.nt-launchpad-row,
+.nt-launchpad__tile {
+  border-radius: 0;
+  box-shadow: none;
+  padding: 9px 8px 9px 10px;
+}
+
+.nt-rowlink.nt-launchpad-row:hover,
+.nt-launchpad__tile:hover {
+  box-shadow: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 3. MANAGEMENT PLANES — the right-column rail
+ *
+ * Planes are a short list of sources the portal talks to. They belong in a
+ * dense strip, not individual cards. The ECG pulse (inset left border) is the
+ * right signal — it indicates a hot plane without requiring a whole box.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Strip all card chrome. The border-bottom hairline creates the list. */
+.nt-plane-mini {
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule);
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 8px 0 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Remove the overview-specific box-shadow hover that components.css adds. */
+.nt-overview .nt-plane-mini {
+  border-radius: 0;
+  transition:
+    background var(--nd-duration-fast) var(--nd-ease),
+    border-left-color var(--nd-duration-fast) var(--nd-ease);
+}
+.nt-overview .nt-plane-mini:hover {
+  box-shadow: none;
+  border-color: inherit;
+  border-left-color: var(--nd-accent);
+  background: color-mix(in srgb, var(--nd-accent) 5%, transparent);
+}
+
+/* ECG hot plane: left pulse stays, gradient wash goes. */
+.nt-plane-mini--ecg {
+  border-left-color: color-mix(in srgb, var(--nd-warning) 80%, transparent);
+  background: none;
+}
+
+/* A plane labelled "more / connect" is a row link, not a card. */
+.nt-plane-mini--more {
+  color: var(--nd-accent-text);
+  cursor: pointer;
+}
+
+/* The ID block and sync label inside a plane row. */
+.nt-plane-mini__id {
+  flex: 1;
+  min-width: 0;
+}
+.nt-plane-mini__sync {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  color: var(--nd-text-muted);
+  white-space: nowrap;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 4. CHANGE LOG / CHANGE STRIP
+ *
+ * The change strip is a compact event tape — a narrow timeline of recent
+ * config deltas. It should read like a diff header, not a highlighted card.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-change-strip {
+  background: none;
+  border: 0;
+  border-top: var(--nd-rule);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 8px 0;
+  gap: 6px;
+}
+
+.nt-change-strip__kicker {
+  font-family: var(--nd-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  font-weight: 400; /* un-bold from the card era's accent hero treatment */
+  margin-right: 4px;
+}
+
+/* Chips stay small and readable; remove the pill border — the kicker already
+   groups them visually. */
+.nt-change-strip__chip {
+  border: 1px solid var(--nd-border-subtle);
+  background: none;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 11.5px;
+  font-family: var(--nd-font-mono);
+}
+
+.nt-change-strip__note {
+  font-size: 10.5px;
+  color: var(--nd-text-faint);
+}
+
+/* Changelog row (individual log entries below the strip) */
+.nt-changelog-row {
+  display: flex;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: var(--nd-rule);
+  border-radius: 0;
+  background: transparent;
+  transition: background var(--nd-duration-fast) var(--nd-ease);
+}
+
+.nt-changelog-row:hover {
+  background: color-mix(in srgb, var(--nd-accent) 4%, transparent);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 5. LAUNCHPAD
+ *
+ * The launchpad is a short list of quick-jump destinations. Each tile is a
+ * rowlink — already covered in section 2. The container itself needs no
+ * frame; the hairline rows are the structure.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-launchpad {
+  display: flex;
+  flex-direction: column;
+  /* No border, no background — the row hairlines are enough. */
+}
+
+.nt-launchpad-row__label {
+  /* Override the card era's tight tracking — let it breathe slightly. */
+  letter-spacing: 0.01em;
+  text-transform: none;
+  font-size: var(--nd-text-12);
+  color: var(--nd-text-primary);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 6. SECTION LABELS — .nt-plane-theater
+ *
+ * In the card era this was a glowing pill acting as a section badge. In the
+ * console era it is a quiet hairline label: same information, one-tenth the
+ * visual weight. The `role="note"` text content is typically hidden via CSS
+ * height:0 or used only for the before/after pseudo — we preserve that but
+ * kill the pill chrome entirely.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-plane-theater {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+  font-size: 0;
+  pointer-events: none;
+}
+
+.nt-plane-theater::before,
+.nt-plane-theater::after {
+  display: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 7. DEVICE DETAIL — terminal + config for one device
+ *
+ * Identity block at the top: dense, no hero banner, no gradient backing.
+ * Wide main column (telemetry, terminal, config); narrow identity rail.
+ * The ratio should not be 50/50 — the main column IS the screen.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-device-detail-shell {
+  gap: 0;
+}
+
+/* Identity block — flatten the hero. Name, state, plane in one dense line.
+   No gradient, no panel border. A ruled bottom sets the section boundary. */
+.nt-device-hero,
+.nt-hero-split.nt-device-hero,
+.nt-device-hero.nt-panel-glass {
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule-strong);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0 0 14px;
+  margin-bottom: 16px;
+}
+
+html[data-nd-theme='light'] .nt-device-hero,
+html[data-nd-theme='light'] .nt-hero-split.nt-device-hero,
+html[data-nd-theme='light'] .nt-device-hero.nt-panel-glass {
+  background: none;
+}
+
+/* The heading in the hero — slightly larger than body but not a page-title. */
+.nt-device-hero .nd-heading,
+.nt-hero-split.nt-device-hero .nd-heading {
+  font-size: var(--nd-text-18);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+/* Meta line (model · site · IP) — monospace, muted, not italic */
+.nt-device-hero .nt-device-hero__meta,
+.nt-device-hero .nt-wrap-10-mt8 {
+  margin-top: 5px;
+  gap: 8px;
+}
+
+/* Stat row below the hero — horizontal tape, not tiled */
+.nt-device-detail-shell .nt-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  padding: 12px 0;
+  border-bottom: var(--nd-rule);
+  margin-bottom: 16px;
+  filter: none;
+}
+
+/* Two-column layout: main gets most of the width.
+   Rail at ~260px is wide enough for a KV list but keeps the main column in
+   clear command of the page. */
+.nt-device-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 0 32px;
+  align-items: start;
+  margin-top: 0;
+}
+
+/* Main column: no accent hairline at the top — the device stat row already
+   draws the section boundary. */
+.nt-device-layout__main {
+  min-width: 0;
+}
+.nt-device-layout__main::before {
+  display: none;
+}
+
+/* Rail: a simple ruled left edge — no gradient background. */
+.nt-device-layout__rail {
+  border-left: var(--nd-rule);
+  background: none;
+  padding-left: 20px;
+  min-width: 0;
+}
+
+/* Fact rows in the identity rail — tighter vertical rhythm than the default;
+   keys left-aligned in a fixed column, values flush left beside them. */
+.nt-device-fact.nt-fact-row,
+.nt-fact-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 0 10px;
+  padding: 5px 0;
+  border-bottom: var(--nd-rule);
+  align-items: baseline;
+  font-size: var(--nd-text-12);
+  background: none;
+  border-radius: 0;
+}
+
+.nt-fact-row__k,
+.nt-device-fact__label {
+  font-family: var(--nd-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--nd-text-muted);
+  width: auto;
+  flex: unset;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-top: 1px;
+}
+
+.nt-fact-row__v,
+.nt-device-fact__value {
+  font-family: var(--nd-font-mono);
+  font-size: 11.5px;
+  color: var(--nd-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.nt-fact-row__v[data-tone="danger"],
+.nt-device-fact__value[data-tone="danger"] { color: var(--nd-danger); }
+.nt-fact-row__v[data-tone="warning"],
+.nt-device-fact__value[data-tone="warning"] { color: var(--nd-warning); }
+.nt-fact-row__v[data-tone="success"],
+.nt-device-fact__value[data-tone="success"] { color: var(--nd-success); }
+
+/* Port table in device detail — screen-scoped width reset. */
+.nt-port-table {
+  width: 100%;
+}
+
+/* Incident spine — breadcrumb trail for the alert → device → ticket workflow.
+   Plain inline text, no box. */
+.nt-incident-spine {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 6px 0 10px;
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule);
+  margin-bottom: 14px;
+  border-radius: 0;
+}
+
+.nt-incident-spine__step {
+  font-family: var(--nd-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--nd-text-faint);
+  padding: 0 6px;
+}
+
+.nt-incident-spine__step[data-active="true"] {
+  color: var(--nd-text-primary);
+  font-weight: 500;
+}
+
+.nt-incident-spine__chev {
+  color: var(--nd-text-faint);
+  font-size: 10px;
+}
+
+/* Raise-ticket action link — inline, no decorative container. */
+.nt-raise-ticket {
+  background: none;
+  border: 1px solid var(--nd-border-default);
+  border-radius: 3px;
+  padding: 4px 10px;
+}
+.nt-raise-ticket:hover,
+.nt-raise-ticket:focus-visible {
+  background: color-mix(in srgb, var(--nd-accent) 8%, transparent);
+  border-color: var(--nd-accent);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 8. SITE DETAIL — topology + estate slice for one site
+ *
+ * Same philosophy as device detail: identity first (dense mono block), then
+ * the main column (topology, device list) and a narrow facts rail. The
+ * overview's 1.6/1 ratio works here too; site topology wants the wider lane.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-site-detail-shell {
+  gap: 0;
+}
+
+/* Two-column layout for site detail — wider left (topology + devices). */
+.nt-split-site {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(240px, 1fr);
+  gap: 0 36px;
+  align-items: start;
+}
+
+/* Site fact grid (the short KV block in the rail) — align with device facts. */
+.nt-site-fact-grid {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 0;
+  align-items: baseline;
+}
+
+/* Rule-separated fact rows inside the site detail — same rhythm as device. */
+.nt-site-detail-shell .nt-rule-row {
+  border-bottom: var(--nd-rule);
+  padding: 5px 0;
+}
+
+/* Stat grid in site detail — horizontal tape like device. */
+.nt-site-detail-shell .nt-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 0;
+  padding: 10px 0 14px;
+  border-bottom: var(--nd-rule);
+  margin-bottom: 16px;
+  filter: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 9. TOPOLOGY — graph theater + estate cards
+ *
+ * The 3D canvas is JS-coloured; we only style its chrome. The estate list
+ * beside the canvas is the primary browsable content — it should read as a
+ * dense list, not a mosaic of equal tiles.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Shell */
+.nt-topology-shell {
+  gap: 0;
+}
+
+/* Topology grid — auto-fit columns for the estate list; the 3D canvas takes
+   its own row above the grid when in 3D mode (JS-controlled width). */
+.nt-topology-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px 12px;
+  align-items: start;
+}
+
+/* Banner rows (grouped labels in the grid, e.g. "Core", "Edge") — a subtle
+   dividing row, not a card. */
+.nt-topology-banner {
+  grid-column: 1 / -1;
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule);
+  border-radius: 0;
+  padding: 6px 0;
+  gap: 4px;
+}
+
+.nt-topology-banner--dashed {
+  border-bottom-style: dashed;
+}
+
+/* Mode switch — keeps the pill styling from the base layer (it's a control,
+   not a card), but defer to what 40-controls owns. No override needed. */
+
+/* Estate site cards — no box, just a hairline bottom and a left accent on
+   expand. The card container was causing the "mosaic of equal rectangles"
+   problem. Convert to a compact list entry. */
+.nt-topo-site-card,
+.nt-topo-site-card.nt-site-card {
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule);
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.nt-topo-site-card:hover,
+.nt-topo-site-card:focus-within {
+  background: color-mix(in srgb, var(--nd-accent) 5%, transparent);
+  border-left-color: var(--nd-accent);
+  box-shadow: none;
+}
+
+/* Site card head — the always-visible summary row */
+.nt-topo-site-card__head {
+  padding: 8px 8px 8px 10px;
+  gap: 8px;
+}
+
+/* Site card body — indented slightly to show hierarchy */
+.nt-topo-card__body {
+  padding: 4px 8px 10px 22px;
+  border-top: var(--nd-rule);
+}
+
+/* Node rows inside an expanded site card */
+.nt-topo-node {
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule);
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  padding: 5px 4px 5px 8px;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.nt-topo-node:hover,
+.nt-topo-node:focus-visible {
+  background: color-mix(in srgb, var(--nd-accent) 6%, transparent);
+  border-left-color: color-mix(in srgb, var(--nd-accent) 60%, transparent);
+  box-shadow: none;
+}
+
+/* 3D canvas container — keep the depth/border, it IS the viewport. Just
+   remove the gradient wash that fights the JS-rendered scene inside. */
+.nt-topo3d {
+  border-radius: 4px;
+  border: var(--nd-rule-strong);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--nd-accent) 8%, transparent);
+  background: var(--nd-bg-inset);
+}
+
+/* HUD overlays on the 3D canvas — keep blur but remove the inner glow that
+   made them look like cards floating inside a card. */
+.nt-topo3d__glass {
+  border: var(--nd-rule);
+  background: color-mix(in srgb, var(--nd-bg-raised) 88%, transparent);
+  box-shadow: none;
+  border-radius: 3px;
+  padding: 8px 10px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 10. ALERTS — signal theater
+ *
+ * The alerts screen is the primary triage surface. It should read like a
+ * structured log: severity left-rules on the rows, filters as a compact bar,
+ * no decorative containers around the filter area.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-alerts-shell {
+  gap: 0;
+}
+
+/* Toolbar / filter bar above the alerts table */
+.nt-alerts__toolbar {
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule);
+  border-radius: 0;
+  padding: 0 0 10px;
+  margin-bottom: 10px;
+  box-shadow: none;
+}
+
+/* Tab strip — flat underline tabs, no pill background */
+.nt-alerts__tabs {
+  background: none;
+  border: 0;
+  border-bottom: var(--nd-rule);
+  border-radius: 0;
+  padding: 0;
+}
+
+/* Ack/write-ritual block — keep the accent border (it signals a write
+   action) but drop the gradient background that made it look like a card. */
+.nt-alerts__ack.nt-write-ritual {
+  background: color-mix(in srgb, var(--nd-accent) 5%, transparent);
+  border-radius: 3px;
+}
+
+/* Alert incident spine */
+.nt-alert-spine .nt-incident-spine__step[data-active="true"] {
+  color: var(--nd-danger);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 11. DEVICES LIST
+ *
+ * A dense searchable fleet table. The screen adds very little chrome beyond
+ * the filter bar and chip rows — both handled here to keep them flat.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-devices-shell {
+  gap: 0;
+}
+
+/* Sticky filter bar — flat glass, no card border. */
+.nt-filter-bar.nt-sticky-filters {
+  background: color-mix(in srgb, var(--nd-bg-canvas) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: var(--nd-rule);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 12. SITES LIST
+ *
+ * Similar to devices. The health-bar column makes the rows self-explanatory;
+ * no decorative chrome needed.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.nt-sites-shell {
+  gap: 0;
+}
+
+.nt-sites-stack {
+  gap: 14px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 13. SECTION PANELS (shared)
+ *
+ * .nt-section-panel is used as a layout slot, not a visual container.
+ * The 00-foundation layer already strips its box; here we just ensure the
+ * spacing between panels reads as whitespace + rule, not as gap between cards.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Panels stack with a ruled top, not a gap — adjacent panels feel continuous. */
+.nt-section-panel + .nt-section-panel {
+  margin-top: 0;
+  padding-top: 22px;
+  border-top: var(--nd-rule);
+}
+
+/* The first panel in a shell wrapper has no top rule. */
+.nt-overview-shell > .nt-section-panel:first-child,
+.nt-device-detail-shell > .nt-section-panel:first-child,
+.nt-site-detail-shell > .nt-section-panel:first-child,
+.nt-topology-shell > .nt-section-panel:first-child,
+.nt-alerts-shell > .nt-section-panel:first-child,
+.nt-devices-shell > .nt-section-panel:first-child,
+.nt-sites-shell > .nt-section-panel:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 14. UTILITY DENSITY — spacing and layout helpers used by screens
+ *
+ * The screens use a large set of ad-hoc utility classes. This section keeps
+ * them coherent with the new density without redefining each class wholesale.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Row helpers — ensure flex basics without imposing extra chrome. */
+.nt-row-between-12 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.nt-inline-center-8 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Panel sub-header row that appears above a table with a heading + copy link. */
+.nt-row-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Configure bulk action bar — lives at the bottom of a select-enabled table.
+   A subtle frosted bar, not a card. The wave era gave it a border + background
+   that made it look like a modal footer. */
+.nt-configure-bulk-bar {
+  background: color-mix(in srgb, var(--nd-bg-raised) 80%, transparent);
+  backdrop-filter: blur(8px);
+  border: var(--nd-rule);
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+html[data-nd-theme='light'] .nt-configure-bulk-bar {
+  background: color-mix(in srgb, var(--nd-bg-surface) 90%, transparent);
+}
+
+/* Chip rows — filter/toggle chips. Keep them inline and quiet. */
+.nt-chip-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Panel (silenced, etc.) used inside detail screens — a quiet inset box.
+   Reduced border-radius to avoid looking like an interior card-in-card. */
+.nt-panel {
+  border-radius: 3px;
+}
+
+/* Health bar — thin data viz bar. Keep it compact. */
+.nt-health-bar,
+.nt-health-track {
+  border-radius: 2px;
+}
+
+/* Stack defaults — ensure the base gap works across both density modes. */
+.nt-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nd-block-gap);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 15. RESPONSIVE
+ *
+ * Below 1100px the two-column detail screens stack. Below 760px (--nd-bp-md)
+ * the overview right column also folds under the left. Below ~600px the stat
+ * grids compress to 3 columns.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 1100px) {
+  .nt-device-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .nt-device-layout__rail {
+    border-left: 0;
+    border-top: var(--nd-rule);
+    padding-left: 0;
+    padding-top: 16px;
+    margin-top: 16px;
+  }
+
+  .nt-split-site {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 960px) {
+  .nt-overview__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .nt-overview .nt-stat-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  /* md breakpoint — stat grids compress */
+  .nt-device-detail-shell .nt-stat-grid,
+  .nt-site-detail-shell .nt-stat-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .nt-topology-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .nt-overview .nt-stat-grid,
+  .nt-device-detail-shell .nt-stat-grid,
+  .nt-site-detail-shell .nt-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 16. LIGHT THEME OVERRIDES
+ *
+ * Token values swap automatically via the html[data-nd-theme='light'] block
+ * in tokens.css, so most rules need no override here. The exceptions are
+ * any place we used color-mix() or transparency that reads differently on a
+ * light surface.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+html[data-nd-theme='light'] .nt-plane-mini--ecg {
+  border-left-color: color-mix(in srgb, var(--nd-warning) 70%, transparent);
+}
+
+html[data-nd-theme='light'] .nt-topo-site-card:hover,
+html[data-nd-theme='light'] .nt-topo-site-card:focus-within {
+  background: color-mix(in srgb, var(--nd-accent) 6%, transparent);
+}
+
+html[data-nd-theme='light'] .nt-topo3d {
+  background: var(--nd-bg-inset);
+}
+
+html[data-nd-theme='light'] .nt-topo3d__glass {
+  background: color-mix(in srgb, var(--nd-bg-surface) 92%, transparent);
+}
+
+html[data-nd-theme='light'] .nt-filter-bar.nt-sticky-filters {
+  background: color-mix(in srgb, var(--nd-bg-canvas) 95%, transparent);
+}
+
+html[data-nd-theme='light'] .nt-rowlink:hover,
+html[data-nd-theme='light'] .nt-rowlink:focus-visible {
+  background: color-mix(in srgb, var(--nd-accent) 8%, transparent);
+}
+
+html[data-nd-theme='light'] .nt-changelog-row:hover {
+  background: color-mix(in srgb, var(--nd-accent) 6%, transparent);
+}
+
+html[data-nd-theme='light'] .nt-device-hero,
+html[data-nd-theme='light'] .nt-hero-split.nt-device-hero {
+  background: none;
+  border-bottom-color: var(--nd-border-default);
+}
+
+html[data-nd-theme='light'] .nt-topo-node:hover,
+html[data-nd-theme='light'] .nt-topo-node:focus-visible {
+  background: color-mix(in srgb, var(--nd-accent) 8%, transparent);
+}
+
+html[data-nd-theme='light'] .nt-topology-banner {
+  border-bottom-color: var(--nd-border-default);
+}
+
+html[data-nd-theme='light'] .nt-overview .nt-plane-mini:hover {
+  background: color-mix(in srgb, var(--nd-accent) 7%, transparent);
+}
+
+
+/* ============================================================
+   ROW-LINK LAYOUT RESTATEMENT
+   ------------------------------------------------------------
+   Measured defect: every `.nt-configure-row` and
+   `.nt-device-lane-row` computed `display: block` with 2 of its
+   children left as raw inline spans, so adjacent labels printed
+   with a 0px gap and ran together as one word:
+       "AP-735-US" + "Lab"      -> "AP-735-USLab"
+       "9004LTE-US" + "Multiple"-> "9004LTE-USMultiple"
+       "AP47" + "Primary Site"  -> "AP47Primary Site"
+   27 such jammed pairs across /devices and /configure.
+
+   Cause: components.css declares a grid for each row variant
+   (`.nt-configure-row` 4-col at 39266, `.nt-device-lane-row`
+   2-col at 21901), but a LATER blanket rule — Wave 20nr's
+   `.nt-rowlink { display: block }` (44844) — has equal
+   single-class specificity and therefore wins on source order,
+   flattening every variant's grid. Adding whitespace in JSX
+   would not fix it: the row would still be an unstructured
+   block, and the columns would stay collapsed.
+
+   Fix: restate each variant's layout at `.nt-rowlink.<variant>`
+   (0,2,0) so no future single-class wave can flatten it again.
+   Column tracks follow the CURRENT markup, not the stale legacy
+   defs — `.nt-device-lane-row` has grown to 3 children since its
+   2-col grid was authored.
+   ============================================================ */
+
+/* /configure — the row sits in a ~589px column, so a flat 4-up
+   table overflows its tracks (measured: content wants 649px) and
+   the cells bleed into each other. Two lines instead:
+       line 1:  id · profile            [actions]
+       line 2:  detail summary          [   "   ]
+   Same height as the broken block render, no overflow. */
+.nt-rowlink.nt-configure-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 12px;
+  row-gap: 2px;
+  width: 100%;
+  text-align: left;
+}
+.nt-rowlink.nt-configure-row > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.nt-rowlink.nt-configure-row > .nt-configure-row__name {
+  grid-column: 1;
+  grid-row: 1;
+}
+.nt-rowlink.nt-configure-row > .nt-configure-row__secondary {
+  grid-column: 2;
+  grid-row: 1;
+}
+.nt-rowlink.nt-configure-row > .nt-configure-row__summary {
+  grid-column: 1 / 3;
+  grid-row: 2;
+}
+.nt-rowlink.nt-configure-row > .nt-configure-row__actions {
+  grid-column: 3;
+  grid-row: 1 / -1;
+  align-self: center;
+}
+
+/* Narrow: no room for two columns of identity, stack them. */
+@media (max-width: 760px) {
+  .nt-rowlink.nt-configure-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .nt-rowlink.nt-configure-row > .nt-configure-row__secondary {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .nt-rowlink.nt-configure-row > .nt-configure-row__summary {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .nt-rowlink.nt-configure-row > .nt-configure-row__actions {
+    grid-column: 2;
+  }
+}
+
+/* /devices lane tile — name+state on line 1, model · site on line 2.
+   Kept to two lines: the lane column is ~180px and a third line
+   would cost a full row of vertical space per device. */
+.nt-rowlink.nt-device-lane-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 6px;
+  row-gap: 2px;
+  width: 100%;
+  text-align: left;
+}
+.nt-rowlink.nt-device-lane-row > :first-child {
+  grid-column: 1 / -1;
+}
+.nt-rowlink.nt-device-lane-row > * {
+  min-width: 0;
+}
+/* Separator between model and site — matches the ` · ` idiom used
+   in the configure/alert summaries. Structural selector because the
+   site span only carries generic utility classes. */
+.nt-rowlink.nt-device-lane-row > :nth-child(3)::before {
+  content: '· ';
+  opacity: 0.55;
+}
+
+/* ------------------------------------------------------------
+   PRIMARY-OVER-SECONDARY CELL IDIOM
+   `.nt-flex-1` is a flex ITEM utility (`flex: 1; min-width: 0`) —
+   it sets no `display`, so it computes to `block` and any inline
+   children inside it butt together with no separation:
+       "Primary Site" + "3 devices · 3 APs"
+        -> "Primary Site3 devices · 3 APs"
+   Four call sites use it as a two-line identity cell
+   (mist sle / licenses / rogues x2). Stack it wherever the
+   primary/secondary type pair is present, rather than restyling
+   the shared `.nt-flex-1` utility for every consumer.
+   ------------------------------------------------------------ */
+.nt-flex-1:has(> .nt-fs-12-pri) {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* ------------------------------------------------------------
+   "Where a change can go" capability rows
+   Measured defect: rows were flex, and the plane label box was
+   sized inconsistently per row — 114px for "HPE Aruba Central",
+   145px for "Mist", but only 47px for "GreenLake", whose
+   uppercased label then overflowed into the note and printed as
+   "GREENLAKEpayload pre-filled in the plane console". Labels
+   also failed to line up as a column.
+   The panel is ~374px wide, so plane + note + badge cannot share
+   one line; "HPE Aruba Central" already wrapped to two lines.
+   Two explicit lines instead: name + mode badge, then the note.
+   ------------------------------------------------------------ */
+.nt-configure-capability {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 10px;
+  row-gap: 1px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+}
+.nt-configure-capability > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.nt-configure-capability > .nt-configure-capability__plane {
+  grid-column: 1;
+  grid-row: 1;
+}
+.nt-configure-capability > .nt-configure-capability__note {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  /* Legacy right-aligns the note with `margin-left: auto` for the
+     old single-line flex row. On its own line that pushed a 174px
+     note to the far right, away from the name it describes. */
+  margin-left: 0;
+  margin-right: auto;
+  text-align: left;
+}
+.nt-configure-capability > .nd-badge {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  justify-self: end;
+}
+
+/* ------------------------------------------------------------
+   CHANGE STRIP — ONE STATUS LINE, NOT A CENTRED POSTER
+   `.nt-change-strip` was a centred flex column: a 1017x106px band
+   holding four items each ~130px wide, so 887px of horizontal room
+   went unused while the band cost 106px of height. The kicker, the
+   delta chips and the provenance note are one reading; render them
+   as a single line the way the rest of the console reads.
+   ------------------------------------------------------------ */
+.nt-change-strip {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  text-align: left;
+  padding: 4px 0;
+}
+
+.nt-change-strip__kicker {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.nt-change-strip__note {
+  margin-left: auto;
+  text-align: right;
+  flex: 0 1 auto;
+}
+
+/* Diff lines are `pre-wrap`, so they wrap at spaces but a single long
+   token (an evidence id, a hostname) still runs past the panel edge.
+   Break inside the token rather than bleed. */
+.nt-diff-line {
+  overflow-wrap: anywhere;
+}

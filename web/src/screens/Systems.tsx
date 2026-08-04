@@ -219,7 +219,6 @@ export function systemsPlaneKey(view: {
   if (id) return id;
   return view.row.name;
 }
-import '../app/app.css';
 
 
 
@@ -502,14 +501,16 @@ export default function Systems() {
   }, [rosterQ, rosterHealth, rosterLinked, searchParams, setSearchParams]);
 
   /* Re-seed when the address bar changes externally (shared link / back). */
-  useEffect(() => {
+  const [prevParams, setPrevParams] = useState(searchParams);
+  if (prevParams !== searchParams) {
+    setPrevParams(searchParams);
     const qFrom = searchParams.get('q') ?? '';
     const hFrom = parseSystemsHealthFilter(searchParams.get('health'));
     const lFrom = parseSystemsLinkedFilter(searchParams.get('linked'));
-    setRosterQ((cur) => (cur === qFrom ? cur : qFrom));
-    setRosterHealth((cur) => (cur === hFrom ? cur : hFrom));
-    setRosterLinked((cur) => (cur === lFrom ? cur : lFrom));
-  }, [searchParams]);
+    if (rosterQ !== qFrom) setRosterQ(qFrom);
+    if (rosterHealth !== hFrom) setRosterHealth(hFrom);
+    if (rosterLinked !== lFrom) setRosterLinked(lFrom);
+  }
 
   if (!data) {
     return <PageSkeleton variant="list" />;
@@ -912,7 +913,7 @@ export default function Systems() {
                 fresh it is. Same vocabulary as SiteDetail so the portal does
                 not invent a third phrasing for one state. */}
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · Copper NOC
+              HPE Network Tools
             </span>
             <span
               className="nt-mono-label"
@@ -979,10 +980,13 @@ export default function Systems() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · systems spine · identity · brokers · health</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · systems spine · identity · brokers · health</div>
+      <div className="nt-status-ribbon nt-systems-ribbon" role="status" aria-label="Systems status ribbon">
+        <span className="nt-status-ribbon__item">systems spine · brokers</span>
+        <span className="nt-status-ribbon__item">identity · health</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
 
-      <VisualReferencePanel target={{ kind: 'estate', id: 'systems' }} />
-      <ConfigRecommendationsPanel title="Connector health recommendations" limit={6} />
 
       {/* Authored on the demo section; derived from the registry's own 429s on
           a live one — never an incident on a plane that was never configured. */}
@@ -1488,9 +1492,12 @@ export default function Systems() {
         width="lg"
         title={cur?.name ?? ''}
         description={cur?.kind ?? ''}
+        className="nt-systems-plane nt-drawer-cinema"
+        dataPhase={cur ? 'done' : undefined}
       >
         {cur && curView ? (
-          <div className="nt-stack nt-gap-18">
+          <div className="nt-stack nt-gap-18 nt-systems-plane__body">
+            <div className="nt-systems-plane__hero">
             <div className="nt-chip-row">
               <Badge tone={curView.stateTone} dot>
                 {curView.stateLabel}
@@ -1516,6 +1523,7 @@ export default function Systems() {
                   {retryNote(curView.live)}
                 </span>
               ) : null}
+            </div>
             </div>
 
             <SegmentedControl options={TAB_OPTIONS} value={tab} onValueChange={(v) => setTab(v as DetailTab)} />
@@ -1619,6 +1627,13 @@ export default function Systems() {
                         >
                           {x.detail}
                         </span>
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'estate', id: 'systems' }} />
+      <ConfigRecommendationsPanel title="Connector health recommendations" category="configuration" limit={6} />
                       </div>
                     );
                   })}
@@ -1851,6 +1866,7 @@ export default function Systems() {
         }}
         width="lg"
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={testing ? 'executing' : 'review'}
         title={`Configure ${selectedEntry.label}`}
       >
         <form

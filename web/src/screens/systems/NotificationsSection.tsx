@@ -295,7 +295,7 @@ export function NotificationsSection() {
   return (
     <>
     <div id={systemsSectionDomId('notifications')} className="nt-systems-section nt-section-panel nt-stack nt-gap-14">
-      <div className="nt-plane-theater" role="note">NightDesk · notify · outbound · severity owns hue</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · notify · outbound · severity owns hue</div>
       <div className="nt-filter-bar nt-gap-8">
         <SectionHeader label="Notifications" meta="ALERT WEBHOOKS · OUTBOUND" />
         <Button variant="ghost" size="sm" className="nt-ml-auto" onClick={copySectionLink}>
@@ -618,6 +618,7 @@ export function NotificationsSection() {
         onOpenChange={setDrawerOpen}
         width="md"
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={saving ? 'executing' : draft.name.trim() && draft.url.trim() ? 'confirm' : 'review'}
         title={editing ? `Edit ${editing.name}` : 'Add notification endpoint'}
         description="Alert queue transitions are POSTed here — fired, resolved, escalated."
       >
@@ -898,6 +899,7 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
         onOpenChange={setDrawerOpen}
         width="md"
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={saving ? 'executing' : draft.host.trim() && draft.from.trim() ? 'confirm' : 'review'}
         title={smtp ? `Edit SMTP relay (${smtp.host})` : 'Configure SMTP relay'}
         description="Where fleet reports are emailed from. The password is write-only — never shown back."
       >
@@ -1206,6 +1208,7 @@ function ReportCard() {
         onOpenChange={setDrawerOpen}
         width="md"
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={saving ? 'executing' : 'confirm'}
         title="Fleet summary report schedule"
         description="Totals and offline devices by type, bell alert counts, and subscriptions approaching expiry — emailed through the configured SMTP relay."
       >

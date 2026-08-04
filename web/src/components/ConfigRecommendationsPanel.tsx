@@ -18,7 +18,7 @@
  * (Loop 222). Full-list CSV stays in the header.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { countOf } from '@hpe/shared';
 import type {
@@ -28,6 +28,7 @@ import type {
 } from '@hpe/shared';
 import { getRecommendations } from '../api/recommendations';
 import { namesFilterForParam, recommendationsPath } from '../app/nav';
+import { ActionOverflow } from './ActionOverflow';
 import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { exportTableCsv } from '../lib/csv';
 import { Alert, Badge, Button, EmptyState, SectionHeader, Skeleton, useToast } from '../nightdesk';
@@ -71,6 +72,13 @@ export function ConfigRecommendationsPanel({
   clientMac,
   severity,
   category,
+  /**
+   * Categories this screen already surfaces natively, so the roll-up does not
+   * restate them. Overview lists alerts in "Needs you now"; repeating them as
+   * `performance` recommendations a few hundred pixels above was the same
+   * finding twice on one page.
+   */
+  excludeCategories,
   limit = 12,
   title = 'Recommendations',
   initialRecommendations,
@@ -84,6 +92,7 @@ export function ConfigRecommendationsPanel({
   clientMac?: string;
   severity?: RecommendationSeverity;
   category?: RecommendationCategory;
+  excludeCategories?: RecommendationCategory[];
   limit?: number;
   title?: string;
   /** Test seam */
@@ -111,18 +120,14 @@ export function ConfigRecommendationsPanel({
   const effectiveSeverity = severity ?? parseSeverityParam(searchParams.get('severity'));
   const effectiveCategory = category ?? parseCategoryParam(searchParams.get('category'));
 
-  const scopeKey = useMemo(
-    () =>
-      JSON.stringify({
-        device: effectiveDevice ?? '',
-        site: effectiveSite ?? '',
-        client: effectiveClient ?? '',
-        severity: effectiveSeverity ?? '',
-        category: effectiveCategory ?? '',
-        limit,
-      }),
-    [effectiveDevice, effectiveSite, effectiveClient, effectiveSeverity, effectiveCategory, limit],
-  );
+  const scopeKey = JSON.stringify({
+    device: effectiveDevice ?? '',
+    site: effectiveSite ?? '',
+    client: effectiveClient ?? '',
+    severity: effectiveSeverity ?? '',
+    category: effectiveCategory ?? '',
+    limit,
+  });
 
   useEffect(() => {
     if (initialRecommendations) return;
@@ -247,11 +252,13 @@ export function ConfigRecommendationsPanel({
     })();
   };
 
-  const viewRows = useMemo(() => {
-    if (!rows) return [];
-    if (idsFilterLc === null) return rows;
-    return rows.filter((r) => idsFilterLc.includes(r.id.trim().toLowerCase()));
-  }, [rows, idsFilterLc]);
+  const excluded = excludeCategories && excludeCategories.length > 0 ? excludeCategories : null;
+  const scopedRows: ConfigRecommendation[] | null =
+    rows === null ? null : excluded ? rows.filter((r) => !excluded.includes(r.category)) : rows;
+  const viewRows =
+    scopedRows && idsFilterLc
+      ? scopedRows.filter((r) => idsFilterLc.includes(r.id.trim().toLowerCase()))
+      : (scopedRows ?? []);
   const idsPresent =
     idsFilterLc === null || !rows
       ? 0
@@ -326,10 +333,10 @@ export function ConfigRecommendationsPanel({
 
   return (
     <div className="nt-stack-12 nt-recs-shell nt-section-panel">
-      <div className="nt-plane-theater" role="note">NightDesk · recommendation lane · severity owns hue · never auto-applied</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · recommendation lane · severity owns hue · never auto-applied</div>
       <div className="nt-row-between-8">
         <SectionHeader label={title} meta="READ ONLY · NO AUTO-APPLY" />
-        <div className="nt-wrap-6">
+        <ActionOverflow label={`${title} actions`}>
           {showCopyLink ? (
             <Button variant="ghost" size="sm" onClick={copyPanelContextLink}>
               Copy panel context link
@@ -345,7 +352,7 @@ export function ConfigRecommendationsPanel({
               </Button>
             </>
           ) : null}
-        </div>
+        </ActionOverflow>
       </div>
       {note ? (
         <div className="nt-fs-12-muted">{note}</div>
@@ -368,14 +375,18 @@ export function ConfigRecommendationsPanel({
             <Skeleton height={28} />
           </div>
         </div>
-      ) : rows.length === 0 ? (
+      ) : scopedRows === null || scopedRows.length === 0 ? (
         <EmptyState
           title={
-            scopeFiltersActive ? 'No recommendations match these filters' : 'No recommendations'
+            scopeFiltersActive
+              ? 'No recommendations match these filters'
+              : 'No recommendations'
           }
           description={
             scopeFiltersActive
-              ? 'Clear device / site / client / severity / category filters to widen the hygiene list.'
+              ? handleClearScopeFilters
+                ? 'Clear device / site / client / severity / category filters to widen the hygiene list.'
+                : 'This screen pins its own scope. Nothing stood out here — the full hygiene list lives on Recommendations.'
               : 'Nothing stood out from observed inventory state for this scope.'
           }
         >

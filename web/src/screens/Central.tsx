@@ -133,7 +133,7 @@ function CentralView({
         actions={
           <>
             <span className="nt-systems-brand" aria-hidden>
-              NightDesk · plane
+              HPE Network Tools · plane
             </span>
             <Badge plane>Central</Badge>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
@@ -293,7 +293,12 @@ function CentralView({
         }
       />
 
-      <div className="nt-plane-theater" role="note">NightDesk · Central ECG · monochrome plane · state owns hue</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · Central ECG · monochrome plane · state owns hue</div>
+      <div className="nt-status-ribbon nt-central-ribbon" role="status" aria-label="Central status ribbon">
+        <span className="nt-status-ribbon__item">Central ECG · state owns hue</span>
+        <span className="nt-status-ribbon__item">sites · WLAN · firmware</span>
+        <span className="nt-status-ribbon__item">plane monochrome</span>
+      </div>
 
       <PlaneHeader plane={data.plane} dataSource={data.dataSource} />
 
@@ -312,8 +317,6 @@ function CentralView({
       ) : null}
 
       <StatRow stats={data.stats} />
-      <VisualReferencePanel target={{ kind: 'connector', id: 'central', plane: 'CENTRAL' }} />
-      <ConfigRecommendationsPanel title="Central estate recommendations" limit={6} />
       {devicesReported && data.fleet.total > 0 ? (
         <div className="nt-note-mt-neg nt-service-note">
           {`${typeMix}${stateMix ? ` — ${stateMix}` : ''}`}
@@ -338,6 +341,13 @@ function CentralView({
       />
 
       <AlertsSection alerts={data.alerts} alertsReported={!notReported.includes('alerts')} />
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'connector', id: 'central', plane: 'CENTRAL' }} />
+      <ConfigRecommendationsPanel title="Central estate recommendations" category="configuration" limit={6} />
     </div>
   );
 }

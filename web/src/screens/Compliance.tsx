@@ -562,7 +562,7 @@ export default function Compliance() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · baseline
+              HPE Network Tools · baseline
             </span>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <div className="nt-w-210">
@@ -714,10 +714,12 @@ export default function Compliance() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · baseline theater · drift owns hue</div>
-
-      <VisualReferencePanel target={{ kind: 'service', id: 'compliance' }} editable={false} />
-      <ConfigRecommendationsPanel title="Compliance recommendations" limit={6} />
+      <div className="nt-plane-theater" role="note">HPE Network Tools · baseline theater · drift owns hue</div>
+      <div className="nt-status-ribbon nt-compliance-ribbon" role="status" aria-label="Compliance status ribbon">
+        <span className="nt-status-ribbon__item">baseline · drift owns hue</span>
+        <span className="nt-status-ribbon__item">diff cinema armed</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
 
       {/* The scope warning leads. Everything below it — findings, tiles, the
           evidence text — is a claim about the estate, and this says how much
@@ -1274,10 +1276,20 @@ export default function Compliance() {
             ? `v${driftView.diff.fromVersion} → v${driftView.diff.toVersion} · +${driftView.diff.added} −${driftView.diff.removed} · ${driftView.source}`
             : undefined
         }
+        className="nt-diff-drawer nt-drawer-cinema"
+        dataPhase={
+          driftView?.state === 'loading'
+            ? 'executing'
+            : driftView?.state === 'ready'
+              ? 'done'
+              : driftView?.state === 'error'
+                ? 'review'
+                : undefined
+        }
       >
         {driftView?.state === 'loading' ? (
           <div className="nt-center-pad nt-pad-48" role="status" aria-label="Loading drift">
-            <div className="nt-stack nt-gap-8">
+            <div className="nt-stack nt-gap-8 nt-debug-wake nt-debug-wake--compact">
               <Skeleton height={14} width="40%" />
               <Skeleton height={36} />
               <Skeleton height={36} />
@@ -1292,6 +1304,13 @@ export default function Compliance() {
         ) : null}
         {driftView?.state === 'ready' ? <DiffCode text={driftView.diff.text} /> : null}
       </Drawer>
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'service', id: 'compliance' }} editable={false} />
+      <ConfigRecommendationsPanel title="Compliance recommendations" category="compliance" limit={6} />
     </div>
   );
 }

@@ -2221,6 +2221,43 @@ Independent residual pass (three operator-visible **non-chip** bulk hand-off imp
 | Docs | Done | user-guide Alerts/Configure/Device detail cookbook + bulk narrative; this Loop 232 row |
 | Typecheck + tests | Done | monorepo `npm run typecheck`; Alerts / ConfigureBulk / DeviceDetail Loop 232 tests |
 
+### Loop 234 (2026-08-04) — Mist rogues Copy names · Recommendations Copy titles + keyboard help
+
+Independent residual pass (three operator-visible **non-chip** bulk/a11y improvements; catalog stays **44** — preferred remaining bulk **Copy names** / **Copy titles** and keyboard help gaps; avoided Compliance/GreenLake/Mist licences Copy names, Alerts/Configure queue titles, and Device clients names from Loop 232):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Mist estate rogues **Copy names** | Done + tested | Bulk bar unique newline-joined SSIDs beside **Copy BSSIDs**; `mist/rogues.tsx` |
+| Recommendations **Copy titles** | Done + tested | Bulk bar unique newline-joined titles beside **Copy IDs**; `ConfigRecommendationsPanel.tsx` |
+| Recommendations keyboard help | Done + tested | Header `KeyboardShortcuts` (`DATATABLE_ROW_SHORTCUTS`); `Recommendations.tsx` |
+| Docs | Done | user-guide Mist/Recommendations cookbook + bulk narrative; this Loop 234 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Mist / ConfigRecommendationsPanel / Recommendations Loop 234 tests |
+
+
+### Loop 235 (2026-08-04) — Site rogues/Mist audit/GreenLake roles bulk Copy names·messages
+
+Independent residual pass (three operator-visible **non-chip** bulk hand-off improvements; catalog stays **44** — preferred remaining bulk **Copy names** / **Copy messages**; avoided Mist estate rogues + ConfigRecommendations from Loop 234, Alerts/Configure/Device clients from Loop 232, and Compliance/GreenLake members/Mist licences from Loop 231):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Site detail rogues **Copy names** | Done + tested | Bulk bar unique newline-joined broadcast SSIDs beside **Copy BSSIDs**; `siteDetail/RogueAps.tsx` |
+| Mist org audit **Copy messages** | Done + tested | Bulk bar unique newline-joined change summaries beside **Copy admins**; `mist/audit.tsx` |
+| GreenLake role grants **Copy names** | Done + tested | Bulk bar unique newline-joined role labels beside **Copy principals**; `GreenLake.tsx` |
+| Docs | Done | user-guide Site detail/Mist audit/GreenLake cookbook + bulk narrative; this Loop 235 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; RogueAps / Mist / GreenLake Loop 235 tests |
+
+### Loop 237 (2026-08-04) — Overview titles · Device ports neighbours · Central webhooks endpoints
+
+Independent residual pass (three operator-visible **non-chip** bulk hand-off improvements; catalog stays **44** — preferred Overview bulk polish, Central bulk polish, and remaining secondary bulk copy; avoided Mist estate rogues/audit + Recommendations titles/keyboard from Loop 234, Site rogues/GreenLake roles from Loop 235, and ClearPass services / GreenLake locations names already shipped):
+
+| Item | Status | Anchors |
+|---|---|---|
+| Overview Needs-you-now **Copy titles** | Done + tested | Bulk bar unique newline-joined alert titles beside **Copy devices**; `Overview.tsx` |
+| Device ports **Copy neighbours** | Done + tested | Bulk bar unique newline-joined LLDP/CDP far-end names beside **Copy ports**; `deviceDetail/tables.tsx` |
+| Central webhooks **Copy endpoints** | Done + tested | Bulk bar unique newline-joined callback URLs beside **Copy names**; `CentralWebhooksPanel.tsx` |
+| Docs | Done | user-guide Overview/Device detail/Systems cookbook + bulk narrative; this Loop 237 row |
+| Typecheck + tests | Done | monorepo `npm run typecheck`; Overview / DeviceDetail / CentralWebhooksPanel Loop 237 tests |
+
 
 ## 2. Current architecture (baseline)
 

@@ -121,7 +121,7 @@ describe('AppShellLayout site-route breadcrumbs', () => {
     renderShellAtSite('/sites/foo%25');
 
     // The shell itself rendered (wordmark + breadcrumb nav + routed outlet).
-    expect(screen.getAllByText('NightDesk').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('HPE Network Tools').length).toBeGreaterThan(0);
     expect(screen.getByText('site content stub')).toBeTruthy();
 
     const crumbs = screen.getByRole('navigation', { name: 'Breadcrumbs' });
@@ -152,9 +152,9 @@ describe('AppShellLayout site-route breadcrumbs', () => {
  * could be on any screen when it happens.
  */
 describe('AppShellLayout platforms collapse', () => {
-  it('collapses Platforms by default and expands on toggle', async () => {
+  it('pins Platforms open by default and collapses on toggle', async () => {
     try {
-      window.localStorage?.setItem?.('hpe-nt.nav-platforms-open', '0');
+      window.localStorage?.removeItem?.('hpe-nt.nav-platforms-open');
     } catch {
       /* jsdom may stub storage */
     }
@@ -174,7 +174,6 @@ describe('AppShellLayout platforms collapse', () => {
         </ToastProvider>
       </SettingsProvider>,
     );
-    // Collapsed: plane brand links hidden on overview (object-first nav).
     expect(screen.queryByRole('button', { name: 'Central' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Platforms/i }));
     expect(await screen.findByRole('button', { name: 'Central' })).toBeTruthy();

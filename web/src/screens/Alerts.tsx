@@ -557,11 +557,13 @@ export default function Alerts() {
     const parsed = parsePaletteAction(searchParams.get('action'));
     if (!parsed) return;
     if (parsed !== 'ticket' && parsed !== 'silence') return;
-    setActionCue(parsed);
-    if (parsed === 'silence') setAlertsTab('silences');
-    if (parsed === 'ticket') setAlertsTab('queue');
-    const stripped = stripActionParam(searchParams);
-    if (stripped) setSearchParams(stripped, { replace: true });
+    queueMicrotask(() => {
+      setActionCue(parsed);
+      if (parsed === 'silence') setAlertsTab('silences');
+      if (parsed === 'ticket') setAlertsTab('queue');
+      const stripped = stripActionParam(searchParams);
+      if (stripped) setSearchParams(stripped, { replace: true });
+    });
   }, [searchParams, setSearchParams]);
 
   /* Keep filter-row params aligned with local state so refresh / Copy view
@@ -666,24 +668,27 @@ export default function Alerts() {
   useEffect(() => {
     if (!ackTarget) return;
     let live = true;
-    setTicketsLoaded(false);
-    setTicketsError(null);
-    void getTickets().then((d) => {
+    queueMicrotask(() => {
       if (!live) return;
-      if (d.apiError) {
-        setAckTickets([]);
-        setAckTicket('');
-        setTicketsError(d.apiError);
-        setTicketsLoaded(true);
-        return;
-      }
-      const open = d.tickets.filter((t) => !/resolved|closed/i.test(t.state));
-      const rest = d.tickets.filter((t) => /resolved|closed/i.test(t.state));
-      const sorted = [...open, ...rest];
-      setAckTickets(sorted);
-      setAckTicket((curId) => curId || (sorted[0]?.id ?? ''));
+      setTicketsLoaded(false);
       setTicketsError(null);
-      setTicketsLoaded(true);
+      void getTickets().then((d) => {
+        if (!live) return;
+        if (d.apiError) {
+          setAckTickets([]);
+          setAckTicket('');
+          setTicketsError(d.apiError);
+          setTicketsLoaded(true);
+          return;
+        }
+        const open = d.tickets.filter((t) => !/resolved|closed/i.test(t.state));
+        const rest = d.tickets.filter((t) => /resolved|closed/i.test(t.state));
+        const sorted = [...open, ...rest];
+        setAckTickets(sorted);
+        setAckTicket((curId) => curId || (sorted[0]?.id ?? ''));
+        setTicketsError(null);
+        setTicketsLoaded(true);
+      });
     });
     return () => {
       live = false;
@@ -1559,7 +1564,7 @@ export default function Alerts() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · signal
+              HPE Network Tools · signal
             </span>
             <span className="nt-mono-label">{synced}</span>
             {/* LIVE on pure live and alerts blend alike — blend-only left pure live quiet. */}
@@ -1702,7 +1707,12 @@ export default function Alerts() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · signal theater · severity owns hue</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · signal theater · severity owns hue</div>
+      <div className="nt-status-ribbon nt-alerts-ribbon" role="status" aria-label="Alerts status ribbon">
+        <span className="nt-status-ribbon__item">signals · severity owns hue</span>
+        <span className="nt-status-ribbon__item">incident spine armed</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
       <nav className="nt-incident-spine nt-alert-spine" aria-label="Incident spine">
         <span className="nt-incident-spine__step nt-alert-spine__step" data-active="true">Alert</span>
         <span className="nt-incident-spine__chev" aria-hidden>→</span>
@@ -1710,9 +1720,6 @@ export default function Alerts() {
         <span className="nt-incident-spine__chev" aria-hidden>→</span>
         <span className="nt-incident-spine__step nt-alert-spine__step">Ticket</span>
       </nav>
-
-      <VisualReferencePanel target={{ kind: 'service', id: 'alerts' }} editable={false} />
-      <ConfigRecommendationsPanel title="Alert / noise recommendations" limit={6} />
 
       {actionCueCopy ? (
         <Alert
@@ -1747,7 +1754,7 @@ export default function Alerts() {
       ) : null}
 
       {ackTarget ? (
-        <div className="nt-alerts__ack nt-write-ritual">
+        <div className="nt-alerts__ack nt-write-ritual" data-phase={ackBusy ? 'executing' : ackTicket ? 'confirm' : 'review'}>
           <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-flex-1-wide">
             <FormField
@@ -2678,6 +2685,7 @@ export default function Alerts() {
           if (!open) setSilenceTarget(null);
         }}
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={silenceBusy ? 'executing' : silenceReason.trim() ? 'confirm' : 'review'}
         title="Silence alert group"
         description={
           silenceTarget
@@ -2735,6 +2743,7 @@ export default function Alerts() {
           if (!open) setWindowForm(false);
         }}
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={wBusy ? 'executing' : windowFormError === null ? 'confirm' : 'review'}
         title="Schedule a maintenance window"
         description="While the window is active, matching alert groups are silenced — reason stamped, expiry automatic, suppression always listed."
       >
@@ -2836,6 +2845,7 @@ export default function Alerts() {
           }
         }}
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={rBusy ? 'executing' : ruleFormError === null ? 'confirm' : 'review'}
         title={ruleEditing ? 'Edit device-down rule' : 'New device-down rule'}
         description="A device that stops reporting raises no plane alert — a matching rule fires instead, once per outage, after the offline threshold."
       >
@@ -2920,6 +2930,7 @@ export default function Alerts() {
           if (!open) setRuleDelete(null);
         }}
         className="nd-drawer--write-ritual nt-write-ritual"
+        dataPhase={rDeleteBusy ? 'executing' : 'confirm'}
         title="Delete device-down rule"
         description={ruleDelete ? ruleSummary(ruleDelete) : undefined}
       >
@@ -2956,10 +2967,12 @@ export default function Alerts() {
               }`
             : undefined
         }
+        className="nt-timeline-drawer nt-drawer-cinema"
+        dataPhase={timelineLoading ? 'executing' : timeline ? 'done' : 'review'}
       >
         {timelineLoading ? (
           <div className="nt-center-pad nt-pad-48">
-            <div role="status" aria-label="Loading alerts" className="nt-stack nt-gap-8">
+            <div role="status" aria-label="Loading alerts" className="nt-stack nt-gap-8 nt-debug-wake nt-debug-wake--compact">
               <Skeleton height={14} width="40%" />
               <Skeleton height={40} />
               <Skeleton height={40} />
@@ -2967,7 +2980,7 @@ export default function Alerts() {
             </div>
           </div>
         ) : timeline ? (
-          <div className="nt-stack-col">
+          <div className="nt-stack-col nt-timeline-drawer__body">
             {timelineNote ? (
               <span
                 className="nt-hint-muted nt-pb-8"
@@ -3047,6 +3060,13 @@ export default function Alerts() {
           />
         )}
       </Drawer>
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'service', id: 'alerts' }} editable={false} />
+      <ConfigRecommendationsPanel title="Alert / noise recommendations" category="performance" limit={6} />
     </div>
   );
 }

@@ -189,7 +189,7 @@ export function EstateRogueAps({ rogues }: { rogues: MistRogueApRow[] | undefine
   return (
     <div id="mist-section-rogues" className="nt-mist-section nt-section-panel nt-stack nt-gap-2">
       <div className="nt-row-between-12">
-        <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Mist RF theater · rogue · neighbor</div>
+        <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Mist RF theater · rogue · neighbor</div>
         <SectionHeader label="Rogue & neighbor APs" meta={meta} />
         <div className="nt-wrap-6">
           <Button

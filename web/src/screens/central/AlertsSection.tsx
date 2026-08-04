@@ -65,7 +65,11 @@ export function AlertsSection({
 
   return (
     <div id="central-section-alerts" className="nt-stack nt-gap-2 nt-central-section nt-section-panel">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Central alerts lane · severity owns hue</div>
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Central alerts lane · severity owns hue</div>
+      <div className="nt-status-ribbon nt-status-ribbon--compact nt-central-alerts-ribbon" role="status" aria-label="Central alerts status ribbon">
+        <span className="nt-status-ribbon__item">Central alerts</span>
+        <span className="nt-status-ribbon__item">severity owns hue</span>
+      </div>
       <div className="nt-row-between-12">
         <SectionHeader label="Recent alerts" meta={meta} />
         <div className="nt-wrap-6">

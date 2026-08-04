@@ -104,8 +104,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (phase.kind === 'checking') {
     return (
       <div className="nt-auth-panel nt-auth-panel--wake nt-war-room-wake" aria-busy="true">
-        <div className="nt-auth-card nt-auth-card--wake nt-panel-glass" aria-hidden>
-          <div className="nt-auth-card__eyebrow">NightDesk · signing in</div>
+        <div className="nt-auth-card nd-auth-card nt-auth-card--wake nt-panel-glass" aria-hidden>
+          <div className="nt-auth-card__eyebrow nd-auth-card__eyebrow">HPE Network Tools · signing in</div>
           <div className="nt-auth-wake-bar" />
           <div className="nt-auth-wake-bar nt-auth-wake-bar--short" />
           <div className="nt-auth-wake-bar nt-auth-wake-bar--mid" />
@@ -117,11 +117,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (phase.kind === 'unreachable') {
     return (
       <div className="nt-auth-panel nt-auth-shell">
-        <div className="nt-auth-card nt-panel-glass">
+        <div className="nt-auth-card nd-auth-card nt-panel-glass">
           <div className="nt-auth-card__eyebrow nt-danger-text">
-            NightDesk · server unreachable
+            HPE Network Tools · server unreachable
           </div>
-          <p className="nt-auth-card__body">
+          <p className="nt-auth-card__body nd-auth-card__body">
             The portal could not ask the server whether you are signed in, so it cannot show you
             anything yet. This usually means the server is not running.
           </p>
@@ -140,24 +140,24 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (state.configured && !state.authenticated) {
     return (
       <div className="nt-auth-panel nt-auth-shell">
-        <div className="nt-auth-card nt-panel-glass">
+        <div className="nt-auth-card nd-auth-card nt-panel-glass">
           <div className="nt-auth-panel__brand">
-            <div className="nt-logo-mark" aria-hidden="true">ND</div>
-            <div className="nt-auth-card__eyebrow">NightDesk · Copper NOC</div>
+            <div className="nt-logo-mark" aria-hidden="true">HPE</div>
+            <div className="nt-auth-card__eyebrow nd-auth-card__eyebrow">HPE Network Tools</div>
           </div>
-          <h1 className="nt-auth-card__title">
+          <h1 className="nt-auth-card__title nd-auth-card__title">
             {lapsed ? 'Your session has ended' : 'Sign in to continue'}
           </h1>
-          <p className="nt-auth-card__body">
+          <p className="nt-auth-card__body nd-auth-card__body">
             {lapsed
               ? 'The portal was signed out while you were working — usually because the server restarted, ' +
                 'which clears every session. Nothing you had open was submitted by this. Sign in again to ' +
                 'return to the page you were on.'
-              : 'NightDesk brokers changes to production network equipment. Every change is ' +
+              : 'HPE Network Tools brokers changes to production network equipment. Every change is ' +
                 'recorded against the account you sign in with.'}
           </p>
           {state.groupGate ? (
-            <p className="nt-auth-card__body">Access is restricted to: {state.groupGate.join(', ')}</p>
+            <p className="nt-auth-card__body nd-auth-card__body">Access is restricted to: {state.groupGate.join(', ')}</p>
           ) : null}
           <div className="nt-mt-20">
             <Button variant="primary" onClick={() => startLogin()}>

@@ -168,7 +168,12 @@ export function IdentityProviderSection() {
           Copy section link
         </Button>
       </div>
-      <div className="nt-plane-theater" role="note">NightDesk · identity · who may enter</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · identity · who may enter</div>
+      <div className="nt-status-ribbon nt-idp-ribbon" role="status" aria-label="Identity provider status ribbon">
+        <span className="nt-status-ribbon__item">identity · entry gate</span>
+        <span className="nt-status-ribbon__item">who may enter</span>
+        <span className="nt-status-ribbon__item">broker path</span>
+      </div>
 
       <div className="nt-row-wrap-8">
         {cfg ? (

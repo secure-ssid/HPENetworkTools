@@ -170,7 +170,7 @@ export function FirmwareSection({ devices }: { devices: DeviceRow[] }) {
   return (
     <div id="mist-section-devices" className="nt-mist-section nt-section-panel nt-stack nt-gap-2">
       <div className="nt-row-between-12">
-        <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Mist firmware theater · compliance owns hue</div>
+        <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Mist firmware theater · compliance owns hue</div>
         <SectionHeader
           label="Firmware"
           meta={

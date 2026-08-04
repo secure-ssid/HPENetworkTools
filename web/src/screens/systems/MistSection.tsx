@@ -172,7 +172,7 @@ export function MistSection() {
           <div className="nt-service-note">The registration status could not be read — {statusError}</div>
         ) : status === null ? (
           <div className="nt-center-pad-24">
-            <div role="status" aria-label="NightDesk · loading Mist org" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
+            <div role="status" aria-label="HPE Network Tools · loading Mist org" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
               <Skeleton height={12} width="30%" />
               <Skeleton height={28} />
             </div>

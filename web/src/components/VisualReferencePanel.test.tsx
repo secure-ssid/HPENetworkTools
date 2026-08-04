@@ -47,10 +47,23 @@ describe('VisualReferencePanel', () => {
       <VisualReferencePanel
         target={{ kind: 'device', id: 'sw-01' }}
         initialReferences={[]}
-        editable={false}
+        editable
       />,
     );
     expect(screen.getByText(/no visual references/i)).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /add visual reference/i }).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('hides read-only empty panels (nothing actionable)', () => {
+    const { container } = renderPanel(
+      <VisualReferencePanel
+        target={{ kind: 'device', id: 'sw-01' }}
+        initialReferences={[]}
+        editable={false}
+      />,
+    );
+    expect(container.querySelector('.nt-visual-ref')).toBeNull();
+    expect(screen.queryByText(/no visual references/i)).toBeNull();
     expect(screen.queryByText(/add visual reference/i)).toBeNull();
   });
 

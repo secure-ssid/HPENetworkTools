@@ -423,7 +423,7 @@ export default function Sites() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · sites
+              HPE Network Tools · sites
             </span>
             {sitesLive ? <Badge tone="info">LIVE</Badge> : null}
             <div className="nt-w-170">
@@ -541,10 +541,12 @@ export default function Sites() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · sites theater · campus health owns hue</div>
-
-      <VisualReferencePanel target={{ kind: 'service', id: 'sites' }} editable={false} />
-      <ConfigRecommendationsPanel title="Site configuration recommendations" limit={8} />
+      <div className="nt-plane-theater" role="note">HPE Network Tools · sites theater · campus health owns hue</div>
+      <div className="nt-status-ribbon nt-sites-ribbon" role="status" aria-label="Sites status ribbon">
+        <span className="nt-status-ribbon__item">campus · health owns hue</span>
+        <span className="nt-status-ribbon__item">estate map armed</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
 
       {missingSources.length > 0 ? (
         <Alert
@@ -868,6 +870,8 @@ export default function Sites() {
         onOpenChange={setAddOpen}
         title="Add site"
         description="Sites are created on the managing plane — the portal hands off with this payload pre-filled."
+        className="nd-drawer--write-ritual nt-write-ritual nt-sites-add"
+        dataPhase={newName.trim() ? 'confirm' : 'review'}
       >
         <form
           className="nt-stack-14"
@@ -876,6 +880,7 @@ export default function Sites() {
             submitAddSite();
           }}
         >
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Site name" htmlFor="add-site-name">
             <Input
               id="add-site-name"
@@ -921,6 +926,13 @@ export default function Sites() {
           </div>
         </form>
       </Drawer>
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'service', id: 'sites' }} editable={false} />
+      <ConfigRecommendationsPanel title="Site configuration recommendations" category="redundancy" limit={8} />
     </div>
   );
 }

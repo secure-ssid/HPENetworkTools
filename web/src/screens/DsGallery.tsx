@@ -72,10 +72,10 @@ export function DsGallery() {
     <>
       <div>
         <div className="nd-micro-label nt-micro-label nt-dsg-brand-kicker">
-          NightDesk
+          HPE Network Tools
         </div>
         <div className="nt-dsg-brand-title">
-          NightDesk
+          HPE Network Tools
         </div>
       </div>
       <Stack gap={16}>
@@ -151,7 +151,12 @@ export function DsGallery() {
     <AppShell className="nt-dsg-shell" sidebar={sidebar} topbar={topbar}>
       <div className="nt-dsg-content nt-section-panel nt-recon-reveal">
       <Stack gap={22}>
-        <div className="nt-plane-theater" role="note">NightDesk · design system · copper primitives</div>
+        <div className="nt-plane-theater" role="note">HPE Network Tools · design system</div>
+        <div className="nt-status-ribbon nt-ds-ribbon" role="status" aria-label="Design system status ribbon">
+          <span className="nt-status-ribbon__item">primitives · tokens</span>
+          <span className="nt-status-ribbon__item">copper NOC</span>
+          <span className="nt-status-ribbon__item">state owns hue</span>
+        </div>
         <div className="nt-hero-split">
           <div>
             <Heading level={2} overline="Meridian Health / Design system">
@@ -366,7 +371,7 @@ export function DsGallery() {
           <Stack gap={26}>
 
             <Stack gap={12}>
-              <SectionHeader label="Overlays" meta="NightDesk 2.0 primitives" />
+              <SectionHeader label="Overlays" meta="HPE Network Tools 2.0 primitives" />
               <Stack direction="row" gap={8} wrap>
                 <Button variant="secondary" size="sm" onClick={() => setModalOpen(true)}>
                   Open modal
@@ -475,7 +480,7 @@ export function DsGallery() {
                 }
               >
                 <Text size={12} tone="secondary">
-                  NightDesk never pretends a write landed when the plane is behind.
+                  HPE Network Tools never pretends a write landed when the plane is behind.
                 </Text>
               </Modal>
               <ConfirmDialog

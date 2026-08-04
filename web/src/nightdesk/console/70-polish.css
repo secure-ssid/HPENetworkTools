@@ -1,0 +1,106 @@
+/*
+ * Console layer 70 — polish.
+ *
+ * Everything here was found by rendering the portal and measuring it, not by
+ * reading the stylesheet. Each rule fixes something a screenshot showed: a
+ * figure that drifted off its own label, a section title sitting on a grey
+ * slab, an empty state reserving a hundred and forty pixels to say "nothing
+ * to report". They live in one late file so the intent of layers 10–60 stays
+ * readable rather than being amended in place.
+ */
+
+/* ── Metrics read left ─────────────────────────────────────────────────
+ * The stat column inherited `align-items: flex-end` from the tile era, where
+ * a centred figure looked balanced inside its box. With the box gone the
+ * figure floats away from the label naming it, and a row of five figures no
+ * longer shares a left edge the eye can run down. A ledger aligns on the
+ * left, so these do too.
+ */
+
+.nd-stat,
+.nt-stat,
+.nt-metric-tile,
+.nt-stat-tile {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.nd-stat__label,
+.nd-stat__value,
+.nd-stat__delta {
+  text-align: left;
+  align-self: stretch;
+}
+
+/* Adjacent figures are told apart by a gutter and a hairline, not a card. */
+.nd-stat + .nd-stat,
+.nt-stat-link + .nt-stat-link {
+  border-left: var(--nd-rule);
+  padding-left: 16px;
+}
+
+/* ── Section titles sit on the page ───────────────────────────────────
+ * `nt-toolbar-glass` is applied to the topbar and, historically, to every
+ * section header and filter bar as well. Styling the bare class for the
+ * topbar painted a surface-coloured slab behind each section title. The
+ * topbar keeps its surface; everything else that carries the class is in
+ * the document flow and takes the page background.
+ */
+
+.nd-section-header.nt-toolbar-glass,
+.nt-screen-header.nt-toolbar-glass,
+.nd-screen-header.nt-toolbar-glass,
+.nt-table-toolbar.nt-toolbar-glass,
+.nt-filter-bar.nt-toolbar-glass,
+.nt-incident-strip.nt-toolbar-glass {
+  background: var(--nd-bg-canvas);
+  min-height: 0;
+  padding-left: 0;
+  padding-right: 0;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* ── Empty states stop reserving a stage ──────────────────────────────
+ * A named empty state is honest and worth keeping, but at 140px of reserved
+ * height three of them push the real data off the first screen. One line of
+ * dim prose says the same thing.
+ */
+
+.nd-empty,
+.nt-empty,
+.nt-empty-cinema {
+  min-height: 0;
+  padding: 10px 0;
+  text-align: left;
+  align-items: flex-start;
+}
+
+.nt-empty-cinema {
+  animation: none;
+}
+
+/* ── Reclaim the dead column ──────────────────────────────────────────
+ * Chip rows and filter bars were laid out to fill a card's width, which on a
+ * wide monitor leaves a large empty field to the right of the last chip. They
+ * wrap against content width instead, so the space below them closes up.
+ */
+
+.nt-chip-row,
+.nt-filter-bar {
+  flex-wrap: wrap;
+  align-content: flex-start;
+  row-gap: 4px;
+}
+
+/* ── Sticky chrome needs an opaque backing ────────────────────────────
+ * Data scrolling under a transparent sticky header is unreadable. These are
+ * the only in-flow elements that get a fill, and it is the page colour so
+ * they still read as part of the page rather than as floating panels.
+ */
+
+.nt-screen-header,
+.nt-sticky-title,
+.nd-table thead th {
+  background: var(--nd-bg-canvas);
+}

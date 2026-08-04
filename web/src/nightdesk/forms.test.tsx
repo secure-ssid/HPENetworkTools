@@ -20,7 +20,7 @@ describe('Button', () => {
   it('composes the base class with the variant and size, defaulting to secondary/md', () => {
     render(<Button>Save</Button>);
     const btn = screen.getByRole('button', { name: 'Save' });
-    expect(btn.className.split(' ')).toEqual(['nd-btn', 'nd-btn--secondary', 'nd-btn--md', 'nt-btn']);
+    expect(btn.className.split(' ')).toEqual(['nd-btn', 'nd-btn--secondary', 'nd-btn--md', 'nt-btn', 'nt-btn--secondary', 'nt-btn--md']);
   });
 
   it.each([
@@ -42,7 +42,7 @@ describe('Button', () => {
       </Button>,
     );
     const btn = screen.getByRole('button', { name: 'Retire plane' });
-    expect(btn.className.split(' ')).toEqual(['nd-btn', 'nd-btn--danger', 'nd-btn--sm', 'nt-btn']);
+    expect(btn.className.split(' ')).toEqual(['nd-btn', 'nd-btn--danger', 'nd-btn--sm', 'nt-btn', 'nt-btn--danger', 'nt-btn--sm']);
     expect(btn.getAttribute('style')).toBeNull();
   });
 
@@ -99,14 +99,14 @@ describe('Input / Textarea', () => {
   it('maps size and mono onto classes and keeps size off the DOM attribute', () => {
     render(<Input size="sm" mono aria-label="Endpoint" defaultValue="apigw" />);
     const input = screen.getByLabelText('Endpoint');
-    expect(input.className.split(' ')).toEqual(['nd-input', 'nd-input--sm', 'nd-input--mono', 'nt-input', 'nt-field']);
+    expect(input.className.split(' ')).toEqual(['nd-input', 'nd-input--sm', 'nd-input--mono', 'nt-input', 'nt-input--sm', 'nt-input--mono', 'nt-field']);
     // `size` is a nightdesk scale token, not the HTML character-width attribute.
     expect(input.hasAttribute('size')).toBe(false);
   });
 
   it('omits the mono class when not asked for and defaults to md', () => {
     render(<Input aria-label="Site" />);
-    expect(screen.getByLabelText('Site').className.split(' ')).toEqual(['nd-input', 'nd-input--md', 'nt-input', 'nt-field']);
+    expect(screen.getByLabelText('Site').className.split(' ')).toEqual(['nd-input', 'nd-input--md', 'nt-input', 'nt-input--md', 'nt-field']);
   });
 
   it('renders a masked credential value verbatim without unmasking it', () => {

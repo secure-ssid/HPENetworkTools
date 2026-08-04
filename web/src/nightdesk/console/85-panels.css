@@ -1,0 +1,427 @@
+/*
+ * Console layer 85 — panel information layout.
+ *
+ * Layer 80 reclaimed vertical space globally. This layer fixes the places
+ * where the *arrangement* of information inside a panel was wrong rather
+ * than merely loose — panels that stacked and centred fields which belong on
+ * one line, and panels where an element landed in the wrong place entirely.
+ *
+ * Centring is the common fault. A centred stack gives every field the same
+ * prominence, throws away the left edge the eye scans down, and turns a row
+ * of facts into a column of them. Operator panels want the opposite: a hard
+ * left margin, values in fixed columns, one line per thing.
+ */
+
+/* ── Launchpad rows ─────────────────────────────────────────────────────
+ * These were `display: block` with inline children and no separation, so the
+ * label and its target ran together — "Open CENTRALCONSOLE", "Run compliance
+ * scanALL SITES", "Reconcile licences with GreenLakeREPORT". The column gap
+ * declared on the row never applied because inline children do not take one.
+ *
+ * As a flex row the label sits on the left, the target on the right, and the
+ * row reads as an action with a destination.
+ */
+
+/*
+ * Qualified with .nt-rowlink because layer 50 sets `a.nt-rowlink { display:
+ * block }`, and an element-qualified class outranks a bare one no matter
+ * which file wins the ordering fight.
+ */
+.nt-rowlink.nt-launchpad-row,
+.nt-rowlink.nt-launchpad__tile,
+.nt-launchpad-row,
+.nt-launchpad__tile {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--nd-gutter);
+  text-align: left;
+  padding: 5px var(--nd-pad-snug) 5px 0;
+  min-height: 0;
+}
+
+.nt-launchpad-row__label {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nt-launchpad-row .nt-mono-label {
+  flex: 0 0 auto;
+  color: var(--nd-text-tertiary);
+}
+
+/* ── Plane summaries ────────────────────────────────────────────────────
+ * Each management plane was a 119px centred stack: name, then counts, then a
+ * health badge, then a sparkline, then the sync age — five rows for five
+ * fields about one plane. Across five planes that is most of a screen.
+ *
+ * All five are attributes of a single row, so they go on a single row: name
+ * and counts flush left, status and freshness flush right.
+ */
+
+.nt-plane-mini {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--nd-pad-snug);
+  text-align: left;
+  padding: 5px 0;
+  min-height: 0;
+}
+
+.nt-plane-mini__id {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--nd-pad-snug);
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  /* In the 350px rail the name plus "13 devices · 598 calls today" does not
+   * fit on one line, and the counts were being cut mid-number. Wrapping the
+   * meta under the name costs one line and keeps the figure readable — still
+   * far short of the 119px stack this row replaced. */
+  flex-wrap: wrap;
+  row-gap: 1px;
+}
+
+/* Status, trend and age are the right-hand column of the row. */
+.nt-plane-mini > .nd-badge,
+.nt-plane-mini > .nt-status-chip {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.nt-plane-mini > .nt-spark-frame {
+  flex: 0 0 auto;
+  padding: 0;
+}
+
+.nt-plane-mini__sync {
+  flex: 0 0 auto;
+  min-width: 34px;
+  text-align: right;
+  color: var(--nd-text-tertiary);
+}
+
+/* ── Panels that centre their contents ──────────────────────────────────
+ * The same centring appears on the surrounding panels and on the "planes not
+ * linked" footer. Flush them left so every row in the rail shares one margin.
+ */
+
+.nt-plane-list,
+.nt-plane-panel,
+.nt-launchpad,
+.nt-launchpad__list,
+.nt-plane-mini__meta,
+.nt-plane-unlinked {
+  text-align: left;
+  align-items: stretch;
+}
+
+/* ── Recommendation entries ─────────────────────────────────────────────
+ * Layer 80 moved the action button beside the description, but keyed the
+ * rule on entries having exactly three children. Entries that carry an extra
+ * qualifying line — "Endpoint repository row not supplied to this
+ * evaluation" — have four, fell through to the stacked layout, and their
+ * button collided with that line.
+ *
+ * Matching the action by what it *is* (a wrapper holding nothing but the
+ * button) rather than by its position makes both shapes lay out correctly,
+ * and any future shape too.
+ *
+ * Note the argument uses a child combinator rather than a nested `:has()`:
+ * `:has()` is forbidden inside its own argument, and a selector that breaks
+ * that rule is invalid, so the entire block would be dropped in silence.
+ */
+
+.nt-rec-card:has(> div > .nd-btn:only-child) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-auto-flow: row;
+  align-items: start;
+  column-gap: var(--nd-gutter);
+}
+
+.nt-rec-card:has(> div > .nd-btn:only-child) > * {
+  grid-column: 1;
+}
+
+/*
+ * The heading row carries the title and its severity badges. It shares row 1
+ * with the action: measured at 1920 the action used to sit on the description
+ * row, where the text ended at x=1250 and the button at x=1757 left a 500px
+ * void mid-row. Pairing the action with the title it acts on closes that gap
+ * and frees the full card width for the description underneath.
+ */
+.nt-rec-card:has(> div > .nd-btn:only-child) > :first-child {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.nt-rec-card:has(> div > .nd-btn:only-child) > div:has(> .nd-btn:only-child) {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+}
+
+.nt-rec-card:has(> div > .nd-btn:only-child) > :first-child ~ :not(div:has(> .nd-btn:only-child)) {
+  grid-column: 1 / -1;
+}
+
+/*
+ * The plane's name must never be the thing that gets clipped — it is how the
+ * row is identified. Pin it and let the counts beside it truncate instead.
+ */
+.nt-plane-mini__id > :first-child {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.nt-plane-mini__id > :nth-child(2) {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+/* ── Tables ─────────────────────────────────────────────────────────────
+ * The first cell sat hard against the selection rail on the row's left edge,
+ * so site names touched the border.
+ */
+
+.nd-table tbody td:first-child,
+.nt-table tbody td:first-child,
+.nd-table thead th:first-child,
+.nt-table thead th:first-child {
+  padding-left: var(--nd-pad-snug);
+}
+
+/*
+ * Cells are `nowrap` with `overflow: hidden`, which makes their min-content
+ * width zero — so the automatic table layout is free to starve any column,
+ * and it starved the identity column first. "SecureSSID" rendered as
+ * "SecureSS" and "Primary Site" as "Primary S" while "Managed by" held 160px
+ * for the word "CENTRAL".
+ *
+ * A character-based floor on the first column protects the one value that
+ * makes a row identifiable, and leaves the rest to the layout algorithm.
+ *
+ * The floor is withheld from first cells that hold a badge, status chip or
+ * checkbox rather than a name — a severity column carrying "P3" is meant to
+ * be narrow, and forcing fourteen characters onto it steals the width from
+ * the alert title next to it.
+ */
+.nd-table tbody td:first-child:not(:has(.nd-badge)):not(:has(.nt-status-chip)):not(:has(input)),
+.nt-table tbody td:first-child:not(:has(.nd-badge)):not(:has(.nt-status-chip)):not(:has(input)) {
+  min-width: 14ch;
+}
+
+/* ── Rail balance ───────────────────────────────────────────────────────
+ * With the rail's panels compacted, its columns no longer need to stretch to
+ * a shared height; letting them size to content stops a short column from
+ * inheriting a tall one's whitespace.
+ */
+
+.nt-overview-split,
+.nt-split-2,
+.nt-two-col {
+  align-items: start;
+}
+
+/* ── Action columns must reserve their controls ─────────────────────────
+ * Legacy gives every table cell `max-width: 0` — the usual trick for making
+ * `table-layout: auto` share width evenly and truncate long text. On a cell
+ * whose child is a button it is destructive: the column reports no width to
+ * claim, so it was handed 19px on ClearPass and 31px on GreenLake while the
+ * 66px button inside it painted past the right edge of the canvas.
+ *
+ * Lifting the cap is the actual fix; `width: 1%` then asks the algorithm for
+ * the smallest share it will grant, which for a nowrap cell resolves to the
+ * control's own width. Measured: 31px -> 76px, button 16px inside the canvas.
+ * `min-width: max-content` does not work here — table cells ignore it.
+ *
+ * The wrapper element varies by screen, so the descendant step is `> *` rather
+ * than a named tag: the Alerts queue wraps its row controls in a span, and
+ * with a `div`-only rule that column stayed at 35px with `overflow: hidden`,
+ * clipping "Silence" and "Timeline" to three letters each. Measured 35 -> 79px.
+ */
+.nd-table td:has(> .nd-btn),
+.nd-table td:has(> .nt-row-actions),
+.nd-table td:has(> * > .nd-btn),
+.nt-table td:has(> .nd-btn),
+.nt-table td:has(> * > .nd-btn) {
+  max-width: none;
+  width: 1%;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+/* The wrapper around a pair of buttons must not collapse them either. */
+.nd-table td > .nt-row-actions,
+.nt-table td > .nt-row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+/* ── Sync history rows ──────────────────────────────────────────────────
+ * The row holds four children — time, plane, message, result badge — but the
+ * last legacy wave (components.css:22885) declares only two grid columns, so
+ * the badge wrapped onto a second implicit row and took the 1fr track with it.
+ * The message, the one part of the line an operator actually reads, was left
+ * in the 64px column: "poll ok — devices 13, sites 2, ..." rendered into 64px
+ * of a 279px need. Four children, four tracks; the message gets the flexible
+ * one and the badge sizes to itself.
+ */
+.nt-sync-row {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: baseline;
+}
+
+.nt-sync-row__what {
+  min-width: 0;
+  white-space: normal;
+  overflow: visible;
+}
+
+/* ── Incident strip title ───────────────────────────────────────────────
+ * `flex: 1 1 200px` let the action buttons win the row, leaving the incident
+ * title 315px for 641px of text. The strip already wraps, so a basis wide
+ * enough to force the wrap gives the title its own full-width line instead of
+ * an ellipsis.
+ */
+.nt-incident-strip__title {
+  flex: 1 1 420px;
+  min-width: 0;
+  white-space: normal;
+}
+
+/* House-voice ornament wedged into the Systems action row; it is aria-hidden,
+ * carries no state, and collapsed to 0px anyway. */
+.nt-systems-brand {
+  display: none;
+}
+
+/* ── Prose in a cell wraps; identifiers truncate ────────────────────────
+ * The plane table cannot fit every column at content width — "oauth
+ * client_credentials · expires in 21m" wants 308px in a 165px track. For a
+ * sentence or a compound status phrase the right answer is a second line, not
+ * an ellipsis; for a serial or a MAC, truncation with the hover title from
+ * DataTable is fine because the value is looked up, not read.
+ */
+.nt-plane-row {
+  align-items: start;
+}
+
+.nt-plane-row__cell,
+.nt-plane-row__scope,
+.nt-plane-row__scope > small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
+/* Explanatory sentences that landed inside a table cell — "The linked plane
+ * did not supply …" was rendering into 119px of a 415px need. */
+td .nt-hint-muted,
+td .nt-cell-note,
+td .nt-note-right {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* A tree node's summary is a sentence — "3 devices across 1 sites · 2 down · …"
+ * was losing its tail to a 16px shortfall. Nothing is gained by holding it to
+ * one line when the row is free to grow. */
+.nt-inventory-tree__label,
+.nt-inventory-tree__label > small {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+/* ── Switches that carry a label ────────────────────────────────────────
+ * `.nd-switch` is pinned to `width: 40px` by legacy, which is right when the
+ * element is just the track. Where it also wraps a caption the caption is
+ * pushed outside that 40px box and lands on top of the next switch — on
+ * Systems, five toggles ("Demo mode (fixture data)", "Blend live sections
+ * into demo", "Config mode…") were printing over one another.
+ * A switch with a label sizes to its content instead.
+ */
+.nd-switch:has(> .nd-switch__label),
+.nt-switch:has(> .nt-switch__label) {
+  width: auto;
+  align-items: center;
+}
+
+.nd-switch > .nd-switch__label,
+.nt-switch > .nt-switch__label {
+  flex: 0 1 auto;
+  white-space: normal;
+}
+
+/* ── Fleet lanes: one row, one plane per lane ───────────────────────────
+ * The fleet grid is a swimlane per management plane — CENTRAL, MIST,
+ * GREENLAKE, CLEARPASS, SSE. Reading is column-major and each lane is a
+ * separate subject, so a lane that wraps to a second row is not a
+ * continuation of anything; it is a lane stranded below the fold.
+ *
+ * At a 196px minimum the track algorithm fits exactly four columns in the
+ * 1017px canvas, so the fifth plane wrapped. Grid rows size to their tallest
+ * item and CENTRAL carries every device, so SSE landed 604px down with a
+ * 502px hole above it — the single largest dead band in the app.
+ *
+ * 180px fits all five with room to spare and nothing clips: verified at
+ * 1440, 1332, 1180, 1024 and 860px. Still auto-fit, so a narrower canvas or
+ * a sixth plane wraps rather than overflowing.
+ */
+
+.nt-fleet-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+/* ── Section titles start at the left edge ──────────────────────────────
+ * A section header is a flex row of title + meta with `space-between`, and
+ * it is often squeezed next to a group of buttons until the two wrap onto
+ * separate lines. On a wrapped line `space-between` has free space and no
+ * second item to push against, so it distributed the space around the title
+ * instead — "Visual references" sat 53px in from the left edge while its
+ * own subtitle stayed flush, and on other screens the pair swapped.
+ * Measured 30 of 41 section headers app-wide with the title off the edge.
+ *
+ * An auto margin absorbs free space before `justify-content` gets to
+ * distribute any, so the title is pinned left on whichever line it lands on
+ * and still pushes the meta to the far end when they share one. This is
+ * done here rather than by overriding `justify-content`, which loses to a
+ * more specific rule elsewhere.
+ */
+
+.nd-section-header > :first-child {
+  margin-right: auto;
+}
+
+/* The meta half of the same header needed the mirror treatment. Legacy sets
+ * `.nt-table-toolbar__meta { margin-left: auto }`, which is right for a meta
+ * sharing a line with its title but wrong once it wraps: alone on line two it
+ * still absorbs the whole line and prints right-aligned under a left-aligned
+ * title. Measured 25 of 38 wrapped metas off the left edge, by as much as
+ * 920px on /configure — "READ ONLY · NO AUTO-APPLY" read as an unrelated
+ * floating label rather than the subtitle of the heading above it.
+ *
+ * Swapping the auto to the right edge pins it left on its own line. There is
+ * no shared-line regression to trade against: measured across 12 routes,
+ * every one of the 44 headers carrying a meta wraps it, so the right-aligned
+ * case this replaces does not currently occur.
+ */
+
+.nd-section-header > .nd-section-header__meta {
+  margin-left: 0;
+  margin-right: auto;
+}

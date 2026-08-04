@@ -16,7 +16,7 @@
  * here that is allowed into localStorage.
  */
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import { Alert, AppShell as NightdeskAppShell, Avatar, Breadcrumbs, Button, Drawer, PageSkeleton } from '../nightdesk';
 import type { Crumb } from '../nightdesk';
@@ -71,15 +71,15 @@ export function writeShellTheme(theme: ShellTheme): void {
 }
 
 /**
- * What a lazy screen chunk shows while it loads: NightDesk PageSkeleton
+ * What a lazy screen chunk shows while it loads: HPE Network Tools PageSkeleton
  * choreography in the content area. The shell itself (sidebar, topbar) is
  * eager and stays put — only the screen is ever pending.
  */
 export function RouteFallback() {
   return (
-    <div className="nt-route-fallback nt-war-room-wake" role="status" aria-label="NightDesk · loading screen">
+    <div className="nt-route-fallback nt-war-room-wake" role="status" aria-label="HPE Network Tools · loading screen">
       <div className="nt-route-fallback__card nt-panel-glass">
-        <div className="nt-route-fallback__kicker">NightDesk · copper wake</div>
+        <div className="nt-route-fallback__kicker">HPE Network Tools · loading</div>
         <PageSkeleton variant="list" />
       </div>
     </div>
@@ -94,12 +94,12 @@ function readRailPref(): boolean {
   }
 }
 
-/** Platforms stay collapsed by default (object-first nav); expand preference is display-only. */
+/** Platforms pinned open by default; a deliberate collapse persists as '0'. */
 function readPlatformsOpenPref(): boolean {
   try {
-    return window.localStorage.getItem(PLATFORMS_KEY) === '1';
+    return window.localStorage.getItem(PLATFORMS_KEY) !== '0';
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -175,7 +175,7 @@ function BackendUnreachableBanner() {
   if (reachable) return null;
   return (
     <div className="nt-pad-12-0 nt-backend-banner">
-      <div className="nt-plane-theater" role="note">NightDesk · backend offline · fixtures only</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · backend offline · fixtures only</div>
       <Alert tone="danger" title="The portal backend is not answering">
         <span className="nt-fs-13">
           Nothing below is your estate. The screens fall back to built-in sample data when no
@@ -285,7 +285,7 @@ function NotificationBell() {
       <Button
         variant="ghost"
         size="sm"
-        className={unread > 0 ? 'nt-notify-bell--hot' : undefined}
+        className={unread > 0 ? 'nt-notify-bell nt-notify-bell--hot' : 'nt-notify-bell'}
         onClick={() => setOpen((v) => !v)}
         aria-label={unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'}
         aria-expanded={open}
@@ -311,7 +311,7 @@ function NotificationBell() {
           data-unread={unread}
         >
           <div className="nt-row-between nt-pad-4-6">
-            <span className="nd-micro-label nt-micro-label">NightDesk · Notifications</span>
+            <span className="nd-micro-label nt-micro-label">HPE Network Tools · Notifications</span>
             <Button variant="ghost" size="sm" onClick={markAll} disabled={unread === 0}>
               Mark all read
             </Button>
@@ -322,10 +322,10 @@ function NotificationBell() {
               when it does; nothing here is a statement about your estate.
             </div>
           ) : view === null ? (
-            <div className="nt-notify-empty">NightDesk · checking…</div>
+            <div className="nt-notify-empty">HPE Network Tools · checking…</div>
           ) : view.entries.length === 0 ? (
             <div className="nt-notify-empty">
-              NightDesk · quiet — device-down alerts and recoveries land here.
+              HPE Network Tools · quiet — device-down alerts and recoveries land here.
             </div>
           ) : (
             <div className="nt-notify-scroll">
@@ -450,7 +450,7 @@ export function AppShellLayout() {
   const siteId = useMatch('/sites/:siteId')?.params.siteId;
   const deviceName = useMatch('/devices/:name')?.params.name;
 
-  const crumbs = useMemo<Crumb[]>(() => {
+  const crumbs: Crumb[] = (() => {
     const base: Crumb[] = [{ label: workspaceName }];
     if (view === 'site') {
       base.push(
@@ -466,25 +466,24 @@ export function AppShellLayout() {
       base.push(...(CRUMBS[view ?? 'overview'] ?? [{ label: 'Overview' }]));
     }
     return base;
-  }, [view, siteId, deviceName, workspaceName, navigate]);
+  })();
 
   useEffect(() => {
     const leaf = crumbs[crumbs.length - 1]?.label?.trim();
-    document.title = leaf ? `${leaf} · NightDesk` : 'NightDesk — Network Operations';
+    document.title = leaf ? `${leaf} · HPE Network Tools` : 'HPE Network Tools — Network Operations';
     return () => {
-      document.title = 'NightDesk — Network Operations';
+      document.title = 'HPE Network Tools — Network Operations';
     };
   }, [crumbs]);
 
   const renderSidebar = (onNavigate?: () => void, collapsible = true) => (
     <>
       <div className="nt-shell-brand">
-        <div className="nt-shell-brand__mark" aria-hidden>ND</div>
-        <div className="nt-logo-mark" aria-hidden="true">ND</div>
+        <div className="nt-shell-brand__mark nt-brand-mark" aria-hidden>HPE</div>
+        <div className="nt-logo-mark" aria-hidden="true">HPE</div>
         <div className="nt-shell-brand__copy">
-          <div className="nt-shell-brand__kicker">HPE · Copper NOC</div>
-          <div className="nt-shell-brand__name nd-shell__brand-name">NightDesk</div>
-          <div className="nt-shell-brand__tagline">GreenLake midnight</div>
+          <div className="nt-shell-brand__name nd-shell__brand-name">HPE Network Tools</div>
+          <div className="nt-shell-brand__tagline">GreenLake operations</div>
         </div>
         {collapsible ? (
         <button
@@ -521,13 +520,14 @@ export function AppShellLayout() {
         return (
         <div
           key={group.label}
-          className={`nt-shell-navgroup nt-sidebar-nav${isPlatforms ? ' nt-shell-navgroup--platforms nt-platforms-group' : ''}${expanded ? '' : ' nt-shell-navgroup--collapsed'}`}
+          className={`nt-shell-navgroup nt-sidebar-nav${isPlatforms ? ' nt-shell-navgroup--platforms nt-platforms-group nt-platforms' : ''}${expanded ? '' : ' nt-shell-navgroup--collapsed'}`}
           data-expanded={expanded ? 'true' : 'false'}
+          data-open={isPlatforms ? (expanded ? 'true' : 'false') : undefined}
         >
           {isPlatforms && !rail ? (
             <button
               type="button"
-              className="nd-micro-label nt-micro-label nt-shell-navgroup__label nt-shell-navgroup__toggle nt-platforms-group__toggle"
+              className="nd-micro-label nt-micro-label nt-shell-navgroup__label nt-shell-navgroup__toggle nt-platforms-group__toggle nt-platforms__toggle"
               onClick={togglePlatforms}
               aria-expanded={expanded}
               aria-label={expanded ? 'Platforms, expanded' : 'Platforms, collapsed'}
@@ -646,10 +646,12 @@ export function AppShellLayout() {
         side="left"
         title="Navigation"
         description={workspaceName}
+        className="nt-mobile-nav-drawer nt-drawer-cinema"
       >
         <nav className="nt-mobile-nav" aria-label="Primary navigation">
-          <div className="nt-mobile-nav__brand" aria-hidden>
-            NightDesk · Copper NOC
+          <div className="nt-mobile-nav__brand nt-brand-mark-row" aria-hidden>
+            <span className="nt-mobile-nav__mark">HPE</span>
+            HPE Network Tools
           </div>
           {renderSidebar(() => setNavOpen(false), false)}
         </nav>

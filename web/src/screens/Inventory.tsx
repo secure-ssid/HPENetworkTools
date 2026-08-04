@@ -181,18 +181,20 @@ export default function Inventory() {
   useEffect(() => {
     if (!selectedId) return;
     const controller = new AbortController();
-    setSelectionError(null);
-    void getInventoryNode(selectedId, controller.signal)
-      .then((node) => {
-        setSelected(node);
-        setSelectionError(null);
-      })
-      .catch((cause) => {
-        if ((cause as Error).name !== 'AbortError') {
-          setSelected(null);
-          setSelectionError((cause as Error).message || 'Inventory node could not be loaded');
-        }
-      });
+    queueMicrotask(() => {
+      setSelectionError(null);
+      void getInventoryNode(selectedId, controller.signal)
+        .then((node) => {
+          setSelected(node);
+          setSelectionError(null);
+        })
+        .catch((cause) => {
+          if ((cause as Error).name !== 'AbortError') {
+            setSelected(null);
+            setSelectionError((cause as Error).message || 'Inventory node could not be loaded');
+          }
+        });
+    });
     return () => controller.abort();
   }, [selectedId]);
 
@@ -324,7 +326,7 @@ export default function Inventory() {
         actions={
           <>
             <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              NightDesk · estate map
+              HPE Network Tools · estate map
             </span>
             {/* LIVE when the systems registry is non-demo — offline/demo stay quiet (Loop 171). */}
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
@@ -386,9 +388,12 @@ export default function Inventory() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">NightDesk · estate map · tree · reconcile cinema</div>
-      <VisualReferencePanel target={{ kind: 'estate', id: 'inventory' }} editable={false} />
-      <ConfigRecommendationsPanel title="Inventory recommendations" limit={5} />
+      <div className="nt-plane-theater" role="note">HPE Network Tools · estate map · tree · reconcile cinema</div>
+      <div className="nt-status-ribbon nt-inventory-ribbon" role="status" aria-label="Inventory status ribbon">
+        <span className="nt-status-ribbon__item">estate map · tree</span>
+        <span className="nt-status-ribbon__item">reconcile cinema</span>
+        <span className="nt-status-ribbon__item">planes monochrome</span>
+      </div>
       <div className="nt-inventory__search">
         <Input
           mono
@@ -821,6 +826,13 @@ export default function Inventory() {
           ) : null}
         </div>
       )}
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'estate', id: 'inventory' }} editable={false} />
+      <ConfigRecommendationsPanel title="Inventory recommendations" category="inventory" limit={5} />
     </div>
   );
 }

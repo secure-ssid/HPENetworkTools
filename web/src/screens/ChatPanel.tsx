@@ -184,12 +184,22 @@ export default function ChatPanel({
       width="lg"
       title="Assistant"
       description={description}
-      className={status?.writeMode === 'enabled' ? 'nd-drawer--write-ritual nt-write-ritual' : undefined}
+      className={
+        status?.writeMode === 'enabled'
+          ? 'nd-drawer--write-ritual nt-write-ritual nt-chat-drawer nt-drawer-cinema'
+          : 'nt-chat-drawer nt-drawer-cinema'
+      }
+      dataPhase={status?.writeMode === 'enabled' ? 'review' : undefined}
     >
       <div className="nt-chat-col nt-chat-shell nt-section-panel">
-        <div className="nt-plane-theater" role="note">NightDesk · brokered assistant · tools · write-aware</div>
+        <div className="nt-plane-theater" role="note">HPE Network Tools · brokered assistant · tools · write-aware</div>
+        <div className="nt-status-ribbon nt-chat-ribbon" role="status" aria-label="Assistant status ribbon">
+          <span className="nt-status-ribbon__item">assistant · tools</span>
+          <span className="nt-status-ribbon__item">write-aware · gated</span>
+          <span className="nt-status-ribbon__item">MCP path</span>
+        </div>
         <div className="nt-shift-meta nt-mono nt-fs-11" role="note">
-          NightDesk · assistant lane · {status?.writeMode === 'enabled' ? 'lab write armed' : 'read-only by default'}
+          HPE Network Tools · assistant lane · {status?.writeMode === 'enabled' ? 'lab write armed' : 'read-only by default'}
         </div>
         {/* panel header: live provider/MCP status plus saved lab access. */}
         {status ? (
@@ -280,7 +290,7 @@ export default function ChatPanel({
                     <Skeleton height={10} width="68%" />
                     <Skeleton height={10} width="54%" />
                   </div>
-                  <span className="nt-hint-muted nt-chat-pending__label">NightDesk · working…</span>
+                  <span className="nt-hint-muted nt-chat-pending__label">HPE Network Tools · working…</span>
                 </div>
               ) : null}
             </div>

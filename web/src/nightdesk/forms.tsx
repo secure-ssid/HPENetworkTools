@@ -32,7 +32,7 @@ export function Button({
   return (
     <button
       type={type}
-      className={cx('nd-btn', `nd-btn--${variant}`, `nd-btn--${size}`, 'nt-btn', className)}
+      className={cx('nd-btn', `nd-btn--${variant}`, `nd-btn--${size}`, 'nt-btn', `nt-btn--${variant}`, `nt-btn--${size}`, className)}
       {...rest}
     />
   );
@@ -50,7 +50,7 @@ export function Input({ size = 'md', mono, className, id, ...rest }: InputProps)
   return (
     <input
       id={id ?? generatedId}
-      className={cx('nd-input', `nd-input--${size}`, mono && 'nd-input--mono', 'nt-input', 'nt-field', className)}
+      className={cx('nd-input', `nd-input--${size}`, mono && 'nd-input--mono', 'nt-input', `nt-input--${size}`, mono && 'nt-input--mono', 'nt-field', className)}
       {...rest}
     />
   );
@@ -91,7 +91,7 @@ export function Select({
     <span className={cx('nd-select-wrap', 'nt-select-wrap', className)}>
       <select
         id={id ?? generatedId}
-        className={`nd-select nd-select--${size} nt-field nt-select`}
+        className={`nd-select nd-select--${size} nt-field nt-select nt-select--${size}`}
         onChange={(e) => {
           onChange?.(e);
           onValueChange?.(e.target.value);

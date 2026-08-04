@@ -1,0 +1,20 @@
+/*
+ * Legacy cascade wrapper.
+ *
+ * `components.css` is fifty thousand lines of accreted "wave" overrides, many
+ * written as compound selectors (`html[data-nd-theme='light'] .nt-x.nt-y`) that
+ * outrank any sane single-class rule. The console redesign in `console/` cannot
+ * express its intent without either duplicating that specificity everywhere or
+ * reaching for `!important` — both of which make the next change harder.
+ *
+ * `app/app.css` has the same problem and, because of module graph ordering,
+ * was emitting after the console layers entirely.
+ *
+ * Assigning both legacy sheets to a cascade layer solves it at the language
+ * level: unlayered styles always beat layered ones regardless of specificity,
+ * so the console layers win by virtue of being the current design, not by
+ * winning a selector arms race. Legacy rules still apply wherever the console
+ * has no opinion, which is what keeps the unconverted screens intact.
+ */
+@import './components.css' layer(legacy);
+@import '../app/app.css' layer(legacy);

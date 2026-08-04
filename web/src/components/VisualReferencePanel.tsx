@@ -40,6 +40,11 @@ export function VisualReferencePanel({
   const [references, setReferences] = useState<VisualReference[] | null>(initialReferences ?? null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /*
+   * The composer is a five-field form. Left permanently open it cost ~250px on
+   * every editable screen for an action taken rarely, so it starts collapsed.
+   */
+  const [composerOpen, setComposerOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [url, setUrl] = useState('');
   const [kind, setKind] = useState<VisualKind>('floorplan');
@@ -114,6 +119,7 @@ export function VisualReferencePanel({
         ...(attribution.trim() ? { attribution: attribution.trim() } : {}),
       });
       setTitle('');
+      setComposerOpen(false);
       setUrl('');
       setAttribution('');
       await reload();
@@ -136,6 +142,7 @@ export function VisualReferencePanel({
         file,
       });
       setTitle('');
+      setComposerOpen(false);
       setAttribution('');
       await reload();
     } catch (err) {
@@ -157,9 +164,18 @@ export function VisualReferencePanel({
     }
   };
 
+  /*
+   * A read-only panel with nothing in it has nothing to say: the empty state
+   * asks the operator to attach a floorplan, but `editable={false}` gives them
+   * no control to do it, and the CSV button downloads an empty file. It was
+   * repeating on ten screens. Errors and the loading state still render —
+   * "references failed to load" is not the same claim as "there are none".
+   */
+  if (!editable && !error && references !== null && references.length === 0) return null;
+
   return (
     <div className="nt-visual-ref nt-recon-reveal nt-visual-ref-shell nt-section-panel">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · visual lane · operator sketches · never telemetry</div>
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · visual lane · operator sketches · never telemetry</div>
       <div className="nt-row-between-12">
         <SectionHeader
           label="Visual references"
@@ -168,6 +184,16 @@ export function VisualReferencePanel({
         <Button variant="secondary" size="sm" onClick={downloadServerCsv}>
           Download references CSV
         </Button>
+        {editable ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            aria-expanded={composerOpen}
+            onClick={() => setComposerOpen((v) => !v)}
+          >
+            {composerOpen ? 'Cancel' : 'Add visual reference'}
+          </Button>
+        ) : null}
       </div>
 
       {error ? (
@@ -184,13 +210,19 @@ export function VisualReferencePanel({
             <Skeleton height={64} />
             <Skeleton height={64} />
           </div>
-          <span className="nt-hint-muted nt-chat-pending__label">NightDesk · visual lane…</span>
+          <span className="nt-hint-muted nt-chat-pending__label">HPE Network Tools · visual lane…</span>
         </div>
       ) : references.length === 0 ? (
         <EmptyState
           title="No visual references"
           description="Attach a floorplan, port map, document, or native console link. These never replace live topology or telemetry."
-        />
+        >
+          {editable && !composerOpen ? (
+            <Button variant="secondary" size="sm" onClick={() => setComposerOpen(true)}>
+              Add visual reference
+            </Button>
+          ) : null}
+        </EmptyState>
       ) : (
         <ul className="nt-visual-ref__list">
           {references.map((ref) => (
@@ -237,7 +269,7 @@ export function VisualReferencePanel({
         </ul>
       )}
 
-      {editable ? (
+      {editable && composerOpen ? (
         <div className="nt-visual-ref__composer">
           <div className="nt-visual-ref__composer-label">Add visual reference</div>
           <Input size="sm" placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />

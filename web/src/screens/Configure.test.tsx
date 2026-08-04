@@ -19,6 +19,10 @@ import Configure, {
   ssidExportRows,
   vlanExportRows,
 } from './Configure';
+
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = vi.fn();
+}
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import {

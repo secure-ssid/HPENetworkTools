@@ -12,7 +12,7 @@ const URL_USERINFO = /\/\/([^/\s@]*?):([^/\s@]*?)@/g;
 
 /** `Authorization: Bearer …` and bare `Bearer …` tokens. */
 const BEARER_AUTH = /\bauthorization\s*[:=]\s*bearer\s+\S+/gi;
-const BEARER_TOKEN = /\bbearer\s+[A-Za-z0-9._\-+/=]+/gi;
+const BEARER_TOKEN = /\bbearer\s+[A-Za-z0-9._+/=-]+/gi;
 
 /**
  * Obvious secret assignments in free text / error strings.
@@ -47,7 +47,7 @@ const JWT_COMPACT = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
  * so a mis-filed note cannot ship key material in a CSV download (Loop 103).
  */
 const PEM_BLOCK =
-  /-----BEGIN [A-Z0-9 \-]+-----[\s\S]*?-----END [A-Z0-9 \-]+-----/g;
+  /-----BEGIN [A-Z0-9 -]+-----[\s\S]*?-----END [A-Z0-9 -]+-----/g;
 
 /** Strip credential userinfo, PEMs, cookies, Basic/JWT, secret assignments. */
 export function redactExportCell(v: unknown): string {

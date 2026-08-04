@@ -24,8 +24,14 @@
  * WLANs filtered empties offer **Clear filters** for q / enabled (Loop 204).
  * Licence usage multi-select raises **Export selected** / **Copy site ids** /
  * **Copy selection link** (`?siteIds=` + `section=licenses`; Loop 187) / Clear.
- * Header keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS — Loop 198)
- * covers the estate tables that already wire j/k/x/Enter.
+ * Estate rogues multi-select raises **Export selected** / **Copy BSSIDs** /
+ * **Copy names** (unique newline-joined SSIDs — Loop 234) / **Copy selection
+ * link** (`?bssids=` + `section=rogues`) / Clear. Org audit multi-select raises
+ * **Export selected** / **Copy admins** / **Copy messages** (unique
+ * newline-joined change summaries — Loop 235) / **Copy selection link**
+ * (`?auditIds=` + `section=audit`) / Clear. Header keyboard shortcuts help
+ * (`?` / DATATABLE_ROW_SHORTCUTS — Loop 198) covers the estate tables that
+ * already wire j/k/x/Enter.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -192,7 +198,7 @@ function MistView({ data, navigate }: { data: MistData; navigate: ReturnType<typ
         actions={
           <>
             <span className="nt-systems-brand" aria-hidden>
-              NightDesk · wireless
+              HPE Network Tools · wireless
             </span>
             <Badge plane>Mist</Badge>
             <Badge tone={HEALTH_TONE[plane.health]} dot>
@@ -437,7 +443,12 @@ function MistView({ data, navigate }: { data: MistData; navigate: ReturnType<typ
         }
       />
 
-      <div className="nt-plane-theater" role="note">NightDesk · Mist ECG · SLE / rogues / AP cinema</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · Mist ECG · SLE / rogues / AP cinema</div>
+      <div className="nt-status-ribbon nt-mist-ribbon" role="status" aria-label="Mist status ribbon">
+        <span className="nt-status-ribbon__item">Mist ECG · SLE</span>
+        <span className="nt-status-ribbon__item">rogues · AP cinema</span>
+        <span className="nt-status-ribbon__item">plane monochrome</span>
+      </div>
 
       <div className="nt-service-note nt-note-10">
         {`MIST PLANE · ${syncPhrase(data)}`}
@@ -464,8 +475,6 @@ function MistView({ data, navigate }: { data: MistData; navigate: ReturnType<typ
         }
       />
 
-      <VisualReferencePanel target={{ kind: 'connector', id: 'mist', plane: 'MIST' }} />
-      <ConfigRecommendationsPanel title="Mist estate recommendations" limit={6} />
 
       <SleAcrossSites sleBySiteId={data.sleBySiteId} />
       <EstateRogueAps rogues={data.rogues} />
@@ -474,6 +483,13 @@ function MistView({ data, navigate }: { data: MistData; navigate: ReturnType<typ
       <FirmwareSection devices={data.devices} />
       <LicenseUsageSection licenseUsages={data.licenseUsages} live={sectionLive} />
       <MistOpsSections />
+
+      {/* Reference material and advisory panels sit below the data they
+          describe. Rendered above it they pushed the primary table several
+          hundred pixels down the page — on a queue screen the queue is what
+          the operator came for, not the suggestions about it. */}
+      <VisualReferencePanel target={{ kind: 'connector', id: 'mist', plane: 'MIST' }} />
+      <ConfigRecommendationsPanel title="Mist estate recommendations" category="configuration" limit={6} />
     </div>
   );
 }

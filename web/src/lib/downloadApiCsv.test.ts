@@ -15,8 +15,10 @@ describe('downloadApiCsv', () => {
   const click = vi.fn();
   let createObjectURL: ReturnType<typeof vi.fn>;
   let revokeObjectURL: ReturnType<typeof vi.fn>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let createElementSpy: any;
+  let createElementSpy: {
+    mockRestore: () => void;
+    mock: { results: { value: unknown }[] };
+  };
 
   beforeEach(() => {
     apiFetch.mockReset();
@@ -25,11 +27,12 @@ describe('downloadApiCsv', () => {
     revokeObjectURL = vi.fn();
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
-    createElementSpy = vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+    const nativeCreate = Document.prototype.createElement.bind(document);
+    createElementSpy = vi.spyOn(document, 'createElement').mockImplementation(((tag: string, options?: ElementCreationOptions) => {
       if (tag === 'a') {
         return { href: '', download: '', click } as unknown as HTMLAnchorElement;
       }
-      return document.createElement(tag);
+      return nativeCreate(tag, options);
     }) as typeof document.createElement);
   });
 

@@ -497,7 +497,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
           <Skeleton height={28} width="72%" />
           <Skeleton height={72} />
         </div>
-        <span className="nt-hint-muted nt-chat-pending__label">NightDesk · diagnostics wake…</span>
+        <span className="nt-hint-muted nt-chat-pending__label">HPE Network Tools · diagnostics wake…</span>
       </div>
     );
   }
@@ -514,7 +514,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
 
   return (
     <div className="nt-diag nt-diagnostics-shell nt-diag-panel nt-section-panel">
-      <div className="nt-plane-theater" role="note">NightDesk · diagnostics · honest probes</div>
+      <div className="nt-plane-theater" role="note">HPE Network Tools · diagnostics · honest probes</div>
       <Alert tone="info" title="Reviewed operational action">
         Traceroute runs through New Central after explicit review. It is an operational action, not a configuration mutation.
         Portal cancellation stops operator polling only because Central exposes no documented traceroute cancel operation.
