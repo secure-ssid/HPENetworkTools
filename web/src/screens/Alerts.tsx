@@ -2,16 +2,28 @@
  * web/src/screens/Alerts.tsx — the de-duplicated queue across all planes.
  * High-fidelity port of design/NtAlerts.dc.html: danger correlation Alert,
  * filter row (FacetFilter popovers — severity, plane, site, each a checklist
- * with live counts, OR-within / AND-across — mono Input 230px,
+ * with live counts, OR-within / AND-across — **Severity** chips sharing the
+ * same `sev` facet / `?sev=` write-back, **Plane** chips sharing the same
+ * `plane` facet / `?plane=` write-back (Loop 151), **Site** chips sharing the same
+ * `site` facet / `?site=` write-back (Loop 157), **Unacked** chips sharing the
+ * same `?unacked=` write-back as the Switch (Loop 154) — mono Input 230px,
  * "Unacknowledged only" Switch, right-aligned mono `N of M` count), open table
  * Sev/Alert/Site/Plane/State/Age/actions. Filters are local, instant and
- * additive (AND); an empty result shows the EmptyState.
+ * additive (AND); an empty result shows the EmptyState. Filtered empties offer
+ * **Clear filters** (Loop 204) — resets q / sev·plane·site facets / unacked /
+ * fps selection deep link.
  * The queue table is a nightdesk DataTable, following the Devices reference:
  * the column manager (View options dropdown + header-edge resize) persists
  * its controlled config through SettingsContext under the 'alerts' table id,
  * the rows are a keyboard grid (j/↓ k/↑ move, Enter/→ opens the group's
  * timeline drawer, x selects, Esc clears — '?' lists them), and the 'alert'
- * column is non-hideable because it is the row's primary identifier. Saved
+ * column is non-hideable because it is the row's primary identifier. A
+ * non-empty selection raises Export selected, **Copy selection link**
+ * (`?fps=` of the marked fingerprints — Devices `?names=` pattern), **Copy
+ * fingerprints** (newline-joined fingerprints for paste — Devices **Copy
+ * serials** pattern), and Clear; an active `fps=` deep link shows a clearable
+ * chip. Header **LIVE** stamps pure live and alerts blend feeds alike
+ * (Loop 166 — pure live used to omit the badge). Saved
  * views (the Views dropdown) capture the facet selection, free text, the two
  * switches, the column config and the density, named and persisted through
  * SettingsContext under the 'alerts' screen id. A row that arrived through
@@ -53,7 +65,19 @@
  * are real operator data in BOTH demo and live mode (the engine evaluates
  * the demo estate in demo mode); with the backend unreachable the section
  * shows the AUTHORED demo rule, labelled, exactly like the windows.
+ * Policy polish: `?tab=policy` deep-links the Policy tab; **Copy policy link**
+ * puts that URL on the clipboard; **Export CSV** on rules and maintenance
+ * windows dumps the visible rows client-side; **Download server CSV** hits
+ * `/api/alert-rules/export` and `/api/maintenance-windows/export` when the
+ * backend is reachable (Loop 80 / Loop 93). Silences tab has client Export
+ * plus `/api/silences/export` (optional `active=`). Secrets are never on
+ * these rows. Queue CSV remains separate (client + live server).
  * Data: getAlerts() — live /api/alerts when the server is up, fixtures otherwise.
+ * List Load more passes `?q=` plus `unacked` / `cleared` so text search and the
+ * Unacknowledged / Include-cleared switches page correctly; FacetFilter stays
+ * client-side on the loaded universe (counts stay honest). Download server CSV
+ * also sends active `plane`/`sev`/`site` facet ticks and the same unacked/cleared
+ * flags so the full export matches the filter bar, not only the on-screen page.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -71,11 +95,11 @@ import {
   KeyboardShortcuts,
   Select,
   PageSkeleton,
+  Skeleton,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
-  Spinner,
   Switch,
   TableViewOptions,
   useToast,
@@ -104,10 +128,19 @@ import type { SavedView } from '../app/SettingsContext';
 import { applyFacets, FacetFilter, sanitizeFacetSelection } from '../components/FacetFilter';
 import type { FacetDef, FacetSelection } from '../components/FacetFilter';
 import { SavedViews } from '../components/SavedViews';
-import { deviceDetailPath } from '../app/nav';
+import { deviceDetailPath, namesFilterForParam } from '../app/nav';
 import { useIncident } from '../app/IncidentContext';
+import {
+  paletteActionCue,
+  parsePaletteAction,
+  stripActionParam,
+  type PaletteActionId,
+} from '../app/actionDeepLink';
 import { ScreenHeader } from './ScreenHeader';
 import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { ApiErrorState } from './ApiErrorState';
 
 /** The silence durations the drawer offers, in minutes. */
@@ -450,32 +483,112 @@ function timelineKindLabel(kind: AlertTimeline['events'][number]['kind']): strin
   return kind;
 }
 
+const ALERTS_TABS = new Set(['queue', 'silences', 'policy']);
+
+/** Seed FacetFilter selection from share URL keys (`sev` matches facet key). */
+function facetsFromSearchParams(params: URLSearchParams): FacetSelection {
+  const init: FacetSelection = {};
+  const plane = params.get('plane')?.trim();
+  if (plane) init.plane = plane.split(',').map((p) => p.trim()).filter(Boolean);
+  const sev = params.get('sev')?.trim();
+  if (sev) init.sev = sev.split(',').map((p) => p.trim()).filter(Boolean);
+  const site = params.get('site')?.trim();
+  if (site) init.site = site.split(',').map((p) => p.trim()).filter(Boolean);
+  return init;
+}
+
 export default function Alerts() {
   const { patchIncident } = useIncident();
-  const [alertsTab, setAlertsTab] = useState('queue');
   const navigate = useNavigate();
   const { density, setDensity, showPlatformTags, pollIntervalSec, tableColumns, setTableColumns, savedViews, setSavedViews } = useSettings();
   const { toast } = useToast();
   const [data, setData] = useState<AlertsData | null>(null);
   /* Faceted filtering (severity / plane / site) — OR within a facet, AND
    * across facets, composed with the free text and switches below. A
-   * `?plane=` deep link (the Central screen's queue hand-off) seeds the
-   * plane facet once, on mount; after that the selection is the operator's. */
-  const [searchParams] = useSearchParams();
-  const [facets, setFacets] = useState<FacetSelection>(() => {
-    const plane = searchParams.get('plane')?.trim();
-    const init: FacetSelection = plane ? { plane: [plane] } : {};
-    return init;
+   * `?plane=` / `?sev=` / `?site=` deep link seeds facets on mount (and when
+   * the address bar changes); local edits write back so refresh / Copy view
+   * link reopen the same slice. `?tab=policy|silences|queue` opens that
+   * section (Policy holds device-down rules and maintenance windows). */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [alertsTab, setAlertsTab] = useState(() => {
+    const t = searchParams.get('tab')?.trim();
+    return t && ALERTS_TABS.has(t) ? t : 'queue';
   });
-  const [q, setQ] = useState('');
-  const [unackedOnly, setUnackedOnly] = useState(false);
-  /* Row selection for the queue table's keyboard grid. Nothing on this
-   * screen consumes the selection yet — it follows the Devices reference, and
-   * the change-queue bulk-actions work will. */
+  const [facets, setFacets] = useState<FacetSelection>(() => facetsFromSearchParams(searchParams));
+  const [q, setQ] = useState(() => searchParams.get('q') ?? '');
+  const [unackedOnly, setUnackedOnly] = useState(
+    () => searchParams.get('unacked') === '1' || searchParams.get('unacked') === 'true',
+  );
+  /* Row selection for the queue table's keyboard grid. Selection drives the
+   * bulk bar (Export selected / Copy selection link) — same contextual pattern
+   * as Devices. */
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  /* Deep link: /alerts?fps=fp1\nfp2 (bulk selection share). Read straight off
+   * the URL like Devices ?names= — not written back by the filter-row effect. */
+  const fpFilter = namesFilterForParam(searchParams.get('fps'));
   /* Rows the plane itself considers resolved are not workload — they are out of
    * the queue unless the operator asks for them (shared/types.ts:274). */
-  const [showCleared, setShowCleared] = useState(false);
+  const [showCleared, setShowCleared] = useState(
+    () => searchParams.get('cleared') === '1' || searchParams.get('cleared') === 'true',
+  );
+
+  /* Re-seed local filter state when the address bar changes externally
+   * (back/forward, pasted deep link) without wiping in-flight edits that
+   * already match the URL after write-back. */
+  const [prevParams, setPrevParams] = useState(searchParams);
+  if (prevParams !== searchParams) {
+    setPrevParams(searchParams);
+    const t = searchParams.get('tab')?.trim();
+    setAlertsTab(t && ALERTS_TABS.has(t) ? t : 'queue');
+    setFacets(facetsFromSearchParams(searchParams));
+    setQ(searchParams.get('q') ?? '');
+    setUnackedOnly(searchParams.get('unacked') === '1' || searchParams.get('unacked') === 'true');
+    setShowCleared(searchParams.get('cleared') === '1' || searchParams.get('cleared') === 'true');
+  }
+
+  /* ⌘K quick-action landing cue (`?action=ticket|silence`) — one-shot. */
+  const [actionCue, setActionCue] = useState<PaletteActionId | null>(() =>
+    parsePaletteAction(searchParams.get('action')),
+  );
+  useEffect(() => {
+    const parsed = parsePaletteAction(searchParams.get('action'));
+    if (!parsed) return;
+    if (parsed !== 'ticket' && parsed !== 'silence') return;
+    setActionCue(parsed);
+    if (parsed === 'silence') setAlertsTab('silences');
+    if (parsed === 'ticket') setAlertsTab('queue');
+    const stripped = stripActionParam(searchParams);
+    if (stripped) setSearchParams(stripped, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  /* Keep filter-row params aligned with local state so refresh / Copy view
+   * link reopen the same queue slice. Empty defaults are omitted. Facet keys
+   * match FacetFilter (`sev` / `plane` / `site`), not display labels.
+   * Never re-write `action` — the cue consumes it once. */
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('action');
+    if (alertsTab !== 'queue') next.set('tab', alertsTab);
+    else next.delete('tab');
+    const qTrim = q.trim();
+    if (qTrim) next.set('q', qTrim);
+    else next.delete('q');
+    const planes = facets.plane ?? [];
+    if (planes.length > 0) next.set('plane', planes.join(','));
+    else next.delete('plane');
+    const sevs = facets.sev ?? [];
+    if (sevs.length > 0) next.set('sev', sevs.join(','));
+    else next.delete('sev');
+    const sites = facets.site ?? [];
+    if (sites.length > 0) next.set('site', sites.join(','));
+    else next.delete('site');
+    if (unackedOnly) next.set('unacked', '1');
+    else next.delete('unacked');
+    if (showCleared) next.set('cleared', '1');
+    else next.delete('cleared');
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [alertsTab, q, facets, unackedOnly, showCleared, searchParams, setSearchParams]);
 
   /* Ticket-gated acknowledge (Central's notifications clear API). The confirm
    * block lives inline under the header; it targets the first open alert in
@@ -488,6 +601,9 @@ export default function Alerts() {
    * a fresh live install has none, and a greyed-out button with an empty Select
    * and no copy reads as a broken control. */
   const [ticketsLoaded, setTicketsLoaded] = useState(false);
+  /* Envelope error on the ticket list is not "no tickets" — surface it so the
+   * ack ritual never pretends the queue is empty when the read failed. */
+  const [ticketsError, setTicketsError] = useState<string | null>(null);
 
   /* Time-boxed silence drawer: targets one group and always requires a
    * reason — it is audit-logged and shown wherever the group is hidden from. */
@@ -547,13 +663,23 @@ export default function Alerts() {
   useEffect(() => {
     if (!ackTarget) return;
     let live = true;
+    setTicketsLoaded(false);
+    setTicketsError(null);
     void getTickets().then((d) => {
       if (!live) return;
+      if (d.apiError) {
+        setAckTickets([]);
+        setAckTicket('');
+        setTicketsError(d.apiError);
+        setTicketsLoaded(true);
+        return;
+      }
       const open = d.tickets.filter((t) => !/resolved|closed/i.test(t.state));
       const rest = d.tickets.filter((t) => /resolved|closed/i.test(t.state));
       const sorted = [...open, ...rest];
       setAckTickets(sorted);
       setAckTicket((curId) => curId || (sorted[0]?.id ?? ''));
+      setTicketsError(null);
       setTicketsLoaded(true);
     });
     return () => {
@@ -579,11 +705,19 @@ export default function Alerts() {
   /** Re-read the queue so a just-raised ticket can authorise the acknowledge. */
   const reloadTickets = async (prefer: string | null) => {
     const d = await getTickets();
+    if (d.apiError) {
+      setAckTickets([]);
+      setAckTicket('');
+      setTicketsError(d.apiError);
+      setTicketsLoaded(true);
+      return;
+    }
     const open = d.tickets.filter((t) => !/resolved|closed/i.test(t.state));
     const rest = d.tickets.filter((t) => /resolved|closed/i.test(t.state));
     const sorted = [...open, ...rest];
     setAckTickets(sorted);
     setAckTicket(prefer ?? sorted[0]?.id ?? '');
+    setTicketsError(null);
     setTicketsLoaded(true);
   };
 
@@ -709,6 +843,16 @@ export default function Alerts() {
     setAlertPageTotal(d.page?.total ?? null);
   };
 
+  const serverQ = q.trim();
+  /** Facet ticks for server CSV only (list facets stay client-side for counts). */
+  const exportPlane = (facets.plane ?? []).join(',');
+  const exportSev = (facets.sev ?? []).join(',');
+  const exportSite = (facets.site ?? []).join(',');
+  /** Queue switches shared with list Load more + Download server CSV. */
+  const serverUnacked = unackedOnly ? '1' : undefined;
+  /** `0` hides cleared (UI default); omit when Include cleared is on. */
+  const serverCleared = showCleared ? undefined : '0';
+
   useEffect(() => {
     let live = true;
     let inFlight = false;
@@ -719,6 +863,9 @@ export default function Alerts() {
       if (mode === 'append') setLoadingMoreAlerts(true);
       void getAlerts({
         limit: ALERT_PAGE,
+        ...(serverQ ? { q: serverQ } : {}),
+        ...(serverUnacked ? { unacked: serverUnacked } : {}),
+        ...(serverCleared ? { cleared: serverCleared } : {}),
         ...(mode === 'append' && nextAlertCursorRef.current
           ? { cursor: nextAlertCursorRef.current }
           : {}),
@@ -768,6 +915,8 @@ export default function Alerts() {
       });
     };
     loadMoreAlertsRef.current = () => pull('append');
+    nextAlertCursorRef.current = null;
+    groupsAccRef.current = [];
     pull('replace');
     const every = Math.max(pollIntervalSec, 10) * 1000;
     const id = setInterval(() => pull('replace'), every);
@@ -775,7 +924,7 @@ export default function Alerts() {
       live = false;
       clearInterval(id);
     };
-  }, [pollIntervalSec]);
+  }, [pollIntervalSec, serverQ, serverUnacked, serverCleared]);
 
   /** Re-read the windows after a create/toggle/delete lands. */
   const refreshWindows = async () => {
@@ -858,7 +1007,12 @@ export default function Alerts() {
 
   /** Re-read the queue after a silence lands or is lifted. */
   const refresh = async () => {
-    const d = await getAlerts({ limit: ALERT_PAGE });
+    const d = await getAlerts({
+      limit: ALERT_PAGE,
+      ...(serverQ ? { q: serverQ } : {}),
+      ...(serverUnacked ? { unacked: serverUnacked } : {}),
+      ...(serverCleared ? { cleared: serverCleared } : {}),
+    });
     applyAlertsPayload(d, 'replace');
   };
 
@@ -1083,12 +1237,29 @@ export default function Alerts() {
      unacked switch, free text) let through. The FacetFilter counts describe
      this set, and applyFacets narrows it to the rows the table shows — so a
      count never promises rows the search box would then hide. */
+  const matchesAlertNonFacet = (g: (typeof groups)[number]) =>
+    (showCleared || g.latest.state !== 'cleared') &&
+    (fpFilter === null || fpFilter.includes(g.fingerprint)) &&
+    (!ql || (g.latest.title + g.latest.detail + g.latest.siteName).toLowerCase().includes(ql));
+  /* Unacked chips count over cleared/q/fps (not unacked) so the open mix stays
+   * visible while the chip is on — same idea as Licences idle (Loop 154). */
+  const unackedUniverse = groups.filter((g) => matchesAlertNonFacet(g));
+  const unackedChips =
+    unackedUniverse.some((g) => g.latest.state === 'open') || unackedOnly
+      ? [
+          {
+            key: '1' as const,
+            label: 'Unacked',
+            count: unackedUniverse.filter((g) => g.latest.state === 'open').length,
+            pressed: unackedOnly,
+          },
+        ]
+      : [];
   const baseRows = groups.filter(
-    (g) =>
-      (showCleared || g.latest.state !== 'cleared') &&
-      (!unackedOnly || g.latest.state === 'open') &&
-      (!ql || (g.latest.title + g.latest.detail + g.latest.siteName).toLowerCase().includes(ql)),
+    (g) => matchesAlertNonFacet(g) && (!unackedOnly || g.latest.state === 'open'),
   );
+  const fpPresent =
+    fpFilter === null ? 0 : fpFilter.filter((fp) => groups.some((g) => g.fingerprint === fp)).length;
   const alertFacets: Array<FacetDef<AlertGroup>> = [
     { key: 'sev', label: 'Severity', values: (g) => [g.latest.sev] },
     { key: 'plane', label: 'Plane', values: (g) => [g.latest.plane] },
@@ -1099,12 +1270,109 @@ export default function Alerts() {
       formatValue: (id) => groups.find((g) => g.latest.siteId === id)?.latest.siteName ?? id,
     },
   ];
+  /* Severity chips count over the non-facet universe (same as FacetFilter's
+   * baseRows) and toggle the `sev` facet / `?sev=` write-back — single-select
+   * click again to clear (Loop 145). Plane chips share the same universe and
+   * toggle `plane` / `?plane=` the same way (Loop 151). */
+  const activeSevs = facets.sev ?? [];
+  const sevChipKeys = [
+    ...new Set(baseRows.map((g) => String(g.latest.sev ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  for (const s of activeSevs) {
+    if (s && !sevChipKeys.includes(s)) sevChipKeys.unshift(s);
+  }
+  const sevChips = sevChipKeys.map((key) => {
+    const sample = baseRows.find((g) => g.latest.sev === key);
+    return {
+      key,
+      label: key,
+      tone: sample?.latest.tone ?? 'neutral',
+      count: baseRows.filter((g) => g.latest.sev === key).length,
+      pressed: activeSevs.length === 1 && activeSevs[0] === key,
+    };
+  }).filter((c) => c.count > 0 || c.pressed);
+  const toggleSevChip = (key: string) => {
+    const cur = facets.sev ?? [];
+    if (cur.length === 1 && cur[0] === key) {
+      const next = { ...facets };
+      delete next.sev;
+      setFacets(next);
+      return;
+    }
+    setFacets({ ...facets, sev: [key] });
+  };
+  const activePlanes = facets.plane ?? [];
+  const planeChipKeys = [
+    ...new Set(baseRows.map((g) => String(g.latest.plane ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b));
+  for (const p of activePlanes) {
+    if (p && !planeChipKeys.includes(p)) planeChipKeys.unshift(p);
+  }
+  const planeChips = planeChipKeys.map((key) => ({
+    key,
+    label: key,
+    count: baseRows.filter((g) => g.latest.plane === key).length,
+    pressed: activePlanes.length === 1 && activePlanes[0] === key,
+  })).filter((c) => c.count > 0 || c.pressed);
+  const togglePlaneChip = (key: string) => {
+    const cur = facets.plane ?? [];
+    if (cur.length === 1 && cur[0] === key) {
+      const next = { ...facets };
+      delete next.plane;
+      setFacets(next);
+      return;
+    }
+    setFacets({ ...facets, plane: [key] });
+  };
+  /* Site chips count over the non-facet universe and toggle the `site` facet /
+   * `?site=` write-back (site id; label from siteName) — single-select click
+   * again to clear (Loop 157). */
+  const activeSites = facets.site ?? [];
+  const siteChipKeys = [
+    ...new Set(baseRows.map((g) => String(g.latest.siteId ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  for (const s of activeSites) {
+    if (s && !siteChipKeys.includes(s)) siteChipKeys.unshift(s);
+  }
+  const siteChips = siteChipKeys
+    .map((key) => {
+      const sample = baseRows.find((g) => g.latest.siteId === key);
+      return {
+        key,
+        label: sample?.latest.siteName?.trim() || key,
+        count: baseRows.filter((g) => g.latest.siteId === key).length,
+        pressed: activeSites.length === 1 && activeSites[0] === key,
+      };
+    })
+    .filter((c) => c.count > 0 || c.pressed);
+  const toggleSiteChip = (key: string) => {
+    const cur = facets.site ?? [];
+    if (cur.length === 1 && cur[0] === key) {
+      const next = { ...facets };
+      delete next.site;
+      setFacets(next);
+      return;
+    }
+    setFacets({ ...facets, site: [key] });
+  };
   const rows = applyFacets(baseRows, alertFacets, facets);
   /* The denominator is the queue, and a row the plane already resolved is not in
    * it — counting cleared rows overstates the workload (README §2). Counts are
    * in firings: a ×3 group is three of them, not one. */
   const clearedCount = countFirings(groups.filter((g) => g.latest.state === 'cleared'));
   const queueTotal = showCleared ? countFirings(groups) : countFirings(groups) - clearedCount;
+
+  const clearAlertFilters = () => {
+    setQ('');
+    setFacets({});
+    setUnackedOnly(false);
+    setSelectedKeys([]);
+    if (fpFilter !== null) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('fps');
+      setSearchParams(next, { replace: true });
+    }
+  };
 
   /* A saved view snapshots the facet selection, the free text and both
      switches, the column-manager config and the density — applying one
@@ -1148,7 +1416,7 @@ export default function Alerts() {
         return (
           <div className="nt-stack nt-gap-2">
             <span className="nt-row nt-gap-6">
-              <span className="nt-body-sm" style={{ fontSize: 13, color: "var(--nd-text-primary)" }}>{a.title}</span>
+              <span className="nt-body-sm nt-fs-13-primary">{a.title}</span>
               {/* One problem, N firings — the count is the noise level,
                   never N rows of the same thing. */}
               {g.count > 1 ? <Badge tone="neutral">×{g.count}</Badge> : null}
@@ -1194,10 +1462,7 @@ export default function Alerts() {
       title: 'State',
       render: (g) => (
         <span
-          className="nt-mono-11"
-          style={{
-            color: g.latest.state === 'open' ? 'var(--nd-text-secondary)' : 'var(--nd-text-muted)',
-          }}
+          className={g.latest.state === 'open' ? 'nt-mono-11 nt-tone-secondary' : 'nt-mono-11 nt-tone-muted'}
         >
           {g.latest.state}
         </span>
@@ -1279,16 +1544,61 @@ export default function Alerts() {
   // queue that is merely unread must never be allowed to look like a quiet one.
   const missingSources = data.missingSources ?? [];
 
+  const actionCueCopy =
+    actionCue === 'ticket' || actionCue === 'silence' ? paletteActionCue(actionCue) : null;
+
   return (
-    <div className="nt-alerts">
+    <div className="nt-alerts nt-recon-reveal nt-alerts-shell nt-section-panel">
       <ScreenHeader
         overline="Operate / Alerts"
         title="Alerts"
         subtitle="Every plane's alarms in one queue, de-duplicated and aged."
         actions={
           <>
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · signal
+            </span>
             <span className="nt-mono-label">{synced}</span>
-            {data.blended?.includes('alerts') ? <Badge tone="info">LIVE</Badge> : null}
+            {/* LIVE on pure live and alerts blend alike — blend-only left pure live quiet. */}
+            {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  /* Prefer the live address bar (filter write-back keeps it
+                   * current); fall back to building from local filter state. */
+                  let url = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+                  let qs = window.location.search.replace(/^\?/, '');
+                  if (!qs) {
+                    const next = new URLSearchParams();
+                    if (alertsTab !== 'queue') next.set('tab', alertsTab);
+                    if (q.trim()) next.set('q', q.trim());
+                    const planes = facets.plane ?? [];
+                    if (planes.length > 0) next.set('plane', planes.join(','));
+                    const sevs = facets.sev ?? [];
+                    if (sevs.length > 0) next.set('sev', sevs.join(','));
+                    const sites = facets.site ?? [];
+                    if (sites.length > 0) next.set('site', sites.join(','));
+                    if (unackedOnly) next.set('unacked', '1');
+                    if (showCleared) next.set('cleared', '1');
+                    qs = next.toString();
+                    url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                  }
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('View link copied', {
+                      description: qs || 'unfiltered alert queue',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy view link
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -1315,6 +1625,41 @@ export default function Alerts() {
             >
               Export CSV
             </Button>
+            {data.dataSource === 'live' ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const qs = new URLSearchParams();
+                    if (q.trim()) qs.set('q', q.trim());
+                    if (exportPlane) qs.set('plane', exportPlane);
+                    if (exportSev) qs.set('sev', exportSev);
+                    if (exportSite) qs.set('site', exportSite);
+                    if (unackedOnly) qs.set('unacked', '1');
+                    if (!showCleared) qs.set('cleared', '0');
+                    const suffix = qs.toString() ? `?${qs}` : '';
+                    const res = await downloadApiCsv(
+                      `/api/alerts/export${suffix}`,
+                      'alerts-queue.csv',
+                    );
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description: 'alerts-queue.csv — active groups from the portal.',
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="sm"
@@ -1346,6 +1691,7 @@ export default function Alerts() {
             <Button
               variant="secondary"
               size="sm"
+              className="nt-raise-ticket"
               onClick={() => void raiseFromTopRow()}
             >
               Raise ticket
@@ -1353,6 +1699,28 @@ export default function Alerts() {
           </>
         }
       />
+      <div className="nt-plane-theater" role="note">NightDesk · signal theater · severity owns hue</div>
+      <nav className="nt-incident-spine nt-alert-spine" aria-label="Incident spine">
+        <span className="nt-incident-spine__step nt-alert-spine__step" data-active="true">Alert</span>
+        <span className="nt-incident-spine__chev" aria-hidden>→</span>
+        <span className="nt-incident-spine__step nt-alert-spine__step">Device</span>
+        <span className="nt-incident-spine__chev" aria-hidden>→</span>
+        <span className="nt-incident-spine__step nt-alert-spine__step">Ticket</span>
+      </nav>
+
+      <VisualReferencePanel target={{ kind: 'service', id: 'alerts' }} editable={false} />
+      <ConfigRecommendationsPanel title="Alert / noise recommendations" limit={6} />
+
+      {actionCueCopy ? (
+        <Alert
+          tone="info"
+          title={actionCueCopy.title}
+          dismissible
+          onDismiss={() => setActionCue(null)}
+        >
+          <span className="nt-body-sm">{actionCueCopy.body}</span>
+        </Alert>
+      ) : null}
 
       {missingSources.length > 0 ? (
         <Alert
@@ -1376,7 +1744,8 @@ export default function Alerts() {
       ) : null}
 
       {ackTarget ? (
-        <div className="nt-alerts__ack">
+        <div className="nt-alerts__ack nt-write-ritual">
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-flex-1-wide">
             <FormField
               label="Authorising ticket"
@@ -1386,9 +1755,14 @@ export default function Alerts() {
                   : `Demo mode — the acknowledge is validated and audit-logged against this ticket; nothing is sent to ${ackTarget.plane}.`
               }
             >
-              {ticketsLoaded && ackTickets.length === 0 ? (
+              {ticketsLoaded && ticketsError ? (
+                <span className="nt-service-note nt-block-pt4" role="status">
+                  Ticket queue unavailable — {ticketsError}. Acknowledge stays blocked until the
+                  queue can be read; the portal will not invent a ticket list.
+                </span>
+              ) : ticketsLoaded && ackTickets.length === 0 ? (
                 <span
-                  className="nt-service-note nt-service-note" style={{ display: "block", paddingTop: 4 }}
+                  className="nt-service-note nt-block-pt4"
                 >
                   No open ticket to authorise this acknowledge — writes are brokered, never
                   standing. Raise one from this alert first.
@@ -1403,10 +1777,19 @@ export default function Alerts() {
               )}
             </FormField>
           </div>
-          {ticketsLoaded && ackTickets.length === 0 ? (
+          {ticketsLoaded && ticketsError ? (
             <Button
               variant="secondary"
               size="sm"
+              onClick={() => void reloadTickets(null)}
+            >
+              Retry ticket queue
+            </Button>
+          ) : ticketsLoaded && ackTickets.length === 0 ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="nt-raise-ticket"
               onClick={() => void raiseFromAckTarget()}
             >
               Raise ticket from this alert
@@ -1437,9 +1820,83 @@ export default function Alerts() {
         </TabsList>
 
       <TabsContent value="queue">
+      {sevChips.length > 0 ? (
+        <div className="nt-severity-chips nt-chip-row" role="group" aria-label="Alert severity">
+          <span className="nt-chip-row__label">Severity</span>
+          {sevChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => toggleSevChip(c.key)}
+              className={c.pressed ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'}
+              aria-pressed={c.pressed}
+              data-sev={c.key}
+            >
+              <Badge tone={c.tone} dot>
+                {c.label}
+              </Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {planeChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Alert plane">
+          <span className="nt-chip-row__label">Plane</span>
+          {planeChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => togglePlaneChip(c.key)}
+              className={c.pressed ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'}
+              aria-pressed={c.pressed}
+              data-plane={c.key}
+            >
+              <Badge plane>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {siteChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Alert site">
+          <span className="nt-chip-row__label">Site</span>
+          {siteChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => toggleSiteChip(c.key)}
+              className={c.pressed ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'}
+              aria-pressed={c.pressed}
+              data-site={c.key}
+            >
+              <Badge tone="neutral">{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {unackedChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Alert unacked">
+          <span className="nt-chip-row__label">Ack</span>
+          {unackedChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setUnackedOnly(!c.pressed)}
+              className={c.pressed ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'}
+              aria-pressed={c.pressed}
+              data-unacked={c.key}
+            >
+              <Badge tone="warning">{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="nt-alerts__toolbar">
         <FacetFilter facets={alertFacets} rows={baseRows} selection={facets} onChange={setFacets} />
-        <div style={{ width: 230 }}>
+        <div className="nt-w-230">
           <Input
             size="sm"
             mono
@@ -1462,6 +1919,23 @@ export default function Alerts() {
             checked={showCleared}
             onCheckedChange={setShowCleared}
           />
+        ) : null}
+        {fpFilter !== null ? (
+          <button
+            type="button"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete('fps');
+              setSearchParams(next, { replace: true });
+            }}
+            title={fpFilter.join(', ')}
+            className="nt-chip nt-chip--active"
+          >
+            {fpPresent === fpFilter.length
+              ? `${fpFilter.length} selected group${fpFilter.length === 1 ? '' : 's'}`
+              : `${fpPresent} of ${fpFilter.length} selected groups — ${fpFilter.length - fpPresent} not in this queue`}
+            {' — clear'}
+          </button>
         ) : null}
         <SavedViews
           views={savedViews.alerts ?? []}
@@ -1495,7 +1969,138 @@ export default function Alerts() {
         onRowActivate={(g) => openTimeline(g)}
         selectedKeys={selectedKeys}
         onSelectionChange={setSelectedKeys}
+        rowTone={(g) => g.latest.tone}
       />
+
+      {selectedKeys.length > 0 ? (
+        <div className="nt-configure-bulk-bar nt-bulk-glass" role="region" aria-label="Alert selection actions">
+          <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
+          <span className="nt-configure-bulk-bar__hint">
+            export, share, or copy fingerprints for the groups you marked — full queue export stays in the header
+          </span>
+          <span className="nt-configure-bulk-bar__actions">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const selected = new Set(selectedKeys);
+                const picked = rows.filter((g) => selected.has(g.fingerprint));
+                if (picked.length === 0) {
+                  toast('No selected groups still in view', {
+                    description: 'Clear selection or adjust filters.',
+                    tone: 'info',
+                  });
+                  return;
+                }
+                const n = exportTableCsv(
+                  'alerts-selected.csv',
+                  ['severity', 'title', 'detail', 'state', 'plane', 'site', 'device', 'count', 'fingerprint'],
+                  picked.map((g) => [
+                    g.latest.sev,
+                    g.latest.title,
+                    g.latest.detail,
+                    g.latest.state,
+                    g.latest.plane,
+                    g.latest.siteName,
+                    g.latest.device ?? '',
+                    g.count,
+                    g.fingerprint,
+                  ]),
+                );
+                toast(`Exported ${n} selected alert group${n === 1 ? '' : 's'}`, {
+                  description: 'alerts-selected.csv — inventory fields only.',
+                  tone: 'success',
+                });
+              }}
+            >
+              Export selected
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = rows.filter((g) => selected.has(g.fingerprint));
+                  if (picked.length === 0) {
+                    toast('No selected groups still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  /* fps= multi-line fingerprints reopen the same marked set on
+                   * refresh — parallel to Devices ?names=. */
+                  const next = new URLSearchParams(searchParams);
+                  next.set('fps', picked.map((g) => g.fingerprint).join('\n'));
+                  const qs = next.toString();
+                  const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('Selection link copied', {
+                      description: `${picked.length} alert group${picked.length === 1 ? '' : 's'} · fps=`,
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy selection link
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = rows.filter((g) => selected.has(g.fingerprint));
+                  if (picked.length === 0) {
+                    toast('No selected groups still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const fps = [
+                    ...new Set(
+                      picked
+                        .map((g) => (g.fingerprint ?? '').trim())
+                        .filter(Boolean),
+                    ),
+                  ];
+                  if (fps.length === 0) {
+                    toast('No fingerprints on the selected groups', {
+                      description: 'Those rows did not publish a fingerprint — export CSV instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const text = fps.join('\n');
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast(
+                      `Copied ${fps.length} fingerprint${fps.length === 1 ? '' : 's'}`,
+                      {
+                        description: 'newline-joined · paste into a ticket or silence note',
+                        tone: 'success',
+                      },
+                    );
+                  } catch {
+                    toast('Could not copy fingerprints', { description: text, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy fingerprints
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
+              Clear
+            </Button>
+          </span>
+        </div>
+      ) : null}
 
       {/* An empty queue and an empty filter result are different facts: blaming
           a filter the operator never set implies alerts exist and are hidden.
@@ -1534,12 +2139,16 @@ export default function Alerts() {
           <EmptyState
             title="Nothing matches that filter"
             description="Loosen the search or the severity, plane and site facets to see the rest of the queue."
-          />
+          >
+            <Button variant="secondary" size="sm" onClick={clearAlertFilters}>
+              Clear filters
+            </Button>
+          </EmptyState>
         )
       ) : null}
 
       {alertHasMore || alertPageTotal != null ? (
-        <div className="nt-filter-bar">
+        <div className="nt-filter-bar nt-sticky-filters">
           {alertPageTotal != null && data.groups ? (
             <span className="nt-mono-label">
               Loaded {data.groups.length} of {alertPageTotal} groups
@@ -1565,15 +2174,82 @@ export default function Alerts() {
       {/* Suppression is always visible: every group an active silence benched,
           with the reason and expiry, and a way back. */}
       {silencedGroups.length > 0 ? (
-        <div className="nt-panel">
+        <div className="nt-panel nt-panel--silenced">
           <div className="nt-panel__head">
             <span className="nt-panel__title">{`SILENCED (${silencedGroups.length})`}</span>
             <span className="nt-panel__hint">
               benched from the active queue until the silence expires — never hidden
             </span>
+            <span className="nt-panel__actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const n = exportTableCsv(
+                    'alert-silences.csv',
+                    [
+                      'id',
+                      'severity',
+                      'title',
+                      'plane',
+                      'device',
+                      'titleContains',
+                      'reason',
+                      'until',
+                      'fingerprint',
+                    ],
+                    silencedGroups.map(({ group, silence }) => [
+                      silence.id,
+                      group.latest.sev,
+                      group.latest.title,
+                      silence.plane ?? group.latest.plane ?? '',
+                      silence.device ?? group.latest.device ?? '',
+                      silence.titleContains ?? '',
+                      silence.reason,
+                      silence.until ?? '',
+                      group.fingerprint,
+                    ]),
+                  );
+                  toast(`Exported ${n} silence${n === 1 ? '' : 's'}`, {
+                    description: 'alert-silences.csv — groups currently benched (no secrets).',
+                  });
+                }}
+              >
+                Export CSV
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const res = await downloadApiCsv(
+                      '/api/silences/export?active=1',
+                      'alert-silences.csv',
+                    );
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description: 'alert-silences.csv — active silences on file (optional active=).',
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            </span>
           </div>
           {silencedGroups.map(({ group, silence }) => (
-            <div key={silence.id} className="nt-panel__row">
+            <div
+              key={silence.id}
+              className="nt-panel__row nt-panel__row--tone"
+              data-tone={group.latest.tone}
+            >
               <Badge tone={group.latest.tone} dot>
                 {group.latest.sev}
               </Badge>
@@ -1621,6 +2297,78 @@ export default function Alerts() {
             a device that stops reporting raises no plane alert — these rules watch for it
           </span>
           <span className="nt-panel__actions">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const url = new URL(window.location.href);
+                    url.search = '';
+                    url.searchParams.set('tab', 'policy');
+                    await navigator.clipboard.writeText(url.toString());
+                    toast('Policy link copied', { tone: 'success' });
+                  } catch {
+                    toast('Could not copy link', { tone: 'danger' });
+                  }
+                })();
+              }}
+            >
+              Copy policy link
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!rules || rules.length === 0}
+              onClick={() => {
+                const list = rules ?? [];
+                const n = exportTableCsv(
+                  'device-down-rules.csv',
+                  ['id', 'enabled', 'siteFilter', 'deviceTypeFilter', 'offlineMinutes', 'cooldownMinutes', 'createdAt'],
+                  list.map((r) => [
+                    r.id,
+                    r.enabled ? 'true' : 'false',
+                    r.siteFilter ?? '',
+                    r.deviceTypeFilter ?? 'all',
+                    r.offlineMinutes,
+                    r.cooldownMinutes,
+                    r.createdAt ?? '',
+                  ]),
+                );
+                toast(`Exported ${n} rule${n === 1 ? '' : 's'}`, {
+                  description: 'device-down-rules.csv — visible rules (no secrets).',
+                });
+              }}
+            >
+              Export CSV
+            </Button>
+            {!rulesDemo ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const res = await downloadApiCsv(
+                      '/api/alert-rules/export',
+                      'device-down-rules.csv',
+                    );
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description: 'device-down-rules.csv — rules on file (optional enabled= filter).',
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
             <Button variant="secondary" size="sm" onClick={() => openRuleForm(null)} disabled={rulesDemo}>
               New rule
             </Button>
@@ -1640,8 +2388,7 @@ export default function Alerts() {
         {rules?.map((r) => (
           <div
             key={r.id}
-            className="nt-panel__row"
-            style={{ opacity: r.enabled ? 1 : 0.55 }}
+            className={r.enabled ? "nt-panel__row" : "nt-panel__row nt-opacity-dim"}
           >
             {/* The demo rule is authored, not a row in the store — there is
                 nothing to toggle, edit or delete. */}
@@ -1692,6 +2439,99 @@ export default function Alerts() {
             scheduled suppression — an active window silences its matches with the reason stamped
           </span>
           <span className="nt-panel__actions">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const url = new URL(window.location.href);
+                    url.search = '';
+                    url.searchParams.set('tab', 'policy');
+                    await navigator.clipboard.writeText(url.toString());
+                    toast('Policy link copied', { tone: 'success' });
+                  } catch {
+                    toast('Could not copy link', { tone: 'danger' });
+                  }
+                })();
+              }}
+            >
+              Copy policy link
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!windows || windows.length === 0}
+              onClick={() => {
+                const list = windows ?? [];
+                const n = exportTableCsv(
+                  'maintenance-windows.csv',
+                  [
+                    'id',
+                    'enabled',
+                    'state',
+                    'reason',
+                    'plane',
+                    'device',
+                    'site',
+                    'titleSubstring',
+                    'schedule',
+                    'spanStart',
+                    'spanEnd',
+                    'createdBy',
+                    'createdAt',
+                  ],
+                  list.map((w) => [
+                    w.id,
+                    w.enabled ? 'true' : 'false',
+                    w.state,
+                    w.reason,
+                    w.matchers.plane ?? '',
+                    w.matchers.device ?? '',
+                    w.matchers.site ?? '',
+                    w.matchers.titleSubstring ?? '',
+                    scheduleSummary(w),
+                    w.spanStart ?? '',
+                    w.spanEnd ?? '',
+                    w.createdBy ?? '',
+                    w.createdAt ?? '',
+                  ]),
+                );
+                toast(`Exported ${n} window${n === 1 ? '' : 's'}`, {
+                  description: 'maintenance-windows.csv — visible windows (matchers + schedule; no secrets).',
+                });
+              }}
+            >
+              Export CSV
+            </Button>
+            {!windowsDemo ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const res = await downloadApiCsv(
+                      '/api/maintenance-windows/export',
+                      'maintenance-windows.csv',
+                    );
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description:
+                          'maintenance-windows.csv — windows on file (optional enabled=/state=).',
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
             <Button variant="secondary" size="sm" onClick={openWindowForm} disabled={windowsDemo}>
               New window
             </Button>
@@ -1711,13 +2551,12 @@ export default function Alerts() {
         {windows?.map((w) => (
           <div
             key={w.id}
-            className="nt-panel__row"
-            style={{ opacity: w.enabled ? 1 : 0.55 }}
+            className={w.enabled ? "nt-panel__row" : "nt-panel__row nt-opacity-dim"}
           >
             <Badge tone={w.state === 'active' ? 'success' : w.state === 'upcoming' ? 'info' : 'neutral'} dot>
               {w.state}
             </Badge>
-            <span className="nt-body-sm" style={{ fontSize: 13, color: "var(--nd-text-primary)" }}>{w.reason}</span>
+            <span className="nt-body-sm nt-fs-13-primary">{w.reason}</span>
             {w.demo ? <Badge tone="neutral">demo</Badge> : null}
             {w.enabled ? null : <Badge tone="neutral">disabled</Badge>}
             <span
@@ -1763,6 +2602,7 @@ export default function Alerts() {
         onOpenChange={(open) => {
           if (!open) setSilenceTarget(null);
         }}
+        className="nd-drawer--write-ritual nt-write-ritual"
         title="Silence alert group"
         description={
           silenceTarget
@@ -1775,6 +2615,7 @@ export default function Alerts() {
         }
       >
         <div className="nt-drawer-stack">
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField
             label="Duration"
             help="The group leaves the active queue until then — and stays listed under Silenced with its reason, so suppression is never invisible."
@@ -1818,10 +2659,12 @@ export default function Alerts() {
         onOpenChange={(open) => {
           if (!open) setWindowForm(false);
         }}
+        className="nd-drawer--write-ritual nt-write-ritual"
         title="Schedule a maintenance window"
         description="While the window is active, matching alert groups are silenced — reason stamped, expiry automatic, suppression always listed."
       >
         <div className="nt-drawer-stack">
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Reason" help="Required — stamped on every silence this window raises, and audit-logged.">
             <Input
               value={wReason}
@@ -1917,10 +2760,12 @@ export default function Alerts() {
             setRuleEditing(null);
           }
         }}
+        className="nd-drawer--write-ritual nt-write-ritual"
         title={ruleEditing ? 'Edit device-down rule' : 'New device-down rule'}
         description="A device that stops reporting raises no plane alert — a matching rule fires instead, once per outage, after the offline threshold."
       >
         <div className="nt-drawer-stack">
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Site filter" help="Site name or id, matched case-insensitively — blank watches every site.">
             <Input
               mono
@@ -1999,11 +2844,13 @@ export default function Alerts() {
         onOpenChange={(open) => {
           if (!open) setRuleDelete(null);
         }}
+        className="nd-drawer--write-ritual nt-write-ritual"
         title="Delete device-down rule"
         description={ruleDelete ? ruleSummary(ruleDelete) : undefined}
       >
         <div className="nt-drawer-stack">
-          <span className="nt-service-note" style={{ fontSize: 13, color: "var(--nd-text-secondary)" }}>
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
+          <span className="nt-service-note nt-fs-13-sec">
             The rule is removed immediately and the deletion is audit-logged. A device only this rule watched
             will page no one when it stops reporting.
           </span>
@@ -2036,20 +2883,55 @@ export default function Alerts() {
         }
       >
         {timelineLoading ? (
-          <div className="nt-center-pad" style={{ padding: 48 }}>
-            <Spinner size="md" />
+          <div className="nt-center-pad nt-pad-48">
+            <div role="status" aria-label="Loading alerts" className="nt-stack nt-gap-8">
+              <Skeleton height={14} width="40%" />
+              <Skeleton height={40} />
+              <Skeleton height={40} />
+              <Skeleton height={40} />
+            </div>
           </div>
         ) : timeline ? (
           <div className="nt-stack-col">
             {timelineNote ? (
               <span
-                className="nt-hint-muted" style={{ paddingBottom: 8 }}
+                className="nt-hint-muted nt-pb-8"
               >
                 {timelineNote}
               </span>
             ) : null}
+            {!timelineNote ? (
+              <div className="nt-drawer-actions nt-pb-10">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    if (!timelineGroup) return;
+                    const fp = timelineGroup.fingerprint;
+                    const path = `/api/alerts/${encodeURIComponent(fp)}/timeline/export`;
+                    const safe = fp.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80);
+                    void (async () => {
+                      const res = await downloadApiCsv(path, `alert-timeline-${safe || 'export'}.csv`);
+                      if (res.ok) {
+                        toast('Server CSV downloaded', {
+                          description: 'alert timeline events — firings, silences, changes, drift.',
+                          tone: 'success',
+                        });
+                      } else {
+                        toast('Server CSV failed', {
+                          description: res.error ?? 'Could not download timeline export',
+                          tone: 'warning',
+                        });
+                      }
+                    })();
+                  }}
+                >
+                  Download server CSV
+                </Button>
+              </div>
+            ) : null}
             {timeline.correlation ? (
-              <div style={{ paddingBottom: 10 }}>
+              <div className="nt-pb-10">
                 <Alert tone="info" title="Correlation in time — not a proven cause">
                   <span className="nt-body-sm">{timeline.correlation}</span>
                 </Alert>
@@ -2058,17 +2940,10 @@ export default function Alerts() {
             {timeline.events.map((e, i) => (
               <div
                 key={`${e.ts}-${i}`}
-                style={{
-                  display: 'flex',
-                  gap: 12,
-                  padding: '8px 0',
-                  borderBottom: i < timeline.events.length - 1 ? '1px solid var(--nd-border-default)' : undefined,
-                }}
+                className={[`nt-ticket-note-row`, i < timeline.events.length - 1 ? "nt-border-b" : undefined].filter(Boolean).join(" ")}
               >
                 <span
-                  className="nt-hint-muted" style={{ width: 76,
-                    flexShrink: 0,
-                    paddingTop: 2 }}
+                  className="nt-hint-muted nt-shrink-0 nt-pt-2 nt-w-76"
                 >
                   {`${untilLabel(e.ts)}${e.approximate ? ' ≈' : ''}`}
                 </span>
@@ -2077,7 +2952,7 @@ export default function Alerts() {
                     <Badge tone={timelineTone(e.kind)} dot>
                       {timelineKindLabel(e.kind)}
                     </Badge>
-                    <span className="nt-body-sm" style={{ fontSize: 13, color: "var(--nd-text-primary)" }}>{e.label}</span>
+                    <span className="nt-body-sm nt-fs-13-primary">{e.label}</span>
                   </span>
                   {e.detail ? (
                     <span

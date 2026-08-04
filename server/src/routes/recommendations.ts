@@ -30,6 +30,18 @@ import { poller } from '../services/poller';
 import { settings } from '../config/settings';
 import { maybeNotModified, weakEtag } from '../lib/httpCache';
 import { sendCsv } from '../lib/csv';
+import { queryOneOf, queryString } from '../lib/query';
+
+const REC_SEVERITIES = ['info', 'suggestion', 'warning'] as const satisfies readonly RecommendationSeverity[];
+const REC_CATEGORIES = [
+  'firmware',
+  'configuration',
+  'redundancy',
+  'security',
+  'performance',
+  'compliance',
+  'inventory',
+] as const satisfies readonly RecommendationCategory[];
 
 export const recommendationsRouter = Router();
 
@@ -136,19 +148,38 @@ function buildAll(): ConfigRecommendation[] {
   ];
 }
 
-function parseRecQuery(req: { query: import('express').Request['query'] }) {
+/**
+ * Shared list/export query parse (Loop 114).
+ * - device/site/client: trimmed strings via queryString (empty → undefined)
+ * - severity/category: queryOneOf allow-list (unknown → honest no-op, never cast junk)
+ * - limit: non-negative integer; missing/empty → undefined; garbage → NaN (route 400s)
+ * Export ignores limit so operators always get the full filtered set.
+ */
+function parseRecQuery(req: { query: Record<string, unknown> }) {
+  const device = queryString(req, 'device');
+  const site = queryString(req, 'site');
+  const client = queryString(req, 'client') || queryString(req, 'clientMac');
+  const severity = queryOneOf(req, 'severity', REC_SEVERITIES) ?? undefined;
+  const category = queryOneOf(req, 'category', REC_CATEGORIES) ?? undefined;
+
+  const limitRaw = queryString(req, 'limit');
+  let limit: number | undefined;
+  if (limitRaw) {
+    // Allow 0 (empty page) and positive ints; reject floats / scientific / negatives.
+    if (!/^\d+$/.test(limitRaw)) limit = Number.NaN;
+    else {
+      const n = Number(limitRaw);
+      limit = Number.isSafeInteger(n) ? n : Number.NaN;
+    }
+  }
+
   return {
-    device: typeof req.query.device === 'string' ? req.query.device : undefined,
-    site: typeof req.query.site === 'string' ? req.query.site : undefined,
-    clientMac:
-      typeof req.query.client === 'string'
-        ? req.query.client
-        : typeof req.query.clientMac === 'string'
-          ? req.query.clientMac
-          : undefined,
-    category: typeof req.query.category === 'string' ? (req.query.category as RecommendationCategory) : undefined,
-    severity: typeof req.query.severity === 'string' ? (req.query.severity as RecommendationSeverity) : undefined,
-    limit: typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined,
+    ...(device ? { device } : {}),
+    ...(site ? { site } : {}),
+    ...(client ? { clientMac: client } : {}),
+    ...(category ? { category } : {}),
+    ...(severity ? { severity } : {}),
+    ...(limit !== undefined ? { limit } : {}),
   };
 }
 

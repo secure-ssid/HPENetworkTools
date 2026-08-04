@@ -7,7 +7,10 @@
  *   DELETE /api/notifications/endpoints/:id      remove → {ok, endpoint} | 404
  *   POST   /api/notifications/endpoints/:id/test one honest shot down the real path → {ok, message, ...}
  *   GET    /api/notifications/status             sampler state + per-endpoint delivery
- *   GET    /api/notifications/outbox             the demo outbox (empty in live mode, says so)
+ *   GET    /api/notifications/outbox             the demo outbox (empty in live mode, says so; optional q=)
+ *   GET    /api/notifications/outbox/export      CSV of outbox summaries (no payload bodies; optional q=)
+ *   GET    /api/notifications/deliveries         live attempt log (no payload bodies)
+ *   GET    /api/notifications/deliveries/export  CSV of delivery outcomes (no payload bodies)
  *
  * The email channel (shared/expiry.ts contracts, services/reports.ts +
  * services/smtp.ts):
@@ -20,6 +23,7 @@
  *   PUT    /api/notifications/report             partial schedule edit {enabled?, frequency?, hour?, recipients?}
  *   POST   /api/notifications/report/send        force a report now (the test button)
  *   GET    /api/notifications/report/preview     the report exactly as it would send now
+ *   GET    /api/notifications/report/export      CSV of report outbox metadata (no email bodies; optional q=)
  *   GET    /api/notifications/ssl-hosts          the certificate watch list
  *   POST   /api/notifications/ssl-hosts          {host: 'name[:port]'} → 201
  *   DELETE /api/notifications/ssl-hosts/:id      remove → {ok} | 404
@@ -39,6 +43,7 @@
  * clear — never a silent rewrite of what the operator meant.
  */
 
+import type { Request } from 'express';
 import { Router } from 'express';
 import {
   isNotificationTemplateKind,
@@ -49,11 +54,17 @@ import {
   validateSmtpConfig,
   MAX_SSL_HOSTS,
   SMTP_DEFAULT_PORT,
+  type NotificationDeliveryAttempt,
   type NotificationEndpoint,
   type NotificationEndpointForm,
+  type NotificationOutboxEntry,
   type ReportConfig,
+  type ReportOutboxEntry,
   type SmtpConfigForm,
+  type SslProbeHost,
 } from '@hpe/shared';
+import { sendCsv } from '../lib/csv';
+import { queryOneOf, queryString } from '../lib/query';
 import { h } from './handler';
 import { notifier } from '../services/notifier';
 import { notificationStore, toSmtpView, toView } from '../services/notifierStore';
@@ -61,6 +72,119 @@ import { reportService } from '../services/reports';
 import { appendBrokerLog, brokerDataDir } from '../services/writeBroker';
 
 export const notificationsRouter = Router();
+
+const DELIVERY_RESULTS = ['delivered', 'failed', 'demo'] as const;
+
+/**
+ * Optional `?result=delivered|failed|demo` and `?q=` on the live delivery log / CSV.
+ * - result: queryOneOf allow-list (unknown → honest no-op)
+ * - q: case-insensitive substring on endpoint / title / error / eventKind /
+ *   fingerprint / result / httpCode / test flag (empty → no text filter)
+ * Never invents an empty log from junk tokens.
+ */
+export function filterDeliveryAttempts(
+  req: Request,
+  entries: readonly NotificationDeliveryAttempt[],
+): NotificationDeliveryAttempt[] {
+  const result = queryOneOf(req, 'result', DELIVERY_RESULTS);
+  const q = queryString(req, 'q').toLowerCase();
+  if (!result && !q) return [...entries];
+  return entries.filter((e) => {
+    if (result && e.result !== result) return false;
+    if (q) {
+      const hay = [
+        e.endpointName,
+        e.title,
+        e.error ?? '',
+        e.eventKind,
+        e.fingerprint,
+        e.result,
+        e.httpCode ?? '',
+        e.test ? 'test' : '',
+      ]
+        .join(' ')
+        .toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Optional `?q=` on the SSL certificate watch list / CSV (Loop 116).
+ * Case-insensitive substring on host, port, probe error, notAfter, and
+ * ok/fail tokens. Empty → no text filter (honest full watch list).
+ */
+export function filterSslHosts(req: Request, hosts: readonly SslProbeHost[]): SslProbeHost[] {
+  const q = queryString(req, 'q').toLowerCase();
+  if (!q) return [...hosts];
+  return hosts.filter((h) => {
+    const probe = h.lastProbe;
+    const hay = [
+      h.host,
+      String(h.port),
+      probe?.error ?? '',
+      probe?.notAfter ?? '',
+      probe?.ok === true ? 'ok yes' : probe?.ok === false ? 'fail no error' : '',
+      probe?.daysLeft ?? '',
+    ]
+      .join(' ')
+      .toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+/**
+ * Optional `?q=` on the webhook demo outbox list / CSV (Loop 119).
+ * Case-insensitive substring on endpoint / title / eventKind / fingerprint /
+ * plane / device / site / sev / id — never scans payload bodies. Empty → full
+ * outbox (honest no-op).
+ */
+export function filterNotificationOutbox(
+  req: Request,
+  entries: readonly NotificationOutboxEntry[],
+): NotificationOutboxEntry[] {
+  const q = queryString(req, 'q').toLowerCase();
+  if (!q) return [...entries];
+  return entries.filter((e) => {
+    const hay = [
+      e.id,
+      e.endpointName,
+      e.contentType,
+      e.event.kind,
+      e.event.id,
+      e.event.fingerprint,
+      e.event.title,
+      e.event.sev,
+      e.event.plane,
+      e.event.device,
+      e.event.siteName,
+      e.event.state,
+    ]
+      .join(' ')
+      .toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+/**
+ * Optional `?q=` on the fleet-report demo outbox CSV (Loop 119).
+ * Case-insensitive substring on subject / recipients / id — never scans
+ * email text/html bodies. Empty → full outbox (honest no-op).
+ */
+export function filterReportOutbox(
+  req: Request,
+  entries: readonly ReportOutboxEntry[],
+): ReportOutboxEntry[] {
+  const q = queryString(req, 'q').toLowerCase();
+  if (!q) return [...entries];
+  return entries.filter((e) => {
+    const hay = [e.id, e.subject, e.recipients.join(' '), e.demo ? 'demo' : '']
+      .join(' ')
+      .toLowerCase();
+    return hay.includes(q);
+  });
+}
 
 notificationsRouter.get(
   '/notifications/endpoints',
@@ -183,11 +307,11 @@ notificationsRouter.get(
 
 notificationsRouter.get(
   '/notifications/outbox',
-  h(async (_req, res) => {
+  h(async (req, res) => {
     const status = notifier.status();
     res.json({
       demoMode: status.demoMode,
-      entries: notifier.outbox(),
+      entries: filterNotificationOutbox(req, notifier.outbox()),
       // An empty outbox in live mode is not "nothing would have been sent" —
       // it is "this process made real network calls instead". Say which.
       ...(status.demoMode
@@ -198,16 +322,93 @@ notificationsRouter.get(
 );
 
 /**
+ * GET /api/notifications/outbox/export — CSV of webhook demo-outbox summaries.
+ * Never includes payload bodies, URLs, or HMAC secrets (Loop 101).
+ * Optional `?q=` matches list triage fields only (Loop 119).
+ */
+notificationsRouter.get(
+  '/notifications/outbox/export',
+  h(async (req, res) => {
+    const entries = filterNotificationOutbox(req, notifier.outbox());
+    sendCsv(
+      res,
+      'notification-outbox.csv',
+      [
+        'at',
+        'id',
+        'endpoint',
+        'contentType',
+        'demo',
+        'eventKind',
+        'eventId',
+        'fingerprint',
+        'title',
+        'sev',
+        'plane',
+        'device',
+        'siteName',
+        'count',
+      ],
+      entries.map((e) => [
+        e.at,
+        e.id,
+        e.endpointName,
+        e.contentType,
+        e.demo ? 'yes' : 'no',
+        e.event.kind,
+        e.event.id,
+        e.event.fingerprint,
+        e.event.title,
+        e.event.sev,
+        e.event.plane,
+        e.event.device,
+        e.event.siteName,
+        e.event.count,
+      ]),
+    );
+  }),
+);
+
+/**
  * Live delivery attempt log — outcome metadata only (no payload bodies).
  * Complements the demo outbox: live mode fills this when POSTs happen.
+ * Optional `?result=delivered|failed|demo` and `?q=` narrow the tail.
  */
 notificationsRouter.get(
   '/notifications/deliveries',
-  h(async (_req, res) => {
+  h(async (req, res) => {
     res.json({
       demoMode: notifier.status().demoMode,
-      entries: notifier.deliveries(),
+      entries: filterDeliveryAttempts(req, notifier.deliveries()),
     });
+  }),
+);
+
+/**
+ * GET /api/notifications/deliveries/export — CSV of delivery outcomes only.
+ * Never includes payload bodies, HMAC secrets, or endpoint URLs.
+ * Optional `?result=` / `?q=` match the list filter.
+ */
+notificationsRouter.get(
+  '/notifications/deliveries/export',
+  h(async (req, res) => {
+    const entries = filterDeliveryAttempts(req, notifier.deliveries());
+    sendCsv(
+      res,
+      'notification-deliveries.csv',
+      ['at', 'result', 'test', 'endpoint', 'title', 'httpCode', 'error', 'eventKind', 'fingerprint'],
+      entries.map((e) => [
+        e.at,
+        e.result,
+        e.test ? 'yes' : 'no',
+        e.endpointName,
+        e.title,
+        e.httpCode ?? '',
+        e.error ?? '',
+        e.eventKind,
+        e.fingerprint,
+      ]),
+    );
   }),
 );
 
@@ -340,14 +541,77 @@ notificationsRouter.get(
   }),
 );
 
+/**
+ * GET /api/notifications/report/export — CSV of fleet-report demo outbox
+ * metadata only (subject/recipients/at). Never email text/html bodies
+ * (Loop 101). Optional `?q=` on subject/recipients/id (Loop 119). Empty in
+ * live mode when nothing was demo-rendered.
+ */
+notificationsRouter.get(
+  '/notifications/report/export',
+  h(async (req, res) => {
+    const entries = filterReportOutbox(req, reportService.outbox());
+    sendCsv(
+      res,
+      'fleet-report-outbox.csv',
+      ['at', 'id', 'subject', 'recipientCount', 'recipients', 'demo'],
+      entries.map((e) => [
+        e.at,
+        e.id,
+        e.subject,
+        e.recipients.length,
+        e.recipients.join('; '),
+        e.demo ? 'yes' : 'no',
+      ]),
+    );
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // SSL certificate watch
 // ---------------------------------------------------------------------------
 
+/**
+ * GET /api/notifications/ssl-hosts/export — CSV of the certificate watch list.
+ * Probe outcome fields only; never private keys or full cert PEMs.
+ * Optional `?q=` matches the list filter (Loop 116).
+ * Registered before `/:id` so "export" is never treated as an id.
+ */
+notificationsRouter.get(
+  '/notifications/ssl-hosts/export',
+  h(async (req, res) => {
+    const hosts = filterSslHosts(req, notificationStore.sslHosts());
+    sendCsv(
+      res,
+      'ssl-hosts.csv',
+      [
+        'host',
+        'port',
+        'addedAt',
+        'probeOk',
+        'probedAt',
+        'notAfter',
+        'daysLeft',
+        'error',
+      ],
+      hosts.map((row) => [
+        row.host,
+        row.port,
+        row.addedAt,
+        row.lastProbe ? (row.lastProbe.ok ? 'yes' : 'no') : '',
+        row.lastProbe?.at ?? '',
+        row.lastProbe?.notAfter ?? '',
+        row.lastProbe?.daysLeft ?? '',
+        row.lastProbe?.error ?? '',
+      ]),
+    );
+  }),
+);
+
 notificationsRouter.get(
   '/notifications/ssl-hosts',
-  h(async (_req, res) => {
-    res.json({ hosts: notificationStore.sslHosts() });
+  h(async (req, res) => {
+    res.json({ hosts: filterSslHosts(req, notificationStore.sslHosts()) });
   }),
 );
 

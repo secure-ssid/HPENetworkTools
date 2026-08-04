@@ -8,9 +8,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SiteApplications } from './Applications';
 import { getSiteApplications } from '../../api/client';
+import { downloadApiCsv } from '../../lib/downloadApiCsv';
+import { ToastProvider } from '../../nightdesk';
 import { DPI_BYTES_ARE_ESTIMATES, SITE_APPLICATIONS_DEMO } from '@hpe/shared';
 import type { SiteAppRow, SiteApplicationsLive } from '@hpe/shared';
 
@@ -19,12 +21,18 @@ vi.mock('../../api/client', async (importOriginal) => {
   return { ...actual, getSiteApplications: vi.fn() };
 });
 
+vi.mock('../../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
 const mockGet = vi.mocked(getSiteApplications);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 const DEMO = SITE_APPLICATIONS_DEMO['campus-01']!; // 12 apps, two suspicious, one unclassified
 
 beforeEach(() => {
   mockGet.mockResolvedValue({ kind: 'ok', applications: DEMO });
+  mockDownloadApiCsv.mockResolvedValue({ ok: true });
 });
 
 afterEach(() => {
@@ -32,8 +40,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderSection(centralClaimed = true) {
-  return render(<SiteApplications centralClaimed={centralClaimed} siteKey="campus-01" />);
+function renderSection(centralClaimed = true, live = false) {
+  return render(
+    <ToastProvider>
+      <SiteApplications centralClaimed={centralClaimed} siteKey="campus-01" live={live} />
+    </ToastProvider>,
+  );
 }
 
 /** Wait out the on-mount read. */
@@ -106,16 +118,16 @@ describe('SiteApplications — the ok table', () => {
 
     // Scope to the rollup's grid rows — a talker row can carry the same word
     // as a category label.
-    const rollupRows = [...container.querySelectorAll('div[style*="grid-template-columns"]')];
+    const rollupRows = [...container.querySelectorAll('.nt-dpi-grid')];
     const rowFor = (category: string) => {
       const row = rollupRows.find((r) => r.firstElementChild?.textContent === category);
       expect(row).toBeTruthy();
-      return row!.querySelector('span[style*="width"]') as HTMLElement;
+      return row!.querySelector('.nt-bar-fill') as HTMLElement;
     };
     // Collaboration is the largest category (8.62 GB of app bytes) — the 100%
     // bar; Streaming's 4.62 GB is 54% of it, and the note says why.
-    expect(rowFor('Collaboration').style.width).toBe('100%');
-    expect(rowFor('Streaming').style.width).toBe('54%');
+    expect(rowFor('Collaboration').style.getPropertyValue('--nd-health')).toBe('100%');
+    expect(rowFor('Streaming').style.getPropertyValue('--nd-health')).toBe('54%');
     expect(screen.getByText(/share of the largest category/)).toBeTruthy();
     // Uncategorized is the synthetic bucket for apps the plane could not classify.
     expect(rowFor('Uncategorized')).toBeTruthy();
@@ -225,5 +237,46 @@ describe('SiteApplications — the honest no-table outcomes', () => {
     renderSection();
     await settle();
     expect(screen.getByText('The application read failed — HTTP 502')).toBeTruthy();
+  });
+});
+
+describe('SiteApplications — CSV export', () => {
+  it('offers client Export CSV when the table is present, and server CSV only when live', async () => {
+    renderSection(true, false);
+    await settle();
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Download server CSV' })).toBeNull();
+  });
+
+  it('downloads server CSV via downloadApiCsv when live', async () => {
+    renderSection(true, true);
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => {
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/sites/campus-01/applications/export',
+        'site-applications-campus-01.csv',
+      );
+    });
+  });
+});
+
+describe('SiteApplications — Copy section link (Loop 71)', () => {
+  it('Copy section link shares section=applications', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    renderSection();
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy section link' }));
+    expect(writeText).toHaveBeenCalled();
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/\?section=applications#applications/);
+  });
+
+  it('Copy section link stays available without a table', async () => {
+    mockGet.mockResolvedValue({ kind: 'not-reported' });
+    renderSection();
+    await settle();
+    expect(screen.getByRole('button', { name: 'Copy section link' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Export CSV' })).toBeNull();
   });
 });

@@ -120,9 +120,12 @@ function pushed(id: string): PushResult {
 
 // -- helpers ----------------------------------------------------------------
 
-function renderConfigure() {
+function renderConfigure(entry = '/configure') {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      initialEntries={[entry]}
+    >
       <SettingsProvider>
         <ToastProvider>
           <Configure />
@@ -134,10 +137,23 @@ function renderConfigure() {
 
 /** The right-hand "Queued changes" column: header + table + bar + buttons. */
 function queueSection() {
+  const root = document.getElementById('configure-section-queue');
+  if (root) return within(root);
   const label = screen.getByText('Queued changes');
   const header = label.closest('.nd-section-header');
-  if (!header || !header.parentElement) throw new Error('queue section not found');
-  return within(header.parentElement);
+  let el: HTMLElement | null = header?.parentElement ?? null;
+  while (el && !el.id?.startsWith('configure-section') && el.parentElement) {
+    if (el.classList.contains('nt-configure__queue') || el.classList.contains('nt-config-queue')) break;
+    if (el.querySelector('.nd-empty, .nt-empty-cinema, [aria-label="Queued changes"]')) break;
+    const parent = el.parentElement;
+    if (parent?.querySelector('.nd-empty, .nt-empty-cinema, table, [role="grid"]')) {
+      el = parent;
+      break;
+    }
+    el = parent;
+  }
+  if (!el) throw new Error('queue section not found');
+  return within(el);
 }
 
 /** Load the screen with the two-entry server queue. */
@@ -368,5 +384,56 @@ describe('Configure — the change-queue bulk action bar', () => {
     expect(screen.getByText(/failed: Port 1\/1\/12 on sw-core-1 — uplink to fw/)).toBeTruthy();
     await waitFor(() => expect(queueSection().getByText('NET-4101')).toBeTruthy());
     expect(queueSection().queryByText(/SELECTED/)).toBeNull();
+  });
+});
+
+/* Loop 183 — Configure queue bulk Export selected / Copy IDs / selection link. */
+describe('Configure queue bulk polish (Loop 183)', () => {
+  it('Export selected / Copy IDs / Copy selection link on the bulk bar', async () => {
+    const createObjectURL = vi.fn(() => 'blob:configure-queue-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    await renderWithTwo();
+    selectAll();
+    const bar = await screen.findByRole('region', { name: 'Queued change selection actions' });
+    expect(within(bar).getByText('2 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 2 selected changes/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy IDs' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const idsText = String(writeText.mock.calls[0]![0]);
+    expect(idsText).toContain('chg-server-1');
+    expect(idsText).toContain('chg-server-2');
+    expect(await screen.findByText(/Copied 2 ids/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    const url = String(writeText.mock.calls[1]![0]);
+    expect(url).toMatch(/ids=/);
+    expect(url).toContain('chg-server-1');
+    expect(url).toMatch(/section=queue/);
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?ids= and shows a clearable selection chip', async () => {
+    mockGetChangeQueue.mockReset();
+    mockGetChangeQueue.mockResolvedValue([serverChange(), SECOND]);
+    renderConfigure(`/configure?section=queue&ids=${encodeURIComponent('chg-server-1')}`);
+    await waitFor(() => expect(queueSection().getByText('NET-4100')).toBeTruthy());
+    expect(queueSection().queryByText('NET-4101')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected change/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(queueSection().getByText('NET-4101')).toBeTruthy());
   });
 });

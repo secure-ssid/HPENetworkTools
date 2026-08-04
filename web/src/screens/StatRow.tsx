@@ -39,7 +39,7 @@ export function StatRow({
     first.length > 0 && stats.every((s) => s.delta.trim() === first) ? first : null;
 
   return (
-    <div className={className ? `nt-stat-band ${className}` : 'nt-stat-band'}>
+    <div className={className ? `nt-stat-band nt-stat-band--cinema ${className}` : 'nt-stat-band nt-stat-band--cinema'}>
       <div className="nt-stat-grid">
         {stats.map((s) => {
           const href = linkForStat?.(s.label) ?? null;

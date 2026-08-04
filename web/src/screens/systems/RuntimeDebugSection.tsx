@@ -1,12 +1,22 @@
 /**
  * Runtime debug panel — GET /api/debug/runtime.
- * Process/plane/poller facts only; no secrets or vendor payloads.
+ * Process/plane/poller + reconcile integrity counts only; no secrets or vendor payloads.
+ * Filter/share via ?rtFilter=&rtPlane= on the Systems URL.
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { Alert, Badge, Button, SectionHeader, Spinner, useToast } from '../../nightdesk';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Alert, Badge, Button, SectionHeader, Select, Skeleton, Spinner, useToast } from '../../nightdesk';
 import { apiFetch, serverMessage } from '../../api/core';
 import { exportTableCsv } from '../../lib/csv';
+import { downloadApiCsv } from '../../lib/downloadApiCsv';
+import { systemsSectionDomId } from './share';
+
+interface RuntimeIntegrity {
+  devices: number;
+  doubleClaimed: number;
+  unclaimed: number;
+}
 
 interface RuntimeDebug {
   ok: boolean;
@@ -33,6 +43,7 @@ interface RuntimeDebug {
     outboxSize: number;
   };
   terminal: { openSessions: number };
+  integrity?: RuntimeIntegrity;
   planes: Array<{
     id: string;
     linked: boolean;
@@ -43,6 +54,52 @@ interface RuntimeDebug {
     lastSync: string | null;
     noteChars: number;
   }>;
+}
+
+type PlaneFilter = 'all' | 'linked' | 'unlinked' | 'healthy' | 'degraded' | 'stale';
+
+const FILTER_OPTIONS: Array<{ value: PlaneFilter; label: string }> = [
+  { value: 'all', label: 'All planes' },
+  { value: 'linked', label: 'Linked' },
+  { value: 'unlinked', label: 'Unlinked' },
+  { value: 'healthy', label: 'Healthy' },
+  { value: 'degraded', label: 'Degraded' },
+  { value: 'stale', label: 'Stale' },
+];
+
+function parseFilter(raw: string | null): PlaneFilter {
+  if (
+    raw === 'linked' ||
+    raw === 'unlinked' ||
+    raw === 'healthy' ||
+    raw === 'degraded' ||
+    raw === 'stale'
+  ) {
+    return raw;
+  }
+  return 'all';
+}
+
+function matchesFilter(
+  p: RuntimeDebug['planes'][number],
+  filter: PlaneFilter,
+): boolean {
+  switch (filter) {
+    case 'all':
+      return true;
+    case 'linked':
+      return p.linked;
+    case 'unlinked':
+      return !p.linked;
+    case 'healthy':
+      return p.linked && p.health === 'healthy' && !p.stale;
+    case 'degraded':
+      return p.linked && (p.health === 'degraded' || p.health === 'warning');
+    case 'stale':
+      return p.stale;
+    default:
+      return true;
+  }
 }
 
 function mb(n: number): string {
@@ -91,8 +148,20 @@ interface HealthDeep {
   deepWithheld?: boolean;
 }
 
+function viewLink(filter: PlaneFilter, planeId: string | null): string {
+  const next = new URLSearchParams();
+  if (filter !== 'all') next.set('rtFilter', filter);
+  if (planeId) next.set('rtPlane', planeId);
+  const qs = next.toString();
+  return `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+}
+
 export function RuntimeDebugSection() {
   const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filter = parseFilter(searchParams.get('rtFilter'));
+  const rtPlane = searchParams.get('rtPlane');
+
   const [data, setData] = useState<RuntimeDebug | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -102,6 +171,14 @@ export function RuntimeDebugSection() {
   const [healthDeep, setHealthDeep] = useState<HealthDeep | null>(null);
   const [healthDeepError, setHealthDeepError] = useState<string | null>(null);
   const [healthDeepLoading, setHealthDeepLoading] = useState(false);
+  const [openedFromLink, setOpenedFromLink] = useState<string | null>(null);
+
+  const setFilter = (next: PlaneFilter) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'all') params.delete('rtFilter');
+    else params.set('rtFilter', next);
+    setSearchParams(params, { replace: true });
+  };
 
   const load = useCallback(async () => {
     try {
@@ -167,7 +244,7 @@ export function RuntimeDebugSection() {
     };
   }, []);
 
-  const loadPlaneHealth = async (planeId: string) => {
+  const loadPlaneHealth = useCallback(async (planeId: string) => {
     setPlaneHealthLoading(true);
     setPlaneHealthError(null);
     try {
@@ -190,7 +267,21 @@ export function RuntimeDebugSection() {
     } finally {
       setPlaneHealthLoading(false);
     }
+  }, []);
+
+  const selectPlane = (planeId: string) => {
+    const params = new URLSearchParams(searchParams);
+    params.set('rtPlane', planeId);
+    setSearchParams(params, { replace: true });
+    void loadPlaneHealth(planeId);
   };
+
+  // Deep-link: open plane health once when ?rtPlane= is present.
+  useEffect(() => {
+    if (!rtPlane || openedFromLink === rtPlane) return;
+    setOpenedFromLink(rtPlane);
+    void loadPlaneHealth(rtPlane);
+  }, [rtPlane, openedFromLink, loadPlaneHealth]);
 
   const loadHealthDeep = async () => {
     setHealthDeepLoading(true);
@@ -217,15 +308,61 @@ export function RuntimeDebugSection() {
     }
   };
 
+  const filteredPlanes = useMemo(() => {
+    if (!data) return [];
+    return data.planes.filter((p) => matchesFilter(p, filter));
+  }, [data, filter]);
+
+  const integrity = data?.integrity;
+  const selectedPlaneId = planeHealth?.plane ?? rtPlane;
+
   return (
-    <div className="nt-stack nt-gap-12">
+    <div className="nt-systems-section nt-section-panel nt-stack nt-gap-12" id={systemsSectionDomId('runtime-debug')} data-legacy-id="runtime-debug">
       <div className="nt-filter-bar nt-gap-10">
-        <SectionHeader label="Runtime debug" meta="PROCESS · PLANES · NO SECRETS" />
+        <SectionHeader label="Runtime debug" meta="PROCESS · PLANES · INTEGRITY · NO SECRETS" />
+        <div className="nt-plane-theater" role="note">NightDesk · runtime theater · process · integrity · no secrets</div>
+        <Select
+          size="sm"
+          aria-label="Filter planes"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value as PlaneFilter)}
+        >
+          {FILTER_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </Select>
         <Button variant="ghost" size="sm" onClick={() => { void load(); }} disabled={loading}>
           {loading ? <Spinner size="sm" /> : 'Refresh'}
         </Button>
         <Button variant="ghost" size="sm" onClick={() => { void loadHealthDeep(); }} disabled={healthDeepLoading}>
           {healthDeepLoading ? <Spinner size="sm" /> : 'Health deep'}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            void (async () => {
+              const url = viewLink(filter, selectedPlaneId);
+              try {
+                await navigator.clipboard.writeText(url);
+                toast('View link copied', {
+                  description:
+                    filter !== 'all' || selectedPlaneId
+                      ? [filter !== 'all' ? `rtFilter=${filter}` : null, selectedPlaneId ? `rtPlane=${selectedPlaneId}` : null]
+                          .filter(Boolean)
+                          .join(' · ')
+                      : 'runtime debug (unfiltered)',
+                  tone: 'success',
+                });
+              } catch {
+                toast('Could not copy link', { description: url, tone: 'warning' });
+              }
+            })();
+          }}
+        >
+          Copy view link
         </Button>
         {data ? (
           <>
@@ -248,44 +385,94 @@ export function RuntimeDebugSection() {
               variant="ghost"
               size="sm"
               onClick={() => {
+                const planesForCsv = filteredPlanes.length > 0 ? filteredPlanes : data.planes;
+                const integ = data.integrity ?? { devices: 0, doubleClaimed: 0, unclaimed: 0 };
                 const n = exportTableCsv(
-                  'runtime-planes.csv',
-                  ['id', 'linked', 'health', 'stale', 'reason', 'ageSec', 'lastSync', 'noteChars'],
-                  data.planes.map((p) => [
-                    p.id,
-                    p.linked,
-                    p.health,
-                    p.stale,
-                    p.reason ?? '',
-                    p.ageSec ?? '',
-                    p.lastSync ?? '',
-                    p.noteChars,
-                  ]),
+                  'connector-integrity.csv',
+                  [
+                    'kind',
+                    'id',
+                    'linked',
+                    'health',
+                    'stale',
+                    'reason',
+                    'ageSec',
+                    'lastSync',
+                    'noteChars',
+                    'count',
+                  ],
+                  [
+                    ['integrity', 'devices', '', '', '', '', '', '', '', integ.devices],
+                    ['integrity', 'doubleClaimed', '', '', '', '', '', '', '', integ.doubleClaimed],
+                    ['integrity', 'unclaimed', '', '', '', '', '', '', '', integ.unclaimed],
+                    ...planesForCsv.map((p) => [
+                      'plane',
+                      p.id,
+                      p.linked,
+                      p.health,
+                      p.stale,
+                      p.reason ?? '',
+                      p.ageSec ?? '',
+                      p.lastSync ?? '',
+                      p.noteChars,
+                      '',
+                    ]),
+                  ],
                 );
-                toast(`Exported ${n} plane row${n === 1 ? '' : 's'}`, {
-                  description: 'runtime-planes.csv — link/health facts only, no secrets.',
+                toast(`Exported ${n} integrity row${n === 1 ? '' : 's'}`, {
+                  description: 'connector-integrity.csv — reconcile counts + plane facts only, no secrets.',
                 });
               }}
             >
-              Export planes CSV
+              Export integrity CSV
             </Button>
+            {!data.portal.demoMode ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    /* Same plane slice as the filter Select / ?rtFilter= so
+                     * server CSV never dumps unlinked planes while the operator
+                     * is looking at degraded only. Integrity tallies always ship. */
+                    const exportQs = new URLSearchParams();
+                    if (filter !== 'all') exportQs.set('filter', filter);
+                    const exportPath = exportQs.toString()
+                      ? `/api/debug/runtime/export?${exportQs.toString()}`
+                      : '/api/debug/runtime/export';
+                    const res = await downloadApiCsv(exportPath, 'connector-integrity-live.csv');
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description:
+                          filter !== 'all'
+                            ? `connector-integrity-live.csv — filter=${filter}; counts + plane facts, no secrets.`
+                            : 'connector-integrity-live.csv — counts + plane link/health only, no secrets.',
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
           </>
         ) : null}
       </div>
 
       {healthDeepError ? (
         <Alert tone="danger" title="Health deep unavailable">
-          <span style={{ fontSize: 13 }}>{healthDeepError}</span>
+          <span className="nt-fs-13">{healthDeepError}</span>
         </Alert>
       ) : null}
       {healthDeep ? (
         <div
-          className="nt-row nt-mono-11" style={{ color: "var(--nd-text-secondary)", flexDirection: 'column',
-            gap: 4,
-            padding: '8px 10px',
-            background: 'var(--nd-bg-raised)',
-            border: '1px solid var(--nd-border-subtle)',
-            borderRadius: 4 }}
+          className="nt-row nt-mono-11 nt-debug-note"
         >
           <span>
             GET /api/health?deep=1 · status {healthDeep.status} · up {fmtUptime(healthDeep.uptimeSec)} · auth{' '}
@@ -293,7 +480,7 @@ export function RuntimeDebugSection() {
             {healthDeep.demoMode ? ' · demo' : ' · live'}
           </span>
           {healthDeep.deepWithheld ? (
-            <span className="nt-hint-muted" style={{ color: "var(--nd-warning)" }}>
+            <span className="nt-hint-muted nt-warning-text">
               deep withheld — sign in when OIDC is on (no process facts for strangers)
             </span>
           ) : null}
@@ -314,19 +501,29 @@ export function RuntimeDebugSection() {
 
       {error ? (
         <Alert tone="danger" title="Runtime debug unavailable">
-          <span style={{ fontSize: 13 }}>{error}</span>
+          <span className="nt-fs-13">{error}</span>
         </Alert>
       ) : null}
 
       {loading && !data ? (
-        <div className="nt-center-pad" style={{ padding: 16 }}>
-          <Spinner size="sm" />
+        <div className="nt-debug-wake" aria-busy="true" aria-live="polite">
+          <span className="nt-chat-pending__pulse" aria-hidden />
+          <div className="nt-stack nt-gap-8 nt-flex-1">
+            <Skeleton height={14} width="42%" />
+            <Skeleton height={12} width="68%" />
+            <div className="nt-metrics-3 nt-grid-160">
+              <Skeleton height={56} />
+              <Skeleton height={56} />
+              <Skeleton height={56} />
+            </div>
+          </div>
+          <span className="nt-hint-muted nt-chat-pending__label">NightDesk · runtime wake…</span>
         </div>
       ) : null}
 
       {data ? (
         <div className="nt-stack nt-gap-10">
-          <div className="nt-wrap-6 nt-gap-8" style={{ alignItems: "center" }}>
+          <div className="nt-wrap-6 nt-gap-8 nt-row-center">
             <Badge tone={data.portal.demoMode ? 'warning' : 'success'}>
               {data.portal.demoMode ? 'demo' : 'live'}
             </Badge>
@@ -337,6 +534,21 @@ export function RuntimeDebugSection() {
               heap {mb(data.process.memory.heapUsed)} / {mb(data.process.memory.heapTotal)} · rss {mb(data.process.memory.rss)}
             </span>
           </div>
+
+          {integrity ? (
+            <div className="nt-wrap-6 nt-gap-8 nt-row-center">
+              <Badge tone="neutral">{integrity.devices} devices</Badge>
+              <Badge tone={integrity.doubleClaimed > 0 ? 'warning' : 'neutral'}>
+                {integrity.doubleClaimed} double-claimed
+              </Badge>
+              <Badge tone={integrity.unclaimed > 0 ? 'warning' : 'neutral'}>
+                {integrity.unclaimed} unclaimed
+              </Badge>
+              <span className="nt-hint-muted">
+                reconcile tallies (counts only — same source as Devices)
+              </span>
+            </div>
+          ) : null}
 
           <div className="nt-mono-11 nt-text-sec nt-lh-15">
             <div>
@@ -355,24 +567,15 @@ export function RuntimeDebugSection() {
             </div>
           </div>
 
-          <div className="nt-metrics-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
-            {data.planes.map((p) => (
+          <div className="nt-metrics-3 nt-grid-160">
+            {filteredPlanes.map((p) => (
               <button
                 key={p.id}
                 type="button"
-                onClick={() => { void loadPlaneHealth(p.id); }}
-                style={{
-                  border: '1px solid var(--nd-border-subtle)',
-                  borderRadius: 'var(--nd-radius-md)',
-                  padding: '8px 10px',
-                  background: 'var(--nd-bg-raised)',
-                  textAlign: 'left',
-                  cursor: 'pointer',
-                  color: 'inherit',
-                  font: 'inherit',
-                }}
+                onClick={() => { selectPlane(p.id); }}
+                className="nt-debug-card-left"
               >
-                <div className="nt-row-center nt-gap-6" style={{ marginBottom: 4 }}>
+                <div className="nt-row-center nt-gap-6 nt-mb-4">
                   <span className="nt-configure-row__name-primary">
                     {p.id}
                   </span>
@@ -398,30 +601,29 @@ export function RuntimeDebugSection() {
               </button>
             ))}
           </div>
+          {filteredPlanes.length === 0 ? (
+            <div className="nt-hint-muted">No planes match filter “{filter}”.</div>
+          ) : null}
           {planeHealthLoading ? (
-            <div className="nt-center-pad" style={{ padding: 8 }}>
-              <Spinner size="sm" />
+            <div className="nt-debug-wake nt-debug-wake--compact" aria-busy="true">
+              <span className="nt-chat-pending__pulse" aria-hidden />
+              <div className="nt-stack nt-gap-6 nt-flex-1">
+                <Skeleton height={12} width="36%" />
+                <Skeleton height={10} width="54%" />
+              </div>
             </div>
           ) : null}
           {planeHealthError ? (
             <Alert tone="danger" title="Plane health unavailable">
-              <span style={{ fontSize: 13 }}>{planeHealthError}</span>
+              <span className="nt-fs-13">{planeHealthError}</span>
             </Alert>
           ) : null}
           {planeHealth ? (
             <div
-              style={{
-                border: '1px solid var(--nd-border-subtle)',
-                borderRadius: 'var(--nd-radius-md)',
-                padding: '10px 12px',
-                background: 'var(--nd-bg-raised)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-              }}
+              className="nt-debug-card-row"
             >
-              <div className="nt-wrap-6 nt-gap-8" style={{ alignItems: "center" }}>
-                <span className="nt-mono-11" style={{ fontSize: 12 }}>{planeHealth.plane}</span>
+              <div className="nt-wrap-6 nt-gap-8 nt-row-center">
+                <span className="nt-mono-11 nt-fs-12">{planeHealth.plane}</span>
                 <Badge tone={planeHealth.linked ? (planeHealth.stale ? 'danger' : 'success') : 'neutral'}>
                   {planeHealth.linked ? (planeHealth.stale ? 'stale' : planeHealth.health) : 'unlinked'}
                 </Badge>
@@ -464,8 +666,11 @@ export function RuntimeDebugSection() {
               ) : null}
             </div>
           ) : null}
-          <div className="nt-hint-muted nt-hint-muted" style={{ fontSize: 10, color: "var(--nd-text-faint)" }}>
+          <div className="nt-hint-muted nt-faint-10">
             snapshot {new Date(data.at).toLocaleString()} · pid {data.process.pid} · {data.process.platform}
+            {' · '}
+            showing {filteredPlanes.length}/{data.planes.length} planes
+            {filter !== 'all' ? ` · filter ${filter}` : ''}
             {planeHealth ? ' · click a plane card for call drill-down' : ' · click a plane card for call drill-down'}
           </div>
         </div>

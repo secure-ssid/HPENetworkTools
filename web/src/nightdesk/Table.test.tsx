@@ -66,6 +66,15 @@ describe('Table shell', () => {
       'mine',
     ]);
   });
+
+  it('forwards ariaLabel onto the table element for screen readers', () => {
+    const { container } = render(
+      <Table ariaLabel="Sample devices">
+        <tbody />
+      </Table>,
+    );
+    expect(container.querySelector('table')?.getAttribute('aria-label')).toBe('Sample devices');
+  });
 });
 
 describe('Table rows vs empty state', () => {

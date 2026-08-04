@@ -6,7 +6,16 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { findingDevicesPath, namesFilterForParam, pathForView, planeFilterForParam, stateFilterForParam, viewForPath } from './nav';
+import { NAV_GROUPS } from '@hpe/shared';
+import {
+  findingDevicesPath,
+  namesFilterForParam,
+  pathForView,
+  planeFilterForParam,
+  recommendationsPath,
+  stateFilterForParam,
+  viewForPath,
+} from './nav';
 
 describe('findingDevicesPath', () => {
   /* A Compliance finding is every device of one plane that failed one check,
@@ -108,5 +117,46 @@ describe('viewForPath', () => {
   it('resolves the Central route to its own view', () => {
     expect(viewForPath('/central')).toBe('central');
     expect(pathForView('central')).toBe('/central');
+  });
+
+  it('resolves the Recommendations route to its own view', () => {
+    expect(viewForPath('/recommendations')).toBe('recommendations');
+    expect(pathForView('recommendations')).toBe('/recommendations');
+  });
+});
+
+describe('recommendationsPath', () => {
+  it('builds share URLs with optional device/site/client filters', () => {
+    expect(recommendationsPath()).toBe('/recommendations');
+    expect(recommendationsPath({ device: 'ap-1', site: 'Campus', client: 'aa:bb' })).toBe(
+      '/recommendations?device=ap-1&site=Campus&client=aa%3Abb',
+    );
+  });
+
+  it('includes severity and category when set (Loop 87)', () => {
+    expect(
+      recommendationsPath({
+        device: 'ap-1',
+        severity: 'warning',
+        category: 'firmware',
+      }),
+    ).toBe('/recommendations?device=ap-1&severity=warning&category=firmware');
+    expect(recommendationsPath({ severity: 'all', category: 'all' })).toBe('/recommendations');
+  });
+});
+
+describe('NAV_GROUPS Change menu', () => {
+  /* Full-page Recommendations (L46) must stay on the Change rail next to
+     Configure/Compliance — otherwise the route exists but operators never find it. */
+  it('lists Recommendations under Change with a path that round-trips', () => {
+    const change = NAV_GROUPS.find((g) => g.label === 'Change');
+    expect(change?.items.map((i) => i.view)).toEqual(
+      expect.arrayContaining(['configure', 'compliance', 'recommendations', 'licenses']),
+    );
+    expect(change?.items.some((i) => i.label === 'Recommendations' && i.view === 'recommendations')).toBe(
+      true,
+    );
+    expect(pathForView('recommendations')).toBe('/recommendations');
+    expect(viewForPath('/recommendations')).toBe('recommendations');
   });
 });

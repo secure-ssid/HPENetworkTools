@@ -45,13 +45,6 @@ export function createCannedTransport(profile: Pick<DeviceProfile, 'kind'>): Ter
   };
 }
 
-const LINE_COLORS: Record<TerminalLine['tone'], string> = {
-  in: 'var(--nd-accent-text)',
-  body: 'var(--nd-text-secondary)',
-  muted: 'var(--nd-text-muted)',
-  warn: 'var(--nd-warning)',
-};
-
 export function TerminalPane({
   transport,
   prompt,
@@ -136,95 +129,32 @@ export function TerminalPane({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'baseline',
-          justifyContent: 'space-between',
-          paddingBottom: 8,
-          borderBottom: '1px solid var(--nd-border-default)',
-        }}
-      >
-        <span className="nd-micro-label">{sectionTitle}</span>
-        <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-text-muted)',
-          }}
-        >
-          {sectionMeta}
-        </span>
+    <div className="nt-term">
+      <div className="nt-term__section-head">
+        <span className="nd-micro-label nt-micro-label">{sectionTitle}</span>
+        <span className="nt-term__section-meta">{sectionMeta}</span>
       </div>
 
-      <div
-        style={{
-          background: 'var(--nd-bg-inset)',
-          border: '1px solid var(--nd-border-default)',
-          borderRadius: 'var(--nd-radius-md)',
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '8px 12px',
-            borderBottom: '1px solid var(--nd-border-subtle)',
-            background: 'var(--nd-bg-surface)',
-          }}
-        >
+      <div className="nt-term__frame">
+        <div className="nt-term__titlebar">
           <span
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: 99,
-              background: online ? 'var(--nd-success)' : 'var(--nd-border-strong)',
-              flex: '0 0 7px',
-            }}
+            className="nt-term__dot"
+            data-online={online ? 'true' : 'false'}
+            aria-hidden
           />
-          <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 10.5,
-              color: 'var(--nd-text-secondary)',
-            }}
-          >
-            {titlebar}
-          </span>
-          <span
-            style={{
-              marginLeft: 'auto',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-            }}
-          >
-            {titlebarRight}
-          </span>
+          <span className="nt-term__title">{titlebar}</span>
+          <span className="nt-term__title-right">{titlebarRight}</span>
         </div>
 
-        <div
-          ref={scrollRef}
-          style={{
-            height: 352,
-            overflow: 'auto',
-            padding: '12px 14px',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 11.5,
-            lineHeight: 1.65,
-          }}
-        >
+        <div ref={scrollRef} className="nt-term__scroll">
           {buffer.map((l, i) => (
-            <div key={i} style={{ whiteSpace: 'pre-wrap', color: LINE_COLORS[l.tone] }}>
+            <div key={i} className="nt-term__line" data-tone={l.tone}>
               {l.text}
             </div>
           ))}
           {canShell ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 2 }}>
-              <span style={{ color: 'var(--nd-accent-text)' }}>{prompt}</span>
+            <div className="nt-term__prompt-row">
+              <span className="nt-term__prompt">{prompt}</span>
               <input
                 type="text"
                 value={cmd}
@@ -234,48 +164,20 @@ export function TerminalPane({
                 }}
                 placeholder="type a command — try: show version"
                 aria-label="Terminal input"
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  background: 'transparent',
-                  border: 'none',
-                  outline: 'none',
-                  color: 'var(--nd-text-primary)',
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 11.5,
-                }}
+                className="nt-term__input"
               />
             </div>
           ) : null}
         </div>
 
         {canShell ? (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '8px 12px',
-              borderTop: '1px solid var(--nd-border-subtle)',
-              background: 'var(--nd-bg-surface)',
-              flexWrap: 'wrap',
-            }}
-          >
+          <div className="nt-term__chips">
             {quickCommands.map((c) => (
               <button
                 key={c}
                 type="button"
                 onClick={() => submit(c)}
-                style={{
-                  background: 'var(--nd-bg-raised)',
-                  border: '1px solid var(--nd-border-subtle)',
-                  borderRadius: 'var(--nd-radius-sm)',
-                  padding: '3px 8px',
-                  cursor: 'pointer',
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10.5,
-                  color: 'var(--nd-text-secondary)',
-                }}
+                className="nt-term__chip"
               >
                 {c}
               </button>
@@ -286,15 +188,7 @@ export function TerminalPane({
                 setLines(transport.banner());
                 setCmd('');
               }}
-              style={{
-                marginLeft: 'auto',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 10.5,
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-term__clear"
             >
               clear
             </button>
@@ -304,7 +198,7 @@ export function TerminalPane({
 
       {readOnlyNote ? (
         <Alert tone="info" title="No local shell on this device">
-          <span style={{ fontSize: 13 }}>{readOnlyNote}</span>
+          <span className="nt-fs-13">{readOnlyNote}</span>
         </Alert>
       ) : null}
     </div>

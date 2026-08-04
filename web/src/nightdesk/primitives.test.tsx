@@ -54,7 +54,7 @@ describe('Stack', () => {
       </Stack>,
     );
     const el = container.firstElementChild as HTMLElement;
-    expect(el.className).toBe('bar');
+    expect(el.className.split(/\s+/)).toEqual(expect.arrayContaining(['nd-stack','nt-stack','nt-stack--row','nt-stack--wrap','bar']));
     expect(el.style.flexDirection).toBe('row');
     expect(el.style.gap).toBe('8px');
     expect(el.style.alignItems).toBe('center');
@@ -111,7 +111,8 @@ describe('Divider', () => {
 describe('SectionHeader', () => {
   it('always renders the label and renders meta only when present', () => {
     const { container, rerender } = render(<SectionHeader label="Needs you now" />);
-    expect(screen.getByText('Needs you now').className).toBe('nd-micro-label');
+    expect(screen.getByText('Needs you now').className).toContain('nd-micro-label');
+    expect(screen.getByText('Needs you now').className).toContain('nt-micro-label');
     expect(container.querySelector('.nd-section-header__meta')).toBeNull();
 
     rerender(<SectionHeader label="Needs you now" meta="3" />);
@@ -129,7 +130,14 @@ describe('Heading', () => {
     render(<Heading level={level}>Sites</Heading>);
     const h = screen.getByRole('heading', { level });
     expect(h.tagName).toBe(`H${level}`);
-    expect(h.className).toBe(`nd-heading nd-heading--${level}`);
+    expect(h.className.split(/\s+/)).toEqual(
+      expect.arrayContaining([
+        'nd-heading',
+        'nt-heading',
+        `nd-heading--${level}`,
+        `nt-heading--${level}`,
+      ]),
+    );
   });
 
   it('renders the overline outside the heading so it is not part of the accessible name', () => {
@@ -192,14 +200,16 @@ describe('Code', () => {
     const { container } = render(<Code>show version</Code>);
     const el = container.firstElementChild as HTMLElement;
     expect(el.tagName).toBe('CODE');
-    expect(el.className).toBe('nd-code');
+    expect(el.className).toContain('nd-code');
+    expect(el.className).toContain('nt-code-inline');
   });
 
   it('wraps block code in a pre so whitespace survives', () => {
     const { container } = render(<Code block>{'line one\nline two'}</Code>);
     const pre = container.firstElementChild as HTMLElement;
     expect(pre.tagName).toBe('PRE');
-    expect(pre.className).toBe('nd-code-block');
+    expect(pre.className).toContain('nd-code-block');
+    expect(pre.className).toContain('nt-code-frame');
     expect(pre.querySelector('code')?.textContent).toBe('line one\nline two');
   });
 });
@@ -209,6 +219,7 @@ describe('Kbd', () => {
     const { container } = render(<Kbd>⌘K</Kbd>);
     const el = container.firstElementChild as HTMLElement;
     expect(el.tagName).toBe('KBD');
-    expect(el.className).toBe('nd-kbd');
+    expect(el.className).toContain('nd-kbd');
+    expect(el.className).toContain('nt-kbd');
   });
 });

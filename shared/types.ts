@@ -62,6 +62,7 @@ export type View =
   | 'greenlake'
   | 'configure'
   | 'compliance'
+  | 'recommendations'
   | 'systems'
   | 'uxi'
   | 'clearpass'

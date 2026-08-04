@@ -26,7 +26,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Alerts from './Alerts';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -155,7 +155,9 @@ describe('Alerts', () => {
     renderAlerts();
 
     await waitFor(() => expect(screen.getByText('0 of 0 alerts · live')).toBeTruthy());
-    expect(screen.queryByRole('alert')).toBeNull();
+    // Correlation danger banner only — other panels may use role=alert for info.
+    expect(screen.queryByText('Riverside Clinic is dark — and its plane is stale')).toBeNull();
+    expect(screen.queryByText(/needs you now/i)).toBeNull();
   });
 
   it('(d) keeps the authored banner for a demo-sourced queue', async () => {
@@ -735,5 +737,504 @@ describe('Alerts webhook badge', () => {
     expect(screen.getAllByText('webhook')).toHaveLength(1);
     // The badge is provenance, not a filter change — both rows still count.
     expect(screen.getByText('2 of 2 alerts · live')).toBeTruthy();
+  });
+});
+
+describe('Alerts Copy view link', () => {
+  it('copies queue filters including plane and q', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [WORST] }));
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/alerts?plane=CENTRAL&q=core&unacked=1']}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Alerts />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toContain('plane=CENTRAL');
+    expect(url).toContain('q=core');
+    expect(url).toContain('unacked=1');
+  });
+});
+
+/* Loop 71 — server list GET includes q= when the search box is set. */
+describe('Alerts server q= filter (Loop 71)', () => {
+  it('getAlerts receives q from the seeded search box', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [WORST], groups: [] }));
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/alerts?q=core']}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Alerts />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(mockGetAlerts).toHaveBeenCalled());
+    const withQ = mockGetAlerts.mock.calls.find((c) => c[0] && typeof c[0] === 'object' && 'q' in c[0]!);
+    expect(withQ?.[0]).toEqual(expect.objectContaining({ q: 'core' }));
+  });
+});
+
+function AlertsLocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="alerts-loc">{`${loc.pathname}${loc.search}`}</div>;
+}
+
+/* Loop 72 — severity (and other queue filters) write back into the address bar. */
+describe('Alerts severity filter URL write-back', () => {
+  it('seeds ?sev= and writes severity ticks back to the URL', async () => {
+    const centralRow = { ...WORST, state: 'acked' } as AlertRow;
+    const classicRow = { ...STALE_PARTNER, state: 'acked', stale: undefined } as AlertRow;
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [centralRow, classicRow] }));
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/alerts?sev=P1']}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/alerts"
+                element={
+                  <>
+                    <Alerts />
+                    <AlertsLocationProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.queryByText('inventory 6h stale')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('alerts-loc').textContent).toContain('sev=P1'));
+
+    // Clear severity, then tick P2 — URL should follow.
+    fireEvent.click(screen.getByRole('button', { name: /1 facet value — clear/i }));
+    await waitFor(() => expect(screen.getByTestId('alerts-loc').textContent).not.toContain('sev='));
+    expect(screen.getByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.getByText('inventory 6h stale')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Severity' }));
+    const sevPanel = screen.getByRole('group', { name: 'Severity filter' });
+    fireEvent.click(within(sevPanel).getByRole('checkbox', { name: 'P2' }));
+    await waitFor(() => expect(screen.getByTestId('alerts-loc').textContent).toContain('sev=P2'));
+    expect(screen.getByText('inventory 6h stale')).toBeTruthy();
+    expect(screen.queryByText('gw-edge-1 unreachable')).toBeNull();
+  });
+});
+
+/* Loop 56 — multi-select bulk bar exports only the marked groups.
+ * Loop 130 — Copy selection link writes ?fps= and deep-link filters the queue. */
+describe('Alerts bulk export of selection', () => {
+  it('shows Export selected for keyboard selection and clears the bar', async () => {
+    mockGetAlerts.mockResolvedValue(liveData());
+    const createObjectURL = vi.fn(() => 'blob:alerts-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+
+    const { container } = renderAlerts();
+    await screen.findByText('2 of 2 alerts · live');
+    expect(screen.queryByRole('region', { name: 'Alert selection actions' })).toBeNull();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Alert selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected alert group/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Alert selection actions' })).toBeNull(),
+    );
+  });
+
+  it('Copy selection link writes fps= and the deep link filters the queue', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    mockGetAlerts.mockResolvedValue(liveData());
+
+    const { container } = renderAlerts();
+    await screen.findByText('2 of 2 alerts · live');
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Alert selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toMatch(/fps=/);
+    expect(decodeURIComponent(url).toLowerCase()).toMatch(/gw-edge-1/);
+
+    // Open the copied fps= deep link — only the marked group remains.
+    cleanup();
+    const qs = url.includes('?') ? url.slice(url.indexOf('?')) : '';
+    mockGetAlerts.mockResolvedValue(liveData());
+    render(
+      <MemoryRouter
+        initialEntries={[`/${qs}`]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Alerts />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByText(/1 of 2 alerts · live/);
+    expect(screen.getByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.queryByText('inventory 6h stale')).toBeNull();
+    expect(screen.getByRole('button', { name: /selected group/i })).toBeTruthy();
+  });
+
+  /* Loop 160 — bulk Copy fingerprints (Devices Copy serials pattern). */
+  it('Copy fingerprints writes unique newline-joined fingerprints', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    mockGetAlerts.mockResolvedValue(liveData());
+
+    const { container } = renderAlerts();
+    await screen.findByText('2 of 2 alerts · live');
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Alert selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy fingerprints' }));
+    expect(await screen.findByText(/Copied 1 fingerprint/i)).toBeTruthy();
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const text = String(writeText.mock.calls[0]![0]);
+    expect(text).toMatch(/gw-edge-1/i);
+    expect(text.includes('\n')).toBe(false);
+  });
+});
+
+/* Loop 145 — Severity chip row toggles the same sev facet / ?sev= write-back. */
+describe('Alerts severity chips (Loop 145)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/"
+                element={
+                  <>
+                    <Alerts />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('severity chips filter the queue and write sev back to the URL', async () => {
+    mockGetAlerts.mockResolvedValue(liveData());
+
+    renderAt('/');
+    expect(await screen.findByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.getByText('inventory 6h stale')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Alert severity' });
+    const p1 = within(chips).getByRole('button', { name: /P1/i });
+    expect(p1.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(p1);
+    await waitFor(() => expect(screen.getByText('gw-edge-1 unreachable')).toBeTruthy());
+    expect(screen.queryByText('inventory 6h stale')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toMatch(/sev=P1/);
+    expect(p1.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(p1);
+    await waitFor(() => expect(screen.getByText('inventory 6h stale')).toBeTruthy());
+    expect(screen.getByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toMatch(/sev=/);
+  });
+});
+
+/* Loop 151 — Plane chip row toggles the same plane facet / ?plane= write-back. */
+describe('Alerts plane chips (Loop 151)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/"
+                element={
+                  <>
+                    <Alerts />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('plane chips filter the queue and write plane back to the URL', async () => {
+    mockGetAlerts.mockResolvedValue(liveData());
+
+    renderAt('/');
+    expect(await screen.findByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.getByText('inventory 6h stale')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Alert plane' });
+    const central = within(chips).getByRole('button', { name: /CENTRAL/i });
+    expect(central.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(central);
+    await waitFor(() => expect(screen.getByText('gw-edge-1 unreachable')).toBeTruthy());
+    expect(screen.queryByText('inventory 6h stale')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toMatch(/plane=CENTRAL/);
+    expect(central.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(central);
+    await waitFor(() => expect(screen.getByText('inventory 6h stale')).toBeTruthy());
+    expect(screen.getByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toMatch(/plane=/);
+  });
+});
+
+/* Loop 154 — Unacked chip row toggles the same unacked= filter as the Switch. */
+describe('Alerts unacked chips (Loop 154)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/"
+                element={
+                  <>
+                    <Alerts />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('unacked chip filters the queue and writes unacked back to the URL', async () => {
+    const openRow = { ...WORST, title: 'open-edge-down', state: 'open' as const };
+    const ackedRow = {
+      ...STALE_PARTNER,
+      title: 'acked-inventory-stale',
+      state: 'acked' as const,
+      stale: undefined,
+    };
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [openRow, ackedRow], correlation: null }));
+
+    renderAt('/');
+    expect((await screen.findAllByText('open-edge-down')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('acked-inventory-stale').length).toBeGreaterThan(0);
+
+    const chips = screen.getByRole('group', { name: 'Alert unacked' });
+    const unacked = within(chips).getByRole('button', { name: /Unacked/i });
+    expect(unacked.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(unacked);
+    await waitFor(() => {
+      expect(screen.getAllByText('open-edge-down').length).toBeGreaterThan(0);
+      expect(screen.queryByText('acked-inventory-stale')).toBeNull();
+    });
+    expect(screen.getByTestId('search').textContent).toMatch(/unacked=1/);
+    expect(unacked.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(unacked);
+    await waitFor(() => {
+      expect(screen.getAllByText('acked-inventory-stale').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('open-edge-down').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByTestId('search').textContent).not.toMatch(/unacked=/);
+  });
+});
+
+/* Loop 157 — Site chip row toggles the same site facet / ?site= write-back. */
+describe('Alerts site chips (Loop 157)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/"
+                element={
+                  <>
+                    <Alerts />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('site chips filter the queue and write site back to the URL', async () => {
+    const hq = {
+      ...WORST,
+      title: 'hq-edge-down',
+      siteId: 'campus-01',
+      siteName: 'Campus-01 HQ',
+    } satisfies AlertRow;
+    const branch = {
+      ...STALE_PARTNER,
+      title: 'branch-stale',
+      siteId: 'branch-02' as AlertRow['siteId'],
+      siteName: 'Branch-02',
+      stale: undefined,
+    } satisfies AlertRow;
+    mockGetAlerts.mockResolvedValue(liveData({ alerts: [hq, branch], correlation: null }));
+
+    renderAt('/');
+    expect((await screen.findAllByText('hq-edge-down')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('branch-stale').length).toBeGreaterThan(0);
+
+    const chips = screen.getByRole('group', { name: 'Alert site' });
+    const branchChip = within(chips).getByRole('button', { name: /Branch-02/i });
+    expect(branchChip.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(branchChip);
+    await waitFor(() => {
+      const queue = screen.getByRole('grid', { name: 'Alerts' });
+      expect(within(queue).getAllByText('branch-stale').length).toBeGreaterThan(0);
+      // Correlation banner still names the estate-worst title; assert the queue row is gone.
+      expect(within(queue).queryByText('hq-edge-down')).toBeNull();
+    });
+    expect(screen.getByTestId('search').textContent).toMatch(/site=branch-02/);
+    expect(branchChip.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(branchChip);
+    await waitFor(() => {
+      const queue = screen.getByRole('grid', { name: 'Alerts' });
+      expect(within(queue).getAllByText('hq-edge-down').length).toBeGreaterThan(0);
+      expect(within(queue).getAllByText('branch-stale').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByTestId('search').textContent).not.toMatch(/site=/);
+  });
+});
+
+/* Loop 166 — LIVE badge honesty (pure live used to omit the badge). */
+describe('Alerts Loop 166 residuals', () => {
+  it('stamps LIVE on pure live alerts', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ syncedAt: '2026-07-26T09:05:00' }));
+    renderAlerts();
+    expect(await screen.findByText('SYNCED 09:05')).toBeTruthy();
+    expect(screen.getByText('LIVE')).toBeTruthy();
+  });
+
+  it('stamps LIVE when alerts arrive via blend', async () => {
+    mockGetAlerts.mockResolvedValue(
+      liveData({ dataSource: 'demo', blended: ['alerts'], syncedAt: '2026-07-26T09:05:00' }),
+    );
+    renderAlerts();
+    expect(await screen.findByText('SYNCED 09:05')).toBeTruthy();
+    expect(screen.getByText('LIVE')).toBeTruthy();
+    expect(screen.queryByText('Riverside Clinic is dark — and its plane is stale')).toBeNull();
+  });
+
+  it('hides LIVE on demo fixtures without blend', async () => {
+    mockGetAlerts.mockResolvedValue(liveData({ dataSource: 'demo' }));
+    renderAlerts();
+    expect(await screen.findByText('Riverside Clinic is dark — and its plane is stale')).toBeTruthy();
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+/* Loop 204 — filtered empty Clear filters CTA. */
+describe('Alerts Loop 204 residuals', () => {
+  it('offers Clear filters when the queue filter is empty', async () => {
+    mockGetAlerts.mockResolvedValue(liveData());
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/alerts?q=zzzz-no-match']}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Alerts />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('Nothing matches that filter')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByText('gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.getByText('inventory 6h stale')).toBeTruthy();
   });
 });

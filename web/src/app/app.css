@@ -20,12 +20,16 @@
   gap: var(--nd-space-4);
   flex-wrap: wrap;
   min-width: 0;
-  padding: 4px 0 16px;
-  border-bottom: 1px solid var(--nd-border-subtle);
+  padding: 8px 4px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--nd-accent) 14%, var(--nd-border-subtle));
   background:
-    linear-gradient(90deg, rgba(224, 140, 98, 0.08), transparent 42%),
-    transparent;
+    radial-gradient(80% 120% at 0% 0%, color-mix(in srgb, var(--nd-accent) 16%, transparent), transparent 55%),
+    linear-gradient(90deg, color-mix(in srgb, var(--nd-accent) 10%, transparent), transparent 42%),
+    linear-gradient(180deg, color-mix(in srgb, var(--nd-bg-raised) 35%, transparent), transparent 70%);
   border-radius: var(--nd-radius-md) var(--nd-radius-md) 0 0;
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--nd-accent) 10%, transparent),
+    0 12px 32px color-mix(in srgb, var(--nd-bg-canvas) 35%, transparent);
 }
 
 .nt-screen-header__copy {
@@ -41,9 +45,10 @@
   margin: 0;
   font-family: var(--nd-font-mono);
   font-size: var(--nd-text-10);
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--nd-accent-text);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--nd-accent) 28%, transparent);
 }
 
 .nt-screen-header__title {
@@ -70,10 +75,15 @@
   gap: var(--nd-space-2);
   flex-wrap: wrap;
   max-width: 100%;
-  padding: 4px;
+  padding: 6px 8px;
   border-radius: var(--nd-radius-lg);
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--nd-border-subtle);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--nd-accent) 6%, transparent), transparent 70%),
+    color-mix(in srgb, var(--nd-bg-raised) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--nd-border-subtle) 70%, var(--nd-accent) 30%);
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--nd-accent) 10%, transparent);
 }
 
 @media (max-width: 900px) {
@@ -126,6 +136,9 @@
   min-height: 100%;
   flex-direction: column;
   gap: var(--nd-space-4);
+  padding: 4px 2px 12px;
+  background:
+    radial-gradient(90% 40% at 0% 0%, color-mix(in srgb, var(--nd-accent) 10%, transparent), transparent 55%);
 }
 
 .nt-shell-inventory {
@@ -154,10 +167,10 @@
   gap: 6px;
   min-height: 36px;
   padding: 3px 6px;
+  padding-left: calc(6px + (var(--nd-tree-level, 1) - 1) * 14px);
   border-radius: var(--nd-radius-md);
   color: var(--nd-text-secondary);
 }
-
 .nt-inventory-tree__row:hover,
 .nt-inventory-tree__row:focus-visible,
 .nt-inventory-tree__row--selected {
@@ -225,6 +238,7 @@
 .nt-inventory-tree__more {
   display: block;
   padding: 6px 8px;
+  padding-left: calc(34px + var(--nd-tree-level, 1) * 14px);
   color: var(--nd-text-muted);
   font-family: var(--nd-font-mono);
   font-size: var(--nd-text-10);
@@ -441,6 +455,41 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  border-radius: var(--nd-radius-md);
+  border: 1px solid color-mix(in srgb, var(--nd-accent) 10%, var(--nd-border-subtle));
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--nd-accent) 4%, transparent), transparent 48px),
+    var(--nd-bg-surface);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--nd-accent) 8%, transparent);
+}
+
+/* Checkbox + plane row (Loop 189 bulk). Head uses the same left gutter. */
+.nt-plane-select-row {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--nd-accent) 6%, var(--nd-border-subtle));
+}
+
+.nt-plane-select-row > .nt-plane-row {
+  flex: 1;
+  min-width: 0;
+  border-bottom: 0;
+}
+
+.nt-plane-row__check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  padding-left: var(--nd-space-2);
+}
+
+.nt-plane-select-row--head {
+  border-bottom-color: color-mix(in srgb, var(--nd-accent) 14%, var(--nd-border-default));
+  background: color-mix(in srgb, var(--nd-bg-raised) 70%, transparent);
 }
 
 .nt-plane-row {
@@ -461,7 +510,7 @@
   padding: var(--nd-row-pad-y) var(--nd-space-2);
   text-align: left;
   border: 0;
-  border-bottom: 1px solid var(--nd-border-subtle);
+  border-bottom: 1px solid color-mix(in srgb, var(--nd-accent) 6%, var(--nd-border-subtle));
   box-shadow: inset 2px 0 0 transparent;
   background: none;
   color: var(--nd-text-secondary);
@@ -472,11 +521,12 @@
 .nt-plane-row--head {
   padding-top: 4px;
   padding-bottom: 5px;
-  border-bottom-color: var(--nd-border-default);
-  color: var(--nd-text-muted);
+  border-bottom-color: color-mix(in srgb, var(--nd-accent) 14%, var(--nd-border-default));
+  color: color-mix(in srgb, var(--nd-text-muted) 85%, var(--nd-accent-text));
   font-size: var(--nd-text-10);
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  background: color-mix(in srgb, var(--nd-bg-raised) 70%, transparent);
 }
 
 .nt-plane-row--link {
@@ -489,8 +539,10 @@
 .nt-plane-row--link:hover,
 .nt-plane-row--link:focus-visible {
   outline: none;
-  background: var(--nd-bg-surface);
-  box-shadow: inset 2px 0 0 var(--nd-accent);
+  background: color-mix(in srgb, var(--nd-accent) 6%, var(--nd-bg-surface));
+  box-shadow:
+    inset 2px 0 0 var(--nd-accent),
+    0 0 16px color-mix(in srgb, var(--nd-accent) 10%, transparent);
 }
 
 .nt-plane-row > span {
@@ -697,6 +749,11 @@
 .nt-stat-band {
   display: flex;
   flex-direction: column;
+  padding: 4px 2px 2px;
+  border-radius: var(--nd-radius-md);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--nd-accent) 5%, transparent), transparent 70%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--nd-accent) 8%, transparent);
 }
 
 /* Said once for the whole row, not repeated under every figure. */
@@ -757,7 +814,7 @@
   border: 1px solid var(--nd-border-default);
   border-radius: var(--nd-radius-lg);
   background: var(--nd-bg-raised);
-  box-shadow: var(--nd-shadow-raised), 0 0 28px rgba(224, 140, 98, 0.06);
+  box-shadow: var(--nd-shadow-raised), 0 0 28px color-mix(in srgb, var(--nd-accent) 6%, transparent);
   padding: 14px;
 }
 .nt-configure__queue-title {
@@ -786,6 +843,46 @@
   align-items: center;
   gap: 16px;
   min-width: 0;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--nd-border-subtle);
+  border-left: 2px solid transparent;
+  padding: 12px 10px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.nt-configure-row:hover {
+  border-left-color: var(--nd-accent);
+  background: color-mix(in srgb, var(--nd-accent) 5%, transparent);
+}
+.nt-micro-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--nd-font-mono);
+  font-size: 10px;
+  letter-spacing: .08em;
+  color: var(--nd-accent-text);
+  text-transform: uppercase;
+}
+.nt-micro-link:hover {
+  color: var(--nd-accent-hover);
+}
+.nt-inventory-detail-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--nd-accent-text);
+  text-align: left;
+}
+.nt-inventory-detail-btn:hover {
+  color: var(--nd-accent-hover);
 }
 
 .nt-configure-row__name,
@@ -1458,3 +1555,99 @@
   align-items: center;
   gap: 8px;
 }
+
+
+/* plane-row copper night */
+.nt-plane-row--link {
+  border-left: 2px solid transparent;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.nt-plane-row--link:hover,
+.nt-plane-row--link:focus-visible {
+  border-left-color: var(--nd-accent);
+  background: color-mix(in srgb, var(--nd-accent) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nd-accent) 8%, transparent);
+}
+.nt-plane-table {
+  border: 1px solid var(--nd-border-subtle);
+  border-radius: var(--nd-radius-md);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--nd-bg-raised) 88%, var(--nd-bg-canvas)), var(--nd-bg-surface));
+  overflow: hidden;
+}
+
+/* Loop 125 — Overview last-hour delta strip + shell theme control */
+.nt-change-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 10px;
+  padding: 8px 10px;
+  border-radius: var(--nd-radius-md);
+  border: 1px solid color-mix(in srgb, var(--nd-accent) 14%, var(--nd-border-subtle));
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--nd-accent) 7%, transparent), transparent 55%),
+    color-mix(in srgb, var(--nd-bg-raised) 55%, transparent);
+}
+.nt-change-strip__kicker {
+  font-family: var(--nd-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--nd-accent) 80%, var(--nd-text-muted));
+  margin-right: 4px;
+}
+.nt-change-strip__chip {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--nd-border-default) 80%, transparent);
+  background: color-mix(in srgb, var(--nd-bg-surface) 80%, transparent);
+  color: var(--nd-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.nt-change-strip__chip:hover {
+  border-color: color-mix(in srgb, var(--nd-accent) 35%, var(--nd-border-default));
+  background: color-mix(in srgb, var(--nd-accent) 10%, var(--nd-bg-surface));
+}
+.nt-change-strip__chip:focus-visible {
+  outline: 2px solid var(--nd-accent);
+  outline-offset: 2px;
+}
+.nt-change-strip__chip--negative {
+  color: var(--nd-danger);
+  border-color: color-mix(in srgb, var(--nd-danger) 28%, var(--nd-border-default));
+}
+.nt-change-strip__chip--positive {
+  color: var(--nd-success);
+  border-color: color-mix(in srgb, var(--nd-success) 28%, var(--nd-border-default));
+}
+.nt-change-strip__chip--neutral {
+  color: var(--nd-text);
+}
+.nt-change-strip__note {
+  margin-left: auto;
+  font-family: var(--nd-font-mono);
+  font-size: 10px;
+  color: var(--nd-text-muted);
+}
+.nt-shell-theme {
+  flex-shrink: 0;
+}
+.nt-shell-theme__compact {
+  display: none;
+}
+@media (max-width: 900px) {
+  .nt-shell-theme__label {
+    display: none;
+  }
+  .nt-shell-theme__compact {
+    display: inline;
+  }
+}
+

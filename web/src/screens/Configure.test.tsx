@@ -13,7 +13,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
-import Configure from './Configure';
+import Configure, {
+  portExportRows,
+  queueExportRows,
+  ssidExportRows,
+  vlanExportRows,
+} from './Configure';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import {
@@ -30,6 +35,8 @@ import {
   queueChange,
 } from '../api/client';
 import type { BrokeredChange, ConfigureData } from '../api/client';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
+import { exportTableCsv } from '../lib/csv';
 import { SSIDS } from '@hpe/shared';
 import type { SsidApplyResult, SsidCatalog, SsidObject } from '@hpe/shared';
 
@@ -51,6 +58,14 @@ vi.mock('../api/client', async (importOriginal) => {
   };
 });
 
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
+vi.mock('../lib/csv', () => ({
+  exportTableCsv: vi.fn((_filename: string, _headers: string[], rows: Array<Array<unknown>>) => rows.length),
+}));
+
 const mockGetConfigure = vi.mocked(getConfigure);
 const mockGetChangeQueue = vi.mocked(getChangeQueue);
 const mockGetChangeHistory = vi.mocked(getChangeHistory);
@@ -62,6 +77,8 @@ const mockGetSsidCatalog = vi.mocked(getSsidCatalog);
 const mockApplySsidDirect = vi.mocked(applySsidDirect);
 const mockGetPortalSettings = vi.mocked(getPortalSettings);
 const mockApplyConfigDirect = vi.mocked(applyConfigDirect);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
+const mockExportTableCsv = vi.mocked(exportTableCsv);
 
 // -- fixtures ---------------------------------------------------------------
 
@@ -160,10 +177,25 @@ function renderConfigure(initialEntry = '/configure') {
 
 /** The right-hand "Queued changes" column: header + rows + Push/Discard. */
 function queueSection() {
+  const root = document.getElementById('configure-section-queue');
+  if (root) return within(root);
   const label = screen.getByText('Queued changes');
   const header = label.closest('.nd-section-header');
-  if (!header || !header.parentElement) throw new Error('queue section not found');
-  return within(header.parentElement);
+  /* Walk past toolbar wrappers (nt-row-between) to the queue column shell. */
+  let el: HTMLElement | null = header?.parentElement ?? null;
+  while (el && !el.id?.startsWith('configure-section') && el.parentElement) {
+    if (el.classList.contains('nt-configure__queue') || el.classList.contains('nt-config-queue')) break;
+    /* Prefer the column that also hosts EmptyState / DataTable siblings. */
+    if (el.querySelector('.nd-empty, .nt-empty-cinema, [aria-label="Queued changes"]')) break;
+    const parent = el.parentElement;
+    if (parent?.querySelector('.nd-empty, .nt-empty-cinema, table, [role="grid"]')) {
+      el = parent;
+      break;
+    }
+    el = parent;
+  }
+  if (!el) throw new Error('queue section not found');
+  return within(el);
 }
 
 /**
@@ -787,6 +819,13 @@ describe('Configure — derived claims and empty states', () => {
     expect(screen.getByText('No switch ports reported')).toBeTruthy();
     expect(screen.getByText('No VLANs reported')).toBeTruthy();
     expect(queueSection().getByText('No changes queued')).toBeTruthy();
+    // Honest empty queue: broker empty ≠ failed read; SSIDs never enter the queue.
+    expect(
+      queueSection().getByText(
+        /The write broker has nothing pending\. Ticketed port and VLAN changes appear here/,
+      ),
+    ).toBeTruthy();
+    expect(queueSection().queryByText(/Edit an SSID, port or VLAN/)).toBeNull();
     // On a live section the empty state says the add path still works.
     expect(
       screen.getByText(
@@ -870,9 +909,11 @@ describe('Configure — change history drawer', () => {
     expect(drawer.queryByText(AUDIT_ROW.ts)).toBeNull();
     expect(drawer.getByText('push vlan')).toBeTruthy();
     expect(drawer.getByText('NET-4166')).toBeTruthy();
-    expect(drawer.getByText('applied')).toBeTruthy();
+    expect(drawer.getAllByText('applied').length).toBeGreaterThan(0);
     expect(drawer.getByText('dry-run ssid')).toBeTruthy();
-    expect(drawer.getByText('render-only (read-only plane)')).toBeTruthy();
+    expect(drawer.getAllByText('render-only (read-only plane)').length).toBeGreaterThan(0);
+    // Server CSV uses downloadApiCsv (not a bare window.open tab).
+    expect(drawer.getByRole('button', { name: /download server csv/i })).toBeTruthy();
     // The old honest-toast claim is gone — the route exists.
     expect(screen.queryByText(/not in this build/)).toBeNull();
     // SECURITY: the audit row carries no config body, and the drawer adds none.
@@ -943,6 +984,252 @@ describe('Configure — change history drawer', () => {
     const second = within(await screen.findByRole('dialog'));
     await waitFor(() => expect(second.getByText('chg-9b02')).toBeTruthy());
     expect(mockGetChangeHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it('downloads history via downloadApiCsv when live audit rows are present', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetChangeHistory.mockResolvedValue({ events: [AUDIT_ROW], unreadable: [] });
+    await openHistoryDrawer();
+    const drawer = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(drawer.getByText('chg-7f21')).toBeTruthy());
+    fireEvent.click(drawer.getByRole('button', { name: /download server csv/i }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/configure/history/export?limit=200',
+        'configure-history.csv',
+      ),
+    );
+    expect(await screen.findByText(/server csv downloaded/i)).toBeTruthy();
+  });
+
+  it('applies kind filter client-side and still sends kind on server CSV', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetChangeHistory.mockResolvedValue({
+      events: [
+        AUDIT_ROW, // kind: vlan
+        { ...AUDIT_ROW, changeId: 'chg-port-1', kind: 'port' },
+      ],
+      unreadable: [],
+    });
+    await openHistoryDrawer();
+    const drawer = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(drawer.getByText('chg-7f21')).toBeTruthy());
+    expect(drawer.getByText('chg-port-1')).toBeTruthy();
+    /* Kind is client-side so chip counts see the full mix — fetch stays unscoped. */
+    expect(mockGetChangeHistory).toHaveBeenCalledWith(50, {});
+    fireEvent.change(drawer.getByRole('combobox', { name: 'Filter history by kind' }), {
+      target: { value: 'vlan' },
+    });
+    await waitFor(() => expect(drawer.getByText('chg-7f21')).toBeTruthy());
+    expect(drawer.queryByText('chg-port-1')).toBeNull();
+    fireEvent.click(drawer.getByRole('button', { name: /download server csv/i }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/configure/history/export?limit=200&kind=vlan',
+        'configure-history.csv',
+      ),
+    );
+  });
+
+  it('passes ticket filter to history fetch and server CSV (Loop 102)', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetChangeHistory.mockResolvedValue({ events: [AUDIT_ROW], unreadable: [] });
+    await openHistoryDrawer();
+    const drawer = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(drawer.getByText('chg-7f21')).toBeTruthy());
+    fireEvent.change(drawer.getByRole('textbox', { name: 'Filter history by ticket' }), {
+      target: { value: 'NET-4166' },
+    });
+    fireEvent.blur(drawer.getByRole('textbox', { name: 'Filter history by ticket' }));
+    await waitFor(() =>
+      expect(mockGetChangeHistory).toHaveBeenCalledWith(50, { ticket: 'NET-4166' }),
+    );
+    fireEvent.click(drawer.getByRole('button', { name: /download server csv/i }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/configure/history/export?limit=200&ticket=NET-4166',
+        'configure-history.csv',
+      ),
+    );
+  });
+});
+
+// -- Loop 47: queue polish (client CSV, section share link, honest empty) ------
+
+describe('Configure — queue polish', () => {
+  it('exports the visible queue as summary CSV without payload bodies', async () => {
+    mockGetChangeQueue.mockResolvedValue([
+      serverChange({
+        id: 'chg-csv-1',
+        what: 'VLAN 812 helpers',
+        ticket: 'NET-9001',
+        rendered: 'vlan 812\n  ip helper-address SECRET',
+      }),
+    ]);
+    mockExportTableCsv.mockClear();
+    renderConfigure();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Export queue CSV' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Export queue CSV' }));
+    expect(mockExportTableCsv).toHaveBeenCalledTimes(1);
+    const [filename, headers, rows] = mockExportTableCsv.mock.calls[0]!;
+    expect(filename).toBe('configure-queue.csv');
+    expect(headers).toEqual(['id', 'state', 'what', 'where', 'ticket', 'expiresAt']);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual([
+      'chg-csv-1',
+      'ready',
+      'VLAN 812 helpers',
+      '2 core switches · local collector',
+      'NET-9001',
+      '2026-07-26T09:15:00.000Z',
+    ]);
+    // Never ship the rendered config body (or any secret-shaped field).
+    expect(JSON.stringify(rows)).not.toMatch(/helper-address|SECRET|rendered/i);
+    expect(await screen.findByText(/Exported 1 queued change/)).toBeTruthy();
+  });
+
+  it('queueExportRows keeps only the on-screen summary columns', () => {
+    const rows = queueExportRows([
+      {
+        id: 'chg-1',
+        state: 'ready',
+        tone: 'success',
+        what: 'Port 1/1/1',
+        where: 'cx-core-1',
+        ticket: 'NET-1',
+        expiresAt: '2026-07-26T09:15:00.000Z',
+      },
+    ]);
+    expect(rows).toEqual([['chg-1', 'ready', 'Port 1/1/1', 'cx-core-1', 'NET-1', '2026-07-26T09:15:00.000Z']]);
+  });
+
+  it('Copy view link shares a section query (default queue)', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    mockGetChangeQueue.mockResolvedValue([]);
+    renderConfigure();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copy view link' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toMatch(/\/configure\?section=queue/);
+    expect(await screen.findByText(/View link copied/i)).toBeTruthy();
+    expect(screen.getByText(/section=queue/)).toBeTruthy();
+  });
+
+  it('Copy view link preserves an explicit section deep link', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    mockGetChangeQueue.mockResolvedValue([]);
+    renderConfigure('/configure?section=ports');
+    await waitFor(() => expect(document.getElementById('configure-section-ports')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/\/configure\?section=ports/);
+  });
+
+  it('anchors configure sections for section deep links', async () => {
+    mockGetChangeQueue.mockResolvedValue([]);
+    renderConfigure('/configure?section=queue');
+    await waitFor(() => expect(document.getElementById('configure-section-queue')).toBeTruthy());
+    expect(document.getElementById('configure-section-ssids')).toBeTruthy();
+    expect(document.getElementById('configure-section-ports')).toBeTruthy();
+    expect(document.getElementById('configure-section-vlans')).toBeTruthy();
+    expect(document.getElementById('configure-section-targets')).toBeTruthy();
+  });
+
+  it('exports SSID / port / VLAN inventory CSVs without payload bodies (Loop 52)', async () => {
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      inventoryMode: 'configured',
+      ssids: [
+        {
+          kind: 'ssid',
+          origin: 'configured',
+          name: 'MRDN-Lab',
+          vlan: 'vlan 820',
+          security: 'WPA2-PSK',
+          targets: 'lab APs',
+          plane: 'MIST',
+          tone: 'accent',
+          note: 'PSK set — redacted by the portal',
+          enabled: true,
+        },
+      ],
+      ports: [
+        {
+          kind: 'port',
+          origin: 'configured',
+          device: 'cx-lab-1',
+          plane: 'CENTRAL',
+          serial: 'CN123',
+          port: '1/1/1',
+          desc: 'uplink',
+          summary: 'trunk · vlan 1',
+          state: 'up',
+          tone: 'success',
+        },
+      ],
+      vlans: [
+        {
+          kind: 'vlan',
+          origin: 'configured',
+          plane: 'CENTRAL',
+          scope: 'cx-all',
+          id: '820',
+          name: 'corp',
+          detail: 'helper 10.0.0.1',
+          role: 'users',
+        },
+      ],
+    });
+    mockGetChangeQueue.mockResolvedValue([]);
+    mockExportTableCsv.mockClear();
+    renderConfigure();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Export SSIDs CSV' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Export SSIDs CSV' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Export ports CSV' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Export VLANs CSV' }));
+    expect(mockExportTableCsv).toHaveBeenCalledTimes(3);
+    expect(mockExportTableCsv.mock.calls.map((c) => c[0])).toEqual([
+      'configure-ssids.csv',
+      'configure-ports.csv',
+      'configure-vlans.csv',
+    ]);
+    const blob = JSON.stringify(mockExportTableCsv.mock.calls);
+    expect(blob).not.toMatch(/passphrase|password|secret-key/i);
+    expect(ssidExportRows([{
+      kind: 'ssid',
+      name: 'x',
+      vlan: 'v',
+      security: 'open',
+      targets: 't',
+      plane: 'MIST',
+      tone: 'neutral',
+      note: 'PSK set — redacted by the portal',
+    }])[0]).toContain('PSK set — redacted by the portal');
+    expect(portExportRows([{
+      kind: 'port',
+      device: 'd',
+      port: '1',
+      desc: '',
+      summary: 'access',
+      state: 'up',
+      tone: 'success',
+    }])).toHaveLength(1);
+    expect(vlanExportRows([{
+      kind: 'vlan',
+      id: '10',
+      name: 'n',
+      detail: 'd',
+      role: 'r',
+    }])[0]?.[0]).toBe('10');
   });
 });
 
@@ -2055,5 +2342,297 @@ describe('Configure — Mist SSID direct write', () => {
         `${LEASE_SENTENCE} HPE Aruba Central accepts pushes from here; Mist takes reviewed SSID writes without a ticket.`,
       ),
     ).toBeTruthy();
+  });
+});
+
+describe('Configure inventory server CSV (Loop 95)', () => {
+  const inventoryLive = {
+    ...CONFIGURE_DATA,
+    inventoryMode: 'configured' as const,
+    ssids: [
+      {
+        kind: 'ssid' as const,
+        origin: 'configured' as const,
+        name: 'MRDN-Lab',
+        vlan: 'vlan 820',
+        security: 'WPA2-PSK',
+        targets: 'lab APs',
+        plane: 'MIST' as const,
+        tone: 'accent' as const,
+        note: 'PSK set — redacted by the portal',
+        enabled: true,
+      },
+    ],
+    ports: [
+      {
+        kind: 'port' as const,
+        origin: 'configured' as const,
+        device: 'cx-lab-1',
+        plane: 'CENTRAL' as const,
+        serial: 'CN123',
+        port: '1/1/1',
+        desc: 'uplink',
+        summary: 'trunk · vlan 1',
+        state: 'up',
+        tone: 'success' as const,
+      },
+    ],
+    vlans: [
+      {
+        kind: 'vlan' as const,
+        origin: 'configured' as const,
+        plane: 'CENTRAL' as const,
+        scope: 'cx-all' as const,
+        id: '820',
+        name: 'corp',
+        detail: 'helper 10.0.0.1',
+        role: 'users',
+      },
+    ],
+  };
+
+  it('offers Download server CSV for ssids/ports/vlans when live', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetConfigure.mockResolvedValue(inventoryLive);
+    mockGetChangeQueue.mockResolvedValue([]);
+    renderConfigure();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Export SSIDs CSV' })).toBeTruthy());
+    const serverBtns = screen.getAllByRole('button', { name: 'Download server CSV' });
+    // history drawer is closed; inventory sections each expose one when rows exist
+    expect(serverBtns.length).toBeGreaterThanOrEqual(3);
+    // Prefer the SSID inventory control — other "Download server CSV" buttons may
+    // target visual-reference exports and are not part of this contract.
+    const ssidExport = screen.getByRole('button', { name: 'Export SSIDs CSV' });
+    const row = ssidExport.closest('.nt-row') ?? ssidExport.parentElement;
+    const inventoryBtn =
+      within(row as HTMLElement).queryByRole('button', { name: 'Download server CSV' }) ?? serverBtns.find((b) => {
+        const host = b.closest('[data-part], .nt-configure-section, section') ?? b.parentElement;
+        return Boolean(host?.textContent?.includes('SSID'));
+      }) ??
+      serverBtns[0]!;
+    fireEvent.click(inventoryBtn);
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]![0]);
+    expect(path).toMatch(/\/api\/configure\/export\?part=/);
+    expect(path).toMatch(/part=ssids|part=ports|part=vlans/);
+  });
+
+  it('SSID Download server CSV targets part=ssids', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetConfigure.mockResolvedValue(inventoryLive);
+    mockGetChangeQueue.mockResolvedValue([]);
+    renderConfigure();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Export SSIDs CSV' })).toBeTruthy());
+    // The SSID section's server download sits next to Export SSIDs CSV.
+    const ssidExport = screen.getByRole('button', { name: 'Export SSIDs CSV' });
+    const row = ssidExport.closest('.nt-row') ?? ssidExport.parentElement;
+    const serverBtn = within(row as HTMLElement).getByRole('button', { name: 'Download server CSV' });
+    fireEvent.click(serverBtn);
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/configure/export?part=ssids',
+        'configure-ssids.csv',
+      ),
+    );
+  });
+});
+
+/* Loop 153 — Kind chip row toggles the same kind filter as the Select. */
+describe('Configure history kind chips (Loop 153)', () => {
+  it('kind chips filter the drawer and keep CSV kind= in sync', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetChangeHistory.mockResolvedValue({
+      events: [
+        AUDIT_ROW,
+        {
+          ts: '2026-07-26T08:12:00.000Z',
+          event: 'dry-run',
+          changeId: 'chg-4a09',
+          ticket: 'NET-4149',
+          kind: 'ssid',
+          result: 'render-only (read-only plane)',
+        },
+        {
+          ts: '2026-07-26T07:00:00.000Z',
+          event: 'push',
+          changeId: 'chg-port-1',
+          ticket: 'NET-4100',
+          kind: 'port',
+          result: 'applied',
+        },
+      ],
+      unreadable: [],
+    });
+
+    await openHistoryDrawer();
+    const drawer = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(drawer.getByText('chg-7f21')).toBeTruthy());
+    expect(drawer.getByText('chg-4a09')).toBeTruthy();
+    expect(drawer.getByText('chg-port-1')).toBeTruthy();
+
+    const chips = drawer.getByRole('group', { name: 'History kind' });
+    const ssid = within(chips).getByRole('button', { name: /SSID/i });
+    expect(ssid.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(ssid);
+    await waitFor(() => expect(drawer.getByText('chg-4a09')).toBeTruthy());
+    expect(drawer.queryByText('chg-7f21')).toBeNull();
+    expect(drawer.queryByText('chg-port-1')).toBeNull();
+    expect(ssid.getAttribute('aria-pressed')).toBe('true');
+    expect(
+      (drawer.getByRole('combobox', { name: 'Filter history by kind' }) as HTMLSelectElement).value,
+    ).toBe('ssid');
+
+    fireEvent.click(drawer.getByRole('button', { name: /download server csv/i }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const csvUrl = String(mockDownloadApiCsv.mock.calls.at(-1)?.[0] ?? '');
+    expect(csvUrl).toContain('kind=ssid');
+
+    fireEvent.click(ssid);
+    await waitFor(() => expect(drawer.getByText('chg-7f21')).toBeTruthy());
+    expect(drawer.getByText('chg-4a09')).toBeTruthy();
+    expect(drawer.getByText('chg-port-1')).toBeTruthy();
+    expect(ssid.getAttribute('aria-pressed')).toBe('false');
+  });
+});
+
+/* Loop 157 — Result chip row toggles the same result filter as the Input. */
+describe('Configure history result chips (Loop 157)', () => {
+  it('result chips filter the drawer and keep CSV result= in sync', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetChangeHistory.mockResolvedValue({
+      events: [
+        AUDIT_ROW,
+        {
+          ts: '2026-07-26T08:12:00.000Z',
+          event: 'dry-run',
+          changeId: 'chg-4a09',
+          ticket: 'NET-4149',
+          kind: 'ssid',
+          result: 'render-only (read-only plane)',
+        },
+        {
+          ts: '2026-07-26T07:00:00.000Z',
+          event: 'push',
+          changeId: 'chg-port-1',
+          ticket: 'NET-4100',
+          kind: 'port',
+          result: 'applied',
+        },
+      ],
+      unreadable: [],
+    });
+
+    await openHistoryDrawer();
+    const drawer = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(drawer.getByText('chg-7f21')).toBeTruthy());
+    expect(drawer.getByText('chg-4a09')).toBeTruthy();
+    expect(drawer.getByText('chg-port-1')).toBeTruthy();
+    /* Result is client-side so chip counts see the full mix — fetch stays ticket-only. */
+    expect(mockGetChangeHistory).toHaveBeenCalledWith(50, {});
+
+    const chips = drawer.getByRole('group', { name: 'History result' });
+    const applied = within(chips).getByRole('button', { name: /^applied/i });
+    expect(applied.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(applied);
+    await waitFor(() => expect(drawer.getByText('chg-7f21')).toBeTruthy());
+    expect(drawer.getByText('chg-port-1')).toBeTruthy();
+    expect(drawer.queryByText('chg-4a09')).toBeNull();
+    expect(applied.getAttribute('aria-pressed')).toBe('true');
+    expect(
+      (drawer.getByRole('textbox', { name: 'Filter history by result' }) as HTMLInputElement).value,
+    ).toBe('applied');
+
+    fireEvent.click(drawer.getByRole('button', { name: /download server csv/i }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const csvUrl = String(mockDownloadApiCsv.mock.calls.at(-1)?.[0] ?? '');
+    expect(csvUrl).toContain('result=applied');
+
+    fireEvent.click(applied);
+    await waitFor(() => expect(drawer.getByText('chg-4a09')).toBeTruthy());
+    expect(drawer.getByText('chg-7f21')).toBeTruthy();
+    expect(drawer.getByText('chg-port-1')).toBeTruthy();
+    expect(applied.getAttribute('aria-pressed')).toBe('false');
+  });
+});
+
+/* Loop 165 — header LIVE badge honesty (pure live + configure blend). */
+describe('Configure Loop 165 residuals', () => {
+  it('stamps LIVE on pure live configure inventory', async () => {
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, dataSource: 'live' });
+    mockGetChangeQueue.mockResolvedValue([]);
+    mockGetPortalSettings.mockResolvedValue({ configMode: false } as never);
+    renderConfigure();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('stamps LIVE when configure arrives via blend', async () => {
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      dataSource: 'demo',
+      blended: ['configure'],
+    });
+    mockGetChangeQueue.mockResolvedValue([]);
+    mockGetPortalSettings.mockResolvedValue({ configMode: false } as never);
+    renderConfigure();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('hides LIVE on demo fixtures without blend', async () => {
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, dataSource: 'demo' });
+    mockGetChangeQueue.mockResolvedValue([]);
+    mockGetPortalSettings.mockResolvedValue({ configMode: false } as never);
+    renderConfigure();
+    await screen.findByText('Configuration');
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+/* Loop 195 — keyboard shortcuts help on the queued changes table. */
+describe('Configure Loop 195 residuals', () => {
+  it('exposes keyboard shortcuts help beside the queue table', async () => {
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, dataSource: 'live' });
+    mockGetChangeQueue.mockResolvedValue([serverChange()]);
+    mockGetPortalSettings.mockResolvedValue({ configMode: false } as never);
+    renderConfigure();
+    // Selection-wired DataTable is an ARIA grid (j/k/x), not a plain table.
+    expect(await screen.findByRole('grid', { name: 'Queued changes' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});
+
+/* Loop 205 — port filter empty Clear filters + queue selection-empty Clear selection filter. */
+describe('Configure Loop 205 residuals', () => {
+  it('offers Clear filters when the port filter matches nothing', async () => {
+    mockGetConfigure.mockResolvedValue({
+      ...CONFIGURE_DATA,
+      dataSource: 'live',
+      inventoryMode: 'configured',
+      ports: [CENTRAL_PORT_ROW],
+    });
+    mockGetChangeQueue.mockResolvedValue([]);
+    mockGetPortalSettings.mockResolvedValue({ configMode: false } as never);
+    renderConfigure('/configure?section=ports');
+    expect(await screen.findByRole('button', { name: /cx-core-1/i })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Filter switch ports'), {
+      target: { value: 'zzzz-no-match' },
+    });
+    expect(await screen.findByText('No switches match')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByRole('button', { name: /cx-core-1/i })).toBeTruthy();
+    expect(screen.queryByText('No switches match')).toBeNull();
+  });
+
+  it('offers Clear selection filter when queue ids deep link matches nothing', async () => {
+    mockGetConfigure.mockResolvedValue({ ...CONFIGURE_DATA, dataSource: 'live' });
+    mockGetChangeQueue.mockResolvedValue([serverChange()]);
+    mockGetPortalSettings.mockResolvedValue({ configMode: false } as never);
+    renderConfigure(`/configure?section=queue&ids=${encodeURIComponent('missing-chg')}`);
+    expect(await screen.findByText('No matching queued changes')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    expect(await screen.findByRole('grid', { name: 'Queued changes' })).toBeTruthy();
+    expect(screen.queryByText('No matching queued changes')).toBeNull();
+    expect(screen.getByTestId('location-probe').textContent).not.toMatch(/ids=/);
   });
 });

@@ -40,7 +40,7 @@ export function ConfigActionPanel({
       <div>
         <SectionHeader label="Configuration actions" meta="NONE DECLARED" />
         <Alert tone="info" title="No configuration actions for this object">
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-fs-13">
             Only product-supported preview/review/push paths appear here. Use Configure or the product console when a
             write is required outside this portal.
           </span>
@@ -50,13 +50,14 @@ export function ConfigActionPanel({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div className="nt-stack-12">
+      <div className="nt-plane-theater" role="note">NightDesk · write ritual · preview before push</div>
       <SectionHeader label="Configuration actions" meta="CAPABILITY GATED" />
       {caps.map((cap) => {
         if (cap.readOnlyReason) {
           return (
             <Alert key={cap.id} tone="neutral" title={`${cap.label} — read only`}>
-              <span style={{ fontSize: 13 }}>{cap.readOnlyReason}</span>
+              <span className="nt-fs-13">{cap.readOnlyReason}</span>
             </Alert>
           );
         }
@@ -64,19 +65,13 @@ export function ConfigActionPanel({
         return (
           <div
             key={cap.id}
-            style={{
-              border: '1px solid var(--nd-border-default)',
-              padding: '12px 14px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
-              background: 'var(--nd-bg-raised)',
-            }}
+            className="nt-action-card"
+            data-write={cap.reviewRequired || !cap.dryRun ? '1' : undefined}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-              <strong style={{ fontSize: 13 }}>{cap.label}</strong>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <Badge tone={cap.tone ?? 'neutral'}>{String(cap.plane)}</Badge>
+            <div className="nt-row-between-8">
+              <strong className="nt-fs-13">{cap.label}</strong>
+              <div className="nt-row nt-gap-6">
+                <Badge plane>{String(cap.plane)}</Badge>
                 {cap.reviewRequired ? <Badge tone="warning">REVIEW</Badge> : null}
                 {cap.dryRun ? <Badge tone="info">DRY-RUN</Badge> : null}
               </div>
@@ -87,7 +82,7 @@ export function ConfigActionPanel({
                 {target.plane ? ` · ${target.plane}` : ''}
               </div>
             ) : null}
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div className="nt-row nt-gap-8">
               <Button
                 variant="secondary"
                 size="sm"
@@ -104,11 +99,11 @@ export function ConfigActionPanel({
             </div>
             {showReview && cap.reviewRequired ? (
               <Alert tone="warning" title="Review required">
-                <span style={{ fontSize: 13 }}>
+                <span className="nt-fs-13">
                   This action uses the existing preview → review → push workflow. The portal will not push from this
                   panel without that gate.
                 </span>
-                <div style={{ marginTop: 10 }}>
+                <div className="nt-mt-10">
                   <Button variant="primary" size="sm" onClick={() => navigate(cap.handoffPath)}>
                     Open reviewed workflow
                   </Button>

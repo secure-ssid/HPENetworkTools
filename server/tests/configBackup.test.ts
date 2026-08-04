@@ -442,6 +442,56 @@ describe('config backup routes', () => {
     expect(byName.get('ap-1')).toMatchObject({ status: 'no-source', versions: 0, latest: null });
   });
 
+  it('GET /api/config-backups/export returns roster CSV without config bodies (Loop 96)', async () => {
+    const r = await fetch(`${routeBase}/api/config-backups/export`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await r.text();
+    const header = text.split('\n')[0] ?? '';
+    expect(header).toContain('device');
+    expect(header).toContain('drift');
+    expect(header).toContain('latestSource');
+    expect(text).toMatch(/sw-a/);
+    expect(text).toMatch(/ap-1/);
+    // Never ship running-config bodies or secret-shaped cells.
+    expect(text).not.toMatch(/hostname |password|secret|BEGIN CERTIFICATE/i);
+
+    const drifted = await fetch(`${routeBase}/api/config-backups/export?drift=1`);
+    expect(drifted.status).toBe(200);
+    const driftedText = await drifted.text();
+    expect(driftedText).toMatch(/sw-a/);
+    expect(driftedText).not.toMatch(/ap-1/);
+  });
+
+  it('list + export honour q/plane/status filters (Loop 105)', async () => {
+    const q = await fetch(`${routeBase}/api/config-backups/export?q=sw-a`);
+    expect(q.status).toBe(200);
+    const qText = await q.text();
+    expect(qText).toMatch(/sw-a/);
+    expect(qText).not.toMatch(/ap-1/);
+
+    const status = await fetch(`${routeBase}/api/config-backups/export?status=no-source`);
+    expect(status.status).toBe(200);
+    const statusText = await status.text();
+    expect(statusText).toMatch(/ap-1/);
+    expect(statusText).not.toMatch(/sw-a,/);
+
+    const list = await getJson(routeBase, '/api/config-backups?status=no-source');
+    expect(list.status).toBe(200);
+    const devices = list.body.devices as Array<{ device: string; status: string }>;
+    expect(devices.length).toBeGreaterThan(0);
+    expect(devices.every((d) => d.status === 'no-source')).toBe(true);
+    // Summary remains the unfiltered estate rollup.
+    expect(list.body.summary.total).toBeGreaterThan(devices.length);
+
+    const unknown = await fetch(`${routeBase}/api/config-backups/export?status=bogus&drift=maybe`);
+    expect(unknown.status).toBe(200);
+    const unknownText = await unknown.text();
+    // Unknown enum/flag → honest no-op (full roster).
+    expect(unknownText).toMatch(/sw-a/);
+    expect(unknownText).toMatch(/ap-1/);
+  });
+
   it('GET /api/config-backups/:device/versions returns metadata newest-first', async () => {
     const { status, body } = await getJson(routeBase, '/api/config-backups/sw-a/versions');
     expect(status).toBe(200);

@@ -22,11 +22,19 @@ import {
 
 export type CfgTab = 'running' | 'diff' | 'history';
 
-export const CFG_TABS = [
+export const CFG_TABS: Array<{ value: CfgTab; label: string }> = [
   { value: 'running', label: 'Running' },
   { value: 'diff', label: 'Drift vs. baseline' },
   { value: 'history', label: 'History' },
 ];
+
+const CFG_TAB_VALUES = new Set<string>(CFG_TABS.map((t) => t.value));
+
+/** Parse `?tab=` for Configuration (running | diff | history). Unknown → running. */
+export function parseCfgTab(raw: string | null | undefined): CfgTab {
+  const t = raw?.trim();
+  return t && CFG_TAB_VALUES.has(t) ? (t as CfgTab) : 'running';
+}
 
 /** Envelope freshness stamp, same format the other live screens use. */
 
@@ -263,4 +271,89 @@ export function sameMac(name: string, mac?: string | null): boolean {
   if (!mac) return false;
   const strip = (v: string) => v.replace(/[^0-9a-f]/gi, '').toLowerCase();
   return strip(name) === strip(mac) && strip(mac).length === 12;
+}
+
+// ---------------------------------------------------------------------------
+// Non-secret summary export
+//
+// Claim/activation codes, running-config bodies, tokens and similar must never
+// ride a CSV or clipboard dump. The Identity rail may still SHOW a claim code
+// to an operator who already holds device-read access — export is a wider
+// surface (paste into tickets, chat, mail) and stays inventory-only.
+// ---------------------------------------------------------------------------
+
+/** Field names (case-insensitive) that must never appear in a device export. */
+const SECRET_DEVICE_FIELD_RE =
+  /claimcode|claim.?code|magic|password|passwd|secret|token|apikey|api.?key|authorization|credential|running.?config|private.?key/i;
+
+export function isSecretDeviceField(key: string): boolean {
+  return SECRET_DEVICE_FIELD_RE.test(key);
+}
+
+/** Canonical inventory columns for one-device summary CSV (no secrets). */
+export const DEVICE_SUMMARY_HEADERS = [
+  'name',
+  'type',
+  'model',
+  'site',
+  'plane',
+  'state',
+  'firmware',
+  'firmwareApproved',
+  'serial',
+  'mac',
+  'ip',
+  'licence',
+  'localShell',
+  'claimants',
+] as const;
+
+export type DeviceSummarySource = {
+  name: string;
+  type?: string | null;
+  model?: string | null;
+  siteName?: string | null;
+  site?: string | null;
+  plane?: string | null;
+  state?: string | null;
+  firmware?: string | null;
+  firmwareApproved?: boolean | null;
+  serial?: string | null;
+  mac?: string | null;
+  ip?: string | null;
+  licence?: string | null;
+  localShell?: boolean | null;
+  claimants?: readonly string[] | null;
+  /** Must never be copied into the export row even if present. */
+  claimCode?: string | null;
+};
+
+/** One summary row. claimCode and any secret-shaped key are dropped. */
+export function deviceSummaryCsvRow(d: DeviceSummarySource): string[] {
+  const row: Record<string, string> = {
+    name: d.name ?? '',
+    type: d.type ?? '',
+    model: d.model ?? '',
+    site: d.siteName ?? d.site ?? '',
+    plane: d.plane ?? '',
+    state: d.state ?? '',
+    firmware: d.firmware ?? '',
+    firmwareApproved:
+      d.firmwareApproved === true ? 'true' : d.firmwareApproved === false ? 'false' : '',
+    serial: d.serial ?? '',
+    mac: d.mac ?? '',
+    ip: d.ip ?? '',
+    licence: d.licence ?? '',
+    localShell: d.localShell === true ? 'yes' : d.localShell === false ? 'no' : '',
+    claimants: (d.claimants ?? []).join(' + '),
+  };
+  return DEVICE_SUMMARY_HEADERS.map((h) => {
+    if (isSecretDeviceField(h)) return '';
+    return row[h] ?? '';
+  });
+}
+
+/** Guard for ad-hoc fact dumps: drop secret-shaped keys before CSV. */
+export function filterPublicFacts(facts: ReadonlyArray<{ k: string; v: string }>): Array<{ k: string; v: string }> {
+  return facts.filter((f) => !isSecretDeviceField(f.k));
 }

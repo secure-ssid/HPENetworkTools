@@ -170,6 +170,74 @@ export interface TopologyPayload {
   notes: string[];
 }
 
+/**
+ * Filter the estate graph for shareable views / CSV export. Keeps edges only
+ * when both ends remain; sites stay when they match the query or still hold a
+ * kept node. Never invents edges. Shared by the Topology screen and
+ * GET /api/topology/export so client Export CSV and server Download stay aligned.
+ *
+ * Optional `type` is an exact case-insensitive match on node.type (device
+ * class: ap/switch/…); empty / `all` is a no-op. Site cards are not typed, so
+ * a type filter never drops a site that still holds a matching node.
+ */
+export function filterTopologyGraph(
+  graph: TopologyGraph,
+  opts: { q: string; plane: string; ghostsOnly: boolean; type?: string },
+): TopologyGraph {
+  const needle = opts.q.trim().toLowerCase();
+  const plane = opts.plane.trim();
+  const planeFilter = plane !== '' && plane !== 'all' ? plane : null;
+  const typeRaw = (opts.type ?? '').trim().toLowerCase();
+  const typeFilter = typeRaw !== '' && typeRaw !== 'all' ? typeRaw : null;
+
+  const siteNameHit = new Set<string>();
+  if (needle) {
+    for (const site of graph.sites) {
+      if (site.name.toLowerCase().includes(needle) || site.siteId.toLowerCase().includes(needle)) {
+        siteNameHit.add(site.siteId);
+      }
+    }
+  }
+
+  const nodeMatches = (n: TopologyGraphNode): boolean => {
+    if (opts.ghostsOnly && !n.ghost) return false;
+    if (planeFilter && !n.planes.some((p) => p === planeFilter)) return false;
+    if (typeFilter) {
+      const t = (n.type ?? '').trim().toLowerCase();
+      if (t !== typeFilter) return false;
+    }
+    if (!needle) return true;
+    if (n.siteId && siteNameHit.has(n.siteId)) return true;
+    const hay = [n.name, n.serial ?? '', n.type ?? '', n.siteId ?? '', ...(n.planes ?? [])]
+      .join(' ')
+      .toLowerCase();
+    return hay.includes(needle);
+  };
+
+  const nodes = graph.nodes.filter(nodeMatches);
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const edges = graph.edges.filter((e) => nodeIds.has(e.from) && nodeIds.has(e.to));
+
+  const sitesWithNodes = new Set(
+    nodes.map((n) => n.siteId).filter((id): id is SiteId => id != null),
+  );
+  const sites = graph.sites.filter((s) => {
+    if (planeFilter && !s.planes.some((p) => p === planeFilter)) {
+      // Keep the card if a filtered node still belongs here (node may list plane via device claim).
+      return sitesWithNodes.has(s.siteId);
+    }
+    if (needle && siteNameHit.has(s.siteId)) return true;
+    return sitesWithNodes.has(s.siteId);
+  });
+
+  return {
+    nodes,
+    edges,
+    sites,
+    omissions: graph.omissions,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The merge
 // ---------------------------------------------------------------------------

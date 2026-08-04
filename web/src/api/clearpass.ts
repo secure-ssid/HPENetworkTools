@@ -55,13 +55,35 @@ function isEndpointPage(value: unknown): value is ClearPassEndpointPage {
   );
 }
 
+/** Optional filters for the on-demand endpoint page (same tokens as export). */
+export interface ClearPassEndpointPageQuery {
+  q?: string;
+  status?: string;
+  category?: string;
+}
+
 /**
  * Read one selected ClearPass repository page. Unlike screen getters, this
  * path never treats a failed live backend as permission to show demo rows.
+ * Optional q/status/category ride the request so Next/Prev stay on the same
+ * filtered slice (demo filters the full fixture; live filters the vendor page).
  */
-export async function getClearPassEndpointPage(offset = 0, limit = 50): Promise<ClearPassEndpointPage> {
+export async function getClearPassEndpointPage(
+  offset = 0,
+  limit = 50,
+  filters?: ClearPassEndpointPageQuery,
+): Promise<ClearPassEndpointPage> {
   try {
-    const response = await apiFetch(`/api/clearpass/endpoints?offset=${offset}&limit=${limit}`);
+    const params = new URLSearchParams();
+    params.set('offset', String(offset));
+    params.set('limit', String(limit));
+    const q = filters?.q?.trim();
+    if (q) params.set('q', q);
+    const status = filters?.status?.trim();
+    if (status) params.set('status', status);
+    const category = filters?.category?.trim();
+    if (category) params.set('category', category);
+    const response = await apiFetch(`/api/clearpass/endpoints?${params.toString()}`);
     if (!response.ok) return failedEndpointPage(offset, limit);
     const page: unknown = await response.json();
     return isEndpointPage(page) ? page : failedEndpointPage(offset, limit);

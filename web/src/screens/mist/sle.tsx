@@ -12,10 +12,10 @@
  */
 
 import { Link } from 'react-router-dom';
-import { Badge, SectionHeader } from '../../nightdesk';
+import { Badge, Button, SectionHeader, useToast } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { MistSleRow, Tone } from '@hpe/shared';
-import { noteStyle } from './style';
+import { buildMistShareUrl } from './share';
 
 function sleTone(success: number | null): Tone {
   if (success === null) return 'neutral';
@@ -55,6 +55,7 @@ function weakestLabel(sle: MistSleRow): string | null {
 }
 
 export function SleAcrossSites({ sleBySiteId }: { sleBySiteId: Partial<Record<string, MistSleRow>> | undefined }) {
+  const { toast } = useToast();
   const rows =
     sleBySiteId === undefined
       ? []
@@ -69,15 +70,31 @@ export function SleAcrossSites({ sleBySiteId }: { sleBySiteId: Partial<Record<st
         : `${countOf(rows.length, 'SITE').toUpperCase()} SCORED · MIST SLE`;
 
   return (
-    <div className="nt-stack nt-gap-2">
-      <SectionHeader label="Wireless experience across sites" meta={meta} />
+    <div id="mist-section-sle" className="nt-mist-section nt-section-panel nt-stack nt-gap-2">
+      <div className="nt-row-between-12">
+        <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Mist SLE theater · experience owns hue</div>
+        <SectionHeader label="Wireless experience across sites" meta={meta} />
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            const url = buildMistShareUrl('sle');
+            void navigator.clipboard.writeText(url).then(
+              () => toast('SLE section link copied', { description: 'section=sle', tone: 'success' }),
+              () => toast('Could not copy link', { description: url, tone: 'warning' }),
+            );
+          }}
+        >
+          Copy section link
+        </Button>
+      </div>
       {sleBySiteId === undefined ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           The SLE walk was not reported this cycle — a failed read, or no linked Mist plane. No score
           below is an all-clear or an alarm.
         </div>
       ) : rows.length === 0 ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           Mist reported no SLE scores for any site this cycle — an unscored window is "not reported",
           never a 0%.
         </div>
@@ -89,29 +106,22 @@ export function SleAcrossSites({ sleBySiteId }: { sleBySiteId: Partial<Record<st
               <Link
                 key={sle.siteId}
                 to={`/sites/${encodeURIComponent(sle.siteId)}`}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: '9px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                  textDecoration: 'none',
-                }}
+                className="nt-mist-row"
               >
-                <span style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ display: 'block', fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
+                <span className="nt-flex-1">
+                  <span className="nt-fs-12-pri">
                     {sle.siteName}
                   </span>
-                  <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)' }}>
+                  <span className="nt-fs-10">
                     {weakest !== null ? `weakest: ${weakest}` : 'no dimension scored this window'}
                   </span>
                 </span>
                 <Badge tone={sleTone(sle.overall)}>{pct(sle.overall)}</Badge>
-                <span style={{ ...noteStyle, fontSize: 'var(--nd-text-11)' }}>drill →</span>
+                <span className="nt-note-11 nt-service-note">drill →</span>
               </Link>
             );
           })}
-          <div style={{ ...noteStyle, fontSize: 10.5, paddingTop: 6 }}>
+          <div className="nt-fs-105 nt-hint-muted">
             Worst-first. A site opens its own page, where each scored metric drills into classifiers,
             impacted clients and APs.
           </div>

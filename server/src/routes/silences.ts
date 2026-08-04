@@ -1,7 +1,8 @@
 /**
  * server/src/routes/silences.ts — alert-silence CRUD.
  *
- *   GET    /api/silences          every silence on file, expired flagged
+ *   GET    /api/silences          every silence on file, expired flagged (optional active=/q=)
+ *   GET    /api/silences/export   CSV of silences on file (optional active=/q=)
  *   POST   /api/silences          {plane?, device?, titleContains?, reason, durationMinutes} → 201
  *   DELETE /api/silences/:id      remove one (unsilence) → {ok, silence} | 404
  *
@@ -22,15 +23,79 @@
 import { Router } from 'express';
 import { MAX_SILENCE_DURATION_MINUTES, MAX_SILENCE_REASON_CHARS, type AlertSilence } from '@hpe/shared';
 import { h } from './handler';
+import { sendCsv } from '../lib/csv';
+import { queryFlag, queryString } from '../lib/query';
 import { logSilenceEvent, silenceStore } from '../services/silences';
 import { brokerDataDir } from '../services/writeBroker';
 
 export const silencesRouter = Router();
 
+/**
+ * Optional list/export filters for silences (Silences tab + CSV):
+ *   `?active=0|1|true|false` — active = not expired; expired rows stay as history
+ *   `?q=` — case-insensitive substring on plane / device / titleContains / reason / id
+ * Absent / unrecognised active → every silence on file (backward compatible).
+ * Empty q → no text filter (honest no-op).
+ */
+export function filterSilencesByActive<T extends {
+  expired?: boolean;
+  id?: string;
+  plane?: string | null;
+  device?: string | null;
+  titleContains?: string | null;
+  reason?: string;
+}>(
+  req: { query: Record<string, unknown> },
+  silences: T[],
+): T[] {
+  let out = silences;
+  const active = queryFlag(req, 'active');
+  if (active === true) out = out.filter((s) => !s.expired);
+  else if (active === false) out = out.filter((s) => Boolean(s.expired));
+
+  const q = queryString(req, 'q').toLowerCase();
+  if (q) {
+    out = out.filter((s) => {
+      const hay = [s.id, s.plane, s.device, s.titleContains, s.reason]
+        .map((v) => String(v ?? '').toLowerCase())
+        .join(' ');
+      return hay.includes(q);
+    });
+  }
+  return out;
+}
+
 silencesRouter.get(
   '/silences',
-  h(async (_req, res) => {
-    res.json({ silences: silenceStore.list() });
+  h(async (req, res) => {
+    res.json({ silences: filterSilencesByActive(req, silenceStore.list()) });
+  }),
+);
+
+/**
+ * GET /api/silences/export — CSV of silences on file (optional active=/q=).
+ * Matcher + reason + expiry only (no secrets). Ahead of /silences/:id so
+ * "export" is never parsed as an id.
+ */
+silencesRouter.get(
+  '/silences/export',
+  h(async (req, res) => {
+    const silences = filterSilencesByActive(req, silenceStore.list());
+    sendCsv(
+      res,
+      'alert-silences.csv',
+      ['id', 'plane', 'device', 'titleContains', 'reason', 'createdAt', 'until', 'expired'],
+      silences.map((s) => [
+        s.id,
+        s.plane ?? '',
+        s.device ?? '',
+        s.titleContains ?? '',
+        s.reason,
+        s.createdAt ?? '',
+        s.until ?? '',
+        s.expired ? 'true' : 'false',
+      ]),
+    );
   }),
 );
 

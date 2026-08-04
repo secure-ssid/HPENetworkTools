@@ -71,6 +71,8 @@ import {
   useToast,
 } from '../../nightdesk';
 import { exportTableCsv } from '../../lib/csv';
+import { downloadApiCsv } from '../../lib/downloadApiCsv';
+import { buildSystemsSectionUrl, systemsSectionDomId } from './share';
 import {
   NOTIFICATION_KIND_LABEL,
   NOTIFICATION_TEMPLATE_OPTIONS,
@@ -115,6 +117,11 @@ export function NotificationsSection() {
   const [status, setStatus] = useState<NotificationServiceStatus | null>(null);
   const [outbox, setOutbox] = useState<NotificationOutbox | null>(null);
   const [deliveries, setDeliveries] = useState<import('../../api/notifications').NotificationDeliveries | null>(null);
+  const [deliveriesError, setDeliveriesError] = useState<string | null>(null);
+  /** Outcome filter for the live delivery log + server CSV (`delivered|failed|demo`). */
+  const [deliveryResult, setDeliveryResult] = useState<'all' | 'delivered' | 'failed' | 'demo'>('all');
+  /** Text triage for delivery log + server CSV (Loop 116 `q=`). */
+  const [deliveryQ, setDeliveryQ] = useState('');
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -129,6 +136,8 @@ export function NotificationsSection() {
       setEndpoints(null);
       setStatus(null);
       setLoadError(`Notification endpoints could not be loaded: ${eps.error}`);
+      setDeliveries(null);
+      setDeliveriesError(eps.error);
       return;
     }
     setEndpoints(eps.endpoints);
@@ -142,7 +151,17 @@ export function NotificationsSection() {
         setOutbox(null);
       }
       const del = await getNotificationDeliveries();
-      if (!('error' in del)) setDeliveries(del.deliveries);
+      if ('error' in del) {
+        setDeliveries(null);
+        setDeliveriesError(del.error);
+      } else {
+        setDeliveries(del.deliveries);
+        setDeliveriesError(null);
+      }
+    } else {
+      // Status unread → delivery log is unavailable, not "quietly empty".
+      setDeliveries(null);
+      setDeliveriesError('error' in st ? st.error : 'notification status unavailable');
     }
   };
 
@@ -257,10 +276,32 @@ export function NotificationsSection() {
   const set = (key: keyof Draft) => (e: { target: { value: string } }) =>
     setDraft((d) => ({ ...d, [key]: e.target.value }));
 
+  /** Shareable Systems deep-link that scrolls to this section. */
+  const copySectionLink = () => {
+    void (async () => {
+      const url = buildSystemsSectionUrl('notifications');
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('Notifications link copied', {
+          description: 'section=notifications',
+          tone: 'success',
+        });
+      } catch {
+        toast('Could not copy link', { description: url, tone: 'warning' });
+      }
+    })();
+  };
+
   return (
     <>
-    <div className="nt-stack nt-gap-14">
-      <SectionHeader label="Notifications" meta="ALERT WEBHOOKS · OUTBOUND" />
+    <div id={systemsSectionDomId('notifications')} className="nt-systems-section nt-section-panel nt-stack nt-gap-14">
+      <div className="nt-plane-theater" role="note">NightDesk · notify · outbound · severity owns hue</div>
+      <div className="nt-filter-bar nt-gap-8">
+        <SectionHeader label="Notifications" meta="ALERT WEBHOOKS · OUTBOUND" />
+        <Button variant="ghost" size="sm" className="nt-ml-auto" onClick={copySectionLink}>
+          Copy section link
+        </Button>
+      </div>
 
       <div className="nt-filter-bar nt-gap-8">
         {status ? (
@@ -296,7 +337,7 @@ export function NotificationsSection() {
             <div key={view.id} className="nt-sync-row nt-row-start nt-pad-row">
               <div className="nt-stack nt-stack-col--flex nt-gap-3">
                 <div className="nt-filter-bar nt-gap-8">
-                  <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{view.name}</span>
+                  <span className="nt-body-sm nt-text-primary">{view.name}</span>
                   <Badge tone="neutral">{view.template}</Badge>
                   {view.hmacSecretConfigured ? <Badge tone="neutral">signed</Badge> : null}
                   <Badge tone={view.enabled ? 'success' : 'neutral'} dot>
@@ -304,7 +345,7 @@ export function NotificationsSection() {
                   </Badge>
                 </div>
                 <span className="nt-hint-muted nt-ellipsis">{view.url}</span>
-                <span className="nt-hint-muted" style={{ color: `var(--nd-${delivery.tone === 'danger' ? 'danger' : delivery.tone === 'success' ? 'success' : delivery.tone === 'warning' ? 'warning' : 'text-muted'})` }}>
+                <span className={`nt-hint-muted ${`nt-tone-${delivery.tone === 'danger' ? 'danger' : delivery.tone === 'success' ? 'success' : delivery.tone === 'warning' ? 'warning' : 'muted'}`}`}>
                   {delivery.text}
                 </span>
               </div>
@@ -339,7 +380,36 @@ export function NotificationsSection() {
       {/* ---------------- demo outbox ---------------- */}
       {outbox ? (
         <div className="nt-stack nt-gap-8">
-          <SectionHeader label="Demo outbox" meta={`${outbox.entries.length} WOULD-HAVE-SENT · NOTHING LEFT THE PROCESS`} />
+          <div className="nt-filter-bar nt-gap-8">
+            <SectionHeader label="Demo outbox" meta={`${outbox.entries.length} WOULD-HAVE-SENT · NOTHING LEFT THE PROCESS`} />
+            <Button
+              variant="ghost"
+              size="sm"
+              className="nt-ml-auto"
+              onClick={() => {
+                void (async () => {
+                  const res = await downloadApiCsv(
+                    '/api/notifications/outbox/export',
+                    'notification-outbox.csv',
+                  );
+                  if (res.ok) {
+                    toast('Server CSV downloaded', {
+                      description:
+                        'notification-outbox.csv — event summaries only (no payload bodies).',
+                      tone: 'success',
+                    });
+                  } else {
+                    toast('Server CSV failed', {
+                      description: res.error ?? 'Could not download export',
+                      tone: 'warning',
+                    });
+                  }
+                })();
+              }}
+            >
+              Download server CSV
+            </Button>
+          </div>
           {outbox.entries.length === 0 ? (
             <div className="nt-hint-muted">
               empty — nothing has fired, resolved or escalated since the sampler started
@@ -348,14 +418,13 @@ export function NotificationsSection() {
             outbox.entries.map((entry) => (
               <div
                 key={entry.id}
-                className="nt-stack" style={{ gap: 6, padding: '8px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)' }}
+                className="nt-stack nt-gap-6 nt-rule-row-pad"
               >
                 <div className="nt-filter-bar nt-gap-8">
                   <Badge tone={entry.event.kind === 'fired' ? 'danger' : entry.event.kind === 'resolved' ? 'success' : 'warning'}>
                     {NOTIFICATION_KIND_LABEL[entry.event.kind]}
                   </Badge>
-                  <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{entry.endpointName}</span>
+                  <span className="nt-body-sm nt-text-primary">{entry.endpointName}</span>
                   <Badge tone="neutral">demo</Badge>
                   <span className="nt-hint-muted">
                     {new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {entry.contentType}
@@ -369,14 +438,71 @@ export function NotificationsSection() {
       ) : null}
 
       {/* ---------------- live delivery attempt log (no bodies) ---------------- */}
-      {deliveries ? (
+      {loaded ? (
         <div className="nt-stack nt-gap-8">
+          {(() => {
+            const qNeedle = deliveryQ.trim().toLowerCase();
+            const deliveryRows =
+              deliveries?.entries.filter((e) => {
+                if (deliveryResult !== 'all' && e.result !== deliveryResult) return false;
+                if (!qNeedle) return true;
+                const hay = [
+                  e.endpointName,
+                  e.title,
+                  e.error ?? '',
+                  e.eventKind,
+                  e.fingerprint,
+                  e.result,
+                  e.httpCode ?? '',
+                  e.test ? 'test' : '',
+                ]
+                  .join(' ')
+                  .toLowerCase();
+                return hay.includes(qNeedle);
+              }) ?? [];
+            const narrowed =
+              deliveryResult !== 'all' || qNeedle.length > 0;
+            return (
+          <>
           <div className="nt-filter-bar nt-gap-8">
             <SectionHeader
               label="Delivery log"
-              meta={`${deliveries.entries.length} ATTEMPTS · OUTCOMES ONLY · NO PAYLOADS`}
+              meta={
+                deliveries
+                  ? `${deliveryRows.length}${
+                      narrowed ? ` of ${deliveries.entries.length}` : ''
+                    } ATTEMPTS · OUTCOMES ONLY · NO PAYLOADS`
+                  : 'OUTCOMES ONLY · NO PAYLOADS · NO URLS · NO SECRETS'
+              }
             />
-            {deliveries.entries.length > 0 ? (
+            <div className="nt-w-140">
+              <Select
+                options={[
+                  { value: 'all', label: 'All outcomes' },
+                  { value: 'delivered', label: 'Delivered' },
+                  { value: 'failed', label: 'Failed' },
+                  { value: 'demo', label: 'Demo' },
+                ]}
+                value={deliveryResult}
+                onValueChange={(v) =>
+                  setDeliveryResult(
+                    v === 'delivered' || v === 'failed' || v === 'demo' ? v : 'all',
+                  )
+                }
+                size="sm"
+                aria-label="Filter delivery outcomes"
+              />
+            </div>
+            <div className="nt-w-180">
+              <Input
+                value={deliveryQ}
+                onChange={(e) => setDeliveryQ(e.target.value)}
+                placeholder="Search endpoint, title…"
+                aria-label="Search delivery log"
+                size="sm"
+              />
+            </div>
+            {deliveryRows.length > 0 ? (
               <Button
                 variant="ghost"
                 size="sm"
@@ -385,7 +511,7 @@ export function NotificationsSection() {
                   const n = exportTableCsv(
                     'notification-deliveries.csv',
                     ['at', 'result', 'test', 'endpoint', 'title', 'httpCode', 'error'],
-                    deliveries.entries.map((e) => [
+                    deliveryRows.map((e) => [
                       e.at,
                       e.result,
                       e.test ? 'yes' : 'no',
@@ -403,17 +529,55 @@ export function NotificationsSection() {
                 Export CSV
               </Button>
             ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              className={deliveryRows.length > 0 ? undefined : 'nt-ml-auto'}
+              onClick={() => {
+                void (async () => {
+                  const qs = new URLSearchParams();
+                  if (deliveryResult !== 'all') qs.set('result', deliveryResult);
+                  if (deliveryQ.trim()) qs.set('q', deliveryQ.trim());
+                  const suffix = qs.toString() ? `?${qs}` : '';
+                  const res = await downloadApiCsv(
+                    `/api/notifications/deliveries/export${suffix}`,
+                    'notification-deliveries.csv',
+                  );
+                  if (res.ok) {
+                    toast('Server CSV downloaded', {
+                      description: 'notification-deliveries.csv — outcomes only, no payloads.',
+                      tone: 'success',
+                    });
+                  } else {
+                    toast('Server CSV failed', {
+                      description: res.error ?? 'Could not download export',
+                      tone: 'warning',
+                    });
+                  }
+                })();
+              }}
+            >
+              Download server CSV
+            </Button>
           </div>
-          {deliveries.entries.length === 0 ? (
+          {deliveriesError ? (
+            <div className="nt-hint-muted">
+              delivery log unavailable — {deliveriesError}
+            </div>
+          ) : !deliveries || deliveries.entries.length === 0 ? (
             <div className="nt-hint-muted">
               empty — no test or transition delivery has been attempted since this process started
             </div>
+          ) : deliveryRows.length === 0 ? (
+            <div className="nt-hint-muted">
+              no attempts match this filter — clear search or choose All outcomes to widen
+            </div>
           ) : (
-            deliveries.entries.map((entry) => (
+            deliveryRows.map((entry) => (
               <div
                 key={entry.id}
-                className="nt-filter-bar" style={{ gap: 8, padding: '6px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)' }}
+                className="nt-delivery-row nt-filter-bar nt-gap-8 nt-rule-row-pad-sm"
+                data-result={entry.result}
               >
                 <Badge
                   tone={
@@ -427,7 +591,7 @@ export function NotificationsSection() {
                   {entry.result}
                 </Badge>
                 {entry.test ? <Badge tone="neutral">test</Badge> : null}
-                <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{entry.endpointName}</span>
+                <span className="nt-body-sm nt-text-primary">{entry.endpointName}</span>
                 <span className="nt-body-sm nt-body-sec">{entry.title}</span>
                 <span className="nt-hint-muted nt-ml-auto">
                   {new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -437,6 +601,9 @@ export function NotificationsSection() {
               </div>
             ))
           )}
+          </>
+            );
+          })()}
         </div>
       ) : null}
 
@@ -450,10 +617,12 @@ export function NotificationsSection() {
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
         width="md"
+        className="nd-drawer--write-ritual nt-write-ritual"
         title={editing ? `Edit ${editing.name}` : 'Add notification endpoint'}
         description="Alert queue transitions are POSTed here — fired, resolved, escalated."
       >
         <div className="nt-stack nt-gap-14">
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Name" help="What this destination is called in the list and the audit log.">
             <Input value={draft.name} onChange={set('name')} placeholder="noc-slack" aria-label="Endpoint name" />
           </FormField>
@@ -704,7 +873,7 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
         <div className="nt-row-center nt-gap-10 nt-rule-row">
           <div className="nt-stack-col--flex nt-gap-3">
             <div className="nt-filter-bar nt-gap-8">
-              <span className="nt-mono-11" style={{ fontSize: 12, color: "var(--nd-text-primary)" }}>
+              <span className="nt-mono-11 nt-fs-12-primary">
                 {smtp.host}:{smtp.port}
               </span>
               {smtp.user ? <Badge tone="neutral">auth as {smtp.user}</Badge> : <Badge tone="neutral">no auth</Badge>}
@@ -728,10 +897,12 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
         width="md"
+        className="nd-drawer--write-ritual nt-write-ritual"
         title={smtp ? `Edit SMTP relay (${smtp.host})` : 'Configure SMTP relay'}
         description="Where fleet reports are emailed from. The password is write-only — never shown back."
       >
         <div className="nt-stack nt-gap-14">
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Host" help="A hostname, not a URL — no scheme, no path.">
             <Input mono value={draft.host} onChange={set('host')} placeholder="smtp.example.com" aria-label="SMTP host" />
           </FormField>
@@ -945,8 +1116,7 @@ function ReportCard() {
             </span>
             {outcome ? (
               <span
-                className="nt-hint-muted" style={{ color: `var(--nd-${outcome.tone === 'danger' ? 'danger' : outcome.tone === 'success' ? 'success' : outcome.tone === 'warning' ? 'warning' : 'text-muted'})`,
-                }}
+                className={`nt-hint-muted ${`nt-tone-${outcome.tone === 'danger' ? 'danger' : outcome.tone === 'success' ? 'success' : outcome.tone === 'warning' ? 'warning' : 'muted'}`}`}
               >
                 {outcome.text}
               </span>
@@ -969,7 +1139,7 @@ function ReportCard() {
       {previewOpen && preview ? (
         <div className="nt-stack nt-gap-6">
           <div className="nt-filter-bar nt-gap-8">
-            <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{preview.subject}</span>
+            <span className="nt-body-sm nt-text-primary">{preview.subject}</span>
             {preview.demo ? <Badge tone="warning">demo data</Badge> : null}
             <span className="nt-hint-muted">generated {when(preview.generatedAt)} · the email carries this text part plus an HTML rendering</span>
           </div>
@@ -984,12 +1154,44 @@ function ReportCard() {
 
       {schedule?.demoMode && schedule.entries.length > 0 ? (
         <div className="nt-stack nt-gap-6">
-          <span className="nt-hint-muted">{schedule.entries.length} would-have-sent report{schedule.entries.length === 1 ? '' : 's'} — nothing left the process</span>
+          <div className="nt-filter-bar nt-gap-8">
+            <span className="nt-hint-muted">
+              {schedule.entries.length} would-have-sent report
+              {schedule.entries.length === 1 ? '' : 's'} — nothing left the process
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="nt-ml-auto"
+              onClick={() => {
+                void (async () => {
+                  const res = await downloadApiCsv(
+                    '/api/notifications/report/export',
+                    'fleet-report-outbox.csv',
+                  );
+                  if (res.ok) {
+                    toast('Server CSV downloaded', {
+                      description:
+                        'fleet-report-outbox.csv — subject/recipients only (no email bodies).',
+                      tone: 'success',
+                    });
+                  } else {
+                    toast('Server CSV failed', {
+                      description: res.error ?? 'Could not download export',
+                      tone: 'warning',
+                    });
+                  }
+                })();
+              }}
+            >
+              Download server CSV
+            </Button>
+          </div>
           {schedule.entries.map((entry) => (
             <div key={entry.id} className="nt-stack-col nt-gap-4 nt-rule-row-sm">
               <div className="nt-filter-bar nt-gap-8">
                 <Badge tone="neutral">demo</Badge>
-                <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{entry.subject}</span>
+                <span className="nt-body-sm nt-text-primary">{entry.subject}</span>
                 <span className="nt-hint-muted">
                   {when(entry.at)} · to {entry.recipients.length > 0 ? entry.recipients.join(', ') : 'no recipients'}
                 </span>
@@ -1003,10 +1205,12 @@ function ReportCard() {
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
         width="md"
+        className="nd-drawer--write-ritual nt-write-ritual"
         title="Fleet summary report schedule"
         description="Totals and offline devices by type, bell alert counts, and subscriptions approaching expiry — emailed through the configured SMTP relay."
       >
         <div className="nt-stack nt-gap-14">
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <Switch
             checked={draft.enabled}
             onCheckedChange={(v) => setDraft((d) => ({ ...d, enabled: v }))}
@@ -1073,6 +1277,8 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
   const [probingId, setProbingId] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<SslProbeHost | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
+  /** Text triage for watch list + server CSV (Loop 116 `q=`). */
+  const [sslQ, setSslQ] = useState('');
 
   const load = async () => {
     const r = await getSslHosts();
@@ -1156,9 +1362,76 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
     await load();
   };
 
+  const sslNeedle = sslQ.trim().toLowerCase();
+  const visibleHosts = !sslNeedle
+    ? hosts
+    : hosts.filter((h) => {
+        const probe = h.lastProbe;
+        const hay = [
+          h.host,
+          String(h.port),
+          probe?.error ?? '',
+          probe?.notAfter ?? '',
+          probe?.ok === true ? 'ok yes' : probe?.ok === false ? 'fail no error' : '',
+          probe?.daysLeft ?? '',
+        ]
+          .join(' ')
+          .toLowerCase();
+        return hay.includes(sslNeedle);
+      });
+
   return (
     <div className="nt-stack nt-gap-8">
-      <SectionHeader label="SSL certificate watch" meta="EXPIRY LADDER · 90/60/30/15 DAYS" />
+      <SectionHeader
+        label="SSL certificate watch"
+        meta={
+          loaded && !error && sslNeedle
+            ? `${visibleHosts.length} of ${hosts.length} · EXPIRY LADDER · 90/60/30/15 DAYS`
+            : 'EXPIRY LADDER · 90/60/30/15 DAYS'
+        }
+      />
+      {loaded && !error ? (
+        <div className="nt-filter-bar nt-gap-8">
+          <div className="nt-w-180">
+            <Input
+              value={sslQ}
+              onChange={(e) => setSslQ(e.target.value)}
+              placeholder="Search host, port, error…"
+              aria-label="Search SSL watch list"
+              size="sm"
+            />
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="nt-ml-auto"
+            onClick={() => {
+              void (async () => {
+                const qs = new URLSearchParams();
+                if (sslQ.trim()) qs.set('q', sslQ.trim());
+                const suffix = qs.toString() ? `?${qs}` : '';
+                const res = await downloadApiCsv(
+                  `/api/notifications/ssl-hosts/export${suffix}`,
+                  'ssl-hosts.csv',
+                );
+                if (res.ok) {
+                  toast('Server CSV downloaded', {
+                    description: 'ssl-hosts.csv — watch list + last probe (no PEMs).',
+                    tone: 'success',
+                  });
+                } else {
+                  toast('Server CSV failed', {
+                    description: res.error ?? 'Could not download export',
+                    tone: 'warning',
+                  });
+                }
+              })();
+            }}
+          >
+            Download server CSV
+          </Button>
+        </div>
+      ) : null}
       {demoMode ? (
         <div className="nt-filter-bar nt-gap-8">
           <Badge tone="warning" dot>demo — probes never dial</Badge>
@@ -1168,7 +1441,7 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
       {error ? <span className="nt-hint-muted">{error}</span> : null}
       {!loaded && !error ? <span className="nt-hint-muted">reading the watch list…</span> : null}
       <div className="nt-stack nt-gap-2">
-        {hosts.map((host) => {
+        {visibleHosts.map((host) => {
           const line = probeLine(host);
           return (
             <div
@@ -1176,12 +1449,11 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
               className="nt-row-center nt-gap-10 nt-rule-row"
             >
               <div className="nt-stack-col--flex nt-gap-3">
-                <span className="nt-mono-11" style={{ fontSize: 12, color: "var(--nd-text-primary)" }}>
+                <span className="nt-mono-11 nt-fs-12-primary">
                   {host.host}:{host.port}
                 </span>
                 <span
-                  className="nt-hint-muted" style={{ color: `var(--nd-${line.tone === 'danger' ? 'danger' : line.tone === 'success' ? 'success' : line.tone === 'warning' ? 'warning' : 'text-muted'})`,
-                  }}
+                  className={`nt-hint-muted ${`nt-tone-${line.tone === 'danger' ? 'danger' : line.tone === 'success' ? 'success' : line.tone === 'warning' ? 'warning' : 'muted'}`}`}
                 >
                   {line.text}
                 </span>
@@ -1197,6 +1469,9 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
         })}
         {loaded && !error && hosts.length === 0 ? (
           <div className="nt-hint-muted nt-pad-row">no hosts watched — add one and its certificate expiry joins the 90/60/30/15-day ladder</div>
+        ) : null}
+        {loaded && !error && hosts.length > 0 && visibleHosts.length === 0 ? (
+          <div className="nt-hint-muted nt-pad-row">no hosts match this search — clear the filter to widen</div>
         ) : null}
       </div>
       <div className="nt-filter-bar nt-gap-8">

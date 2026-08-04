@@ -12,6 +12,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { SseInventoryPanel } from './SseInventoryPanel';
 import { ToastProvider } from '../nightdesk';
 import {
@@ -25,9 +26,25 @@ import {
   updateSseObject,
 } from '../api/client';
 import type { SseKindListing } from '../api/client';
+import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 
 const { mockLabConfigMode } = vi.hoisted(() => ({ mockLabConfigMode: vi.fn(() => ({ lab: false })) }));
 vi.mock('../hooks/useLabConfigMode', () => ({ useLabConfigMode: mockLabConfigMode }));
+
+vi.mock('../components/VisualReferencePanel', () => ({
+  VisualReferencePanel: ({ target }: { target: { kind: string; id: string; plane?: string } }) => (
+    <div data-testid="sse-visual-ref">{`${target.kind}/${target.id}${target.plane ? `@${target.plane}` : ''}`}</div>
+  ),
+}));
+
+vi.mock('../lib/csv', () => ({
+  exportTableCsv: vi.fn(() => 1),
+}));
+
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(async () => ({ ok: true as const })),
+}));
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -182,22 +199,30 @@ function committedButUnverified() {
 function renderPanel(
   canWrite: boolean,
   initial?: { kind: 'connectorZones' | 'users'; objectId?: string },
+  route = '/systems',
 ) {
   return render(
-    <ToastProvider>
-      <SseInventoryPanel
-        canWrite={canWrite}
-        initialKind={initial?.kind}
-        initialObjectId={initial?.objectId}
-      />
-    </ToastProvider>,
+    <MemoryRouter initialEntries={[route]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <ToastProvider>
+        <SseInventoryPanel
+          canWrite={canWrite}
+          initialKind={initial?.kind}
+          initialObjectId={initial?.objectId}
+        />
+      </ToastProvider>
+    </MemoryRouter>,
   );
 }
+
+const mockExportTableCsv = vi.mocked(exportTableCsv);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   mockLabConfigMode.mockReturnValue({ lab: false });
+  mockExportTableCsv.mockReturnValue(1);
+  mockDownloadApiCsv.mockResolvedValue({ ok: true });
 });
 
 
@@ -223,6 +248,16 @@ describe('SseInventoryPanel — listing', () => {
     expect(await screen.findByDisplayValue('selected.user')).toBeTruthy();
   });
 
+  it('honours sseKind/sseQ filter query params on load', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue(listing('users', 'user-1', 'Pat'));
+
+    renderPanel(false, undefined, '/systems?sseKind=users&sseQ=pat');
+
+    await waitFor(() => expect(mockGetSseKind).toHaveBeenCalledWith('users', 'pat'));
+    expect(screen.getByDisplayValue('pat')).toBeTruthy();
+  });
+
   it('renders the cached rows for the default kind (connector zones)', async () => {
     mockGetSseInventory.mockResolvedValue(null);
     mockGetSseKind.mockResolvedValue({
@@ -239,6 +274,72 @@ describe('SseInventoryPanel — listing', () => {
     // Read-only: no "New" button, and the row only offers View, never Edit/Delete.
     expect(screen.queryByRole('button', { name: /New Connector Zone/i })).toBeNull();
     expect(screen.getByRole('button', { name: 'View' })).toBeTruthy();
+    expect(screen.getByTestId('sse-visual-ref').textContent).toBe('connector/sse@SSE');
+  });
+
+  it('exports the filtered client CSV, downloads server CSV, and copies a Systems view link', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue({
+      rows: [
+        {
+          kind: 'connectorZones',
+          id: 'cz-1',
+          name: 'HQ zone',
+          description: 'primary',
+          enabled: true,
+          builtIn: false,
+          detail: '2 connector(s)',
+          raw: { secretToken: 'must-not-export' },
+        },
+      ],
+      total: 1,
+      truncated: false,
+      unavailable: false,
+    } satisfies SseKindListing);
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderPanel(false);
+
+    await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+    expect(mockExportTableCsv).toHaveBeenCalledWith(
+      'sse-connectorZones.csv',
+      ['kind', 'id', 'name', 'description', 'enabled', 'builtIn', 'detail'],
+      [
+        [
+          'connectorZones',
+          'cz-1',
+          'HQ zone',
+          'primary',
+          'true',
+          'false',
+          '2 connector(s)',
+        ],
+      ],
+    );
+    const exported = JSON.stringify(mockExportTableCsv.mock.calls[0]);
+    expect(exported).not.toMatch(/secretToken|must-not-export/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/sse/objects/connectorZones/export',
+        'sse-connectorZones.csv',
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copied = String(writeText.mock.calls[0]?.[0] ?? '');
+    expect(copied).toContain('/systems?');
+    expect(copied).toContain('plane=sse');
+    expect(copied).toContain('sseKind=connectorZones');
   });
 
   it('an unavailable kind renders an honest "unavailable" state, never a fabricated empty list', async () => {
@@ -344,7 +445,7 @@ describe('SseInventoryPanel — listing', () => {
       users.resolve(listing('users', 'user-old', 'Wrong-kind user'));
       await users.promise;
     });
-    expect(screen.getByRole('status', { name: 'Loading' })).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Loading inventory' })).toBeTruthy();
     expect(screen.queryByText('Wrong-kind user')).toBeNull();
 
     await act(async () => {
@@ -881,8 +982,8 @@ describe('SseInventoryPanel — reviewed create', () => {
 
     const note = await screen.findByText(/it is the change that was not confirmed in what came back/);
     const block = note.closest('div') as HTMLElement;
-    expect(block.style.border).toContain('--nd-warning');
-    expect(block.style.border).not.toContain('--nd-success');
+    expect(block.className).toContain('nt-border-warning');
+    expect(block.className).not.toContain('nt-border-success');
     // The reassurance that would otherwise sit here answers a question nobody
     // asked, in the place the answer to theirs belongs.
     expect(screen.queryByText(/was reloaded from the refreshed cache/)).toBeNull();
@@ -1234,5 +1335,134 @@ describe('SseInventoryPanel — reviewed create', () => {
     expect(screen.getByText(/^No users$/i)).toBeTruthy();
     expect(screen.queryByText('HQ zone')).toBeNull();
     expect(mockGetSseKind).toHaveBeenCalledTimes(2);
+  });
+});
+
+/* Loop 183 — SSE inventory multi-select Export selected / Copy IDs / selection link. */
+describe('SseInventoryPanel bulk selection (Loop 183)', () => {
+  it('shows bulk bar: Export selected, Copy IDs, Copy selection link, Clear', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue({
+      rows: [
+        { kind: 'connectorZones', id: 'cz-1', name: 'HQ zone', raw: {} },
+        { kind: 'connectorZones', id: 'cz-2', name: 'Branch zone', raw: {} },
+      ],
+      total: 2,
+      truncated: false,
+      unavailable: false,
+    });
+    mockExportTableCsv.mockReturnValue(1);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { container } = renderPanel(false);
+    expect(await screen.findByText('HQ zone')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'SSE object selection actions' })).toBeNull();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Connector zones inventory"]') as HTMLElement | null;
+      if (!el) throw new Error('SSE inventory table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'SSE object selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected object/)).toBeTruthy();
+    expect(mockExportTableCsv).toHaveBeenCalled();
+    expect(String(mockExportTableCsv.mock.calls.at(-1)?.[0])).toContain('selected');
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy IDs' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('cz-1');
+    expect(await screen.findByText(/Copied 1 id/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    const url = String(writeText.mock.calls[1]![0]);
+    expect(url).toMatch(/sseIds=/);
+    expect(url).toContain('cz-1');
+    expect(url).toMatch(/sseKind=connectorZones/);
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'SSE object selection actions' })).toBeNull(),
+    );
+  });
+
+  it('deep-links ?sseIds= and shows a clearable selection chip', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue({
+      rows: [
+        { kind: 'connectorZones', id: 'cz-1', name: 'HQ zone', raw: {} },
+        { kind: 'connectorZones', id: 'cz-2', name: 'Branch zone', raw: {} },
+      ],
+      total: 2,
+      truncated: false,
+      unavailable: false,
+    });
+
+    renderPanel(false, undefined, `/systems?plane=sse&sseKind=connectorZones&sseIds=${encodeURIComponent('cz-1')}`);
+    expect(await screen.findByText('HQ zone')).toBeTruthy();
+    expect(screen.queryByText('Branch zone')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected object/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    expect(await screen.findByText('Branch zone')).toBeTruthy();
+  });
+});
+
+/* Loop 201 — keyboard shortcuts help + filtered empty CTAs on SSE object inventory. */
+describe('SSE inventory Loop 201 residuals', () => {
+  it('exposes keyboard shortcuts help on the inventory toolbar', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue({
+      rows: [{ kind: 'connectorZones', id: 'cz-1', name: 'HQ zone', raw: {} }],
+      total: 1,
+      truncated: false,
+      unavailable: false,
+    });
+    renderPanel(false);
+    expect(await screen.findByText('HQ zone')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+
+  it('offers Clear search when the kind list is filtered empty', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue({
+      rows: [],
+      total: 0,
+      truncated: false,
+      unavailable: false,
+    });
+    renderPanel(false, undefined, '/systems?plane=sse&sseKind=connectorZones&sseQ=nope');
+    expect(await screen.findByText('No rows match the search.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Clear search' })).toBeTruthy();
+  });
+
+  it('offers Clear selection filter when sseIds matches nothing', async () => {
+    mockGetSseInventory.mockResolvedValue(null);
+    mockGetSseKind.mockResolvedValue({
+      rows: [{ kind: 'connectorZones', id: 'cz-1', name: 'HQ zone', raw: {} }],
+      total: 1,
+      truncated: false,
+      unavailable: false,
+    });
+    renderPanel(
+      false,
+      undefined,
+      `/systems?plane=sse&sseKind=connectorZones&sseIds=${encodeURIComponent('missing')}`,
+    );
+    expect(await screen.findByText('No selected objects in this kind')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Clear selection filter' })).toBeTruthy();
   });
 });

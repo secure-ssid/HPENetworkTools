@@ -2,7 +2,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { cx } from './utils';
 
 export function NightdeskProvider({ children }: { children: ReactNode }) {
-  return <div className="nd-root">{children}</div>;
+  return <div className="nd-root nt-root">{children}</div>;
 }
 
 type StackProps = {
@@ -32,7 +32,16 @@ export function Stack({
   if (justify) s.justifyContent = justify;
   if (wrap) s.flexWrap = 'wrap';
   return (
-    <div className={className} style={s}>
+    <div
+      className={cx(
+        'nd-stack',
+        'nt-stack',
+        direction === 'row' ? 'nt-stack--row' : 'nt-stack--col',
+        wrap && 'nt-stack--wrap',
+        className,
+      )}
+      style={s}
+    >
       {children}
     </div>
   );
@@ -50,21 +59,21 @@ export function Card({
   children: ReactNode;
 }) {
   return (
-    <div className={cx('nd-card', `nd-card--${variant}`, className)} style={style}>
+    <div className={cx('nd-card', `nd-card--${variant}`, 'nt-card-lift', 'nt-panel-glass', className)} style={style}>
       {children}
     </div>
   );
 }
 
 export function Divider({ variant = 'default' }: { variant?: 'default' | 'flair' }) {
-  return <div role="separator" className={`nd-divider nd-divider--${variant}`} />;
+  return <div role="separator" className={`nd-divider nd-divider--${variant}${variant === 'flair' ? ' nt-divider-flair' : ''}`} />;
 }
 
 export function SectionHeader({ label, meta }: { label: ReactNode; meta?: ReactNode }) {
   return (
-    <div className="nd-section-header">
-      <span className="nd-micro-label">{label}</span>
-      {meta ? <span className="nd-section-header__meta">{meta}</span> : null}
+    <div className="nd-section-header nt-table-toolbar nt-toolbar-glass">
+      <span className="nd-micro-label nt-micro-label">{label}</span>
+      {meta ? <span className="nd-section-header__meta nt-table-toolbar__meta">{meta}</span> : null}
     </div>
   );
 }
@@ -80,8 +89,8 @@ export function Heading({ level = 2, overline, className, children }: HeadingPro
   const Tag = `h${level}` as 'h1' | 'h2' | 'h3' | 'h4';
   return (
     <div className={className}>
-      {overline ? <span className="nd-micro-label nd-heading__overline">{overline}</span> : null}
-      <Tag className={`nd-heading nd-heading--${level}`}>{children}</Tag>
+      {overline ? <span className="nd-micro-label nt-micro-label nd-heading__overline nt-heading__overline">{overline}</span> : null}
+      <Tag className={`nd-heading nt-heading nd-heading--${level} nt-heading--${level}`}>{children}</Tag>
     </div>
   );
 }
@@ -136,14 +145,14 @@ export function Code({
 }) {
   if (block) {
     return (
-      <pre className={cx('nd-code-block', className)}>
+      <pre className={cx('nd-code-block', 'nt-code-frame', className)}>
         <code>{children}</code>
       </pre>
     );
   }
-  return <code className={cx('nd-code', className)}>{children}</code>;
+  return <code className={cx('nd-code', 'nt-code-inline', className)}>{children}</code>;
 }
 
 export function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="nd-kbd">{children}</kbd>;
+  return <kbd className="nd-kbd nt-kbd">{children}</kbd>;
 }

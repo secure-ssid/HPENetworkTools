@@ -25,12 +25,14 @@
  * through the app's error middleware.
  */
 
-import { Router } from 'express';
+import type { Request, Router } from 'express';
+import { Router as makeRouter } from 'express';
 import { h } from './handler';
 import { writeBroker, type WriteBroker } from '../services/writeBroker';
 import { ssidDirectWrite, type SsidDirectWriteService } from '../services/ssidDirectWrite';
 import type { BrokerAuditEvent } from '@hpe/shared';
 import { sendCsv } from '../lib/csv';
+import { queryString } from '../lib/query';
 
 /** Audit-log page size: what the drawer asks for, clamped to what the log tail
  *  can sensibly answer. A missing/garbage `limit` is the default, never 0. */
@@ -48,8 +50,33 @@ function historyLimit(raw: unknown): number {
   return Math.min(HISTORY_MAX, Math.trunc(n));
 }
 
+/**
+ * Optional `?kind=` / `?result=` / `?ticket=` exact filters (case-insensitive)
+ * on the broker audit log. Empty/missing values leave the list alone — never
+ * invent emptiness from an unknown token (operators still see the unfiltered
+ * tail). Ticket match is exact on the ticket reference (not a substring of
+ * changeId/who) so a compliance pull for one change request stays precise.
+ */
+export function applyConfigureHistoryFilters(
+  req: Request,
+  events: readonly BrokerAuditEvent[],
+): BrokerAuditEvent[] {
+  // Loop 119: shared queryString (trim; non-string → '') so list + export stay
+  // aligned with the rest of the residual filter surface.
+  const kind = queryString(req, 'kind').toLowerCase();
+  const result = queryString(req, 'result').toLowerCase();
+  const ticket = queryString(req, 'ticket').toLowerCase();
+  if (!kind && !result && !ticket) return [...events];
+  return events.filter((e) => {
+    if (kind && String(e.kind ?? '').toLowerCase() !== kind) return false;
+    if (result && String(e.result ?? '').toLowerCase() !== result) return false;
+    if (ticket && String(e.ticket ?? '').toLowerCase() !== ticket) return false;
+    return true;
+  });
+}
+
 export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirectWriteService = ssidDirectWrite): Router {
-  const router = Router();
+  const router = makeRouter();
 
   router.post('/configure/render', (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -106,21 +133,23 @@ export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirect
    */
   router.get('/configure/history', (req, res) => {
     const read = broker.readRecentEvents(historyLimit(req.query.limit));
-    const events: BrokerAuditEvent[] = read.events;
+    const events: BrokerAuditEvent[] = applyConfigureHistoryFilters(req, read.events);
     res.json({ events, unreadable: read.unreadable });
   });
 
   /**
    * CSV export of the same audit events — compliance download. Bodies stay
-   * excluded (BrokerAuditEvent never carries payloads).
+   * excluded (BrokerAuditEvent never carries payloads). Optional kind/result
+   * /ticket match the drawer filters.
    */
   router.get('/configure/history/export', (req, res) => {
     const read = broker.readRecentEvents(historyLimit(req.query.limit ?? 1000));
+    const events = applyConfigureHistoryFilters(req, read.events);
     sendCsv(
       res,
       'configure-history.csv',
       ['ts', 'event', 'changeId', 'ticket', 'kind', 'result', 'who'],
-      read.events.map((e) => {
+      events.map((e) => {
         const who =
           'who' in e && typeof (e as { who?: unknown }).who === 'string' ? (e as { who: string }).who : '';
         return [e.ts, e.event, e.changeId, e.ticket, e.kind, e.result, who];

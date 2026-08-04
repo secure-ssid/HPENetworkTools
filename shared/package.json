@@ -20,7 +20,8 @@
     "./alertRules": "./alertRules.ts",
     "./appRisk": "./appRisk.ts",
     "./trends": "./trends.ts",
-    "./expiry": "./expiry.ts"
+    "./expiry": "./expiry.ts",
+    "./exports": "./exports.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

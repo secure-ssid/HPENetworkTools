@@ -9,6 +9,7 @@ import {
   parseLimitCursor,
   weakEtag,
 } from '../../lib/httpCache';
+import { queryString } from '../../lib/query';
 
 /**
  * Optional list paging: when `?limit=` is present, slice `body[listKey]` and
@@ -40,12 +41,28 @@ export function applyListPaging(
   };
 }
 
+/**
+ * Body used for the weak ETag. Drop wall-clock envelope stamps (`syncedAt`)
+ * so identical payloads do not miss on every poll/request — demo mode stamps
+ * `new Date()` per response, and live mode can refresh poll timestamps without
+ * changing row content. The full body (including `syncedAt`) is still sent on 200.
+ */
+export function etagPayload(body: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.prototype.hasOwnProperty.call(body, 'syncedAt')) return body;
+  const { syncedAt: _syncedAt, ...rest } = body;
+  return rest;
+}
+
 export function sendCachedJson(req: Request, res: Response, body: Record<string, unknown>): void {
-  if (maybeNotModified(req, res, weakEtag(body))) return;
+  if (maybeNotModified(req, res, weakEtag(etagPayload(body)))) return;
   res.json(body);
 }
 
-/** Optional list filters for inventory endpoints: ?q= and ?plane=. */
+/**
+ * Optional list filters for inventory endpoints: ?q= and ?plane=.
+ * Loop 122: shared `queryString` so non-string bags are honest no-ops
+ * (same vocabulary as Alerts/Systems/Compliance CSV filters).
+ */
 export function applyListFilters(
   req: Request,
   body: Record<string, unknown>,
@@ -54,9 +71,8 @@ export function applyListFilters(
 ): Record<string, unknown> {
   const list = body[listKey];
   if (!Array.isArray(list)) return body;
-  const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
-  const plane =
-    typeof req.query.plane === 'string' ? req.query.plane.trim().toLowerCase() : '';
+  const q = queryString(req, 'q').toLowerCase();
+  const plane = queryString(req, 'plane').toLowerCase();
   if (!q && !plane) return body;
   const filtered = (list as Record<string, unknown>[]).filter((row) => {
     if (plane) {

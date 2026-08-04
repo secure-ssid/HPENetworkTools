@@ -18,15 +18,17 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
-import { Alert, AppShell as NightdeskAppShell, Avatar, Breadcrumbs, Button, Drawer, Spinner } from '../nightdesk';
+import { Alert, AppShell as NightdeskAppShell, Avatar, Breadcrumbs, Button, Drawer, PageSkeleton } from '../nightdesk';
 import type { Crumb } from '../nightdesk';
 import { CRUMBS, NAV_GROUPS, SITE_IDS, SYSTEMS, siteDisplayName } from '@hpe/shared';
-import type { NotificationCenterEntry, NotificationCenterSeverity, NotificationCenterView, SiteId, View } from '@hpe/shared';
+import type { NotificationCenterEntry, NotificationCenterView, SiteId, View } from '@hpe/shared';
 import { getSystemsState } from '../api/client';
 import { getNotificationCenter, markNotificationCenterRead } from '../api/notificationCenter';
 import { isBackendReachable, onBackendReachabilityChange } from '../api/core';
 import { useSettings } from './SettingsContext';
 import { SearchPanel } from './SearchPanel';
+import { ShiftStrip } from './ShiftStrip';
+import { IncidentStrip } from './IncidentStrip';
 import ChatPanel from '../screens/ChatPanel';
 import { pathForView, viewForPath } from './nav';
 import { NAV_ICONS } from './navIcons';
@@ -34,16 +36,52 @@ import { useAuth } from './AuthGate';
 import { logout } from '../api/auth';
 
 const RAIL_KEY = 'hpe-nt.nav-rail';
+const PLATFORMS_KEY = 'hpe-nt.nav-platforms-open';
+/** Display-only light/dark preference (no estate data). */
+export const THEME_STORAGE_KEY = 'hpe-nt.theme';
+export type ShellTheme = 'dark' | 'light';
+
+export function readShellTheme(): ShellTheme {
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+export function applyShellTheme(theme: ShellTheme): void {
+  try {
+    if (theme === 'light') {
+      document.documentElement.setAttribute('data-nd-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-nd-theme');
+    }
+  } catch {
+    /* jsdom / locked document — preference still lives in state */
+  }
+}
+
+export function writeShellTheme(theme: ShellTheme): void {
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch {
+    /* private mode — theme still applies for this session */
+  }
+  applyShellTheme(theme);
+}
 
 /**
- * What a lazy screen chunk shows while it loads: the portal's ordinary
- * spinner, centred in the content area. The shell itself (sidebar, topbar)
- * is eager and stays put — only the screen is ever pending.
+ * What a lazy screen chunk shows while it loads: NightDesk PageSkeleton
+ * choreography in the content area. The shell itself (sidebar, topbar) is
+ * eager and stays put — only the screen is ever pending.
  */
 export function RouteFallback() {
   return (
-    <div className="nt-center-pad" style={{ padding: 48 }}>
-      <Spinner />
+    <div className="nt-route-fallback nt-war-room-wake" role="status" aria-label="NightDesk · loading screen">
+      <div className="nt-route-fallback__card nt-panel-glass">
+        <div className="nt-route-fallback__kicker">NightDesk · copper wake</div>
+        <PageSkeleton variant="list" />
+      </div>
     </div>
   );
 }
@@ -53,6 +91,23 @@ function readRailPref(): boolean {
     return window.localStorage.getItem(RAIL_KEY) === '1';
   } catch {
     return false; // private mode / disabled storage is not an error worth showing
+  }
+}
+
+/** Platforms stay collapsed by default (object-first nav); expand preference is display-only. */
+function readPlatformsOpenPref(): boolean {
+  try {
+    return window.localStorage.getItem(PLATFORMS_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writePlatformsOpenPref(open: boolean) {
+  try {
+    window.localStorage.setItem(PLATFORMS_KEY, open ? '1' : '0');
+  } catch {
+    /* ignore */
   }
 }
 
@@ -90,7 +145,7 @@ function SignedInAs() {
   }
   if (!auth.principal) return null;
   return (
-    <div className="nt-shell-workspace__row" style={{ marginTop: 6 }}>
+    <div className="nt-shell-workspace__row nt-mt-6">
       <span className="nt-shell-workspace__linked" title={auth.principal.email ?? auth.principal.name}>
         {auth.principal.name}
       </span>
@@ -119,9 +174,10 @@ function BackendUnreachableBanner() {
   useEffect(() => onBackendReachabilityChange(setReachable), []);
   if (reachable) return null;
   return (
-    <div style={{ padding: '12px 0 0' }}>
+    <div className="nt-pad-12-0 nt-backend-banner">
+      <div className="nt-plane-theater" role="note">NightDesk · backend offline · fixtures only</div>
       <Alert tone="danger" title="The portal backend is not answering">
-        <span style={{ fontSize: 13 }}>
+        <span className="nt-fs-13">
           Nothing below is your estate. The screens fall back to built-in sample data when no
           backend answers, so the sites, alerts and devices shown are fixtures — not a reading of
           your network, and not a statement that it is healthy. This clears by itself as soon as
@@ -133,19 +189,6 @@ function BackendUnreachableBanner() {
 }
 
 /** The tone dot a bell entry's severity maps to. */
-function notificationTone(severity: NotificationCenterSeverity): string {
-  switch (severity) {
-    case 'danger':
-      return 'var(--nd-danger)';
-    case 'warning':
-      return 'var(--nd-warning)';
-    case 'success':
-      return 'var(--nd-success)';
-    default:
-      return 'var(--nd-info)';
-  }
-}
-
 /**
  * The notification center's topbar presence: a bell with the unread count,
  * opening the newest entries. Polls on the same cadence as the engine's
@@ -238,10 +281,11 @@ function NotificationBell() {
 
   const unread = view?.unread ?? 0;
   return (
-    <div ref={rootRef} style={{ position: 'relative', flex: '0 0 auto' }}>
+    <div ref={rootRef} className="nt-notify-anchor" data-unread={unread > 0 ? '1' : '0'}>
       <Button
         variant="ghost"
         size="sm"
+        className={unread > 0 ? 'nt-notify-bell--hot' : undefined}
         onClick={() => setOpen((v) => !v)}
         aria-label={unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'}
         aria-expanded={open}
@@ -263,22 +307,11 @@ function NotificationBell() {
         <div
           role="dialog"
           aria-label="Notifications"
-          style={{
-            position: 'absolute',
-            top: 38,
-            right: 0,
-            width: 360,
-            maxWidth: '90vw',
-            background: 'var(--nd-bg-raised)',
-            border: '1px solid var(--nd-border-default)',
-            borderRadius: 'var(--nd-radius-md)',
-            boxShadow: 'var(--nd-shadow-overlay)',
-            padding: 6,
-            zIndex: 30,
-          }}
+          className={`nt-notify-popover nt-panel-glass${unread > 0 ? ' nt-notify-popover--hot' : ''}`}
+          data-unread={unread}
         >
-          <div className="nt-row-between" style={{ padding: "4px 6px" }}>
-            <span className="nd-micro-label">Notifications</span>
+          <div className="nt-row-between nt-pad-4-6">
+            <span className="nd-micro-label nt-micro-label">NightDesk · Notifications</span>
             <Button variant="ghost" size="sm" onClick={markAll} disabled={unread === 0}>
               Mark all read
             </Button>
@@ -289,10 +322,10 @@ function NotificationBell() {
               when it does; nothing here is a statement about your estate.
             </div>
           ) : view === null ? (
-            <div className="nt-notify-empty">Checking…</div>
+            <div className="nt-notify-empty">NightDesk · checking…</div>
           ) : view.entries.length === 0 ? (
             <div className="nt-notify-empty">
-              No notifications yet — device-down alerts and their recoveries land here.
+              NightDesk · quiet — device-down alerts and recoveries land here.
             </div>
           ) : (
             <div className="nt-notify-scroll">
@@ -301,35 +334,19 @@ function NotificationBell() {
                   key={entry.id}
                   type="button"
                   onClick={() => openEntry(entry)}
-                  style={{
-                    display: 'flex',
-                    gap: 8,
-                    width: '100%',
-                    textAlign: 'left',
-                    padding: '8px 6px',
-                    border: 'none',
-                    borderRadius: 'var(--nd-radius-sm)',
-                    background: 'transparent',
-                    color: 'var(--nd-text-primary)',
-                    cursor: 'pointer',
-                  }}
+                  className="nt-notify-item nt-card-lift"
+                  data-unread={entry.read ? 'false' : 'true'}
                 >
                   <span
                     aria-hidden="true"
-                    style={{
-                      flex: '0 0 auto',
-                      width: 8,
-                      height: 8,
-                      marginTop: 5,
-                      borderRadius: '50%',
-                      background: notificationTone(entry.severity),
-                    }}
+                    className="nt-notify-dot"
+                    data-severity={entry.severity}
                   />
-                  <span style={{ minWidth: 0 }}>
+                  <span className="nt-min-w-0">
                     <span className={`nt-notify-title ${entry.read ? "nt-notify-title--read" : "nt-notify-title--unread"}`}>
                       {entry.title}
                       {entry.demo ? (
-                        <span className="nt-mono-label nt-ml-auto" style={{ marginLeft: 6 }}>
+                        <span className="nt-mono-label nt-ml-auto nt-ml-6">
                           demo
                         </span>
                       ) : null}
@@ -356,6 +373,20 @@ export function AppShellLayout() {
   const [chatOpen, setChatOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [rail, setRail] = useState(readRailPref);
+  const [platformsOpen, setPlatformsOpen] = useState(readPlatformsOpenPref);
+  const [theme, setTheme] = useState<ShellTheme>(readShellTheme);
+
+  useEffect(() => {
+    applyShellTheme(theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((prev) => {
+      const next: ShellTheme = prev === 'light' ? 'dark' : 'light';
+      writeShellTheme(next);
+      return next;
+    });
+  };
 
   const toggleRail = () => {
     setRail((prev) => {
@@ -365,6 +396,14 @@ export function AppShellLayout() {
       } catch {
         /* the preference simply will not survive a reload */
       }
+      return next;
+    });
+  };
+
+  const togglePlatforms = () => {
+    setPlatformsOpen((prev) => {
+      const next = !prev;
+      writePlatformsOpenPref(next);
       return next;
     });
   };
@@ -429,12 +468,22 @@ export function AppShellLayout() {
     return base;
   }, [view, siteId, deviceName, workspaceName, navigate]);
 
+  useEffect(() => {
+    const leaf = crumbs[crumbs.length - 1]?.label?.trim();
+    document.title = leaf ? `${leaf} · NightDesk` : 'NightDesk — Network Operations';
+    return () => {
+      document.title = 'NightDesk — Network Operations';
+    };
+  }, [crumbs]);
+
   const renderSidebar = (onNavigate?: () => void, collapsible = true) => (
     <>
       <div className="nt-shell-brand">
+        <div className="nt-shell-brand__mark" aria-hidden>ND</div>
+        <div className="nt-logo-mark" aria-hidden="true">ND</div>
         <div className="nt-shell-brand__copy">
           <div className="nt-shell-brand__kicker">HPE · Copper NOC</div>
-          <div className="nt-shell-brand__name">NightDesk</div>
+          <div className="nt-shell-brand__name nd-shell__brand-name">NightDesk</div>
           <div className="nt-shell-brand__tagline">GreenLake midnight</div>
         </div>
         {collapsible ? (
@@ -446,32 +495,70 @@ export function AppShellLayout() {
           aria-label={rail ? 'Expand navigation' : 'Collapse navigation'}
           aria-pressed={rail}
         >
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" focusable="false">
+          <svg
+            viewBox="0 0 16 16"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            focusable="false"
+            aria-hidden="true"
+          >
             <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" />
             <path d="M6.25 2.75v10.5" />
           </svg>
         </button>
         ) : null}
       </div>
-      {NAV_GROUPS.map((group) => (
-        <div key={group.label} className="nt-shell-navgroup">
-          <div className="nd-micro-label nt-shell-navgroup__label">{group.label}</div>
-          {group.items.map((item) => (
-            <NightdeskAppShell.NavItem
-              key={item.view}
-              label={item.label}
-              icon={NAV_ICONS[item.view]}
-              active={item.view === navView}
-              onClick={() => {
-                navigate(pathForView(item.view));
-                onNavigate?.();
-              }}
-            />
-          ))}
+      {NAV_GROUPS.map((group) => {
+        const isPlatforms = group.label === 'Platforms';
+        const platformViews = isPlatforms ? new Set(group.items.map((i) => i.view)) : null;
+        const onPlatformRoute = Boolean(navView && platformViews?.has(navView));
+        const expanded = !isPlatforms || platformsOpen || onPlatformRoute || rail;
+        return (
+        <div
+          key={group.label}
+          className={`nt-shell-navgroup nt-sidebar-nav${isPlatforms ? ' nt-shell-navgroup--platforms nt-platforms-group' : ''}${expanded ? '' : ' nt-shell-navgroup--collapsed'}`}
+          data-expanded={expanded ? 'true' : 'false'}
+        >
+          {isPlatforms && !rail ? (
+            <button
+              type="button"
+              className="nd-micro-label nt-micro-label nt-shell-navgroup__label nt-shell-navgroup__toggle nt-platforms-group__toggle"
+              onClick={togglePlatforms}
+              aria-expanded={expanded}
+              aria-label={expanded ? 'Platforms, expanded' : 'Platforms, collapsed'}
+            >
+              <span>{group.label}</span>
+              <span className="nt-shell-navgroup__chev" aria-hidden>
+                {expanded ? '▾' : '▸'}
+              </span>
+            </button>
+          ) : (
+            <div className="nd-micro-label nt-micro-label nt-shell-navgroup__label">{group.label}</div>
+          )}
+          {expanded
+            ? group.items.map((item) => (
+                <NightdeskAppShell.NavItem
+                  key={item.view}
+                  label={item.label}
+                  icon={NAV_ICONS[item.view]}
+                  active={item.view === navView}
+                  onClick={() => {
+                    navigate(pathForView(item.view));
+                    onNavigate?.();
+                  }}
+                />
+              ))
+            : null}
         </div>
-      ))}
+        );
+      })}
       <div className="nt-shell-workspace">
-        <span className="nd-micro-label">Workspace</span>
+        <span className="nd-micro-label nt-micro-label">Workspace</span>
         <div className="nt-shell-workspace__row">
           <span className="nt-shell-workspace__name">{workspaceName}</span>
           <span className="nt-shell-workspace__tag">GLK</span>
@@ -501,11 +588,23 @@ export function AppShellLayout() {
       <NotificationBell />
       {settingsError ? (
         <span
-          className="nt-shell-settings-error nt-mono-11 nt-danger-text" role="status" style={{ maxWidth: 260 }}
+          className="nt-shell-settings-error nt-mono-11 nt-danger-text nt-max-w-260" role="status"
         >
           {settingsError}
         </span>
       ) : null}
+      <Button
+        className="nt-shell-theme"
+        variant="ghost"
+        size="sm"
+        onClick={toggleTheme}
+        aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
+        aria-pressed={theme === 'light'}
+        title={theme === 'light' ? 'Dark theme' : 'Light theme'}
+      >
+        <span className="nt-shell-theme__label">{theme === 'light' ? 'Light' : 'Dark'}</span>
+        <span className="nt-shell-theme__compact" aria-hidden="true">{theme === 'light' ? '☀' : '☾'}</span>
+      </Button>
       <Button
         className="nt-shell-assistant"
         variant="ghost"
@@ -533,6 +632,8 @@ export function AppShellLayout() {
 
   return (
     <NightdeskAppShell sidebar={sidebar} topbar={topbar} className={rail ? 'nd-shell--rail' : undefined}>
+      <ShiftStrip />
+      <IncidentStrip />
       <BackendUnreachableBanner />
       <Suspense fallback={<RouteFallback />}>
         <Outlet />
@@ -547,6 +648,9 @@ export function AppShellLayout() {
         description={workspaceName}
       >
         <nav className="nt-mobile-nav" aria-label="Primary navigation">
+          <div className="nt-mobile-nav__brand" aria-hidden>
+            NightDesk · Copper NOC
+          </div>
           {renderSidebar(() => setNavOpen(false), false)}
         </nav>
       </Drawer>

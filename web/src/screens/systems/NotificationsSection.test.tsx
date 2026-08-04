@@ -37,6 +37,7 @@ import {
   updateNotificationEndpoint,
 } from '../../api/notifications';
 import type { FleetReport, NotificationEndpointView, NotificationServiceStatus, ReportConfig } from '@hpe/shared';
+import { downloadApiCsv } from '../../lib/downloadApiCsv';
 
 vi.mock('../../api/notifications', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/notifications')>();
@@ -64,6 +65,10 @@ vi.mock('../../api/notifications', async (importOriginal) => {
     probeSslHost: vi.fn(),
   };
 });
+
+vi.mock('../../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
 
 const FAILED: NotificationEndpointView = {
   id: 'ntf-1',
@@ -179,6 +184,54 @@ describe('notifications section', () => {
     expect(screen.getByText('FIRED')).toBeTruthy();
   });
 
+  it('Download server CSV on demo outbox hits /api/notifications/outbox/export (Loop 101)', async () => {
+    vi.mocked(getNotificationEndpoints).mockResolvedValue({ endpoints: [QUIET] });
+    vi.mocked(getNotificationStatus).mockResolvedValue({ status: DEMO_STATUS });
+    vi.mocked(getNotificationOutbox).mockResolvedValue({
+      outbox: {
+        demoMode: true,
+        entries: [
+          {
+            id: 'out-1',
+            at: '2026-08-01T12:00:00.000Z',
+            endpointId: 'ntf-2',
+            endpointName: 'ntfy-ops',
+            event: {
+              id: 'evt-1',
+              kind: 'fired',
+              at: '2026-08-01T12:00:00.000Z',
+              fingerprint: 'central|gw-edge-1|gateway down',
+              plane: 'CENTRAL',
+              device: 'gw-edge-1',
+              title: 'Gateway down',
+              sev: 'P1',
+              state: 'open',
+              siteName: 'Campus-01 HQ',
+              age: '4m',
+              count: 1,
+            },
+            contentType: 'text/plain; charset=utf-8',
+            body: '[P1] FIRED: Gateway down — gw-edge-1 (CENTRAL · Campus-01 HQ)',
+            demo: true,
+          },
+        ],
+      },
+    });
+    vi.mocked(downloadApiCsv).mockResolvedValue({ ok: true });
+    mount();
+    await waitFor(() => expect(screen.getByText(/WOULD-HAVE-SENT/)).toBeTruthy());
+    const outboxLabel = screen.getByText('Demo outbox');
+    const outboxCard = outboxLabel.closest('.nt-stack') ?? outboxLabel.parentElement?.parentElement;
+    if (!outboxCard) throw new Error('outbox card not found');
+    fireEvent.click(within(outboxCard as HTMLElement).getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(downloadApiCsv).toHaveBeenCalledWith(
+        '/api/notifications/outbox/export',
+        'notification-outbox.csv',
+      ),
+    );
+  });
+
   it('creates an endpoint from the drawer without inventing a secret', async () => {
     vi.mocked(getNotificationEndpoints).mockResolvedValue({ endpoints: [] });
     vi.mocked(getNotificationStatus).mockResolvedValue({ status: LIVE_STATUS });
@@ -262,6 +315,200 @@ describe('notifications section', () => {
     fireEvent.click(confirmBtns[confirmBtns.length - 1]!);
     await waitFor(() => expect(deleteNotificationEndpoint).toHaveBeenCalledWith('ntf-2'));
     await waitFor(() => expect(screen.getByText(/no endpoints yet/)).toBeTruthy());
+  });
+
+  it('offers Copy section link for the notifications deep-link', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.mocked(getNotificationEndpoints).mockResolvedValue({ endpoints: [] });
+    vi.mocked(getNotificationStatus).mockResolvedValue({ status: LIVE_STATUS });
+    mount();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copy section link' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy section link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(
+      /\/systems\?section=notifications#systems-section-notifications/,
+    );
+    expect(screen.getByText(/Notifications link copied/i)).toBeTruthy();
+  });
+
+  it('shows an honest empty delivery log and Download server CSV', async () => {
+    vi.mocked(getNotificationEndpoints).mockResolvedValue({ endpoints: [] });
+    vi.mocked(getNotificationStatus).mockResolvedValue({ status: LIVE_STATUS });
+    vi.mocked(getNotificationDeliveries).mockResolvedValue({
+      deliveries: { demoMode: false, entries: [] },
+    });
+    mount();
+    await waitFor(() =>
+      expect(screen.getByText(/no test or transition delivery has been attempted/i)).toBeTruthy(),
+    );
+    // Deliveries + SSL watch both offer Download server CSV once loaded.
+    expect(screen.getAllByRole('button', { name: 'Download server CSV' }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole('button', { name: 'Export CSV' })).toBeNull();
+  });
+
+  it('names why the delivery log is unavailable instead of hiding it', async () => {
+    vi.mocked(getNotificationEndpoints).mockResolvedValue({ endpoints: [QUIET] });
+    vi.mocked(getNotificationStatus).mockResolvedValue({ status: LIVE_STATUS });
+    vi.mocked(getNotificationDeliveries).mockResolvedValue({ error: 'deliveries store offline' });
+    mount();
+    await waitFor(() =>
+      expect(screen.getByText(/delivery log unavailable — deliveries store offline/i)).toBeTruthy(),
+    );
+    expect(screen.getAllByRole('button', { name: 'Download server CSV' }).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('downloads server CSV of delivery outcomes via the shared helper', async () => {
+    vi.mocked(downloadApiCsv).mockResolvedValue({ ok: true });
+    vi.mocked(getNotificationEndpoints).mockResolvedValue({ endpoints: [] });
+    vi.mocked(getNotificationStatus).mockResolvedValue({ status: LIVE_STATUS });
+    vi.mocked(getNotificationDeliveries).mockResolvedValue({
+      deliveries: {
+        demoMode: false,
+        entries: [
+          {
+            id: 'd1',
+            at: '2026-08-01T12:00:00.000Z',
+            result: 'demo',
+            test: true,
+            endpointId: 'ntf-2',
+            endpointName: 'ntfy-ops',
+            title: 'Test ping',
+            eventKind: 'fired',
+            eventId: 'evt-test-1',
+            fingerprint: 'test|fp',
+          },
+        ],
+      },
+    });
+    mount();
+    await waitFor(() => expect(screen.getByText('Test ping')).toBeTruthy());
+    const deliveryHeader = screen.getByText(/ATTEMPTS · OUTCOMES ONLY|OUTCOMES ONLY · NO PAYLOADS/);
+    const deliveryBar = deliveryHeader.closest('.nt-filter-bar') ?? deliveryHeader.parentElement;
+    if (!deliveryBar) throw new Error('delivery log bar not found');
+    fireEvent.click(within(deliveryBar as HTMLElement).getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(downloadApiCsv).toHaveBeenCalledWith(
+        '/api/notifications/deliveries/export',
+        'notification-deliveries.csv',
+      ),
+    );
+    expect(screen.getByText(/Server CSV downloaded/i)).toBeTruthy();
+  });
+
+  it('filters delivery log by outcome and passes result to server CSV', async () => {
+    vi.mocked(downloadApiCsv).mockResolvedValue({ ok: true });
+    vi.mocked(getNotificationEndpoints).mockResolvedValue({ endpoints: [] });
+    vi.mocked(getNotificationStatus).mockResolvedValue({ status: LIVE_STATUS });
+    vi.mocked(getNotificationDeliveries).mockResolvedValue({
+      deliveries: {
+        demoMode: false,
+        entries: [
+          {
+            id: 'd1',
+            at: '2026-08-01T12:00:00.000Z',
+            result: 'demo',
+            test: true,
+            endpointId: 'ntf-2',
+            endpointName: 'ntfy-ops',
+            title: 'Demo ping',
+            eventKind: 'fired',
+            eventId: 'evt-test-1',
+            fingerprint: 'test|fp',
+          },
+          {
+            id: 'd2',
+            at: '2026-08-01T12:01:00.000Z',
+            result: 'failed',
+            test: false,
+            endpointId: 'ntf-2',
+            endpointName: 'ntfy-ops',
+            title: 'Failed fan-out',
+            eventKind: 'fired',
+            eventId: 'evt-2',
+            fingerprint: 'fp-2',
+            error: 'HTTP 503',
+          },
+        ],
+      },
+    });
+    mount();
+    await waitFor(() => expect(screen.getByText('Demo ping')).toBeTruthy());
+    expect(screen.getByText('Failed fan-out')).toBeTruthy();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter delivery outcomes' }), {
+      target: { value: 'failed' },
+    });
+    await waitFor(() => expect(screen.queryByText('Demo ping')).toBeNull());
+    expect(screen.getByText('Failed fan-out')).toBeTruthy();
+    const deliveryHeader = screen.getByText(/ATTEMPTS · OUTCOMES ONLY|OUTCOMES ONLY · NO PAYLOADS/);
+    const deliveryBar = deliveryHeader.closest('.nt-filter-bar') ?? deliveryHeader.parentElement;
+    if (!deliveryBar) throw new Error('delivery log bar not found');
+    fireEvent.click(within(deliveryBar as HTMLElement).getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(downloadApiCsv).toHaveBeenCalledWith(
+        '/api/notifications/deliveries/export?result=failed',
+        'notification-deliveries.csv',
+      ),
+    );
+  });
+
+  it('filters delivery log by q= and forwards search to server CSV (Loop 116)', async () => {
+    vi.mocked(downloadApiCsv).mockResolvedValue({ ok: true });
+    vi.mocked(getNotificationEndpoints).mockResolvedValue({ endpoints: [] });
+    vi.mocked(getNotificationStatus).mockResolvedValue({ status: LIVE_STATUS });
+    vi.mocked(getNotificationDeliveries).mockResolvedValue({
+      deliveries: {
+        demoMode: false,
+        entries: [
+          {
+            id: 'd1',
+            at: '2026-08-01T12:00:00.000Z',
+            result: 'demo',
+            test: true,
+            endpointId: 'ntf-2',
+            endpointName: 'ntfy-ops',
+            title: 'Alpha ping',
+            eventKind: 'fired',
+            eventId: 'evt-test-1',
+            fingerprint: 'test|fp',
+          },
+          {
+            id: 'd2',
+            at: '2026-08-01T12:01:00.000Z',
+            result: 'failed',
+            test: false,
+            endpointId: 'ntf-3',
+            endpointName: 'slack-noc',
+            title: 'Beta fan-out',
+            eventKind: 'fired',
+            eventId: 'evt-2',
+            fingerprint: 'fp-2',
+            error: 'HTTP 503',
+          },
+        ],
+      },
+    });
+    mount();
+    await waitFor(() => expect(screen.getByText('Alpha ping')).toBeTruthy());
+    expect(screen.getByText('Beta fan-out')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search delivery log' }), {
+      target: { value: 'beta' },
+    });
+    await waitFor(() => expect(screen.queryByText('Alpha ping')).toBeNull());
+    expect(screen.getByText('Beta fan-out')).toBeTruthy();
+    const deliveryHeader = screen.getByText(/ATTEMPTS · OUTCOMES ONLY|OUTCOMES ONLY · NO PAYLOADS/);
+    const deliveryBar = deliveryHeader.closest('.nt-filter-bar') ?? deliveryHeader.parentElement;
+    if (!deliveryBar) throw new Error('delivery log bar not found');
+    fireEvent.click(within(deliveryBar as HTMLElement).getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(downloadApiCsv).toHaveBeenCalledWith(
+        '/api/notifications/deliveries/export?q=beta',
+        'notification-deliveries.csv',
+      ),
+    );
   });
 });
 
@@ -483,6 +730,40 @@ describe('report card', () => {
     await waitFor(() => expect(screen.getByText('Fleet Summary Report — 2026-08-01')).toBeTruthy());
     expect(screen.getByText(/nothing left the process/)).toBeTruthy();
   });
+
+  it('Download server CSV on report outbox hits /api/notifications/report/export (Loop 101)', async () => {
+    stubWebhooks();
+    vi.mocked(getReportSchedule).mockResolvedValue({
+      report: {
+        config: { ...SCHEDULE.config, lastResult: 'demo' },
+        demoMode: true,
+        entries: [
+          {
+            id: 'rpt-1',
+            at: '2026-08-01T07:00:00.000Z',
+            subject: 'Fleet Summary Report — 2026-08-01',
+            recipients: ['noc@example.com'],
+            text: 'text',
+            html: '<p>html</p>',
+            demo: true as const,
+          },
+        ],
+      },
+    });
+    vi.mocked(downloadApiCsv).mockResolvedValue({ ok: true });
+    mount();
+    await waitFor(() => expect(screen.getByText(/nothing left the process/)).toBeTruthy());
+    const hint = screen.getByText(/nothing left the process/);
+    const card = hint.closest('.nt-stack') ?? hint.parentElement?.parentElement;
+    if (!card) throw new Error('report outbox card not found');
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(downloadApiCsv).toHaveBeenCalledWith(
+        '/api/notifications/report/export',
+        'fleet-report-outbox.csv',
+      ),
+    );
+  });
 });
 
 describe('ssl watch card', () => {
@@ -519,5 +800,47 @@ describe('ssl watch card', () => {
     fireEvent.click(within(rowOf('vpn.example.com:443')).getByRole('button', { name: 'Probe now' }));
     await waitFor(() => expect(screen.getByText('Probe skipped')).toBeTruthy());
     expect(screen.getByText(/The demo certificate walks the ladder instead/)).toBeTruthy();
+  });
+
+  it('Download server CSV hits /api/notifications/ssl-hosts/export (Loop 96)', async () => {
+    stubWebhooks();
+    vi.mocked(getSslHosts).mockResolvedValue({ hosts: [SSL_OK] });
+    vi.mocked(downloadApiCsv).mockResolvedValue({ ok: true });
+    mount();
+    await waitFor(() => expect(screen.getByText('vpn.example.com:443')).toBeTruthy());
+    const sslLabel = screen.getByText('SSL certificate watch');
+    const sslCard = sslLabel.closest('.nt-stack') ?? sslLabel.parentElement?.parentElement;
+    if (!sslCard) throw new Error('ssl card not found');
+    fireEvent.click(within(sslCard as HTMLElement).getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(downloadApiCsv).toHaveBeenCalledWith(
+        '/api/notifications/ssl-hosts/export',
+        'ssl-hosts.csv',
+      ),
+    );
+  });
+
+  it('filters SSL watch by q= and forwards search to server CSV (Loop 116)', async () => {
+    stubWebhooks();
+    vi.mocked(getSslHosts).mockResolvedValue({ hosts: [SSL_OK, SSL_FAIL] });
+    vi.mocked(downloadApiCsv).mockResolvedValue({ ok: true });
+    mount();
+    await waitFor(() => expect(screen.getByText('vpn.example.com:443')).toBeTruthy());
+    expect(screen.getByText(/probe failed — connect ECONNREFUSED/)).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search SSL watch list' }), {
+      target: { value: 'vpn.example' },
+    });
+    await waitFor(() => expect(screen.queryByText(/probe failed — connect ECONNREFUSED/)).toBeNull());
+    expect(screen.getByText('vpn.example.com:443')).toBeTruthy();
+    const sslLabel = screen.getByText('SSL certificate watch');
+    const sslCard = sslLabel.closest('.nt-stack') ?? sslLabel.parentElement?.parentElement;
+    if (!sslCard) throw new Error('ssl card not found');
+    fireEvent.click(within(sslCard as HTMLElement).getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(downloadApiCsv).toHaveBeenCalledWith(
+        '/api/notifications/ssl-hosts/export?q=vpn.example',
+        'ssl-hosts.csv',
+      ),
+    );
   });
 });

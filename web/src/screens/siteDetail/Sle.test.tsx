@@ -6,24 +6,47 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { SiteSle } from './Sle';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import {
+  SiteSle,
+  siteSleSectionUrl,
+  sleDrillCsvRows,
+  sleMetricCsvRows,
+  sleMetricFromParam,
+  SLE_DRILL_CSV_HEADERS,
+  SLE_METRIC_CSV_HEADERS,
+} from './Sle';
 import { getSleMetricDetail } from '../../api/client';
 import { MIST_SLE_DRILLDOWN, SITE_SLE, hhmmLocal as hhmm } from '@hpe/shared';
 import type { MistSleMetricDetail } from '@hpe/shared';
+import { ToastProvider } from '../../nightdesk';
+import { exportTableCsv } from '../../lib/csv';
+import { downloadApiCsv } from '../../lib/downloadApiCsv';
 
 vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>();
   return { ...actual, getSleMetricDetail: vi.fn() };
 });
 
+vi.mock('../../lib/csv', () => ({
+  exportTableCsv: vi.fn(() => 6),
+}));
+
+vi.mock('../../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(async () => ({ ok: true as const })),
+}));
+
 const mockDrill = vi.mocked(getSleMetricDetail);
+const mockExportTableCsv = vi.mocked(exportTableCsv);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 const SLE = SITE_SLE['campus-02']!; // six metrics, overall 0.96
 const DRILL = MIST_SLE_DRILLDOWN['campus-02|coverage']!;
 
 beforeEach(() => {
   mockDrill.mockResolvedValue({ kind: 'ok', detail: DRILL });
+  mockExportTableCsv.mockReturnValue(6);
 });
 
 afterEach(() => {
@@ -31,9 +54,19 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderSle(sle: Parameters<typeof SiteSle>[0]['sle'] = SLE, mistClaimed = true) {
+function renderSle(
+  _sle?: Parameters<typeof SiteSle>[0]['sle'],
+  mistClaimed = true,
+  entry = '/sites/campus-02',
+) {
+  // Prefer raw arguments so an explicit `undefined` is not collapsed by defaults.
+  const value = arguments.length === 0 ? SLE : (arguments[0] as Parameters<typeof SiteSle>[0]['sle']);
   return render(
-    <SiteSle sle={sle} mistClaimed={mistClaimed} siteKey="campus-02" siteName="Campus-02 Research" />,
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
+      <ToastProvider>
+        <SiteSle sle={value} mistClaimed={mistClaimed} siteKey="campus-02" siteName="Campus-02 Research" />
+      </ToastProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -67,9 +100,7 @@ describe('SiteSle section', () => {
   });
 
   it('an absent sle key is "not reported", not an empty estate', () => {
-    render(
-      <SiteSle sle={undefined} mistClaimed siteKey="campus-02" siteName="Campus-02 Research" />,
-    );
+    renderSle(undefined, true);
     expect(screen.getByText('The portal did not say whether this site reports SLE scores.')).toBeTruthy();
   });
 
@@ -80,6 +111,52 @@ describe('SiteSle section', () => {
     expect(screen.getByText('WAN')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /drill/i })).toBeNull();
     expect(screen.getByText(/there is nothing to drill into/)).toBeTruthy();
+  });
+
+  it('Copy section link shares section=sle and Export CSV dumps metric scores', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    renderSle();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy section link' }));
+    expect(writeText).toHaveBeenCalled();
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/\?section=sle#sle/);
+    mockExportTableCsv.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+    expect(mockExportTableCsv).toHaveBeenCalledTimes(1);
+    const [filename, headers, rows] = mockExportTableCsv.mock.calls[0]!;
+    expect(filename).toBe('site-sle-campus-02.csv');
+    expect(headers).toEqual([...SLE_METRIC_CSV_HEADERS]);
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it('Download server CSV hits /api/sites/:id/sle/export (Loop 98)', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderSle();
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => {
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/sites/campus-02/sle/export',
+        'site-sle-campus-02.csv',
+      );
+    });
+  });
+
+  it('sleMetricCsvRows and sleDrillCsvRows keep summary columns only', () => {
+    expect(siteSleSectionUrl('/sites/campus-02')).toMatch(/\/sites\/campus-02\?section=sle#sle/);
+    expect(siteSleSectionUrl('/sites/campus-02', 'coverage')).toMatch(
+      /\/sites\/campus-02\?section=sle&metric=coverage#sle/,
+    );
+    expect(sleMetricFromParam('coverage')).toBe('coverage');
+    expect(sleMetricFromParam('  ')).toBeNull();
+    const metrics = sleMetricCsvRows(SLE);
+    expect(metrics[0]?.[0]).toBeTruthy();
+    const drill = sleDrillCsvRows(DRILL);
+    expect(drill.some((r) => r[0] === 'classifier')).toBe(true);
+    expect(JSON.stringify(drill)).not.toMatch(/password|secret|token/i);
+    expect(SLE_DRILL_CSV_HEADERS[0]).toBe('section');
   });
 });
 
@@ -108,6 +185,27 @@ describe('SiteSle drill drawer', () => {
     expect(screen.getByText('ap-3f-14')).toBeTruthy();
     const trend = screen.getByRole('img', { name: /Coverage success, 24 intervals/ });
     expect(trend).toBeTruthy();
+
+    // Drill export — classifiers + impacted only.
+    mockExportTableCsv.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Export drill CSV' }));
+    expect(mockExportTableCsv).toHaveBeenCalledTimes(1);
+    const [filename, headers] = mockExportTableCsv.mock.calls[0]!;
+    expect(filename).toBe('site-sle-campus-02-coverage.csv');
+    expect(headers).toEqual([...SLE_DRILL_CSV_HEADERS]);
+
+    mockDownloadApiCsv.mockClear();
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    // Section + drill both expose the label — scope to the open drawer dialog.
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Download server CSV' }),
+    );
+    await waitFor(() => {
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/sites/campus-02/sle/coverage/export',
+        'site-sle-campus-02-coverage.csv',
+      );
+    });
   });
 
   it('404 words the drawer as "not reported", never as an empty drill', async () => {
@@ -152,5 +250,21 @@ describe('SiteSle drill drawer', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await openDrill(/coverage/i);
     expect(mockDrill).toHaveBeenCalledTimes(2);
+  });
+
+  /* Loop 78 — ?metric= deep-link opens the drill; Copy drill link shares it. */
+  it('opens the drill from ?section=sle&metric= and Copy drill link shares metric=', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    renderSle(SLE, true, '/sites/campus-02?section=sle&metric=coverage');
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+    await waitFor(() => expect(mockDrill).toHaveBeenCalledWith('campus-02', 'coverage'));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy drill link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/section=sle/);
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/metric=coverage/);
   });
 });

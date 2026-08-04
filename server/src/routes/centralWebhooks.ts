@@ -2,6 +2,7 @@
  * server/src/routes/centralWebhooks.ts — New Central webhook management API.
  *
  *   GET    /api/central/webhooks                       ?limit=&offset=&q=  → WebhookListEnvelope
+ *   GET    /api/central/webhooks/export                 ?q=                 → CSV (summary fields; no secrets)
  *   GET    /api/central/webhooks/:id                                       → WebhookDetail
  *   GET    /api/central/webhooks/handoff                                   → durable pending status
  *   POST   /api/central/webhooks/handoff/acknowledge                        secretStored:true
@@ -32,7 +33,8 @@
 
 import { Router, type Response } from 'express';
 import { h } from './handler';
-import type { WebhookMutationResult, WebhookOneTimeSecretResult } from '@hpe/shared';
+import { WEBHOOK_LIST_MAX_LIMIT, type WebhookMutationResult, type WebhookOneTimeSecretResult } from '@hpe/shared';
+import { sendCsv } from '../lib/csv';
 import { CentralWebhooksError, centralWebhooks, type CentralWebhooksService } from '../services/centralWebhooks';
 
 /** CentralWebhooksError carries its own HTTP status; anything else is a
@@ -70,6 +72,38 @@ export function makeCentralWebhooksRouter(service: CentralWebhooksService = cent
     h(async (req, res) => {
       try {
         res.json(await service.list(req.query.limit, req.query.offset, req.query.q));
+      } catch (err) {
+        reportOrThrow(err, res);
+      }
+    }),
+  );
+
+  /**
+   * GET /api/central/webhooks/export — CSV of webhook summaries (id/name/endpoint/
+   * auth/generation/timestamps only). Optional `?q=` matches the list filter.
+   * Static path must stay ahead of `/central/webhooks/:id`. Never secrets/HMAC.
+   */
+  router.get(
+    '/central/webhooks/export',
+    h(async (req, res) => {
+      try {
+        const envelope = await service.list(WEBHOOK_LIST_MAX_LIMIT, 0, req.query.q);
+        sendCsv(
+          res,
+          'central-webhooks.csv',
+          ['id', 'name', 'endpoint', 'authMechanism', 'generation', 'createdAt', 'updatedAt', 'source', 'error'],
+          envelope.items.map((w) => [
+            w.id,
+            w.name,
+            w.endpoint,
+            w.authMechanism,
+            w.generation,
+            w.createdAt,
+            w.updatedAt ?? '',
+            envelope.source,
+            envelope.error ?? '',
+          ]),
+        );
       } catch (err) {
         reportOrThrow(err, res);
       }

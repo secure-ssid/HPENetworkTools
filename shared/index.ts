@@ -25,3 +25,4 @@ export * from './assistantModels';
 export * from './visualReferences';
 export * from './taxonomy';
 export * from './configRecommendations';
+export * from './exports';

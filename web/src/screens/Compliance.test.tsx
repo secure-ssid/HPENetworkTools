@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import Compliance from './Compliance';
@@ -7,6 +7,8 @@ import { ToastProvider } from '../nightdesk';
 import { getCompliance, getConfigBackups, getConfigBackupDiff, getConfigBackupVersions, syncSystems } from '../api/client';
 import type { ComplianceData } from '../api/client';
 import type { ConfigBackupListEnvelope } from '@hpe/shared';
+import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -22,11 +24,31 @@ vi.mock('../api/client', async (importOriginal) => {
   };
 });
 
+vi.mock('../lib/csv', () => ({
+  exportTableCsv: vi.fn((_filename: string, _headers: string[], rows: Array<Array<unknown>>) => rows.length),
+}));
+
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
+vi.mock('../components/VisualReferencePanel', () => ({
+  VisualReferencePanel: () => <div data-testid="visual-refs">Visual references</div>,
+}));
+
+vi.mock('../components/ConfigRecommendationsPanel', () => ({
+  ConfigRecommendationsPanel: ({ title }: { title?: string }) => (
+    <div data-testid="config-recs">{title ?? 'Recommendations'}</div>
+  ),
+}));
+
 const mockGetCompliance = vi.mocked(getCompliance);
 const mockSyncSystems = vi.mocked(syncSystems);
 const mockGetConfigBackups = vi.mocked(getConfigBackups);
 const mockGetConfigBackupVersions = vi.mocked(getConfigBackupVersions);
 const mockGetConfigBackupDiff = vi.mocked(getConfigBackupDiff);
+const mockExportTableCsv = vi.mocked(exportTableCsv);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 const LIVE_COVERAGE: ComplianceData = {
   dataSource: 'live',
@@ -85,12 +107,21 @@ const LIVE_UNAVAILABLE: ComplianceData = {
   diff: '',
 };
 
-function renderCompliance() {
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="loc">{`${loc.pathname}${loc.search}`}</div>;
+}
+
+function renderCompliance(initialPath = '/compliance') {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter
+      initialEntries={[initialPath]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <SettingsProvider>
         <ToastProvider>
           <Compliance />
+          <LocationProbe />
         </ToastProvider>
       </SettingsProvider>
     </MemoryRouter>,
@@ -100,6 +131,10 @@ function renderCompliance() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  /* clearAllMocks drops implementations — restore additive API defaults. */
+  mockGetConfigBackups.mockResolvedValue(null);
+  mockGetCompliance.mockReset();
+  mockSyncSystems.mockReset();
 });
 
 describe('Compliance live evidence coverage', () => {
@@ -438,6 +473,27 @@ describe('Compliance config drift (running-config backups)', () => {
     expect(screen.queryByText('ap-1f-04')).toBeNull();
   });
 
+  it('Download server CSV hits config-backups export with drift=1 (Loop 96)', async () => {
+    mockGetCompliance.mockResolvedValue(LIT_CARD);
+    mockGetConfigBackups.mockResolvedValue(BACKUPS);
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderCompliance();
+
+    expect(await screen.findByText('Config drift — running-config snapshots')).toBeTruthy();
+    // Findings header also has Download server CSV — click the one under the drift section.
+    const driftLabel = screen.getByText('Config drift — running-config snapshots');
+    const section = driftLabel.closest('.nt-stack-col') ?? driftLabel.parentElement?.parentElement;
+    if (!section) throw new Error('drift section not found');
+    const buttons = within(section as HTMLElement).getAllByRole('button', { name: 'Download server CSV' });
+    fireEvent.click(buttons[0]!);
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/config-backups/export?drift=1',
+        'config-backups.csv',
+      ),
+    );
+  });
+
   it('says so honestly when nothing drifts', async () => {
     mockGetCompliance.mockResolvedValue(LIT_CARD);
     mockGetConfigBackups.mockResolvedValue({
@@ -598,16 +654,789 @@ describe('Compliance findings table superpowers', () => {
     expect((rows[0].querySelectorAll('td')[1] as HTMLElement).className).not.toContain('tint');
   });
 
-  it('is not a keyboard grid — a finding row has no primary action to offer Enter', async () => {
+  it('is a selection keyboard grid without a primary Enter action (Loop 162 bulk)', async () => {
     mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
     const { container } = renderCompliance();
     await screen.findByText('Firmware evidence not reported');
 
-    expect(container.querySelector('table')?.getAttribute('role')).toBeNull();
+    /* Multi-select enables the DataTable keyboard grid (x toggles); there is
+     * still no onRowActivate, so Enter must not navigate or open anything.
+     * Shortcuts help is expected whenever the grid is armed for selection. */
+    expect(container.querySelector('table')?.getAttribute('role')).toBe('grid');
     const rows = Array.from(container.querySelectorAll('tbody tr'));
     expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((tr) => tr.getAttribute('tabindex') === null)).toBe(true);
-    // …and no shortcuts overlay advertises row commands that do not exist.
-    expect(screen.queryByRole('button', { name: 'Keyboard shortcuts' })).toBeNull();
+    const first = rows[0] as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'Enter' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});
+
+/* Loop 45 — export, share, server CSV, recommendations, baseline deep-link. */
+describe('Compliance export, share, and recommendations', () => {
+  beforeEach(() => {
+    mockExportTableCsv.mockClear();
+    mockDownloadApiCsv.mockReset();
+  });
+
+  it('exports the findings currently in view (baseline filter applied)', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_SAME_RULE_TWO_PLANES);
+    renderCompliance();
+    await screen.findByText('Device ownership needs reconciliation');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+    expect(mockExportTableCsv).toHaveBeenCalledTimes(1);
+    const [filename, headers, rows] = mockExportTableCsv.mock.calls[0]!;
+    expect(filename).toBe('compliance-findings');
+    expect(headers).toContain('baseline');
+    expect(headers).toContain('rule');
+    expect(rows).toHaveLength(3);
+    expect(await screen.findByText(/Exported 3 findings/)).toBeTruthy();
+  });
+
+  it('offers Download server CSV on live payloads and hits /api/compliance/export', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    renderCompliance();
+    await screen.findByText('Firmware evidence not reported');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith('/api/compliance/export', 'compliance-findings.csv'),
+    );
+    expect(await screen.findByText(/Server CSV downloaded/i)).toBeTruthy();
+  });
+
+  /* Loop 75 — server CSV carries the same baseline/sev/plane slice as the filter row. */
+  it('passes active filters into Download server CSV path', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'high',
+          tone: 'danger',
+          plane: 'CENTRAL',
+          baseline: 'Live evidence coverage',
+          title: 'high-central-export',
+        },
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'low',
+          tone: 'info',
+          plane: 'MIST',
+          baseline: 'Live evidence coverage',
+          title: 'low-mist-export',
+          rule: 'r.low',
+        },
+      ],
+    });
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance?sev=high&plane=CENTRAL&baseline=Live%20evidence%20coverage']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Compliance />
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('high-central-export')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]?.[0] ?? '');
+    expect(path.startsWith('/api/compliance/export?')).toBe(true);
+    expect(path).toMatch(/sev=high/);
+    expect(path).toMatch(/plane=CENTRAL/);
+    expect(path).toMatch(/baseline=Live(\+|%20)evidence(\+|%20)coverage/);
+  });
+
+  /* Loop 92 — free-text q= on share + client filter + server CSV. */
+  it('seeds q from URL, filters the table, and passes q on Download server CSV', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          title: 'Firmware evidence not reported',
+          detail: 'missing train on sw-core-a',
+          rule: 'fw.train',
+          device: 'sw-core-a',
+        },
+        {
+          ...LIVE_COVERAGE.findings[0],
+          title: 'Other finding',
+          detail: 'unrelated',
+          rule: 'other.rule',
+          device: 'ap-1',
+        },
+      ],
+    });
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance?q=firmware']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Compliance />
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('Firmware evidence not reported')).toBeTruthy();
+    expect(screen.queryByText('Other finding')).toBeNull();
+    const search = screen.getByRole('textbox', { name: 'Search findings' }) as HTMLInputElement;
+    expect(search.value).toBe('firmware');
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]?.[0] ?? '');
+    expect(path).toMatch(/\/api\/compliance\/export\?/);
+    expect(path).toMatch(/q=firmware/);
+  });
+
+  it('hides Download server CSV on demo fixtures', async () => {
+    mockGetCompliance.mockResolvedValue({ ...LIVE_COVERAGE, dataSource: 'demo' });
+    renderCompliance();
+    await screen.findByText('Firmware evidence not reported');
+    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Download server CSV' })).toBeNull();
+  });
+
+  it('Copy filter link writes ?baseline= when a baseline is selected', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    renderCompliance();
+    await screen.findByText('Firmware evidence not reported');
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Baseline' }), {
+      target: { value: 'Live evidence coverage' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Copy filter link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copied = new URL(String(writeText.mock.calls[0]![0]));
+    expect(copied.searchParams.get('baseline')).toBe('Live evidence coverage');
+    expect(screen.getByText(/Filter link copied/i)).toBeTruthy();
+  });
+
+  it('seeds the baseline filter from ?baseline=', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_SAME_RULE_TWO_PLANES,
+      findings: [
+        { ...LIVE_COVERAGE.findings[0], baseline: 'Live evidence coverage', title: 'cov-only', device: 'ap-1' },
+        {
+          ...LIVE_COVERAGE.findings[0],
+          baseline: 'Other baseline',
+          title: 'other-only',
+          device: 'ap-2',
+          rule: 'other.rule',
+        },
+      ],
+    });
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance?baseline=Other%20baseline']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Compliance />
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('other-only')).toBeTruthy();
+    expect(screen.queryByText('cov-only')).toBeNull();
+    expect(screen.getByText(/1 of 2 findings/)).toBeTruthy();
+  });
+
+  it('mounts VisualReference and Compliance recommendations panels', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    renderCompliance();
+    await screen.findByText('Firmware evidence not reported');
+    expect(screen.getByTestId('visual-refs')).toBeTruthy();
+    expect(screen.getByTestId('config-recs').textContent).toMatch(/Compliance recommendations/i);
+  });
+});
+
+/* Loop 61 — severity/plane share completeness. */
+describe('Compliance filter share completeness (Loop 61)', () => {
+  it('seeds sev+plane from the URL and Copy filter link keeps them with baseline', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_SAME_RULE_TWO_PLANES,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'high',
+          tone: 'danger',
+          plane: 'CENTRAL',
+          baseline: 'Live evidence coverage',
+          title: 'high-central',
+          device: 'ap-1',
+          rule: 'r.high',
+        },
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'low',
+          tone: 'info',
+          plane: 'MIST',
+          baseline: 'Live evidence coverage',
+          title: 'low-mist',
+          device: 'ap-2',
+          rule: 'r.low',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance?sev=high&plane=CENTRAL']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Compliance />
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('high-central')).toBeTruthy();
+    expect(screen.queryByText('low-mist')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy filter link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copied = String(writeText.mock.calls[0]?.[0] ?? '');
+    expect(copied).toMatch(/sev=high/);
+    expect(copied).toMatch(/plane=CENTRAL/);
+  });
+});
+
+/* Loop 110 — fix-class filter parity. */
+describe('Compliance fix filter (Loop 110)', () => {
+  beforeEach(() => {
+    mockDownloadApiCsv.mockReset();
+  });
+
+  it('seeds fix from URL, filters the table, and passes fix on Download server CSV', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          fix: 'manual',
+          fixColor: 'var(--nd-warning)',
+          title: 'manual-fix-row',
+          device: 'sw-a',
+          rule: 'r.manual',
+        },
+        {
+          ...LIVE_COVERAGE.findings[0],
+          fix: 'auto',
+          fixColor: 'var(--nd-success)',
+          title: 'auto-fix-row',
+          device: 'sw-b',
+          rule: 'r.auto',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance?fix=manual']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Compliance />
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('manual-fix-row')).toBeTruthy();
+    expect(screen.queryByText('auto-fix-row')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]?.[0] ?? '');
+    expect(path).toMatch(/fix=manual/);
+  });
+});
+
+/* Loop 143 — Plane chip row toggles the same plane= filter as the Select. */
+describe('Compliance plane chips (Loop 143)', () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="loc">{`${location.pathname}${location.search}`}</div>;
+  }
+
+  it('plane chips filter findings and write plane back to the URL', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'high',
+          tone: 'danger',
+          title: 'plane-central',
+          device: 'd-central',
+          rule: 'r.central',
+          plane: 'CENTRAL',
+        },
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'high',
+          tone: 'danger',
+          title: 'plane-mist',
+          device: 'd-mist',
+          rule: 'r.mist',
+          plane: 'MIST',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/compliance"
+                element={
+                  <>
+                    <Compliance />
+                    <LocationProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('plane-central')).toBeTruthy();
+    expect(screen.getByText('plane-mist')).toBeTruthy();
+    const chips = screen.getByRole('group', { name: 'Finding plane' });
+    const mist = within(chips).getByRole('button', { name: /MIST/i });
+    expect(mist.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(mist);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('plane=MIST'));
+    expect(screen.getByText('plane-mist')).toBeTruthy();
+    expect(screen.queryByText('plane-central')).toBeNull();
+    expect(mist.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(mist);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toContain('plane='));
+    expect(screen.getByText('plane-central')).toBeTruthy();
+    expect(screen.getByText('plane-mist')).toBeTruthy();
+  });
+});
+
+/* Loop 133 — Severity chip row toggles the same sev= filter as the Select. */
+describe('Compliance severity chips (Loop 133)', () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="loc">{`${location.pathname}${location.search}`}</div>;
+  }
+
+  it('severity chips filter findings and write sev back to the URL', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'high',
+          tone: 'danger',
+          title: 'chip-high',
+          device: 'd-high',
+          rule: 'r.high',
+        },
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'low',
+          tone: 'info',
+          title: 'chip-low',
+          device: 'd-low',
+          rule: 'r.low',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/compliance"
+                element={
+                  <>
+                    <Compliance />
+                    <LocationProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('chip-high')).toBeTruthy();
+    expect(screen.getByText('chip-low')).toBeTruthy();
+    const chips = screen.getByRole('group', { name: 'Finding severity' });
+    const high = within(chips).getByRole('button', { name: /High/i });
+    fireEvent.click(high);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('sev=high'));
+    expect(screen.getByText('chip-high')).toBeTruthy();
+    expect(screen.queryByText('chip-low')).toBeNull();
+    expect(high.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(high);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toContain('sev='));
+    expect(screen.getByText('chip-low')).toBeTruthy();
+  });
+
+  it('Clear filters on empty restores findings', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'high',
+          tone: 'danger',
+          title: 'keep-high',
+          device: 'd-1',
+          rule: 'r.keep',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance?sev=low']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Compliance />
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('Nothing matches these filters')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByText('keep-high')).toBeTruthy();
+  });
+});
+
+/* Loop 146 — Fix chip row toggles the same fix= filter as the Select. */
+describe('Compliance fix chips (Loop 146)', () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="loc">{`${location.pathname}${location.search}`}</div>;
+  }
+
+  it('fix chips filter findings and write fix back to the URL', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'high',
+          tone: 'danger',
+          title: 'fix-auto',
+          device: 'd-auto',
+          rule: 'r.auto',
+          fix: 'auto',
+        },
+        {
+          ...LIVE_COVERAGE.findings[0],
+          sev: 'high',
+          tone: 'danger',
+          title: 'fix-manual',
+          device: 'd-manual',
+          rule: 'r.manual',
+          fix: 'manual',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/compliance"
+                element={
+                  <>
+                    <Compliance />
+                    <LocationProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('fix-auto')).toBeTruthy();
+    expect(screen.getByText('fix-manual')).toBeTruthy();
+    const chips = screen.getByRole('group', { name: 'Finding fix class' });
+    const manual = within(chips).getByRole('button', { name: /Manual/i });
+    expect(manual.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(manual);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('fix=manual'));
+    expect(screen.getByText('fix-manual')).toBeTruthy();
+    expect(screen.queryByText('fix-auto')).toBeNull();
+    expect(manual.getAttribute('aria-pressed')).toBe('true');
+    expect((screen.getByLabelText('Fix class') as HTMLSelectElement).value).toBe('manual');
+
+    fireEvent.click(manual);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toContain('fix='));
+    expect(screen.getByText('fix-auto')).toBeTruthy();
+    expect(screen.getByText('fix-manual')).toBeTruthy();
+  });
+});
+
+/* Loop 152 — Baseline chip row toggles the same baseline= filter as the Select. */
+describe('Compliance baseline chips (Loop 152)', () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="loc">{`${location.pathname}${location.search}`}</div>;
+  }
+
+  it('baseline chips filter findings and write baseline back to the URL', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      findings: [
+        {
+          ...LIVE_COVERAGE.findings[0],
+          title: 'base-a-finding',
+          device: 'd-a',
+          rule: 'r.a',
+          baseline: 'Baseline A',
+        },
+        {
+          ...LIVE_COVERAGE.findings[0],
+          title: 'base-b-finding',
+          device: 'd-b',
+          rule: 'r.b',
+          baseline: 'Baseline B',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/compliance']}
+      >
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/compliance"
+                element={
+                  <>
+                    <Compliance />
+                    <LocationProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('base-a-finding')).toBeTruthy();
+    expect(screen.getByText('base-b-finding')).toBeTruthy();
+    const chips = screen.getByRole('group', { name: 'Finding baseline' });
+    const b = within(chips).getByRole('button', { name: /Baseline B/i });
+    expect(b.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(b);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('baseline=Baseline+B'));
+    expect(screen.getByText('base-b-finding')).toBeTruthy();
+    expect(screen.queryByText('base-a-finding')).toBeNull();
+    expect(b.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(b);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toContain('baseline='));
+    expect(screen.getByText('base-a-finding')).toBeTruthy();
+    expect(screen.getByText('base-b-finding')).toBeTruthy();
+  });
+});
+
+
+/* Loop 159 — LIVE badge honesty (pure live + blend). */
+describe('Compliance Loop 159 residuals', () => {
+  it('stamps LIVE on pure live findings', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    renderCompliance();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('stamps LIVE when compliance arrives via blend', async () => {
+    mockGetCompliance.mockResolvedValue({
+      ...LIVE_COVERAGE,
+      dataSource: 'demo',
+      blended: ['compliance'],
+    });
+    renderCompliance();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('hides LIVE on demo fixtures without blend', async () => {
+    mockGetCompliance.mockResolvedValue({ ...LIVE_COVERAGE, dataSource: 'demo', blended: undefined });
+    renderCompliance();
+    await screen.findByText('Firmware evidence not reported');
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+/* Loop 165 — bulk Export selected on findings. */
+describe('Compliance Loop 165 residuals', () => {
+  it('shows bulk bar for selection: Export selected + Clear', async () => {
+    mockExportTableCsv.mockClear();
+    mockGetCompliance.mockResolvedValue(LIVE_COVERAGE);
+    const { container } = renderCompliance();
+    expect(await screen.findByText(LIVE_COVERAGE.findings[0]!.title)).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Compliance finding selection actions' })).toBeNull();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Compliance finding selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected finding/)).toBeTruthy();
+    expect(mockExportTableCsv).toHaveBeenCalled();
+    expect(String(mockExportTableCsv.mock.calls.at(-1)?.[0] ?? '')).toContain('selected');
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Compliance finding selection actions' })).toBeNull(),
+    );
+  });
+});
+
+/* Loop 172 — bulk Copy rules (Devices Copy serials pattern). */
+describe('Compliance Loop 172 residuals', () => {
+  it('Copy rules writes unique newline-joined rule ids', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetCompliance.mockResolvedValue(LIVE_SAME_RULE_TWO_PLANES);
+    const { container } = renderCompliance();
+    /* Same title on two plane rows — assert plural, not unique text. */
+    expect((await screen.findAllByText(LIVE_SAME_RULE_TWO_PLANES.findings[0]!.title)).length).toBeGreaterThanOrEqual(2);
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    (rows[0] as HTMLElement).focus();
+    fireEvent.keyDown(rows[0] as HTMLElement, { key: 'x' });
+    (rows[1] as HTMLElement).focus();
+    fireEvent.keyDown(rows[1] as HTMLElement, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Compliance finding selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy rules' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    /* Two planes share scan.coverage.firmware — copy once. */
+    expect(String(writeText.mock.calls[0]![0])).toBe('scan.coverage.firmware');
+    expect(await screen.findByText(/Copied 1 rule/)).toBeTruthy();
+  });
+});
+
+/* Loop 177 — bulk Copy selection link (?rules=) + clearable chip. */
+describe('Compliance Loop 177 residuals', () => {
+  it('Copy selection link writes rules= and the deep link filters findings', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetCompliance.mockResolvedValue(LIVE_SAME_RULE_TWO_PLANES);
+    const { container } = renderCompliance();
+    expect(
+      (await screen.findAllByText(LIVE_SAME_RULE_TWO_PLANES.findings[0]!.title)).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByText('Device ownership needs reconciliation')).toBeTruthy();
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    (rows[0] as HTMLElement).focus();
+    fireEvent.keyDown(rows[0] as HTMLElement, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Compliance finding selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/rules=/);
+    expect(String(writeText.mock.calls[0]![0])).toContain('scan.coverage.firmware');
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?rules= and shows a clearable selection chip', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_SAME_RULE_TWO_PLANES);
+    renderCompliance(`/compliance?rules=${encodeURIComponent('scan.coverage.firmware')}`);
+    expect(
+      (await screen.findAllByText(LIVE_SAME_RULE_TWO_PLANES.findings[0]!.title)).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText('Device ownership needs reconciliation')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected rule/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/rules=/));
+    expect(await screen.findByText('Device ownership needs reconciliation')).toBeTruthy();
+  });
+});
+
+/* Loop 199 — keyboard shortcuts help on findings. */
+describe('Compliance Loop 199 residuals', () => {
+  it('exposes keyboard shortcuts help on the findings screen', async () => {
+    mockGetCompliance.mockResolvedValue(LIVE_SAME_RULE_TWO_PLANES);
+    renderCompliance('/compliance');
+    expect(
+      (await screen.findAllByText(LIVE_SAME_RULE_TWO_PLANES.findings[0]!.title)).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
   });
 });

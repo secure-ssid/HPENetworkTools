@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Sites from './Sites';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getSites } from '../api/client';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import type { SiteRow } from '@hpe/shared';
 
 if (!window.matchMedia) {
@@ -25,7 +26,12 @@ vi.mock('../api/client', async (importOriginal) => {
   return { ...actual, getSites: vi.fn() };
 });
 
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
 const mockGetSites = vi.mocked(getSites);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 /** A site as a live plane reports it — sparse, some fields never arrive. */
 function liveSite(over: Partial<SiteRow> = {}): SiteRow {
@@ -47,12 +53,30 @@ function liveSite(over: Partial<SiteRow> = {}): SiteRow {
   };
 }
 
-function renderSites() {
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="loc">{`${loc.pathname}${loc.search}`}</div>;
+}
+
+function renderSites(initial = '/sites') {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter
+      initialEntries={[initial]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <ToastProvider>
         <SettingsProvider>
-          <Sites />
+          <Routes>
+            <Route
+              path="/sites"
+              element={
+                <>
+                  <Sites />
+                  <LocationProbe />
+                </>
+              }
+            />
+          </Routes>
         </SettingsProvider>
       </ToastProvider>
     </MemoryRouter>,
@@ -130,7 +154,7 @@ describe('Sites health rail', () => {
     expect(cell).toBeTruthy();
     // The rail keeps the column aligned even with nothing to plot…
     const rail = cell!.firstElementChild as HTMLElement;
-    expect(rail.style.width).toBe('70px');
+    expect(rail.classList.contains('nt-health-track')).toBe(true);
     // …and carries no fill, so no percentage is implied.
     expect(rail.children.length).toBe(0);
     expect(within(cell!).getByText('—')).toBeTruthy();
@@ -223,5 +247,372 @@ describe('Sites unread-inventory disclosure', () => {
       screen.getByText(/CENTRAL contributed no inventory, so any site there is unknown rather than absent\./),
     ).toBeTruthy();
     expect(screen.queryByText('Nothing matches that filter')).toBeNull();
+  });
+});
+
+describe('Sites filter persistence + load more', () => {
+  it('seeds filters from the URL and writes q/plane back as they change', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [
+        liveSite(),
+        liveSite({ id: 'northgate', name: 'Branch West', planes: [{ name: 'MIST', tone: 'accent' }] }),
+      ],
+    });
+
+    renderSites('/sites?q=Branch&plane=MIST');
+    await waitFor(() => expect(screen.getByText('Branch West')).toBeTruthy());
+    expect(screen.queryByText('Site A')).toBeNull();
+    expect(screen.getByTestId('loc').textContent).toContain('q=Branch');
+    expect(screen.getByTestId('loc').textContent).toContain('plane=MIST');
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Filter sites' }), {
+      target: { value: 'Site' },
+    });
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('q=Site'));
+    expect(screen.getByTestId('loc').textContent).toContain('plane=MIST');
+  });
+
+  it('seeds health filter from the URL, filters rows, and writes health back', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [
+        liveSite({ id: 'campus-01', name: 'Healthy HQ', tone: 'ok' }),
+        liveSite({
+          id: 'campus-02',
+          name: 'Critical Clinic',
+          health: '42%',
+          healthPct: '42%',
+          tone: 'bad',
+        }),
+        liveSite({
+          id: 'lakeshore',
+          name: 'Unreported Site',
+          health: null,
+          healthPct: '—',
+          tone: 'stale',
+        }),
+      ],
+    });
+
+    renderSites('/sites?health=bad');
+    await waitFor(() => expect(screen.getByText('Critical Clinic')).toBeTruthy());
+    expect(screen.queryByText('Healthy HQ')).toBeNull();
+    expect(screen.queryByText('Unreported Site')).toBeNull();
+    expect(screen.getByTestId('loc').textContent).toContain('health=bad');
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by health' }), {
+      target: { value: 'stale' },
+    });
+    await waitFor(() => expect(screen.getByText('Unreported Site')).toBeTruthy());
+    expect(screen.queryByText('Critical Clinic')).toBeNull();
+    expect(screen.getByTestId('loc').textContent).toContain('health=stale');
+  });
+
+  /* Loop 130 — Health chip row toggles the same health= filter as the Select. */
+  it('health chips filter the table and write health back to the URL', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [
+        liveSite({ id: 'campus-01', name: 'Healthy HQ', tone: 'ok' }),
+        liveSite({
+          id: 'campus-02',
+          name: 'Critical Clinic',
+          health: '42%',
+          healthPct: '42%',
+          tone: 'bad',
+        }),
+        liveSite({
+          id: 'lakeshore',
+          name: 'Unreported Site',
+          health: null,
+          healthPct: '—',
+          tone: 'stale',
+        }),
+      ],
+    });
+
+    renderSites('/sites');
+    await waitFor(() => expect(screen.getByText('Healthy HQ')).toBeTruthy());
+    const chips = screen.getByRole('group', { name: 'Site health' });
+    const critical = within(chips).getByRole('button', { name: /Critical/i });
+    expect(critical.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(critical);
+    await waitFor(() => expect(screen.getByText('Critical Clinic')).toBeTruthy());
+    expect(screen.queryByText('Healthy HQ')).toBeNull();
+    expect(screen.getByTestId('loc').textContent).toContain('health=bad');
+    expect(critical.getAttribute('aria-pressed')).toBe('true');
+
+    // Toggle off restores the full universe.
+    fireEvent.click(critical);
+    await waitFor(() => expect(screen.getByText('Healthy HQ')).toBeTruthy());
+    expect(screen.getByText('Critical Clinic')).toBeTruthy();
+    expect(screen.getByTestId('loc').textContent).not.toContain('health=');
+  });
+
+  /* Loop 139 — Plane chip row toggles the same plane= filter as the Select. */
+  it('plane chips filter the table and write plane back to the URL', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [
+        liveSite({
+          id: 'campus-01',
+          name: 'Central Campus',
+          planes: [{ name: 'CENTRAL', tone: 'accent' }],
+        }),
+        liveSite({
+          id: 'campus-02',
+          name: 'Mist Branch',
+          planes: [{ name: 'MIST', tone: 'accent' }],
+        }),
+        liveSite({
+          id: 'northgate',
+          name: 'Dual Site',
+          planes: [
+            { name: 'CENTRAL', tone: 'accent' },
+            { name: 'MIST', tone: 'accent' },
+          ],
+        }),
+      ],
+    });
+
+    renderSites('/sites');
+    await waitFor(() => expect(screen.getByText('Central Campus')).toBeTruthy());
+    const chips = screen.getByRole('group', { name: 'Site plane' });
+    const mist = within(chips).getByRole('button', { name: /MIST/i });
+    expect(mist.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(mist);
+    await waitFor(() => expect(screen.getByText('Mist Branch')).toBeTruthy());
+    expect(screen.getByText('Dual Site')).toBeTruthy();
+    expect(screen.queryByText('Central Campus')).toBeNull();
+    expect(screen.getByTestId('loc').textContent).toContain('plane=MIST');
+    expect(mist.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(mist);
+    await waitFor(() => expect(screen.getByText('Central Campus')).toBeTruthy());
+    expect(screen.getByText('Mist Branch')).toBeTruthy();
+    expect(screen.getByTestId('loc').textContent).not.toContain('plane=');
+  });
+
+  it('Copy filter link includes health with q and plane', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite({ name: 'Branch West', planes: [{ name: 'MIST', tone: 'accent' }], tone: 'warn' })],
+    });
+
+    renderSites('/sites?q=Branch&plane=MIST&health=warn');
+    await waitFor(() => expect(screen.getByText('Branch West')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy filter link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toContain('q=Branch');
+    expect(url).toContain('plane=MIST');
+    expect(url).toContain('health=warn');
+  });
+
+  it('Load more appends the next cursor page without dropping prior rows', async () => {
+    mockGetSites.mockImplementation(async (query) => {
+      if (query?.cursor === 'page-2') {
+        return {
+          dataSource: 'live',
+          syncedAt: '2026-03-04T09:05:00.000Z',
+          stats: [],
+          sites: [liveSite({ id: 'campus-02', name: 'Site B', devices: 9 })],
+          page: { total: 2, limit: 100, cursor: 'page-2', nextCursor: '' },
+        };
+      }
+      return {
+        dataSource: 'live',
+        syncedAt: '2026-03-04T09:05:00.000Z',
+        stats: [],
+        sites: [liveSite()],
+        page: { total: 2, limit: 100, cursor: '', nextCursor: 'page-2' },
+      };
+    });
+
+    renderSites();
+    await waitFor(() => expect(screen.getByText('Site A')).toBeTruthy());
+    expect(screen.getByText('Loaded 1 of 2')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(screen.getByText('Site B')).toBeTruthy());
+    expect(screen.getByText('Site A')).toBeTruthy();
+    expect(screen.getByText('2 of 2 sites · 13 devices indexed')).toBeTruthy();
+    expect(mockGetSites.mock.calls.some((c) => c[0]?.cursor === 'page-2')).toBe(true);
+  });
+
+  it('passes q/plane/health to getSites and Download server CSV', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite({ name: 'Branch West', planes: [{ name: 'MIST', tone: 'accent' }], tone: 'warn' })],
+    });
+
+    renderSites('/sites?q=Branch&plane=MIST&health=warn');
+    await waitFor(() => expect(screen.getByText('Branch West')).toBeTruthy());
+    await waitFor(() =>
+      expect(
+        mockGetSites.mock.calls.some(
+          (c) => c[0]?.q === 'Branch' && c[0]?.plane === 'MIST' && c[0]?.health === 'warn',
+        ),
+      ).toBe(true),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/sites/export?q=Branch&plane=MIST&health=warn',
+        'sites.csv',
+      ),
+    );
+  });
+});
+
+/* Loop 163 — LIVE badge honesty + multi-select Export selected. */
+describe('Sites Loop 163 residuals', () => {
+  it('stamps LIVE on pure live sites', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite()],
+    });
+    renderSites();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('stamps LIVE when sites arrive via blend', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'demo',
+      blended: ['sites'],
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite()],
+    });
+    renderSites();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+    expect(screen.getByText(/^LIVE · SYNCED /)).toBeTruthy();
+  });
+
+  it('hides LIVE on demo fixtures without blend', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'demo',
+      syncedAt: null,
+      stats: [],
+      sites: [liveSite()],
+    });
+    renderSites();
+    await waitFor(() => expect(screen.getByText('Site A')).toBeTruthy());
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+
+  it('shows bulk bar for selection: Export selected, Copy names, Copy selection link, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:sites-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite(), liveSite({ id: 'campus-02', name: 'Site B', devices: 9 })],
+    });
+    const { container } = renderSites();
+    expect(await screen.findByText('Site A')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Site selection actions' })).toBeNull();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Site selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected site/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/ids=campus-01|ids=campus%2D01|ids=/);
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Site selection actions' })).toBeNull(),
+    );
+  });
+
+  it('deep-links ?ids= and shows a clearable selection chip', async () => {
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite(), liveSite({ id: 'campus-02', name: 'Site B', devices: 9 })],
+    });
+    renderSites(`/sites?ids=${encodeURIComponent('campus-01')}`);
+    expect(await screen.findByText('Site A')).toBeTruthy();
+    expect(screen.queryByText('Site B')).toBeNull();
+    const chip = screen.getByRole('button', { name: /1 selected site/i });
+    fireEvent.click(chip);
+    await waitFor(() => expect(screen.getByText('Site B')).toBeTruthy());
+    expect(screen.getByTestId('loc').textContent).not.toMatch(/ids=/);
+  });
+});
+
+
+
+/* Loop 186 — Sites bulk Copy names. */
+describe('Sites bulk Copy names (Loop 186)', () => {
+  it('copies unique newline-joined site names from the selection', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetSites.mockResolvedValue({
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:05:00.000Z',
+      stats: [],
+      sites: [liveSite(), liveSite({ id: 'campus-02', name: 'Site B', devices: 9 })],
+    });
+    const { container } = renderSites();
+    expect(await screen.findByText('Site A')).toBeTruthy();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Site selection actions' });
+    expect(within(bar).getByRole('button', { name: 'Copy names' })).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toBe('Site A');
+    expect(await screen.findByText(/Copied 1 name/)).toBeTruthy();
   });
 });

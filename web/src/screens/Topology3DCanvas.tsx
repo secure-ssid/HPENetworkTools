@@ -32,21 +32,73 @@ interface Edge3D {
   line: THREE.Line;
 }
 
-/** NightDesk semantic tones — matches tokens.css copper NOC palette. */
-const TONE_COLORS: Record<string, number> = {
+/** Fallback hex when CSS vars unavailable (SSR / canvas boot). */
+const TONE_FALLBACK: Record<string, number> = {
   success: 0x3dd68c,
   warning: 0xf0c34a,
   danger: 0xff6f7a,
-  neutral: 0x6b7791,
+  neutral: 0x8a7a6c,
   accent: 0xe08c62,
   info: 0x5eb4ff,
 };
 
-const ND_CANVAS = 0x0a0d12;
-const ND_EDGE = 0x2e3547;
-const ND_COOL = 0x6ea8ff;
+const ND_CANVAS_FALLBACK = 0x0b0907;
+const ND_EDGE_FALLBACK = 0x3a2a20;
+const ND_COOL_FALLBACK = 0xc47a4a;
 
-function createTextSprite(text: string, isSite: boolean): THREE.Sprite {
+function cssHex(varName: string, fallback: number): number {
+  if (typeof document === 'undefined') return fallback;
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  if (!raw) return fallback;
+  if (raw.startsWith('#')) {
+    const hex = raw.slice(1);
+    if (hex.length === 3) {
+      const expanded = hex
+        .split('')
+        .map((c) => c + c)
+        .join('');
+      const n = Number.parseInt(expanded, 16);
+      return Number.isFinite(n) ? n : fallback;
+    }
+    if (hex.length >= 6) {
+      const n = Number.parseInt(hex.slice(0, 6), 16);
+      return Number.isFinite(n) ? n : fallback;
+    }
+  }
+  const m = raw.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (m) {
+    return ((Number(m[1]) & 255) << 16) | ((Number(m[2]) & 255) << 8) | (Number(m[3]) & 255);
+  }
+  return fallback;
+}
+
+function ndPalette() {
+  return {
+    tones: {
+      success: cssHex('--nd-success', TONE_FALLBACK.success),
+      warning: cssHex('--nd-warning', TONE_FALLBACK.warning),
+      danger: cssHex('--nd-danger', TONE_FALLBACK.danger),
+      neutral: cssHex('--nd-text-secondary', TONE_FALLBACK.neutral),
+      accent: cssHex('--nd-accent', TONE_FALLBACK.accent),
+      info: cssHex('--nd-info', TONE_FALLBACK.info),
+    } as Record<string, number>,
+    canvas: cssHex('--nd-bg-canvas', ND_CANVAS_FALLBACK),
+    edge: cssHex('--nd-border-default', ND_EDGE_FALLBACK),
+    cool: cssHex('--nd-accent', ND_COOL_FALLBACK),
+    siteInk: cssHex('--nd-text-primary', 0xf1f0ec),
+    deviceInk: cssHex('--nd-text-secondary', 0xb0a498),
+  };
+}
+
+function toCssHex(n: number): string {
+  return `#${n.toString(16).padStart(6, '0')}`;
+}
+
+function createTextSprite(
+  text: string,
+  isSite: boolean,
+  palette: ReturnType<typeof ndPalette>,
+): THREE.Sprite {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 128;
@@ -55,8 +107,11 @@ function createTextSprite(text: string, isSite: boolean): THREE.Sprite {
     ctx.font = isSite
       ? 'Bold 30px Inter, -apple-system, system-ui, sans-serif'
       : '24px Inter, -apple-system, system-ui, sans-serif';
-    ctx.fillStyle = isSite ? 'rgba(24, 30, 42, 0.92)' : 'rgba(17, 22, 31, 0.9)';
-    ctx.strokeStyle = isSite ? '#e08c62' : '#3d4560';
+    /* Copper NOC glass chips — live tokens when present. */
+    ctx.fillStyle = isSite ? 'rgba(24, 30, 42, 0.94)' : 'rgba(17, 22, 31, 0.92)';
+    ctx.strokeStyle = isSite
+      ? toCssHex(palette.tones.accent)
+      : `rgba(${(palette.edge >> 16) & 255}, ${(palette.edge >> 8) & 255}, ${palette.edge & 255}, 0.24)`;
     ctx.lineWidth = 3;
 
     const x = 16;
@@ -79,7 +134,7 @@ function createTextSprite(text: string, isSite: boolean): THREE.Sprite {
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = isSite ? '#f1f4fa' : '#9aa6bd';
+    ctx.fillStyle = isSite ? toCssHex(palette.siteInk) : toCssHex(palette.deviceInk);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const label = text.length > 24 ? `${text.slice(0, 22)}…` : text;
@@ -103,9 +158,14 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
     const width = container.clientWidth || 800;
     const height = container.clientHeight || 500;
 
+    const palette = ndPalette();
+    const TONE_COLORS = palette.tones;
+    const ND_EDGE = palette.edge;
+    const ND_COOL = palette.cool;
+
     // Scene setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(ND_CANVAS);
+    scene.background = new THREE.Color(palette.canvas);
 
     // Camera setup
     const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
@@ -167,7 +227,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
       mesh.position.copy(sitePos);
       mesh.userData = { id: site.siteId, name: site.name, type: 'site' };
 
-      const siteSprite = createTextSprite(site.name, true);
+      const siteSprite = createTextSprite(site.name, true, palette);
       siteSprite.position.set(0, 6, 0);
       mesh.add(siteSprite);
 
@@ -211,7 +271,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
         devMesh.position.copy(devPos);
         devMesh.userData = { id: devNode.id, name: devNode.name, type: 'device' };
 
-        const devSprite = createTextSprite(devNode.name, false);
+        const devSprite = createTextSprite(devNode.name, false, palette);
         devSprite.position.set(0, 3.5, 0);
         devMesh.add(devSprite);
 
@@ -267,7 +327,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
         mesh.position.copy(gPos);
         mesh.userData = { id: gNode.id, name: gNode.name, type: gNode.ghost ? 'ghost' : 'device' };
 
-        const gSprite = createTextSprite(gNode.name, false);
+        const gSprite = createTextSprite(gNode.name, false, palette);
         gSprite.position.set(0, 3, 0);
         mesh.add(gSprite);
 
@@ -412,29 +472,17 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
   }, [graph, onSelectNode]);
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '540px', borderRadius: '8px', overflow: 'hidden' }}>
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+    <div className="nt-topo3d nt-topo-host nt-topo3d-shell nt-panel-glass">
+      <div className="nt-topo3d__brand" aria-hidden>NightDesk · graph cinema · copper midnight</div>
+      <div ref={containerRef} className="nt-topo3d__canvas" />
 
       {/* Hover Info Tooltip */}
       {hoveredNode && (
         <div
-          style={{
-            position: 'absolute',
-            top: '16px',
-            left: '16px',
-            background: 'rgba(15, 23, 42, 0.85)',
-            backdropFilter: 'blur(8px)',
-            border: '1px solid var(--nd-border-default)',
-            color: 'var(--nd-text-primary)',
-            padding: '8px 14px',
-            borderRadius: '6px',
-            fontSize: '13px',
-            pointerEvents: 'none',
-            zIndex: 10,
-          }}
+          className="nt-topo3d__glass nt-topo3d__glass--tl"
         >
-          <div style={{ fontWeight: 600 }}>{hoveredNode.name}</div>
-          <div style={{ fontSize: '11px', color: 'var(--nd-text-muted)', textTransform: 'capitalize' }}>
+          <div className="nt-topo3d__title">{hoveredNode.name}</div>
+          <div className="nt-topo3d__meta">
             {hoveredNode.type} {hoveredNode.id !== hoveredNode.name ? `· ${hoveredNode.id}` : ''}
           </div>
         </div>
@@ -442,24 +490,9 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
 
       {/* Legend & Controls overlay */}
       <div
-        style={{
-          position: 'absolute',
-          bottom: '16px',
-          right: '16px',
-          background: 'rgba(15, 23, 42, 0.85)',
-          backdropFilter: 'blur(8px)',
-          border: '1px solid var(--nd-border-default)',
-          color: 'var(--nd-text-secondary)',
-          padding: '10px 14px',
-          borderRadius: '6px',
-          fontSize: '12px',
-          zIndex: 10,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '6px',
-        }}
+        className="nt-topo3d__glass nt-topo3d__glass--br"
       >
-        <div style={{ fontWeight: 600, color: 'var(--nd-text-primary)', marginBottom: '2px' }}>3D Controls</div>
+        <div className="nt-topo3d__stat">3D Controls</div>
         <div>Rotate: Left Click + Drag</div>
         <div>Pan: Right Click + Drag</div>
         <div>Zoom: Scroll Wheel</div>

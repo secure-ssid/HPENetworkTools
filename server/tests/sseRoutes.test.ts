@@ -149,11 +149,13 @@ describe('SSE routes — unlinked', () => {
   it('every SSE route answers 409 before any credentials are saved', async () => {
     expect((await getJson('/api/sse/inventory')).status).toBe(409);
     expect((await getJson('/api/sse/objects/connectors')).status).toBe(409);
+    expect((await getJson('/api/sse/objects/connectorZones/export')).status).toBe(409);
     expect((await postJson('/api/sse/objects/connectorZones', 'POST', { fields: { name: 'x' }, reviewConfirmed: true })).status).toBe(409);
   });
 
   it('rejects an unknown object kind before it can reach any adapter method', async () => {
     expect((await getJson('/api/sse/objects/not-a-real-kind')).status).toBe(404);
+    expect((await getJson('/api/sse/objects/not-a-real-kind/export')).status).toBe(404);
   });
 });
 
@@ -190,6 +192,21 @@ describe('SSE routes — linked, read scope only', () => {
     expect(hit.body.rows).toHaveLength(1);
     const miss = await getJson('/api/sse/objects/connectorZones?q=nope');
     expect(miss.body.rows).toHaveLength(0);
+  });
+
+  it('exports cached kind rows as CSV without raw bodies or secrets', async () => {
+    const res = await fetch(`${base}/api/sse/objects/connectorZones/export?q=hq`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    expect(res.headers.get('content-disposition') ?? '').toMatch(/sse-connectorZones\.csv/);
+    const text = await res.text();
+    const header = text.split('\n')[0];
+    expect(header).toBe('kind,id,name,description,enabled,builtIn,detail');
+    expect(text).toMatch(/connectorZones,cz-1,HQ zone/);
+    expect(text).not.toMatch(/password|secret|token|apiKey|raw/i);
+    const miss = await fetch(`${base}/api/sse/objects/connectorZones/export?q=nope`);
+    expect(miss.status).toBe(200);
+    expect((await miss.text()).trim()).toBe('kind,id,name,description,enabled,builtIn,detail');
   });
 
   it('a read-only token is refused a write with 403, never silently downgraded to a no-op', async () => {

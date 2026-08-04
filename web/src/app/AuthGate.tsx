@@ -102,21 +102,30 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, []);
 
   if (phase.kind === 'checking') {
-    return <div className="nt-auth-panel" aria-busy="true" />;
+    return (
+      <div className="nt-auth-panel nt-auth-panel--wake nt-war-room-wake" aria-busy="true">
+        <div className="nt-auth-card nt-auth-card--wake nt-panel-glass" aria-hidden>
+          <div className="nt-auth-card__eyebrow">NightDesk · signing in</div>
+          <div className="nt-auth-wake-bar" />
+          <div className="nt-auth-wake-bar nt-auth-wake-bar--short" />
+          <div className="nt-auth-wake-bar nt-auth-wake-bar--mid" />
+        </div>
+      </div>
+    );
   }
 
   if (phase.kind === 'unreachable') {
     return (
-      <div className="nt-auth-panel">
-        <div className="nt-auth-card">
-          <div className="nt-auth-card__eyebrow" style={{ color: 'var(--nd-danger)' }}>
-            Server unreachable
+      <div className="nt-auth-panel nt-auth-shell">
+        <div className="nt-auth-card nt-panel-glass">
+          <div className="nt-auth-card__eyebrow nt-danger-text">
+            NightDesk · server unreachable
           </div>
           <p className="nt-auth-card__body">
             The portal could not ask the server whether you are signed in, so it cannot show you
             anything yet. This usually means the server is not running.
           </p>
-          <div style={{ marginTop: 20 }}>
+          <div className="nt-mt-20">
             <Button variant="primary" onClick={check}>
               Try again
             </Button>
@@ -130,9 +139,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   if (state.configured && !state.authenticated) {
     return (
-      <div className="nt-auth-panel">
-        <div className="nt-auth-card">
-          <div className="nt-auth-card__eyebrow">NightDesk</div>
+      <div className="nt-auth-panel nt-auth-shell">
+        <div className="nt-auth-card nt-panel-glass">
+          <div className="nt-auth-panel__brand">
+            <div className="nt-logo-mark" aria-hidden="true">ND</div>
+            <div className="nt-auth-card__eyebrow">NightDesk · Copper NOC</div>
+          </div>
           <h1 className="nt-auth-card__title">
             {lapsed ? 'Your session has ended' : 'Sign in to continue'}
           </h1>
@@ -141,13 +153,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
               ? 'The portal was signed out while you were working — usually because the server restarted, ' +
                 'which clears every session. Nothing you had open was submitted by this. Sign in again to ' +
                 'return to the page you were on.'
-              : 'This portal brokers changes to production network equipment. Every change it makes is ' +
+              : 'NightDesk brokers changes to production network equipment. Every change is ' +
                 'recorded against the account you sign in with.'}
           </p>
           {state.groupGate ? (
             <p className="nt-auth-card__body">Access is restricted to: {state.groupGate.join(', ')}</p>
           ) : null}
-          <div style={{ marginTop: 20 }}>
+          <div className="nt-mt-20">
             <Button variant="primary" onClick={() => startLogin()}>
               Sign in
             </Button>

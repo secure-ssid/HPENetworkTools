@@ -3,26 +3,26 @@
   color-scheme: dark;
 
   /* backgrounds — elevation ladder */
-  --nd-bg-canvas: #0a0d12;
-  --nd-bg-surface: #11161f;
-  --nd-bg-raised: #181e2a;
-  --nd-bg-inset: #07090d;
-  --nd-bg-panel: rgba(17, 22, 31, 0.82);
-  --nd-bg-hover: #1f2634;
-  --nd-bg-glass: rgba(10, 13, 18, 0.72);
-  --nd-bg-glass-strong: rgba(17, 22, 31, 0.9);
+  --nd-bg-canvas: #0b0907;
+  --nd-bg-surface: #14110e;
+  --nd-bg-raised: #1b1612;
+  --nd-bg-inset: #070504;
+  --nd-bg-panel: rgba(20, 17, 14, 0.84);
+  --nd-bg-hover: #241c16;
+  --nd-bg-glass: rgba(11, 9, 7, 0.74);
+  --nd-bg-glass-strong: rgba(20, 17, 14, 0.92);
 
   /* borders (1px) */
-  --nd-border-subtle: rgba(148, 163, 184, 0.09);
-  --nd-border-default: rgba(148, 163, 184, 0.14);
-  --nd-border-strong: rgba(148, 163, 184, 0.24);
+  --nd-border-subtle: rgba(180, 150, 130, 0.10);
+  --nd-border-default: rgba(180, 150, 130, 0.15);
+  --nd-border-strong: rgba(180, 150, 130, 0.26);
   --nd-border-glow: rgba(232, 140, 98, 0.35);
 
   /* text */
   --nd-text-primary: #f1f4fa;
-  --nd-text-secondary: #9aa6bd;
-  --nd-text-muted: #6b7791;
-  --nd-text-faint: #4d576e;
+  --nd-text-secondary: #b0a498;
+  --nd-text-muted: #8a7d72;
+  --nd-text-faint: #5c524a;
   --nd-text-inverse: #0c1018;
 
   /* accent (warm copper) — grammar, not confetti */

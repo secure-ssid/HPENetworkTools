@@ -12,19 +12,17 @@ import { Code } from '../nightdesk';
 export function DiffCode({ text }: { text: string }) {
   const lines = text.split('\n');
   return (
-    <Code block>
-      {lines.map((line, i) => {
-        const color = line.startsWith('-')
-          ? 'var(--nd-danger)'
-          : line.startsWith('+')
-            ? 'var(--nd-success)'
-            : undefined;
-        return (
-          <span key={i} style={color ? { color } : undefined}>
-            {line + (i < lines.length - 1 ? '\n' : '')}
-          </span>
-        );
-      })}
-    </Code>
+    <div className="nt-backup-diff nt-diff-cinema nt-code-frame">
+      <Code block className="nt-diff-code">
+        {lines.map((line, i) => {
+          const kind = line.startsWith('-') ? 'del' : line.startsWith('+') ? 'add' : 'ctx';
+          return (
+            <span key={i} className={`nt-diff-line nt-diff-line--${kind}`} data-kind={kind}>
+              {line + (i < lines.length - 1 ? '\n' : '')}
+            </span>
+          );
+        })}
+      </Code>
+    </div>
   );
 }

@@ -120,6 +120,49 @@ describe('device trend routes — demo mode', () => {
     expect(badMetric.status).toBe(404);
     expect(badMetric.body.error).toContain("unknown AP trend metric 'bogus'");
   });
+
+  it('GET /api/devices/:name/trends/export returns hardware CSV (Loop 98)', async () => {
+    const res = await fetch(`${base}/api/devices/sw-core-a/trends/export?part=hardware`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await res.text();
+    const header = text.split('\n')[0] ?? '';
+    expect(header).toBe('metric,t,v');
+    expect(text).toMatch(/cpuUtilization/);
+    expect(text.split('\n').length).toBeGreaterThan(5);
+    expect(text).not.toMatch(/password|secret|token|claimCode|apiKey/i);
+  });
+
+  it('GET /api/devices/:name/trends/export?part=interfaces returns interface rates (Loop 98)', async () => {
+    const res = await fetch(`${base}/api/devices/sw-core-a/trends/export?part=interfaces`);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text.split('\n')[0]).toBe('metric,t,v');
+    expect(text).toMatch(/txBytes|rxBytes|inCrcErrors/);
+    expect(text).not.toMatch(/password|secret|token/i);
+  });
+
+  it('GET /api/devices/:name/trends/export?part=ap&metric=throughput (Loop 98)', async () => {
+    const res = await fetch(
+      `${base}/api/devices/ap-1f-04/trends/export?part=ap&metric=throughput`,
+    );
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text.split('\n')[0]).toBe('metric,t,v');
+    expect(text).toMatch(/throughput/);
+    expect(text).not.toMatch(/password|secret|token/i);
+  });
+
+  it('GET trends/export rejects unknown part and refuses wrong device class', async () => {
+    const bad = await fetch(`${base}/api/devices/sw-core-a/trends/export?part=wallets`);
+    expect(bad.status).toBe(400);
+
+    const apOnSwitch = await fetch(`${base}/api/devices/sw-core-a/trends/export?part=ap`);
+    expect(apOnSwitch.status).toBe(404);
+
+    const hwOnAp = await fetch(`${base}/api/devices/ap-1f-04/trends/export?part=hardware`);
+    expect(hwOnAp.status).toBe(404);
+  });
 });
 
 describe('device trend routes — live mode', () => {

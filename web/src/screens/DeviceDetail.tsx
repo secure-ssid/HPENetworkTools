@@ -18,7 +18,10 @@
  * same reason: on a cloud-claimed device they are both empty, and an empty
  * note is not what the page should open with.
  *
- * Main column: the class block, Active diagnostics, Clients on this device,
+ * Main column: the class block, Active diagnostics, Clients on this device
+ * (multi-select **Export selected** / **Copy MACs** / Clear — Loop 180;
+ * header `KeyboardShortcuts` surfaces the ports/clients grid map — Loop 199;
+ * ports selection-empty `?ports=` offers **Clear selection filter** — Loop 207),
  * then the Local terminal (web/src/lib/TerminalPane —
  * shell-capable devices first try the recorded-SSH WebSocket transport from
  * web/src/lib/wsTerminal.ts, falling back to the canned demo transport when
@@ -72,15 +75,18 @@ import {
   Badge,
   Button,
   Code,
+  DATATABLE_ROW_SHORTCUTS,
   Divider,
   Drawer,
   EmptyState,
   FormField,
   Heading,
+  KeyboardShortcuts,
   SectionHeader,
   Select, Stat,
-  Table,
+  DataTable,
   useToast,
+  type DataTableColumn,
 } from '../nightdesk';
 import { getDeviceDetail, getTerminalSession, getTerminalSessions, getTickets, rebootDevice } from '../api/client';
 import type { TerminalSession, TerminalSessionEvent } from '../api/client';
@@ -88,11 +94,44 @@ import type { DeviceDetailData } from '../api/client';
 import { deviceTerminalKind, hhmmLocal as hhmm, terminalQuickCommands, countOf } from '@hpe/shared';
 import type {
   CfgHistoryRow,
+  DevicePortRow,
   Fact,
   Plane,
   TicketRow,
 } from '@hpe/shared';
+
+const profilePortColumns: Array<DataTableColumn<DevicePortRow>> = [
+  {
+    key: 'port',
+    title: 'Port',
+    hideable: false,
+    render: (p) => <span className="nt-cell-mono nt-cell-nowrap">{p.id}</span>,
+  },
+  {
+    key: 'what',
+    title: 'What',
+    render: (p) => (
+      <>
+        {p.what}
+        {/* Authored counters ride the same contract as the live
+            AOS-CX read (DevicePort.counters): a row with a block
+            says it in one mono line, a row without one (psu2 is
+            not an interface) gets no line — never an invented 0. */}
+        {p.counters ? (
+          <div className="nt-hint-muted nt-pt-2">{portCountersText(p.counters)}</div>
+        ) : null}
+      </>
+    ),
+  },
+  {
+    key: 'state',
+    title: 'State',
+    render: (p) => <Badge tone={p.tone}>{p.state}</Badge>,
+  },
+];
 import { useSettings } from '../app/SettingsContext';
+import { useIncident } from '../app/IncidentContext';
+import { deviceDetailPath, namesFilterForParam } from '../app/nav';
 import { TerminalPane, createCannedTransport } from '../lib/TerminalPane';
 import { createWsTransport } from '../lib/wsTerminal';
 import type { AsyncTerminalTransport, TerminalSessionIdentity } from '../lib/wsTerminal';
@@ -102,10 +141,14 @@ import { ConfigActionPanel } from '../components/ConfigActionPanel';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { DeviceTypeBadge } from '../components/DeviceTypeBadge';
 import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { ApiErrorState } from './ApiErrorState';
 import { RecordedSessions } from './deviceDetail/RecordedSessions';
 import {
   CfgTab,
+  DEVICE_SUMMARY_HEADERS,
+  deviceSummaryCsvRow,
+  parseCfgTab,
   portCountersText,
   sectionsToRender,
   servedDeviceDetail,
@@ -155,7 +198,7 @@ import {
 export default function DeviceDetail() {
   const { name = '' } = useParams();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   // The plane+serial the row that linked here carried (Devices.tsx,
   // SiteDetail's device table) — the exact identity that survives
   // reconciliation when two rows share this display name. Absent for legacy
@@ -165,9 +208,14 @@ export default function DeviceDetail() {
   const linkSerial = searchParams.get('serial') ?? undefined;
   const routeIdentity = `${name}\u0000${linkPlane ?? ''}\u0000${linkSerial ?? ''}`;
   const { showPlatformTags } = useSettings();
+  const { patchIncident } = useIncident();
   const { toast } = useToast();
   const [data, setData] = useState<DeviceDetailData | null>(null);
-  const [cfgTab, setCfgTab] = useState<CfgTab>('running');
+  /* Configuration tabs share via `?tab=running|diff|history` (default running
+     omits the param so plane/serial links stay short). */
+  const [cfgTab, setCfgTab] = useState<CfgTab>(() => parseCfgTab(searchParams.get('tab')));
+  /* Profile ports multi-select (demo class block) — Loop 187. */
+  const [selectedPortKeys, setSelectedPortKeys] = useState<string[]>([]);
   const [extraHistory, setExtraHistory] = useState<CfgHistoryRow[]>([]);
 
   useEffect(() => {
@@ -179,6 +227,25 @@ export default function DeviceDetail() {
       live = false;
     };
   }, [name, linkPlane, linkSerial]);
+
+  /* Keep `?tab=` aligned with the Configuration segmented control so
+     Copy view link / refresh open the same running | drift | history pane. */
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (cfgTab === 'running') next.delete('tab');
+    else next.set('tab', cfgTab);
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [cfgTab, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!name) return;
+    patchIncident({
+      deviceName: name,
+      devicePlane: linkPlane,
+      sourcePath: deviceDetailPath({ name, plane: linkPlane, serial: linkSerial }),
+    });
+  }, [name, linkPlane, linkSerial, patchIncident]);
 
   const kind = data?.profile?.kind ?? 'sw';
   // The route computes the shell banner and the quick-command chips for the
@@ -343,7 +410,7 @@ export default function DeviceDetail() {
   if (prevRouteIdentity !== routeIdentity) {
     setPrevRouteIdentity(routeIdentity);
     setData(null);
-    setCfgTab('running');
+    setCfgTab(parseCfgTab(searchParams.get('tab')));
     setExtraHistory([]);
     setRebootOpen(false);
     setRebootTickets([]);
@@ -381,6 +448,8 @@ export default function DeviceDetail() {
   // behavior"): the offline fixture fallback answers `demo` too, so an unknown
   // name means something different in each mode.
   const isDemo = data.dataSource === 'demo' && !(data.blended?.includes('devices') ?? false);
+  /* LIVE badge on pure live and devices blend alike — demo stays quiet (Loop 171). */
+  const sectionLive = !isDemo;
   // The recording THIS pane's session opened, if the store has caught up: the
   // newest transcript that started at (or just before) the moment the bridge
   // went live. Ordering is not part of the API contract, so sort. An older
@@ -449,11 +518,13 @@ export default function DeviceDetail() {
       open={rebootOpen}
       onOpenChange={setRebootOpen}
       width="md"
+      className="nd-drawer--write-ritual nt-write-ritual"
       title={`Reboot ${name}`}
       description="A reboot drops every client on this device. It is a brokered write: ticket-stamped, audit-logged, and only ever claimed when the plane accepts it."
     >
       <div className="nt-drawer-stack">
-        <div style={{ fontSize: 13, color: 'var(--nd-text-secondary)', lineHeight: 1.6 }}>
+        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
+        <div className="nt-body-sec">
           Central-managed devices reboot through the troubleshooting API (
           <Code>POST …/reboot</Code>, accepted on HTTP 202). Local switches get an honest
           hand-off to the recorded SSH session instead — the portal never fakes a push.
@@ -475,7 +546,7 @@ export default function DeviceDetail() {
             size="sm"
             disabled={rebooting || !rebootTicket}
             onClick={() => void confirmReboot()}
-            style={{ background: 'var(--nd-danger)' }}
+            className="nt-dot nt-dot--danger nt-dot-danger"
           >
             {rebooting ? 'Rebooting…' : `Reboot ${name}`}
           </Button>
@@ -533,7 +604,7 @@ export default function DeviceDetail() {
                 : `No linked plane has reported '${name}'. It may be unmanaged, or the plane that owns it is not linked.`
             }
           >
-            <div style={{ marginTop: 16 }}>
+            <div className="nt-mt-16">
               <Button variant="primary" size="sm" onClick={() => navigate('/systems')}>
                 Connected systems
               </Button>
@@ -592,7 +663,7 @@ export default function DeviceDetail() {
           : device.firmwareApproved
             ? `${liveFirmware} (approved)`
             : `${liveFirmware} — off the approved train`,
-        ...(firmwareKnown && !device.firmwareApproved ? { tone: 'var(--nd-warning)' } : {}),
+        ...(firmwareKnown && !device.firmwareApproved ? { tone: 'warning' } : {}),
       },
       { k: 'Licence', v: reported(device.licence) },
       { k: 'Local shell', v: device.localShell ? 'yes — via collector' : 'no — cloud-claimed' },
@@ -630,22 +701,16 @@ export default function DeviceDetail() {
     ];
 
     return (
-      <div className="nt-stack">
+      <div className="nt-stack nt-device-detail-shell nt-section-panel nt-recon-reveal">
         <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-end',
-            justifyContent: 'space-between',
-            gap: 24,
-            flexWrap: 'wrap',
-          }}
+          className="nt-hero-split nt-device-hero nt-panel-glass"
         >
           <div>
             <Heading level={2} overline={`Devices / ${device.name}`}>
               {device.name}
             </Heading>
             <div
-              style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}
+              className="nt-wrap-10-mt8 nt-device-hero__meta"
             >
               <Badge tone={device.stateTone} dot>
                 {device.state}
@@ -660,8 +725,67 @@ export default function DeviceDetail() {
             </div>
           </div>
           <div className="nt-row nt-gap-8">
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · device
+            </span>
+            {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
               ← Inventory
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const url = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('View link copied', {
+                      description: window.location.search || device.name,
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy view link
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const n = exportTableCsv(
+                  `device-summary-${device.name}.csv`,
+                  [...DEVICE_SUMMARY_HEADERS],
+                  [
+                    deviceSummaryCsvRow({
+                      name: device.name,
+                      type: device.type,
+                      model: device.model,
+                      siteName: device.siteName,
+                      plane: device.plane,
+                      state: device.state,
+                      firmware: device.firmware,
+                      firmwareApproved: device.firmwareApproved,
+                      serial: device.serial,
+                      mac: device.mac,
+                      ip: device.ip,
+                      licence: device.licence,
+                      localShell: device.localShell,
+                      claimants,
+                      claimCode: device.claimCode,
+                    }),
+                  ],
+                );
+                toast(`Exported ${n} device summary`, {
+                  description: 'Inventory fields only — claim codes and config bodies omitted.',
+                  tone: 'success',
+                });
+              }}
+            >
+              Export summary
             </Button>
             {/* Design rule 4: a plane the portal cannot write to still gets an
                 honest console hand-off, never a fake edit form. The local
@@ -686,8 +810,18 @@ export default function DeviceDetail() {
             <Button variant="ghost" size="sm" className="nt-btn-danger-ghost" onClick={() => setRebootOpen(true)}>
               Reboot
             </Button>
+            {/* Ports / clients tables are keyboard grids — surface the map (Loop 199). */}
+            <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
           </div>
         </div>
+        <div className="nt-plane-theater" role="note">NightDesk · device cinema · facts · trends · plane ECG</div>
+        <nav className="nt-incident-spine" aria-label="Incident spine">
+          <span className="nt-incident-spine__step">Alert</span>
+          <span className="nt-incident-spine__chev" aria-hidden>→</span>
+          <span className="nt-incident-spine__step" data-active="true">Device</span>
+          <span className="nt-incident-spine__chev" aria-hidden>→</span>
+          <span className="nt-incident-spine__step">Ticket</span>
+        </nav>
 
         {reconciliationAlert}
 
@@ -717,7 +851,14 @@ export default function DeviceDetail() {
               ) : section === 'wlans' ? (
                 <WlansPanel key={section} detail={liveDetail} plane={detailPlane} />
               ) : (
-                <PortsPanel key={section} detail={liveDetail} plane={detailPlane} />
+                <PortsPanel
+                  key={section}
+                  detail={liveDetail}
+                  plane={detailPlane}
+                  deviceName={device.name}
+                  devicePlane={device.plane}
+                  deviceSerial={device.serial}
+                />
               ),
             )}
 
@@ -757,16 +898,73 @@ export default function DeviceDetail() {
             />
             <ConfigRecommendationsPanel device={device.name} site={device.siteName} />
 
-            <div>
+            <div className="nt-stack nt-gap-2">
               <SectionHeader label="Clients on this device" meta={clients?.meta} />
               {clients === null ? (
                 <LiveGapNote>Not available in live mode — no linked plane reported client sessions.</LiveGapNote>
               ) : clients.rows.length === 0 ? (
                 <LiveGapNote>No active client sessions were attached to this device in the current poller snapshot.</LiveGapNote>
               ) : (
-                <ClientTable rows={clients.rows} />
+                <>
+                  <div className="nt-wrap-8">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        const n = exportTableCsv(
+                          `device-clients-${device.name}.csv`,
+                          ['client', 'model', 'mac', 'ip', 'where', 'state', 'detail'],
+                          clients.rows.map((c) => [
+                            c.name,
+                            c.model ?? '',
+                            c.mac ?? '',
+                            c.ip ?? '',
+                            c.where ?? '',
+                            c.state,
+                            c.detail,
+                          ]),
+                        );
+                        toast(`Exported ${n} client row${n === 1 ? '' : 's'}`, {
+                          description: 'Clients currently attached to this device.',
+                        });
+                      }}
+                    >
+                      Export clients
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const qs = new URLSearchParams();
+                          if (device.plane) qs.set('plane', String(device.plane));
+                          if (device.serial) qs.set('serial', String(device.serial));
+                          const suffix = qs.toString() ? `?${qs}` : '';
+                          const res = await downloadApiCsv(
+                            `/api/devices/${encodeURIComponent(device.name)}/clients/export${suffix}`,
+                            `device-clients-${device.name}.csv`,
+                          );
+                          if (res.ok) {
+                            toast('Server CSV downloaded', {
+                              description: 'Attached sessions from the portal inventory.',
+                              tone: 'success',
+                            });
+                          } else {
+                            toast('Server CSV failed', {
+                              description: res.error ?? 'Could not download clients export',
+                              tone: 'warning',
+                            });
+                          }
+                        })();
+                      }}
+                    >
+                      Download server CSV
+                    </Button>
+                  </div>
+                  <ClientTable rows={clients.rows} exportName={`device-clients-${device.name}`} />
+                </>
               )}
-              <div style={{ paddingTop: 10 }}>
+              <div className="nt-pt-10">
                 <Button variant="ghost" size="sm" onClick={() => navigate('/clients')}>
                   All clients →
                 </Button>
@@ -831,10 +1029,11 @@ export default function DeviceDetail() {
                 sessionsError={sessionsError}
                 expanded={expanded}
                 toggleTranscript={toggleTranscript}
+                deviceName={device.name}
               />
             ) : null}
 
-            <div style={{ paddingTop: 14 }}>
+            <div className="nt-pt-14">
               <SectionHeader label="Configuration" meta={cfg?.meta} />
               {/* The route joins the config-backup store into `config`: real
                   snapshots on file for this device render the same three tabs
@@ -864,9 +1063,9 @@ export default function DeviceDetail() {
                 }
               />
               {liveFacts.map((f) => (
-                <div key={f.k} className="nt-fact-row">
-                  <span className="nt-fact-row__k">{f.k}</span>
-                  <span className="nt-fact-row__v" style={{ color: f.tone ?? undefined }}>
+                <div key={f.k} className="nt-fact-row nt-device-fact">
+                  <span className="nt-fact-row__k nt-device-fact__label">{f.k}</span>
+                  <span className="nt-fact-row__v nt-device-fact__value" data-tone={f.tone || undefined}>
                     {f.v}
                   </span>
                 </div>
@@ -877,7 +1076,7 @@ export default function DeviceDetail() {
               evidence={data.evidence ?? null}
               gapNote="Live inventory evidence only — running-configuration drift remains unavailable."
             >
-              <div style={{ paddingTop: 10 }}>
+              <div className="nt-pt-10">
                 <Button variant="ghost" size="sm" onClick={() => navigate('/compliance')}>
                   View evidence coverage →
                 </Button>
@@ -952,20 +1151,14 @@ export default function DeviceDetail() {
   return (
     <div className="nt-stack">
       <div
-        style={{
-          display: 'flex',
-          alignItems: 'flex-end',
-          justifyContent: 'space-between',
-          gap: 24,
-          flexWrap: 'wrap',
-        }}
+        className="nt-hero-split nt-device-hero"
       >
         <div>
           <Heading level={2} overline={`Devices / ${profile.name}`}>
             {profile.name}
           </Heading>
           <div
-            style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}
+            className="nt-wrap-10-mt8 nt-device-hero__meta"
           >
             <Badge tone={headerStateTone} dot>
               {headerState}
@@ -979,8 +1172,67 @@ export default function DeviceDetail() {
           </div>
         </div>
         <div className="nt-row nt-gap-8">
+          <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+            NightDesk · device
+          </span>
+          {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
           <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
             ← Inventory
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              void (async () => {
+                const url = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+                try {
+                  await navigator.clipboard.writeText(url);
+                  toast('View link copied', {
+                    description: window.location.search || profile.name,
+                    tone: 'success',
+                  });
+                } catch {
+                  toast('Could not copy link', { description: url, tone: 'warning' });
+                }
+              })();
+            }}
+          >
+            Copy view link
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              const n = exportTableCsv(
+                `device-summary-${profile.name}.csv`,
+                [...DEVICE_SUMMARY_HEADERS],
+                [
+                  deviceSummaryCsvRow({
+                    name: device?.name ?? profile.name,
+                    type: device?.type,
+                    model: headerModel,
+                    siteName: headerSite,
+                    plane: headerPlane,
+                    state: headerState,
+                    firmware: device?.firmware,
+                    firmwareApproved: device?.firmwareApproved,
+                    serial: device?.serial,
+                    mac: device?.mac,
+                    ip: headerIp,
+                    licence: device?.licence,
+                    localShell: device?.localShell,
+                    claimants,
+                    claimCode: device?.claimCode,
+                  }),
+                ],
+              );
+              toast(`Exported ${n} device summary`, {
+                description: 'Inventory fields only — claim codes and config bodies omitted.',
+                tone: 'success',
+              });
+            }}
+          >
+            Export summary
           </Button>
           <Button
             variant="secondary"
@@ -1000,6 +1252,8 @@ export default function DeviceDetail() {
           <Button variant="ghost" size="sm" className="nt-btn-danger-ghost" onClick={() => setRebootOpen(true)}>
             Reboot
           </Button>
+          {/* Ports / clients tables are keyboard grids — surface the map (Loop 199). */}
+          <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
         </div>
       </div>
 
@@ -1022,56 +1276,265 @@ export default function DeviceDetail() {
           <div className="nt-stack nt-gap-2">
             <SectionHeader label={profile.listTitle} meta={profile.listMeta} />
             {profile.ports.length > 0 ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  const n = exportTableCsv(
-                    `device-ports-${device?.name ?? 'export'}.csv`,
-                    ['port', 'what', 'state'],
-                    profile.ports.map((p) => [p.id, p.what, p.state]),
-                  );
-                  toast(`Exported ${n} port row${n === 1 ? '' : 's'}`, {
-                    description: 'Current ports table on this device.',
-                  });
-                }}
-              >
-                Export ports
-              </Button>
+              <div className="nt-filter-bar nt-gap-8">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    const n = exportTableCsv(
+                      `device-ports-${device?.name ?? 'export'}.csv`,
+                      ['port', 'what', 'state'],
+                      profile.ports.map((p) => [p.id, p.what, p.state]),
+                    );
+                    toast(`Exported ${n} port row${n === 1 ? '' : 's'}`, {
+                      description: 'Current ports table on this device.',
+                    });
+                  }}
+                >
+                  Export ports
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const devName = device?.name ?? profile.name;
+                      const qs = new URLSearchParams();
+                      if (device?.plane) qs.set('plane', String(device.plane));
+                      if (device?.serial) qs.set('serial', String(device.serial));
+                      const suffix = qs.toString() ? `?${qs}` : '';
+                      const res = await downloadApiCsv(
+                        `/api/devices/${encodeURIComponent(devName)}/ports/export${suffix}`,
+                        `device-ports-${devName}.csv`,
+                      );
+                      if (res.ok) {
+                        toast('Server CSV downloaded', {
+                          description: 'Port/interface rows from the portal inventory.',
+                          tone: 'success',
+                        });
+                      } else {
+                        toast('Server CSV failed', {
+                          description: res.error ?? 'Could not download ports export',
+                          tone: 'warning',
+                        });
+                      }
+                    })();
+                  }}
+                >
+                  Download server CSV
+                </Button>
+              </div>
             ) : null}
-            <Table density="compact" className="nt-port-table">
-              <Table.Head>
-                <Table.Row>
-                  <Table.HeaderCell>Port</Table.HeaderCell>
-                  <Table.HeaderCell>What</Table.HeaderCell>
-                  <Table.HeaderCell>State</Table.HeaderCell>
-                </Table.Row>
-              </Table.Head>
-              <Table.Body>
-                {profile.ports.map((p) => (
-                  <Table.Row key={p.id}>
-                    <Table.Cell className="nt-cell-mono nt-cell-nowrap">{p.id}</Table.Cell>
-                    <Table.Cell>
-                      {p.what}
-                      {/* Authored counters ride the same contract as the live
-                          AOS-CX read (DevicePort.counters): a row with a block
-                          says it in one mono line, a row without one (psu2 is
-                          not an interface) gets no line — never an invented 0. */}
-                      {p.counters ? (
-                        <div
-                          className="nt-hint-muted" style={{ paddingTop: 2 }}
+            {(() => {
+              const portsFilter = namesFilterForParam(searchParams.get('ports'));
+              const portsFilterLc =
+                portsFilter === null
+                  ? null
+                  : portsFilter.map((p) => p.trim().toLowerCase()).filter(Boolean);
+              const portRows =
+                portsFilterLc === null
+                  ? profile.ports
+                  : profile.ports.filter((p) =>
+                      portsFilterLc.includes((p.id ?? '').trim().toLowerCase()),
+                    );
+              const portsPresent =
+                portsFilterLc === null
+                  ? 0
+                  : portsFilterLc.filter((name) =>
+                      profile.ports.some((p) => (p.id ?? '').trim().toLowerCase() === name),
+                    ).length;
+              return (
+                <>
+                  {portsFilterLc !== null ? (
+                    <div className="nt-chip-row" role="group" aria-label="Selection deep link">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = new URLSearchParams(searchParams);
+                          next.delete('ports');
+                          setSearchParams(next, { replace: true });
+                          setSelectedPortKeys([]);
+                        }}
+                        title={portsFilter?.join(', ')}
+                        className="nt-chip nt-chip--active"
+                      >
+                        {portsPresent === portsFilterLc.length
+                          ? `${portsFilterLc.length} selected port${portsFilterLc.length === 1 ? '' : 's'}`
+                          : `${portsPresent} of ${portsFilterLc.length} selected ports present`}
+                        {' — clear'}
+                      </button>
+                    </div>
+                  ) : null}
+                  {portRows.length === 0 && portsFilterLc !== null ? (
+                    <EmptyState
+                      title="No ports match this selection"
+                      description="Clear the selection filter to restore the full class-block port list."
+                    >
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          const next = new URLSearchParams(searchParams);
+                          next.delete('ports');
+                          setSearchParams(next, { replace: true });
+                          setSelectedPortKeys([]);
+                        }}
+                      >
+                        Clear selection filter
+                      </Button>
+                    </EmptyState>
+                  ) : (
+                    <DataTable
+                      ariaLabel={profile.listTitle}
+                      density="compact"
+                      className="nt-port-table"
+                      columns={profilePortColumns}
+                      rows={portRows}
+                      rowKey={(p) => p.id}
+                      rowTone={(p) => p.tone}
+                      selectedKeys={selectedPortKeys}
+                      onSelectionChange={setSelectedPortKeys}
+                    />
+                  )}
+                  {selectedPortKeys.length > 0 ? (
+                    <div
+                      className="nt-configure-bulk-bar nt-bulk-glass"
+                      role="region"
+                      aria-label="Device port selection actions"
+                    >
+                      <span className="nt-configure-bulk-bar__count">{`${selectedPortKeys.length} SELECTED`}</span>
+                      <span className="nt-configure-bulk-bar__hint">
+                        export, copy port names, or share a selection link for only the interfaces you
+                        marked — full list export stays above
+                      </span>
+                      <span className="nt-configure-bulk-bar__actions">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            const selected = new Set(selectedPortKeys);
+                            const picked = portRows.filter((p) => selected.has(p.id));
+                            if (picked.length === 0) {
+                              toast('No selected ports still in view', {
+                                description: 'Clear selection or refresh the device.',
+                                tone: 'info',
+                              });
+                              return;
+                            }
+                            const n = exportTableCsv(
+                              `device-ports-${device?.name ?? 'export'}-selected.csv`,
+                              ['port', 'what', 'state'],
+                              picked.map((p) => [p.id, p.what, p.state]),
+                            );
+                            toast(`Exported ${countOf(n, 'selected port')}`, {
+                              description: 'Selected class-block port rows only.',
+                              tone: 'success',
+                            });
+                          }}
                         >
-                          {portCountersText(p.counters)}
-                        </div>
-                      ) : null}
-                    </Table.Cell>
-                    <Table.Cell>
-                      <Badge tone={p.tone}>{p.state}</Badge>
-                    </Table.Cell>
-                  </Table.Row>
-                ))}
-              </Table.Body>
-            </Table>
+                          Export selected
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            void (async () => {
+                              const selected = new Set(selectedPortKeys);
+                              const picked = portRows.filter((p) => selected.has(p.id));
+                              if (picked.length === 0) {
+                                toast('No selected ports still in view', {
+                                  description: 'Clear selection or refresh the device.',
+                                  tone: 'info',
+                                });
+                                return;
+                              }
+                              const ports = [
+                                ...new Set(
+                                  picked
+                                    .map((p) => (p.id ?? '').trim())
+                                    .filter((name) => name && name !== '—'),
+                                ),
+                              ];
+                              if (ports.length === 0) {
+                                toast('No names on the selected ports', {
+                                  description: 'Export CSV for row detail instead.',
+                                  tone: 'info',
+                                });
+                                return;
+                              }
+                              const text = ports.join('\n');
+                              try {
+                                await navigator.clipboard.writeText(text);
+                                toast(`Copied ${countOf(ports.length, 'port')}`, {
+                                  description:
+                                    ports.length < picked.length
+                                      ? `${picked.length - ports.length} selected without a name skipped`
+                                      : 'newline-joined · paste into a ticket or change window',
+                                  tone: 'success',
+                                });
+                              } catch {
+                                toast('Could not copy ports', { description: text, tone: 'warning' });
+                              }
+                            })();
+                          }}
+                        >
+                          Copy ports
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            void (async () => {
+                              const selected = new Set(selectedPortKeys);
+                              const picked = portRows.filter((p) => selected.has(p.id));
+                              if (picked.length === 0) {
+                                toast('No selected ports still in view', {
+                                  description: 'Clear selection or refresh the device.',
+                                  tone: 'info',
+                                });
+                                return;
+                              }
+                              const ports = [
+                                ...new Set(
+                                  picked
+                                    .map((p) => (p.id ?? '').trim())
+                                    .filter((name) => name.length > 0),
+                                ),
+                              ];
+                              if (ports.length === 0) {
+                                toast('No names on the selected ports', {
+                                  description: 'Export CSV for row detail instead.',
+                                  tone: 'info',
+                                });
+                                return;
+                              }
+                              const next = new URLSearchParams(searchParams);
+                              next.set('ports', ports.join('\n'));
+                              const qs = next.toString();
+                              const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                              try {
+                                await navigator.clipboard.writeText(url);
+                                toast('Selection link copied', {
+                                  description: `${ports.length} port${ports.length === 1 ? '' : 's'} · ports=`,
+                                  tone: 'success',
+                                });
+                              } catch {
+                                toast('Could not copy link', { description: url, tone: 'warning' });
+                              }
+                            })();
+                          }}
+                        >
+                          Copy selection link
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setSelectedPortKeys([])}>
+                          Clear
+                        </Button>
+                      </span>
+                    </div>
+                  ) : null}
+                </>
+              );
+            })()}
           </div>
 
           {/* Central's per-device telemetry for the demo estate's switches and
@@ -1089,8 +1552,69 @@ export default function DeviceDetail() {
 
           <div className="nt-stack nt-gap-2">
             <SectionHeader label="Clients on this device" meta={clients.meta} />
-            <ClientTable rows={clients.rows} />
-            <div style={{ paddingTop: 10 }}>
+            {clients.rows.length > 0 ? (
+              <div className="nt-wrap-8">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    const n = exportTableCsv(
+                      `device-clients-${device?.name ?? profile.name}.csv`,
+                      ['client', 'model', 'mac', 'ip', 'where', 'state', 'detail'],
+                      clients.rows.map((c) => [
+                        c.name,
+                        c.model ?? '',
+                        c.mac ?? '',
+                        c.ip ?? '',
+                        c.where ?? '',
+                        c.state,
+                        c.detail,
+                      ]),
+                    );
+                    toast(`Exported ${n} client row${n === 1 ? '' : 's'}`, {
+                      description: 'Clients currently attached to this device.',
+                    });
+                  }}
+                >
+                  Export clients
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const devName = device?.name ?? profile.name;
+                      const qs = new URLSearchParams();
+                      if (device?.plane) qs.set('plane', String(device.plane));
+                      if (device?.serial) qs.set('serial', String(device.serial));
+                      const suffix = qs.toString() ? `?${qs}` : '';
+                      const res = await downloadApiCsv(
+                        `/api/devices/${encodeURIComponent(devName)}/clients/export${suffix}`,
+                        `device-clients-${devName}.csv`,
+                      );
+                      if (res.ok) {
+                        toast('Server CSV downloaded', {
+                          description: 'Attached sessions from the portal inventory.',
+                          tone: 'success',
+                        });
+                      } else {
+                        toast('Server CSV failed', {
+                          description: res.error ?? 'Could not download clients export',
+                          tone: 'warning',
+                        });
+                      }
+                    })();
+                  }}
+                >
+                  Download server CSV
+                </Button>
+              </div>
+            ) : null}
+            <ClientTable
+              rows={clients.rows}
+              exportName={`device-clients-${device?.name ?? profile.name}`}
+            />
+            <div className="nt-pt-10">
               <Button variant="ghost" size="sm" onClick={() => navigate('/clients')}>
                 All clients →
               </Button>
@@ -1158,15 +1682,16 @@ export default function DeviceDetail() {
               sessionsError={sessionsError}
               expanded={expanded}
               toggleTranscript={toggleTranscript}
+              deviceName={device?.name ?? name}
             />
           ) : null}
 
-          <div style={{ paddingTop: 14 }}>
+          <div className="nt-pt-14">
             <SectionHeader label="Configuration" meta={cfg.meta} />
           </div>
           <ConfigTabs cfg={cfg} cfgTab={cfgTab} onTabChange={setCfgTab} historyRows={historyRows} />
 
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 4 }}>
+          <div className="nt-wrap-8-pt4">
             <Button variant="secondary" size="sm" onClick={snapshotNow}>
               Snapshot config now
             </Button>
@@ -1184,9 +1709,9 @@ export default function DeviceDetail() {
           <div className="nt-stack nt-gap-2">
             <SectionHeader label="Identity" />
             {facts.map((f) => (
-              <div key={f.k} className="nt-fact-row">
-                <span className="nt-fact-row__k">{f.k}</span>
-                <span className="nt-fact-row__v">{f.v}</span>
+              <div key={f.k} className="nt-fact-row nt-device-fact">
+                <span className="nt-fact-row__k nt-device-fact__label">{f.k}</span>
+                <span className="nt-fact-row__v nt-device-fact__value">{f.v}</span>
               </div>
             ))}
           </div>

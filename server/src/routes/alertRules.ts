@@ -2,7 +2,8 @@
  * server/src/routes/alertRules.ts — device-down rule CRUD + the notification
  * center (the bell).
  *
- *   GET    /api/alert-rules                        every rule on file
+ *   GET    /api/alert-rules                        every rule on file (optional enabled=/deviceType=)
+ *   GET    /api/alert-rules/export                 CSV of rules on file (optional enabled=/deviceType=; no secrets)
  *   POST   /api/alert-rules                        {enabled?, siteFilter?, deviceTypeFilter?, offlineMinutes?, cooldownMinutes?} → 201
  *   PUT    /api/alert-rules/:id                    partial edit → 200 | 404
  *   DELETE /api/alert-rules/:id                    remove → {ok, rule} | 404
@@ -28,8 +29,11 @@ import {
   normalizeDeviceTypeFilter,
   validateDeviceDownRule,
   type DeviceDownRuleInput,
+  type DeviceTypeFilter,
 } from '@hpe/shared';
 import { h } from './handler';
+import { sendCsv } from '../lib/csv';
+import { queryFlag, queryString } from '../lib/query';
 import { alertRuleStore, logAlertRuleEvent } from '../services/alertRules';
 import { notificationCenter } from '../services/notificationCenter';
 import { brokerDataDir } from '../services/writeBroker';
@@ -37,10 +41,71 @@ import { brokerDataDir } from '../services/writeBroker';
 export const alertRulesRouter = Router();
 export const notificationCenterRouter = Router();
 
+/**
+ * Optional list/export filters for device-down rules (Policy tab + CSV):
+ *   `?enabled=0|1|true|false`
+ *   `?deviceType=` — canonical or alias vocabulary (switch/ap/gateway/all);
+ *     unknown tokens are an honest no-op (never coerce to 'all')
+ * Absent / unrecognised → every rule on file (backward compatible).
+ */
+export function filterAlertRulesByEnabled<T extends {
+  enabled: boolean;
+  deviceTypeFilter?: DeviceTypeFilter | string | null;
+}>(
+  req: { query: Record<string, unknown> },
+  rules: T[],
+): T[] {
+  let out = rules;
+  const enabled = queryFlag(req, 'enabled');
+  if (enabled === true) out = out.filter((r) => r.enabled);
+  else if (enabled === false) out = out.filter((r) => !r.enabled);
+
+  const typeRaw = queryString(req, 'deviceType');
+  if (typeRaw) {
+    const want = normalizeDeviceTypeFilter(typeRaw);
+    if (want) {
+      out = out.filter((r) => {
+        const have = (r.deviceTypeFilter ?? 'all') as string;
+        // 'all' query matches every rule; otherwise exact canonical type.
+        if (want === 'all') return true;
+        return have === want;
+      });
+    }
+  }
+  return out;
+}
+
 alertRulesRouter.get(
   '/alert-rules',
-  h(async (_req, res) => {
-    res.json({ rules: alertRuleStore.list() });
+  h(async (req, res) => {
+    res.json({ rules: filterAlertRulesByEnabled(req, alertRuleStore.list()) });
+  }),
+);
+
+/**
+ * GET /api/alert-rules/export — CSV of device-down rules on file.
+ * Optional `?enabled=0|1` / `?deviceType=` match the list filters.
+ * Operator-visible policy facts only (no secrets). Must stay ahead of
+ * /alert-rules/:id so "export" is never parsed as an id.
+ */
+alertRulesRouter.get(
+  '/alert-rules/export',
+  h(async (req, res) => {
+    const rules = filterAlertRulesByEnabled(req, alertRuleStore.list());
+    sendCsv(
+      res,
+      'device-down-rules.csv',
+      ['id', 'enabled', 'siteFilter', 'deviceTypeFilter', 'offlineMinutes', 'cooldownMinutes', 'createdAt'],
+      rules.map((r) => [
+        r.id,
+        r.enabled ? 'true' : 'false',
+        r.siteFilter ?? '',
+        r.deviceTypeFilter ?? 'all',
+        r.offlineMinutes,
+        r.cooldownMinutes,
+        r.createdAt ?? '',
+      ]),
+    );
   }),
 );
 

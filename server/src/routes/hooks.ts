@@ -15,7 +15,8 @@
  *
  *   hooksRouter — mounts with the other guarded routers:
  *     GET    /api/hooks/receivers               per-source receiver status
- *     GET    /api/hooks/events                  recent received events (?limit=)
+ *     GET    /api/hooks/events                  recent received events (?limit=&source=&q=)
+ *     GET    /api/hooks/events/export           CSV of recent events (?limit=&source=&q=)
  *     POST   /api/hooks/receivers/:source/secret  store a signing secret (write-only)
  *     DELETE /api/hooks/receivers/:source/secret  clear it
  *     POST   /api/hooks/simulate                demo-only: sign a fixture payload
@@ -41,6 +42,8 @@
 
 import { Router } from 'express';
 import { h } from './handler';
+import { sendCsv } from '../lib/csv';
+import { queryInt } from '../lib/query';
 import {
   MIST_WEBHOOK_TOPICS,
   centralDemoAlertPayload,
@@ -48,6 +51,7 @@ import {
   isWebhookReceiverSource,
   mistDemoAlarmPayload,
   mistDemoClientSessionPayload,
+  type WebhookReceivedEvent,
   mistDemoDeviceUpdownPayload,
   type MistWebhookRegistrationForm,
   type WebhookEventsEnvelope,
@@ -77,6 +81,31 @@ function requestContext(req: { method: string; originalUrl: string; protocol: st
     protocol: req.protocol,
     host: req.get('host') ?? 'localhost',
   };
+}
+
+/**
+ * Optional `source=` (mist|central) and free-text `q=` filters on received
+ * events. Unknown source is a no-op (honest — do not empty the list).
+ * Used by list + export so Download server CSV matches the operator view.
+ */
+export function filterReceivedEvents(
+  events: WebhookReceivedEvent[],
+  query: { source?: unknown; q?: unknown },
+): WebhookReceivedEvent[] {
+  const sourceRaw = typeof query.source === 'string' ? query.source.trim().toLowerCase() : '';
+  const source = isWebhookReceiverSource(sourceRaw) ? sourceRaw : '';
+  const q = typeof query.q === 'string' ? query.q.trim().toLowerCase() : '';
+  if (!source && !q) return events;
+  return events.filter((e) => {
+    if (source && e.source !== source) return false;
+    if (q) {
+      const hay = [e.title, e.detail, e.device, e.eventType, e.siteName, e.siteId, e.id, e.alertId ?? '']
+        .join(' ')
+        .toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
 }
 
 /** Factory so tests can inject an isolated receiver (same shape as
@@ -124,9 +153,14 @@ export function makeHooksRouter(receiver: WebhookReceiver = webhookReceiver): Ro
   router.get(
     '/hooks/events',
     h((req, res) => {
-      const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
-      const limit = limitRaw !== undefined && Number.isSafeInteger(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
-      const events = receiver.recent(limit);
+      const limit = queryInt(req, 'limit');
+      // Pull a wider tail before filter so source/q still have rows to match,
+      // then re-apply limit on the filtered set for the JSON page.
+      const pull = limit !== null ? Math.min(Math.max(limit * 4, limit), 500) : undefined;
+      const events = filterReceivedEvents(receiver.recent(pull), req.query).slice(
+        0,
+        limit !== null ? limit : undefined,
+      );
       const envelope: WebhookEventsEnvelope = {
         events,
         ...(events.length === 0
@@ -138,6 +172,54 @@ export function makeHooksRouter(receiver: WebhookReceiver = webhookReceiver): Ro
           : {}),
       };
       res.json(envelope);
+    }),
+  );
+
+  /**
+   * GET /api/hooks/events/export — CSV of recent received events (summary
+   * fields only; never raw payloads or signing secrets). Optional `limit`,
+   * `source=mist|central`, and free-text `q=` match the list filters.
+   */
+  router.get(
+    '/hooks/events/export',
+    h((req, res) => {
+      const limit = queryInt(req, 'limit', { max: 500 }) ?? 200;
+      const pull = Math.min(Math.max(limit * 4, limit), 500);
+      const events = filterReceivedEvents(receiver.recent(pull), req.query).slice(0, limit);
+      sendCsv(
+        res,
+        'webhook-events.csv',
+        [
+          'id',
+          'source',
+          'receivedAt',
+          'eventType',
+          'demo',
+          'sev',
+          'title',
+          'detail',
+          'state',
+          'device',
+          'siteId',
+          'siteName',
+          'alertId',
+        ],
+        events.map((e) => [
+          e.id,
+          e.source,
+          e.receivedAt,
+          e.eventType,
+          e.demo ? 'yes' : 'no',
+          e.sev,
+          e.title,
+          e.detail,
+          e.state,
+          e.device,
+          e.siteId,
+          e.siteName,
+          e.alertId ?? '',
+        ]),
+      );
     }),
   );
 

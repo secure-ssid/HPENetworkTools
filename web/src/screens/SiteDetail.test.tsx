@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
-import SiteDetail from './SiteDetail';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import SiteDetail, { siteDevicesExportPath, siteOpenAlertsExportRows } from './SiteDetail';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getSettings, getSiteApplications, getSiteDetail, getSleMetricDetail } from '../api/client';
 import type { SiteDetailData } from '../api/client';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { hhmmLocal, DPI_BYTES_ARE_ESTIMATES, MIST_SITE_MAPS, MIST_SLE_DRILLDOWN, SITE_APPLICATIONS_DEMO, SITE_PROFILES, SITE_SLE, SITES, deriveSiteProfile } from '@hpe/shared';
 import type { SiteRow, SiteTopologyLive, TopologyDeviceNode } from '@hpe/shared';
 
@@ -33,10 +34,15 @@ vi.mock('../api/client', async (importOriginal) => {
   };
 });
 
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
 const mockGetSettings = vi.mocked(getSettings);
 const mockGetSiteDetail = vi.mocked(getSiteDetail);
 const mockGetSleMetricDetail = vi.mocked(getSleMetricDetail);
 const mockGetSiteApplications = vi.mocked(getSiteApplications);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 const LIVE_SITE: SiteRow = {
   id: 'multiple',
@@ -135,6 +141,12 @@ function DeviceStub() {
   return <div>device page {name}</div>;
 }
 
+/** Exposes the current path so selection deep-link clear assertions stay honest. */
+function PathProbe() {
+  const location = useLocation();
+  return <div data-testid="path">{`${location.pathname}${location.search}`}</div>;
+}
+
 function renderDetail(path = '/sites/SecureSSID') {
   return render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
@@ -144,6 +156,7 @@ function renderDetail(path = '/sites/SecureSSID') {
             <Route path="/sites/:siteId" element={<SiteDetail />} />
             <Route path="/devices/:name" element={<DeviceStub />} />
           </Routes>
+          <PathProbe />
         </SettingsProvider>
       </ToastProvider>
     </MemoryRouter>,
@@ -859,5 +872,390 @@ describe('SiteDetail application visibility', () => {
     await waitFor(() => expect(screen.getByText('Application visibility')).toBeTruthy());
     expect(screen.getByText('No linked plane publishes DPI application data for this site.')).toBeTruthy();
     expect(mockGetSiteApplications).not.toHaveBeenCalled();
+  });
+});
+
+describe('SiteDetail — copy view link + section deep link', () => {
+  it('copies a view link and keeps section anchors for deep links', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderDetail('/sites/SecureSSID?section=devices');
+
+    await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+    expect(document.getElementById('site-section-devices')).toBeTruthy();
+    expect(document.getElementById('site-section-applications')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]?.[0] ?? '');
+    expect(url).toMatch(/section=devices|#devices/);
+  });
+});
+
+describe('SiteDetail — open alerts export (Loop 124)', () => {
+  it('siteOpenAlertsExportRows marks open vs silenced without payloads', () => {
+    expect(
+      siteOpenAlertsExportRows(
+        [{ sev: 'P1', tone: 'danger', title: 'AP down', meta: '2m · MIST' }],
+        [
+          {
+            sev: 'P2',
+            tone: 'warning',
+            title: 'High util',
+            meta: 'core',
+            reason: 'change window',
+            until: '2026-08-04T18:00:00.000Z',
+          },
+        ],
+      ),
+    ).toEqual([
+      ['P1', 'danger', 'AP down', '2m · MIST', 'open', '', ''],
+      [
+        'P2',
+        'warning',
+        'High util',
+        'core',
+        'silenced',
+        'change window',
+        '2026-08-04T18:00:00.000Z',
+      ],
+    ]);
+  });
+});
+
+describe('SiteDetail — devices server CSV (Loop 92)', () => {
+  it('siteDevicesExportPath encodes site= for devices export', () => {
+    expect(siteDevicesExportPath('campus-01')).toBe('/api/devices/export?site=campus-01');
+    expect(siteDevicesExportPath('Campus HQ')).toBe(
+      `/api/devices/export?site=${encodeURIComponent('Campus HQ')}`,
+    );
+    expect(siteDevicesExportPath('  ')).toBe('/api/devices/export');
+  });
+
+  it('Download server CSV hits /api/devices/export?site= on live payloads', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      devices: [
+        {
+          name: 'CX6300-CORE',
+          model: 'CX-6300M',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access switch',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '—',
+        },
+      ],
+    } as SiteDetailData);
+
+    renderDetail('/sites/SecureSSID');
+    await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+      siteDevicesExportPath(String(LIVE_SITE.id)),
+      'devices.csv',
+    );
+    expect(await screen.findByText(/Server CSV downloaded/i)).toBeTruthy();
+  });
+
+  it('hides Download server CSV on demo fixtures', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'demo',
+      devices: [],
+    } as SiteDetailData);
+    renderDetail('/sites/SecureSSID');
+    await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Download server CSV' })).toBeNull();
+  });
+});
+
+/* Loop 169 — header LIVE badge honesty (pure live + sites blend). */
+describe('SiteDetail Loop 169 residuals', () => {
+  it('stamps LIVE on pure live site detail', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      syncedAt: '2026-08-04T12:00:00.000Z',
+      devices: [],
+    } as SiteDetailData);
+    renderDetail('/sites/SecureSSID');
+    await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+    expect(screen.getByText('LIVE')).toBeTruthy();
+    expect(screen.getByText(/^LIVE · SYNCED /)).toBeTruthy();
+  });
+
+  it('stamps LIVE when sites arrives via blend', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'demo',
+      blended: ['sites'],
+      syncedAt: '2026-08-04T12:00:00.000Z',
+      devices: [],
+    } as SiteDetailData);
+    renderDetail('/sites/SecureSSID');
+    await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+    expect(screen.getByText('LIVE')).toBeTruthy();
+  });
+
+  it('keeps demo chrome quiet (no LIVE badge)', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'demo',
+      devices: [],
+    } as SiteDetailData);
+    renderDetail('/sites/SecureSSID');
+    await waitFor(() => expect(screen.getByText('Live site facts')).toBeTruthy());
+    expect(screen.getByText('DEMO FIXTURE')).toBeTruthy();
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+/* Loop 174 — site devices multi-select Export selected + Copy serials bulk bar. */
+describe('SiteDetail devices bulk selection (Loop 174)', () => {
+  it('shows bulk bar for selection: Export selected, Copy serials, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:site-devices-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      syncedAt: '2026-08-04T12:00:00.000Z',
+      devices: [
+        {
+          name: 'CX6300-CORE',
+          model: 'CX-6300M',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access switch',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '12d',
+          serial: 'SN-CORE-001',
+        },
+        {
+          name: 'AP-1',
+          model: 'AP-655',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access point',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '3d',
+          serial: 'SN-AP-001',
+        },
+      ],
+    } as SiteDetailData);
+
+    const { container } = renderDetail('/sites/SecureSSID');
+    expect(await screen.findByText('CX6300-CORE')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Site device selection actions' })).toBeNull();
+
+    const table = container.querySelector('[aria-label="Devices at this site"]') as HTMLElement;
+    expect(table).toBeTruthy();
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Site device selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected device/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy serials' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('SN-CORE-001');
+    expect(await screen.findByText(/Copied 1 serial/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Site device selection actions' })).toBeNull(),
+    );
+  });
+});
+
+/* Loop 181 — site devices bulk Copy selection link (?names=) + clearable chip. */
+describe('SiteDetail devices selection link (Loop 181)', () => {
+  it('Copy selection link writes names=', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      syncedAt: '2026-08-04T12:00:00.000Z',
+      devices: [
+        {
+          name: 'CX6300-CORE',
+          model: 'CX-6300M',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access switch',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '12d',
+          serial: 'SN-CORE-001',
+        },
+        {
+          name: 'AP-1',
+          model: 'AP-655',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access point',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '3d',
+          serial: 'SN-AP-001',
+        },
+      ],
+    } as SiteDetailData);
+
+    const { container } = renderDetail('/sites/SecureSSID');
+    expect(await screen.findByText('CX6300-CORE')).toBeTruthy();
+
+    const table = container.querySelector('[aria-label="Devices at this site"]') as HTMLElement;
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Site device selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toMatch(/names=/);
+    expect(url).toContain('CX6300-CORE');
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?names= and shows a clearable selection chip', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      syncedAt: '2026-08-04T12:00:00.000Z',
+      devices: [
+        {
+          name: 'CX6300-CORE',
+          model: 'CX-6300M',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access switch',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '12d',
+          serial: 'SN-CORE-001',
+        },
+        {
+          name: 'AP-1',
+          model: 'AP-655',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access point',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '3d',
+          serial: 'SN-AP-001',
+        },
+      ],
+    } as SiteDetailData);
+
+    const { container } = renderDetail(`/sites/SecureSSID?names=${encodeURIComponent('CX6300-CORE')}`);
+    expect(await screen.findByText('CX6300-CORE')).toBeTruthy();
+    const table = container.querySelector('[aria-label="Devices at this site"]') as HTMLElement;
+    expect(table).toBeTruthy();
+    expect(within(table).queryByText('AP-1')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected device/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.getByTestId('path').textContent).not.toMatch(/names=/));
+    expect(await within(table).findByText('AP-1')).toBeTruthy();
+  });
+});
+
+/* Loop 199 — keyboard shortcuts help on devices/rogues grids. */
+describe('SiteDetail Loop 199 residuals', () => {
+  it('exposes keyboard shortcuts help on the site header', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      devices: [
+        {
+          name: 'CX6300-CORE',
+          model: 'CX-6300M',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access switch',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '—',
+          serial: 'SN-CORE-001',
+        },
+      ],
+    } as SiteDetailData);
+
+    renderDetail('/sites/SecureSSID');
+    expect(await screen.findByText('CX6300-CORE')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});
+
+/* Loop 208 — site devices selection-empty Clear selection filter CTA. */
+describe('SiteDetail Loop 208 residuals', () => {
+  it('offers Clear selection filter when devices names deep link matches nothing', async () => {
+    mockGetSiteDetail.mockResolvedValue({
+      site: LIVE_SITE,
+      profile: null,
+      dataSource: 'live',
+      syncedAt: '2026-08-04T12:00:00.000Z',
+      devices: [
+        {
+          name: 'CX6300-CORE',
+          model: 'CX-6300M',
+          plane: 'CENTRAL',
+          planeTone: 'accent',
+          role: 'access switch',
+          state: 'up',
+          stateTone: 'success',
+          uptime: '12d',
+          serial: 'SN-CORE-001',
+        },
+      ],
+    } as SiteDetailData);
+
+    renderDetail(`/sites/SecureSSID?names=${encodeURIComponent('missing-device')}`);
+    expect(await screen.findByText(/No devices match the selection deep link/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.getByTestId('path').textContent).not.toMatch(/names=/));
+    expect(await screen.findByText('CX6300-CORE')).toBeTruthy();
+    expect(screen.queryByText(/No devices match the selection deep link/i)).toBeNull();
   });
 });

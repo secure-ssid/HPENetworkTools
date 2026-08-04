@@ -173,4 +173,39 @@ describe('visual references API', () => {
     expect(listed.status).toBe(200);
     expect(listed.body.references).toEqual([]);
   });
+
+  it('GET /api/visual-references/export returns metadata CSV (Loop 99)', async () => {
+    await postJson('/api/visual-references', {
+      target: { kind: 'site', id: 'northgate', plane: 'mist' },
+      kind: 'floorplan',
+      source: 'url',
+      title: 'Northgate layout export',
+      url: 'https://maps.example/northgate-export.png',
+      attribution: 'facilities',
+    });
+
+    const r = await fetch(`${base}/api/visual-references/export`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await r.text();
+    const header = text.split('\n')[0] ?? '';
+    expect(header).toContain('id');
+    expect(header).toContain('targetKind');
+    expect(header).toContain('title');
+    expect(header).toContain('source');
+    expect(header).toContain('owner');
+    expect(text).toContain('Northgate layout export');
+    // Metadata only — never binary PNG magic or PEMs.
+    expect(text).not.toMatch(/\x89PNG|BEGIN CERTIFICATE|private key/i);
+
+    const filtered = await fetch(
+      `${base}/api/visual-references/export?kind=site&id=northgate&plane=mist`,
+    );
+    expect(filtered.status).toBe(200);
+    const filteredText = await filtered.text();
+    expect(filteredText).toContain('Northgate layout export');
+
+    const bad = await fetch(`${base}/api/visual-references/export?kind=site`);
+    expect(bad.status).toBe(400);
+  });
 });

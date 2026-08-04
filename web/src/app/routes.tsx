@@ -32,6 +32,7 @@ const Licenses = lazy(() => import('../screens/Licenses'));
 const GreenLake = lazy(() => import('../screens/GreenLake'));
 const Configure = lazy(() => import('../screens/Configure'));
 const Compliance = lazy(() => import('../screens/Compliance'));
+const Recommendations = lazy(() => import('../screens/Recommendations'));
 const Systems = lazy(() => import('../screens/Systems'));
 const Uxi = lazy(() => import('../screens/Uxi'));
 const DsGallery = lazy(() =>
@@ -61,6 +62,7 @@ export function AppRoutes() {
         <Route path="/greenlake" element={<GreenLake />} />
         <Route path="/configure" element={<Configure />} />
         <Route path="/compliance" element={<Compliance />} />
+        <Route path="/recommendations" element={<Recommendations />} />
         <Route path="/systems" element={<Systems />} />
         <Route path="/uxi" element={<Uxi />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />

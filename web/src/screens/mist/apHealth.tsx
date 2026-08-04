@@ -17,33 +17,16 @@
  */
 
 import { Link } from 'react-router-dom';
-import { Badge, SectionHeader } from '../../nightdesk';
+import { Badge, Button, SectionHeader, useToast } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { MistApStatsRow } from '@hpe/shared';
 import { deviceDetailPath } from '../../app/nav';
-import { noteStyle } from './style';
-
-const rowStyle = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 12,
-  padding: '7px 0',
-  borderBottom: '1px solid var(--nd-border-subtle)',
-} as const;
-
-const nameStyle = {
-  flex: 1,
-  minWidth: 0,
-  fontSize: 'var(--nd-text-12)',
-  color: 'var(--nd-text-primary)',
-} as const;
-
-const factStyle = { ...noteStyle, fontSize: 'var(--nd-text-10)', textAlign: 'right' } as const;
+import { buildMistShareUrl } from './share';
 
 function SubGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 8 }}>
-      <span className="nd-micro-label">{label}</span>
+    <div className="nt-mist-section nt-section-panel nt-stack-2-pt8 nt-ap-health-group nt-ap-health-panel">
+      <span className="nd-micro-label nt-micro-label">{label}</span>
       {children}
     </div>
   );
@@ -53,12 +36,12 @@ function SubGroup({ label, children }: { label: string; children: React.ReactNod
  * hand-off. If a future row omits that identity, leave its name as text rather
  * than pretending a bare name is safe to resolve. */
 function ApName({ row, context }: { row: MistApStatsRow; context: string }) {
-  if (!row.serial) return <span style={nameStyle}>{row.deviceName}</span>;
+  if (!row.serial) return <span className="nt-ap-health-name">{row.deviceName}</span>;
   return (
     <Link
       to={deviceDetailPath({ name: row.deviceName, plane: 'MIST', serial: row.serial })}
       aria-label={`Open device ${row.deviceName} — ${context}`}
-      style={{ ...nameStyle, color: 'var(--nd-accent-text)', textDecoration: 'none' }}
+      className="nt-link-accent nt-ap-health-name"
     >
       {row.deviceName}
     </Link>
@@ -99,15 +82,15 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
     <>
       <SubGroup label="Power">
         {!powerReported ? (
-          <div style={noteStyle}>No AP in this walk reported a power state.</div>
+          <div className="nt-service-note">No AP in this walk reported a power state.</div>
         ) : constrained.length === 0 ? (
-          <div style={noteStyle}>No AP reports a power constraint.</div>
+          <div className="nt-service-note">No AP reports a power constraint.</div>
         ) : (
           constrained.map((r) => (
-            <div key={r.deviceName} style={rowStyle}>
+            <div key={r.deviceName} className="nt-ap-health-row nt-card-lift">
               <Badge tone="warning">constrained</Badge>
               <ApName row={r} context="Power" />
-              <span style={factStyle}>
+              <span className="nt-ap-health-fact">
                 {r.powerSrc ?? 'power source not reported'} · {r.siteName}
               </span>
             </div>
@@ -117,18 +100,18 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
 
       <SubGroup label="Radio load — busiest reported">
         {radios.length === 0 ? (
-          <div style={noteStyle}>No radio in this walk reported a utilization reading.</div>
+          <div className="nt-service-note">No radio in this walk reported a utilization reading.</div>
         ) : (
           radios.map(({ ap, radio, util }) => (
-            <div key={`${ap.deviceName}:${radio.band}`} style={rowStyle}>
-              <span style={nameStyle}>
+            <div key={`${ap.deviceName}:${radio.band}`} className="nt-ap-health-row nt-card-lift">
+              <span className="nt-ap-health-name">
                 <ApName row={ap} context={`Radio load ${radio.band}`} />
-                <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', marginLeft: 8 }}>
+                <span className="nt-ml-8-note nt-service-note">
                   {radio.band}
                   {radio.channel !== null ? ` · ch ${radio.channel}` : ''}
                 </span>
               </span>
-              <span style={factStyle}>
+              <span className="nt-ap-health-fact">
                 {util}% channel util
                 {radio.utilNonWifiPct !== null && radio.utilNonWifiPct > 0 ? ` · ${radio.utilNonWifiPct}% non-Wi-Fi` : ''}
                 {` · ${ap.siteName}`}
@@ -140,12 +123,12 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
 
       <SubGroup label="Environment — hottest reported">
         {withTemp.length === 0 ? (
-          <div style={noteStyle}>No AP in this walk reported an environment reading.</div>
+          <div className="nt-service-note">No AP in this walk reported an environment reading.</div>
         ) : (
           withTemp.map((r) => (
-            <div key={r.deviceName} style={rowStyle}>
+            <div key={r.deviceName} className="nt-ap-health-row nt-card-lift">
               <ApName row={r} context="Environment" />
-              <span style={factStyle}>
+              <span className="nt-ap-health-fact">
                 {r.env!.ambientTempC!.toFixed(1)}°C
                 {r.env!.humidityPct !== null ? ` · ${r.env!.humidityPct}% rh` : ''}
                 {` · ${r.siteName}`}
@@ -154,7 +137,7 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
           ))
         )}
         {noEnv > 0 ? (
-          <div style={{ ...noteStyle, fontSize: 10.5, paddingTop: 4 }}>
+          <div className="nt-fs-105 nt-hint-muted">
             {countOf(noEnv, 'AP')} carried no environment sensor block — "not reported", never an
             assumed reading.
           </div>
@@ -163,14 +146,14 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
 
       <SubGroup label="Uplinks — each AP's own LLDP report">
         {uplinks.length === 0 ? (
-          <div style={noteStyle}>No AP in this walk reported an LLDP neighbour.</div>
+          <div className="nt-service-note">No AP in this walk reported an LLDP neighbour.</div>
         ) : (
           uplinks.map((r) => {
             const speed = uplinkSpeed(r);
             return (
-              <div key={r.deviceName} style={rowStyle}>
+              <div key={r.deviceName} className="nt-ap-health-row nt-card-lift">
                 <ApName row={r} context="Uplink" />
-                <span style={factStyle}>
+                <span className="nt-ap-health-fact">
                   {r.lldpUplink!.systemName}
                   {r.lldpUplink!.portId ? ` ${r.lldpUplink!.portId}` : ''}
                   {speed ? ` · ${speed}` : ''}
@@ -186,6 +169,7 @@ function ApHealthBody({ rows }: { rows: MistApStatsRow[] }) {
 }
 
 export function ApHealthSection({ apStats }: { apStats: MistApStatsRow[] | undefined }) {
+  const { toast } = useToast();
   const meta =
     apStats === undefined
       ? 'NOT REPORTED'
@@ -194,14 +178,30 @@ export function ApHealthSection({ apStats }: { apStats: MistApStatsRow[] | undef
         : `${countOf(apStats.length, 'AP').toUpperCase()} · MIST AP-STATS`;
 
   return (
-    <div className="nt-stack nt-gap-2">
-      <SectionHeader label="AP health" meta={meta} />
+    <div id="mist-section-ap-health" className="nt-stack nt-gap-2 nt-ap-health nt-section-panel">
+      <div className="nt-row-between-12">
+        <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Mist AP health · RF owns hue</div>
+        <SectionHeader label="AP health" meta={meta} />
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            const url = buildMistShareUrl('ap-health');
+            void navigator.clipboard.writeText(url).then(
+              () => toast('AP health section link copied', { description: 'section=ap-health', tone: 'success' }),
+              () => toast('Could not copy link', { description: url, tone: 'warning' }),
+            );
+          }}
+        >
+          Copy section link
+        </Button>
+      </div>
       {apStats === undefined ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           The AP-stats walk was not reported this cycle — a failed read, or no linked Mist plane.
         </div>
       ) : apStats.length === 0 ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           The AP-stats walk reported no rows this cycle — a real answer from the sites read, not a
           failed walk.
         </div>

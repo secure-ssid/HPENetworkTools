@@ -140,7 +140,9 @@ describe('Drawer width', () => {
         {BODY}
       </Drawer>,
     );
-    expect((screen.getByRole('dialog') as HTMLElement).style.width).toBe(expected);
+    expect(
+      (screen.getByRole('dialog') as HTMLElement).style.getPropertyValue('--nd-overlay-w'),
+    ).toBe(expected);
   });
 
   describe('Drawer side', () => {
@@ -160,7 +162,9 @@ describe('Drawer width', () => {
         {BODY}
       </Drawer>,
     );
-    expect((screen.getByRole('dialog') as HTMLElement).style.width).toBe('720px');
+    expect(
+      (screen.getByRole('dialog') as HTMLElement).style.getPropertyValue('--nd-overlay-w'),
+    ).toBe('720px');
   });
 });
 

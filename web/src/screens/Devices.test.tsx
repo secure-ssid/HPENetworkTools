@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Devices from './Devices';
@@ -817,6 +817,56 @@ describe('Devices table superpowers', () => {
     expect(first.getAttribute('aria-selected')).toBe('false');
   });
 
+  /* Loop 78 — selection raises Export selected + Copy selection link bulk bar.
+   * Loop 130 — Copy serials joins published inventory serials for paste. */
+  it('shows bulk bar for selection: Export selected, Copy selection link, Copy serials, Clear', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    // jsdom has no blob URLs — stub the download path used by Export selected.
+    const createObjectURL = vi.fn(() => 'blob:devices-selected');
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL });
+    mockGetDevices.mockResolvedValue({
+      ...THREE,
+      devices: [
+        liveRow({ name: 'ap-1', serial: 'SN-AP-1' }),
+        liveRow({ name: 'ap-2', serial: 'SN-AP-2' }),
+        liveRow({ name: 'sw-3' }),
+      ],
+    });
+    const { container } = renderDevices();
+    await screen.findByText('3 of 3 indexed');
+    const [first, second] = bodyRows(container);
+
+    expect(screen.queryByRole('region', { name: 'Device selection actions' })).toBeNull();
+    fireEvent.keyDown(first, { key: 'x' });
+    fireEvent.keyDown(second, { key: 'x' });
+
+    const bar = screen.getByRole('region', { name: 'Device selection actions' });
+    expect(within(bar).getByText(/2 selected/i)).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 2 selected devices/i)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toMatch(/names=/);
+    expect(decodeURIComponent(url)).toMatch(/ap-1/);
+
+    writeText.mockClear();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy serials' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toBe('SN-AP-1\nSN-AP-2');
+    expect(await screen.findByText(/Copied 2 serials/i)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    expect(screen.queryByRole('region', { name: 'Device selection actions' })).toBeNull();
+  });
+
   it("lists the row commands on '?'", async () => {
     mockGetDevices.mockResolvedValue(THREE);
     renderDevices();
@@ -1108,5 +1158,495 @@ describe('Devices firmware verdicts', () => {
     // Its sibling ap-3f-12 is at the suggested train and stays quiet — exactly
     // one behind badge on the whole table.
     expect(screen.getAllByText(/behind →/)).toHaveLength(1);
+  });
+});
+
+/* Loop 56 — filter-row state writes into the address bar so Copy view link
+ * shares q/type/issues/plane/site (plus names/state deep links). */
+describe('Devices filter share link completeness', () => {
+  function LocationProbe() {
+    const location = useLocation();
+    return <div data-testid="loc">{`${location.pathname}${location.search}`}</div>;
+  }
+
+  function renderAt(entry: string) {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/devices"
+                element={
+                  <>
+                    <Devices />
+                    <LocationProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('seeds q/type/issues from the URL and write-back keeps them shareable', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [
+        liveRow({ name: 'sw-core', type: 'switch', plane: 'CENTRAL', reconciliationIssue: true }),
+        liveRow({ name: 'ap-1', type: 'ap', plane: 'MIST', model: 'AP-635' }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderAt('/devices?q=core&type=switch&issues=1&plane=CENTRAL');
+    expect(await screen.findByText('sw-core')).toBeTruthy();
+    expect(screen.queryByText('ap-1')).toBeNull();
+
+    const loc = screen.getByTestId('loc').textContent ?? '';
+    expect(loc).toContain('q=core');
+    expect(loc).toContain('type=switch');
+    expect(loc).toContain('issues=1');
+    expect(loc).toContain('plane=CENTRAL');
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Filter devices' }), {
+      target: { value: 'sw' },
+    });
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('q=sw'));
+    expect(screen.getByTestId('loc').textContent).toContain('type=switch');
+  });
+
+  it('Copy view link includes the written-back filter query', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [liveRow({ name: 'sw-core', type: 'switch' })],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderAt('/devices?q=core&type=switch');
+    await screen.findByText('sw-core');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toContain('q=core');
+    expect(url).toContain('type=switch');
+  });
+});
+
+/* Loop 145 — Issues chip row toggles the same issues= filter as the Switch. */
+describe('Devices issues chips (Loop 145)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/devices') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/devices"
+                element={
+                  <>
+                    <Devices />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('issues chips filter the table and write issues back to the URL', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [
+        liveRow({ name: 'sw-issue', type: 'switch', reconciliationIssue: true }),
+        liveRow({ name: 'ap-clean', type: 'ap', plane: 'MIST', reconciliationIssue: false }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 1, unclaimed: 0 },
+    });
+
+    renderAt('/devices');
+    expect(await screen.findByText('sw-issue')).toBeTruthy();
+    expect(screen.getByText('ap-clean')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Device issues' });
+    const issues = within(chips).getByRole('button', { name: /Issues/i });
+    expect(issues.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(issues);
+    await waitFor(() => expect(screen.getByText('sw-issue')).toBeTruthy());
+    expect(screen.queryByText('ap-clean')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('issues=1');
+    expect(issues.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(issues);
+    await waitFor(() => expect(screen.getByText('ap-clean')).toBeTruthy());
+    expect(screen.getByText('sw-issue')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toContain('issues=');
+  });
+
+  it('clean chip hides reconciliation issues and writes issues=0', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [
+        liveRow({ name: 'sw-issue', type: 'switch', reconciliationIssue: true }),
+        liveRow({ name: 'ap-clean', type: 'ap', plane: 'MIST', reconciliationIssue: false }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 1, unclaimed: 0 },
+    });
+
+    renderAt('/devices');
+    expect(await screen.findByText('sw-issue')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Device issues' });
+    const clean = within(chips).getByRole('button', { name: /Clean/i });
+    fireEvent.click(clean);
+    await waitFor(() => expect(screen.getByText('ap-clean')).toBeTruthy());
+    expect(screen.queryByText('sw-issue')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('issues=0');
+    expect(clean.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+/* Loop 154 — State chip row toggles the same state= deep-link filter. */
+describe('Devices state chips (Loop 154)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/devices') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/devices"
+                element={
+                  <>
+                    <Devices />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('state chips filter the table and write state back to the URL', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [
+        liveRow({ name: 'sw-up', type: 'switch', state: 'up', stateTone: 'success' }),
+        liveRow({ name: 'ap-down', type: 'ap', plane: 'MIST', state: 'down', stateTone: 'danger' }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderAt('/devices');
+    expect(await screen.findByText('sw-up')).toBeTruthy();
+    expect(screen.getByText('ap-down')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Device state' });
+    const down = within(chips).getByRole('button', { name: /down/i });
+    expect(down.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(down);
+    await waitFor(() => expect(screen.getByText('ap-down')).toBeTruthy());
+    expect(screen.queryByText('sw-up')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('state=down');
+    expect(down.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(down);
+    await waitFor(() => expect(screen.getByText('sw-up')).toBeTruthy());
+    expect(screen.getByText('ap-down')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toContain('state=');
+  });
+});
+
+/* Loop 153 — Type chip row toggles the same type= filter as the Select. */
+describe('Devices type chips (Loop 153)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/devices') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/devices"
+                element={
+                  <>
+                    <Devices />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('type chips filter the table and write type back to the URL', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [
+        liveRow({ name: 'sw-core', type: 'switch' }),
+        liveRow({ name: 'ap-lobby', type: 'ap', plane: 'MIST' }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderAt('/devices');
+    expect(await screen.findByText('sw-core')).toBeTruthy();
+    expect(screen.getByText('ap-lobby')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Device type' });
+    const ap = within(chips).getByRole('button', { name: /ap/i });
+    expect(ap.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(ap);
+    await waitFor(() => expect(screen.getByText('ap-lobby')).toBeTruthy());
+    expect(screen.queryByText('sw-core')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('type=ap');
+    expect(ap.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(ap);
+    await waitFor(() => expect(screen.getByText('sw-core')).toBeTruthy());
+    expect(screen.getByText('ap-lobby')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toContain('type=');
+  });
+});
+
+/* Loop 157 — Plane chip row toggles the same plane facet / ?plane= write-back. */
+describe('Devices plane chips (Loop 157)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/devices') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/devices"
+                element={
+                  <>
+                    <Devices />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('plane chips filter the table and write plane back to the URL', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [
+        liveRow({ name: 'sw-central', type: 'switch', plane: 'CENTRAL' }),
+        liveRow({ name: 'ap-mist', type: 'ap', plane: 'MIST' }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderAt('/devices');
+    expect(await screen.findByText('sw-central')).toBeTruthy();
+    expect(screen.getByText('ap-mist')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Device plane' });
+    const mist = within(chips).getByRole('button', { name: /MIST/i });
+    expect(mist.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(mist);
+    await waitFor(() => expect(screen.getByText('ap-mist')).toBeTruthy());
+    expect(screen.queryByText('sw-central')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toMatch(/plane=MIST/);
+    expect(mist.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(mist);
+    await waitFor(() => expect(screen.getByText('sw-central')).toBeTruthy());
+    expect(screen.getByText('ap-mist')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toMatch(/plane=/);
+  });
+});
+
+/* Loop 156 — Site chip row toggles the same site facet / ?site= write-back. */
+describe('Devices site chips (Loop 156)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/devices') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/devices"
+                element={
+                  <>
+                    <Devices />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('site chips filter the table and write site back to the URL', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live' as const,
+      devices: [
+        liveRow({
+          name: 'sw-hq',
+          type: 'switch',
+          siteId: 'campus-01',
+          siteName: 'Campus-01 HQ',
+        }),
+        liveRow({
+          name: 'ap-lab',
+          type: 'ap',
+          plane: 'MIST',
+          siteId: 'campus-02',
+          siteName: 'Campus-02 Lab',
+        }),
+      ],
+      lanes: {},
+      reconciliation: { doubleClaimed: 0, unclaimed: 0 },
+    });
+
+    renderAt('/devices');
+    expect(await screen.findByText('sw-hq')).toBeTruthy();
+    expect(screen.getByText('ap-lab')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Device site' });
+    const lab = within(chips).getByRole('button', { name: /Campus-02 Lab/i });
+    expect(lab.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(lab);
+    await waitFor(() => expect(screen.getByText('ap-lab')).toBeTruthy());
+    expect(screen.queryByText('sw-hq')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toMatch(/site=campus-02/);
+    expect(lab.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(lab);
+    await waitFor(() => expect(screen.getByText('sw-hq')).toBeTruthy());
+    expect(screen.getByText('ap-lab')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toMatch(/site=/);
+  });
+});
+
+/* Loop 163 — LIVE badge honesty (pure live + blend). */
+describe('Devices Loop 163 residuals', () => {
+  it('stamps LIVE on pure live inventory', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [liveRow()],
+      lanes: LANE_META,
+    });
+    renderDevices();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('stamps LIVE when devices arrive via blend', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'demo',
+      blended: ['devices'],
+      devices: [liveRow()],
+      lanes: LANE_META,
+    });
+    renderDevices();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('hides LIVE on demo fixtures without blend', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'demo',
+      devices: DEVICES,
+      lanes: LANE_META,
+      reconciliation: DEVICE_RECONCILIATION,
+    });
+    renderDevices();
+    await screen.findByText(/devices, six inventories/i);
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+
+/* Loop 202 — filtered empty Clear filters CTA. */
+describe('Devices Loop 202 residuals', () => {
+  function renderAt(entry: string) {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/devices" element={<Devices />} />
+            </Routes>
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('offers Clear filters when the inventory filter is empty', async () => {
+    mockGetDevices.mockResolvedValue({
+      dataSource: 'live',
+      devices: [
+        liveRow({ name: 'sw-core-a', type: 'switch' }),
+        liveRow({ name: 'ap-1', type: 'ap', plane: 'MIST' }),
+      ],
+      lanes: LANE_META,
+    });
+    renderAt('/devices?q=zzzz-no-match');
+    expect(await screen.findByText('Nothing matches that filter')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByText('sw-core-a')).toBeTruthy();
+    expect(screen.getByText('ap-1')).toBeTruthy();
   });
 });

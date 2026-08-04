@@ -22,8 +22,11 @@ export function ScreenHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="nt-screen-header" data-path={overline}>
-      <div className="nt-screen-header__copy">
+    <div className="nt-screen-header nt-sticky-title nt-toolbar-glass" data-path={overline}>
+      <div className="nt-screen-header__copy nt-screen-header__titles">
+        <p className="nt-screen-header__brand nt-screen-kicker" aria-hidden>
+          NightDesk · Copper NOC
+        </p>
         <p className="nt-screen-header__overline">{overline}</p>
         <Heading level={1} className="nt-screen-header__title">
           {title}

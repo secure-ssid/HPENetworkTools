@@ -2,7 +2,9 @@
  * server/src/routes/maintenance.ts — maintenance-window CRUD.
  *
  *   GET    /api/maintenance-windows        every window on file (expired flagged, span state
- * *                                         annotated) + the authored fixtures in demo mode
+ *                                          annotated) + the authored fixtures in demo mode
+ *                                          (optional enabled=/state=/q=)
+ *   GET    /api/maintenance-windows/export CSV of windows (optional enabled=/state=/q=)
  *   POST   /api/maintenance-windows        {reason, matchers, schedule, enabled?} → 201
  *   PATCH  /api/maintenance-windows/:id    {enabled} → {window} | 404
  *   DELETE /api/maintenance-windows/:id    remove one → {ok, window} | 404
@@ -37,12 +39,16 @@ import {
   type MaintenanceWindowView,
 } from '@hpe/shared';
 import { h } from './handler';
+import { sendCsv } from '../lib/csv';
+import { queryFlag, queryOneOf, queryString } from '../lib/query';
 import { settings } from '../config/settings';
 import { currentActor } from '../services/auth';
 import { logMaintenanceEvent, maintenanceStore } from '../services/maintenance';
 import { brokerDataDir } from '../services/writeBroker';
 
 export const maintenanceRouter = Router();
+
+const MAINTENANCE_STATES = ['active', 'upcoming', 'expired'] as const;
 
 /** The persisted window plus where it stands right now. */
 function annotate(window: MaintenanceWindow, now: number, demo?: true): MaintenanceWindowView {
@@ -55,18 +61,114 @@ function annotate(window: MaintenanceWindow, now: number, demo?: true): Maintena
   };
 }
 
+/** Compact schedule cell for CSV (matchers + reason only — no secrets). */
+export function maintenanceScheduleCsv(schedule: MaintenanceSchedule): string {
+  if (schedule.kind === 'once') return `once ${schedule.start} → ${schedule.end}`;
+  const days = [...schedule.days].sort((a, b) => a - b).join(' ');
+  return `weekly ${days} ${schedule.startTime}–${schedule.endTime}${schedule.tz ? ` ${schedule.tz}` : ''}`;
+}
+
+/**
+ * Optional list/export filters for maintenance windows:
+ *   `?enabled=0|1|true|false` — via shared queryFlag
+ *   `?state=active|upcoming|expired` — via shared queryOneOf (unknown → no-op)
+ *   `?q=` — case-insensitive substring on id / reason / plane / device / site / titleSubstring
+ * Unrecognised tokens are no-ops (honest full list). Empty q → no text filter.
+ */
+export function filterMaintenanceWindows(
+  req: { query: Record<string, unknown> },
+  windows: MaintenanceWindowView[],
+): MaintenanceWindowView[] {
+  let out = windows;
+  const enabled = queryFlag(req, 'enabled');
+  if (enabled === true) out = out.filter((w) => w.enabled);
+  else if (enabled === false) out = out.filter((w) => !w.enabled);
+
+  const state = queryOneOf(req, 'state', MAINTENANCE_STATES);
+  if (state) out = out.filter((w) => w.state === state);
+
+  const q = queryString(req, 'q').toLowerCase();
+  if (q) {
+    out = out.filter((w) => {
+      const hay = [
+        w.id,
+        w.reason,
+        w.matchers.plane,
+        w.matchers.device,
+        w.matchers.site,
+        w.matchers.titleSubstring,
+      ]
+        .map((v) => String(v ?? '').toLowerCase())
+        .join(' ');
+      return hay.includes(q);
+    });
+  }
+  return out;
+}
+
+function listWindows(now = Date.now()): MaintenanceWindowView[] {
+  const windows = maintenanceStore.list(now).map((w) => annotate(w, now));
+  // The authored fixtures are served labelled, alongside the real rows —
+  // the demo must show the feature, and a fixture must never read as an
+  // operator's window.
+  if (settings.get().demoMode) {
+    windows.push(...DEMO_MAINTENANCE_WINDOWS.map((w) => annotate(w, now, true)));
+  }
+  return windows;
+}
+
 maintenanceRouter.get(
   '/maintenance-windows',
-  h(async (_req, res) => {
-    const now = Date.now();
-    const windows = maintenanceStore.list(now).map((w) => annotate(w, now));
-    // The authored fixtures are served labelled, alongside the real rows —
-    // the demo must show the feature, and a fixture must never read as an
-    // operator's window.
-    if (settings.get().demoMode) {
-      windows.push(...DEMO_MAINTENANCE_WINDOWS.map((w) => annotate(w, now, true)));
-    }
-    res.json({ windows });
+  h(async (req, res) => {
+    res.json({ windows: filterMaintenanceWindows(req, listWindows()) });
+  }),
+);
+
+/**
+ * GET /api/maintenance-windows/export — CSV of windows on file (+ demo fixtures
+ * when demoMode). Optional enabled=/state=/q= match the Policy list. Ahead of
+ * /:id so "export" is never an id.
+ */
+maintenanceRouter.get(
+  '/maintenance-windows/export',
+  h(async (req, res) => {
+    const windows = filterMaintenanceWindows(req, listWindows());
+    sendCsv(
+      res,
+      'maintenance-windows.csv',
+      [
+        'id',
+        'enabled',
+        'state',
+        'reason',
+        'plane',
+        'device',
+        'site',
+        'titleSubstring',
+        'schedule',
+        'spanStart',
+        'spanEnd',
+        'createdBy',
+        'createdAt',
+        'demo',
+      ],
+      windows.map((w) => [
+        w.id,
+        w.enabled ? 'true' : 'false',
+        w.state,
+        w.reason,
+        w.matchers.plane ?? '',
+        w.matchers.device ?? '',
+        w.matchers.site ?? '',
+        w.matchers.titleSubstring ?? '',
+        maintenanceScheduleCsv(w.schedule),
+        w.spanStart ?? '',
+        w.spanEnd ?? '',
+        w.createdBy ?? '',
+        w.createdAt ?? '',
+        w.demo ? 'true' : 'false',
+      ]),
+    );
   }),
 );
 

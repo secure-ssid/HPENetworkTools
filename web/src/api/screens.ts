@@ -191,6 +191,44 @@ export interface ScreenListQuery {
   cursor?: string;
   q?: string;
   plane?: string;
+  /** Tickets queue: P1|P2|P3 (server-enforced). */
+  pri?: string;
+  /** Tickets queue: exact state or openish (server-enforced). */
+  state?: string;
+  /** UXI sensors: online|offline|issues|unknown|idle (server-enforced). */
+  status?: string;
+  /** UXI sensors: critical|warning|info — at least one issue of that severity. */
+  severity?: string;
+  /** UXI sensors / Alerts: exact site name (server-enforced, case-insensitive; Alerts allows comma multi). */
+  site?: string;
+  /** Auth events: accept|reject|timeout (server-enforced exact). */
+  result?: string;
+  /** Auth events: exact service name (server-enforced, case-insensitive). */
+  service?: string;
+  /** Auth events: exact method name (server-enforced, case-insensitive). */
+  method?: string;
+  /** Auth events: exact role name (server-enforced, case-insensitive). */
+  role?: string;
+  /** Sites list: ok|warn|bad|stale. Clients list: exact health word (case-insensitive). */
+  health?: string;
+  /** Alerts queue: P1|P2|P3 (comma multi OK; server-enforced on latest.sev). */
+  sev?: string;
+  /** Devices / Clients: exact type (server-enforced, case-insensitive). */
+  type?: string;
+  /** Devices: reconciliation issues only (`1`/`true`). */
+  issues?: string;
+  /** Clients: wired|wireless (server-enforced). */
+  medium?: string;
+  /** Clients: exact group (server-enforced, case-insensitive). */
+  group?: string;
+  /** Clients: problem rows only (`1`/`true`). */
+  problems?: string;
+  /** Alerts queue: only latest.state=open (`1`/`true`). */
+  unacked?: string;
+  /** Alerts queue: `0`/`false` drops cleared; `1`/`true` keeps them. */
+  cleared?: string;
+  /** Auth events: 15m|1h|24h|7d quick window on event.at (server-enforced). */
+  range?: string;
 }
 
 function screenListPath(base: string, query?: ScreenListQuery): string {
@@ -200,6 +238,25 @@ function screenListPath(base: string, query?: ScreenListQuery): string {
   if (query.cursor) params.set('cursor', query.cursor);
   if (query.q) params.set('q', query.q);
   if (query.plane) params.set('plane', query.plane);
+  if (query.pri) params.set('pri', query.pri);
+  if (query.state) params.set('state', query.state);
+  if (query.status) params.set('status', query.status);
+  if (query.severity) params.set('severity', query.severity);
+  if (query.site) params.set('site', query.site);
+  if (query.result) params.set('result', query.result);
+  if (query.service) params.set('service', query.service);
+  if (query.method) params.set('method', query.method);
+  if (query.role) params.set('role', query.role);
+  if (query.health) params.set('health', query.health);
+  if (query.sev) params.set('sev', query.sev);
+  if (query.type) params.set('type', query.type);
+  if (query.issues) params.set('issues', query.issues);
+  if (query.medium) params.set('medium', query.medium);
+  if (query.group) params.set('group', query.group);
+  if (query.problems) params.set('problems', query.problems);
+  if (query.unacked) params.set('unacked', query.unacked);
+  if (query.cleared) params.set('cleared', query.cleared);
+  if (query.range) params.set('range', query.range);
   const qs = params.toString();
   return qs ? `${base}?${qs}` : base;
 }
@@ -235,6 +292,8 @@ export interface AlertsData extends ScreenEnvelope {
 
 export interface TicketsData extends ScreenEnvelope {
   tickets: TicketRow[];
+  /** Present only when the request asked for `?limit=` paging. */
+  page?: ListPageMeta;
 }
 
 export interface ClientsData extends ScreenEnvelope {
@@ -314,6 +373,8 @@ export interface UxiData extends ScreenEnvelope {
    *  multi-plane `missingSources` other screens carry. Absent means the
    *  route did not say. */
   missingSources?: Plane[];
+  /** Present when the client requested `?limit=` — same shape as Sites/AuthEvents. */
+  page?: ListPageMeta;
 }
 
 export interface MistData extends ScreenEnvelope {
@@ -560,8 +621,8 @@ export async function getAlerts(query?: ScreenListQuery): Promise<AlertsData> {
   return { alerts: ALERTS, syncedAt: DEMO_SYNCED_AT, dataSource: 'demo' };
 }
 
-export async function getTickets(): Promise<TicketsData> {
-  const result = await fetchScreen<TicketsData>('/api/tickets');
+export async function getTickets(query?: ScreenListQuery): Promise<TicketsData> {
+  const result = await fetchScreen<TicketsData>(screenListPath('/api/tickets', query));
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') return apiFailure<TicketsData>(result.message, { tickets: [] });
   return { tickets: TICKETS, dataSource: 'demo' };
@@ -757,14 +818,46 @@ export async function getClearPassServiceDetail(id: string): Promise<ClearPassSe
   return demo ? { kind: 'ok', detail: demo } : { kind: 'not-reported' };
 }
 
-export async function getUxi(): Promise<UxiData> {
-  const result = await fetchScreen<UxiData>('/api/uxi');
+export async function getUxi(query?: ScreenListQuery): Promise<UxiData> {
+  const result = await fetchScreen<UxiData>(screenListPath('/api/uxi', query));
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') {
     return apiFailure<UxiData>(result.message, { sensors: [] });
   }
+  /* Offline fixture path: apply the same filters client-side so demo stays honest. */
+  let sensors = UXI_SENSORS.slice();
+  const q = query?.q?.trim().toLowerCase() ?? '';
+  const status = query?.status?.trim().toLowerCase() ?? '';
+  const site = query?.site?.trim().toLowerCase() ?? '';
+  if (q || status || site) {
+    sensors = sensors.filter((s) => {
+      if (site && String(s.site ?? '').trim().toLowerCase() !== site) return false;
+      if (q) {
+        const hay = [s.name, s.serial ?? '', s.site ?? '', s.model ?? ''].join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (status === 'online' && s.isOnline !== true) return false;
+      if (status === 'offline' && s.isOnline !== false) return false;
+      if (status === 'unknown' && s.isOnline !== null) return false;
+      if (status === 'issues' && !(s.issueCount > 0)) return false;
+      if (status === 'idle' && !(s.isOnline === true && s.isTesting === false)) return false;
+      return true;
+    });
+  }
+  const limit = query?.limit;
+  if (limit != null && limit > 0) {
+    const cursor = Math.max(0, Number.parseInt(query?.cursor ?? '0', 10) || 0);
+    const slice = sensors.slice(cursor, cursor + limit);
+    const next = cursor + limit < sensors.length ? String(cursor + limit) : null;
+    return {
+      sensors: slice,
+      dataSource: 'demo',
+      syncedAt: DEMO_SYNCED_AT,
+      page: { total: sensors.length, limit, cursor: String(cursor), nextCursor: next },
+    };
+  }
   return {
-    sensors: UXI_SENSORS,
+    sensors,
     dataSource: 'demo',
     syncedAt: DEMO_SYNCED_AT,
   };

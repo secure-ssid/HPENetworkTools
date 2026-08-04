@@ -31,6 +31,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
   mockGetSettings.mockReset();
   mockSaveSettings.mockClear();
+  try {
+    document.documentElement.removeAttribute('data-nd-density');
+  } catch {
+    /* ignore */
+  }
 });
 
 function Probe() {
@@ -331,3 +336,44 @@ describe('SettingsProvider savedViews', () => {
     expect(JSON.parse(localStorage.getItem('nt-saved-views') ?? '{}')).toEqual(serverViews);
   });
 });
+
+describe('Shell density attribute (Loop 125)', () => {
+  function DensityProbe() {
+    const { density, setDensity } = useSettings();
+    return (
+      <div>
+        <span data-testid="density">{density}</span>
+        <button type="button" onClick={() => setDensity('compact')}>
+          compact
+        </button>
+        <button type="button" onClick={() => setDensity('comfortable')}>
+          comfortable
+        </button>
+      </div>
+    );
+  }
+
+  it('mirrors density onto html[data-nd-density]', async () => {
+    mockGetSettings.mockResolvedValue({
+      density: 'comfortable',
+      inventoryView: 'Unified table',
+      showPlatformTags: true,
+      workspaceName: 'Meridian Health',
+      pollIntervalSec: 60,
+    });
+    render(
+      <SettingsProvider>
+        <DensityProbe />
+      </SettingsProvider>,
+    );
+    await waitFor(() =>
+      expect(document.documentElement.getAttribute('data-nd-density')).toBe('comfortable'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'compact' }));
+    await waitFor(() =>
+      expect(document.documentElement.getAttribute('data-nd-density')).toBe('compact'),
+    );
+    expect(screen.getByTestId('density').textContent).toBe('compact');
+  });
+});
+

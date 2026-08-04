@@ -8,13 +8,22 @@
  * read-only credential must not be shown write controls it cannot use.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getGreenLakeInventory, runGreenLakeAction } from '../api/client';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
-import GreenLake from './GreenLake';
+import GreenLake, {
+  buildGreenLakeShareUrl,
+  matchesGreenLakeQ,
+  matchesGreenLakeUserStatus,
+  sectionDomId,
+  sectionFromParam,
+  sectionToExportPart,
+  sectionToParam,
+} from './GreenLake';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 
 const { mockLabConfigMode } = vi.hoisted(() => ({ mockLabConfigMode: vi.fn(() => ({ lab: false })) }));
 vi.mock('../hooks/useLabConfigMode', () => ({ useLabConfigMode: mockLabConfigMode }));
@@ -24,14 +33,22 @@ vi.mock('../api/client', async (importOriginal) => {
   return { ...actual, getGreenLakeInventory: vi.fn(), runGreenLakeAction: vi.fn() };
 });
 
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
 const mockInventory = vi.mocked(getGreenLakeInventory);
 const mockAction = vi.mocked(runGreenLakeAction);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   mockLabConfigMode.mockReturnValue({ lab: false });
 });
+
+// jsdom lacks a working scrollIntoView; section focus effect calls it when ?section= is set.
+Element.prototype.scrollIntoView = vi.fn();
 
 const USER = {
   id: 'u-1',
@@ -57,13 +74,31 @@ function inventory(over: Partial<Parameters<typeof renderScreen>[0]> = {}) {
   };
 }
 
-function renderScreen(payload: Record<string, unknown>) {
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="loc">{`${loc.pathname}${loc.search}`}</div>;
+}
+
+function renderScreen(payload: Record<string, unknown>, initialPath = '/greenlake') {
   mockInventory.mockResolvedValue(payload as never);
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter
+      initialEntries={[initialPath]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <ToastProvider>
         <SettingsProvider>
-          <GreenLake />
+          <Routes>
+            <Route
+              path="/greenlake"
+              element={
+                <>
+                  <GreenLake />
+                  <LocationProbe />
+                </>
+              }
+            />
+          </Routes>
         </SettingsProvider>
       </ToastProvider>
     </MemoryRouter>,
@@ -108,6 +143,38 @@ describe('GreenLake screen', () => {
     await screen.findByText('ops@example.com');
     expect(screen.getByRole('button', { name: /create location/i })).toBeTruthy();
   });
+
+  /* Loop 78 — hardened mode never auto-sends reviewConfirmed without a tick. */
+  it('keeps write actions disarmed until the review checkbox is ticked (hardened)', async () => {
+    renderScreen(inventory());
+    await screen.findByText('ops@example.com');
+    const invite = screen.getByRole('button', { name: /send invite/i });
+    // Empty email already disables; fill it and the review gate still holds.
+    fireEvent.change(screen.getByPlaceholderText('person@example.com'), {
+      target: { value: 'new@example.com' },
+    });
+    expect((invite as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      screen.getByLabelText(/I have reviewed this write/i),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/I have reviewed this write/i));
+    expect((invite as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('lab mode skips the review checkbox and sends without reviewConfirmed', async () => {
+    mockLabConfigMode.mockReturnValue({ lab: true });
+    mockAction.mockResolvedValue({ ok: true, message: 'invitation sent', outcome: 'applied' } as never);
+    renderScreen(inventory());
+    await screen.findByText('ops@example.com');
+    expect(screen.queryByLabelText(/I have reviewed this write/i)).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('person@example.com'), {
+      target: { value: 'new@example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /send invite/i }));
+    await waitFor(() =>
+      expect(mockAction).toHaveBeenCalledWith('inviteUser', expect.any(Object), undefined),
+    );
+  });
 });
 
 /**
@@ -124,6 +191,9 @@ describe('GreenLake screen — post-write freshness', () => {
     renderScreen(inventory());
     const field = await screen.findByPlaceholderText('person@example.com');
     fireEvent.change(field, { target: { value: 'new@example.com' } });
+    // Hardened mode: arm the review gate before the write is allowed.
+    const review = screen.queryByLabelText(/I have reviewed this write/i);
+    if (review) fireEvent.click(review);
     fireEvent.click(screen.getByText('Send invite'));
   }
 
@@ -220,5 +290,666 @@ describe('GreenLake screen — post-write freshness', () => {
     await invite({ ok: false, message: 'HTTP 403 — not permitted' });
     expect(await screen.findByText('GreenLake refused the change')).toBeTruthy();
     expect(screen.queryByText(/Applied in GreenLake/)).toBeNull();
+  });
+});
+
+describe('GreenLake share + server CSV', () => {
+  it('offers Download server CSV and Copy view link', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    renderScreen(inventory({ canWrite: false }));
+    expect(await screen.findByRole('button', { name: 'Download server CSV' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+  });
+
+  it('Download server CSV defaults to part=users when no section focus (Loop 96)', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderScreen(inventory({ canWrite: false }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/greenlake/export?part=users',
+        'greenlake-users.csv',
+      ),
+    );
+  });
+
+  it('Download server CSV follows ?section= into part= (Loop 96)', async () => {
+    // jsdom lacks scrollIntoView; section focus effect calls it when ?section= is set.
+    Element.prototype.scrollIntoView = vi.fn();
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderScreen(inventory({ canWrite: false }), '/greenlake?section=locations');
+    fireEvent.click(await screen.findByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/greenlake/export?part=locations',
+        'greenlake-locations.csv',
+      ),
+    );
+
+    cleanup();
+    mockDownloadApiCsv.mockClear();
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderScreen(inventory({ canWrite: false }), '/greenlake?section=roles');
+    fireEvent.click(await screen.findByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/greenlake/export?part=roles',
+        'greenlake-roles.csv',
+      ),
+    );
+  });
+
+  it('Copy section link shares each section with ?section= + hash (Loop 72)', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    renderScreen(inventory({ canWrite: false }));
+    await screen.findByText('ops@example.com');
+
+    const sectionButtons = screen.getAllByRole('button', { name: 'Copy section link' });
+    expect(sectionButtons).toHaveLength(3);
+
+    fireEvent.click(sectionButtons[0]!);
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/section=users/);
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/#greenlake-section-users/);
+
+    fireEvent.click(sectionButtons[1]!);
+    await waitFor(() => expect(writeText.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(String(writeText.mock.calls[1]![0])).toMatch(/section=roles/);
+    expect(String(writeText.mock.calls[1]![0])).toMatch(/#greenlake-section-roles/);
+
+    fireEvent.click(sectionButtons[2]!);
+    await waitFor(() => expect(writeText.mock.calls.length).toBeGreaterThanOrEqual(3));
+    expect(String(writeText.mock.calls[2]![0])).toMatch(/section=locations/);
+    expect(String(writeText.mock.calls[2]![0])).toMatch(/#greenlake-section-locations/);
+  });
+});
+
+describe('GreenLake section helpers', () => {
+  it('round-trips section param tokens and builds share URLs', () => {
+    expect(sectionFromParam('users')).toBe('users');
+    expect(sectionFromParam('roles')).toBe('roleAssignments');
+    expect(sectionFromParam('roleAssignments')).toBe('roleAssignments');
+    expect(sectionFromParam('nope')).toBeNull();
+    expect(sectionToParam('roleAssignments')).toBe('roles');
+    expect(sectionDomId('roleAssignments')).toBe('greenlake-section-roles');
+    expect(buildGreenLakeShareUrl('users', 'http://x', '/greenlake')).toBe(
+      'http://x/greenlake?section=users#greenlake-section-users',
+    );
+    expect(buildGreenLakeShareUrl(null, 'http://x', '/greenlake')).toBe('http://x/greenlake');
+  });
+
+  it('maps focused section onto greenlake export part (Loop 96)', () => {
+    expect(sectionToExportPart(null)).toBe('users');
+    expect(sectionToExportPart('users')).toBe('users');
+    expect(sectionToExportPart('locations')).toBe('locations');
+    expect(sectionToExportPart('roleAssignments')).toBe('roles');
+  });
+
+  it('buildGreenLakeShareUrl carries optional q (Loop 95)', () => {
+    expect(buildGreenLakeShareUrl('users', 'http://x', '/greenlake', 'ops')).toBe(
+      'http://x/greenlake?section=users&q=ops#greenlake-section-users',
+    );
+    expect(buildGreenLakeShareUrl(null, 'http://x', '/greenlake', 'ops')).toBe(
+      'http://x/greenlake?q=ops',
+    );
+  });
+
+  it('matchesGreenLakeQ is case-insensitive substring', () => {
+    expect(matchesGreenLakeQ(['Ops@Example.com', 'VERIFIED'], 'ops@')).toBe(true);
+    expect(matchesGreenLakeQ(['Ops@Example.com'], 'zzz')).toBe(false);
+    expect(matchesGreenLakeQ(['a'], '')).toBe(true);
+  });
+
+  it('buildGreenLakeShareUrl + status match (Loop 107)', () => {
+    expect(buildGreenLakeShareUrl('users', 'http://x', '/greenlake', 'ops', 'VERIFIED')).toBe(
+      'http://x/greenlake?section=users&q=ops&status=VERIFIED#greenlake-section-users',
+    );
+    expect(matchesGreenLakeUserStatus('VERIFIED', 'verified')).toBe(true);
+    expect(matchesGreenLakeUserStatus('PENDING', 'VERIFIED')).toBe(false);
+    expect(matchesGreenLakeUserStatus('x', 'all')).toBe(true);
+  });
+});
+
+describe('GreenLake q filter share + server CSV (Loop 95)', () => {
+  it('Download server CSV passes q= when filter is set', async () => {
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderScreen(inventory({ canWrite: false }), '/greenlake?q=ops');
+    expect(await screen.findByDisplayValue('ops')).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]![0]);
+    expect(path).toContain('/api/greenlake/export?');
+    const qs = new URLSearchParams(path.split('?')[1]);
+    expect(qs.get('part')).toBe('users');
+    expect(qs.get('q')).toBe('ops');
+  });
+
+  it('Download server CSV passes status= for users (Loop 107)', async () => {
+    mockDownloadApiCsv.mockClear();
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderScreen(inventory({ canWrite: false }), '/greenlake?status=VERIFIED');
+    fireEvent.click(await screen.findByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]![0]);
+    const qs = new URLSearchParams(path.split('?')[1]);
+    expect(qs.get('part')).toBe('users');
+    expect(qs.get('status')).toBe('VERIFIED');
+  });
+});
+
+/* Loop 136 — Status chip row toggles the same status= filter as the Select. */
+describe('GreenLake member status chips (Loop 136)', () => {
+  it('status chips filter members and write status back to the URL', async () => {
+    renderScreen(
+      inventory({
+        canWrite: false,
+        users: [
+          { ...USER, id: 'u-1', username: 'ops@example.com', status: 'VERIFIED' },
+          {
+            ...USER,
+            id: 'u-2',
+            username: 'pending@example.com',
+            firstName: 'Pending',
+            lastName: 'Person',
+            status: 'PENDING',
+          },
+        ],
+      }),
+    );
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(screen.getByText('pending@example.com')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Member status' });
+    const pending = within(chips).getByRole('button', { name: /PENDING/i });
+    expect(pending.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(pending);
+    await waitFor(() => expect(screen.getByText('pending@example.com')).toBeTruthy());
+    expect(screen.queryByText('ops@example.com')).toBeNull();
+    expect(screen.getByTestId('loc').textContent).toMatch(/status=PENDING/i);
+    expect(pending.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(pending);
+    await waitFor(() => expect(screen.getByText('ops@example.com')).toBeTruthy());
+    expect(screen.getByText('pending@example.com')).toBeTruthy();
+    expect(screen.getByTestId('loc').textContent).not.toMatch(/status=/i);
+  });
+});
+
+/* Loop 168 — LIVE badge on plane-sourced workspace inventory. */
+describe('GreenLake Loop 168 residuals', () => {
+  it('stamps LIVE when workspace inventory loads from the plane', async () => {
+    renderScreen(inventory());
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(screen.getByText('LIVE')).toBeTruthy();
+    expect(screen.getByText(/GLOBAL\.API\.GREENLAKE/)).toBeTruthy();
+  });
+
+  it('keeps LIVE beside the provenance stamp after a partial read', async () => {
+    renderScreen(
+      inventory({
+        users: [],
+        unavailable: ['users'],
+        readStatus: { users: { state: 'failed', reason: 'denied', message: 'HTTP 403' } },
+        source: 'global.api.greenlake.hpe.com · 2 of 3 sections read',
+      }),
+    );
+    await waitFor(() => expect(screen.getByText(/workspace members could not be read/i)).toBeTruthy());
+    expect(screen.getByText('LIVE')).toBeTruthy();
+  });
+});
+
+/* Loop 172 — members bulk Export selected + Copy emails. */
+describe('GreenLake Loop 172 residuals', () => {
+  it('shows bulk bar for selection: Export selected, Copy emails, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:gl-members-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { container } = renderScreen(
+      inventory({
+        users: [
+          USER,
+          {
+            id: 'u-2',
+            username: 'pending@example.com',
+            firstName: 'Pending',
+            lastName: 'User',
+            status: 'PENDING',
+            lastLogin: null,
+            createdAt: null,
+            roles: [],
+          },
+        ],
+      }),
+    );
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Workspace member selection actions' })).toBeNull();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Workspace member selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected member/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy emails' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('ops@example.com');
+    expect(await screen.findByText(/Copied 1 email/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Workspace member selection actions' })).toBeNull(),
+    );
+  });
+});
+
+/* Loop 178 — members bulk Copy selection link (?ids=) + clearable chip. */
+describe('GreenLake Loop 178 residuals', () => {
+  it('Copy selection link writes ids= and the deep link filters members', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { container } = renderScreen(
+      inventory({
+        users: [
+          USER,
+          {
+            id: 'u-2',
+            username: 'pending@example.com',
+            firstName: 'Pending',
+            lastName: 'User',
+            status: 'PENDING',
+            lastLogin: null,
+            createdAt: null,
+            roles: [],
+          },
+        ],
+      }),
+    );
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(await screen.findByText('pending@example.com')).toBeTruthy();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Workspace member selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/ids=/);
+    expect(String(writeText.mock.calls[0]![0])).toContain('u-1');
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?ids= and shows a clearable selection chip', async () => {
+    renderScreen(
+      inventory({
+        users: [
+          USER,
+          {
+            id: 'u-2',
+            username: 'pending@example.com',
+            firstName: 'Pending',
+            lastName: 'User',
+            status: 'PENDING',
+            lastLogin: null,
+            createdAt: null,
+            roles: [],
+          },
+        ],
+      }),
+      '/greenlake?ids=u-1',
+    );
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(screen.queryByText('pending@example.com')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected member/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/ids=/));
+    expect(await screen.findByText('pending@example.com')).toBeTruthy();
+  });
+});
+
+/* Loop 177 — members bulk Copy selection link (?ids=) + clearable chip. */
+describe('GreenLake Loop 177 residuals', () => {
+  it('Copy selection link writes ids= and the deep link filters members', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { container } = renderScreen(
+      inventory({
+        users: [
+          USER,
+          {
+            id: 'u-2',
+            username: 'pending@example.com',
+            firstName: 'Pending',
+            lastName: 'User',
+            status: 'PENDING',
+            lastLogin: null,
+            createdAt: null,
+            roles: [],
+          },
+        ],
+      }),
+    );
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(await screen.findByText('pending@example.com')).toBeTruthy();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Workspace member selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toMatch(/ids=/);
+    expect(url).toContain('u-1');
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?ids= and shows a clearable selection chip', async () => {
+    renderScreen(
+      inventory({
+        users: [
+          USER,
+          {
+            id: 'u-2',
+            username: 'pending@example.com',
+            firstName: 'Pending',
+            lastName: 'User',
+            status: 'PENDING',
+            lastLogin: null,
+            createdAt: null,
+            roles: [],
+          },
+        ],
+      }),
+      `/greenlake?ids=${encodeURIComponent('u-1')}`,
+    );
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(screen.queryByText('pending@example.com')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected member/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/ids=/));
+    expect(await screen.findByText('pending@example.com')).toBeTruthy();
+  });
+});
+
+const ROLE_A = {
+  id: 'ra-1',
+  principal: 'user:u-1',
+  principalType: 'USER',
+  principalName: 'Grant Principal A',
+  role: 'ccs.operator',
+  roleGrn: 'grn:glp/providers/authorization/roles/ccs.operator',
+  scope: ['/workspaces/ws-1'],
+  source: 'workspace',
+};
+
+const ROLE_B = {
+  id: 'ra-2',
+  principal: 'user:u-2',
+  principalType: 'USER',
+  principalName: 'Grant Principal B',
+  role: 'ccs.observer',
+  roleGrn: 'grn:glp/providers/authorization/roles/ccs.observer',
+  scope: ['/workspaces/ws-1'],
+  source: 'workspace',
+};
+
+const LOC_A = {
+  id: 'loc-1',
+  name: 'Campus-01',
+  type: 'SITE',
+  address: '1 Example Way',
+  country: 'US',
+  deviceCount: 12,
+};
+
+const LOC_B = {
+  id: 'loc-2',
+  name: 'Campus-02',
+  type: 'SITE',
+  address: '2 Example Way',
+  country: 'US',
+  deviceCount: 4,
+};
+
+/* Loop 196 — role grants + locations bulk. */
+describe('GreenLake Loop 196 residuals', () => {
+  it('shows role-grant bulk bar: Export selected, Copy principals, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:gl-roles-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderScreen(
+      inventory({
+        roleAssignments: [ROLE_A, ROLE_B],
+      }),
+    );
+    const table = await screen.findByRole('grid', { name: 'Role grants' });
+    expect(within(table).getByText('Grant Principal A')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Role grant selection actions' })).toBeNull();
+
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Role grant selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected role grant/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy principals' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('Grant Principal A');
+    expect(await screen.findByText(/Copied 1 principal/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Role grant selection actions' })).toBeNull(),
+    );
+  });
+
+  it('Copy selection link writes roleIds= and the deep link filters grants', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderScreen(
+      inventory({
+        roleAssignments: [ROLE_A, ROLE_B],
+      }),
+    );
+    const table = await screen.findByRole('grid', { name: 'Role grants' });
+    expect(within(table).getByText('Grant Principal A')).toBeTruthy();
+    expect(within(table).getByText('Grant Principal B')).toBeTruthy();
+
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Role grant selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toMatch(/roleIds=/);
+    expect(url).toContain('ra-1');
+    expect(url).toMatch(/section=roles/);
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?roleIds= and shows a clearable role grant chip', async () => {
+    renderScreen(
+      inventory({
+        roleAssignments: [ROLE_A, ROLE_B],
+      }),
+      '/greenlake?section=roles&roleIds=ra-1',
+    );
+    const table = await screen.findByRole('grid', { name: 'Role grants' });
+    expect(within(table).getByText('Grant Principal A')).toBeTruthy();
+    expect(within(table).queryByText('Grant Principal B')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Role grant selection deep link' });
+    expect(within(chip).getByText(/1 selected role grant/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/roleIds=/));
+    const tableAfter = await screen.findByRole('grid', { name: 'Role grants' });
+    expect(within(tableAfter).getByText('Grant Principal B')).toBeTruthy();
+  });
+
+  it('shows location bulk bar: Export selected, Copy names, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:gl-locs-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderScreen(
+      inventory({
+        locations: [LOC_A, LOC_B],
+      }),
+    );
+    const table = await screen.findByRole('grid', { name: 'Locations' });
+    expect(within(table).getByText('Campus-01')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Location selection actions' })).toBeNull();
+
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Location selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected location/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('Campus-01');
+    expect(await screen.findByText(/Copied 1 location name/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Location selection actions' })).toBeNull(),
+    );
+  });
+
+  it('Copy selection link writes locationIds= and the deep link filters locations', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderScreen(
+      inventory({
+        locations: [LOC_A, LOC_B],
+      }),
+    );
+    const table = await screen.findByRole('grid', { name: 'Locations' });
+    expect(within(table).getByText('Campus-01')).toBeTruthy();
+    expect(within(table).getByText('Campus-02')).toBeTruthy();
+
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Location selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toMatch(/locationIds=/);
+    expect(url).toContain('loc-1');
+    expect(url).toMatch(/section=locations/);
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?locationIds= and shows a clearable location chip', async () => {
+    renderScreen(
+      inventory({
+        locations: [LOC_A, LOC_B],
+      }),
+      '/greenlake?section=locations&locationIds=loc-1',
+    );
+    const table = await screen.findByRole('grid', { name: 'Locations' });
+    expect(within(table).getByText('Campus-01')).toBeTruthy();
+    expect(within(table).queryByText('Campus-02')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Location selection deep link' });
+    expect(within(chip).getByText(/1 selected location/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/locationIds=/));
+    const tableAfter = await screen.findByRole('grid', { name: 'Locations' });
+    expect(within(tableAfter).getByText('Campus-02')).toBeTruthy();
+  });
+});
+
+/* Loop 195 — keyboard shortcuts help + filtered empty Clear filters CTA. */
+describe('GreenLake Loop 195 residuals', () => {
+  it('exposes keyboard shortcuts help beside workspace members', async () => {
+    renderScreen(inventory());
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+
+  it('offers Clear filters when members match nothing', async () => {
+    renderScreen(inventory(), '/greenlake?q=zzz-no-match');
+    /* q= empties members, roles, and locations — three twin empty alerts. */
+    const empties = await screen.findAllByText('Nothing matches that filter');
+    expect(empties.length).toBeGreaterThanOrEqual(1);
+    const members = document.getElementById(sectionDomId('users'));
+    expect(members).toBeTruthy();
+    fireEvent.click(within(members as HTMLElement).getByRole('button', { name: 'Clear filters' }));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/q=/));
+    expect(await screen.findByText('ops@example.com')).toBeTruthy();
   });
 });

@@ -6,6 +6,8 @@
  * section is actually live-sourced (dataSource 'live', or blended): a demo
  * payload is authored data and renders as authored, never stamped with the
  * empty registry ("unlinked / never / 0" beside a fixture device count).
+ * Roster triage ships **Health** chips (`?health=`) and **Linked** chips
+ * (`?linked=1|0`) beside the matching Selects (Loop 139 / 145).
  * On a live section the state Badge shows the registry health
  * (healthy/degraded/warning/unlinked) plus an `unverified` marker when the
  * registry's own age-based `stale` flag is set, the fact strip overrides Last
@@ -16,12 +18,18 @@
  * the poller.
  * Backend unreachable → fixture-only plus a small mono "backend offline —
  * fixture state" note. The header carries the envelope's own provenance stamp
- * (DEMO FIXTURE vs LIVE · SYNCED hh:mm) and the Planes meta counts what is
- * actually on screen, never a literal. The stamp is kept honest by polling on
- * the settings cadence (the Overview pattern, one fetch at a time) — suspended
- * while the connect drawer is open, because a refresh must never disturb
- * in-flight credential entry or a connection test. A drawer site row that names a real
- * site drills into it (closing the drawer first).
+ * (DEMO FIXTURE vs LIVE · SYNCED hh:mm) plus a **LIVE** badge on pure live and
+ * systems blend (Loop 169 — mono stamp alone is easy to miss). Plane roster
+ * multi-select raises **Export selected**, **Copy plane ids**, and **Copy
+ * selection link** (`?ids=` of registry plane ids — Sites pattern; clearable
+ * chip — Loop 189); drawer open stays on `?plane=` and is independent of bulk
+ * marks. Roster filter empties offer **Clear filters** (Loop 202). The Planes
+ * meta counts what is actually on screen, never a literal.
+ * The stamp is kept honest by polling on the settings cadence (the Overview
+ * pattern, one fetch at a time) — suspended while the connect drawer is open,
+ * because a refresh must never disturb in-flight credential entry or a
+ * connection test. A drawer site row that names a real site drills into it
+ * (closing the drawer first).
  * The connect drawer renders the endpoint variant plus the per-plane
  * credential fields the chosen adapter needs (shared CONNECT_FIELDS) and
  * saves every value under the settings key that adapter's isComplete()
@@ -87,7 +95,10 @@ import { ScreenHeader } from './ScreenHeader';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ApiErrorState } from './ApiErrorState';
+import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { useSettings } from '../app/SettingsContext';
+import { namesFilterForParam } from '../app/nav';
 import { SseInventoryPanel } from './SseInventoryPanel';
 import { CentralWebhooksPanel } from './CentralWebhooksPanel';
 import { MistSection } from './systems/MistSection';
@@ -104,18 +115,107 @@ import {
   pollFailureBanner,
 } from './systems/PlaneRow';
 import { PortalSection } from './systems/PortalSection';
+import { parseSystemsSection, systemsSectionDomId } from './systems/share';
 import {
   DetailTab,
   HEALTH_TONE,
   PLANE_ID_BY_NAME,
   PlaneView,
   TAB_OPTIONS,
+  countFact,
+  factValue,
   mergedFacts,
   retryNote,
   staleTitle,
   storedEndpoint,
   storedScopes,
 } from './systems/facts';
+
+/** Roster triage filters — same vocabulary as GET /api/systems/export. */
+export const SYSTEMS_HEALTH_FILTERS = [
+  { value: 'all', label: 'All health' },
+  { value: 'healthy', label: 'Healthy' },
+  { value: 'warning', label: 'Warning' },
+  { value: 'degraded', label: 'Degraded' },
+  { value: 'unlinked', label: 'Unlinked' },
+] as const;
+
+export const SYSTEMS_LINKED_FILTERS = [
+  { value: 'all', label: 'Linked + unlinked' },
+  { value: '1', label: 'Linked only' },
+  { value: '0', label: 'Unlinked only' },
+] as const;
+
+export type SystemsHealthFilter = (typeof SYSTEMS_HEALTH_FILTERS)[number]['value'];
+export type SystemsLinkedFilter = (typeof SYSTEMS_LINKED_FILTERS)[number]['value'];
+
+export function parseSystemsHealthFilter(raw: string | null): SystemsHealthFilter {
+  const v = raw?.trim().toLowerCase() ?? '';
+  if (v === 'healthy' || v === 'warning' || v === 'degraded' || v === 'unlinked') return v;
+  return 'all';
+}
+
+export function parseSystemsLinkedFilter(raw: string | null): SystemsLinkedFilter {
+  const v = raw?.trim().toLowerCase() ?? '';
+  if (v === '1' || v === 'true') return '1';
+  if (v === '0' || v === 'false') return '0';
+  return 'all';
+}
+
+/** Client-side roster match — mirrors server applySystemsRosterFilters. */
+export function systemsViewMatchesFilters(
+  view: {
+    row: { name?: string; kind?: string; scope?: string; state?: string };
+    planeId?: string | null;
+    stateLabel: string;
+    live?: { linked?: boolean } | null;
+  },
+  opts: { q?: string; health?: SystemsHealthFilter; linked?: SystemsLinkedFilter },
+): boolean {
+  const healthWant = opts.health && opts.health !== 'all' ? opts.health : '';
+  const linkedWant = opts.linked && opts.linked !== 'all' ? opts.linked : '';
+  const q = (opts.q ?? '').trim().toLowerCase();
+  const health = String(view.stateLabel ?? view.row.state ?? '')
+    .trim()
+    .toLowerCase();
+  const isLinked =
+    view.live != null ? view.live.linked === true : health !== '' && health !== 'unlinked';
+  if (healthWant && health !== healthWant) return false;
+  if (linkedWant === '1' && !isLinked) return false;
+  if (linkedWant === '0' && isLinked) return false;
+  if (q) {
+    const hay = [view.row.name, view.planeId, view.row.kind, view.stateLabel, view.row.scope]
+      .map((v) => String(v ?? '').toLowerCase())
+      .join(' ');
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+/** Build systems-export query string from the filter bar. */
+export function buildSystemsExportQuery(opts: {
+  q?: string;
+  health?: SystemsHealthFilter;
+  linked?: SystemsLinkedFilter;
+}): string {
+  const qs = new URLSearchParams();
+  const q = (opts.q ?? '').trim();
+  if (q) qs.set('q', q);
+  if (opts.health && opts.health !== 'all') qs.set('health', opts.health);
+  if (opts.linked && opts.linked !== 'all') qs.set('linked', opts.linked);
+  const s = qs.toString();
+  return s ? `?${s}` : '';
+}
+
+/** Stable bulk/deep-link key for a plane row — registry id when known, else name. */
+export function systemsPlaneKey(view: {
+  planeId?: string | null;
+  row: { name: string; planeId?: string | null };
+}): string {
+  const id = (view.planeId ?? view.row.planeId ?? '').trim();
+  if (id) return id;
+  return view.row.name;
+}
 import '../app/app.css';
 
 
@@ -233,6 +333,19 @@ export default function Systems() {
   const [retireBusy, setRetireBusy] = useState(false);
   const [tab, setTab] = useState<DetailTab>('summary');
   const [showDormant, setShowDormant] = useState(false);
+  /* Roster triage (?q= / ?health= / ?linked=) — same slice Download server CSV sends. */
+  const [rosterQ, setRosterQ] = useState(() => searchParams.get('q') ?? '');
+  const [rosterHealth, setRosterHealth] = useState<SystemsHealthFilter>(() =>
+    parseSystemsHealthFilter(searchParams.get('health')),
+  );
+  const [rosterLinked, setRosterLinked] = useState<SystemsLinkedFilter>(() =>
+    parseSystemsLinkedFilter(searchParams.get('linked')),
+  );
+  /* Keyboard/checkbox multi-select raises Export selected / Copy plane ids /
+   * Copy selection link. Independent of drawer open (?plane=). */
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  /* Deep link: /systems?ids=central\nmist (bulk Copy selection link). */
+  const idsFilter = namesFilterForParam(searchParams.get('ids'));
 
   const [addOpen, setAddOpen] = useState(false);
   const [draft, setDraft] = useState<ConnectorConfig>(() => connectorDraft('central'));
@@ -321,6 +434,14 @@ export default function Systems() {
     setPrevRequestedPlane(requestedPlane);
     if (requestedPlane === null && handledPlaneLink !== null) setHandledPlaneLink(null);
   }
+  /* Optional `?tab=summary|activity|config` opens that drawer tab. SSE still
+     defaults to config (object inventory lives there); other planes default
+     to summary unless the link names a known tab. */
+  const requestedTabRaw = searchParams.get('tab');
+  const requestedTab: DetailTab | null =
+    requestedTabRaw === 'summary' || requestedTabRaw === 'activity' || requestedTabRaw === 'config'
+      ? requestedTabRaw
+      : null;
   if (data && requestedPlane && handledPlaneLink !== requestedPlane) {
     const row = data.systems.find(
       (system) =>
@@ -330,15 +451,62 @@ export default function Systems() {
     if (row) {
       setHandledPlaneLink(requestedPlane);
       setDetailName(row.name);
-      setTab(requestedPlane === 'sse' ? 'config' : 'summary');
+      setTab(requestedTab ?? (requestedPlane === 'sse' ? 'config' : 'summary'));
     }
   }
   useEffect(() => {
     if (!requestedPlane || handledPlaneLink !== requestedPlane) return;
     const next = new URLSearchParams(searchParams);
     next.delete('plane');
+    next.delete('tab');
     setSearchParams(next, { replace: true });
   }, [requestedPlane, handledPlaneLink, searchParams, setSearchParams]);
+
+  /* Deep-link scroll: `?section=portal|identity|assistant|notifications|runtime-debug`
+     (plus aliases / hash) land on the matching Systems panel once the page body is
+     painted. Unknown section keys are ignored. */
+  const systemsSection =
+    parseSystemsSection(searchParams.get('section')) ??
+    parseSystemsSection(
+      typeof window !== 'undefined' && window.location.hash
+        ? window.location.hash.replace(/^#/, '')
+        : null,
+    );
+  useEffect(() => {
+    if (!data || data.apiError || !systemsSection) return;
+    const t = window.setTimeout(() => {
+      const el =
+        document.getElementById(systemsSectionDomId(systemsSection)) ??
+        document.getElementById(systemsSection);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [data, systemsSection]);
+
+  /* Keep roster triage filters shareable without clobbering section=/plane=/ids=. */
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    const qTrim = rosterQ.trim();
+    if (qTrim) next.set('q', qTrim);
+    else next.delete('q');
+    if (rosterHealth !== 'all') next.set('health', rosterHealth);
+    else next.delete('health');
+    if (rosterLinked !== 'all') next.set('linked', rosterLinked);
+    else next.delete('linked');
+    /* Selection deep-link ids= is URL-owned (Copy selection link) — preserve. */
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [rosterQ, rosterHealth, rosterLinked, searchParams, setSearchParams]);
+
+  /* Re-seed when the address bar changes externally (shared link / back). */
+  useEffect(() => {
+    const qFrom = searchParams.get('q') ?? '';
+    const hFrom = parseSystemsHealthFilter(searchParams.get('health'));
+    const lFrom = parseSystemsLinkedFilter(searchParams.get('linked'));
+    setRosterQ((cur) => (cur === qFrom ? cur : qFrom));
+    setRosterHealth((cur) => (cur === hFrom ? cur : hFrom));
+    setRosterLinked((cur) => (cur === lFrom ? cur : lFrom));
+  }, [searchParams]);
 
   if (!data) {
     return <PageSkeleton variant="list" />;
@@ -369,8 +537,85 @@ export default function Systems() {
   const linkedCount = views.filter((v) => v.live?.linked).length;
   // A live section knows which planes were never configured; an authored one
   // has no such thing, so every fixture row stays in the primary table.
-  const dormantViews = systemsLive && liveState ? views.filter((v) => v.live && !v.live.linked) : [];
-  const activeViews = views.filter((v) => !dormantViews.includes(v));
+  const rosterFilter = { q: rosterQ, health: rosterHealth, linked: rosterLinked };
+  const rosterFilterActive =
+    rosterQ.trim().length > 0 ||
+    rosterHealth !== 'all' ||
+    rosterLinked !== 'all' ||
+    idsFilter !== null;
+  const dormantViewsAll =
+    systemsLive && liveState ? views.filter((v) => v.live && !v.live.linked) : [];
+  const activeViewsAll = views.filter((v) => !dormantViewsAll.includes(v));
+  const matchesIds = (v: PlaneView) => {
+    if (idsFilter === null) return true;
+    const key = systemsPlaneKey(v);
+    return idsFilter.some((id) => id.toLowerCase() === key.toLowerCase());
+  };
+  const dormantViews = dormantViewsAll
+    .filter((v) => systemsViewMatchesFilters(v, rosterFilter))
+    .filter(matchesIds);
+  const activeViews = activeViewsAll
+    .filter((v) => systemsViewMatchesFilters(v, rosterFilter))
+    .filter(matchesIds);
+  const visibleViews = [...activeViews, ...dormantViews];
+  const visibleKeySet = new Set(visibleViews.map(systemsPlaneKey));
+  const prunedKeys = selectedKeys.filter((k) => visibleKeySet.has(k));
+  if (prunedKeys.length !== selectedKeys.length) setSelectedKeys(prunedKeys);
+  const togglePlaneSelect = (v: PlaneView) => {
+    const key = systemsPlaneKey(v);
+    setSelectedKeys((cur) =>
+      cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key],
+    );
+  };
+  const clearIdsFilter = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('ids');
+    setSearchParams(next, { replace: true });
+  };
+  /* Health chips count over q+linked (not health); Linked chips over q+health
+   * (not linked) so each mix stays visible while a chip is active. */
+  const healthUniverse = views.filter((v) =>
+    systemsViewMatchesFilters(v, { q: rosterQ, health: 'all', linked: rosterLinked }),
+  );
+  const linkedUniverse = views.filter((v) =>
+    systemsViewMatchesFilters(v, { q: rosterQ, health: rosterHealth, linked: 'all' }),
+  );
+  const SYSTEMS_HEALTH_CHIP_META: Array<{
+    key: Exclude<SystemsHealthFilter, 'all'>;
+    label: string;
+    tone: 'success' | 'warning' | 'danger' | 'neutral';
+  }> = [
+    { key: 'healthy', label: 'Healthy', tone: 'success' },
+    { key: 'warning', label: 'Warning', tone: 'warning' },
+    { key: 'degraded', label: 'Degraded', tone: 'danger' },
+    { key: 'unlinked', label: 'Unlinked', tone: 'neutral' },
+  ];
+  const healthChips = SYSTEMS_HEALTH_CHIP_META.map((m) => ({
+    ...m,
+    count: healthUniverse.filter((v) => {
+      const h = String(v.stateLabel ?? v.row.state ?? '')
+        .trim()
+        .toLowerCase();
+      return h === m.key;
+    }).length,
+  })).filter((c) => c.count > 0 || rosterHealth === c.key);
+  const SYSTEMS_LINKED_CHIP_META: Array<{
+    key: Exclude<SystemsLinkedFilter, 'all'>;
+    label: string;
+    tone: 'success' | 'neutral';
+  }> = [
+    { key: '1', label: 'Linked', tone: 'success' },
+    { key: '0', label: 'Unlinked', tone: 'neutral' },
+  ];
+  const linkedChips = SYSTEMS_LINKED_CHIP_META.map((m) => ({
+    ...m,
+    count: linkedUniverse.filter((v) =>
+      systemsViewMatchesFilters(v, { q: rosterQ, health: rosterHealth, linked: m.key }),
+    ).length,
+  })).filter((c) => c.count > 0 || rosterLinked === c.key);
+  /* When triage filters leave only unlinked rows, expand the dormant block so
+     the match is not hidden behind a collapsed "+ N not linked" control. */
+  const showDormantEffective = showDormant || (rosterFilterActive && dormantViews.length > 0);
   const throttle = systemsLive ? throttleBanner(views) : null;
   /* Ahead of the throttle banner on purpose: being rate-limited means the
      inventory is behind, while a failing poll may mean there is none. When
@@ -653,7 +898,7 @@ export default function Systems() {
 
   return (
     <>
-    <div className="nt-systems">
+    <div className="nt-systems nt-recon-reveal nt-systems-shell nt-section-panel">
       <ScreenHeader
         overline="Platforms / Connected systems"
         title="Connected systems"
@@ -663,6 +908,9 @@ export default function Systems() {
             {/* Design rule 1: the screen says which source answered and how
                 fresh it is. Same vocabulary as SiteDetail so the portal does
                 not invent a third phrasing for one state. */}
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · Copper NOC
+            </span>
             <span
               className="nt-mono-label"
             >
@@ -670,6 +918,55 @@ export default function Systems() {
                 ? `LIVE · SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : 'NEVER'}`
                 : 'DEMO FIXTURE'}
             </span>
+            {/* LIVE badge on pure live and systems blend alike — mono stamp alone is easy to miss (Loop 169). */}
+            {systemsLive ? <Badge tone="info">LIVE</Badge> : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void navigator.clipboard.writeText(window.location.href).then(
+                  () => toast('View link copied', { tone: 'success' }),
+                  () => toast('Could not copy link', { tone: 'danger' }),
+                );
+              }}
+            >
+              Copy view link
+            </Button>
+            {systemsLive ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label="Download systems roster CSV"
+                onClick={() => {
+                  void (async () => {
+                    const suffix = buildSystemsExportQuery({
+                      q: rosterQ,
+                      health: rosterHealth,
+                      linked: rosterLinked,
+                    });
+                    const res = await downloadApiCsv(
+                      `/api/systems/export${suffix}`,
+                      'systems-roster.csv',
+                    );
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description: suffix
+                          ? `systems-roster.csv — filtered roster (${suffix.slice(1)}; no credentials).`
+                          : 'systems-roster.csv — plane name/health/scope/sync/counts only (no credentials).',
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
             <Button variant="ghost" size="sm" onClick={() => void syncAll()} disabled={syncing}>
               {syncing ? 'Syncing…' : 'Sync all'}
             </Button>
@@ -679,6 +976,7 @@ export default function Systems() {
           </>
         }
       />
+      <div className="nt-plane-theater" role="note">NightDesk · systems spine · identity · brokers · health</div>
 
       <VisualReferencePanel target={{ kind: 'estate', id: 'systems' }} />
       <ConfigRecommendationsPanel title="Connector health recommendations" limit={6} />
@@ -720,29 +1018,171 @@ export default function Systems() {
                is the genuinely linked planes; on an authored one it is the
                rows themselves — never a literal that goes stale the moment a
                fixture plane is added (the authored set is eight, not seven). */
-            systemsLive && liveState
-              ? `${linkedCount} LINKED · SELECT ONE FOR DETAIL`
-              : `${data.systems.length} LINKED · SELECT ONE FOR DETAIL`
+            rosterFilterActive
+              ? `${activeViews.length + dormantViews.length} of ${views.length} match`
+              : systemsLive && liveState
+                ? `${linkedCount} LINKED · SELECT ONE FOR DETAIL`
+                : `${data.systems.length} LINKED · SELECT ONE FOR DETAIL`
           }
         />
-        <div className="nt-plane-table" role="table" aria-label="Connected planes">
-          <div className="nt-plane-row nt-plane-row--head" role="row">
-            <span role="columnheader">System</span>
-            <span role="columnheader">Status</span>
-            <span role="columnheader">Last sync</span>
-            <span role="columnheader" className="nt-plane-row--num">
-              Inventory
-            </span>
-            <span role="columnheader" className="nt-plane-row--num">
-              Calls
-            </span>
-            <span role="columnheader">Auth</span>
-            <span role="columnheader">Scope</span>
-            <span role="columnheader" aria-label="Open detail" />
+        <div className="nt-filter-bar nt-sticky-filters nt-gap-8">
+          <div className="nt-filter-field nt-min-w-200">
+            <Input
+              size="sm"
+              mono
+              placeholder="Name, plane id, scope…"
+              value={rosterQ}
+              onChange={(e) => setRosterQ(e.target.value)}
+              aria-label="Filter systems roster"
+            />
           </div>
-          {activeViews.map((v) => (
-            <PlaneRow key={v.row.name} view={v} onOpen={openPlane} />
-          ))}
+          <div className="nt-filter-field nt-filter-field--md">
+            <Select
+              options={[...SYSTEMS_HEALTH_FILTERS]}
+              value={rosterHealth}
+              onValueChange={(v) => setRosterHealth(parseSystemsHealthFilter(v))}
+              size="sm"
+              aria-label="Health"
+            />
+          </div>
+          <div className="nt-filter-field nt-filter-field--md">
+            <Select
+              options={[...SYSTEMS_LINKED_FILTERS]}
+              value={rosterLinked}
+              onValueChange={(v) => setRosterLinked(parseSystemsLinkedFilter(v))}
+              size="sm"
+              aria-label="Linked"
+            />
+          </div>
+        </div>
+        {healthChips.length > 0 ? (
+          <div className="nt-chip-row" role="group" aria-label="Systems health">
+            <span className="nt-chip-row__label">Health</span>
+            {healthChips.map((c) => (
+              <button
+                key={c.key}
+                type="button"
+                onClick={() => setRosterHealth(rosterHealth === c.key ? 'all' : c.key)}
+                className={rosterHealth === c.key ? 'nt-chip nt-chip--active' : 'nt-chip'}
+                aria-pressed={rosterHealth === c.key}
+              >
+                <Badge tone={c.tone}>{c.label}</Badge>
+                <span className="nt-chip__count">{c.count}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {linkedChips.length > 0 ? (
+          <div className="nt-chip-row" role="group" aria-label="Systems linked">
+            <span className="nt-chip-row__label">Linked</span>
+            {linkedChips.map((c) => (
+              <button
+                key={c.key}
+                type="button"
+                onClick={() => setRosterLinked(rosterLinked === c.key ? 'all' : c.key)}
+                className={
+                  rosterLinked === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+                }
+                aria-pressed={rosterLinked === c.key}
+                data-linked={c.key}
+              >
+                <Badge tone={c.tone}>{c.label}</Badge>
+                <span className="nt-chip__count">{c.count}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {idsFilter !== null ? (
+          <div className="nt-chip-row" role="status">
+            <button
+              type="button"
+              className="nt-chip nt-chip--active"
+              onClick={clearIdsFilter}
+              aria-label="Clear plane selection link filter"
+              title={idsFilter.join(', ')}
+            >
+              {(() => {
+                const present = visibleViews.filter((v) =>
+                  idsFilter.some(
+                    (id) => id.toLowerCase() === systemsPlaneKey(v).toLowerCase(),
+                  ),
+                ).length;
+                return present === idsFilter.length
+                  ? `${idsFilter.length} selected plane${idsFilter.length === 1 ? '' : 's'}`
+                  : `${present} of ${idsFilter.length} selected planes present`;
+              })()}
+              {' — clear'}
+            </button>
+          </div>
+        ) : null}
+        <div className="nt-plane-table" role="table" aria-label="Connected planes">
+          <div className="nt-plane-select-row nt-plane-select-row--head" role="row">
+            <span role="columnheader" className="nt-plane-row__check" aria-label="Select" />
+            <div className="nt-plane-row nt-plane-row--head" role="presentation">
+              <span role="columnheader">System</span>
+              <span role="columnheader">Status</span>
+              <span role="columnheader">Last sync</span>
+              <span role="columnheader" className="nt-plane-row--num">
+                Inventory
+              </span>
+              <span role="columnheader" className="nt-plane-row--num">
+                Calls
+              </span>
+              <span role="columnheader">Auth</span>
+              <span role="columnheader">Scope</span>
+              <span role="columnheader" aria-label="Open detail" />
+            </div>
+          </div>
+          {activeViews.map((v) => {
+            const key = systemsPlaneKey(v);
+            const marked = selectedKeys.includes(key);
+            return (
+              <div key={v.row.name} className="nt-plane-select-row">
+                <span className="nt-plane-row__check">
+                  <Checkbox
+                    aria-label={`Select plane ${v.row.name}`}
+                    checked={marked}
+                    onChange={() => togglePlaneSelect(v)}
+                  />
+                </span>
+                <PlaneRow view={v} onOpen={openPlane} />
+              </div>
+            );
+          })}
+          {activeViews.length === 0 && dormantViews.length === 0 ? (
+            <div className="nt-hint-muted nt-p-12" role="status">
+              <div>
+                Nothing matches this roster filter. Clear q / health / linked
+                {idsFilter !== null ? ' / selection' : ''} to see every plane.
+              </div>
+              {rosterFilterActive ? (
+                <div className="nt-mt-8">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setRosterQ('');
+                      setRosterHealth('all');
+                      setRosterLinked('all');
+                      setSelectedKeys([]);
+                      /* Drop URL-owned triage params in the same turn so the
+                         address-bar re-seed cannot restore a stale q/health/linked. */
+                      const next = new URLSearchParams(searchParams);
+                      next.delete('q');
+                      next.delete('health');
+                      next.delete('linked');
+                      next.delete('ids');
+                      if (next.toString() !== searchParams.toString()) {
+                        setSearchParams(next, { replace: true });
+                      }
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {/* A plane that was never configured has nothing to report, and eight
             of them repeating "never / — / no credentials stored" buried the two
@@ -752,20 +1192,159 @@ export default function Systems() {
             <button
               type="button"
               className="nt-plane-dormant__toggle"
-              aria-expanded={showDormant}
+              aria-expanded={showDormantEffective}
               onClick={() => setShowDormant((v) => !v)}
             >
-              <span aria-hidden="true">{showDormant ? '−' : '+'}</span>
+              <span aria-hidden="true">{showDormantEffective ? '−' : '+'}</span>
               {`${countOf(dormantViews.length, 'system')} not linked`}
               <small>no credentials stored — nothing is polled</small>
             </button>
-            {showDormant ? (
+            {showDormantEffective ? (
               <div className="nt-plane-table" role="table" aria-label="Systems that are not linked">
-                {dormantViews.map((v) => (
-                  <PlaneRow key={v.row.name} view={v} onOpen={openPlane} />
-                ))}
+                {dormantViews.map((v) => {
+                  const key = systemsPlaneKey(v);
+                  const marked = selectedKeys.includes(key);
+                  return (
+                    <div key={v.row.name} className="nt-plane-select-row">
+                      <span className="nt-plane-row__check">
+                        <Checkbox
+                          aria-label={`Select plane ${v.row.name}`}
+                          checked={marked}
+                          onChange={() => togglePlaneSelect(v)}
+                        />
+                      </span>
+                      <PlaneRow view={v} onOpen={openPlane} />
+                    </div>
+                  );
+                })}
               </div>
             ) : null}
+          </div>
+        ) : null}
+        {selectedKeys.length > 0 ? (
+          <div
+            className="nt-configure-bulk-bar nt-bulk-glass"
+            role="region"
+            aria-label="Plane selection actions"
+          >
+            <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
+            <span className="nt-configure-bulk-bar__hint">
+              export, copy plane ids, or share a selection link for only the planes you marked —
+              drawer open stays independent
+            </span>
+            <span className="nt-configure-bulk-bar__actions">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  const selected = new Set(selectedKeys);
+                  const picked = visibleViews.filter((v) => selected.has(systemsPlaneKey(v)));
+                  if (picked.length === 0) {
+                    toast('No selected planes still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const n = exportTableCsv(
+                    'systems-planes-selected.csv',
+                    ['name', 'planeId', 'kind', 'health', 'scope', 'linked', 'lastSync', 'inventory', 'calls'],
+                    picked.map((v) => {
+                      const inv = countFact(v.facts);
+                      return [
+                        v.row.name,
+                        systemsPlaneKey(v),
+                        v.row.kind,
+                        v.stateLabel,
+                        v.row.scope,
+                        v.live ? (v.live.linked ? 'yes' : 'no') : '',
+                        factValue(v.facts, 'Last sync') ?? '',
+                        inv ? `${inv.value} ${inv.unit}`.trim() : '',
+                        factValue(v.facts, 'Calls today') ?? '',
+                      ];
+                    }),
+                  );
+                  toast(`Exported ${countOf(n, 'selected plane')}`, {
+                    description: 'systems-planes-selected.csv — roster fields only (no credentials).',
+                    tone: 'success',
+                  });
+                }}
+              >
+                Export selected
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const selected = new Set(selectedKeys);
+                    const picked = visibleViews.filter((v) => selected.has(systemsPlaneKey(v)));
+                    if (picked.length === 0) {
+                      toast('No selected planes still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const ids = [...new Set(picked.map(systemsPlaneKey).filter(Boolean))];
+                    if (ids.length === 0) {
+                      toast('No plane ids on the selection', {
+                        description: 'Export CSV for names instead.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const text = ids.join('\n');
+                    try {
+                      await navigator.clipboard.writeText(text);
+                      toast(`Copied ${countOf(ids.length, 'plane id')}`, {
+                        description: 'newline-joined · paste into a ticket or change window',
+                        tone: 'success',
+                      });
+                    } catch {
+                      toast('Could not copy plane ids', { description: text, tone: 'warning' });
+                    }
+                  })();
+                }}
+              >
+                Copy plane ids
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const selected = new Set(selectedKeys);
+                    const picked = visibleViews.filter((v) => selected.has(systemsPlaneKey(v)));
+                    if (picked.length === 0) {
+                      toast('No selected planes still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const next = new URLSearchParams(searchParams);
+                    next.set('ids', picked.map(systemsPlaneKey).join('\n'));
+                    const qs = next.toString();
+                    const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                    try {
+                      await navigator.clipboard.writeText(url);
+                      toast('Selection link copied', {
+                        description: `${picked.length} plane${picked.length === 1 ? '' : 's'} · ids=`,
+                        tone: 'success',
+                      });
+                    } catch {
+                      toast('Could not copy link', { description: url, tone: 'warning' });
+                    }
+                  })();
+                }}
+              >
+                Copy selection link
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
+                Clear
+              </Button>
+            </span>
           </div>
         ) : null}
       </div>
@@ -866,7 +1445,7 @@ export default function Systems() {
                   drawer shows a stale plane with nothing to explain it. */}
               {curView.live && retryNote(curView.live) ? (
                 <span
-                  className="nt-hint-muted nt-hint-muted" style={{ color: "var(--nd-warning)" }}
+                  className="nt-hint-muted nt-warning-text"
                 >
                   {retryNote(curView.live)}
                 </span>
@@ -877,10 +1456,62 @@ export default function Systems() {
 
             {tab === 'summary' ? (
               <div className="nt-stack nt-gap-18">
+                <div className="nt-row nt-gap-8">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      const planeId = curView.planeId ?? '';
+                      const safeName = (cur.name || planeId || 'plane')
+                        .toLowerCase()
+                        .replace(/[^a-z0-9]+/g, '-')
+                        .replace(/^-|-$/g, '');
+                      const rows: Array<Array<unknown>> = [
+                        ['field', 'value'],
+                        ['plane', cur.name],
+                        ['planeId', planeId],
+                        ['kind', cur.kind],
+                        ['health', curView.stateLabel],
+                        ['healthTone', curView.stateTone],
+                        ['unverified', curView.live?.stale ? 'yes' : 'no'],
+                        ['scope', cur.scope],
+                        ['note', curView.live?.note ?? cur.scopeNote],
+                        ['retry', curView.live ? retryNote(curView.live) ?? '' : ''],
+                        ['lastSync', curView.live?.lastSync ?? ''],
+                        ['consecutiveFailures', curView.live?.consecutiveFailures ?? ''],
+                        ['callsToday', curView.live?.callsToday ?? ''],
+                        ['deviceCount', curView.live?.deviceCount ?? ''],
+                      ];
+                      for (const f of curView.facts) {
+                        rows.push([`fact:${f.k}`, f.v]);
+                      }
+                      for (const s of cur.sites) {
+                        rows.push([`site:${s.name}`, s.detail]);
+                      }
+                      for (const l of cur.live) {
+                        rows.push([`live:${l.label}`, l.value]);
+                      }
+                      /* Drop the header row we used as a template — exportTableCsv
+                         takes headers separately. */
+                      const body = rows.slice(1);
+                      const n = exportTableCsv(
+                        `plane-health-${safeName || 'summary'}.csv`,
+                        ['field', 'value'],
+                        body,
+                      );
+                      toast(`Exported health summary (${n} rows)`, {
+                        description: `${cur.name} — facts, sites, and live counts only. No credentials.`,
+                        tone: 'success',
+                      });
+                    }}
+                  >
+                    Export health summary
+                  </Button>
+                </div>
                 <div className="nt-fact-grid nt-fact-grid--dense">
                   {curView.facts.map((f) => (
                     <div key={f.k} className="nt-metric-tile nt-metric-tile--bordered">
-                      <span className="nt-fact-row__k" style={{ width: 'auto', flex: 'none' }}>{f.k}</span>
+                      <span className="nt-fact-row__k nt-flex-none">{f.k}</span>
                       <span className="nt-fact-row__v">{f.v}</span>
                     </div>
                   ))}
@@ -906,23 +1537,13 @@ export default function Systems() {
                               setDetailName(null);
                               navigate(`/sites/${encodeURIComponent(siteId)}`);
                             }}
-                            style={{
-                              flex: 1,
-                              minWidth: 0,
-                              background: 'none',
-                              border: 'none',
-                              padding: 0,
-                              cursor: 'pointer',
-                              textAlign: 'left',
-                              fontSize: 12.5,
-                              color: 'var(--nd-accent-text)',
-                            }}
+                            className="nt-sys-link"
                           >
                             {x.name}
                           </button>
                         ) : (
                           <span
-                            className="nt-body-sm nt-flex-1" style={{ color: "var(--nd-text-primary)" }}
+                            className="nt-body-sm nt-flex-1 nt-text-primary"
                           >
                             {x.name}
                           </span>
@@ -948,7 +1569,7 @@ export default function Systems() {
                       className="nt-row-center nt-gap-10 nt-rule-row-md"
                     >
                       <span
-                        className="nt-mono-11 nt-mono-11" style={{ fontSize: 12, color: "var(--nd-text-primary)", width: 80, flex: "0 0 80px" }}
+                        className="nt-mono-11 nt-sys-k"
                       >
                         {l.value}
                       </span>
@@ -960,7 +1581,7 @@ export default function Systems() {
                   {cur.live.length === 0 ? (
                     <NothingReported label="no sessions, devices or alerts sourced here yet" />
                   ) : null}
-                  <div className="nt-chip-wrap" style={{ paddingTop: 12 }}>
+                  <div className="nt-chip-wrap nt-pt-12">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -989,68 +1610,62 @@ export default function Systems() {
 
             {tab === 'activity' ? (
               <div className="nt-stack nt-gap-18">
-                <div className="nt-stack nt-gap-2">
+                <div className="nt-stack nt-gap-2 nt-section-panel">
                   <SectionHeader label="API calls" meta="LAST 20 MINUTES" />
-                  {curCalls.map((c, i) => (
-                    <div
-                      key={`${c.time}-${i}`}
-                      className="nt-row-center nt-gap-10" style={{ padding: "7px 0", borderBottom: "1px solid var(--nd-border-subtle)" }}
-                    >
-                      <span
-                        className="nt-hint-muted nt-w-44"
-                      >
-                        {hhmm(c.time)}
-                      </span>
-                      <span
-                        className="nt-ellipsis nt-mono-11 nt-flex-1 nt-text-sec"
-                      >
-                        {c.path}
-                      </span>
-                      <span
-                        className="nt-hint-muted" style={{ width: 56,
-                          textAlign: 'right' }}
-                      >
-                        {c.ms}
-                      </span>
-                      <Badge tone={c.tone}>{c.code}</Badge>
+                  {curCalls.length > 0 ? (
+                    <div className="nt-log-stream" role="log" aria-label="API calls last 20 minutes">
+                      {curCalls.map((c, i) => (
+                        <div
+                          key={`${c.time}-${i}`}
+                          className="nt-log-stream__line nt-row-center nt-gap-10 nt-rule-pad-7"
+                          data-tone={c.tone === 'danger' || c.tone === 'warning' ? c.tone : undefined}
+                        >
+                          <span className="nt-log-stream__ts nt-hint-muted nt-w-44">
+                            {hhmm(c.time)}
+                          </span>
+                          <span className="nt-ellipsis nt-mono-11 nt-flex-1 nt-text-sec">
+                            {c.path}
+                          </span>
+                          <span className="nt-hint-muted nt-w-56-right">
+                            {c.ms}
+                          </span>
+                          <Badge tone={c.tone}>{c.code}</Badge>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                  {curCalls.length === 0 ? (
-                    <div
-                      className="nt-hint-muted" style={{ padding: '7px 0' }}
-                    >
+                  ) : (
+                    <div className="nt-hint-muted nt-pad-7-0">
                       no calls recorded yet
                     </div>
-                  ) : null}
+                  )}
                 </div>
 
-                <div className="nt-stack nt-gap-2">
+                <div className="nt-stack nt-gap-2 nt-section-panel">
                   <SectionHeader label="Recent events" />
-                  {cur.events.map((e, i) => (
-                    <div
-                      key={`${e.time}-${i}`}
-                      className="nt-row nt-gap-12 nt-rule-row"
-                    >
-                      <span
-                        className="nt-hint-muted nt-w-44"
-                      >
-                        {hhmm(e.time)}
-                      </span>
-                      <div className="nt-flex-1">
-                        <div className="nt-body-sm nt-text-pri-12">
-                          {e.what}
-                        </div>
+                  {cur.events.length > 0 ? (
+                    <div className="nt-log-stream" role="log" aria-label="Recent plane events">
+                      {cur.events.map((e, i) => (
                         <div
-                          className="nt-hint-muted"
+                          key={`${e.time}-${i}`}
+                          className="nt-log-stream__line nt-row nt-gap-12 nt-rule-row"
                         >
-                          {e.who}
+                          <span className="nt-log-stream__ts nt-hint-muted nt-w-44">
+                            {hhmm(e.time)}
+                          </span>
+                          <div className="nt-flex-1">
+                            <div className="nt-body-sm nt-text-pri-12">
+                              {e.what}
+                            </div>
+                            <div className="nt-hint-muted">
+                              {e.who}
+                            </div>
+                          </div>
                         </div>
-                      </div>
+                      ))}
                     </div>
-                  ))}
-                  {cur.events.length === 0 ? (
+                  ) : (
                     <NothingReported label="no brokered writes, token rotations or cluster changes recorded" />
-                  ) : null}
+                  )}
                 </div>
               </div>
             ) : null}
@@ -1089,12 +1704,11 @@ export default function Systems() {
                       key={p.what}
                       className="nt-row-center nt-gap-10 nt-rule-row-md"
                     >
-                      <span className="nt-body-sm nt-flex-1" style={{ color: "var(--nd-text-primary)" }}>
+                      <span className="nt-body-sm nt-flex-1 nt-text-primary">
                         {p.what}
                       </span>
                       <span
-                        className="nt-hint-muted" style={{ width: 96,
-                          textAlign: 'right' }}
+                        className="nt-hint-muted nt-w-96-right"
                       >
                         {p.every}
                       </span>
@@ -1170,6 +1784,7 @@ export default function Systems() {
           else closeConnect();
         }}
         width="lg"
+        className="nd-drawer--write-ritual nt-write-ritual"
         title={`Configure ${selectedEntry.label}`}
       >
         <form
@@ -1177,6 +1792,7 @@ export default function Systems() {
           onSubmit={(event) => event.preventDefault()}
           className="nt-stack nt-gap-14"
         >
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-chip-wrap nt-chip-wrap--tight" aria-label="Declared capabilities">
             <Badge tone={selectedEntry.tone}>{selectedEntry.contributesClients ? 'client source' : 'inventory source'}</Badge>
             {selectedEntry.writeCapabilities.length > 0 ? selectedEntry.writeCapabilities.map((capability) => (
@@ -1296,10 +1912,10 @@ export default function Systems() {
           </div>
 
           <details>
-            <summary className="nt-text-sec" style={{ cursor: "pointer", fontSize: 12.5 }}>
+            <summary className="nt-text-sec nt-fs-125 nt-cursor-pointer">
               Advanced policy
             </summary>
-            <div className="nt-stack-col nt-gap-10" style={{ paddingTop: 10 }}>
+            <div className="nt-stack-col nt-gap-10 nt-pt-10">
               <Checkbox
                 label="Verify TLS certificate"
                 checked={draft.verifyTls}

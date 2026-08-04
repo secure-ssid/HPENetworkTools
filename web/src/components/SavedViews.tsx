@@ -91,11 +91,11 @@ export function SavedViews({
   };
 
   return (
-    <div className="nd-viewopts" ref={rootRef}>
+    <div className="nd-viewopts nt-saved-views" ref={rootRef}>
       <button
         type="button"
         ref={triggerRef}
-        className="nd-btn nd-btn--secondary nd-btn--sm"
+        className="nd-btn nt-btn nd-btn--secondary nt-btn--secondary nd-btn--sm nt-btn--sm"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
@@ -105,30 +105,24 @@ export function SavedViews({
         /* Left-anchored: filter-row triggers sit mid-row, where the
            nd-viewopts right anchor would overflow the viewport edge. */
         <div
-          className="nd-viewopts__panel"
+          className="nd-viewopts__panel nt-view-options__panel nt-saved-menu-left nt-panel-glass"
           role="group"
           aria-label="Saved views"
-          style={{ right: 'auto', left: 0, minWidth: 260 }}
         >
-          <div className="nd-viewopts__heading">Saved views</div>
+          <div className="nd-viewopts__heading nt-view-options__heading">Saved views</div>
           {views.length === 0 ? (
             <div
-              style={{
-                padding: '2px 6px 8px',
-                fontSize: 'var(--nd-text-12)',
-                color: 'var(--nd-text-muted)',
-                lineHeight: 1.5,
-              }}
+              className="nt-saved-hint"
             >
               No saved views — name the current filters and layout below to keep them.
             </div>
           ) : (
-            <ul className="nd-viewopts__list">
+            <ul className="nd-viewopts__list nt-view-options__list">
               {views.map((view) => (
-                <li key={view.name} className="nd-viewopts__item">
+                <li key={view.name} className="nd-viewopts__item nt-view-options__item">
                   {renaming === view.name ? (
                     <form
-                      style={{ display: 'flex', flex: 1, gap: 4, minWidth: 0 }}
+                      className="nt-saved-row"
                       onSubmit={(event) => {
                         event.preventDefault();
                         commitRename(view.name);
@@ -157,27 +151,14 @@ export function SavedViews({
                           onApply(view);
                           setOpen(false);
                         }}
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          background: 'none',
-                          border: 'none',
-                          padding: 0,
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          fontSize: 'var(--nd-text-12)',
-                          color: 'var(--nd-text-primary)',
-                        }}
+                        className="nt-fs-12-pri"
                       >
                         {view.name}
                       </button>
-                      <span className="nd-viewopts__moves">
+                      <span className="nd-viewopts__move nt-view-options__moves nt-view-options__moves">
                         <button
                           type="button"
-                          className="nd-viewopts__move"
+                          className="nd-viewopts__move nt-view-options__move"
                           aria-label={`Rename view ${view.name}`}
                           onClick={() => {
                             setRenaming(view.name);
@@ -188,7 +169,7 @@ export function SavedViews({
                         </button>
                         <button
                           type="button"
-                          className="nd-viewopts__move"
+                          className="nd-viewopts__move nt-view-options__move"
                           aria-label={`Delete view ${view.name}`}
                           onClick={() => onChange(views.filter((v) => v.name !== view.name))}
                         >
@@ -202,19 +183,13 @@ export function SavedViews({
             </ul>
           )}
           <form
-            style={{
-              display: 'flex',
-              gap: 6,
-              marginTop: 8,
-              paddingTop: 8,
-              borderTop: '1px solid var(--nd-border-default)',
-            }}
+            className="nt-saved-footer"
             onSubmit={(event) => {
               event.preventDefault();
               save();
             }}
           >
-            <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="nt-flex-1">
               <Input
                 size="sm"
                 mono
@@ -230,7 +205,7 @@ export function SavedViews({
           </form>
           {nameTaken ? (
             <div
-              className="nt-hint-muted" style={{ padding: "6px 6px 0" }}
+              className="nt-hint-muted nt-pad-6-6-0"
             >
               a view with this name exists — pick another name, or rename or delete it first
             </div>

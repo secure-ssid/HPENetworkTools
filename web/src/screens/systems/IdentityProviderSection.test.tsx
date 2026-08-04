@@ -193,4 +193,21 @@ describe('identity provider section', () => {
       expect(screen.getByText(/no identity provider — every route is open/)).toBeTruthy(),
     );
   });
+
+  it('offers Copy section link for the identity deep-link (Loop 124)', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.mocked(getAuthConfig).mockResolvedValue(CONFIGURED);
+    mount();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copy section link' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy section link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(
+      /\/systems\?section=identity#systems-section-identity/,
+    );
+    expect(document.getElementById('systems-section-identity')).toBeTruthy();
+  });
 });

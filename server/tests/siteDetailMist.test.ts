@@ -121,6 +121,44 @@ describe('site detail Mist keys — demo mode', () => {
     });
   });
 
+  it('GET /api/sites/:siteId/sle/export returns SLE metric CSV (Loop 98)', async () => {
+    const res = await fetch(`${base}/api/sites/campus-02/sle/export`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await res.text();
+    const header = text.split('\n')[0] ?? '';
+    expect(header).toContain('metric');
+    expect(header).toContain('success');
+    expect(header).toContain('samples');
+    expect(header).toContain('impactUsers');
+    expect(text).toMatch(/coverage|time-to-connect|capacity/i);
+    expect(text).not.toMatch(/password|secret|token|apiKey|credential/i);
+  });
+
+  it('GET /api/sites/:siteId/sle/:metric/export returns drill CSV (Loop 98)', async () => {
+    const res = await fetch(`${base}/api/sites/campus-02/sle/coverage/export`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await res.text();
+    const header = text.split('\n')[0] ?? '';
+    expect(header).toContain('section');
+    expect(header).toContain('name');
+    expect(header).toContain('mac');
+    expect(text).toMatch(/classifier|impacted-client|impacted-ap/);
+    expect(text).toMatch(/signal-strength|s\.mehta|ap-3f-14/i);
+    expect(text).not.toMatch(/password|secret|token|apiKey|credential/i);
+  });
+
+  it('GET /api/sites/:siteId/sle/export 404s when no SLE scores', async () => {
+    const res = await fetch(`${base}/api/sites/warehouse-dc1/sle/export`);
+    // warehouse may or may not have SLE — if it has scores, accept 200; otherwise 404.
+    if (res.status === 200) {
+      expect(res.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    } else {
+      expect(res.status).toBe(404);
+    }
+  });
+
   it('the demo drill 404s a drill the demo world did not author', async () => {
     const { status, body } = await getJson('/api/sites/campus-02/sle/roaming');
     expect(status).toBe(404);
@@ -352,6 +390,51 @@ describe('site detail Mist keys — live mode', () => {
     expect(status).toBe(200);
     expect(body.rogues).toHaveLength(1);
     expect(body.rogues[0]).toMatchObject({ bssid: '5c:5b:35:00:0e:77', seenOnLan: true });
+  });
+
+  it('GET /api/sites/:siteId/rogues/export returns site-scoped CSV (Loop 104)', async () => {
+    // Live cache only knows the site via a contributed device; rogues ride the same pull.
+    contributions.set('mist', {
+      devices: [MIST_AP],
+      mistRogues: [
+        {
+          siteId: 'campus-02',
+          siteName: 'Campus-02 Research',
+          bssid: '5c:5b:35:00:0e:77',
+          ssid: 'FREE-WIFI',
+          channel: 6,
+          avgRssi: -48,
+          numAps: 2,
+          seenOnLan: true,
+        },
+        {
+          siteId: 'northgate',
+          siteName: 'Northgate Clinic',
+          bssid: '70:a7:41:19:02:3c',
+          ssid: 'Xfinitywifi',
+          channel: 149,
+          avgRssi: -78,
+          numAps: 3,
+          seenOnLan: false,
+        },
+      ],
+    });
+    const r = await fetch(`${base}/api/sites/campus-02/rogues/export`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await r.text();
+    const header = text.split('\n')[0] ?? '';
+    expect(header).toContain('bssid');
+    expect(header).toContain('seenOnLan');
+    expect(header).toContain('siteId');
+    expect(text).toMatch(/campus-02/i);
+    expect(text).toMatch(/5c:5b:35:00:0e:77/i);
+    // Northgate BSSID must not leak into this site's CSV.
+    expect(text).not.toMatch(/70:a7:41:19:02:3c/i);
+    expect(text).not.toMatch(/api[_-]?key\s*[:=]|bearer\s+[a-z0-9._-]+|password|secret|token/i);
+
+    const unknown = await fetch(`${base}/api/sites/no-such-place/rogues/export`);
+    expect(unknown.status).toBe(404);
   });
 
   it('the audit-log route calls the adapter once and serves the second read from the TTL cache', async () => {

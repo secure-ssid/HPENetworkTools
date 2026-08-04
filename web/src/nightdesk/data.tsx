@@ -18,11 +18,13 @@ export function Stat({
   deltaTone?: 'positive' | 'negative' | 'neutral';
 }) {
   return (
-    <div className="nd-stat">
-      <div className="nd-stat__rule" />
-      <div className="nd-micro-label">{label}</div>
-      <div className="nd-stat__value">{value}</div>
-      {delta ? <div className={`nd-stat__delta nd-stat__delta--${deltaTone}`}>{delta}</div> : null}
+    <div className="nd-stat nt-metric-tile nt-stat-tile" data-delta={deltaTone}>
+      <div className="nd-stat__rule nt-metric-tile__rule" />
+      <div className="nd-micro-label nt-micro-label nt-metric-tile__k">{label}</div>
+      <div className="nd-stat__value nt-metric-tile__v">{value}</div>
+      {delta ? (
+        <div className={`nd-stat__delta nd-stat__delta--${deltaTone} nt-metric-tile__note`}>{delta}</div>
+      ) : null}
     </div>
   );
 }
@@ -42,8 +44,16 @@ export function Badge({
   children: ReactNode;
 }) {
   return (
-    <span className={cx('nd-badge', plane ? 'nd-badge--plane' : `nd-badge--${tone}`)}>
-      {dot ? <span className="nd-badge__dot" /> : null}
+    <span
+      className={cx(
+        'nd-badge',
+        plane ? 'nd-badge--plane nt-plane-chip' : `nd-badge--${tone}`,
+        !plane && 'nt-status-chip',
+      )}
+      data-tone={plane ? undefined : tone}
+      data-plane={plane ? 'true' : undefined}
+    >
+      {dot ? <span className="nd-badge__dot nt-status-dot" data-tone={tone} /> : null}
       {children}
     </span>
   );
@@ -60,7 +70,7 @@ export function Avatar({ name, size = 'sm' }: { name: string; size?: 'sm' | 'md'
     .join('')
     .toUpperCase();
   return (
-    <span className={`nd-avatar nd-avatar--${size}`} title={name}>
+    <span className={`nd-avatar nd-avatar--${size} nt-avatar`} title={name} data-size={size}>
       {initials}
     </span>
   );
@@ -92,21 +102,21 @@ export function Progress({
   const known = Number.isFinite(raw);
   const pct = known ? Math.max(0, Math.min(100, raw)) : 0;
   return (
-    <div className={cx('nd-progress', className)}>
+    <div className={cx('nd-progress', 'nt-progress-rail', className)} data-tone={tone}>
       {label || note ? (
-        <div className="nd-progress__head">
-          {label ? <span className="nd-micro-label">{label}</span> : <span />}
-          {note ? <span className="nd-progress__note">{note}</span> : null}
+        <div className="nd-progress__head nt-progress-rail__head">
+          {label ? <span className="nd-micro-label nt-micro-label">{label}</span> : <span />}
+          {note ? <span className="nd-progress__note nt-progress-rail__note">{note}</span> : null}
         </div>
       ) : null}
       <div
-        className="nd-progress__track"
+        className="nd-progress__track nt-progress-rail"
         role="progressbar"
         aria-valuenow={known ? value : undefined}
         aria-valuemin={0}
         aria-valuemax={max}
       >
-        <div className={`nd-progress__fill nd-progress__fill--${tone}`} style={{ width: `${pct}%` }} />
+        <div className={`nd-progress__fill nd-progress__fill--${tone} nt-progress-rail__fill`} style={{ ["--nd-health" as string]: `${pct}%` }} />
       </div>
     </div>
   );
@@ -118,15 +128,19 @@ export function EmptyState({
   title,
   description,
   children,
+  className,
 }: {
   title: string;
   description?: string;
   children?: ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="nd-empty">
-      <div className="nd-empty__title">{title}</div>
-      {description ? <div className="nd-empty__desc">{description}</div> : null}
+    <div className={cx('nd-empty', 'nt-empty', 'nt-empty-cinema', className)}>
+      <div className="nt-empty-wake__mark" aria-hidden>ND</div>
+      <div className="nd-empty__kicker nt-empty-cinema__kicker">NightDesk · quiet lane</div>
+      <div className="nd-empty__title nt-empty-cinema__title">{title}</div>
+      {description ? <div className="nd-empty__desc nt-empty-cinema__body">{description}</div> : null}
       {children}
     </div>
   );
@@ -135,7 +149,14 @@ export function EmptyState({
 /* ---------- Spinner / Skeleton ---------- */
 
 export function Spinner({ size = 'sm' }: { size?: 'sm' | 'md' }) {
-  return <span className={`nd-spinner nd-spinner--${size}`} role="status" aria-label="Loading" />;
+  return (
+    <span
+      className={`nd-spinner nd-spinner--${size} nt-spinner`}
+      role="status"
+      aria-label="Loading"
+      data-size={size}
+    />
+  );
 }
 
 export function Skeleton({
@@ -149,7 +170,7 @@ export function Skeleton({
   className?: string;
   style?: CSSProperties;
 }) {
-  return <div className={cx('nd-skeleton', className)} style={{ width, height, ...style }} />;
+  return <div className={cx('nd-skeleton', 'nt-skeleton-block', className)} style={{ width, height, ...style }} />;
 }
 
 /** Route/list first paint — copper-NOC skeleton choreography instead of a lone spinner. */
@@ -160,25 +181,26 @@ export function PageSkeleton({
 }) {
   if (variant === 'overview') {
     return (
-      <div className="nd-page-skeleton" aria-busy="true" aria-label="Loading overview">
-        <div className="nd-page-skeleton__header">
+      <div className="nd-page-skeleton nd-page-skeleton--war nt-page-skeleton nt-war-room-wake" aria-busy="true" aria-label="Loading overview">
+        <div className="nd-page-skeleton__kicker nt-page-skeleton__kicker">NightDesk · waking the war room</div>
+        <div className="nd-page-skeleton__header nt-page-skeleton__header">
           <Skeleton width={220} height={28} />
           <Skeleton width={140} height={28} />
         </div>
-        <div className="nd-page-skeleton__stats">
+        <div className="nd-page-skeleton__stats nt-page-skeleton__stats">
           {Array.from({ length: 5 }, (_, i) => (
-            <Skeleton key={i} height={72} className="nd-page-skeleton__row" />
+            <Skeleton key={i} height={72} className="nd-page-skeleton__row nt-page-skeleton__row" />
           ))}
         </div>
-        <div className="nd-page-skeleton__grid">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="nd-page-skeleton__grid nt-page-skeleton__grid">
+          <div className="nt-stack-8">
             {Array.from({ length: 6 }, (_, i) => (
-              <Skeleton key={i} height={40} className="nd-page-skeleton__row" />
+              <Skeleton key={i} height={40} className="nd-page-skeleton__row nt-page-skeleton__row" />
             ))}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div className="nt-stack-8">
             {Array.from({ length: 5 }, (_, i) => (
-              <Skeleton key={i} height={36} className="nd-page-skeleton__row" />
+              <Skeleton key={i} height={36} className="nd-page-skeleton__row nt-page-skeleton__row" />
             ))}
           </div>
         </div>
@@ -188,15 +210,16 @@ export function PageSkeleton({
 
   if (variant === 'detail') {
     return (
-      <div className="nd-page-skeleton" aria-busy="true" aria-label="Loading detail">
-        <div className="nd-page-skeleton__header">
+      <div className="nd-page-skeleton nd-page-skeleton--war nt-page-skeleton nt-war-room-wake" aria-busy="true" aria-label="Loading detail">
+        <div className="nd-page-skeleton__kicker nt-page-skeleton__kicker">NightDesk · resolving device</div>
+        <div className="nd-page-skeleton__header nt-page-skeleton__header">
           <Skeleton width={280} height={28} />
           <Skeleton width={180} height={28} />
         </div>
         <Skeleton height={64} />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="nt-stack-8">
           {Array.from({ length: 8 }, (_, i) => (
-            <Skeleton key={i} height={36} className="nd-page-skeleton__row" />
+            <Skeleton key={i} height={36} className="nd-page-skeleton__row nt-page-skeleton__row" />
           ))}
         </div>
       </div>
@@ -204,15 +227,16 @@ export function PageSkeleton({
   }
 
   return (
-    <div className="nd-page-skeleton" aria-busy="true" aria-label="Loading NightDesk">
-      <div className="nd-page-skeleton__header">
+    <div className="nd-page-skeleton nd-page-skeleton--war nt-page-skeleton nt-war-room-wake" aria-busy="true" aria-label="Loading NightDesk">
+      <div className="nd-page-skeleton__kicker nt-page-skeleton__kicker">NightDesk · assembling the lane</div>
+      <div className="nd-page-skeleton__header nt-page-skeleton__header">
         <Skeleton width={200} height={28} />
         <Skeleton width={160} height={28} />
       </div>
       <Skeleton height={40} />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div className="nt-stack-6">
         {Array.from({ length: 10 }, (_, i) => (
-          <Skeleton key={i} height={38} className="nd-page-skeleton__row" />
+          <Skeleton key={i} height={38} className="nd-page-skeleton__row nt-page-skeleton__row" />
         ))}
       </div>
     </div>
@@ -225,16 +249,16 @@ export type Crumb = { label: string; onClick?: () => void };
 
 export function Breadcrumbs({ items }: { items: Crumb[] }) {
   return (
-    <nav className="nd-crumbs" aria-label="Breadcrumbs">
+    <nav className="nd-crumbs nt-crumb nt-breadcrumbs" aria-label="Breadcrumbs">
       {items.map((item, i) => (
-        <span key={i} style={{ display: 'contents' }}>
-          {i > 0 ? <span className="nd-crumbs__sep">/</span> : null}
+        <span key={i} className="nt-contents">
+          {i > 0 ? <span className="nd-crumbs__sep nt-breadcrumbs__sep" aria-hidden>/</span> : null}
           {item.onClick ? (
-            <button type="button" className="nd-crumbs__link" onClick={item.onClick}>
+            <button type="button" className="nd-crumbs__link nt-breadcrumbs__link" onClick={item.onClick}>
               {item.label}
             </button>
           ) : (
-            <span className={cx('nd-crumbs__item', i === items.length - 1 && 'nd-crumbs__item--current')}>
+            <span className={cx('nd-crumbs__item', 'nt-breadcrumbs__item', i === items.length - 1 && 'nd-crumbs__item--current', i === items.length - 1 && 'nt-breadcrumbs__item--current')}>
               {item.label}
             </span>
           )}
@@ -270,10 +294,10 @@ export function Pagination({
   onChange: (page: number) => void;
 }) {
   return (
-    <div className="nd-pagination">
+    <div className="nd-pagination nt-pagination nt-toolbar-glass" role="navigation" aria-label="Pagination">
       <button
         type="button"
-        className="nd-pagebtn"
+        className="nd-pagebtn nt-pagebtn"
         disabled={page <= 1}
         onClick={() => onChange(page - 1)}
         aria-label="Previous page"
@@ -282,15 +306,17 @@ export function Pagination({
       </button>
       {pageList(page, total).map((p, i) =>
         p === '…' ? (
-          <span key={`gap-${i}`} className="nd-pagination__gap">
+          <span key={`gap-${i}`} className="nd-pagination__gap nt-pagination__gap">
             …
           </span>
         ) : (
           <button
             key={p}
             type="button"
-            className={cx('nd-pagebtn', p === page && 'nd-pagebtn--current')}
+            className={cx('nd-pagebtn', 'nt-pagebtn', p === page && 'nd-pagebtn--current', p === page && 'nt-pagebtn--current')}
             onClick={() => onChange(p)}
+            aria-label={p === page ? `Page ${p}, current` : `Page ${p}`}
+            aria-current={p === page ? 'page' : undefined}
           >
             {p}
           </button>
@@ -298,7 +324,7 @@ export function Pagination({
       )}
       <button
         type="button"
-        className="nd-pagebtn"
+        className="nd-pagebtn nt-pagebtn"
         disabled={page >= total}
         onClick={() => onChange(page + 1)}
         aria-label="Next page"

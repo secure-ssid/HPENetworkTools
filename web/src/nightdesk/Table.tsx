@@ -4,14 +4,17 @@ import { cx } from './utils';
 type TableProps = {
   density?: 'comfortable' | 'compact';
   className?: string;
+  /** Accessible name for the table — same contract as DataTable.ariaLabel. */
+  ariaLabel?: string;
   children: ReactNode;
 };
 
-function TableRoot({ density = 'comfortable', className, children }: TableProps) {
+function TableRoot({ density = 'comfortable', className, ariaLabel, children }: TableProps) {
   return (
-    <div className="nd-table-scroll">
+    <div className="nd-table-scroll nt-table-scroll">
       <table
         className={cx('nd-table', 'nd-table--open', density === 'compact' && 'nd-table--compact', className)}
+        aria-label={ariaLabel}
       >
         {children}
       </table>

@@ -235,6 +235,105 @@ describe('silence routes', () => {
     expect(body.error).toContain('unknown silence');
     expect(auditEvents()).toHaveLength(before);
   });
+
+  it('GET /api/silences/export returns CSV (Loop 93) and honours active=', async () => {
+    const created = await sendJson('POST', '/api/silences', {
+      device: 'gw-edge-1',
+      reason: 'export check',
+      durationMinutes: 60,
+    });
+    expect(created.status).toBe(201);
+    const silence = created.body.silence as AlertSilence;
+
+    const csv = await fetch(`${base}/api/silences/export`);
+    expect(csv.status).toBe(200);
+    expect(csv.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await csv.text();
+    const header = text.split('\n')[0] ?? '';
+    expect(header).toContain('id');
+    expect(header).toContain('reason');
+    expect(header).toContain('until');
+    expect(header).toContain('expired');
+    expect(text).toContain(silence.id);
+    expect(text).toContain('export check');
+    expect(text).not.toMatch(/api[_-]?key\s*[:=]|bearer\s+[a-z0-9._-]+|password|secret/i);
+
+    const activeOnly = await fetch(`${base}/api/silences/export?active=1`);
+    expect(activeOnly.status).toBe(200);
+    expect(await activeOnly.text()).toContain(silence.id);
+
+    const expiredOnly = await fetch(`${base}/api/silences/export?active=0`);
+    expect(expiredOnly.status).toBe(200);
+    const expiredText = await expiredOnly.text();
+    expect(expiredText.split('\n')[0]).toContain('id');
+    expect(expiredText).not.toContain(silence.id);
+
+    await sendJson('DELETE', `/api/silences/${silence.id}`);
+  });
+
+  it('GET /api/silences and export honour q= text filter (Loop 111)', async () => {
+    const { filterSilencesByActive } = await import('../src/routes/silences');
+    const sample = [
+      {
+        id: 'sil-a',
+        plane: 'CENTRAL',
+        device: 'gw-edge-1',
+        titleContains: 'tunnel flap',
+        reason: 'change window',
+        expired: false,
+      },
+      {
+        id: 'sil-b',
+        plane: 'MIST',
+        device: 'ap-floor-2',
+        titleContains: 'radio down',
+        reason: 'rf survey',
+        expired: false,
+      },
+    ];
+    expect(
+      filterSilencesByActive({ query: { q: 'tunnel' } }, sample).map((s) => s.id),
+    ).toEqual(['sil-a']);
+    expect(
+      filterSilencesByActive({ query: { q: 'MIST' } }, sample).map((s) => s.id),
+    ).toEqual(['sil-b']);
+    expect(
+      filterSilencesByActive({ query: { q: 'rf survey' } }, sample).map((s) => s.id),
+    ).toEqual(['sil-b']);
+    expect(filterSilencesByActive({ query: { q: 'nope' } }, sample)).toEqual([]);
+    expect(filterSilencesByActive({ query: {} }, sample)).toHaveLength(2);
+
+    const a = await sendJson('POST', '/api/silences', {
+      device: 'gw-edge-loop111',
+      reason: 'Loop111 change window',
+      durationMinutes: 30,
+    });
+    expect(a.status).toBe(201);
+    const silenceA = a.body.silence as AlertSilence;
+    const b = await sendJson('POST', '/api/silences', {
+      device: 'ap-floor-loop111',
+      reason: 'Loop111 rf survey',
+      durationMinutes: 30,
+    });
+    expect(b.status).toBe(201);
+    const silenceB = b.body.silence as AlertSilence;
+
+    const list = await fetch(`${base}/api/silences?q=change%20window`);
+    expect(list.status).toBe(200);
+    const listBody = (await list.json()) as { silences: Array<{ id: string }> };
+    expect(listBody.silences.some((s) => s.id === silenceA.id)).toBe(true);
+    expect(listBody.silences.some((s) => s.id === silenceB.id)).toBe(false);
+
+    const csv = await fetch(`${base}/api/silences/export?q=ap-floor-loop111&active=1`);
+    expect(csv.status).toBe(200);
+    const text = await csv.text();
+    expect(text).toContain(silenceB.id);
+    expect(text).toContain('Loop111 rf survey');
+    expect(text).not.toContain(silenceA.id);
+
+    await sendJson('DELETE', `/api/silences/${silenceA.id}`);
+    await sendJson('DELETE', `/api/silences/${silenceB.id}`);
+  });
 });
 
 // ---------------------------------------------------------------------------

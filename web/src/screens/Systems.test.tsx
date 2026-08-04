@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
-import Systems from './Systems';
+import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import Systems, {
+  buildSystemsExportQuery,
+  parseSystemsHealthFilter,
+  parseSystemsLinkedFilter,
+  systemsPlaneKey,
+  systemsViewMatchesFilters,
+} from './Systems';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import {
@@ -18,6 +24,7 @@ import {
 import type { LivePlaneState, SystemsData, SystemsState } from '../api/client';
 import { CONNECTOR_CATALOG, hhmmLocal, PERMISSIONS, SYNC_HISTORY, SYSTEMS } from '@hpe/shared';
 import type { ConnectorConfig, SystemRow } from '@hpe/shared';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -48,6 +55,10 @@ vi.mock('../api/client', async (importOriginal) => {
   };
 });
 
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(async () => ({ ok: true as const })),
+}));
+
 const mockGetSystems = vi.mocked(getSystems);
 const mockGetSystemsState = vi.mocked(getSystemsState);
 const mockGetPortalSettings = vi.mocked(getPortalSettings);
@@ -57,6 +68,7 @@ const mockSaveChatSettings = vi.mocked(saveChatSettings);
 const mockTestChatProvider = vi.mocked(testChatProvider);
 const mockSaveSystemCredentials = vi.mocked(saveSystemCredentials);
 const mockTestSystem = vi.mocked(testSystem);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 /** A registry entry as a stock install reports it: nothing configured. */
 function unlinked(id: string, over: Partial<LivePlaneState> = {}): LivePlaneState {
@@ -144,6 +156,7 @@ beforeEach(() => {
               outboxSize: 0,
             },
             terminal: { openSessions: 0 },
+            integrity: { devices: 0, doubleClaimed: 0, unclaimed: 0 },
             planes: [],
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -708,6 +721,27 @@ describe('Systems plane drawer', () => {
     expect(screen.queryByText('DEMO FIXTURE')).toBeNull();
     // No plane rows means no linked planes — the meta must not claim seven.
     expect(screen.getByText('0 LINKED · SELECT ONE FOR DETAIL')).toBeTruthy();
+  });
+
+  it('exports a plane health summary CSV from the drawer summary tab', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    const createObjectURL = vi.fn(() => 'blob:plane-health');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+
+    renderSystems();
+    await waitFor(() => expect(screen.getByText('HPE Aruba Central')).toBeTruthy());
+    fireEvent.click(screen.getByText('HPE Aruba Central'));
+    await waitFor(() => expect(screen.getByText('Sites on this plane')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export health summary' }));
+    expect(await screen.findByText(/Exported health summary/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
   });
 });
 
@@ -1648,6 +1682,54 @@ describe('Systems Configuration tab — SSE object inventory', () => {
     expect(await screen.findByText('Object inventory')).toBeTruthy();
   });
 
+  it('honours ?tab=config on a Central plane deep-link (webhooks share target)', async () => {
+    const centralRow: SystemRow = {
+      name: 'HPE Aruba Central',
+      planeId: 'central',
+      kind: 'live plane registry',
+      state: 'healthy',
+      tone: 'success',
+      scope: 'read only',
+      scopeTone: 'neutral',
+      scopeNote: 'read only',
+      facts: [{ k: 'Last sync', v: '5s ago' }],
+      sites: [],
+      live: [],
+      calls: [],
+      events: [],
+      pulls: [],
+      configText: 'plane: central',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [centralRow],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: {
+        central: unlinked('central', {
+          linked: true,
+          health: 'healthy',
+          capabilities: { directWrite: false },
+        }),
+      },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    // Webhooks panel mounts on the Configuration tab; summary would not show it.
+    renderSystems('/systems?plane=central&tab=config');
+
+    expect(await screen.findByText('Webhooks')).toBeTruthy();
+    // Configuration tab chrome — not the Summary default for non-SSE planes.
+    expect(screen.getByRole('button', { name: 'New webhook' })).toBeTruthy();
+    expect(screen.queryByText('Object inventory')).toBeNull();
+  });
+
   it('renders the SSE inventory panel for a linked plane with a declared write scope', async () => {
     const sseRow: SystemRow = {
       name: 'HPE Aruba Networking SSE',
@@ -1885,5 +1967,426 @@ describe('Systems polling', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('offers Download server CSV on live payloads and hits /api/systems/export (Loop 100)', async () => {
+    mockLiveApis();
+    mockDownloadApiCsv.mockClear();
+    renderSystems();
+    await waitFor(() => expect(screen.getByText(/^LIVE · SYNCED /)).toBeTruthy());
+    // Distinct aria-label — NotificationsSection also exposes "Download server CSV".
+    fireEvent.click(await screen.findByRole('button', { name: 'Download systems roster CSV' }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith('/api/systems/export', 'systems-roster.csv'),
+    );
+  });
+
+  it('hides systems roster Download server CSV on demo fixtures', async () => {
+    mockGetSystems.mockResolvedValue({
+      systems: SYSTEMS,
+      syncHistory: SYNC_HISTORY,
+      permissions: PERMISSIONS,
+      dataSource: 'demo',
+    });
+    mockGetSystemsState.mockResolvedValue(null);
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    renderSystems();
+    await waitFor(() => expect(screen.getByText('DEMO FIXTURE')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Download systems roster CSV' })).toBeNull();
+  });
+});
+
+describe('Systems roster filters (Loop 107)', () => {
+  it('parse + export query + match helpers', () => {
+    expect(parseSystemsHealthFilter('Degraded')).toBe('degraded');
+    expect(parseSystemsHealthFilter('nope')).toBe('all');
+    expect(parseSystemsLinkedFilter('true')).toBe('1');
+    expect(parseSystemsLinkedFilter('0')).toBe('0');
+    expect(buildSystemsExportQuery({ q: 'uxi', health: 'degraded', linked: '1' })).toBe(
+      '?q=uxi&health=degraded&linked=1',
+    );
+    expect(buildSystemsExportQuery({})).toBe('');
+    const healthy = {
+      row: { name: 'Central', kind: 'cloud', scope: 'read', state: 'healthy' },
+      planeId: 'central',
+      stateLabel: 'healthy',
+      live: { linked: true },
+    };
+    const unlinked = {
+      row: { name: 'Mist', kind: 'cloud', scope: 'read', state: 'unlinked' },
+      planeId: 'mist',
+      stateLabel: 'unlinked',
+      live: { linked: false },
+    };
+    expect(systemsViewMatchesFilters(healthy, { health: 'healthy' })).toBe(true);
+    expect(systemsViewMatchesFilters(unlinked, { linked: '0' })).toBe(true);
+    expect(systemsViewMatchesFilters(healthy, { linked: '0' })).toBe(false);
+    expect(systemsViewMatchesFilters(healthy, { q: 'cent' })).toBe(true);
+  });
+
+  it('Download server CSV forwards q/health/linked from the filter bar', async () => {
+    mockGetSystems.mockResolvedValue({
+      systems: [],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:41:00.000Z',
+    });
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    mockDownloadApiCsv.mockClear();
+    renderSystems('/systems?q=central&health=healthy&linked=1');
+    await waitFor(() => expect(screen.getByText(/^LIVE · SYNCED /)).toBeTruthy());
+    fireEvent.click(await screen.findByRole('button', { name: 'Download systems roster CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]![0]);
+    expect(path.startsWith('/api/systems/export?')).toBe(true);
+    const qs = new URLSearchParams(path.split('?')[1]);
+    expect(qs.get('q')).toBe('central');
+    expect(qs.get('health')).toBe('healthy');
+    expect(qs.get('linked')).toBe('1');
+  });
+
+  /* Loop 140 — Health chip row toggles the same health= filter as the Select. */
+  it('health chips filter the roster and write health back to the URL', async () => {
+    const healthyRow = SYSTEMS.find((s) => s.state === 'healthy');
+    const degradedRow = SYSTEMS.find((s) => s.state === 'degraded');
+    expect(healthyRow && degradedRow).toBeTruthy();
+    mockGetSystems.mockResolvedValue({
+      systems: [healthyRow!, degradedRow!],
+      syncHistory: SYNC_HISTORY,
+      permissions: PERMISSIONS,
+      dataSource: 'demo',
+    });
+    mockGetSystemsState.mockResolvedValue(null);
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    function SearchProbe() {
+      const loc = useLocation();
+      return <div data-testid="search">{loc.search}</div>;
+    }
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/systems']}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/systems"
+                element={
+                  <>
+                    <Systems />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(healthyRow!.name)).toBeTruthy();
+    expect(screen.getByText(degradedRow!.name)).toBeTruthy();
+    const chips = screen.getByRole('group', { name: 'Systems health' });
+    const degradedChip = within(chips).getByRole('button', { name: /Degraded/i });
+    expect(degradedChip.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(degradedChip);
+    await waitFor(() => expect(screen.getByText(degradedRow!.name)).toBeTruthy());
+    expect(screen.queryByText(healthyRow!.name)).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toMatch(/health=degraded/));
+    expect(degradedChip.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(degradedChip);
+    await waitFor(() => expect(screen.getByText(healthyRow!.name)).toBeTruthy());
+    expect(screen.getByText(degradedRow!.name)).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toMatch(/health=/);
+  });
+});
+
+/* Loop 145 — Linked chip row toggles the same linked= filter as the Select. */
+describe('Systems linked chips (Loop 145)', () => {
+  it('linked chips filter the roster and write linked back to the URL', async () => {
+    const linkedRow: SystemRow = {
+      ...SYSTEMS[0]!,
+      name: 'SecureSSID-LAB-Central',
+      planeId: 'central',
+      state: 'healthy',
+    };
+    const darkRow: SystemRow = {
+      ...SYSTEMS[1]!,
+      name: 'Mist',
+      planeId: 'mist',
+      state: 'warning',
+      tone: 'neutral',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [linkedRow, darkRow],
+      syncHistory: SYNC_HISTORY,
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:41:00.000Z',
+    });
+    mockGetSystemsState.mockResolvedValue({
+      demoMode: false,
+      planes: {
+        central: {
+          id: 'central',
+          linked: true,
+          health: 'healthy',
+          lastSync: '2026-03-04T09:41:00.000Z',
+          deviceCount: 10,
+          callsToday: 1,
+          note: null,
+          recentCalls: [],
+        },
+        mist: unlinked('mist'),
+      },
+      history: [],
+    });
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    function SearchProbe() {
+      const loc = useLocation();
+      return <div data-testid="search">{loc.search}</div>;
+    }
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/systems']}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route
+                path="/systems"
+                element={
+                  <>
+                    <Systems />
+                    <SearchProbe />
+                  </>
+                }
+              />
+            </Routes>
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('SecureSSID-LAB-Central')).toBeTruthy();
+    // Unlinked rows sit in the dormant block until expanded or filtered.
+    const chips = screen.getByRole('group', { name: 'Systems linked' });
+    const unlinkedChip = within(chips).getByRole('button', { name: /^Unlinked/i });
+    expect(unlinkedChip.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(unlinkedChip);
+    await waitFor(() => expect(screen.getByText('Mist')).toBeTruthy());
+    expect(screen.queryByText('SecureSSID-LAB-Central')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toMatch(/linked=0/));
+    expect(unlinkedChip.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(unlinkedChip);
+    await waitFor(() => expect(screen.getByText('SecureSSID-LAB-Central')).toBeTruthy());
+    expect(screen.getByTestId('search').textContent).not.toMatch(/linked=/);
+  });
+});
+
+/* Loop 169 — header LIVE badge honesty (pure live + systems blend). */
+describe('Systems Loop 169 residuals', () => {
+  it('stamps LIVE on pure live systems', async () => {
+    mockGetSystems.mockResolvedValue({
+      systems: [],
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'live',
+      syncedAt: '2026-03-04T09:41:00.000Z',
+    });
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    renderSystems();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+    expect(screen.getByText(/^LIVE · SYNCED /)).toBeTruthy();
+  });
+
+  it('stamps LIVE when systems arrives via blend', async () => {
+    mockGetSystems.mockResolvedValue({
+      systems: SYSTEMS.slice(0, 1),
+      syncHistory: [],
+      permissions: PERMISSIONS,
+      dataSource: 'demo',
+      blended: ['systems'],
+      syncedAt: '2026-03-04T09:41:00.000Z',
+    });
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    renderSystems();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('keeps demo chrome quiet (no LIVE badge)', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(registry());
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+    renderSystems();
+    expect(await screen.findByText('DEMO FIXTURE')).toBeTruthy();
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+/* Loop 189 — plane roster bulk Export / Copy plane ids / Copy selection link. */
+describe('Systems Loop 189 plane bulk', () => {
+  it('systemsPlaneKey prefers registry id over name', () => {
+    expect(
+      systemsPlaneKey({
+        planeId: 'central',
+        row: { name: 'SecureSSID-LAB-Central', planeId: 'central' },
+      }),
+    ).toBe('central');
+    expect(systemsPlaneKey({ planeId: null, row: { name: 'Local switches' } })).toBe(
+      'Local switches',
+    );
+  });
+
+  it('shows bulk bar for selection: Export selected, Copy plane ids, Copy selection link, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:systems-planes-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const central: SystemRow = {
+      ...SYSTEMS[0]!,
+      name: 'SecureSSID-LAB-Central',
+      planeId: 'central',
+      state: 'healthy',
+    };
+    const mist: SystemRow = {
+      ...SYSTEMS[1]!,
+      name: 'Mist',
+      planeId: 'mist',
+      state: 'healthy',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [central, mist],
+      syncHistory: SYNC_HISTORY,
+      permissions: PERMISSIONS,
+      dataSource: 'demo',
+    });
+    mockGetSystemsState.mockResolvedValue(null);
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems('/systems');
+    expect(await screen.findByText('SecureSSID-LAB-Central')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Plane selection actions' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select plane SecureSSID-LAB-Central' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select plane Mist' }));
+
+    const bar = await screen.findByRole('region', { name: 'Plane selection actions' });
+    expect(within(bar).getByText('2 SELECTED')).toBeTruthy();
+    expect(within(bar).getByRole('button', { name: 'Copy plane ids' })).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 2 selected plane/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy plane ids' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toBe('central\nmist');
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(String(writeText.mock.calls.at(-1)![0])).toMatch(/ids=/);
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Plane selection actions' })).toBeNull(),
+    );
+  });
+
+  it('deep-links ?ids= and shows a clearable selection chip', async () => {
+    const central: SystemRow = {
+      ...SYSTEMS[0]!,
+      name: 'SecureSSID-LAB-Central',
+      planeId: 'central',
+      state: 'healthy',
+    };
+    const mist: SystemRow = {
+      ...SYSTEMS[1]!,
+      name: 'Mist',
+      planeId: 'mist',
+      state: 'healthy',
+    };
+    mockGetSystems.mockResolvedValue({
+      systems: [central, mist],
+      syncHistory: SYNC_HISTORY,
+      permissions: PERMISSIONS,
+      dataSource: 'demo',
+    });
+    mockGetSystemsState.mockResolvedValue(null);
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems(`/systems?ids=${encodeURIComponent('central')}`);
+    expect(await screen.findByText('SecureSSID-LAB-Central')).toBeTruthy();
+    /* Plane row only — MistSection may still mention the product elsewhere. */
+    expect(
+      screen.queryByRole('checkbox', { name: 'Select plane Mist' }),
+    ).toBeNull();
+    expect(
+      screen.getByRole('checkbox', { name: 'Select plane SecureSSID-LAB-Central' }),
+    ).toBeTruthy();
+    const chip = await screen.findByRole('button', {
+      name: 'Clear plane selection link filter',
+    });
+    fireEvent.click(chip);
+    expect(
+      await screen.findByRole('checkbox', { name: 'Select plane Mist' }),
+    ).toBeTruthy();
+  });
+});
+
+/* Loop 202 — roster filtered empty Clear filters CTA. */
+describe('Systems Loop 202 residuals', () => {
+  it('offers Clear filters when the roster filter is empty', async () => {
+    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+    mockGetSystemsState.mockResolvedValue(null);
+    mockGetPortalSettings.mockResolvedValue(null);
+    mockGetChatStatus.mockResolvedValue(null);
+    mockGetChatSettings.mockResolvedValue(null);
+
+    renderSystems('/systems?q=zzzz-no-match');
+    expect(await screen.findByText(/Nothing matches this roster filter/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByText('HPE Aruba Central')).toBeTruthy();
+    expect(
+      screen.getByRole('checkbox', { name: 'Select plane HPE Aruba Central' }),
+    ).toBeTruthy();
   });
 });

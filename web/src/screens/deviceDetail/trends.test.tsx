@@ -17,6 +17,7 @@
  *   (h) the pure helpers (rateText, gapPhrase, counterWindowTotal)
  */
 
+import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
@@ -28,12 +29,21 @@ import {
   normalizeTrendSet,
   type SwitchInterfaceTrendsLive,
 } from '@hpe/shared';
-import { HardwareTrendsPanel, counterWindowTotal, gapPhrase, rateText } from './trends';
+import { HardwareTrendsPanel, counterWindowTotal, gapPhrase, rateText, trendSeriesExportRows } from './trends';
+import {
+  DEVICE_SUMMARY_HEADERS,
+  deviceSummaryCsvRow,
+  filterPublicFacts,
+  isSecretDeviceField,
+  parseCfgTab,
+} from './facts';
+import { ToastProvider } from '../../nightdesk';
 import {
   getDeviceApTrends,
   getDeviceHardwareTrends,
   getDeviceInterfaceTrends,
 } from '../../api/client';
+import { downloadApiCsv } from '../../lib/downloadApiCsv';
 
 vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>();
@@ -44,6 +54,12 @@ vi.mock('../../api/client', async (importOriginal) => {
     getDeviceApTrends: vi.fn(),
   };
 });
+
+vi.mock('../../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(async () => ({ ok: true as const })),
+}));
+
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 const mockHardware = vi.mocked(getDeviceHardwareTrends);
 const mockInterfaces = vi.mocked(getDeviceInterfaceTrends);
@@ -70,6 +86,10 @@ function mockApReads() {
   });
 }
 
+function renderTrends(ui: ReactElement) {
+  return render(<ToastProvider>{ui}</ToastProvider>);
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -82,7 +102,7 @@ afterEach(() => {
 describe('HardwareTrendsPanel — switch hardware gauges', () => {
   it('renders the stat tiles from the latest samples, one sparkline row per series', async () => {
     mockSwitchReads();
-    render(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
 
     // Latest samples of the authored window (hour 23): cpu 87, memory 44,
     // temp 57.6, PoE draw 186 of the flat 370 budget.
@@ -107,7 +127,7 @@ describe('HardwareTrendsPanel — switch hardware gauges', () => {
 
   it('renders the 03:00–05:00 telemetry gap as a break, never a bridged line', async () => {
     mockSwitchReads();
-    render(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
 
     // Every series names the break in its accessible label…
     const broken = await screen.findAllByRole('img', { name: /line broken where samples are missing/ });
@@ -124,7 +144,7 @@ describe('HardwareTrendsPanel — switch hardware gauges', () => {
 
   it('draws the PoE budget as consumption against available', async () => {
     mockSwitchReads();
-    render(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
     // The tile (and its series row) name the draw; the caption names the budget.
     expect((await screen.findAllByText('PoE draw')).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/of 370 W budget/)).toBeTruthy();
@@ -138,7 +158,7 @@ describe('HardwareTrendsPanel — switch hardware gauges', () => {
 describe('HardwareTrendsPanel — interface error counters', () => {
   it('gives the burst counters rows with window totals and collapses the zeros', async () => {
     mockSwitchReads();
-    render(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
 
     // The excursion's mark: inCrcErrors 4+9+12+6, inErrors 3+5+7+4, inDiscards 2.
     expect(await screen.findByText('CRC errors')).toBeTruthy();
@@ -187,7 +207,7 @@ describe('HardwareTrendsPanel — interface error counters', () => {
       source: { plane: 'central', at: '2026-07-29T00:00:00.000Z', sections: { interfaces: 'ok' } },
     };
     mockSwitchReads({ kind: 'not-reported' }, { kind: 'ok', live: flat });
-    render(<HardwareTrendsPanel name="sw-quiet" type="switch" identity={{ plane: 'CENTRAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="sw-quiet" type="switch" identity={{ plane: 'CENTRAL' }} />);
 
     expect(
       await screen.findByText('All 10 reported error counters stayed at zero across the window.'),
@@ -203,7 +223,7 @@ describe('HardwareTrendsPanel — interface error counters', () => {
 describe('HardwareTrendsPanel — honest read outcomes', () => {
   it('not-reported says no plane answered, without implying the device has no telemetry', async () => {
     mockSwitchReads({ kind: 'not-reported' }, { kind: 'not-reported' });
-    render(<HardwareTrendsPanel name="sw-x" type="switch" identity={{ plane: 'LOCAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="sw-x" type="switch" identity={{ plane: 'LOCAL' }} />);
     expect(
       await screen.findByText(
         'No hardware-trend read is available for this device — no claiming plane answered for it.',
@@ -223,7 +243,7 @@ describe('HardwareTrendsPanel — honest read outcomes', () => {
         },
       },
     );
-    render(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
     expect(await screen.findByText('Hardware trends could not be read — HTTP 502')).toBeTruthy();
     expect(
       screen.getByText('Interface counters could not be read — interface-trends: HTTP 503'),
@@ -242,7 +262,7 @@ describe('HardwareTrendsPanel — honest read outcomes', () => {
       },
       { kind: 'not-reported' },
     );
-    render(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL' }} />);
     expect(
       await screen.findByText('The plane answered with no usable hardware samples in this window.'),
     ).toBeTruthy();
@@ -256,7 +276,7 @@ describe('HardwareTrendsPanel — honest read outcomes', () => {
 describe('HardwareTrendsPanel — Central AP', () => {
   it('renders cpu/memory/throughput with bit/s labels from three on-demand reads', async () => {
     mockApReads();
-    render(<HardwareTrendsPanel name="ap-1f-04" type="ap" identity={{ plane: 'CENTRAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="ap-1f-04" type="ap" identity={{ plane: 'CENTRAL' }} />);
 
     // Latest samples: cpu 20%, memory 60%, throughput 162e9 bytes/h → 360 Mb/s.
     expect(await screen.findByText('20%')).toBeTruthy();
@@ -276,7 +296,7 @@ describe('HardwareTrendsPanel — Central AP', () => {
         ? Promise.resolve({ kind: 'failed', message: 'HTTP 504' } as const)
         : Promise.resolve({ kind: 'ok', live: metric === 'cpu' ? AP_CPU : AP_MEM } as const),
     );
-    render(<HardwareTrendsPanel name="ap-1f-04" type="ap" identity={{ plane: 'CENTRAL' }} />);
+    renderTrends(<HardwareTrendsPanel name="ap-1f-04" type="ap" identity={{ plane: 'CENTRAL' }} />);
     expect(await screen.findByText('The throughput trend could not be read — HTTP 504')).toBeTruthy();
     expect(screen.getByRole('img', { name: /CPU trend/ })).toBeTruthy();
   });
@@ -289,7 +309,7 @@ describe('HardwareTrendsPanel — Central AP', () => {
 describe('HardwareTrendsPanel — on-demand wiring', () => {
   it('fetches once on mount with a 24h window, and re-fetches when the window changes', async () => {
     mockSwitchReads();
-    render(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL', serial: 'CS1' }} />);
+    renderTrends(<HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL', serial: 'CS1' }} />);
     await screen.findByText('87%');
 
     expect(mockHardware).toHaveBeenCalledTimes(1);
@@ -340,5 +360,105 @@ describe('trend panel helpers', () => {
       points: [{ t: '2026-07-28T00:00:00.000Z', v: null }],
     };
     expect(counterWindowTotal(single)).toBeNull();
+  });
+
+  it('trendSeriesExportRows keeps only metric/t/v and drops secret-shaped keys', () => {
+    const rows = trendSeriesExportRows([
+      ...HW.trends!.series,
+      {
+        key: 'claimCode',
+        kind: 'gauge',
+        rate: null,
+        bucketMs: null,
+        samples: 1,
+        points: [{ t: '2026-07-28T00:00:00.000Z', v: 1 }],
+      },
+    ]);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.length === 3)).toBe(true);
+    expect(rows.some((r) => String(r[0]).toLowerCase().includes('claim'))).toBe(false);
+    const csv = rows.map((r) => r.join(',')).join('\n');
+    expect(csv).not.toMatch(/KV4M9Q2X7RND3H1|password|token/i);
+  });
+
+  it('device summary CSV omits claim codes, passwords, and config bodies', () => {
+    expect(isSecretDeviceField('claimCode')).toBe(true);
+    expect(isSecretDeviceField('Claim code')).toBe(true);
+    expect(isSecretDeviceField('password')).toBe(true);
+    expect(isSecretDeviceField('passwd')).toBe(true);
+    expect(isSecretDeviceField('runningConfig')).toBe(true);
+    expect(isSecretDeviceField('running config')).toBe(true);
+    expect(isSecretDeviceField('firmware')).toBe(false);
+    for (const h of DEVICE_SUMMARY_HEADERS) {
+      expect(isSecretDeviceField(h)).toBe(false);
+    }
+    const row = deviceSummaryCsvRow({
+      name: 'ap-3f-12',
+      type: 'ap',
+      model: 'AP43',
+      siteName: 'Campus-02',
+      plane: 'MIST',
+      state: 'up',
+      firmware: '0.14.29',
+      firmwareApproved: true,
+      serial: 'SN1',
+      mac: 'aa:bb',
+      ip: '10.0.0.1',
+      licence: 'Wi-Fi SUB',
+      localShell: false,
+      claimants: ['MIST'],
+      claimCode: 'KV4M9Q2X7RND3H1',
+    });
+    const csv = row.join(',');
+    expect(csv).not.toContain('KV4M9Q2X7RND3H1');
+    expect(csv).not.toMatch(/password|passwd|secret|token|running.?config|ntp server/i);
+    expect(row).toHaveLength(DEVICE_SUMMARY_HEADERS.length);
+    expect(row).toContain('ap-3f-12');
+    expect(row).toContain('MIST');
+    expect(
+      filterPublicFacts([
+        { k: 'Claim code', v: 'KV4M9Q2X7RND3H1' },
+        { k: 'password', v: 's3cret' },
+        { k: 'running config', v: 'hostname x' },
+        { k: 'serial', v: 'SN1' },
+      ]),
+    ).toEqual([{ k: 'serial', v: 'SN1' }]);
+  });
+
+  it('parseCfgTab accepts running|diff|history and defaults unknown', () => {
+    expect(parseCfgTab('diff')).toBe('diff');
+    expect(parseCfgTab('history')).toBe('history');
+    expect(parseCfgTab('running')).toBe('running');
+    expect(parseCfgTab('nope')).toBe('running');
+    expect(parseCfgTab(null)).toBe('running');
+  });
+});
+
+describe('HardwareTrendsPanel export', () => {
+  it('offers Export trends once samples land', async () => {
+    mockSwitchReads();
+    renderTrends(
+      <HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL', serial: 'S1' }} />,
+    );
+    expect(await screen.findByRole('button', { name: 'Export trends' })).toBeTruthy();
+  });
+
+  it('Download server CSV hits trends/export for hardware + interfaces (Loop 98)', async () => {
+    mockSwitchReads();
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderTrends(
+      <HardwareTrendsPanel name="sw-core-a" type="switch" identity={{ plane: 'CENTRAL', serial: 'S1' }} />,
+    );
+    const btn = await screen.findByRole('button', { name: 'Download server CSV' });
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(mockDownloadApiCsv.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    const paths = mockDownloadApiCsv.mock.calls.map((c) => String(c[0]));
+    expect(paths.some((p) => p.includes('/api/devices/sw-core-a/trends/export') && p.includes('part=hardware'))).toBe(
+      true,
+    );
+    expect(paths.some((p) => p.includes('part=interfaces'))).toBe(true);
+    expect(paths.every((p) => p.includes('plane=CENTRAL') && p.includes('serial=S1'))).toBe(true);
   });
 });

@@ -48,6 +48,8 @@ export function viewForPath(pathname: string): View | null {
       return 'configure';
     case 'compliance':
       return 'compliance';
+    case 'recommendations':
+      return 'recommendations';
     case 'systems':
       return 'systems';
     default:
@@ -142,6 +144,32 @@ export function deviceDetailPath(identity: DeviceLinkIdentity): string {
 export function findingDevicesPath(names: readonly string[]): string {
   if (names.length === 1) return deviceDetailPath({ name: names[0]! });
   return `/devices?names=${encodeURIComponent(names.join('\n'))}`;
+}
+
+/**
+ * Canonical path for the full-page Recommendations surface.
+ * Query carries optional scope filters only — never auto-applies config.
+ */
+export function recommendationsPath(filters: {
+  device?: string;
+  site?: string;
+  client?: string;
+  severity?: string;
+  category?: string;
+} = {}): string {
+  const params = new URLSearchParams();
+  const device = filters.device?.trim();
+  const site = filters.site?.trim();
+  const client = filters.client?.trim();
+  const severity = filters.severity?.trim();
+  const category = filters.category?.trim();
+  if (device) params.set('device', device);
+  if (site) params.set('site', site);
+  if (client) params.set('client', client);
+  if (severity && severity !== 'all') params.set('severity', severity);
+  if (category && category !== 'all') params.set('category', category);
+  const qs = params.toString();
+  return qs ? `/recommendations?${qs}` : '/recommendations';
 }
 
 /** Device names carried by a `?names=` deep link; null when there is no filter. */

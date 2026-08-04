@@ -3,6 +3,7 @@
  *
  *   GET    /api/sse/inventory              cached SseInventory (poller cache)
  *   GET    /api/sse/objects/:kind          one kind's rows, optional ?q= search
+ *   GET    /api/sse/objects/:kind/export   CSV of cached summary rows (no raw/secrets), optional ?q=
  *   GET    /api/sse/objects/:kind/:id      on-demand fresh detail read
  *   POST   /api/sse/objects/:kind          create {fields, reviewConfirmed?}
  *   PUT    /api/sse/objects/:kind/:id      update {fields, reviewConfirmed?}
@@ -39,7 +40,11 @@ import {
   type SseKindReadStatus,
   type SseObjectKind,
 } from '@hpe/shared';
+import { sendCsv } from '../lib/csv';
 import { SseObjectsError, sseObjects, sseObjectsErrorBody } from '../services/sseObjects';
+
+/** Summary columns only — never `raw` (even when secrets are stripped). */
+const SSE_EXPORT_HEADER = ['kind', 'id', 'name', 'description', 'enabled', 'builtIn', 'detail'] as const;
 
 export const sseRouter = Router();
 
@@ -104,6 +109,35 @@ sseRouter.get(
       const q = typeof req.query.q === 'string' ? req.query.q : undefined;
       const inventory = sseObjects.inventory();
       res.json({ ...sseObjects.listKind(kind, q), readStatus: kindReadStatus(inventory, kind) });
+    } catch (err) {
+      reportOrThrow(err, res);
+    }
+  }),
+);
+
+/** CSV of one kind's cached summary rows. Registered before `/:id` so "export"
+ *  is never treated as an object id. No vendor `raw` bodies or secrets. */
+sseRouter.get(
+  '/sse/objects/:kind/export',
+  h(async (req, res) => {
+    const kind = asKind(req.params.kind);
+    if (!kind) {
+      res.status(404).json({ error: `unknown SSE object kind '${req.params.kind}'` });
+      return;
+    }
+    try {
+      const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+      const listing = sseObjects.listKind(kind, q);
+      const rows = listing.rows.map((r) => [
+        r.kind,
+        r.id,
+        r.name,
+        r.description ?? '',
+        r.enabled === undefined ? '' : r.enabled ? 'true' : 'false',
+        r.builtIn === true ? 'true' : r.builtIn === false ? 'false' : '',
+        r.detail ?? '',
+      ]);
+      sendCsv(res, `sse-${kind}.csv`, [...SSE_EXPORT_HEADER], rows);
     } catch (err) {
       reportOrThrow(err, res);
     }

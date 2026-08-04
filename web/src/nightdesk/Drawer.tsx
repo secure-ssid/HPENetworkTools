@@ -11,6 +11,7 @@ export function Drawer({
   side = 'right',
   title,
   description,
+  className,
   children,
 }: {
   open: boolean;
@@ -19,6 +20,8 @@ export function Drawer({
   side?: 'left' | 'right';
   title?: ReactNode;
   description?: ReactNode;
+  /** Extra classes on the panel (e.g. write-ritual chrome). */
+  className?: string;
   children: ReactNode;
 }) {
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -82,12 +85,12 @@ export function Drawer({
   const w = typeof width === 'number' ? width : DRAWER_WIDTHS[width];
 
   return createPortal(
-    <div className="nd-drawer-root">
-      <div className="nd-drawer-overlay" onClick={() => onOpenChange(false)} />
+    <div className="nd-drawer-root nt-drawer-root">
+      <div className="nd-drawer-overlay nt-drawer-overlay" onClick={() => onOpenChange(false)} />
       <div
         ref={drawerRef}
-        className={`nd-drawer nd-drawer--${side}`}
-        style={{ width: w }}
+        className={['nd-drawer', 'nd-drawer__panel', 'nt-drawer', 'nt-drawer__panel', `nd-drawer--${side}`, className].filter(Boolean).join(' ')}
+        style={{ ['--nd-overlay-w' as string]: typeof w === 'number' ? `${w}px` : w }}
         role="dialog"
         aria-modal="true"
         aria-label={title ? undefined : 'Dialog'}
@@ -95,21 +98,22 @@ export function Drawer({
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
       >
-        <div className="nd-drawer__header">
+        <div className="nd-drawer__header nt-drawer__header">
           <div>
-            {title ? <div id={titleId} className="nd-drawer__title">{title}</div> : null}
-            {description ? <div id={descriptionId} className="nd-drawer__description">{description}</div> : null}
+            <div className="nt-drawer-kicker" aria-hidden>NightDesk · drawer</div>
+            {title ? <div id={titleId} className="nd-drawer__title nt-drawer__title">{title}</div> : null}
+            {description ? <div id={descriptionId} className="nd-drawer__description nt-drawer__description">{description}</div> : null}
           </div>
           <button
             type="button"
-            className="nd-drawer__close"
+            className="nd-drawer__close nt-drawer__close"
             aria-label="Close dialog"
             onClick={() => onOpenChange(false)}
           >
             ×
           </button>
         </div>
-        <div className="nd-drawer__body">{children}</div>
+        <div className="nd-drawer__body nt-drawer__body">{children}</div>
       </div>
     </div>,
     document.body,

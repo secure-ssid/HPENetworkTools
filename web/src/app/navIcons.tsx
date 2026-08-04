@@ -153,6 +153,12 @@ export const NAV_ICONS: Partial<Record<View, ReactNode>> = {
       <path d="m5.8 8 1.6 1.6L10.3 6.7" />
     </Svg>
   ),
+  recommendations: (
+    <Svg>
+      <path d="M4 2.5h8a1.5 1.5 0 0 1 1.5 1.5v8.2L8 14.5 2.5 12.2V4A1.5 1.5 0 0 1 4 2.5Z" />
+      <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" />
+    </Svg>
+  ),
   systems: (
     <Svg>
       <circle cx="8" cy="3.5" r="1.8" />

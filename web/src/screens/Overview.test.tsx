@@ -23,15 +23,20 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
-import Overview from './Overview';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import Overview, {
+  buildOverviewShareUrl,
+  overviewAlertKey,
+  parseOverviewHealthFilter,
+} from './Overview';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
 import { getMetricsHistory, getOverview } from '../api/client';
 import type { OverviewData } from '../api/client';
 import { OVERVIEW_PLANES } from '@hpe/shared';
 import type { AnomalyFlag, MetricPoint, MetricsEnvelopeWithAnomalies, MetricsHistoryEnvelope } from '@hpe/shared';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
@@ -40,13 +45,19 @@ vi.mock('../api/client', async (importOriginal) => {
   return { ...actual, getOverview: vi.fn(), getMetricsHistory: vi.fn(() => Promise.resolve(null)) };
 });
 
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
 const mockGetOverview = vi.mocked(getOverview);
 const mockGetMetrics = vi.mocked(getMetricsHistory);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 afterEach(() => {
   cleanup();
   mockGetOverview.mockReset();
   mockGetMetrics.mockReset();
+  mockDownloadApiCsv.mockReset();
   // mockReset strips the factory default too — restore it so tests that never
   // touch metrics still get a resolved null instead of `undefined`.
   mockGetMetrics.mockImplementation(() => Promise.resolve(null));
@@ -94,7 +105,8 @@ function liveData(over: Partial<OverviewData> = {}): OverviewData {
 function siteRows(n: number): OverviewData['sites'] {
   return Array.from({ length: n }, (_, i) => ({
     name: `Site ${i + 1}`,
-    siteId: 'campus-01' as const,
+    /* Unique siteIds — Sites preview multi-select keys on siteId (Loop 190). */
+    siteId: (`site-${i + 1}`) as OverviewData['sites'][number]['siteId'],
     plane: 'Central',
     devices: 4,
     clients: '10',
@@ -122,16 +134,24 @@ function captureConsoleErrors() {
 /** Exposes the current pathname so navigation assertions stay honest. */
 function PathProbe() {
   const location = useLocation();
-  return <div data-testid="path">{location.pathname}</div>;
+  return <div data-testid="path">{`${location.pathname}${location.search}`}</div>;
 }
 
-function renderOverview() {
+function renderOverview(initialEntry = '/overview') {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      initialEntries={[initialEntry]}
+    >
       <ToastProvider>
         <SettingsProvider>
-          <Overview />
+          {/* PathProbe sits outside Routes so navigate() away from /overview still
+              reports the destination; Overview only mounts on its path. */}
           <PathProbe />
+          <Routes>
+            <Route path="/overview" element={<Overview />} />
+            <Route path="*" element={null} />
+          </Routes>
         </SettingsProvider>
       </ToastProvider>
     </MemoryRouter>,
@@ -139,6 +159,83 @@ function renderOverview() {
 }
 
 describe('Overview', () => {
+  it('downloads multi-slice server CSV when live (Loop 89)', async () => {
+    mockGetOverview.mockResolvedValue(liveData());
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderOverview();
+    fireEvent.click(await screen.findByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv.mock.calls.length).toBeGreaterThanOrEqual(4));
+    const paths = mockDownloadApiCsv.mock.calls.map((c) => String(c[0]));
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        '/api/overview/export?part=alerts',
+        '/api/overview/export?part=planes',
+        '/api/overview/export?part=sites',
+        '/api/overview/export?part=changes',
+      ]),
+    );
+    expect(await screen.findByText('Server CSV downloaded')).toBeTruthy();
+  });
+
+  it('passes health into part=sites server CSV (Loop 89)', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        sites: [
+          {
+            name: 'Campus 01',
+            siteId: 'campus-01',
+            plane: 'Central · local',
+            devices: 42,
+            clients: '1,204',
+            health: '96%',
+            healthPct: '96%',
+            tone: 'ok',
+            alerts: '2',
+            alertTone: 'warning',
+          },
+          {
+            name: 'Branch bad',
+            siteId: 'riverside',
+            plane: 'Central · local',
+            devices: 3,
+            clients: '12',
+            health: '40%',
+            healthPct: '40%',
+            tone: 'bad',
+            alerts: '5',
+            alertTone: 'danger',
+          },
+        ],
+      }),
+    );
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderOverview('/overview?health=bad');
+    fireEvent.click(await screen.findByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const sitesCall = mockDownloadApiCsv.mock.calls.find((c) => String(c[0]).includes('part=sites'));
+    expect(String(sitesCall?.[0])).toMatch(/part=sites/);
+    expect(String(sitesCall?.[0])).toMatch(/health=bad/);
+  });
+
+  it('hides Download server CSV on demo payloads', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ dataSource: 'demo' }));
+    renderOverview();
+    expect(await screen.findByRole('button', { name: 'Export CSV' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Download server CSV' })).toBeNull();
+  });
+
+  it('offers Copy view link on the header', async () => {
+    mockGetOverview.mockResolvedValue(liveData());
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    renderOverview();
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+  });
+
   it('(a) live mode with syncedAt null renders an em-dash stamp, not the string null', async () => {
     mockGetOverview.mockResolvedValue(liveData({ syncedAt: null }));
     renderOverview();
@@ -598,6 +695,22 @@ describe('Overview plane sparklines', () => {
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.queryByText(/devices reported per plane/)).toBeNull();
   });
+
+  it('Download metrics CSV fetches series + anomalies parts (Loop 101)', async () => {
+    mockGetOverview.mockResolvedValue(liveData());
+    mockGetMetrics.mockResolvedValue(LIVE_METRICS);
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderOverview();
+
+    expect(
+      await screen.findByRole('button', { name: 'Download metrics CSV' }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Download metrics CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalledTimes(2));
+    const paths = mockDownloadApiCsv.mock.calls.map((c) => c[0]);
+    expect(paths).toContain('/api/metrics/export?part=series');
+    expect(paths).toContain('/api/metrics/export?part=anomalies');
+  });
 });
 
 /* The anomaly markers ride the additive `anomalies` block of the metrics
@@ -697,5 +810,523 @@ describe('Overview plane anomaly markers', () => {
     expect(await screen.findByRole('img', { name: /10 devices reported/ })).toBeTruthy();
     expect(document.querySelector('circle[fill="var(--nd-warning)"]')).toBeNull();
     expect(screen.queryByText(/dots mark samples unusual/)).toBeNull();
+  });
+});
+
+describe('Overview sites health share (Loop 74)', () => {
+  it('seeds health from ?health= and filters the sites preview', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        sites: [
+          {
+            name: 'Healthy Hall',
+            siteId: 'campus-01',
+            plane: 'Central',
+            devices: 10,
+            clients: '100',
+            health: '99%',
+            healthPct: '99%',
+            tone: 'ok',
+            alerts: 'clear',
+            alertTone: 'success',
+          },
+          {
+            name: 'Warn Wing',
+            siteId: 'campus-02',
+            plane: 'Mist',
+            devices: 8,
+            clients: '40',
+            health: '82%',
+            healthPct: '82%',
+            tone: 'warn',
+            alerts: '1',
+            alertTone: 'warning',
+          },
+        ],
+      }),
+    );
+    renderOverview('/overview?health=warn');
+    expect(await screen.findByText('Warn Wing')).toBeTruthy();
+    expect(screen.queryByText('Healthy Hall')).toBeNull();
+    expect((screen.getByLabelText('Filter sites by health') as HTMLSelectElement).value).toBe('warn');
+    expect(screen.getByTestId('path').textContent).toContain('health=warn');
+  });
+
+  it('writes health back and Copy view link carries it', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        sites: [
+          {
+            name: 'Healthy Hall',
+            siteId: 'campus-01',
+            plane: 'Central',
+            devices: 10,
+            clients: '100',
+            health: '99%',
+            healthPct: '99%',
+            tone: 'ok',
+            alerts: 'clear',
+            alertTone: 'success',
+          },
+          {
+            name: 'Bad Building',
+            siteId: 'campus-02',
+            plane: 'Mist',
+            devices: 2,
+            clients: '3',
+            health: '40%',
+            healthPct: '40%',
+            tone: 'bad',
+            alerts: '3',
+            alertTone: 'danger',
+          },
+        ],
+      }),
+    );
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    renderOverview('/overview');
+    expect(await screen.findByText('Healthy Hall')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Filter sites by health'), { target: { value: 'bad' } });
+    await waitFor(() => expect(screen.getByTestId('path').textContent).toContain('health=bad'));
+    expect(await screen.findByText('Bad Building')).toBeTruthy();
+    expect(screen.queryByText('Healthy Hall')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/health=bad/);
+  });
+
+  it('parseOverviewHealthFilter + buildOverviewShareUrl round-trip', () => {
+    expect(parseOverviewHealthFilter('warn')).toBe('warn');
+    expect(parseOverviewHealthFilter('nope')).toBe('all');
+    expect(buildOverviewShareUrl({ health: 'ok', origin: 'http://x', pathname: '/overview' })).toBe(
+      'http://x/overview?health=ok',
+    );
+    expect(buildOverviewShareUrl({ health: 'all', origin: 'http://x', pathname: '/overview' })).toBe(
+      'http://x/overview',
+    );
+  });
+});
+
+/* Loop 136 — Health chip row toggles the same health= filter as the Select. */
+describe('Overview sites health chips (Loop 136)', () => {
+  it('health chips filter the sites preview and write health back to the URL', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        sites: [
+          {
+            name: 'Healthy Hall',
+            siteId: 'campus-01',
+            plane: 'Central',
+            devices: 10,
+            clients: '100',
+            health: '99%',
+            healthPct: '99%',
+            tone: 'ok',
+            alerts: 'clear',
+            alertTone: 'success',
+          },
+          {
+            name: 'Bad Building',
+            siteId: 'campus-02',
+            plane: 'Mist',
+            devices: 2,
+            clients: '3',
+            health: '40%',
+            healthPct: '40%',
+            tone: 'bad',
+            alerts: '3',
+            alertTone: 'danger',
+          },
+        ],
+      }),
+    );
+    renderOverview('/overview');
+    expect(await screen.findByText('Healthy Hall')).toBeTruthy();
+    const chips = screen.getByRole('group', { name: 'Site health' });
+    const critical = within(chips).getByRole('button', { name: /Critical/i });
+    expect(critical.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(critical);
+    await waitFor(() => expect(screen.getByText('Bad Building')).toBeTruthy());
+    expect(screen.queryByText('Healthy Hall')).toBeNull();
+    expect(screen.getByTestId('path').textContent).toContain('health=bad');
+    expect(critical.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(critical);
+    await waitFor(() => expect(screen.getByText('Healthy Hall')).toBeTruthy());
+    expect(screen.getByText('Bad Building')).toBeTruthy();
+    expect(screen.getByTestId('path').textContent).not.toContain('health=');
+  });
+});
+
+describe('Overview attention strip (Loop 125 + 128)', () => {
+  const T0 = '2026-08-04T10:00:00.000Z';
+  const T60 = '2026-08-04T11:00:00.000Z';
+
+  const HOUR_METRICS: MetricsHistoryEnvelope = {
+    dataSource: 'live',
+    since: T0,
+    sampleMs: 300_000,
+    retentionMs: 86_400_000,
+    planes: {
+      Central: {
+        devices: [
+          { t: T0, v: 100 },
+          { t: T60, v: 100 },
+        ],
+        devicesDown: [
+          { t: T0, v: 1 },
+          { t: T60, v: 4 },
+        ],
+        clients: [],
+        alerts: [
+          { t: T0, v: 2 },
+          { t: T60, v: 5 },
+        ],
+      },
+    },
+    deviceClients: {},
+  };
+
+  it('renders last-hour chips from metrics and navigates on click', async () => {
+    mockGetOverview.mockResolvedValue(liveData());
+    mockGetMetrics.mockResolvedValue(HOUR_METRICS);
+    renderOverview();
+
+    const region = await screen.findByRole('region', { name: 'What needs attention now' });
+    expect(region).toBeTruthy();
+    expect(screen.getByRole('button', { name: '+3 down' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '+3 alerts' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '+3 alerts' }));
+    await waitFor(() => expect(screen.getByTestId('path').textContent).toBe('/alerts'));
+  });
+
+  it('omits the strip when metrics cannot form a delta and no licences are due', async () => {
+    mockGetOverview.mockResolvedValue(liveData());
+    mockGetMetrics.mockResolvedValue(null);
+    renderOverview();
+    await screen.findByText('Central');
+    expect(screen.queryByRole('region', { name: 'What needs attention now' })).toBeNull();
+  });
+
+  it('shows an expiring-licence chip from stats even without metrics deltas', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        stats: [{ label: 'Licences ≤60d', value: '34', delta: '▲ 12 renewals due', tone: 'neutral' }],
+      }),
+    );
+    mockGetMetrics.mockResolvedValue(null);
+    renderOverview();
+
+    const region = await screen.findByRole('region', { name: 'What needs attention now' });
+    expect(region).toBeTruthy();
+    const chip = screen.getByRole('button', { name: '34 licences ≤60d' });
+    fireEvent.click(chip);
+    await waitFor(() => expect(screen.getByTestId('path').textContent).toBe('/licenses'));
+  });
+});
+
+
+/* Loop 168 — pure-live header LIVE badge (blend keeps section badges). */
+describe('Overview Loop 168 residuals', () => {
+  it('stamps LIVE on pure live overview header', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ dataSource: 'live', syncedAt: '2026-07-26T09:05:00' }));
+    mockGetMetrics.mockResolvedValue(null);
+    renderOverview();
+    expect(await screen.findByText('Operations')).toBeTruthy();
+    expect(screen.getByText('LIVE')).toBeTruthy();
+    expect(screen.getByText(/SYNCED 09:05/)).toBeTruthy();
+  });
+
+  it('hides header LIVE on demo fixtures without blend', async () => {
+    mockGetOverview.mockResolvedValue(liveData({ dataSource: 'demo' }));
+    mockGetMetrics.mockResolvedValue(null);
+    renderOverview();
+    expect(await screen.findByText('Operations')).toBeTruthy();
+    expect(screen.getByText(/SYNCED 09:41/)).toBeTruthy();
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+/* Loop 190 — Needs-you-now + Sites preview multi-select bulk bars. */
+describe('Overview bulk (Loop 190)', () => {
+  it('shows alerts bulk bar: Export selected, Copy devices, Copy selection link, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:overview-alerts-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        alerts: [
+          {
+            sev: 'P1',
+            tone: 'danger',
+            title: 'Gateway gw-edge-1 unreachable',
+            meta: 'CENTRAL · campus-01 · gw-edge-1',
+            plane: 'CENTRAL',
+            age: '4m',
+            device: 'gw-edge-1',
+          },
+          {
+            sev: 'P2',
+            tone: 'warning',
+            title: 'AP offline',
+            meta: 'MIST · campus-02',
+            plane: 'MIST',
+            age: '12m',
+            device: 'ap-3f-12',
+          },
+        ],
+      }),
+    );
+    renderOverview();
+    expect(await screen.findByRole('grid', { name: 'Needs you now' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Overview alert selection actions' })).toBeNull();
+
+    const table = screen.getByRole('grid', { name: 'Needs you now' });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Overview alert selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected alert/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy devices' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('gw-edge-1');
+
+    writeText.mockClear();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/devices=/);
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Overview alert selection actions' })).toBeNull(),
+    );
+  });
+
+  it('deep-links ?devices= and shows a clearable alerts selection chip', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        alerts: [
+          {
+            sev: 'P1',
+            tone: 'danger',
+            title: 'Gateway gw-edge-1 unreachable',
+            meta: 'CENTRAL · campus-01 · gw-edge-1',
+            plane: 'CENTRAL',
+            age: '4m',
+            device: 'gw-edge-1',
+          },
+          {
+            sev: 'P2',
+            tone: 'warning',
+            title: 'AP offline',
+            meta: 'MIST · campus-02',
+            plane: 'MIST',
+            age: '12m',
+            device: 'ap-3f-12',
+          },
+        ],
+      }),
+    );
+    renderOverview('/overview?devices=gw-edge-1');
+    const chip = await screen.findByRole('button', { name: /1 selected device/i });
+    expect(chip.textContent ?? '').toMatch(/^1 selected device/);
+    expect(screen.getByText('Gateway gw-edge-1 unreachable')).toBeTruthy();
+    expect(screen.queryByText('AP offline')).toBeNull();
+    fireEvent.click(chip);
+    await waitFor(() => expect(screen.getByText('AP offline')).toBeTruthy());
+    expect(screen.getByTestId('path').textContent).not.toMatch(/devices=/);
+  });
+
+  it('shows sites bulk bar: Export selected, Copy names, Copy selection link, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:overview-sites-selected');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        sites: [
+          {
+            name: 'Campus 01',
+            siteId: 'campus-01',
+            plane: 'Central · local',
+            devices: 42,
+            clients: '1,204',
+            health: '96%',
+            healthPct: '96%',
+            tone: 'ok',
+            alerts: '2',
+            alertTone: 'warning',
+          },
+          {
+            name: 'Campus 02',
+            siteId: 'campus-02',
+            plane: 'Mist',
+            devices: 10,
+            clients: '100',
+            health: '90%',
+            healthPct: '90%',
+            tone: 'ok',
+            alerts: 'clear',
+            alertTone: 'success',
+          },
+        ],
+      }),
+    );
+    renderOverview();
+    expect(await screen.findByRole('grid', { name: 'Sites preview' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Overview site selection actions' })).toBeNull();
+
+    const table = screen.getByRole('grid', { name: 'Sites preview' });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Overview site selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected site/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('Campus 01');
+
+    writeText.mockClear();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/siteIds=/);
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Overview site selection actions' })).toBeNull(),
+    );
+  });
+
+  it('deep-links ?siteIds= and shows a clearable sites selection chip', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({
+        sites: [
+          {
+            name: 'Campus 01',
+            siteId: 'campus-01',
+            plane: 'Central · local',
+            devices: 42,
+            clients: '1,204',
+            health: '96%',
+            healthPct: '96%',
+            tone: 'ok',
+            alerts: '2',
+            alertTone: 'warning',
+          },
+          {
+            name: 'Campus 02',
+            siteId: 'campus-02',
+            plane: 'Mist',
+            devices: 10,
+            clients: '100',
+            health: '90%',
+            healthPct: '90%',
+            tone: 'ok',
+            alerts: 'clear',
+            alertTone: 'success',
+          },
+        ],
+      }),
+    );
+    renderOverview('/overview?siteIds=campus-01');
+    const chip = await screen.findByRole('button', { name: /1 selected site/i });
+    expect(chip.textContent ?? '').toMatch(/^1 selected site/);
+    expect(screen.getByText('Campus 01')).toBeTruthy();
+    expect(screen.queryByText('Campus 02')).toBeNull();
+    fireEvent.click(chip);
+    await waitFor(() => expect(screen.getByText('Campus 02')).toBeTruthy());
+    expect(screen.getByTestId('path').textContent).not.toMatch(/siteIds=/);
+  });
+
+  it('buildOverviewShareUrl carries devices and siteIds; overviewAlertKey is stable', () => {
+    expect(
+      buildOverviewShareUrl({
+        health: 'warn',
+        devices: ['gw-edge-1'],
+        siteIds: ['campus-01'],
+        origin: 'http://x',
+        pathname: '/overview',
+      }),
+    ).toMatch(/health=warn/);
+    expect(
+      buildOverviewShareUrl({
+        devices: ['gw-edge-1'],
+        origin: 'http://x',
+        pathname: '/overview',
+      }),
+    ).toMatch(/devices=/);
+    expect(
+      buildOverviewShareUrl({
+        siteIds: ['campus-01'],
+        origin: 'http://x',
+        pathname: '/overview',
+      }),
+    ).toMatch(/siteIds=/);
+    expect(
+      overviewAlertKey({
+        sev: 'P1',
+        tone: 'danger',
+        title: 't',
+        meta: 'm',
+        plane: 'CENTRAL',
+        age: '1m',
+        device: 'd1',
+      }),
+    ).toBe('CENTRAL|d1|t');
+  });
+});
+
+/* Loop 189 — empty-state CTAs on Overview sections. */
+describe('Overview Loop 189 empty polish', () => {
+  it('offers actionable empty CTAs for alerts, launchpad, change log, and planes', async () => {
+    mockGetOverview.mockResolvedValue(
+      liveData({ alerts: [], sites: [], planes: [], changes: [], launchpad: [] }),
+    );
+    mockGetMetrics.mockResolvedValue(null);
+    renderOverview();
+
+    expect(await screen.findByText('Nothing needs you right now')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open Alerts' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open Configure' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Connected systems' }).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByRole('button', { name: 'Inventory' })).toBeTruthy();
+    expect(screen.getByText(/Alerts queue still carries history/i)).toBeTruthy();
+    expect(screen.getByText(/Review or stage the next change under Configure/i)).toBeTruthy();
+  });
+});
+
+/* Loop 201 — keyboard shortcuts help on Overview Needs-you-now / Sites grids. */
+describe('Overview Loop 201 residuals', () => {
+  it('exposes keyboard shortcuts help on the Overview header', async () => {
+    mockGetOverview.mockResolvedValue(liveData());
+    mockGetMetrics.mockResolvedValue(null);
+    renderOverview();
+    expect(await screen.findByRole('heading', { name: 'Operations' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
   });
 });

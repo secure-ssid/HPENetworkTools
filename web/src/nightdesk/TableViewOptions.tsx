@@ -87,27 +87,27 @@ export function TableViewOptions<Row>({
     Object.keys(config.widths ?? {}).length === 0;
 
   return (
-    <div className="nd-viewopts" ref={rootRef}>
+    <div className="nd-viewopts nt-view-options" ref={rootRef}>
       <button
         type="button"
         ref={triggerRef}
-        className="nd-btn nd-btn--secondary nd-btn--sm"
+        className="nd-btn nd-btn--secondary nd-btn--sm nt-btn"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
         View options
       </button>
       {open ? (
-        <div className="nd-viewopts__panel" role="group" aria-label="Table view options">
-          <div className="nd-viewopts__heading">Columns</div>
-          <ul className="nd-viewopts__list">
+        <div className="nd-viewopts__panel nt-panel-glass nt-view-options__panel" role="group" aria-label="Table view options">
+          <div className="nd-viewopts__heading nt-view-options__heading">Columns</div>
+          <ul className="nd-viewopts__list nt-view-options__list">
             {arranged.map((column, index) => {
               const isHidden = hidden.has(column.key);
               const locked = column.hideable === false;
               const lastVisible = !isHidden && visibleCount === 1;
               return (
-                <li key={column.key} className="nd-viewopts__item">
-                  <label className={cx('nd-checkbox', 'nd-viewopts__check')}>
+                <li key={column.key} className="nd-viewopts__item nt-view-options__item">
+                  <label className={cx('nd-checkbox', 'nd-viewopts__check', 'nt-view-options__check')}>
                     <input
                       type="checkbox"
                       checked={!isHidden}
@@ -117,10 +117,10 @@ export function TableViewOptions<Row>({
                     />
                     <span>{column.title}</span>
                   </label>
-                  <span className="nd-viewopts__moves">
+                  <span className="nd-viewopts__moves nt-view-options__moves">
                     <button
                       type="button"
-                      className="nd-viewopts__move"
+                      className="nd-viewopts__move nt-view-options__move"
                       aria-label={`Move ${column.title} earlier`}
                       disabled={index === 0}
                       onClick={() => move(column, -1)}
@@ -129,7 +129,7 @@ export function TableViewOptions<Row>({
                     </button>
                     <button
                       type="button"
-                      className="nd-viewopts__move"
+                      className="nd-viewopts__move nt-view-options__move"
                       aria-label={`Move ${column.title} later`}
                       disabled={index === arranged.length - 1}
                       onClick={() => move(column, 1)}
@@ -142,7 +142,7 @@ export function TableViewOptions<Row>({
             })}
           </ul>
           {isDefault ? null : (
-            <button type="button" className="nd-viewopts__reset" onClick={() => onChange({})}>
+            <button type="button" className="nd-viewopts__reset nt-view-options__reset" onClick={() => onChange({})}>
               Reset to defaults
             </button>
           )}

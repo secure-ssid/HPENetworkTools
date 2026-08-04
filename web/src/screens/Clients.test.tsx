@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import Clients from './Clients';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -1446,7 +1446,7 @@ describe('Clients table superpowers', () => {
     fireEvent.click(screen.getByRole('button', { name: /Session/ })); // desc: real duration, never alphabetical
     expect(firstNames()[0]).toContain('c-three');
 
-    fireEvent.click(screen.getByRole('button', { name: /^Type/ })); // asc: laptop < phone < tablet
+    fireEvent.click(screen.getByRole('button', { name: /Sort Type|^Type/ })); // asc: laptop < phone < tablet
     expect(firstNames()[0]).toContain('c-one');
     expect(firstNames()[2]).toContain('c-three');
   });
@@ -1580,5 +1580,780 @@ describe('Clients — wired Mist rows', () => {
     expect(d.queryByText('Roams')).toBeNull();
     // Mist published no usage figure for this session — said, never zeroed.
     expect(metricNoteFor('Throughput')).toBe('not reported by MIST');
+  });
+});
+
+describe('Clients drawer — copy view link + summary export', () => {
+  it('offers Copy view link and Export summary in the client drawer', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const createObjectURL = vi.fn(() => 'blob:client-summary');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+
+    renderDrawer('3c:a9:ab:7c:a9:51', true);
+
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
+    const d = drawer();
+    expect(await d.findByRole('button', { name: 'Copy view link' })).toBeTruthy();
+    expect(d.getByRole('button', { name: 'Export summary' })).toBeTruthy();
+    fireEvent.click(d.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]?.[0])).toMatch(/mac=/);
+    fireEvent.click(d.getByRole('button', { name: 'Export summary' }));
+    expect(await screen.findByText(/Exported 1 client summary/)).toBeTruthy();
+  });
+});
+
+/* Loop 67 — filter URL seed/write-back so Copy view link shares the full slice. */
+describe('Clients filter URL write-back', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path: string) {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route path="/clients" element={<Clients />} />
+            </Routes>
+            <SearchProbe />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  beforeEach(() => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:aa:aa:aa:aa:01',
+          name: 'client-a',
+          medium: 'wireless',
+          type: 'laptop',
+          siteName: 'Campus',
+          group: 'corp',
+          plane: 'CENTRAL',
+          health: 'good',
+          healthTone: 'success',
+          problem: true,
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'bb:bb:bb:bb:bb:02',
+          name: 'client-b',
+          medium: 'wired',
+          type: 'phone',
+          siteName: 'Remote',
+          group: 'guest',
+          plane: 'MIST',
+          health: 'warning',
+          healthTone: 'warning',
+          problem: false,
+        },
+      ],
+      dataSource: 'live' as const,
+    });
+  });
+
+  it('seeds filters from the URL and Copy view link keeps them', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderAt('/clients?q=client&medium=wireless&type=laptop&site=Campus&group=corp&plane=CENTRAL&problems=1');
+
+    await waitFor(() => expect(screen.getByDisplayValue('client')).toBeTruthy());
+    expect((screen.getByRole('combobox', { name: 'Medium' }) as HTMLSelectElement).value).toBe('wireless');
+    expect((screen.getByRole('combobox', { name: 'Device type' }) as HTMLSelectElement).value).toBe('laptop');
+    expect((screen.getByRole('combobox', { name: 'Site' }) as HTMLSelectElement).value).toBe('Campus');
+    expect((screen.getByRole('combobox', { name: 'Group' }) as HTMLSelectElement).value).toBe('corp');
+    expect((screen.getByRole('combobox', { name: 'Plane' }) as HTMLSelectElement).value).toBe('CENTRAL');
+    expect(screen.getByRole('switch', { name: /Problems only/i }).getAttribute('aria-checked')).toBe('true');
+
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toContain('q=client'));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]?.[0] ?? '');
+    expect(url).toContain('q=client');
+    expect(url).toContain('medium=wireless');
+    expect(url).toContain('type=laptop');
+    expect(url).toContain('site=Campus');
+    expect(url).toContain('group=corp');
+    expect(url).toContain('plane=CENTRAL');
+    expect(url).toContain('problems=1');
+  });
+
+  it('opening a client drawer preserves list filters on the URL', async () => {
+    renderAt('/clients?q=client&plane=CENTRAL');
+    await waitFor(() => expect(screen.getByText('client-a')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('client-a'));
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toMatch(/mac=/));
+    const search = screen.getByTestId('search').textContent ?? '';
+    expect(search).toContain('q=client');
+    expect(search).toContain('plane=CENTRAL');
+    expect(search).toMatch(/mac=/);
+  });
+});
+
+/* Loop 56 — list envelope nextCursor drives Load more (Sites pattern). */
+describe('Clients load-more page cursor', () => {
+  function renderClients() {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('Load more appends the next cursor page without dropping prior rows', async () => {
+    const page1: ClientRow = {
+      ...SPARSE_LIVE_CLIENT,
+      mac: 'aa:aa:aa:aa:aa:01',
+      name: 'client-a',
+      ip: '10.0.0.1',
+    };
+    const page2: ClientRow = {
+      ...SPARSE_LIVE_CLIENT,
+      mac: 'aa:aa:aa:aa:aa:02',
+      name: 'client-b',
+      ip: '10.0.0.2',
+    };
+    mockGetClients.mockImplementation(async (macOrQuery) => {
+      const query = typeof macOrQuery === 'object' && macOrQuery ? macOrQuery : undefined;
+      if (query?.cursor === 'page-2') {
+        return {
+          stats: [],
+          clients: [page2],
+          dataSource: 'live' as const,
+          page: { total: 2, limit: 250, cursor: 'page-2', nextCursor: '' },
+        };
+      }
+      return {
+        stats: [],
+        clients: [page1],
+        dataSource: 'live' as const,
+        page: { total: 2, limit: 250, cursor: '', nextCursor: 'page-2' },
+      };
+    });
+
+    renderClients();
+    await waitFor(() => expect(screen.getByText('client-a')).toBeTruthy());
+    expect(screen.getByText('Loaded 1 of 2')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(screen.getByText('client-b')).toBeTruthy());
+    expect(screen.getByText('client-a')).toBeTruthy();
+    expect(
+      mockGetClients.mock.calls.some((c) => {
+        const arg = c[0];
+        return typeof arg === 'object' && arg !== null && 'cursor' in arg && arg.cursor === 'page-2';
+      }),
+    ).toBe(true);
+  });
+});
+
+/* Loop 127 — bulk Export selected + pure-live LIVE badge honesty. */
+describe('Clients Loop 127 residuals', () => {
+  function renderClients() {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('stamps LIVE on pure live sessions (not only blend mode)', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [SPARSE_LIVE_CLIENT],
+      dataSource: 'live',
+    });
+    renderClients();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('shows bulk bar for selection: Export selected + Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:clients-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:01', name: 'sess-one' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:02', name: 'sess-two' },
+      ],
+      dataSource: 'live',
+    });
+    const { container } = renderClients();
+    await screen.findByText('2 of 2 sampled');
+    expect(screen.queryByRole('region', { name: 'Client selection actions' })).toBeNull();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Client selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected session/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Client selection actions' })).toBeNull(),
+    );
+  });
+
+  /* Loop 134 — bulk Copy MACs (Devices Copy serials pattern). */
+  it('Copy MACs writes unique newline-joined inventory MACs', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:01', name: 'sess-one' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:02', name: 'sess-two' },
+      ],
+      dataSource: 'live',
+    });
+    const { container } = renderClients();
+    await screen.findByText('2 of 2 sampled');
+
+    const rows = container.querySelectorAll('tbody tr');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    (rows[0] as HTMLElement).focus();
+    fireEvent.keyDown(rows[0] as HTMLElement, { key: 'x' });
+    (rows[1] as HTMLElement).focus();
+    fireEvent.keyDown(rows[1] as HTMLElement, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Client selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy MACs' }));
+    expect(await screen.findByText(/Copied 2 MACs/i)).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith('aa:00:00:00:00:01\naa:00:00:00:00:02');
+  });
+
+  /* Loop 160 — Copy selection link writes ?macs= and deep-link filters the roster. */
+  it('Copy selection link writes macs= and the deep link filters the roster', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:01', name: 'sess-one' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:02', name: 'sess-two' },
+      ],
+      dataSource: 'live',
+    });
+    const { container } = renderClients();
+    await screen.findByText('2 of 2 sampled');
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Client selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = String(writeText.mock.calls[0]![0]);
+    expect(url).toMatch(/macs=/);
+    expect(decodeURIComponent(url).toLowerCase()).toMatch(/aa:00:00:00:00:01/);
+
+    cleanup();
+    const qs = url.includes('?') ? url.slice(url.indexOf('?')) : '';
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:01', name: 'sess-one' },
+        { ...SPARSE_LIVE_CLIENT, mac: 'aa:00:00:00:00:02', name: 'sess-two' },
+      ],
+      dataSource: 'live',
+    });
+    render(
+      <MemoryRouter
+        initialEntries={[`/clients${qs}`]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByText(/1 of 2 sampled/);
+    expect(screen.getByText('sess-one')).toBeTruthy();
+    expect(screen.queryByText('sess-two')).toBeNull();
+    expect(screen.getByRole('button', { name: /selected MAC/i })).toBeTruthy();
+  });
+
+  it('filtered empty state offers Clear filters', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [{ ...SPARSE_LIVE_CLIENT, name: 'alpha', mac: 'aa:00:00:00:00:01', type: 'laptop' }],
+      dataSource: 'live',
+    });
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/clients?type=phone']}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Clients />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('Nothing matches that filter')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByText('alpha')).toBeTruthy();
+  });
+});
+
+/* Loop 140 — Health chip row toggles the same health= filter as the Select. */
+describe('Clients health chips (Loop 140)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/clients') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route path="/clients" element={<Clients />} />
+            </Routes>
+            <SearchProbe />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('health chips filter the table and write health back to the URL', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:01',
+          name: 'good-client',
+          health: 'good',
+          healthTone: 'success',
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:02',
+          name: 'weak-client',
+          health: 'weak signal',
+          healthTone: 'warning',
+        },
+      ],
+      dataSource: 'live' as const,
+    });
+
+    renderAt('/clients');
+    expect(await screen.findByText('good-client')).toBeTruthy();
+    expect(screen.getByText('weak-client')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Client health' });
+    const weak = within(chips).getByRole('button', { name: /weak signal/i });
+    expect(weak.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(weak);
+    await waitFor(() => expect(screen.getByText('weak-client')).toBeTruthy());
+    expect(screen.queryByText('good-client')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('health=weak');
+    expect(weak.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(weak);
+    await waitFor(() => expect(screen.getByText('good-client')).toBeTruthy());
+    expect(screen.getByText('weak-client')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toContain('health=');
+  });
+});
+
+/* Loop 143 — Medium chip row toggles the same medium= filter as the Select. */
+describe('Clients medium chips (Loop 143)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/clients') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route path="/clients" element={<Clients />} />
+            </Routes>
+            <SearchProbe />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('medium chips filter the table and write medium back to the URL', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:11',
+          name: 'wifi-client',
+          medium: 'wireless',
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:12',
+          name: 'wire-client',
+          medium: 'wired',
+        },
+      ],
+      dataSource: 'live' as const,
+    });
+
+    renderAt('/clients');
+    expect(await screen.findByText('wifi-client')).toBeTruthy();
+    expect(screen.getByText('wire-client')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Client medium' });
+    const wired = within(chips).getByRole('button', { name: /Wired/i });
+    expect(wired.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(wired);
+    await waitFor(() => expect(screen.getByText('wire-client')).toBeTruthy());
+    expect(screen.queryByText('wifi-client')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('medium=wired');
+    expect(wired.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(wired);
+    await waitFor(() => expect(screen.getByText('wifi-client')).toBeTruthy());
+    expect(screen.getByText('wire-client')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toContain('medium=');
+  });
+});
+
+/* Loop 149 — Problems chip row toggles the same problems= filter as the Switch. */
+describe('Clients problems chips (Loop 149)', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderAt(path = '/clients') {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route path="/clients" element={<Clients />} />
+            </Routes>
+            <SearchProbe />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('problems chips filter the roster and write problems back to the URL', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:21',
+          name: 'problem-client',
+          problem: true,
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:22',
+          name: 'clean-client',
+          problem: false,
+        },
+      ],
+      dataSource: 'live' as const,
+    });
+
+    renderAt('/clients');
+    expect(await screen.findByText('problem-client')).toBeTruthy();
+    expect(screen.getByText('clean-client')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Client problems' });
+    const problems = within(chips).getByRole('button', { name: /Problems/i });
+    expect(problems.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(problems);
+    await waitFor(() => expect(screen.getByText('problem-client')).toBeTruthy());
+    expect(screen.queryByText('clean-client')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('problems=1');
+    expect(problems.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(problems);
+    await waitFor(() => expect(screen.getByText('clean-client')).toBeTruthy());
+    expect(screen.getByText('problem-client')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toContain('problems=');
+  });
+
+  it('clean chip writes problems=0', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:31',
+          name: 'problem-two',
+          problem: true,
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:32',
+          name: 'clean-two',
+          problem: false,
+        },
+      ],
+      dataSource: 'live' as const,
+    });
+
+    renderAt('/clients');
+    expect(await screen.findByText('clean-two')).toBeTruthy();
+    const chips = screen.getByRole('group', { name: 'Client problems' });
+    const clean = within(chips).getByRole('button', { name: /Clean/i });
+    fireEvent.click(clean);
+    await waitFor(() => expect(screen.getByText('clean-two')).toBeTruthy());
+    expect(screen.queryByText('problem-two')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('problems=0');
+  });
+});
+
+/* Loop 152 — Plane chip row toggles the same plane= filter as the Select. */
+describe('Clients plane chips (Loop 152)', () => {
+  function renderAt(path: string) {
+    function SearchProbe() {
+      const loc = useLocation();
+      return <div data-testid="search">{loc.search}</div>;
+    }
+    return render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={[path]}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route path="/clients" element={<Clients />} />
+            </Routes>
+            <SearchProbe />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('plane chips filter the roster and write plane back to the URL', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:41',
+          name: 'central-client',
+          plane: 'CENTRAL',
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:42',
+          name: 'mist-client',
+          plane: 'MIST',
+        },
+      ],
+      dataSource: 'live' as const,
+    });
+
+    renderAt('/clients');
+    expect(await screen.findByText('central-client')).toBeTruthy();
+    expect(screen.getByText('mist-client')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Client plane' });
+    const mist = within(chips).getByRole('button', { name: /MIST/i });
+    expect(mist.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(mist);
+    await waitFor(() => expect(screen.getByText('mist-client')).toBeTruthy());
+    expect(screen.queryByText('central-client')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('plane=MIST');
+    expect(mist.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(mist);
+    await waitFor(() => expect(screen.getByText('central-client')).toBeTruthy());
+    expect(screen.getByText('mist-client')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toContain('plane=');
+  });
+});
+
+/* Loop 154 — Site chip row toggles the same site= filter as the Select. */
+describe('Clients site chips (Loop 154)', () => {
+  function renderAt(path: string) {
+    function SearchProbe() {
+      const loc = useLocation();
+      return <div data-testid="search">{loc.search}</div>;
+    }
+    return render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={[path]}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route path="/clients" element={<Clients />} />
+            </Routes>
+            <SearchProbe />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('site chips filter the roster and write site back to the URL', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:51',
+          name: 'hq-client',
+          siteName: 'Campus-01 HQ',
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:52',
+          name: 'lab-client',
+          siteName: 'Campus-02 Lab',
+        },
+      ],
+      dataSource: 'live' as const,
+    });
+
+    renderAt('/clients');
+    expect(await screen.findByText('hq-client')).toBeTruthy();
+    expect(screen.getByText('lab-client')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Client site' });
+    const lab = within(chips).getByRole('button', { name: /Campus-02 Lab/i });
+    expect(lab.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(lab);
+    await waitFor(() => expect(screen.getByText('lab-client')).toBeTruthy());
+    expect(screen.queryByText('hq-client')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('site=Campus-02+Lab');
+    expect(lab.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(lab);
+    await waitFor(() => expect(screen.getByText('hq-client')).toBeTruthy());
+    expect(screen.getByText('lab-client')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toContain('site=');
+  });
+});
+
+/* Loop 156 — Group chip row toggles the same group= filter as the Select. */
+describe('Clients group chips (Loop 156)', () => {
+  function renderAt(path: string) {
+    function SearchProbe() {
+      const loc = useLocation();
+      return <div data-testid="search">{loc.search}</div>;
+    }
+    return render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={[path]}
+      >
+        <ToastProvider>
+          <SettingsProvider>
+            <Routes>
+              <Route path="/clients" element={<Clients />} />
+            </Routes>
+            <SearchProbe />
+          </SettingsProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('group chips filter the roster and write group back to the URL', async () => {
+    mockGetClients.mockResolvedValue({
+      stats: [],
+      clients: [
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:61',
+          name: 'corp-client',
+          group: 'corp',
+        },
+        {
+          ...SPARSE_LIVE_CLIENT,
+          mac: 'aa:00:00:00:00:62',
+          name: 'guest-client',
+          group: 'guest',
+        },
+      ],
+      dataSource: 'live' as const,
+    });
+
+    renderAt('/clients');
+    expect(await screen.findByText('corp-client')).toBeTruthy();
+    expect(screen.getByText('guest-client')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Client group' });
+    const guest = within(chips).getByRole('button', { name: /guest/i });
+    expect(guest.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(guest);
+    await waitFor(() => expect(screen.getByText('guest-client')).toBeTruthy());
+    expect(screen.queryByText('corp-client')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toContain('group=guest');
+    expect(guest.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(guest);
+    await waitFor(() => expect(screen.getByText('corp-client')).toBeTruthy());
+    expect(screen.getByText('guest-client')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toContain('group=');
   });
 });

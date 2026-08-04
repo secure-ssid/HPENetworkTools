@@ -1,8 +1,20 @@
 /**
  * web/src/screens/Clients.tsx — every session, wired and wireless.
  * High-fidelity port of design/NtClients.dc.html: 5-Stat row, local AND filter
- * row (search / medium / type / site / group / plane / "Problems only") with
- * the right-aligned mono count, the open table, and the width="lg"
+ * row (search / medium / type / site / group / plane / health / "Problems only") with
+ * URL write-back (`q`/`medium`/`type`/`site`/`group`/`plane`/`health`/`problems`) so
+ * **Copy view link** and refresh reopen the same slice; drawer `mac` /
+ * `diagnostics` preserve those filters. A **Medium** chip row (counts over the
+ * non-medium filter universe — Loop 143) and a **Health** chip row (counts over the
+ * non-health filter universe — Loop 140) toggle the same `?medium=` / `?health=` as
+ * the header Selects — click again to clear. A **Problems** chip row (counts over
+ * the non-problems filter universe — Loop 149) toggles the same `?problems=` as the
+ * Problems-only Switch (`1` = problems, `0` = clean). A **Plane** chip row (counts over
+ * the non-plane filter universe — Loop 152) toggles the same `?plane=` as the header
+ * Select. A **Site** chip row (counts over the non-site filter universe — Loop 154)
+ * toggles the same `?site=` as the header Select. A **Group** chip row (counts over
+ * the non-group filter universe — Loop 156) toggles the same `?group=` as the
+ * header Select. Right-aligned mono count, width="lg"
  * client drawer (state badges, Experience metrics + quality Progress,
  *
  * The table is one fact per column and one line per session. The prototype
@@ -18,10 +30,14 @@
  * options → show/hide/reorder, header-edge resize) persists its controlled
  * config through SettingsContext under the 'clients' table id, and the rows
  * are a keyboard grid (j/↓ k/↑ move, Enter/→ opens the client drawer — the
- * row's one primary action — x selects, Esc clears; '?' lists them). No
- * column tints: a session's health already wears its tone as a Badge, and no
- * other column has a threshold that is the same fact down the column (the
- * same call Devices made).
+ * row's one primary action — x selects, Esc clears; '?' lists them). A
+ * non-empty selection raises **Export selected**, **Copy selection link**
+ * (`?macs=` of the marked inventory MACs — Devices `?names=` / Alerts `?fps=`
+ * pattern; clearable chip while active), and **Copy MACs** (newline-joined
+ * inventory MACs — Devices **Copy serials** pattern).
+ * Header **LIVE** stamps pure live and blend feeds alike. No column tints: a
+ * session's health already wears its tone as a Badge, and no other column has
+ * a threshold that is the same fact down the column (the same call Devices made).
  *
  * Where it is, the vertical path-to-the-internet hop chain computed with
  * shared pathFor(), the stitched session timeline via timelineFor(), and the
@@ -48,7 +64,7 @@ import {
   SectionHeader,
   Select,
   PageSkeleton,
-  Spinner,
+  Skeleton,
   Switch,
   TableViewOptions,
   useToast,
@@ -73,7 +89,7 @@ import type { CategoryBucket } from '@hpe/shared';
 import { partitionColumns, SharedFacts } from './dataColumns';
 import type { DataColumn } from './dataColumns';
 import { useSettings } from '../app/SettingsContext';
-import { planeFilterForParam } from '../app/nav';
+import { namesFilterForParam, planeFilterForParam } from '../app/nav';
 import {
   clientFieldProvenance,
   clientPlaneSections,
@@ -106,11 +122,22 @@ import type {
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
+import { exportTableCsv } from '../lib/csv';
 
 const MEDIUM_OPTIONS = [
   { value: 'all', label: 'Wired + wireless' },
   { value: 'wireless', label: 'Wireless' },
   { value: 'wired', label: 'Wired' },
+];
+
+const MEDIUM_CHIP_META: Array<{
+  key: 'wireless' | 'wired';
+  label: string;
+  tone: 'info' | 'neutral';
+}> = [
+  { key: 'wireless', label: 'Wireless', tone: 'info' },
+  { key: 'wired', label: 'Wired', tone: 'neutral' },
 ];
 
 /** Numeric value of a metric string; fixtures use U+2212 for negative dBm. */
@@ -636,13 +663,38 @@ export default function Clients() {
      reference integration runs for the change-queue bulk-actions work. */
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [searchParams, setSearchParams] = useSearchParams();
-  const [q, setQ] = useState('');
-  const [medium, setMedium] = useState('all');
-  const [type, setType] = useState('all');
-  const [site, setSite] = useState('all');
-  const [group, setGroup] = useState('all');
+  const [q, setQ] = useState(() => searchParams.get('q') ?? '');
+  const [medium, setMedium] = useState(() => {
+    const m = searchParams.get('medium')?.trim();
+    return m && m.length > 0 ? m : 'all';
+  });
+  const [type, setType] = useState(() => {
+    const t = searchParams.get('type')?.trim();
+    return t && t.length > 0 ? t : 'all';
+  });
+  const [site, setSite] = useState(() => {
+    const s = searchParams.get('site')?.trim();
+    return s && s.length > 0 ? s : 'all';
+  });
+  const [group, setGroup] = useState(() => {
+    const g = searchParams.get('group')?.trim();
+    return g && g.length > 0 ? g : 'all';
+  });
   const [plane, setPlane] = useState(() => planeFilterForParam(searchParams.get('plane')));
-  const [problemsOnly, setProblemsOnly] = useState(false);
+  const [health, setHealth] = useState(() => {
+    const h = searchParams.get('health')?.trim();
+    return h && h.length > 0 ? h : 'all';
+  });
+  /* Problems triage: all | problems-only (`1`) | clean-only (`0`) — chips + Switch
+   * share the same `?problems=` write-back (Loop 149). */
+  const [problemsFilter, setProblemsFilter] = useState<'all' | '1' | '0'>(() => {
+    const raw = (searchParams.get('problems') ?? '').trim().toLowerCase();
+    if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return '1';
+    if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return '0';
+    return 'all';
+  });
+  const problemsOnly = problemsFilter === '1';
+  const setProblemsOnly = (on: boolean) => setProblemsFilter(on ? '1' : 'all');
   const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
   const [showDiagnostics, setShowDiagnostics] = useState(() => searchParams.get('diagnostics') === '1');
   const [clientTypeBuckets, setClientTypeBuckets] = useState<CategoryBucket[]>([]);
@@ -650,7 +702,9 @@ export default function Clients() {
   /* The header stamps SYNCED hh:mm, so a NOC tab must not sit on a mount-time
      snapshot under it: poll on the settings cadence, the same pattern
      Overview.tsx runs. One fetch at a time — a slow response never stacks up
-     behind the interval; fixture reads poll harmlessly. Live lists page at 250. */
+     behind the interval; fixture reads poll harmlessly. Live lists page at 250.
+     q/medium/type/site/group/plane/health/problems ride the request so Load more
+     pages the filtered set (server applyClientListFilters). */
   const clientsAccRef = useRef<ClientRow[]>([]);
   const nextClientCursorRef = useRef<string | null>(null);
   const loadMoreClientsRef = useRef<() => void>(() => {});
@@ -658,6 +712,15 @@ export default function Clients() {
   const [clientPageTotal, setClientPageTotal] = useState<number | null>(null);
   const [loadingMoreClients, setLoadingMoreClients] = useState(false);
   const CLIENT_PAGE = 250;
+
+  const serverQ = q.trim();
+  const serverMedium = medium !== 'all' ? medium : undefined;
+  const serverType = type !== 'all' ? type : undefined;
+  const serverSite = site !== 'all' ? site : undefined;
+  const serverGroup = group !== 'all' ? group : undefined;
+  const serverPlane = plane !== 'all' ? plane : undefined;
+  const serverHealth = health !== 'all' ? health : undefined;
+  const serverProblems = problemsFilter === 'all' ? undefined : problemsFilter;
 
   useEffect(() => {
     let live = true;
@@ -669,6 +732,14 @@ export default function Clients() {
       if (mode === 'append') setLoadingMoreClients(true);
       void getClients({
         limit: CLIENT_PAGE,
+        ...(serverQ ? { q: serverQ } : {}),
+        ...(serverMedium ? { medium: serverMedium } : {}),
+        ...(serverType ? { type: serverType } : {}),
+        ...(serverSite ? { site: serverSite } : {}),
+        ...(serverGroup ? { group: serverGroup } : {}),
+        ...(serverPlane ? { plane: serverPlane } : {}),
+        ...(serverHealth ? { health: serverHealth } : {}),
+        ...(serverProblems ? { problems: serverProblems } : {}),
         ...(mode === 'append' && nextClientCursorRef.current
           ? { cursor: nextClientCursorRef.current }
           : {}),
@@ -704,6 +775,8 @@ export default function Clients() {
       }
     };
     loadMoreClientsRef.current = () => pull('append');
+    nextClientCursorRef.current = null;
+    clientsAccRef.current = [];
     pull('replace');
     const every = Math.max(pollIntervalSec, 10) * 1000;
     const id = setInterval(() => pull('replace'), every);
@@ -711,20 +784,91 @@ export default function Clients() {
       live = false;
       clearInterval(id);
     };
-  }, [pollIntervalSec]);
+  }, [
+    pollIntervalSec,
+    serverQ,
+    serverMedium,
+    serverType,
+    serverSite,
+    serverGroup,
+    serverPlane,
+    serverHealth,
+    serverProblems,
+  ]);
 
-  /* Deep link: /clients?plane=<registryId> (from the Systems plane drawer).
-     Applied when the URL changes while the screen is mounted — state adjusted
-     during render rather than an effect that commits the stale filter first. */
+  /* Deep link + share: hydrate filters when the URL changes while mounted
+     (back/forward, paste, Systems plane drawer). State adjusts during render
+     rather than an effect that commits the stale filter first. */
   const [prevParams, setPrevParams] = useState(searchParams);
   if (prevParams !== searchParams) {
     setPrevParams(searchParams);
+    const qParam = searchParams.get('q');
+    if (qParam !== null) setQ(qParam);
+    else setQ('');
+    const mediumParam = searchParams.get('medium');
+    if (mediumParam !== null) setMedium(mediumParam.trim() || 'all');
+    else setMedium('all');
+    const typeParam = searchParams.get('type');
+    if (typeParam !== null) setType(typeParam.trim() || 'all');
+    else setType('all');
+    const siteParam = searchParams.get('site');
+    if (siteParam !== null) setSite(siteParam.trim() || 'all');
+    else setSite('all');
+    const groupParam = searchParams.get('group');
+    if (groupParam !== null) setGroup(groupParam.trim() || 'all');
+    else setGroup('all');
     const pp = searchParams.get('plane');
     if (pp !== null) setPlane(planeFilterForParam(pp));
+    else setPlane('all');
+    const healthParam = searchParams.get('health');
+    if (healthParam !== null) setHealth(healthParam.trim() || 'all');
+    else setHealth('all');
+    const problemsParam = searchParams.get('problems');
+    if (problemsParam !== null) {
+      const raw = problemsParam.trim().toLowerCase();
+      if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') setProblemsFilter('1');
+      else if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') setProblemsFilter('0');
+      else setProblemsFilter('all');
+    } else {
+      setProblemsFilter('all');
+    }
+    setShowDiagnostics(searchParams.get('diagnostics') === '1');
   }
+
+  /* Keep filter-row params aligned with local state so refresh / Copy view link
+     reopen the same client-side slice. Drawer params (`mac`, `diagnostics`) are
+     preserved; empty defaults are omitted rather than written as q=&type=all. */
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    const qTrim = q.trim();
+    if (qTrim) next.set('q', qTrim);
+    else next.delete('q');
+    if (medium !== 'all') next.set('medium', medium);
+    else next.delete('medium');
+    if (type !== 'all') next.set('type', type);
+    else next.delete('type');
+    if (site !== 'all') next.set('site', site);
+    else next.delete('site');
+    if (group !== 'all') next.set('group', group);
+    else next.delete('group');
+    if (plane !== 'all') next.set('plane', plane);
+    else next.delete('plane');
+    if (health !== 'all') next.set('health', health);
+    else next.delete('health');
+    if (problemsFilter === '1') next.set('problems', '1');
+    else if (problemsFilter === '0') next.set('problems', '0');
+    else next.delete('problems');
+    if (showDiagnostics) next.set('diagnostics', '1');
+    else next.delete('diagnostics');
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [q, medium, type, site, group, plane, health, problemsFilter, showDiagnostics, searchParams, setSearchParams]);
 
   /* The drawer selection is the ?mac= URL param — deep links open it directly. */
   const macParam = searchParams.get('mac');
+  /* Deep link: /clients?macs=aa\nbb (bulk Copy selection link). Read off the URL
+   * like Devices ?names= / Alerts ?fps= — must not drift from the address bar. */
+  const macsFilter = namesFilterForParam(searchParams.get('macs'));
 
   /* Ticket-gated session writes: Reauthenticate (Central troubleshooting-API
    * disconnect — the client rejoins and reauthenticates) and Block endpoint
@@ -738,6 +882,7 @@ export default function Clients() {
   const [coaTickets, setCoaTickets] = useState<TicketRow[]>([]);
   const [coaTicket, setCoaTicket] = useState('');
   const [coaBusy, setCoaBusy] = useState(false);
+  const [coaTicketsError, setCoaTicketsError] = useState<string | null>(null);
 
   const openCoa = (mode: 'reauth' | 'block') => {
     setCoaMode(mode);
@@ -820,13 +965,21 @@ export default function Clients() {
   useEffect(() => {
     if (!coaOpen) return;
     let live = true;
+    setCoaTicketsError(null);
     void getTickets().then((d) => {
       if (!live) return;
+      if (d.apiError) {
+        setCoaTickets([]);
+        setCoaTicket('');
+        setCoaTicketsError(d.apiError);
+        return;
+      }
       const open = d.tickets.filter((t) => !/resolved|closed/i.test(t.state));
       const rest = d.tickets.filter((t) => /resolved|closed/i.test(t.state));
       const sorted = [...open, ...rest];
       setCoaTickets(sorted);
       setCoaTicket((curId) => curId || (sorted[0]?.id ?? ''));
+      setCoaTicketsError(null);
     });
     return () => {
       live = false;
@@ -851,16 +1004,156 @@ export default function Clients() {
   // collapse into the same roster.
   const missingSources = data.missingSources ?? [];
   const ql = q.trim().toLowerCase();
+  /* Medium / health / problems / plane / site / group chips each count over every
+   * filter except their own — full mix stays visible while a chip is on
+   * (Loops 140/143/149/152/154/156). */
+  const matchesTypeQ = (c: (typeof clients)[number]) =>
+    (type === 'all' || c.type === type) &&
+    (!ql || (c.name + c.model + c.mac + c.ip + c.attach + c.group).toLowerCase().includes(ql));
+  const matchesGroup = (c: (typeof clients)[number]) => group === 'all' || c.group === group;
+  const matchesClientsBase = (c: (typeof clients)[number]) => matchesTypeQ(c) && matchesGroup(c);
+  const matchesSite = (c: (typeof clients)[number]) => site === 'all' || c.siteName === site;
+  const matchesPlane = (c: (typeof clients)[number]) =>
+    plane === 'all' || c.plane === plane || c.sources?.some((source) => source.row.plane === plane);
+  const matchesClientsSansPlane = (c: (typeof clients)[number]) =>
+    matchesClientsBase(c) && matchesSite(c);
+  const matchesClientsSansSite = (c: (typeof clients)[number]) =>
+    matchesClientsBase(c) && matchesPlane(c);
+  const matchesClientsSansGroup = (c: (typeof clients)[number]) =>
+    matchesTypeQ(c) && matchesSite(c) && matchesPlane(c);
+  const matchesClientsCore = (c: (typeof clients)[number]) =>
+    matchesClientsBase(c) && matchesSite(c) && matchesPlane(c);
+  const matchesMedium = (c: (typeof clients)[number]) => medium === 'all' || c.medium === medium;
+  const matchesHealth = (c: (typeof clients)[number]) =>
+    health === 'all' || c.health.toLowerCase() === health.toLowerCase();
+  const matchesProblems = (c: (typeof clients)[number]) => {
+    if (problemsFilter === '1') return Boolean(c.problem);
+    if (problemsFilter === '0') return !c.problem;
+    return true;
+  };
+  const macsFilterLc =
+    macsFilter === null ? null : macsFilter.map((m) => m.trim().toLowerCase()).filter(Boolean);
+  const matchesMacs = (c: (typeof clients)[number]) =>
+    macsFilterLc === null || macsFilterLc.includes((c.mac ?? '').trim().toLowerCase());
+  const mediumUniverse = clients.filter(
+    (c) => matchesClientsCore(c) && matchesHealth(c) && matchesProblems(c) && matchesMacs(c),
+  );
+  const healthUniverse = clients.filter(
+    (c) => matchesClientsCore(c) && matchesMedium(c) && matchesProblems(c) && matchesMacs(c),
+  );
+  const problemsUniverse = clients.filter(
+    (c) => matchesClientsCore(c) && matchesMedium(c) && matchesHealth(c) && matchesMacs(c),
+  );
+  const planeUniverse = clients.filter(
+    (c) =>
+      matchesClientsSansPlane(c) &&
+      matchesMedium(c) &&
+      matchesHealth(c) &&
+      matchesProblems(c) &&
+      matchesMacs(c),
+  );
+  const siteUniverse = clients.filter(
+    (c) =>
+      matchesClientsSansSite(c) &&
+      matchesMedium(c) &&
+      matchesHealth(c) &&
+      matchesProblems(c) &&
+      matchesMacs(c),
+  );
+  const groupUniverse = clients.filter(
+    (c) =>
+      matchesClientsSansGroup(c) &&
+      matchesMedium(c) &&
+      matchesHealth(c) &&
+      matchesProblems(c) &&
+      matchesMacs(c),
+  );
   const rows = clients.filter(
     (c) =>
-      (medium === 'all' || c.medium === medium) &&
-      (type === 'all' || c.type === type) &&
-      (plane === 'all' || c.plane === plane || c.sources?.some((source) => source.row.plane === plane)) &&
-      (site === 'all' || c.siteName === site) &&
-      (group === 'all' || c.group === group) &&
-      (!problemsOnly || c.problem) &&
-      (!ql || (c.name + c.model + c.mac + c.ip + c.attach + c.group).toLowerCase().includes(ql)),
+      matchesClientsCore(c) &&
+      matchesMedium(c) &&
+      matchesHealth(c) &&
+      matchesProblems(c) &&
+      matchesMacs(c),
   );
+  const macsPresent =
+    macsFilter === null
+      ? 0
+      : macsFilter.filter((m) =>
+          clients.some((c) => (c.mac ?? '').trim().toLowerCase() === m.trim().toLowerCase()),
+        ).length;
+  const mediumChips = MEDIUM_CHIP_META.map((m) => ({
+    ...m,
+    count: mediumUniverse.filter((c) => c.medium === m.key).length,
+  })).filter((c) => c.count > 0 || medium === c.key);
+  const healthChipKeys = [
+    ...new Set(healthUniverse.map((c) => String(c.health ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b));
+  if (health !== 'all' && !healthChipKeys.some((k) => k.toLowerCase() === health.toLowerCase())) {
+    healthChipKeys.unshift(health);
+  }
+  const healthChips = healthChipKeys.map((key) => {
+    const sample = healthUniverse.find((c) => c.health.toLowerCase() === key.toLowerCase());
+    return {
+      key,
+      label: key,
+      tone: sample?.healthTone ?? 'neutral',
+      count: healthUniverse.filter((c) => c.health.toLowerCase() === key.toLowerCase()).length,
+    };
+  });
+  const PROBLEMS_CHIP_META: Array<{ key: '1' | '0'; label: string; tone: 'warning' | 'success' }> = [
+    { key: '1', label: 'Problems', tone: 'warning' },
+    { key: '0', label: 'Clean', tone: 'success' },
+  ];
+  const problemsChips = PROBLEMS_CHIP_META.map((m) => ({
+    ...m,
+    count: problemsUniverse.filter((c) => (m.key === '1' ? Boolean(c.problem) : !c.problem)).length,
+  })).filter((c) => c.count > 0 || problemsFilter === c.key);
+  const clientPlanesOf = (c: (typeof clients)[number]): string[] => {
+    const set = new Set<string>();
+    const primary = String(c.plane ?? '').trim();
+    if (primary) set.add(primary);
+    for (const source of c.sources ?? []) {
+      const p = String(source.row.plane ?? '').trim();
+      if (p) set.add(p);
+    }
+    return [...set];
+  };
+  const planeChipKeys = [
+    ...new Set(planeUniverse.flatMap((c) => clientPlanesOf(c))),
+  ].sort((a, b) => a.localeCompare(b));
+  if (plane !== 'all' && !planeChipKeys.includes(plane)) planeChipKeys.unshift(plane);
+  const planeChips = planeChipKeys
+    .map((key) => ({
+      key,
+      label: key,
+      count: planeUniverse.filter(
+        (c) => c.plane === key || c.sources?.some((source) => source.row.plane === key),
+      ).length,
+    }))
+    .filter((c) => c.count > 0 || plane === c.key);
+  const siteChipKeys = [
+    ...new Set(siteUniverse.map((c) => String(c.siteName ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b));
+  if (site !== 'all' && !siteChipKeys.includes(site)) siteChipKeys.unshift(site);
+  const siteChips = siteChipKeys
+    .map((key) => ({
+      key,
+      label: key,
+      count: siteUniverse.filter((c) => c.siteName === key).length,
+    }))
+    .filter((c) => c.count > 0 || site === c.key);
+  const groupChipKeys = [
+    ...new Set(groupUniverse.map((c) => String(c.group ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b));
+  if (group !== 'all' && !groupChipKeys.includes(group)) groupChipKeys.unshift(group);
+  const groupChips = groupChipKeys
+    .map((key) => ({
+      key,
+      label: key,
+      count: groupUniverse.filter((c) => c.group === key).length,
+    }))
+    .filter((c) => c.count > 0 || group === c.key);
 
   /* One column per fact, not two facts stacked in one cell. The stacked form
      made every row two lines tall for values that are usually short, and it
@@ -915,7 +1208,7 @@ export default function Clients() {
         const expanded = expandedSources[c.mac] === true;
         const labels = sources.map((source) => source.row.plane);
         return (
-          <div className="nt-col-start">
+          <div className="nt-col-start nt-recon-reveal">
             <button
               type="button"
               className="nt-clients-table__link"
@@ -1044,10 +1337,27 @@ export default function Clients() {
   const groupOptions = [{ value: 'all', label: 'All groups' }].concat(
     uniq(clients, 'group').map((v) => ({ value: v, label: v })),
   );
+  const healthOptions = [{ value: 'all', label: 'All health' }].concat(
+    uniq(clients, 'health').map((v) => ({ value: v, label: v })),
+  );
+  if (health !== 'all' && !healthOptions.some((o) => o.value === health)) {
+    healthOptions.push({ value: health, label: `${health} (no clients)` });
+  }
 
   const cur = macParam ? (clients.find((c) => c.mac === macParam) ?? null) : null;
-  const openClient = (mac: string) => setSearchParams({ mac }, { replace: true });
-  const closeClient = () => setSearchParams({}, { replace: true });
+  /* Open/close the drawer without wiping list filters already on the URL. */
+  const openClient = (mac: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('mac', mac);
+    setSearchParams(next, { replace: true });
+  };
+  const closeClient = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('mac');
+    next.delete('diagnostics');
+    setSearchParams(next, { replace: true });
+    setShowDiagnostics(false);
+  };
   const openDevice = (name: string) => {
     closeClient();
     navigate(`/devices/${encodeURIComponent(name)}`);
@@ -1104,7 +1414,7 @@ export default function Clients() {
   };
 
   /* Drawer view model — computed only while a client is selected. */
-  const warn = (bad: boolean) => (bad ? 'var(--nd-warning)' : 'var(--nd-text-primary)');
+  const warn = (bad: boolean) => bad;
   const drawer = cur
     ? (() => {
         const wired = cur.medium === 'wired';
@@ -1408,7 +1718,7 @@ export default function Clients() {
               ].join(' · '),
               `no usage samples in ${windowPhrase(det?.tputWindowSec)}`,
             ) || metricNote(cur.tput, 'current rate'),
-          color: warn(false),
+          warn: warn(false),
         };
         const metrics = wired
           ? [
@@ -1416,20 +1726,20 @@ export default function Clients() {
                 k: 'Switch port',
                 v: cur.where,
                 note: cur.where === '—' ? metricNote(cur.where, 'access port') : cur.attach,
-                color: warn(false),
+                warn: warn(false),
               },
               {
                 k: 'VLAN',
                 v: vlanNumber(cur.vlan) ?? cur.vlan,
                 note: metricNote(cur.vlan, 'client VLAN'),
-                color: warn(false),
+                warn: warn(false),
               },
               throughputMetric,
               {
                 k: 'Session',
                 v: cur.session,
                 note: metricNote(cur.session, 'connected duration'),
-                color: warn(false),
+                warn: warn(false),
               },
               {
                 k: 'Authentication',
@@ -1438,13 +1748,13 @@ export default function Clients() {
                   cur.authBy !== '—'
                     ? `authenticated by ${cur.authBy}`
                     : metricNote(cur.auth, 'access authentication'),
-                color: warn(false),
+                warn: warn(false),
               },
               {
                 k: 'IP',
                 v: cur.ip,
                 note: 'client address',
-                color: warn(cur.ip === 'pending' || cur.ip === '—'),
+                warn: warn(cur.ip === 'pending' || cur.ip === '—'),
               },
             ]
           : [
@@ -1455,13 +1765,13 @@ export default function Clients() {
                   ? 'derived from SNR + noise floor'
                   : detailNote('rssi', 'target ≥ −67 dBm', noSignalNote) ||
                     metricNote(cur.rssi, 'target ≥ −67 dBm'),
-                color: warn(rssiNum !== null ? rssiNum < -67 : cur.rssi !== '—' && metricNum(cur.rssi) < -67),
+                warn: warn(rssiNum !== null ? rssiNum < -67 : cur.rssi !== '—' && metricNum(cur.rssi) < -67),
               },
               {
                 k: 'SNR',
                 v: cur.snr,
                 note: metricNote(cur.snr, 'target ≥ 25 dB'),
-                color: warn(cur.snr !== '—' && metricNum(cur.snr) < 25),
+                warn: warn(cur.snr !== '—' && metricNum(cur.snr) < 25),
               },
               {
                 k: 'Retries',
@@ -1469,7 +1779,7 @@ export default function Clients() {
                 note: radio
                   ? `${servingRadioLabel(radio)} — the radio's, not this client's`
                   : metricNote(cur.retries, 'target under 8%'),
-                color: warn(
+                warn: warn(
                   radioRetries !== null
                     ? radioRetries > 8
                     : cur.retries !== '—' && metricNum(cur.retries) > 8,
@@ -1495,7 +1805,7 @@ export default function Clients() {
                     ].join(' · '),
                     `no roaming in ${roamWindow}`,
                   ) || metricNote(cur.roams, 'this session'),
-                color: warn(roamsNum !== null ? roamsNum > 8 : parseInt(cur.roams, 10) > 8),
+                warn: warn(roamsNum !== null ? roamsNum > 8 : parseInt(cur.roams, 10) > 8),
               },
               {
                 k: 'IP',
@@ -1503,7 +1813,7 @@ export default function Clients() {
                 // Fixtures store the VLAN already prefixed ('vlan 820'); Central
                 // reports the bare id ('200'). One label, no stutter.
                 note: vlanNumber(cur.vlan) ? `VLAN ${vlanNumber(cur.vlan)}` : metricNote(cur.vlan, 'VLAN'),
-                color: warn(cur.ip === 'pending' || cur.ip === '—'),
+                warn: warn(cur.ip === 'pending' || cur.ip === '—'),
               },
             ];
 
@@ -1550,15 +1860,20 @@ export default function Clients() {
     : null;
 
   return (
-    <div className="nt-stack">
+    <div className="nt-stack nt-clients-shell nt-section-panel nt-recon-reveal">
       <ScreenHeader
         overline="Operate / Clients"
         title="Clients"
         subtitle="Every session, wired or wireless, whichever plane authenticated it."
         actions={
           <>
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · clients
+            </span>
             <span className="nt-mono-label">{stamp}</span>
-            {data.blended?.includes('clients') ? <Badge tone="info">LIVE</Badge> : null}
+            {/* LIVE when the sessions are live or blend-swapped — not only when
+                blend mode is on. Pure live used to omit the badge. */}
+            {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/auth-events')}>
               Auth events →
             </Button>
@@ -1567,11 +1882,33 @@ export default function Clients() {
               size="sm"
               onClick={() => {
                 void (async () => {
-                  const url = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+                  /* Prefer the live address bar (filter write-back keeps it
+                     complete); fall back to building from state for MemoryRouter
+                     tests and embeds that do not share window.location. */
+                  const qs =
+                    window.location.search ||
+                    (() => {
+                      const next = new URLSearchParams();
+                      if (q.trim()) next.set('q', q.trim());
+                      if (medium !== 'all') next.set('medium', medium);
+                      if (type !== 'all') next.set('type', type);
+                      if (site !== 'all') next.set('site', site);
+                      if (group !== 'all') next.set('group', group);
+                      if (plane !== 'all') next.set('plane', plane);
+                      if (health !== 'all') next.set('health', health);
+                      if (problemsFilter === '1') next.set('problems', '1');
+                        else if (problemsFilter === '0') next.set('problems', '0');
+                      if (macParam) next.set('mac', macParam);
+                      if (macsFilter) next.set('macs', macsFilter.join('\n'));
+                      if (showDiagnostics) next.set('diagnostics', '1');
+                      const s = next.toString();
+                      return s ? `?${s}` : '';
+                    })();
+                  const url = `${window.location.origin}${window.location.pathname}${qs}`;
                   try {
                     await navigator.clipboard.writeText(url);
                     toast('View link copied', {
-                      description: window.location.search || 'unfiltered clients list',
+                      description: qs || 'unfiltered clients list',
                       tone: 'success',
                     });
                   } catch {
@@ -1585,9 +1922,47 @@ export default function Clients() {
             <Button variant="secondary" size="sm" onClick={exportCsv}>
               Export sessions
             </Button>
+            {data.dataSource === 'live' ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const qs = new URLSearchParams();
+                    if (serverQ) qs.set('q', serverQ);
+                    if (serverMedium) qs.set('medium', serverMedium);
+                    if (serverType) qs.set('type', serverType);
+                    if (serverSite) qs.set('site', serverSite);
+                    if (serverGroup) qs.set('group', serverGroup);
+                    if (serverPlane) qs.set('plane', serverPlane);
+                    if (serverHealth) qs.set('health', serverHealth);
+                    if (serverProblems) qs.set('problems', serverProblems);
+                    const suffix = qs.toString() ? `?${qs}` : '';
+                    const res = await downloadApiCsv(
+                      `/api/clients/export${suffix}`,
+                      'clients-sessions.csv',
+                    );
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description: 'clients-sessions.csv — filtered portal session export.',
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
           </>
         }
       />
+      <div className="nt-plane-theater" role="note">NightDesk · session theater · association · roam · SNR</div>
 
       <StatRow stats={data.stats} />
 
@@ -1609,6 +1984,134 @@ export default function Clients() {
         </div>
       ) : null}
 
+      {mediumChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Client medium">
+          <span className="nt-chip-row__label">Medium</span>
+          {mediumChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setMedium(medium === c.key ? 'all' : c.key)}
+              className={medium === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'}
+              aria-pressed={medium === c.key}
+              data-medium={c.key}
+            >
+              <Badge tone={c.tone}>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {healthChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Client health">
+          <span className="nt-chip-row__label">Health</span>
+          {healthChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setHealth(health.toLowerCase() === c.key.toLowerCase() ? 'all' : c.key)}
+              className={
+                health.toLowerCase() === c.key.toLowerCase()
+                  ? 'nt-chip nt-chip--active nt-toggle-chip'
+                  : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={health.toLowerCase() === c.key.toLowerCase()}
+              data-health={c.key}
+            >
+              <Badge tone={c.tone}>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {problemsChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Client problems">
+          <span className="nt-chip-row__label">Problems</span>
+          {problemsChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setProblemsFilter(problemsFilter === c.key ? 'all' : c.key)}
+              className={
+                problemsFilter === c.key
+                  ? 'nt-chip nt-chip--active nt-toggle-chip'
+                  : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={problemsFilter === c.key}
+              data-problems={c.key}
+            >
+              <Badge tone={c.tone}>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {planeChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Client plane">
+          <span className="nt-chip-row__label">Plane</span>
+          {planeChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setPlane(plane === c.key ? 'all' : c.key)}
+              className={
+                plane === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={plane === c.key}
+              data-plane={c.key}
+            >
+              <Badge plane>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {siteChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Client site">
+          <span className="nt-chip-row__label">Site</span>
+          {siteChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setSite(site === c.key ? 'all' : c.key)}
+              className={
+                site === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={site === c.key}
+              data-site={c.key}
+            >
+              <Badge tone="neutral">{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {groupChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Client group">
+          <span className="nt-chip-row__label">Group</span>
+          {groupChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setGroup(group === c.key ? 'all' : c.key)}
+              className={
+                group === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={group === c.key}
+              data-group={c.key}
+            >
+              <Badge tone="neutral">{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       {missingSources.length > 0 ? (
         <Alert
           tone="warning"
@@ -1623,7 +2126,7 @@ export default function Clients() {
         </Alert>
       ) : null}
 
-      <div className="nt-filter-bar">
+      <div className="nt-filter-bar nt-sticky-filters">
         <div className="nt-filter-field nt-filter-field--xl">
           <Input
             size="sm"
@@ -1679,7 +2182,33 @@ export default function Clients() {
             aria-label="Plane"
           />
         </div>
+        <div className="nt-filter-field nt-filter-field--md">
+          <Select
+            options={healthOptions}
+            value={health}
+            onValueChange={setHealth}
+            size="sm"
+            aria-label="Health"
+          />
+        </div>
         <Switch label="Problems only" size="sm" checked={problemsOnly} onCheckedChange={setProblemsOnly} />
+        {macsFilter !== null ? (
+          <button
+            type="button"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete('macs');
+              setSearchParams(next, { replace: true });
+            }}
+            title={macsFilter.join(', ')}
+            className="nt-chip nt-chip--active"
+          >
+            {macsPresent === macsFilter.length
+              ? `${macsFilter.length} selected MAC${macsFilter.length === 1 ? '' : 's'}`
+              : `${macsPresent} of ${macsFilter.length} selected MACs — ${macsFilter.length - macsPresent} not in this roster`}
+            {' — clear'}
+          </button>
+        ) : null}
         <TableViewOptions
           columns={clientColumns}
           config={tableColumns.clients ?? {}}
@@ -1708,7 +2237,169 @@ export default function Clients() {
         onRowActivate={(c) => openClient(c.mac)}
         selectedKeys={selectedKeys}
         onSelectionChange={setSelectedKeys}
+        rowTone={(c) => c.healthTone}
       />
+      {selectedKeys.length > 0 ? (
+        <div className="nt-configure-bulk-bar nt-bulk-glass" role="region" aria-label="Client selection actions">
+          <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
+          <span className="nt-configure-bulk-bar__hint">
+            export, share, or copy MACs for the sessions you marked — full list export stays in the header
+          </span>
+          <span className="nt-configure-bulk-bar__actions">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const selected = new Set(selectedKeys);
+                const picked = rows.filter((c) => selected.has(c.mac));
+                if (picked.length === 0) {
+                  toast('No selected sessions still in view', {
+                    description: 'Clear selection or adjust filters.',
+                    tone: 'info',
+                  });
+                  return;
+                }
+                const n = exportTableCsv(
+                  'clients-selected.csv',
+                  [
+                    'client',
+                    'mac',
+                    'type',
+                    'model',
+                    'site',
+                    'group',
+                    'attached',
+                    'where',
+                    'plane',
+                    'auth',
+                    'authBy',
+                    'role',
+                    'vlan',
+                    'health',
+                    'session',
+                  ],
+                  picked.map((c) => [
+                    c.name,
+                    c.mac,
+                    c.type,
+                    c.model,
+                    c.siteName,
+                    c.group,
+                    c.attach,
+                    c.where,
+                    c.plane,
+                    c.auth,
+                    c.authBy,
+                    c.role,
+                    c.vlan,
+                    c.health,
+                    c.session,
+                  ]),
+                );
+                toast(`Exported ${countOf(n, 'selected session')}`, {
+                  description: 'clients-selected.csv — inventory fields only.',
+                  tone: 'success',
+                });
+              }}
+            >
+              Export selected
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = rows.filter((c) => selected.has(c.mac));
+                  if (picked.length === 0) {
+                    toast('No selected sessions still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const macs = [
+                    ...new Set(
+                      picked
+                        .map((c) => (c.mac ?? '').trim())
+                        .filter(Boolean),
+                    ),
+                  ];
+                  if (macs.length === 0) {
+                    toast('No MACs on the selected sessions', {
+                      description: 'Those rows did not publish a MAC — export CSV for names instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  /* Reuse ?macs= so a shared selection reopens the same set. */
+                  const next = new URLSearchParams(searchParams);
+                  next.set('macs', macs.join('\n'));
+                  const qs = next.toString();
+                  const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('Selection link copied', {
+                      description: `${macs.length} MAC${macs.length === 1 ? '' : 's'} · macs=`,
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy selection link
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = rows.filter((c) => selected.has(c.mac));
+                  if (picked.length === 0) {
+                    toast('No selected sessions still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const macs = [
+                    ...new Set(
+                      picked
+                        .map((c) => (c.mac ?? '').trim())
+                        .filter(Boolean),
+                    ),
+                  ];
+                  if (macs.length === 0) {
+                    toast('No MACs on the selected sessions', {
+                      description: 'Those rows did not publish a MAC — export CSV for names instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const text = macs.join('\n');
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast(`Copied ${countOf(macs.length, 'MAC')}`, {
+                      description: 'newline-joined · paste into a ticket or NAC lookup',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy MACs', { description: text, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy MACs
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
+              Clear
+            </Button>
+          </span>
+        </div>
+      ) : null}
       <SharedFacts facts={shared} count={rows.length} noun="sessions" />
 
       {/* No sessions at all and no sessions past the filter are different facts —
@@ -1739,7 +2430,29 @@ export default function Clients() {
           <EmptyState
             title="Nothing matches that filter"
             description="Loosen the filters or clear Problems only to see more sessions."
-          />
+          >
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setQ('');
+                setMedium('all');
+                setType('all');
+                setSite('all');
+                setGroup('all');
+                setPlane('all');
+                setHealth('all');
+                setProblemsFilter('all');
+                if (macsFilter) {
+                  const next = new URLSearchParams(searchParams);
+                  next.delete('macs');
+                  setSearchParams(next, { replace: true });
+                }
+              }}
+            >
+              Clear filters
+            </Button>
+          </EmptyState>
         )
       ) : null}
       {clientHasMore || clientPageTotal != null ? (
@@ -1791,12 +2504,106 @@ export default function Clients() {
               </span>
             </div>
 
+            <div className="nt-row nt-gap-8">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    /* Prefer the live address bar; fall back to filters + mac so
+                       drawer share links keep the list slice (not mac alone). */
+                    const qs =
+                      window.location.search ||
+                      (() => {
+                        const next = new URLSearchParams();
+                        if (q.trim()) next.set('q', q.trim());
+                        if (medium !== 'all') next.set('medium', medium);
+                        if (type !== 'all') next.set('type', type);
+                        if (site !== 'all') next.set('site', site);
+                        if (group !== 'all') next.set('group', group);
+                        if (plane !== 'all') next.set('plane', plane);
+                        if (health !== 'all') next.set('health', health);
+                        if (problemsFilter === '1') next.set('problems', '1');
+                        else if (problemsFilter === '0') next.set('problems', '0');
+                        next.set('mac', cur.mac);
+                        if (showDiagnostics) next.set('diagnostics', '1');
+                        return `?${next}`;
+                      })();
+                    const url = `${window.location.origin}${window.location.pathname}${qs}`;
+                    try {
+                      await navigator.clipboard.writeText(url);
+                      toast('View link copied', {
+                        description: qs || `mac=${cur.mac}`,
+                        tone: 'success',
+                      });
+                    } catch {
+                      toast('Could not copy link', { description: url, tone: 'warning' });
+                    }
+                  })();
+                }}
+              >
+                Copy view link
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const n = exportTableCsv(
+                    `client-summary-${cur.mac.replace(/[^a-zA-Z0-9-]/g, '')}.csv`,
+                    [
+                      'name',
+                      'mac',
+                      'type',
+                      'model',
+                      'site',
+                      'group',
+                      'attach',
+                      'where',
+                      'plane',
+                      'auth',
+                      'authBy',
+                      'role',
+                      'vlan',
+                      'ip',
+                      'health',
+                      'quality',
+                      'session',
+                    ],
+                    [
+                      [
+                        cur.name,
+                        cur.mac,
+                        cur.type,
+                        cur.model,
+                        cur.siteName,
+                        cur.group,
+                        cur.attach,
+                        cur.where,
+                        cur.plane,
+                        cur.auth,
+                        cur.authBy,
+                        cur.role,
+                        cur.vlan,
+                        cur.ip,
+                        cur.health,
+                        cur.quality ?? '',
+                        cur.session,
+                      ],
+                    ],
+                  );
+                  toast(`Exported ${n} client summary`, {
+                    description: 'Session inventory fields only — no secrets.',
+                    tone: 'success',
+                  });
+                }}
+              >
+                Export summary
+              </Button>
+            </div>
+
             {isUnverified(cur) ? (
               <div
-                className="nt-hint-muted" style={{ lineHeight: 1.6,
-                  padding: '10px 12px',
-                  border: '1px solid var(--nd-border-default)',
-                  background: 'var(--nd-bg-raised)' }}
+                className="nt-hint-muted nt-client-note"
               >
                 {cur.plane} is behind, so this session was not re-confirmed on the last poll. Every
                 figure below is last-good at pull time, not current — treat it as unverified.
@@ -1850,7 +2657,7 @@ export default function Clients() {
                 {drawer.metrics.map((m) => (
                   <div key={m.k} className="nt-metric-tile">
                     <span className="nt-metric-tile__k">{m.k}</span>
-                    <span className="nt-metric-tile__v" style={{ color: m.color }}>
+                    <span className="nt-metric-tile__v" data-warn={m.warn ? "true" : "false"}>
                       {m.v}
                     </span>
                     <span className="nt-metric-tile__note">{m.note}</span>
@@ -1877,12 +2684,7 @@ export default function Clients() {
                 <div key={p.k} className="nt-fact-row">
                   <span className="nt-fact-row__k nt-fact-row__k--wide">{p.k}</span>
                   <span
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      fontSize: 'var(--nd-text-12)',
-                      color: p.muted ? 'var(--nd-text-muted)' : 'var(--nd-text-secondary)',
-                    }}
+                    className={[`nt-flex-1 nt-fs-12-sec`, p.muted ? "nt-tone-muted" : "nt-tone-secondary"].filter(Boolean).join(" ")}
                   >
                     {p.v}
                   </span>
@@ -1909,8 +2711,12 @@ export default function Clients() {
               {drawer.planes360 === undefined ? (
                 /* The per-client read lands after the drawer shell: say the
                    planes are being asked, never that none reported. */
-                <div className="nt-center-pad nt-pad-y-18">
-                  <Spinner size="sm" />
+                <div className="nt-center-pad nt-pad-y-18" role="status" aria-label="Loading client 360">
+                  <div className="nt-stack nt-gap-6">
+                    <Skeleton height={12} width="40%" />
+                    <Skeleton height={28} />
+                    <Skeleton height={28} />
+                  </div>
                 </div>
               ) : drawer.planes360 === null ? (
                 <div className="nt-hint-muted nt-service-note nt-pad-row">
@@ -1927,10 +2733,7 @@ export default function Clients() {
                       {row.lines.map((line, i) => (
                         <span
                           key={i}
-                          style={{
-                            fontSize: 'var(--nd-text-12)',
-                            color: line.muted ? 'var(--nd-text-muted)' : 'var(--nd-text-secondary)',
-                          }}
+                          className={[`nt-fs-12-sec`, line.muted ? "nt-tone-muted" : "nt-tone-secondary"].filter(Boolean).join(" ")}
                         >
                           {line.text}
                         </span>
@@ -1942,10 +2745,7 @@ export default function Clients() {
                         ? drawer.apps360Lines.map((line, j) => (
                             <span
                               key={`apps-${j}`}
-                              style={{
-                                fontSize: 'var(--nd-text-12)',
-                                color: line.muted ? 'var(--nd-text-muted)' : 'var(--nd-text-secondary)',
-                              }}
+                              className={[`nt-fs-12-sec`, line.muted ? "nt-tone-muted" : "nt-tone-secondary"].filter(Boolean).join(" ")}
                             >
                               {line.text}
                             </span>
@@ -1996,40 +2796,22 @@ export default function Clients() {
                   {drawer.pathEmpty}
                 </div>
               ) : (
-              <div className="nt-stack-col nt-gap-0" style={{ paddingLeft: 2 }}>
+              <div className="nt-stack-col nt-gap-0 nt-pl-2">
                 {drawer.path.map((h, i) => (
                   <div key={`${h.name}-${i}`} className="nt-row-stretch">
                     <div
-                      style={{
-                        width: 11,
-                        flex: '0 0 11px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                      }}
+                      className="nt-timeline-rail"
                     >
                       <span
-                        style={{
-                          width: 9,
-                          height: 9,
-                          borderRadius: 99,
-                          background: h.dot,
-                          marginTop: 6,
-                          flex: '0 0 9px',
-                        }}
+                        className="nt-timeline-dot" data-tone={h.tone ?? "neutral"}
                       />
                       {h.hasNext ? (
                         <span
-                          style={{
-                            flex: 1,
-                            width: 1,
-                            background: 'var(--nd-border-default)',
-                            margin: '3px 0 0',
-                          }}
+                          className="nt-timeline-stem"
                         />
                       ) : null}
                     </div>
-                    <div className="nt-flex-1" style={{ paddingBottom: 16 }}>
+                    <div className="nt-flex-1 nt-pb-16">
                       <div
                         className="nt-filter-bar nt-gap-10"
                       >
@@ -2082,15 +2864,11 @@ export default function Clients() {
                   {drawer.timelineEmpty}
                 </div>
               ) : (
-              drawer.timeline.map((t, i) => (
+              <div className="nt-timeline">
+              {drawer.timeline.map((t, i) => (
                 <div
                   key={`${t.time}-${i}`}
-                  style={{
-                    display: 'flex',
-                    gap: 12,
-                    padding: '9px 0',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
+                  className="nt-hist-row nt-timeline__item"
                 >
                   <span
                     className="nt-hint-muted nt-w-44"
@@ -2104,11 +2882,7 @@ export default function Clients() {
                   </span>
                   <div className="nt-flex-1">
                     <div
-                      style={{
-                        fontSize: 'var(--nd-text-12)',
-                        color: 'var(--nd-text-primary)',
-                        lineHeight: 1.4,
-                      }}
+                      className="nt-hist-title"
                     >
                       {t.what}
                     </div>
@@ -2119,7 +2893,8 @@ export default function Clients() {
                     </div>
                   </div>
                 </div>
-              ))
+              ))}
+              </div>
               )}
             </div>
             ) : null}
@@ -2161,16 +2936,9 @@ export default function Clients() {
               </div>
               {coaOpen ? (
                 <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'flex-end',
-                    gap: 10,
-                    flexWrap: 'wrap',
-                    padding: '12px 14px',
-                    border: '1px solid var(--nd-border-default)',
-                    background: 'var(--nd-bg-raised)',
-                  }}
+                  className="nt-client-toolbar nt-write-ritual"
                 >
+                  <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
                   <div className="nt-flex-1-wide">
                     <FormField
                       label="Authorising ticket"
@@ -2180,20 +2948,27 @@ export default function Clients() {
                           : `Deauthenticates ${cur.name} on ${cur.attach} via the troubleshooting API (202 = accepted); the client rejoins and reauthenticates. Recorded against this ticket.`
                       }
                     >
-                      <Select
-                        options={coaTickets.map((t) => ({ value: t.id, label: `${t.id} · ${t.title}` }))}
-                        value={coaTicket}
-                        onValueChange={setCoaTicket}
-                        aria-label="Authorising ticket"
-                      />
+                      {coaTicketsError ? (
+                        <span className="nt-service-note nt-block-pt4" role="status">
+                          Ticket queue unavailable — {coaTicketsError}. Session writes stay blocked until
+                          the queue can be read; the portal will not invent tickets.
+                        </span>
+                      ) : (
+                        <Select
+                          options={coaTickets.map((t) => ({ value: t.id, label: `${t.id} · ${t.title}` }))}
+                          value={coaTicket}
+                          onValueChange={setCoaTicket}
+                          aria-label="Authorising ticket"
+                        />
+                      )}
                     </FormField>
                   </div>
                   <Button
                     variant="primary"
                     size="sm"
-                    disabled={coaBusy || !coaTicket}
+                    disabled={coaBusy || !coaTicket || !!coaTicketsError}
                     onClick={() => void confirmCoa()}
-                    style={{ background: 'var(--nd-danger)' }}
+                    className="nt-dot nt-dot-danger"
                   >
                     {coaBusy ? 'Sending…' : coaMode === 'block' ? 'Block via ClearPass' : 'Disconnect'}
                   </Button>

@@ -25,8 +25,10 @@ import {
   Code,
   FormField,
   Input,
-  Spinner,
+  Skeleton,
+  useToast,
 } from '../nightdesk';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'timed_out', 'cancelled']);
 
@@ -197,6 +199,7 @@ export interface DiagnosticsPanelProps {
 
 export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanelProps) {
   const identity = useMemo(() => identityOf(plane, serial, deviceName), [plane, serial, deviceName]);
+  const { toast } = useToast();
 
   const [device, setDevice] = useState<DiagnosticEligibleDevice | null>(null);
   const [loading, setLoading] = useState(true);
@@ -485,7 +488,19 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
     }
   };
 
-  if (loading) return <Spinner size="sm" />;
+  if (loading) {
+    return (
+      <div className="nt-debug-wake" aria-busy="true" aria-live="polite">
+        <span className="nt-chat-pending__pulse" aria-hidden />
+        <div className="nt-stack nt-gap-8 nt-flex-1">
+          <Skeleton height={12} width="40%" />
+          <Skeleton height={28} width="72%" />
+          <Skeleton height={72} />
+        </div>
+        <span className="nt-hint-muted nt-chat-pending__label">NightDesk · diagnostics wake…</span>
+      </div>
+    );
+  }
   if (!device) {
     return <Alert tone="warning" title="Not in live inventory">Active diagnostics are discovered from live inventory only.</Alert>;
   }
@@ -498,16 +513,17 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div className="nt-diag nt-diagnostics-shell nt-diag-panel nt-section-panel">
+      <div className="nt-plane-theater" role="note">NightDesk · diagnostics · honest probes</div>
       <Alert tone="info" title="Reviewed operational action">
         Traceroute runs through New Central after explicit review. It is an operational action, not a configuration mutation.
         Portal cancellation stops operator polling only because Central exposes no documented traceroute cancel operation.
         Reservation/status tracking is in memory and is not recovered after a portal restart.
       </Alert>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className="nt-diag__row">
         <Badge tone="accent">{device.deviceClass === 'ap' ? 'AP' : 'AOS-CX'}</Badge>
-        <span style={{ fontSize: 12, color: 'var(--nd-text-secondary)' }}>{device.reason}</span>
+        <span className="nt-diag__reason">{device.reason}</span>
       </div>
 
       {!job || TERMINAL.has(job.state) ? (
@@ -568,16 +584,16 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
           )}
 
           {review ? (
-            <div style={{ border: '1px solid var(--nd-border)', padding: 12, borderRadius: 8 }}>
-              <div style={{ fontWeight: 650, marginBottom: 8 }}>Operator review</div>
-              <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+            <div className="nt-diag__review">
+              <div className="nt-diag__review-title">Operator review</div>
+              <div className="nt-diag__review-body">
                 Device: <Code>{review.device}</Code><br />
                 Operation: <Code>traceroute</Code><br />
                 Target: <Code>{review.target}</Code><br />
                 Start: <Code>{review.startPath}</Code><br />
                 Poll: <Code>{review.pollPathTemplate}</Code>
               </div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <div className="nt-diag__review-actions">
                 <Button variant="primary" size="sm" disabled={busy} onClick={() => void confirmStart()}>
                   {busy ? 'Starting…' : 'Confirm and run traceroute'}
                 </Button>
@@ -593,12 +609,12 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
       ) : null}
 
       {job ? (
-        <div style={{ borderTop: '1px solid var(--nd-border-subtle)', paddingTop: 12 }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div className="nt-diag__job">
+          <div className="nt-diag__job-head">
             <Badge tone={job.state === 'succeeded' ? 'success' : job.state === 'failed' || job.state === 'timed_out' ? 'danger' : 'info'}>
               {job.state.replace('_', ' ')}
             </Badge>
-            <span style={{ fontSize: 12 }}>{job.progressPercent}% · {job.message}</span>
+            <span className="nt-diag__job-msg">{job.progressPercent}% · {job.message}</span>
           </div>
           {/* How long, and Central's own handle for the run. `cancelled` means
               the PORTAL stopped watching and the upstream task kept going, so
@@ -606,7 +622,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
               to chase it with — and the one state where its absence has to be
               said out loud rather than left as a blank. */}
           {jobTiming(job, nowMs) ? (
-            <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)', paddingTop: 6 }}>
+            <div className="nt-diag__mono nt-diag__mono--pad6">
               {jobTiming(job, nowMs)}
             </div>
           ) : null}
@@ -614,7 +630,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
               "am I even tracing to the host I meant?" — a stale DNS record
               sends a perfect-looking trace to the wrong address. */}
           {job.result && (job.result.destination !== null || job.result.resolvedIp !== null) ? (
-            <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)', paddingTop: 8 }}>
+            <div className="nt-diag__mono nt-diag__mono--pad8">
               to {job.result.destination ?? 'the requested target'}
               {job.result.resolvedIp !== null ? ` (${job.result.resolvedIp})` : ''}
             </div>
@@ -623,10 +639,10 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
               server-side, and a firewall that drops TTL-exceeded produces a
               run of them that would otherwise share one React key. */}
           {job.result?.hops.map((hop, index) => (
-            <div key={`${index}-${hop.hop}`} style={{ display: 'flex', gap: 12, padding: '6px 0', fontFamily: 'var(--nd-font-mono)', fontSize: 11 }}>
-              <span style={{ width: 24 }}>{hop.hop}</span>
-              <span style={{ flex: 1 }}>{hopAddresses(hop.probes)}</span>
-              <span style={{ color: 'var(--nd-text-muted)', whiteSpace: 'nowrap' }}>
+            <div key={`${index}-${hop.hop}`} className="nt-diag__hop">
+              <span className="nt-diag__hop-n">{hop.hop}</span>
+              <span className="nt-diag__hop-addr">{hopAddresses(hop.probes)}</span>
+              <span className="nt-diag__hop-rtt">
                 {hop.probes.map(probeTime).join(' · ') || '*'}
               </span>
             </div>
@@ -658,11 +674,48 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
         </Alert>
       ) : null}
 
+      {history.length || historyGaps.discarded > 0 || historyGaps.unreadable > 0 ? (
+        <div className="nt-filter-bar nt-gap-8">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="nt-ml-auto"
+            onClick={() => {
+              void (async () => {
+                const params = new URLSearchParams();
+                if (serial) params.set('device', serial);
+                else if (deviceName) params.set('device', deviceName);
+                if (plane) params.set('plane', plane);
+                const qs = params.toString();
+                const res = await downloadApiCsv(
+                  `/api/diagnostics/history/export${qs ? `?${qs}` : ''}`,
+                  'diagnostics-history.csv',
+                );
+                if (res.ok) {
+                  toast('Server CSV downloaded', {
+                    description:
+                      'diagnostics-history.csv — audit rows only; target always redacted.',
+                    tone: 'success',
+                  });
+                } else {
+                  toast('Server CSV failed', {
+                    description: res.error ?? 'Could not download export',
+                    tone: 'warning',
+                  });
+                }
+              })();
+            }}
+          >
+            Download server CSV
+          </Button>
+        </div>
+      ) : null}
+
       {history.length ? (
         <div>
-          <div style={{ fontSize: 11, fontWeight: 650, textTransform: 'uppercase', letterSpacing: '.08em' }}>Recent audit history</div>
+          <div className="nt-diag__audit-label">Recent audit history</div>
           {history.map((entry) => (
-            <div key={`${entry.id}-${entry.at}`} style={{ fontSize: 11, paddingTop: 5, color: 'var(--nd-text-secondary)' }}>
+            <div key={`${entry.id}-${entry.at}`} className="nt-diag__audit-row">
               {new Date(entry.at).toLocaleString()} · <Code>{entry.plane}/{entry.serial}</Code> · {entry.state} · target {entry.target}
             </div>
           ))}

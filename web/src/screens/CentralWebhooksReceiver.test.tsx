@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { CentralWebhooksPanel } from './CentralWebhooksPanel';
 import { ToastProvider } from '../nightdesk';
 import { getCentralWebhookHandoffStatus, getCentralWebhooks } from '../api/client';
@@ -122,9 +123,11 @@ function stubHooksFetch(opts: HooksFetchOpts = {}) {
 
 function renderPanel() {
   return render(
-    <ToastProvider>
-      <CentralWebhooksPanel />
-    </ToastProvider>,
+    <MemoryRouter>
+      <ToastProvider>
+        <CentralWebhooksPanel />
+      </ToastProvider>
+    </MemoryRouter>,
   );
 }
 

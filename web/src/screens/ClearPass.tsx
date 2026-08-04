@@ -15,16 +15,36 @@
  * only — no password material exists in this payload), and the service
  * definitions themselves (enabled state, template, hit count, match rules —
  * whitelisted the same way; nothing in a service row is credential
- * material). Each collection rides the envelope only when the plane reported
- * it, so every tab keeps the three states distinct: reported rows / a real
- * empty answer / "not reported by this CPPM". Services populate wherever the
- * box answers /api/config/service (6.11+) or the legacy /api/service — the
- * demo estate's 6.11 CPPM included; device groups stay the collection that
- * reads "not available on this CPPM" in both modes. A service row opens a
- * detail drawer with the full definition (summary, match rules,
- * authentication, authorization, enforcement, options), read on demand from
- * GET /api/clearpass/services/:id — the one per-service read this screen
- * spends, TTL-cached and budget-gated on the server, never polled.
+ * material). Deep links: `?tab=` opens a named strip (default endpoints omits
+ * the param); endpoint `q` / `status` / `category` (a **Status** chip row
+ * counts over the q+category universe and toggles the same `?status=` as the
+ * Select; a **Category** chip row counts over q+status and toggles the same
+ * `?category=` — Loop 142) and services `enabled` (an **Enabled** chip row counts
+ * over loaded q and toggles the same `?enabled=` — Loop 149)
+ * write back with the tab so **Copy filter link** shares the same view.
+ * Services also reuses `q` and server CSV uses `part=services`. Endpoint
+ * multi-select raises **Export selected**, **Copy MACs** (unique newline-joined
+ * inventory MACs for NAC paste — Devices **Copy serials** pattern), **Copy
+ * selection link** (`?macs=` of unique inventory MACs — Clients `?macs=`
+ * pattern; clearable chip while active; Loop 175), and Clear (Loop 162).
+ * Services multi-select raises **Export selected**, **Copy names**
+ * (unique newline-joined service names for policy hand-offs — Devices **Copy
+ * serials** pattern), **Copy selection link** (`?services=` of service ids with
+ * `tab=services` — Sites `?ids=` pattern; clearable chip while active;
+ * Loop 181), and Clear (Loop 174). Header **LIVE** stamps pure live and
+ * clearpass blend feeds alike (Loop 168 — pure live used to omit blend honesty).
+ * Endpoints table carries keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS —
+ * Loop 195).
+ * Each collection rides the envelope only when the plane reported it, so every
+ * tab keeps the three states distinct: reported rows / a real empty answer /
+ * "not reported by this CPPM". Services populate wherever the box answers
+ * /api/config/service (6.11+) or the legacy /api/service — the demo estate's
+ * 6.11 CPPM included; device groups stay the collection that reads "not
+ * available on this CPPM" in both modes. A service row opens a detail drawer
+ * with the full definition (summary, match rules, authentication,
+ * authorization, enforcement, options), read on demand from GET
+ * /api/clearpass/services/:id — the one per-service read this screen spends,
+ * TTL-cached and budget-gated on the server, never polled.
  *
  * The Endpoints and Local users tabs also WRITE — the only two CPPM datasets
  * the portal touches (policy stays in ClearPass): 'Register endpoint' and a
@@ -44,9 +64,10 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   PageSkeleton,
+  Skeleton,
   Alert,
   Badge,
   Button,
@@ -58,12 +79,16 @@ import {
   SectionHeader,
   SegmentedControl,
   Select,
-  Spinner,
   Switch,
-  Table,
+  DataTable,
+  DATATABLE_ROW_SHORTCUTS,
+  KeyboardShortcuts,
+  TableViewOptions,
   Textarea,
   useToast,
 } from '../nightdesk';
+import type { DataTableColumn } from '../nightdesk';
+import { namesFilterForParam } from '../app/nav';
 import { getClearPass, getClearPassServiceDetail } from '../api/client';
 import type { ClearPassData, ClearPassServiceDetailResult } from '../api/client';
 import {
@@ -80,7 +105,7 @@ import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { useSettings } from '../app/SettingsContext';
 import { useLabConfigMode } from '../hooks/useLabConfigMode';
-import { hhmmssLocal, hhmmLocal, formatCount, normalizeMac, detailState } from '@hpe/shared';
+import { hhmmssLocal, hhmmLocal, formatCount, countOf, normalizeMac, detailState } from '@hpe/shared';
 import {
   CLEARPASS_ENDPOINT_STATUSES,
   type ClearPassAuthSourceRow,
@@ -106,8 +131,20 @@ import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
 import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 
 type ClearPassTab = 'endpoints' | 'auth' | 'network' | 'sources' | 'roles' | 'enforcement' | 'users' | 'services';
+
+const CLEARPASS_TABS = [
+  'endpoints',
+  'auth',
+  'network',
+  'sources',
+  'roles',
+  'enforcement',
+  'users',
+  'services',
+] as const satisfies readonly ClearPassTab[];
 
 const TAB_OPTIONS: Array<{ value: ClearPassTab; label: string }> = [
   { value: 'endpoints', label: 'Endpoints' },
@@ -119,6 +156,12 @@ const TAB_OPTIONS: Array<{ value: ClearPassTab; label: string }> = [
   { value: 'users', label: 'Local users' },
   { value: 'services', label: 'Services' },
 ];
+
+function parseClearPassTab(raw: string | null | undefined): ClearPassTab | null {
+  if (!raw) return null;
+  const key = raw.trim().toLowerCase();
+  return (CLEARPASS_TABS as readonly string[]).includes(key) ? (key as ClearPassTab) : null;
+}
 
 const STATUS_TONE: Record<string, Tone> = {
   Known: 'success',
@@ -136,15 +179,25 @@ function uniq(values: Array<string | null>): string[] {
 
 export default function ClearPass() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { density } = useSettings();
   const { lab } = useLabConfigMode();
   const [data, setData] = useState<ClearPassData | null>(null);
   const [endpointPage, setEndpointPage] = useState<ClearPassEndpointPage | null>(null);
   const [systemsState, setSystemsState] = useState<SystemsState | null>(null);
-  const [tab, setTab] = useState<ClearPassTab>('endpoints');
-  const [q, setQ] = useState('');
-  const [status, setStatus] = useState('all');
-  const [category, setCategory] = useState('all');
+  const [tab, setTab] = useState<ClearPassTab>(
+    () => parseClearPassTab(searchParams.get('tab')) ?? 'endpoints',
+  );
+  const [q, setQ] = useState(() => searchParams.get('q') ?? '');
+  const [status, setStatus] = useState(() => searchParams.get('status') ?? 'all');
+  const [category, setCategory] = useState(() => searchParams.get('category') ?? 'all');
+  const [enabled, setEnabled] = useState(() => {
+    const raw = (searchParams.get('enabled') ?? '').trim().toLowerCase();
+    /* Normalise queryFlag tokens (yes/on/true → 1; no/off/false → 0). */
+    if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return '1';
+    if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return '0';
+    return 'all';
+  });
   const dataRequestSeqRef = useRef(0);
   const dataMountedRef = useRef(false);
   const endpointPageRequestSeqRef = useRef(0);
@@ -158,15 +211,37 @@ export default function ClearPass() {
 
   const requestEndpointPage = async (offset: number, limit = 50): Promise<void> => {
     const seq = ++endpointPageRequestSeqRef.current;
-    const page = await getClearPassEndpointPage(offset, limit);
+    const page = await getClearPassEndpointPage(offset, limit, {
+      ...(q.trim() ? { q: q.trim() } : {}),
+      ...(status !== 'all' ? { status } : {}),
+      ...(category !== 'all' ? { category } : {}),
+    });
     if (endpointPageMountedRef.current && seq === endpointPageRequestSeqRef.current) setEndpointPage(page);
   };
+
+  /* Keep ?tab= / endpoint+services filters aligned so Copy filter link and refresh reopen the same strip.
+   * Selection deep-links `macs=` / `services=` are URL-owned (Copy selection link) and preserved here. */
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (tab !== 'endpoints') next.set('tab', tab);
+    else next.delete('tab');
+    const qTrim = q.trim();
+    if (qTrim) next.set('q', qTrim);
+    else next.delete('q');
+    if (status !== 'all') next.set('status', status);
+    else next.delete('status');
+    if (category !== 'all') next.set('category', category);
+    else next.delete('category');
+    if (enabled !== 'all') next.set('enabled', enabled);
+    else next.delete('enabled');
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [tab, q, status, category, enabled, searchParams, setSearchParams]);
 
   useEffect(() => {
     dataMountedRef.current = true;
     endpointPageMountedRef.current = true;
     void requestData();
-    void requestEndpointPage(0, 50);
     void getSystemsState().then((state) => {
       if (dataMountedRef.current) setSystemsState(state);
     });
@@ -177,6 +252,14 @@ export default function ClearPass() {
       endpointPageRequestSeqRef.current += 1;
     };
   }, []);
+
+  /* Endpoint page is on-demand and filter-aware: reload page 0 whenever the
+     filter strip changes so Next/Prev continue the same q/status/category. */
+  useEffect(() => {
+    if (!endpointPageMountedRef.current) return;
+    void requestEndpointPage(0, 50);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional filter keys only
+  }, [q, status, category]);
 
   if (!data) {
     return <PageSkeleton variant="list" />;
@@ -197,6 +280,8 @@ export default function ClearPass() {
       setStatus={setStatus}
       category={category}
       setCategory={setCategory}
+      enabled={enabled}
+      setEnabled={setEnabled}
       endpointPage={endpointPage}
       clearpassHealth={systemsState?.planes?.clearpass?.health ?? null}
       clearpassNote={systemsState?.planes?.clearpass?.note ?? null}
@@ -211,6 +296,47 @@ export default function ClearPass() {
     />
   );
 }
+
+/** Client filter for the Services tab — mirrors server filterClearPassServiceRows. */
+export function filterServicesForView(
+  services: ClearPassServiceRow[] | undefined,
+  q: string,
+  enabled: string,
+): ClearPassServiceRow[] | undefined {
+  if (services === undefined) return undefined;
+  const needle = q.trim().toLowerCase();
+  const er = enabled.trim().toLowerCase();
+  const enabledWant =
+    er === '1' || er === 'true' || er === 'yes' || er === 'on'
+      ? true
+      : er === '0' || er === 'false' || er === 'no' || er === 'off'
+        ? false
+        : null;
+  if (!needle && enabledWant === null) return services;
+  return services.filter((row) => {
+    if (enabledWant !== null) {
+      if (row.enabled !== true && row.enabled !== false) return false;
+      if (row.enabled !== enabledWant) return false;
+    }
+    if (needle) {
+      const hay = [
+        row.id,
+        row.name,
+        row.type,
+        row.description,
+        row.template,
+        row.rulesSummary,
+        ...(row.authSources ?? []),
+      ]
+        .map((v) => String(v ?? ''))
+        .join(' ')
+        .toLowerCase();
+      if (!hay.includes(needle)) return false;
+    }
+    return true;
+  });
+}
+
 
 /** Which reviewed write drawer is open (null = none). */
 type WriteDrawerState =
@@ -241,6 +367,8 @@ function ClearPassView({
   setStatus,
   category,
   setCategory,
+  enabled,
+  setEnabled,
   endpointPage,
   clearpassHealth,
   clearpassNote,
@@ -262,6 +390,8 @@ function ClearPassView({
   setStatus: (v: string) => void;
   category: string;
   setCategory: (v: string) => void;
+  enabled: string;
+  setEnabled: (v: string) => void;
   endpointPage: ClearPassEndpointPage | null;
   clearpassHealth: 'healthy' | 'degraded' | 'warning' | 'unlinked' | null;
   clearpassNote: string | null;
@@ -274,12 +404,159 @@ function ClearPassView({
   mergeDemoEndpointPage: (fn: (page: ClearPassEndpointPage) => ClearPassEndpointPage) => void;
 }) {
   const { toast } = useToast();
+  const { tableColumns, setTableColumns } = useSettings();
   const [writeDrawer, setWriteDrawer] = useState<WriteDrawerState>(null);
   const [inventoryView, setInventoryView] = useState<StaticInventoryDetail | null>(null);
   /** The service whose detail drawer is open (null = none). */
   const [serviceView, setServiceView] = useState<ClearPassServiceRow | null>(null);
+  /* Keyboard multi-select on the endpoints table raises Export selected /
+   * Copy MACs / Copy selection link. Cleared when leaving the Endpoints tab so
+   * a stale bar cannot act on rows that are no longer on screen. */
+  const [selectedEndpointKeys, setSelectedEndpointKeys] = useState<string[]>([]);
+  /* Services multi-select raises Export selected / Copy names / Copy selection link (Loop 174/181). */
+  const [selectedServiceKeys, setSelectedServiceKeys] = useState<string[]>([]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  /* Deep link: /clearpass?macs=aa\nbb (bulk Copy selection link). Read off the URL
+   * like Clients ?macs= — must not drift from the address bar. */
+  const macsFilter = namesFilterForParam(searchParams.get('macs'));
+  const macsFilterLc =
+    macsFilter === null
+      ? null
+      : macsFilter.map((mac) => mac.trim().toLowerCase()).filter(Boolean);
+  /* Deep link: /clearpass?tab=services&services=id1\nid2 (bulk Copy selection link). */
+  const servicesFilter = namesFilterForParam(searchParams.get('services'));
+  const [prevEndpointTab, setPrevEndpointTab] = useState(tab);
+  if (prevEndpointTab !== tab) {
+    setPrevEndpointTab(tab);
+    if (tab !== 'endpoints' && selectedEndpointKeys.length > 0) {
+      setSelectedEndpointKeys([]);
+    }
+    if (tab !== 'services' && selectedServiceKeys.length > 0) {
+      setSelectedServiceKeys([]);
+    }
+  }
   const demo = data.dataSource === 'demo';
+  /* Pure live or clearpass blend (demo chrome + live CPPM sections). */
+  const sectionLive =
+    data.dataSource === 'live' || (data.blended?.includes('clearpass') ?? false);
   const canWrite = demo || data.canWrite === true;
+  const filteredServices = useMemo(() => {
+    const base = filterServicesForView(data.services, q, enabled);
+    if (base === undefined || servicesFilter === null) return base;
+    const ids = new Set(servicesFilter);
+    return base.filter((s) => ids.has(s.id));
+  }, [data.services, q, enabled, servicesFilter]);
+  const servicesPresent =
+    servicesFilter === null || data.services === undefined
+      ? 0
+      : servicesFilter.filter((id) => data.services!.some((s) => s.id === id)).length;
+  /* Enabled chips count over q only (not enabled) so operators still see the
+   * full enabled/disabled mix while a chip is active — Loop 149. */
+  const enabledUniverse = useMemo(
+    () => filterServicesForView(data.services, q, 'all') ?? [],
+    [data.services, q],
+  );
+  const ENABLED_CHIP_META: Array<{ key: '1' | '0'; label: string; tone: 'success' | 'neutral' }> = [
+    { key: '1', label: 'Enabled', tone: 'success' },
+    { key: '0', label: 'Disabled', tone: 'neutral' },
+  ];
+  const enabledChips = ENABLED_CHIP_META.map((m) => ({
+    ...m,
+    count: enabledUniverse.filter((s) =>
+      m.key === '1' ? s.enabled === true : s.enabled === false,
+    ).length,
+  })).filter((c) => c.count > 0 || enabled === c.key);
+  const endpointColumns: Array<DataTableColumn<EndpointRow>> = [
+    {
+      key: 'status',
+      title: 'Status',
+      hideable: false,
+      render: (row) => (
+        <Badge tone={statusTone(row.status)} dot>
+          {row.status}
+        </Badge>
+      ),
+    },
+    {
+      key: 'mac',
+      title: 'MAC',
+      hideable: false,
+      render: (row) => (
+        <button
+          type="button"
+          onClick={() => navigate(`/auth-events?q=${encodeURIComponent(row.mac)}`)}
+          className="nt-mono-link nt-ta-left"
+        >
+          {row.mac}
+        </button>
+      ),
+    },
+    {
+      key: 'hostname',
+      title: 'Hostname',
+      render: (row) => (
+        <>
+          {row.hostname ?? '—'}
+          {row.description ? <div className="nt-hint-muted">{row.description}</div> : null}
+        </>
+      ),
+    },
+    {
+      key: 'ip',
+      title: 'IP',
+      render: (row) => <span className="nt-hint-muted">{row.ip ?? '—'}</span>,
+    },
+    {
+      key: 'category',
+      title: 'Category',
+      render: (row) => (
+        <>
+          {row.category ?? '—'}
+          {row.insightTags && row.insightTags.length > 0 ? (
+            <div className="nt-chip-wrap nt-pad-top-4">
+              {row.insightTags.map((tag) => (
+                <Badge key={tag} tone="neutral">
+                  {tag}
+                </Badge>
+              ))}
+            </div>
+          ) : null}
+        </>
+      ),
+    },
+    {
+      key: 'os',
+      title: 'OS / Family',
+      render: (row) => [row.family, row.os].filter(Boolean).join(' · ') || '—',
+    },
+    {
+      key: 'profile',
+      title: 'Profile',
+      render: (row) => row.profile ?? '—',
+    },
+    {
+      key: 'updated',
+      title: 'Updated',
+      render: (row) => <span className="nt-hint-muted">{row.updatedAt ?? '—'}</span>,
+    },
+    {
+      key: 'edit',
+      title: '',
+      hideable: false,
+      render: (row) =>
+        canWrite ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setWriteDrawer({ kind: 'editEndpoint', row })}
+            aria-label={`Edit endpoint ${row.mac}`}
+          >
+            Edit
+          </Button>
+        ) : null,
+    },
+  ];
+
   const [previousCanWrite, setPreviousCanWrite] = useState(canWrite);
   if (previousCanWrite !== canWrite) {
     setPreviousCanWrite(canWrite);
@@ -304,37 +581,203 @@ function ClearPassView({
       // A live count comes out of the poller's ≤200-event page — minutes of
       // traffic, not a day. Only the fixture feed is a 24h cut (the same rule
       // AuthEvents words its live fail-reason bars by).
-      { label: 'Auth events', value: String(authEvents.length), delta: data.dataSource === 'live' ? 'current poller snapshot' : 'last 24h', tone: 'neutral' },
+      { label: 'Auth events', value: String(authEvents.length), delta: sectionLive ? 'current poller snapshot' : 'last 24h', tone: 'neutral' },
     ];
-  }, [endpoints, endpointPage?.total, data.endpointTotal, authEvents, data.dataSource]);
+  }, [endpoints, endpointPage?.total, data.endpointTotal, authEvents, sectionLive]);
 
+  /* Server already applied q/status/category on the page route; keep a cheap
+     client pass so a stale page cannot flash unfiltered rows mid-request.
+     Status chips count over q+category+macs (not status); category chips over
+     q+status+macs (not category) so each row still shows the full mix while its
+     own chip is on. Selection deep-link `macs=` narrows every universe. */
   const ql = q.trim().toLowerCase();
-  const rows = endpoints.filter(
-    (e) =>
-      (status === 'all' || e.status === status) &&
-      (category === 'all' || e.category === category) &&
-      (!ql || (e.hostname ?? '' ).toLowerCase().includes(ql) || e.mac.toLowerCase().includes(ql) || (e.ip ?? '').toLowerCase().includes(ql)),
+  const matchesQ = (e: (typeof endpoints)[number]) =>
+    !ql ||
+    (e.hostname ?? '').toLowerCase().includes(ql) ||
+    e.mac.toLowerCase().includes(ql) ||
+    (e.ip ?? '').toLowerCase().includes(ql);
+  const matchesStatus = (e: (typeof endpoints)[number]) => status === 'all' || e.status === status;
+  const matchesCategory = (e: (typeof endpoints)[number]) =>
+    category === 'all' || e.category === category;
+  const matchesMacs = (e: (typeof endpoints)[number]) =>
+    macsFilterLc === null || macsFilterLc.includes((e.mac ?? '').trim().toLowerCase());
+  const statusUniverse = endpoints.filter(
+    (e) => matchesCategory(e) && matchesQ(e) && matchesMacs(e),
   );
+  const categoryUniverse = endpoints.filter(
+    (e) => matchesStatus(e) && matchesQ(e) && matchesMacs(e),
+  );
+  const rows = endpoints.filter(
+    (e) => matchesStatus(e) && matchesCategory(e) && matchesQ(e) && matchesMacs(e),
+  );
+  const macsPresent =
+    macsFilter === null
+      ? 0
+      : macsFilter.filter((mac) =>
+          endpoints.some((e) => (e.mac ?? '').trim().toLowerCase() === mac.trim().toLowerCase()),
+        ).length;
+  const statusChipKeys = uniq([
+    ...statusUniverse.map((e) => e.status),
+    ...(status !== 'all' ? [status] : []),
+  ]).sort((a, b) => a.localeCompare(b));
+  const statusChips = statusChipKeys.map((key) => ({
+    key,
+    label: key,
+    tone: statusTone(key),
+    count: statusUniverse.filter((e) => e.status === key).length,
+  }));
+  const categoryChipKeys = uniq([
+    ...categoryUniverse.map((e) => e.category),
+    ...(category !== 'all' ? [category] : []),
+  ])
+    .filter((v): v is string => Boolean(v))
+    .sort((a, b) => a.localeCompare(b));
+  const categoryChips = categoryChipKeys
+    .map((key) => ({
+      key,
+      label: key,
+      count: categoryUniverse.filter((e) => e.category === key).length,
+    }))
+    .filter((c) => c.count > 0 || category === c.key);
 
+  /* Prefer option values from the loaded page; keep the active selection even
+     when the filtered page no longer contains that status/category. */
   const statusOptions = [{ value: 'all', label: 'All statuses' }].concat(
-    uniq(endpoints.map((e) => e.status)).map((v) => ({ value: v, label: v })),
+    uniq([
+      ...endpoints.map((e) => e.status),
+      ...(status !== 'all' ? [status] : []),
+    ]).map((v) => ({ value: v, label: v })),
   );
   const categoryOptions = [{ value: 'all', label: 'All categories' }].concat(
-    uniq(endpoints.map((e) => e.category)).map((v) => ({ value: v, label: v })),
+    uniq([
+      ...endpoints.map((e) => e.category),
+      ...(category !== 'all' ? [category] : []),
+    ])
+      .filter((v): v is string => Boolean(v))
+      .map((v) => ({ value: v, label: v })),
   );
 
   const recentAuth = authEvents.slice(0, 20);
+  const recentAuthColumns: Array<DataTableColumn<(typeof recentAuth)[number]>> = [
+    {
+      key: 'time',
+      title: 'Time',
+      hideable: false,
+      render: (ev) => <span className="nt-hint-muted">{ev.at ? hhmmssLocal(ev.at) : ev.time}</span>,
+    },
+    {
+      key: 'result',
+      title: 'Result',
+      hideable: false,
+      render: (ev) => (
+        <Badge tone={ev.tone} dot>
+          {ev.result}
+        </Badge>
+      ),
+    },
+    { key: 'who', title: 'Username', render: (ev) => ev.who },
+    {
+      key: 'mac',
+      title: 'MAC',
+      render: (ev) => <span className="nt-mono-11">{ev.mac}</span>,
+    },
+    {
+      key: 'method',
+      title: 'Method',
+      render: (ev) => <span className="nt-body-sec">{ev.method}</span>,
+    },
+  ];
+
 
   return (
-    <div className="nt-stack">
+    <div className="nt-stack nt-recon-reveal nt-clearpass-shell nt-section-panel nt-plane-shell">
       <ScreenHeader
         overline="Operate / ClearPass"
         title="ClearPass"
         subtitle="Endpoint policy, profiling, and authentication from HPE ClearPass."
         actions={
           <>
-            {data.dataSource === 'live' ? <Badge tone="info">LIVE</Badge> : null}
-            {rows.length > 0 ? (
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · access
+            </span>
+            <Badge plane>ClearPass</Badge>
+            {/* LIVE on pure live and clearpass blend alike — stamp alone is easy to miss. */}
+            {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  /* Prefer the live address bar (tab/filter write-back); fall back
+                     to state when the host has not mirrored router search. */
+                  const qs =
+                    window.location.search ||
+                    (() => {
+                      const next = new URLSearchParams();
+                      if (tab !== 'endpoints') next.set('tab', tab);
+                      if (q.trim()) next.set('q', q.trim());
+                      if (status !== 'all') next.set('status', status);
+                      if (category !== 'all') next.set('category', category);
+                      if (enabled !== 'all') next.set('enabled', enabled);
+                      const s = next.toString();
+                      return s ? `?${s}` : '';
+                    })();
+                  const url = `${window.location.origin}${window.location.pathname}${qs}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('Filter link copied', {
+                      description: qs.replace(/^\?/, '') || 'default ClearPass view',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy filter link
+            </Button>
+            {tab === 'services' && filteredServices && filteredServices.length > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const n = exportTableCsv(
+                    'clearpass-services.csv',
+                    [
+                      'id',
+                      'name',
+                      'type',
+                      'description',
+                      'template',
+                      'enabled',
+                      'hitCount',
+                      'orderNo',
+                      'authSources',
+                      'rulesSummary',
+                    ],
+                    filteredServices.map((s) => [
+                      s.id ?? '',
+                      s.name ?? '',
+                      s.type ?? '',
+                      s.description ?? '',
+                      s.template ?? '',
+                      s.enabled === true ? 'yes' : s.enabled === false ? 'no' : '',
+                      s.hitCount == null ? '' : String(s.hitCount),
+                      s.orderNo == null ? '' : String(s.orderNo),
+                      (s.authSources ?? []).join('; '),
+                      s.rulesSummary ?? '',
+                    ]),
+                  );
+                  toast(`Exported ${n} service${n === 1 ? '' : 's'}`, {
+                    description: 'clearpass-services.csv — filtered services on this tab.',
+                  });
+                }}
+              >
+                Export CSV
+              </Button>
+            ) : null}
+            {tab === 'endpoints' && rows.length > 0 ? (
               <Button
                 variant="ghost"
                 size="sm"
@@ -360,19 +803,70 @@ function ClearPassView({
                 Export CSV
               </Button>
             ) : null}
+            {sectionLive ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const qs = new URLSearchParams();
+                    if (q.trim()) qs.set('q', q.trim());
+                    /* Endpoints tab follows the on-screen status/category slice;
+                       Auth tab prefers sessions; Services uses dedicated columns;
+                       other tabs keep the full endpoints+sessions export. */
+                    if (tab === 'endpoints') {
+                      if (status !== 'all') qs.set('status', status);
+                      if (category !== 'all') qs.set('category', category);
+                      qs.set('part', 'endpoints');
+                    } else if (tab === 'auth') {
+                      qs.set('part', 'sessions');
+                    } else if (tab === 'services') {
+                      if (enabled !== 'all') qs.set('enabled', enabled);
+                      qs.set('part', 'services');
+                    }
+                    const suffix = qs.toString() ? `?${qs}` : '';
+                    const filename =
+                      tab === 'services' ? 'clearpass-services.csv' : 'clearpass-export.csv';
+                    const res = await downloadApiCsv(`/api/clearpass/export${suffix}`, filename);
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description:
+                          tab === 'endpoints'
+                            ? 'clearpass-export.csv — filtered endpoints.'
+                            : tab === 'auth'
+                              ? 'clearpass-export.csv — auth sessions.'
+                              : tab === 'services'
+                                ? 'clearpass-services.csv — filtered services.'
+                                : 'clearpass-export.csv — endpoints + auth sessions.',
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/auth-events')}>
               Auth events →
             </Button>
           </>
-        }
+}
       />
+
+      <div className="nt-plane-theater" role="note">NightDesk · ClearPass ECG · policy · endpoints · identity</div>
 
       <StatRow stats={stats} />
 
       <VisualReferencePanel target={{ kind: 'connector', id: 'clearpass', plane: 'CLEARPASS' }} />
       <ConfigRecommendationsPanel title="ClearPass-related recommendations" limit={8} />
 
-      {data.dataSource === 'live' && clearpassHealth && clearpassHealth !== 'healthy' ? (
+      {sectionLive && clearpassHealth && clearpassHealth !== 'healthy' ? (
         <Alert
           tone={clearpassHealth === 'unlinked' ? 'info' : 'warning'}
           title={
@@ -396,7 +890,7 @@ function ClearPassView({
               </>
             ) : null}
           </span>
-          <div className="nt-filter-bar" style={{ marginTop: 10, gap: 8 }}>
+          <div className="nt-filter-bar nt-mt-10 nt-gap-8 nt-row">
             <Button variant="secondary" size="sm" onClick={() => navigate('/systems?plane=clearpass')}>
               Repair ClearPass on Connected systems
             </Button>
@@ -443,8 +937,8 @@ function ClearPassView({
             }
           />
 
-          <div className="nt-filter-bar">
-            <div className="nt-filter-field" style={{ width: 250 }}>
+          <div className="nt-filter-bar nt-sticky-filters">
+            <div className="nt-filter-field nt-w-250">
               <Input
                 size="sm"
                 mono
@@ -452,33 +946,30 @@ function ClearPassView({
                 value={q}
                 onChange={(e) => {
                   setQ(e.target.value);
-                  void loadEndpointPage(0);
                 }}
-                aria-label="Filter loaded endpoint page"
+                aria-label="Filter endpoints"
               />
             </div>
-            <div className="nt-filter-field" style={{ width: 160 }}>
+            <div className="nt-filter-field nt-w-160">
               <Select
                 options={statusOptions}
                 value={status}
                 onValueChange={(value) => {
                   setStatus(value);
-                  void loadEndpointPage(0);
                 }}
                 size="sm"
-                aria-label="Status on loaded page"
+                aria-label="Endpoint status"
               />
             </div>
-            <div className="nt-filter-field" style={{ width: 180 }}>
+            <div className="nt-filter-field nt-w-180">
               <Select
                 options={categoryOptions}
                 value={category}
                 onValueChange={(value) => {
                   setCategory(value);
-                  void loadEndpointPage(0);
                 }}
                 size="sm"
-                aria-label="Category on loaded page"
+                aria-label="Endpoint category"
               />
             </div>
             {canWrite ? <div className="nt-ml-auto">
@@ -488,13 +979,63 @@ function ClearPassView({
             </div> : null}
           </div>
 
+          {statusChips.length > 0 ? (
+            <div className="nt-chip-row" role="group" aria-label="Endpoint status">
+              <span className="nt-chip-row__label">Status</span>
+              {statusChips.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  onClick={() => setStatus(status === c.key ? 'all' : c.key)}
+                  className={status === c.key ? 'nt-chip nt-chip--active' : 'nt-chip'}
+                  aria-pressed={status === c.key}
+                >
+                  <Badge tone={c.tone}>{c.label}</Badge>
+                  <span className="nt-chip__count">{c.count}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {categoryChips.length > 0 ? (
+            <div className="nt-chip-row" role="group" aria-label="Endpoint category">
+              <span className="nt-chip-row__label">Category</span>
+              {categoryChips.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  onClick={() => setCategory(category === c.key ? 'all' : c.key)}
+                  className={
+                    category === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+                  }
+                  aria-pressed={category === c.key}
+                  data-category={c.key}
+                >
+                  <Badge tone="neutral">{c.label}</Badge>
+                  <span className="nt-chip__count">{c.count}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
           <span className="nt-body-sm nt-hint-muted">
-            Filters apply only to the {loadedEndpointCount} {loadedEndpointCount === 1 ? 'row' : 'rows'} loaded on this page.
+            {endpointPage?.dataSource === 'live'
+              ? 'Live filters narrow the vendor page just returned; Next still walks the ClearPass repository.'
+              : q.trim() || status !== 'all' || category !== 'all'
+                ? `Filtered repository page — ${endpointPage?.total ?? loadedEndpointCount} matching ${
+                    (endpointPage?.total ?? loadedEndpointCount) === 1 ? 'endpoint' : 'endpoints'
+                  }.`
+                : `Showing ${loadedEndpointCount} ${loadedEndpointCount === 1 ? 'endpoint' : 'endpoints'} on this page.`}
           </span>
 
           {endpointPage === null ? (
-            <div className="nt-center-pad">
-              <Spinner size="sm" />
+            <div className="nt-center-pad" role="status" aria-label="Loading endpoints">
+              <div className="nt-stack nt-gap-6">
+                <Skeleton height={12} width="32%" />
+                <Skeleton height={32} />
+                <Skeleton height={32} />
+                <Skeleton height={32} />
+              </div>
             </div>
           ) : endpointPage.state === 'unavailable' ? (
             <EmptyState
@@ -528,35 +1069,231 @@ function ClearPassView({
             ) : (
               <EmptyState
                 title="Nothing matches that filter"
-                description="Loosen the search, status or category filter to see more of this loaded page."
-              />
+                description="Loosen the search, status, category or selection filter — Next page still walks the repository when more rows exist."
+              >
+                {macsFilter !== null || q.trim() || status !== 'all' || category !== 'all' ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setQ('');
+                      setStatus('all');
+                      setCategory('all');
+                      if (macsFilter !== null) {
+                        const next = new URLSearchParams(searchParams);
+                        next.delete('macs');
+                        setSearchParams(next, { replace: true });
+                      }
+                      setSelectedEndpointKeys([]);
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                ) : null}
+              </EmptyState>
             )
           ) : (
-            <Table density={density}>
-              <Table.Head>
-                <Table.Row>
-                  <Table.HeaderCell>Status</Table.HeaderCell>
-                  <Table.HeaderCell>MAC</Table.HeaderCell>
-                  <Table.HeaderCell>Hostname</Table.HeaderCell>
-                  <Table.HeaderCell>IP</Table.HeaderCell>
-                  <Table.HeaderCell>Category</Table.HeaderCell>
-                  <Table.HeaderCell>OS / Family</Table.HeaderCell>
-                  <Table.HeaderCell>Profile</Table.HeaderCell>
-                  <Table.HeaderCell>Updated</Table.HeaderCell>
-                  <Table.HeaderCell>{/* edit */}</Table.HeaderCell>
-                </Table.Row>
-              </Table.Head>
-              <Table.Body>
-                {rows.map((e) => (
-                  <EndpointTableRow
-                    key={e.id}
-                    row={e}
-                    onOpenAuth={() => navigate(`/auth-events?q=${encodeURIComponent(e.mac)}`)}
-                    onEdit={canWrite ? () => setWriteDrawer({ kind: 'editEndpoint', row: e }) : undefined}
+            <div className="nt-stack nt-gap-8">
+              <div className="nt-row-between">
+                <span className="nd-micro-label nt-micro-label">Endpoints</span>
+                <div className="nt-row nt-gap-8">
+                  <TableViewOptions
+                    columns={endpointColumns}
+                    config={tableColumns.clearpassEndpoints ?? {}}
+                    onChange={(config) => setTableColumns('clearpassEndpoints', config)}
                   />
-                ))}
-              </Table.Body>
-            </Table>
+                  <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
+                </div>
+              </div>
+              {macsFilter !== null ? (
+                <div className="nt-chip-row" role="group" aria-label="Selection deep link">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = new URLSearchParams(searchParams);
+                      next.delete('macs');
+                      setSearchParams(next, { replace: true });
+                    }}
+                    title={macsFilter.join(', ')}
+                    className="nt-chip nt-chip--active"
+                  >
+                    {macsPresent === macsFilter.length
+                      ? `${macsFilter.length} selected MAC${macsFilter.length === 1 ? '' : 's'}`
+                      : `${macsPresent} of ${macsFilter.length} selected MACs present`}
+                    {' — clear'}
+                  </button>
+                </div>
+              ) : null}
+              <DataTable
+                ariaLabel="ClearPass endpoints"
+                density={density}
+                columns={endpointColumns}
+                rows={rows}
+                rowKey={(e) => e.id}
+                columnsConfig={tableColumns.clearpassEndpoints}
+                onColumnsConfigChange={(config) => setTableColumns('clearpassEndpoints', config)}
+                selectedKeys={selectedEndpointKeys}
+                onSelectionChange={setSelectedEndpointKeys}
+                rowTone={(e) => statusTone(e.status)}
+              />
+              {selectedEndpointKeys.length > 0 ? (
+                <div
+                  className="nt-configure-bulk-bar nt-bulk-glass"
+                  role="region"
+                  aria-label="Endpoint selection actions"
+                >
+                  <span className="nt-configure-bulk-bar__count">{`${selectedEndpointKeys.length} SELECTED`}</span>
+                  <span className="nt-configure-bulk-bar__hint">
+                    export, copy MACs, or share a selection link for only the endpoints you marked — full list export stays in the header
+                  </span>
+                  <span className="nt-configure-bulk-bar__actions">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        const selected = new Set(selectedEndpointKeys);
+                        const picked = rows.filter((e) => selected.has(e.id));
+                        if (picked.length === 0) {
+                          toast('No selected endpoints still in view', {
+                            description: 'Clear selection or adjust filters.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const n = exportTableCsv(
+                          'clearpass-endpoints-selected.csv',
+                          [
+                            'mac',
+                            'hostname',
+                            'ip',
+                            'status',
+                            'category',
+                            'family',
+                            'os',
+                            'profile',
+                            'updatedAt',
+                            'description',
+                          ],
+                          picked.map((e) => [
+                            e.mac,
+                            e.hostname ?? '',
+                            e.ip ?? '',
+                            e.status,
+                            e.category ?? '',
+                            e.family ?? '',
+                            e.os ?? '',
+                            e.profile ?? '',
+                            e.updatedAt ?? '',
+                            e.description ?? '',
+                          ]),
+                        );
+                        toast(`Exported ${countOf(n, 'selected endpoint')}`, {
+                          description: 'clearpass-endpoints-selected.csv — profile fields only.',
+                          tone: 'success',
+                        });
+                      }}
+                    >
+                      Export selected
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const selected = new Set(selectedEndpointKeys);
+                          const picked = rows.filter((e) => selected.has(e.id));
+                          if (picked.length === 0) {
+                            toast('No selected endpoints still in view', {
+                              description: 'Clear selection or adjust filters.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
+                          const macs = [
+                            ...new Set(
+                              picked
+                                .map((e) => (e.mac ?? '').trim())
+                                .filter(Boolean),
+                            ),
+                          ];
+                          if (macs.length === 0) {
+                            toast('No MACs on the selected endpoints', {
+                              description: 'Those rows did not publish a MAC — export CSV instead.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
+                          const text = macs.join('\n');
+                          try {
+                            await navigator.clipboard.writeText(text);
+                            toast(`Copied ${countOf(macs.length, 'MAC')}`, {
+                              description:
+                                macs.length < picked.length
+                                  ? `${picked.length - macs.length} selected without a MAC skipped`
+                                  : 'newline-joined · paste into NAC or a ticket',
+                              tone: 'success',
+                            });
+                          } catch {
+                            toast('Could not copy MACs', { description: text, tone: 'warning' });
+                          }
+                        })();
+                      }}
+                    >
+                      Copy MACs
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const selected = new Set(selectedEndpointKeys);
+                          const picked = rows.filter((e) => selected.has(e.id));
+                          if (picked.length === 0) {
+                            toast('No selected endpoints still in view', {
+                              description: 'Clear selection or adjust filters.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
+                          const macs = [
+                            ...new Set(
+                              picked
+                                .map((e) => (e.mac ?? '').trim())
+                                .filter(Boolean),
+                            ),
+                          ];
+                          if (macs.length === 0) {
+                            toast('No MACs on the selected endpoints', {
+                              description: 'Those rows did not publish a MAC — export CSV instead.',
+                              tone: 'info',
+                            });
+                            return;
+                          }
+                          const next = new URLSearchParams(searchParams);
+                          next.set('macs', macs.join('\n'));
+                          const qs = next.toString();
+                          const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                          try {
+                            await navigator.clipboard.writeText(url);
+                            toast('Selection link copied', {
+                              description: `${macs.length} MAC${macs.length === 1 ? '' : 's'} · macs=`,
+                              tone: 'success',
+                            });
+                          } catch {
+                            toast('Could not copy link', { description: url, tone: 'warning' });
+                          }
+                        })();
+                      }}
+                    >
+                      Copy selection link
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedEndpointKeys([])}>
+                      Clear
+                    </Button>
+                  </span>
+                </div>
+              ) : null}
+            </div>
           )}
 
           {endpointPage !== null && endpointPage.state === 'ok' ? (
@@ -598,44 +1335,14 @@ function ClearPassView({
               description="ClearPass has not recorded a RADIUS decision recently."
             />
           ) : (
-            <Table density={density}>
-              <Table.Head>
-                <Table.Row>
-                  <Table.HeaderCell>Time</Table.HeaderCell>
-                  <Table.HeaderCell>Result</Table.HeaderCell>
-                  <Table.HeaderCell>Username</Table.HeaderCell>
-                  <Table.HeaderCell>MAC</Table.HeaderCell>
-                  <Table.HeaderCell>Method</Table.HeaderCell>
-                </Table.Row>
-              </Table.Head>
-              <Table.Body>
-                {recentAuth.map((ev, i) => (
-                  <Table.Row key={`${ev.time}-${i}`}>
-                    <Table.Cell>
-                      <span
-                        className="nt-hint-muted"
-                      >
-                        {ev.at ? hhmmssLocal(ev.at) : ev.time}
-                      </span>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <Badge tone={ev.tone} dot>
-                        {ev.result}
-                      </Badge>
-                    </Table.Cell>
-                    <Table.Cell>{ev.who}</Table.Cell>
-                    <Table.Cell>
-                      <span className="nt-mono-11">{ev.mac}</span>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <span className="nt-body-sec">
-                        {ev.method}
-                      </span>
-                    </Table.Cell>
-                  </Table.Row>
-                ))}
-              </Table.Body>
-            </Table>
+            <DataTable
+              ariaLabel="Recent ClearPass auth events"
+              density={density}
+              columns={recentAuthColumns}
+              rows={recentAuth}
+              rowKey={(ev, i) => `${ev.time}|${ev.mac}|${i}`}
+              rowTone={(ev) => ev.tone}
+            />
           )}
           <div>
             <Button variant="ghost" size="sm" onClick={() => navigate('/auth-events')}>
@@ -665,13 +1372,84 @@ function ClearPassView({
         />
       ) : null}
       {tab === 'services' ? (
-        <ServicesSection
-          services={data.services}
-          deviceGroups={data.deviceGroups}
-          density={density}
-          onView={setServiceView}
-          onViewDeviceGroup={setInventoryView}
-        />
+        <>
+          <div className="nt-filter-bar nt-sticky-filters">
+            <div className="nt-filter-field nt-w-250">
+              <Input
+                size="sm"
+                mono
+                placeholder="name, type, template, rules…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                aria-label="Filter services"
+              />
+            </div>
+            <div className="nt-filter-field nt-w-160">
+              <Select
+                options={[
+                  { value: 'all', label: 'All statuses' },
+                  { value: '1', label: 'Enabled' },
+                  { value: '0', label: 'Disabled' },
+                ]}
+                value={enabled}
+                onValueChange={setEnabled}
+                size="sm"
+                aria-label="Service enabled"
+              />
+            </div>
+          </div>
+          {enabledChips.length > 0 ? (
+            <div className="nt-chip-row" role="group" aria-label="Service enabled state">
+              <span className="nt-chip-row__label">Enabled</span>
+              {enabledChips.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  onClick={() => setEnabled(enabled === c.key ? 'all' : c.key)}
+                  className={
+                    enabled === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+                  }
+                  aria-pressed={enabled === c.key}
+                  data-enabled={c.key}
+                >
+                  <Badge tone={c.tone}>{c.label}</Badge>
+                  <span className="nt-chip__count">{c.count}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {servicesFilter !== null ? (
+            <div className="nt-chip-row" role="group" aria-label="Selection deep link">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.delete('services');
+                  setSearchParams(next, { replace: true });
+                  setSelectedServiceKeys([]);
+                }}
+                title={servicesFilter.join(', ')}
+                className="nt-chip nt-chip--active"
+              >
+                {servicesPresent === servicesFilter.length
+                  ? `${servicesFilter.length} selected service${servicesFilter.length === 1 ? '' : 's'}`
+                  : `${servicesPresent} of ${servicesFilter.length} selected services present`}
+                {' — clear'}
+              </button>
+            </div>
+          ) : null}
+          <ServicesSection
+            services={filteredServices}
+            servicesTotal={data.services?.length}
+            deviceGroups={data.deviceGroups}
+            density={density}
+            selectedServiceKeys={selectedServiceKeys}
+            onServiceSelectionChange={setSelectedServiceKeys}
+            onView={setServiceView}
+            onViewDeviceGroup={setInventoryView}
+            selectionFilterActive={servicesFilter !== null}
+          />
+        </>
       ) : null}
 
       {inventoryView ? (
@@ -796,72 +1574,6 @@ function ClearPassView({
   );
 }
 
-function EndpointTableRow({
-  row,
-  onOpenAuth,
-  onEdit,
-}: {
-  row: EndpointRow;
-  onOpenAuth: () => void;
-  onEdit?: () => void;
-}) {
-  return (
-    <Table.Row>
-      <Table.Cell>
-        <Badge tone={statusTone(row.status)} dot>
-          {row.status}
-        </Badge>
-      </Table.Cell>
-      <Table.Cell>
-        <button
-          type="button"
-          onClick={onOpenAuth}
-          className="nt-mono-link" style={{ textAlign: "left" }}
-        >
-          {row.mac}
-        </button>
-      </Table.Cell>
-      <Table.Cell>
-        {row.hostname ?? '—'}
-        {row.description ? (
-          <div className="nt-hint-muted">{row.description}</div>
-        ) : null}
-      </Table.Cell>
-      <Table.Cell>
-        <span className="nt-hint-muted">
-          {row.ip ?? '—'}
-        </span>
-      </Table.Cell>
-      <Table.Cell>
-        {row.category ?? '—'}
-        {row.insightTags && row.insightTags.length > 0 ? (
-          <div className="nt-chip-wrap nt-pad-top-4">
-            {row.insightTags.map((tag) => (
-              <Badge key={tag} tone="neutral">
-                {tag}
-              </Badge>
-            ))}
-          </div>
-        ) : null}
-      </Table.Cell>
-      <Table.Cell>{[row.family, row.os].filter(Boolean).join(' · ') || '—'}</Table.Cell>
-      <Table.Cell>{row.profile ?? '—'}</Table.Cell>
-      <Table.Cell>
-        <span className="nt-hint-muted">
-          {row.updatedAt ?? '—'}
-        </span>
-      </Table.Cell>
-      <Table.Cell>
-        {onEdit ? (
-          <Button variant="ghost" size="sm" onClick={onEdit} aria-label={`Edit endpoint ${row.mac}`}>
-            Edit
-          </Button>
-        ) : null}
-      </Table.Cell>
-    </Table.Row>
-  );
-}
-
 // -- Policy inventories --------------------------------------------------------
 //
 // One section per CPPM collection the adapter walks alongside the endpoint
@@ -903,16 +1615,6 @@ function boolText(value: boolean | null): string {
 function reported(value: string | null): string {
   return value ?? 'Not reported';
 }
-
-const inventoryDetailButtonStyle = {
-  background: 'none',
-  border: 'none',
-  padding: 0,
-  cursor: 'pointer',
-  font: 'inherit',
-  color: 'var(--nd-accent-text)',
-  textAlign: 'left',
-} as const;
 
 function StaticInventoryDetailDrawer({
   row,
@@ -996,6 +1698,55 @@ function NetworkDevicesSection({
   density: 'comfortable' | 'compact';
   onView: (row: StaticInventoryDetail) => void;
 }) {
+  const columns: Array<DataTableColumn<ClearPassNetworkDeviceRow>> = [
+    {
+      key: 'name',
+      title: 'Name',
+      hideable: false,
+      sortValue: (d) => d.name,
+      render: (d) => (
+        <button
+          type="button"
+          onClick={() => onView(networkDeviceDetail(d))}
+          className="nt-inventory-detail-btn"
+          aria-label={`View network device ${d.name}`}
+        >
+          {d.name}
+        </button>
+      ),
+    },
+    {
+      key: 'ip',
+      title: 'IP',
+      sortValue: (d) => d.ipAddress ?? '',
+      render: (d) => <span className="nt-hint-muted">{d.ipAddress ?? '—'}</span>,
+    },
+    {
+      key: 'vendor',
+      title: 'Vendor',
+      sortValue: (d) => d.vendorName ?? '',
+      render: (d) => d.vendorName ?? '—',
+    },
+    {
+      key: 'coa',
+      title: 'CoA',
+      sortValue: (d) => boolText(d.coaCapable),
+      render: (d) => boolText(d.coaCapable),
+    },
+    {
+      key: 'radsec',
+      title: 'RadSec',
+      sortValue: (d) => boolText(d.radsecEnabled),
+      render: (d) => boolText(d.radsecEnabled),
+    },
+    {
+      key: 'description',
+      title: 'Description',
+      sortValue: (d) => d.description ?? '',
+      render: (d) => d.description ?? '—',
+    },
+  ];
+
   return (
     <>
       <SectionHeader label="Network devices" meta={inventoryMeta(rows)} />
@@ -1004,40 +1755,17 @@ function NetworkDevicesSection({
         notReportedDescription="ClearPass did not return its network-device inventory this cycle — the NAD list is unknown, not empty."
         emptyTitle="ClearPass reports no network devices"
       >
-        <Table density={density}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Name</Table.HeaderCell>
-              <Table.HeaderCell>IP</Table.HeaderCell>
-              <Table.HeaderCell>Vendor</Table.HeaderCell>
-              <Table.HeaderCell>CoA</Table.HeaderCell>
-              <Table.HeaderCell>RadSec</Table.HeaderCell>
-              <Table.HeaderCell>Description</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {(rows ?? []).map((d) => (
-              <Table.Row key={d.id}>
-                <Table.Cell>
-                  <button type="button" onClick={() => onView(networkDeviceDetail(d))} style={inventoryDetailButtonStyle} aria-label={`View network device ${d.name}`}>
-                    {d.name}
-                  </button>
-                </Table.Cell>
-                <Table.Cell>
-                  <span
-                    className="nt-hint-muted"
-                  >
-                    {d.ipAddress ?? '—'}
-                  </span>
-                </Table.Cell>
-                <Table.Cell>{d.vendorName ?? '—'}</Table.Cell>
-                <Table.Cell>{boolText(d.coaCapable)}</Table.Cell>
-                <Table.Cell>{boolText(d.radsecEnabled)}</Table.Cell>
-                <Table.Cell>{d.description ?? '—'}</Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <DataTable
+          ariaLabel="ClearPass network devices"
+          density={density}
+          columns={columns}
+          rows={rows ?? []}
+          rowKey={(d) => d.id}
+          onRowActivate={(d) => onView(networkDeviceDetail(d))}
+          rowTone={(d) =>
+            d.radsecEnabled ? 'success' : d.coaCapable ? 'info' : 'neutral'
+          }
+        />
       </InventoryGate>
     </>
   );
@@ -1052,6 +1780,37 @@ function AuthSourcesSection({
   density: 'comfortable' | 'compact';
   onView: (row: StaticInventoryDetail) => void;
 }) {
+  const columns: Array<DataTableColumn<ClearPassAuthSourceRow>> = [
+    {
+      key: 'name',
+      title: 'Name',
+      hideable: false,
+      sortValue: (s) => s.name,
+      render: (s) => (
+        <button
+          type="button"
+          onClick={() => onView(authSourceDetail(s))}
+          className="nt-inventory-detail-btn"
+          aria-label={`View authentication source ${s.name}`}
+        >
+          {s.name}
+        </button>
+      ),
+    },
+    {
+      key: 'type',
+      title: 'Type',
+      sortValue: (s) => s.type ?? '',
+      render: (s) => s.type ?? '—',
+    },
+    {
+      key: 'description',
+      title: 'Description',
+      sortValue: (s) => s.description ?? '',
+      render: (s) => s.description ?? '—',
+    },
+  ];
+
   return (
     <>
       <SectionHeader label="Authentication sources" meta={inventoryMeta(rows)} />
@@ -1060,28 +1819,14 @@ function AuthSourcesSection({
         notReportedDescription="ClearPass did not return its authentication sources this cycle — the list is unknown, not empty."
         emptyTitle="ClearPass reports no authentication sources"
       >
-        <Table density={density}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Name</Table.HeaderCell>
-              <Table.HeaderCell>Type</Table.HeaderCell>
-              <Table.HeaderCell>Description</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {(rows ?? []).map((s) => (
-              <Table.Row key={s.id}>
-                <Table.Cell>
-                  <button type="button" onClick={() => onView(authSourceDetail(s))} style={inventoryDetailButtonStyle} aria-label={`View authentication source ${s.name}`}>
-                    {s.name}
-                  </button>
-                </Table.Cell>
-                <Table.Cell>{s.type ?? '—'}</Table.Cell>
-                <Table.Cell>{s.description ?? '—'}</Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <DataTable
+          ariaLabel="ClearPass authentication sources"
+          density={density}
+          columns={columns}
+          rows={rows ?? []}
+          rowKey={(s) => s.id}
+          onRowActivate={(s) => onView(authSourceDetail(s))}
+        />
       </InventoryGate>
     </>
   );
@@ -1096,6 +1841,31 @@ function RolesSection({
   density: 'comfortable' | 'compact';
   onView: (row: StaticInventoryDetail) => void;
 }) {
+  const columns: Array<DataTableColumn<ClearPassRoleRow>> = [
+    {
+      key: 'name',
+      title: 'Name',
+      hideable: false,
+      sortValue: (r) => r.name,
+      render: (r) => (
+        <button
+          type="button"
+          onClick={() => onView(roleDetail(r))}
+          className="nt-inventory-detail-btn"
+          aria-label={`View role ${r.name}`}
+        >
+          {r.name}
+        </button>
+      ),
+    },
+    {
+      key: 'description',
+      title: 'Description',
+      sortValue: (r) => r.description ?? '',
+      render: (r) => r.description ?? '—',
+    },
+  ];
+
   return (
     <>
       <SectionHeader label="Roles" meta={inventoryMeta(rows)} />
@@ -1104,26 +1874,14 @@ function RolesSection({
         notReportedDescription="ClearPass did not return its role inventory this cycle — the list is unknown, not empty."
         emptyTitle="ClearPass reports no roles"
       >
-        <Table density={density}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Name</Table.HeaderCell>
-              <Table.HeaderCell>Description</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {(rows ?? []).map((r) => (
-              <Table.Row key={r.id}>
-                <Table.Cell>
-                  <button type="button" onClick={() => onView(roleDetail(r))} style={inventoryDetailButtonStyle} aria-label={`View role ${r.name}`}>
-                    {r.name}
-                  </button>
-                </Table.Cell>
-                <Table.Cell>{r.description ?? '—'}</Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <DataTable
+          ariaLabel="ClearPass roles"
+          density={density}
+          columns={columns}
+          rows={rows ?? []}
+          rowKey={(r) => r.id}
+          onRowActivate={(r) => onView(roleDetail(r))}
+        />
       </InventoryGate>
     </>
   );
@@ -1140,6 +1898,68 @@ function EnforcementSection({
   density: 'comfortable' | 'compact';
   onView: (row: StaticInventoryDetail) => void;
 }) {
+  const policyColumns: Array<DataTableColumn<ClearPassEnforcementPolicyRow>> = [
+    {
+      key: 'name',
+      title: 'Policy',
+      hideable: false,
+      sortValue: (p) => p.name,
+      render: (p) => (
+        <button
+          type="button"
+          onClick={() => onView(enforcementPolicyDetail(p))}
+          className="nt-inventory-detail-btn"
+          aria-label={`View enforcement policy ${p.name}`}
+        >
+          {p.name}
+        </button>
+      ),
+    },
+    {
+      key: 'type',
+      title: 'Type',
+      sortValue: (p) => p.enforcementType ?? '',
+      render: (p) => p.enforcementType ?? '—',
+    },
+    {
+      key: 'defaultProfile',
+      title: 'Default profile',
+      sortValue: (p) => p.defaultProfile ?? '',
+      render: (p) => <DefaultProfileChain policy={p} profiles={profiles} />,
+    },
+  ];
+
+  const profileColumns: Array<DataTableColumn<ClearPassEnforcementProfileRow>> = [
+    {
+      key: 'name',
+      title: 'Name',
+      hideable: false,
+      sortValue: (p) => p.name,
+      render: (p) => (
+        <button
+          type="button"
+          onClick={() => onView(enforcementProfileDetail(p))}
+          className="nt-inventory-detail-btn"
+          aria-label={`View enforcement profile ${p.name}`}
+        >
+          {p.name}
+        </button>
+      ),
+    },
+    {
+      key: 'type',
+      title: 'Type',
+      sortValue: (p) => p.type ?? '',
+      render: (p) => p.type ?? '—',
+    },
+    {
+      key: 'description',
+      title: 'Description',
+      sortValue: (p) => p.description ?? '',
+      render: (p) => p.description ?? '—',
+    },
+  ];
+
   return (
     <>
       <SectionHeader label="Enforcement policies" meta={inventoryMeta(policies)} />
@@ -1148,30 +1968,14 @@ function EnforcementSection({
         notReportedDescription="ClearPass did not return its enforcement policies this cycle — the list is unknown, not empty."
         emptyTitle="ClearPass reports no enforcement policies"
       >
-        <Table density={density}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Policy</Table.HeaderCell>
-              <Table.HeaderCell>Type</Table.HeaderCell>
-              <Table.HeaderCell>Default profile</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {(policies ?? []).map((p) => (
-              <Table.Row key={p.id}>
-                <Table.Cell>
-                  <button type="button" onClick={() => onView(enforcementPolicyDetail(p))} style={inventoryDetailButtonStyle} aria-label={`View enforcement policy ${p.name}`}>
-                    {p.name}
-                  </button>
-                </Table.Cell>
-                <Table.Cell>{p.enforcementType ?? '—'}</Table.Cell>
-                <Table.Cell>
-                  <DefaultProfileChain policy={p} profiles={profiles} />
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <DataTable
+          ariaLabel="ClearPass enforcement policies"
+          density={density}
+          columns={policyColumns}
+          rows={policies ?? []}
+          rowKey={(p) => p.id}
+          onRowActivate={(p) => onView(enforcementPolicyDetail(p))}
+        />
       </InventoryGate>
 
       <SectionHeader label="Enforcement profiles" meta={inventoryMeta(profiles)} />
@@ -1180,28 +1984,14 @@ function EnforcementSection({
         notReportedDescription="ClearPass did not return its enforcement profiles this cycle — the list is unknown, not empty."
         emptyTitle="ClearPass reports no enforcement profiles"
       >
-        <Table density={density}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Name</Table.HeaderCell>
-              <Table.HeaderCell>Type</Table.HeaderCell>
-              <Table.HeaderCell>Description</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {(profiles ?? []).map((p) => (
-              <Table.Row key={p.id}>
-                <Table.Cell>
-                  <button type="button" onClick={() => onView(enforcementProfileDetail(p))} style={inventoryDetailButtonStyle} aria-label={`View enforcement profile ${p.name}`}>
-                    {p.name}
-                  </button>
-                </Table.Cell>
-                <Table.Cell>{p.type ?? '—'}</Table.Cell>
-                <Table.Cell>{p.description ?? '—'}</Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <DataTable
+          ariaLabel="ClearPass enforcement profiles"
+          density={density}
+          columns={profileColumns}
+          rows={profiles ?? []}
+          rowKey={(p) => p.id}
+          onRowActivate={(p) => onView(enforcementProfileDetail(p))}
+        />
       </InventoryGate>
     </>
   );
@@ -1263,44 +2053,48 @@ function LocalUsersSection({
         notReportedDescription="ClearPass did not return its local users this cycle — the list is unknown, not empty."
         emptyTitle="ClearPass reports no local users"
       >
-        <Table density={density}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>User ID</Table.HeaderCell>
-              <Table.HeaderCell>Name</Table.HeaderCell>
-              <Table.HeaderCell>Role</Table.HeaderCell>
-              <Table.HeaderCell>Status</Table.HeaderCell>
-              <Table.HeaderCell>{/* edit */}</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {(rows ?? []).map((u) => (
-              <Table.Row key={u.id}>
-                <Table.Cell>
-                  <span className="nt-mono-11">{u.userId}</span>
-                </Table.Cell>
-                <Table.Cell>{u.username ?? '—'}</Table.Cell>
-                <Table.Cell>{u.roleName ?? '—'}</Table.Cell>
-                <Table.Cell>
-                  {u.enabled === null ? (
-                    '—'
-                  ) : (
-                    <Badge tone={u.enabled ? 'success' : 'neutral'} dot>
-                      {u.enabled ? 'Enabled' : 'Disabled'}
-                    </Badge>
-                  )}
-                </Table.Cell>
-                <Table.Cell>
-                  {onEdit ? (
-                    <Button variant="ghost" size="sm" onClick={() => onEdit(u)} aria-label={`Edit local user ${u.userId}`}>
-                      Edit
-                    </Button>
-                  ) : null}
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <DataTable
+          ariaLabel="ClearPass local users"
+          density={density}
+          columns={[
+            {
+              key: 'userId',
+              title: 'User ID',
+              hideable: false,
+              render: (u) => <span className="nt-mono-11">{u.userId}</span>,
+            },
+            { key: 'name', title: 'Name', render: (u) => u.username ?? '—' },
+            { key: 'role', title: 'Role', render: (u) => u.roleName ?? '—' },
+            {
+              key: 'status',
+              title: 'Status',
+              render: (u) =>
+                u.enabled === null ? (
+                  '—'
+                ) : (
+                  <Badge tone={u.enabled ? 'success' : 'neutral'} dot>
+                    {u.enabled ? 'Enabled' : 'Disabled'}
+                  </Badge>
+                ),
+            },
+            {
+              key: 'edit',
+              title: '',
+              hideable: false,
+              render: (u) =>
+                onEdit ? (
+                  <Button variant="ghost" size="sm" onClick={() => onEdit(u)} aria-label={`Edit local user ${u.userId}`}>
+                    Edit
+                  </Button>
+                ) : null,
+            },
+          ] satisfies Array<DataTableColumn<ClearPassLocalUserRow>>}
+          rows={rows ?? []}
+          rowKey={(u) => u.id}
+          rowTone={(u) =>
+            u.enabled === null ? 'neutral' : u.enabled ? 'success' : 'warning'
+          }
+        />
       </InventoryGate>
     </>
   );
@@ -1323,98 +2117,236 @@ function LocalUsersSection({
  */
 function ServicesSection({
   services,
+  servicesTotal,
   deviceGroups,
   density,
+  selectedServiceKeys,
+  onServiceSelectionChange,
   onView,
   onViewDeviceGroup,
+  selectionFilterActive = false,
 }: {
   services: ClearPassServiceRow[] | undefined;
+  /** Unfiltered collection length when a filter is active (for honest meta). */
+  servicesTotal?: number;
   deviceGroups: ClearPassDeviceGroupRow[] | undefined;
   density: 'comfortable' | 'compact';
+  selectedServiceKeys: string[];
+  onServiceSelectionChange: (keys: string[]) => void;
   onView: (row: ClearPassServiceRow) => void;
   onViewDeviceGroup: (row: StaticInventoryDetail) => void;
+  /** True while a `?services=` selection deep-link is narrowing the table. */
+  selectionFilterActive?: boolean;
 }) {
+  const { toast } = useToast();
+  const [searchParams] = useSearchParams();
+  const filteredMeta =
+    services === undefined
+      ? 'NOT AVAILABLE'
+      : servicesTotal !== undefined && servicesTotal !== services.length
+        ? `${services.length} of ${servicesTotal}`
+        : `${services.length}`;
   return (
     <>
-      <SectionHeader label="Services" meta={services === undefined ? 'NOT AVAILABLE' : `${services.length}`} />
+      <SectionHeader label="Services" meta={filteredMeta} />
       {services === undefined ? (
         <EmptyState
           title="Services are not available on this CPPM"
           description="This CPPM answered 404 on both /api/config/service and /api/service — the section is absent, not empty. Nothing about the portal's read is broken."
         />
       ) : services.length === 0 ? (
-        <EmptyState title="ClearPass reports no services" />
+        <EmptyState
+          title={
+            servicesTotal && servicesTotal > 0
+              ? 'Nothing matches that filter'
+              : 'ClearPass reports no services'
+          }
+          description={
+            servicesTotal && servicesTotal > 0
+              ? selectionFilterActive
+                ? 'Clear the selection link or loosen the search/enabled filter to widen the services list.'
+                : 'Loosen the search or enabled filter to widen the services list.'
+              : undefined
+          }
+        />
       ) : (
-        <Table density={density}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Service</Table.HeaderCell>
-              <Table.HeaderCell>Status</Table.HeaderCell>
-              <Table.HeaderCell>Type</Table.HeaderCell>
-              <Table.HeaderCell>Hits</Table.HeaderCell>
-              <Table.HeaderCell>Order</Table.HeaderCell>
-              <Table.HeaderCell>Auth sources</Table.HeaderCell>
-              <Table.HeaderCell>Match rules</Table.HeaderCell>
-              <Table.HeaderCell>{/* view */}</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {services.map((s) => (
-              <Table.Row key={s.id}>
-                <Table.Cell>
-                  <button
-                    type="button"
-                    onClick={() => onView(s)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      padding: 0,
-                      cursor: 'pointer',
-                      font: 'inherit',
-                      color: 'var(--nd-accent-text)',
-                      textAlign: 'left',
-                    }}
-                  >
-                    {s.name}
-                  </button>
-                  {s.description ? (
-                    <div className="nt-hint-muted">{s.description}</div>
-                  ) : null}
-                </Table.Cell>
-                <Table.Cell>
-                  {s.enabled === null || s.enabled === undefined ? (
-                    '—'
-                  ) : (
-                    <Badge tone={s.enabled ? 'success' : 'neutral'} dot>
-                      {s.enabled ? 'Enabled' : 'Disabled'}
-                    </Badge>
-                  )}
-                </Table.Cell>
-                <Table.Cell>
-                  {s.type ?? '—'}
-                  {s.template ? (
-                    <div className="nt-hint-muted">{s.template}</div>
-                  ) : null}
-                </Table.Cell>
-                <Table.Cell>
-                  {s.hitCount === null || s.hitCount === undefined ? '—' : formatCount(s.hitCount)}
-                </Table.Cell>
-                <Table.Cell>{s.orderNo ?? '—'}</Table.Cell>
-                <Table.Cell>{s.authSources && s.authSources.length > 0 ? s.authSources.join(', ') : '—'}</Table.Cell>
-                <Table.Cell>
-                  <span className="nt-mono-11">
-                    {s.rulesSummary ?? '—'}
-                  </span>
-                </Table.Cell>
-                <Table.Cell>
-                  <Button variant="ghost" size="sm" onClick={() => onView(s)} aria-label={`View service ${s.name}`}>
-                    View
-                  </Button>
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <>
+          <DataTable
+            ariaLabel="ClearPass services"
+            density={density}
+            columns={serviceColumns(onView)}
+            rows={services}
+            rowKey={(s) => s.id}
+            selectedKeys={selectedServiceKeys}
+            onSelectionChange={onServiceSelectionChange}
+            onRowActivate={onView}
+            rowTone={(s) =>
+              s.enabled === null || s.enabled === undefined
+                ? 'neutral'
+                : s.enabled
+                  ? 'success'
+                  : 'warning'
+            }
+          />
+          {selectedServiceKeys.length > 0 ? (
+            <div
+              className="nt-configure-bulk-bar nt-bulk-glass"
+              role="region"
+              aria-label="Service selection actions"
+            >
+              <span className="nt-configure-bulk-bar__count">{`${selectedServiceKeys.length} SELECTED`}</span>
+              <span className="nt-configure-bulk-bar__hint">
+                export, copy names, or share a selection link for only the services you marked — full list export stays in the header
+              </span>
+              <span className="nt-configure-bulk-bar__actions">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const selected = new Set(selectedServiceKeys);
+                    const picked = services.filter((s) => selected.has(s.id));
+                    if (picked.length === 0) {
+                      toast('No selected services still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const n = exportTableCsv(
+                      'clearpass-services-selected.csv',
+                      [
+                        'id',
+                        'name',
+                        'type',
+                        'description',
+                        'template',
+                        'enabled',
+                        'hitCount',
+                        'orderNo',
+                        'authSources',
+                        'rulesSummary',
+                      ],
+                      picked.map((s) => [
+                        s.id ?? '',
+                        s.name ?? '',
+                        s.type ?? '',
+                        s.description ?? '',
+                        s.template ?? '',
+                        s.enabled === true ? 'yes' : s.enabled === false ? 'no' : '',
+                        s.hitCount == null ? '' : String(s.hitCount),
+                        s.orderNo == null ? '' : String(s.orderNo),
+                        (s.authSources ?? []).join('; '),
+                        s.rulesSummary ?? '',
+                      ]),
+                    );
+                    toast(`Exported ${countOf(n, 'selected service')}`, {
+                      description: 'clearpass-services-selected.csv — policy fields only.',
+                      tone: 'success',
+                    });
+                  }}
+                >
+                  Export selected
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedServiceKeys);
+                      const picked = services.filter((s) => selected.has(s.id));
+                      if (picked.length === 0) {
+                        toast('No selected services still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((s) => (s.name ?? '').trim())
+                            .filter((name) => name && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected services', {
+                          description: 'Those rows did not publish a name — export CSV for ids instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = names.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(names.length, 'name')}`, {
+                          description:
+                            names.length < picked.length
+                              ? `${picked.length - names.length} selected without a name skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy names', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy names
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedServiceKeys);
+                      const picked = services.filter((s) => selected.has(s.id));
+                      if (picked.length === 0) {
+                        toast('No selected services still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const ids = [
+                        ...new Set(
+                          picked
+                            .map((s) => (s.id ?? '').trim())
+                            .filter((id) => id && id !== '—'),
+                        ),
+                      ];
+                      if (ids.length === 0) {
+                        toast('No ids on the selected services', {
+                          description: 'Those rows did not publish an id — export CSV for names instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const next = new URLSearchParams(searchParams);
+                      next.set('services', ids.join('\n'));
+                      next.set('tab', 'services');
+                      const qs = next.toString();
+                      const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                      try {
+                        await navigator.clipboard.writeText(url);
+                        toast('Selection link copied', {
+                          description: `${ids.length} service${ids.length === 1 ? '' : 's'} · services=`,
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy link', { description: url, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy selection link
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => onServiceSelectionChange([])}>
+                  Clear
+                </Button>
+              </span>
+            </div>
+          ) : null}
+        </>
       )}
 
       <SectionHeader label="Device groups" meta={deviceGroups === undefined ? 'NOT AVAILABLE' : `${deviceGroups.length}`} />
@@ -1426,29 +2358,133 @@ function ServicesSection({
       ) : deviceGroups.length === 0 ? (
         <EmptyState title="ClearPass reports no device groups" />
       ) : (
-        <Table density={density}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Name</Table.HeaderCell>
-              <Table.HeaderCell>Description</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {deviceGroups.map((g) => (
-              <Table.Row key={g.id}>
-                <Table.Cell>
-                  <button type="button" onClick={() => onViewDeviceGroup(deviceGroupDetail(g))} style={inventoryDetailButtonStyle} aria-label={`View device group ${g.name}`}>
-                    {g.name}
-                  </button>
-                </Table.Cell>
-                <Table.Cell>{g.description ?? '—'}</Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <DataTable
+          ariaLabel="ClearPass device groups"
+          density={density}
+          columns={deviceGroupColumns(onViewDeviceGroup)}
+          rows={deviceGroups}
+          rowKey={(g) => g.id}
+          onRowActivate={(g) => onViewDeviceGroup(deviceGroupDetail(g))}
+        />
       )}
     </>
   );
+}
+
+function serviceColumns(
+  onView: (row: ClearPassServiceRow) => void,
+): Array<DataTableColumn<ClearPassServiceRow>> {
+  return [
+    {
+      key: 'name',
+      title: 'Service',
+      hideable: false,
+      sortValue: (s) => s.name,
+      render: (s) => (
+        <div>
+          <button
+            type="button"
+            onClick={() => onView(s)}
+            className="nt-mono-link nt-btn-plain-primary nt-font-inherit"
+          >
+            {s.name}
+          </button>
+          {s.description ? <div className="nt-hint-muted">{s.description}</div> : null}
+        </div>
+      ),
+    },
+    {
+      key: 'status',
+      title: 'Status',
+      sortValue: (s) => (s.enabled === null || s.enabled === undefined ? '' : s.enabled ? 1 : 0),
+      render: (s) =>
+        s.enabled === null || s.enabled === undefined ? (
+          '—'
+        ) : (
+          <Badge tone={s.enabled ? 'success' : 'neutral'} dot>
+            {s.enabled ? 'Enabled' : 'Disabled'}
+          </Badge>
+        ),
+    },
+    {
+      key: 'type',
+      title: 'Type',
+      sortValue: (s) => s.type ?? '',
+      render: (s) => (
+        <div>
+          {s.type ?? '—'}
+          {s.template ? <div className="nt-hint-muted">{s.template}</div> : null}
+        </div>
+      ),
+    },
+    {
+      key: 'hits',
+      title: 'Hits',
+      numeric: true,
+      sortValue: (s) => s.hitCount ?? -1,
+      render: (s) =>
+        s.hitCount === null || s.hitCount === undefined ? '—' : formatCount(s.hitCount),
+    },
+    {
+      key: 'order',
+      title: 'Order',
+      numeric: true,
+      sortValue: (s) => s.orderNo ?? -1,
+      render: (s) => s.orderNo ?? '—',
+    },
+    {
+      key: 'authSources',
+      title: 'Auth sources',
+      sortValue: (s) => (s.authSources ?? []).join(', '),
+      render: (s) =>
+        s.authSources && s.authSources.length > 0 ? s.authSources.join(', ') : '—',
+    },
+    {
+      key: 'rules',
+      title: 'Match rules',
+      sortValue: (s) => s.rulesSummary ?? '',
+      render: (s) => <span className="nt-mono-11">{s.rulesSummary ?? '—'}</span>,
+    },
+    {
+      key: 'view',
+      title: 'View',
+      hideable: false,
+      render: (s) => (
+        <Button variant="ghost" size="sm" onClick={() => onView(s)} aria-label={`View service ${s.name}`}>
+          View
+        </Button>
+      ),
+    },
+  ];
+}
+
+function deviceGroupColumns(
+  onViewDeviceGroup: (row: StaticInventoryDetail) => void,
+): Array<DataTableColumn<ClearPassDeviceGroupRow>> {
+  return [
+    {
+      key: 'name',
+      title: 'Name',
+      hideable: false,
+      sortValue: (g) => g.name,
+      render: (g) => (
+        <button
+          type="button"
+          onClick={() => onViewDeviceGroup(deviceGroupDetail(g))}
+          className="nt-inventory-detail-btn"
+          aria-label={`View device group ${g.name}`}
+        >
+          {g.name}
+        </button>
+      ),
+    },
+    {
+      key: 'description',
+      title: 'Description',
+      sortValue: (g) => g.description ?? '',
+      render: (g) => g.description ?? '—',
+    },
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -1498,7 +2534,7 @@ function ServiceDetailBody({ result }: { result: ClearPassServiceDetailResult })
   if (state === 'failed') {
     return (
       <div className="nt-stack nt-gap-16">
-        <div className="nt-service-note" style={{ fontSize: 'var(--nd-text-10)'  }}>{provenance}</div>
+        <div className="nt-service-note nt-hint-muted">{provenance}</div>
         <div className="nt-service-note nt-danger-text">
           The service read failed{detail.source.note ? ` — ${detail.source.note}` : ''}.
         </div>
@@ -1508,7 +2544,7 @@ function ServiceDetailBody({ result }: { result: ClearPassServiceDetailResult })
   if (state === 'empty' || detail.service === null) {
     return (
       <div className="nt-stack nt-gap-16">
-        <div className="nt-service-note" style={{ fontSize: 'var(--nd-text-10)'  }}>{provenance}</div>
+        <div className="nt-service-note nt-hint-muted">{provenance}</div>
         <div className="nt-service-note">
           {detail.source.note ?? 'ClearPass answered 404 for this service — no such service on this CPPM.'}
         </div>
@@ -1524,7 +2560,7 @@ function ServiceDefinition({ detail }: { detail: ClearPassServiceDetailLive }) {
   if (s === null) return null; // unreachable past ServiceDetailBody's gate — never render a guessed object
   return (
     <div className="nt-stack nt-gap-22">
-      <div className="nt-service-note" style={{ fontSize: 'var(--nd-text-10)'  }}>
+      <div className="nt-service-note nt-hint-muted">
         {`CLEARPASS · READ ${hhmmLocal(detail.source.at)}${detail.source.cached ? ' · CACHED' : ''}`}
       </div>
 
@@ -1545,34 +2581,44 @@ function ServiceDefinition({ detail }: { detail: ClearPassServiceDetailLive }) {
         <SectionHeader label="Match rules" />
         <ReviewRow label="Match type" value={matchTypeLabel(s.rulesMatchType)} />
         {s.rulesConditions.length > 0 ? (
-          <Table density="compact">
-            <Table.Head>
-              <Table.Row>
-                <Table.HeaderCell>Type</Table.HeaderCell>
-                <Table.HeaderCell>Name</Table.HeaderCell>
-                <Table.HeaderCell>Operator</Table.HeaderCell>
-                <Table.HeaderCell>Value</Table.HeaderCell>
-              </Table.Row>
-            </Table.Head>
-            <Table.Body>
-              {s.rulesConditions.map((c, i) => (
-                <Table.Row key={`${c.type ?? ''}:${c.name ?? ''}:${i}`}>
-                  <Table.Cell>{c.type ?? '—'}</Table.Cell>
-                  <Table.Cell>{c.name ?? '—'}</Table.Cell>
-                  <Table.Cell>
-                    <span className="nt-mono-11">
-                      {c.operator ?? '—'}
-                    </span>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <span className="nt-mono-11">
-                      {c.value ?? '—'}
-                    </span>
-                  </Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table>
+          <DataTable
+            density="compact"
+            className="nt-plane-table"
+            ariaLabel="ClearPass match rule conditions"
+            rowKey={(c, i) => `${c.type ?? ''}:${c.name ?? ''}:${i}`}
+            columns={
+              [
+                {
+                  key: 'type',
+                  title: 'Type',
+                  render: (c) => c.type ?? '—',
+                },
+                {
+                  key: 'name',
+                  title: 'Name',
+                  render: (c) => c.name ?? '—',
+                },
+                {
+                  key: 'operator',
+                  title: 'Operator',
+                  render: (c) => <span className="nt-mono-11">{c.operator ?? '—'}</span>,
+                },
+                {
+                  key: 'value',
+                  title: 'Value',
+                  render: (c) => <span className="nt-mono-11">{c.value ?? '—'}</span>,
+                },
+              ] satisfies Array<
+                DataTableColumn<{
+                  type?: string | null;
+                  name?: string | null;
+                  operator?: string | null;
+                  value?: string | null;
+                }>
+              >
+            }
+            rows={s.rulesConditions}
+          />
         ) : (
           <div className="nt-service-note">No match conditions were reported for this service.</div>
         )}
@@ -1645,8 +2691,12 @@ function ServiceDetailDrawer({
       description="The service definition as ClearPass reports it — summary, match rules, authentication, authorization, enforcement and options."
     >
       {result === null ? (
-        <div className="nt-center-pad nt-center-pad" style={{ padding: 48 }}>
-          <Spinner size="md" />
+        <div className="nt-center-pad nt-pad-48">
+          <div role="status" aria-label="NightDesk · loading ClearPass" className="nt-stack nt-gap-8 nt-debug-wake nt-debug-wake--compact">
+            <Skeleton height={14} width="36%" />
+            <Skeleton height={36} />
+            <Skeleton height={36} />
+          </div>
         </div>
       ) : (
         <ServiceDetailBody result={result} />
@@ -1724,23 +2774,11 @@ function demoLocalUserRowFor(form: ClearPassLocalUserCreateForm): ClearPassLocal
 function ReviewRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
     <div
-      style={{
-        display: 'flex',
-        alignItems: 'baseline',
-        gap: 10,
-        padding: '6px 0',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-      }}
+      className="nt-row-baseline nt-rule-row-sm nt-row nt-items-baseline nt-gap-10"
     >
-      <span className="nt-fact-row__k nt-fact-row__k" style={{ flex: "0 0 110px" }}>{label}</span>
+      <span className="nt-fact-row__k nt-w-110">{label}</span>
       <span
-        className={mono ? 'nt-mono-11' : undefined}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontSize: mono ? undefined : 12.5,
-          color: 'var(--nd-text-secondary)',
-        }}
+        className={mono ? "nt-fact-body nt-fact-body--mono nt-mono-11" : "nt-fact-body"}
       >
         {value}
       </span>
@@ -1776,7 +2814,7 @@ function WriteOutcomeAlert({ outcome }: { outcome: { error?: string; result?: Cl
       : 'Applied, not confirmed by the read-back';
   return (
     <Alert tone={tone} title={title}>
-      <div className="nt-stack-col nt-gap-6" style={{ fontSize: 13 }}>
+      <div className="nt-stack-col nt-gap-6 nt-fs-13">
         <span>{r.message}</span>
         {stale ? (
           <span>
@@ -1821,7 +2859,7 @@ function ReviewedWriteFooter({
       /> : null}
       {problems.length > 0 ? (
         <Alert tone="warning" title="Apply is disabled — the form would be refused">
-          <div className="nt-stack" style={{ gap: 4, fontSize: 13 }}>
+          <div className="nt-stack nt-gap-4 nt-fs-13">
             {problems.map((p) => (
               <span key={p}>{p}</span>
             ))}
@@ -1926,10 +2964,12 @@ function RegisterEndpointDrawer({
       open
       onOpenChange={onOpenChange}
       width="lg"
+      className="nd-drawer--write-ritual nt-write-ritual"
       title="Register endpoint"
       description={`Add one MAC to the ClearPass endpoint repository, with the profiling attributes you know. ${lab ? 'This lab write applies directly.' : 'The write goes to the linked CPPM only after your explicit review.'}`}
     >
       <div className="nt-stack nt-gap-16">
+        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
         <FormField label="MAC address" help="Any separator — normalised to aa:bb:cc:dd:ee:ff before the write.">
           <Input mono value={mac} onChange={(e) => setMac(e.target.value)} placeholder="3c:22:fb:41:0a:19" />
         </FormField>
@@ -1970,7 +3010,7 @@ function RegisterEndpointDrawer({
             }
             mono={!!parsed.attributes}
           />
-          <span className="nt-hint-muted" style={{ marginTop: 6 }}>
+          <span className="nt-hint-muted nt-mt-6">
             {demo
               ? 'demo mode — validated and audit-logged here; nothing is sent to a live CPPM.'
               : 'POST /api/endpoint on the linked CPPM, then a read-back to confirm it.'}
@@ -2061,10 +3101,12 @@ function EditEndpointDrawer({
       open
       onOpenChange={onOpenChange}
       width="lg"
+      className="nd-drawer--write-ritual nt-write-ritual"
       title={`Edit endpoint ${row.mac}`}
       description="Change the repository status and/or the operator note. The MAC is the endpoint's identity and is never rewritten."
     >
       <div className="nt-stack nt-gap-16">
+        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
         <FormField label="Status">
           <Select
             options={statusOptions}
@@ -2085,7 +3127,7 @@ function EditEndpointDrawer({
             label="Description"
             value={descChanged ? `${row.description ?? '—'} → ${description || '(cleared)'}` : 'unchanged'}
           />
-          <span className="nt-hint-muted" style={{ marginTop: 6 }}>
+          <span className="nt-hint-muted nt-mt-6">
             {demo
               ? 'demo mode — validated and audit-logged here; nothing is sent to a live CPPM.'
               : `PATCH /api/endpoint/${row.id} on the linked CPPM, then a read-back to confirm it.`}
@@ -2222,10 +3264,12 @@ function LocalUserWriteDrawer({
       open
       onOpenChange={onOpenChange}
       width="lg"
+      className="nd-drawer--write-ritual nt-write-ritual"
       title={title}
       description="A ClearPass local account. The password is write-only: it is sent to CPPM and never displayed, echoed, or read back — including here."
     >
       <div className="nt-stack nt-gap-16">
+        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
         {mode === 'create' ? (
           <FormField label="User ID" help="The login name — it cannot be changed afterwards.">
             <Input mono value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="noc-operator" />
@@ -2299,7 +3343,7 @@ function LocalUserWriteDrawer({
             }
           />
           <ReviewRow label="Password" value={password ? 'set — write-only, never displayed' : mode === 'create' ? '—' : 'unchanged'} />
-          <span className="nt-hint-muted" style={{ marginTop: 6 }}>
+          <span className="nt-hint-muted nt-mt-6">
             {demo
               ? 'demo mode — validated and audit-logged here; nothing is sent to a live CPPM.'
               : mode === 'create'

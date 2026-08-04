@@ -52,25 +52,19 @@ function MapBlock({ map, clients }: { map: MistSiteMap; clients: SiteMapClientDo
     .join(' · ');
 
   return (
-    <div className="nt-stack nt-gap-8">
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
+    <div className="nt-site-section nt-section-panel nt-stack nt-gap-8">
+      <div className="nt-row-baseline-wrap">
+        <span className="nt-fs-12-pri">
           {map.name ?? 'Unnamed floor plan'}
         </span>
-        {dims ? <span className="nt-service-note" style={{ fontSize: "var(--nd-text-10)" }}>{dims}</span> : null}
+        {dims ? <span className="nt-service-note nt-fs-10">{dims}</span> : null}
       </div>
       {map.imageUrl !== null && map.widthPx !== null && map.heightPx !== null ? (
         <svg
           role="img"
           aria-label={`Floor plan ${map.name ?? map.mapId} with ${countOf(placedAps.length, 'AP')} and ${countOf(located.length, 'client')} located`}
           viewBox={`0 0 ${map.widthPx} ${map.heightPx}`}
-          style={{
-            display: 'block',
-            width: '100%',
-            height: 'auto',
-            border: '1px solid var(--nd-border-default)',
-            background: 'var(--nd-bg-raised)',
-          }}
+          className="nt-floor-img"
         >
           <image href={map.imageUrl} x={0} y={0} width={map.widthPx} height={map.heightPx} />
           {placedAps.map((ap) => (
@@ -109,7 +103,7 @@ function MapBlock({ map, clients }: { map: MistSiteMap; clients: SiteMapClientDo
             : 'This map row reports no image dimensions, so its pixel coordinates cannot be placed — nothing is drawn.'}
         </div>
       )}
-      <div className="nt-service-note" style={{ fontSize: 10.5 }}>
+      <div className="nt-service-note nt-hint-muted nt-fs-105">
         {placedAps.length > 0
           ? `APs placed: ${placedAps.map((ap) => ap.deviceName).join(' · ')}`
           : 'No AP has a reported position on this map.'}
@@ -137,6 +131,7 @@ export function SiteFloorPlan({
   if (maps === undefined) {
     return (
       <div className="nt-stack nt-gap-10">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · floor plan lane · operator geometry</div>
         <SectionHeader label="Floor plan" meta="NOT REPORTED" />
         <div className="nt-service-note">The portal did not say whether this site has floor plans.</div>
       </div>
@@ -145,6 +140,7 @@ export function SiteFloorPlan({
   if (maps.length === 0) {
     return (
       <div className="nt-stack nt-gap-10">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · floor plan lane · operator geometry</div>
         <SectionHeader label="Floor plan" meta={mistClaimed ? 'NONE UPLOADED' : 'NOT PUBLISHED'} />
         <div className="nt-service-note">
           {mistClaimed
@@ -155,13 +151,14 @@ export function SiteFloorPlan({
     );
   }
   return (
-    <div className="nt-stack nt-gap-14">
+    <div className="nt-stack nt-gap-14 nt-floor-shell">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · floor plan lane · operator geometry</div>
       <SectionHeader
         label="Floor plan"
         meta={
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <span className="nt-inline-center-8">
             {`${countOf(maps.length, 'map').toUpperCase()} · `}
-            <Badge tone="info">MIST</Badge>
+            <Badge plane>MIST</Badge>
           </span>
         }
       />

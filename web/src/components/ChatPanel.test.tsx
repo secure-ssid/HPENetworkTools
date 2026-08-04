@@ -75,7 +75,7 @@ describe('ChatPanel', () => {
     // says so.
     await waitFor(() => expect(input.disabled).toBe(true));
     expect(sendButton.disabled).toBe(true);
-    expect(screen.getByText('working…')).toBeTruthy();
+    expect(screen.getByText(/working…/)).toBeTruthy();
 
     // The server never answered in time — postChat resolves with the abort
     // message from client.ts.

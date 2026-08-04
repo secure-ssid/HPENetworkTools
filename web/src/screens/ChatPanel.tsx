@@ -15,7 +15,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Badge, Button, Drawer, EmptyState, Input, Spinner, Text } from '../nightdesk';
+import { Alert, Badge, Button, Drawer, EmptyState, Input, Skeleton, Text } from '../nightdesk';
 import { getChatStatus, postChat } from '../api/client';
 import type { ChatStatus, ChatTranscriptEntry } from '../api/client';
 
@@ -56,7 +56,7 @@ function AssistantText({ content }: { content: string }) {
       continue;
     }
     if (line.trim() === '') {
-      rows.push(<div key={i} style={{ height: 6 }} />);
+      rows.push(<div key={i} className="nt-bar-track nt-bar-h-6" />);
       continue;
     }
     const mono = fence || codeish(line);
@@ -66,18 +66,22 @@ function AssistantText({ content }: { content: string }) {
         size={mono ? 11 : 12}
         mono={mono}
         tone={mono ? 'secondary' : 'primary'}
-        style={{ lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+        className="nt-chat-body"
       >
         {line}
       </Text>,
     );
   }
-  return <div className="nt-stack nt-gap-2">{rows}</div>;
+  return (
+    <div className="nt-chat-bubble nt-chat-bubble--assistant nt-stack nt-gap-2" data-role="assistant">
+      {rows}
+    </div>
+  );
 }
 
 function TranscriptRow({ entry }: { entry: ChatTranscriptEntry }) {
   return (
-    <div className="nt-chat-tool-row">
+    <div className="nt-chat-tool-row" data-ok={entry.ok ? 'true' : 'false'}>
       <span className="nt-chat-tool-row__tool">{entry.tool}</span>
       <span className="nt-chat-tool-row__args">{entry.args}</span>
       <span title={entry.resultPreview} className="nt-chat-tool-row__result">
@@ -174,13 +178,23 @@ export default function ChatPanel({
       : 'centralmcp';
 
   return (
-    <Drawer open={open} onOpenChange={onOpenChange} width="lg" title="Assistant" description={description}>
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <Drawer
+      open={open}
+      onOpenChange={onOpenChange}
+      width="lg"
+      title="Assistant"
+      description={description}
+      className={status?.writeMode === 'enabled' ? 'nd-drawer--write-ritual nt-write-ritual' : undefined}
+    >
+      <div className="nt-chat-col nt-chat-shell nt-section-panel">
+        <div className="nt-plane-theater" role="note">NightDesk · brokered assistant · tools · write-aware</div>
+        <div className="nt-shift-meta nt-mono nt-fs-11" role="note">
+          NightDesk · assistant lane · {status?.writeMode === 'enabled' ? 'lab write armed' : 'read-only by default'}
+        </div>
         {/* panel header: live provider/MCP status plus saved lab access. */}
         {status ? (
           <div
-            className="nt-filter-bar" style={{ gap: 8, paddingBottom: 12,
-              borderBottom: '1px solid var(--nd-border-subtle)' }}
+            className="nt-filter-bar nt-gap-8 nt-chat-head-rule"
           >
             {status.configured.mcp ? (
               <Badge tone={status.mcpReachable ? 'success' : 'warning'} dot>
@@ -195,7 +209,7 @@ export default function ChatPanel({
               {status.configured.llm ? 'llm configured' : 'llm not configured'}
             </Badge>
             {status.activeProvider ? <Badge tone="neutral">{status.activeProvider}</Badge> : null}
-            <span style={{ marginLeft: 'auto' }}>
+            <span className="nt-ml-auto">
               <Badge tone={status.writeMode === 'enabled' ? 'success' : 'neutral'}>
                 {status.writeMode === 'enabled' ? 'LAB R/W' : 'READ ONLY'}
               </Badge>
@@ -204,10 +218,14 @@ export default function ChatPanel({
         ) : null}
 
         {/* message stream */}
-        <div ref={scrollRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px 0' }}>
+        <div ref={scrollRef} className="nt-chat-scroll">
           {status === undefined ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: 64 }}>
-              <Spinner size="md" />
+            <div className="nt-center-pad-64" role="status" aria-label="Loading assistant">
+              <div className="nt-stack nt-gap-8">
+                <Skeleton height={14} width="42%" />
+                <Skeleton height={48} />
+                <Skeleton height={48} />
+              </div>
             </div>
           ) : !configured ? (
             <EmptyState
@@ -218,7 +236,7 @@ export default function ChatPanel({
                   : 'Configure MCP + LLM in Connected systems → Assistant.'
               }
             >
-              <div style={{ marginTop: 14 }}>
+              <div className="nt-mt-14">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -235,24 +253,12 @@ export default function ChatPanel({
             <div className="nt-stack nt-gap-14">
               {messages.map((m, i) =>
                 m.role === 'user' ? (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                    <div
-                      style={{
-                        maxWidth: '85%',
-                        background: 'var(--nd-bg-raised)',
-                        borderRadius: 'var(--nd-radius-lg)',
-                        padding: '8px 12px',
-                        fontSize: 'var(--nd-text-12)',
-                        lineHeight: 1.5,
-                        color: 'var(--nd-text-primary)',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                      }}
-                    >
+                  <div key={i} className="nt-end">
+                    <div className="nt-chat-bubble nt-chat-bubble--user" data-role="user">
                       {m.content}
                       {m.failed ? (
                         <div
-                          className="nt-hint-muted" style={{ marginTop: 4, color: "var(--nd-danger)" }}
+                          className="nt-hint-muted nt-danger-text nt-mt-4"
                         >
                           NOT ANSWERED — SEND AGAIN TO ASK IT
                         </div>
@@ -267,13 +273,14 @@ export default function ChatPanel({
                 ),
               )}
               {pending ? (
-                <div className="nt-row nt-gap-8">
-                  <Spinner size="sm" />
-                  <span
-                    className="nt-hint-muted"
-                  >
-                    working…
-                  </span>
+                <div className="nt-chat-pending" aria-live="polite" aria-busy="true">
+                  <span className="nt-chat-pending__pulse" aria-hidden />
+                  <div className="nt-chat-pending__stack">
+                    <Skeleton height={10} width="42%" />
+                    <Skeleton height={10} width="68%" />
+                    <Skeleton height={10} width="54%" />
+                  </div>
+                  <span className="nt-hint-muted nt-chat-pending__label">NightDesk · working…</span>
                 </div>
               ) : null}
             </div>
@@ -281,9 +288,9 @@ export default function ChatPanel({
         </div>
 
         {error ? (
-          <div style={{ paddingBottom: 10 }}>
+          <div className="nt-pb-10">
             <Alert tone="danger" title="Chat failed" dismissible onDismiss={() => setError(null)}>
-              <span style={{ fontSize: 13 }}>{error}</span>
+              <span className="nt-fs-13">{error}</span>
             </Alert>
           </div>
         ) : null}
@@ -291,14 +298,9 @@ export default function ChatPanel({
         {/* composer */}
         {configured ? (
           <div
-            style={{
-              display: 'flex',
-              gap: 8,
-              paddingTop: 12,
-              borderTop: '1px solid var(--nd-border-subtle)',
-            }}
+            className="nt-chat-composer"
           >
-            <div ref={composerRef} style={{ flex: 1, minWidth: 0 }}>
+            <div ref={composerRef} className="nt-flex-1">
               <Input
                 mono
                 value={draft}

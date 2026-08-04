@@ -167,4 +167,68 @@ describe('GET /api/configure/history/export', () => {
     expect(text).not.toContain('rendered');
     expect(text).not.toContain('ip helper');
   });
+
+  it('filters list and export by kind (and optional result)', async () => {
+    const ssidOnly = await history('?limit=50&kind=ssid');
+    expect(ssidOnly.length).toBeGreaterThan(0);
+    for (const e of ssidOnly) expect(e.kind.toLowerCase()).toBe('ssid');
+
+    const none = await history('?limit=50&kind=vlan');
+    // This harness only queued SSIDs — empty is honest, not an error.
+    expect(none).toEqual([]);
+
+    const csv = await fetch(`${base}/api/configure/history/export?limit=50&kind=ssid`);
+    expect(csv.status).toBe(200);
+    const text = await csv.text();
+    expect(text).toContain('ssid');
+    expect(text).not.toContain('rendered');
+  });
+
+  it('filters list and export by exact ticket (Loop 102)', async () => {
+    const hit = await history(`?limit=50&ticket=${encodeURIComponent(TICKET)}`);
+    expect(hit.length).toBeGreaterThan(0);
+    for (const e of hit) expect(e.ticket.toLowerCase()).toBe(TICKET.toLowerCase());
+
+    // Case-insensitive exact match — partial ticket strings must not widen.
+    const caseHit = await history(`?limit=50&ticket=${encodeURIComponent(TICKET.toLowerCase())}`);
+    expect(caseHit.length).toBe(hit.length);
+
+    const miss = await history('?limit=50&ticket=NET-DOES-NOT-EXIST');
+    expect(miss).toEqual([]);
+
+    const csv = await fetch(
+      `${base}/api/configure/history/export?limit=50&ticket=${encodeURIComponent(TICKET)}`,
+    );
+    expect(csv.status).toBe(200);
+    const text = await csv.text();
+    expect(text).toContain(TICKET);
+    expect(text).not.toContain('rendered');
+  });
+
+  it('applyConfigureHistoryFilters uses shared queryString (Loop 119)', async () => {
+    const { applyConfigureHistoryFilters } = await import('../src/routes/configure');
+    const events = [
+      { ts: 't1', event: 'queue', changeId: 'c1', ticket: 'NET-1', kind: 'ssid', result: 'ok', who: 'op' },
+      { ts: 't2', event: 'push', changeId: 'c2', ticket: 'NET-2', kind: 'vlan', result: 'failed', who: 'op' },
+    ];
+    // Non-string query values are honest no-ops (shared queryString).
+    expect(
+      applyConfigureHistoryFilters({ query: { kind: ['ssid'] } } as never, events as never),
+    ).toHaveLength(2);
+    expect(
+      applyConfigureHistoryFilters({ query: { kind: '  SSID  ' } } as never, events as never).map(
+        (e) => e.kind,
+      ),
+    ).toEqual(['ssid']);
+    expect(
+      applyConfigureHistoryFilters({ query: { result: 'FAILED' } } as never, events as never).map(
+        (e) => e.changeId,
+      ),
+    ).toEqual(['c2']);
+    expect(
+      applyConfigureHistoryFilters({ query: { ticket: 'net-1' } } as never, events as never).map(
+        (e) => e.ticket,
+      ),
+    ).toEqual(['NET-1']);
+  });
 });

@@ -16,7 +16,7 @@ export function ClientCategoryBadges({
 }) {
   const tax = classifyClient({ type, model, os }, endpoint ?? null);
   return (
-    <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+    <span className="nt-badge-row">
       <Badge tone={tax.typeTone}>{tax.effectiveCategory}</Badge>
       {!compact && tax.osFamily ? <Badge tone="neutral">{tax.osFamily}</Badge> : null}
       {!compact && tax.categoryConfidence === 'profiled' ? <Badge tone="success">PROFILED</Badge> : null}

@@ -93,6 +93,35 @@ describe('InventoryTree', () => {
     );
   });
 
+  it('seeds expanded branches from expandedIds and reports toggles', async () => {
+    const onExpandedChange = vi.fn();
+    mockGetInventoryTree.mockImplementation(async (options = {}) => {
+      const { parent } = options;
+      if (!parent) return page(null, [ROOT]);
+      if (parent === ROOT.id) return page(ROOT.id, [CENTRAL]);
+      if (parent === CENTRAL.id) return page(CENTRAL.id, [DEVICES]);
+      return page(parent ?? null, []);
+    });
+
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <InventoryTree expandedIds={[ROOT.id, CENTRAL.id]} onExpandedChange={onExpandedChange} />
+      </MemoryRouter>,
+    );
+
+    // Shared expand set opens both levels without a manual click.
+    expect(await screen.findByText('Devices')).toBeTruthy();
+    expect(mockGetInventoryTree).toHaveBeenCalledWith(
+      expect.objectContaining({ parent: CENTRAL.id }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse HPE Aruba Central' }));
+    await waitFor(() => expect(onExpandedChange).toHaveBeenCalled());
+    const last = onExpandedChange.mock.calls.at(-1)?.[0] as string[];
+    expect(last).toContain(ROOT.id);
+    expect(last).not.toContain(CENTRAL.id);
+  });
+
   /* A branch that shrinks under a half-paged read answers Load More with no
    * rows and no next cursor — the same answer as the genuine last page. The
    * button then simply disappeared, which reads as "those were all of them"

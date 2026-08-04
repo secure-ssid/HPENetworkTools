@@ -36,7 +36,7 @@ import {
   FormField,
   Input,
   SectionHeader,
-  Spinner,
+  Skeleton,
   useToast,
 } from '../../nightdesk';
 import { apiFetch, isApiError, type ApiResult } from '../../api/client';
@@ -47,7 +47,6 @@ import type {
   MistWebhookRegistrationStatus,
 } from '@hpe/shared';
 import { AuditLogSection, getMistAuditLog, getMistRegistration, stampLabel } from '../mist/audit';
-import { noteStyle } from '../mist/style';
 import { useLabConfigMode } from '../../hooks/useLabConfigMode';
 
 async function postMistRegistration(form: {
@@ -163,33 +162,36 @@ export function MistSection() {
   const delivering = status?.lastReceivedAt ?? null;
 
   return (
-    <div className="nt-stack nt-gap-18">
+    <div className="nt-systems-section nt-section-panel nt-stack nt-gap-18">
       <div className="nt-stack nt-gap-10">
         <SectionHeader
           label="Webhook receiver"
           meta={status?.demo === true ? 'DEMO FIXTURE' : registered ? 'REGISTERED' : 'NOT REGISTERED'}
         />
         {statusError !== null ? (
-          <div style={noteStyle}>The registration status could not be read — {statusError}</div>
+          <div className="nt-service-note">The registration status could not be read — {statusError}</div>
         ) : status === null ? (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
-            <Spinner size="sm" />
+          <div className="nt-center-pad-24">
+            <div role="status" aria-label="NightDesk · loading Mist org" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
+              <Skeleton height={12} width="30%" />
+              <Skeleton height={28} />
+            </div>
           </div>
         ) : (
           <>
             {status.error ? (
-              <div style={noteStyle}>{status.error}</div>
+              <div className="nt-service-note">{status.error}</div>
             ) : (
               <div className="nt-stack nt-gap-6">
                 {status.subscriptions.map((s) => (
                   <div
                     key={s.id}
-                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}
+                    className="nt-row-center nt-gap-10 nt-pad-6-0"
                   >
                     <Badge tone={s.enabled === true ? 'success' : 'neutral'} dot>
                       {s.enabled === true ? 'enabled' : s.enabled === false ? 'disabled' : 'unknown'}
                     </Badge>
-                    <span style={{ flex: 1, minWidth: 0, ...noteStyle, fontSize: 'var(--nd-text-10)' }}>
+                    <span className="nt-flex-1 nt-service-note nt-fs-10">
                       {s.url ?? 'url not reported'}
                       {` · ${countOf(s.topics.length, 'topic')}`}
                       {s.secretConfigured === true ? ' · signed' : ''}
@@ -197,11 +199,11 @@ export function MistSection() {
                   </div>
                 ))}
                 {status.subscriptions.length === 0 ? (
-                  <div style={noteStyle}>
+                  <div className="nt-service-note">
                     {status.note ?? 'No org webhook subscription points at this receiver yet.'}
                   </div>
                 ) : null}
-                <div style={{ ...noteStyle, fontSize: 10.5 }}>
+                <div className="nt-service-note nt-fs-105 nt-hint-muted">
                   {delivering
                     ? `last delivery accepted ${stampLabel(delivering)}`
                     : 'no delivery accepted yet — registered is not delivering'}
@@ -209,7 +211,7 @@ export function MistSection() {
               </div>
             )}
             {(status.linked || status.demo === true) && canWrite ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 6 }}>
+              <div className="nt-stack-10-pt6">
                 <FormField
                   label="Receiver URL"
                   help="the public URL Mist should POST to — must end with /api/hooks/mist"
@@ -244,7 +246,7 @@ export function MistSection() {
                     {result.message}
                   </Alert>
                 ) : null}
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <div className="nt-row nt-gap-8 nt-flex-wrap">
                   <Button
                     variant="primary"
                     size="sm"
@@ -259,8 +261,8 @@ export function MistSection() {
                 </div>
               </div>
             ) : status.linked ? (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8, paddingTop: 6 }}>
-                <div style={noteStyle}>
+              <div className="nt-stack-start-8-pt6">
+                <div className="nt-service-note">
                   This linked Mist plane has a read-only connector grant. Registration status can still be verified,
                   but subscription mutation controls are hidden.
                 </div>

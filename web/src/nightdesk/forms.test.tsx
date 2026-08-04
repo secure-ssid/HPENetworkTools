@@ -20,7 +20,7 @@ describe('Button', () => {
   it('composes the base class with the variant and size, defaulting to secondary/md', () => {
     render(<Button>Save</Button>);
     const btn = screen.getByRole('button', { name: 'Save' });
-    expect(btn.className.split(' ')).toEqual(['nd-btn', 'nd-btn--secondary', 'nd-btn--md']);
+    expect(btn.className.split(' ')).toEqual(['nd-btn', 'nd-btn--secondary', 'nd-btn--md', 'nt-btn']);
   });
 
   it.each([
@@ -42,7 +42,7 @@ describe('Button', () => {
       </Button>,
     );
     const btn = screen.getByRole('button', { name: 'Retire plane' });
-    expect(btn.className.split(' ')).toEqual(['nd-btn', 'nd-btn--danger', 'nd-btn--sm']);
+    expect(btn.className.split(' ')).toEqual(['nd-btn', 'nd-btn--danger', 'nd-btn--sm', 'nt-btn']);
     expect(btn.getAttribute('style')).toBeNull();
   });
 
@@ -99,14 +99,14 @@ describe('Input / Textarea', () => {
   it('maps size and mono onto classes and keeps size off the DOM attribute', () => {
     render(<Input size="sm" mono aria-label="Endpoint" defaultValue="apigw" />);
     const input = screen.getByLabelText('Endpoint');
-    expect(input.className.split(' ')).toEqual(['nd-input', 'nd-input--sm', 'nd-input--mono']);
+    expect(input.className.split(' ')).toEqual(['nd-input', 'nd-input--sm', 'nd-input--mono', 'nt-field']);
     // `size` is a nightdesk scale token, not the HTML character-width attribute.
     expect(input.hasAttribute('size')).toBe(false);
   });
 
   it('omits the mono class when not asked for and defaults to md', () => {
     render(<Input aria-label="Site" />);
-    expect(screen.getByLabelText('Site').className.split(' ')).toEqual(['nd-input', 'nd-input--md']);
+    expect(screen.getByLabelText('Site').className.split(' ')).toEqual(['nd-input', 'nd-input--md', 'nt-field']);
   });
 
   it('renders a masked credential value verbatim without unmasking it', () => {
@@ -127,6 +127,8 @@ describe('Input / Textarea', () => {
     expect(screen.getByLabelText('Config').className.split(' ')).toEqual([
       'nd-textarea',
       'nd-textarea--mono',
+      'nt-field',
+      'nt-field--area',
     ]);
   });
 });
@@ -168,7 +170,9 @@ describe('Select', () => {
   it('keeps the size token on the inner select and the caller class on the wrapper', () => {
     const { container } = render(<Select aria-label="Plane" size="sm" className="wide" options={[]} />);
     expect(container.querySelector('.nd-select-wrap')?.className).toContain('wide');
-    expect(screen.getByLabelText('Plane').className).toBe('nd-select nd-select--sm');
+    expect(screen.getByLabelText('Plane').className).toContain('nd-select');
+    expect(screen.getByLabelText('Plane').className).toContain('nd-select--sm');
+    expect(screen.getByLabelText('Plane').className).toContain('nt-field');
   });
 });
 

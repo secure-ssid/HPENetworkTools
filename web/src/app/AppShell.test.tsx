@@ -10,12 +10,13 @@
  * The api client module is mocked at the boundary — no real fetch ever runs.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { AppShellLayout } from './AppShell';
+import { AppShellLayout, THEME_STORAGE_KEY, applyShellTheme, readShellTheme, writeShellTheme } from './AppShell';
 import { noteBackendReachable, resetBackendReachability } from '../api/core';
 import { SettingsProvider } from './SettingsContext';
+import { ToastProvider } from '../nightdesk';
 
 // ---------------------------------------------------------------------------
 // Module-boundary mock: no network. Only the members the shell subtree
@@ -40,6 +41,16 @@ vi.mock('../api/client', () => ({
     pollIntervalSec: 60,
   }),
   getSystemsState: vi.fn().mockResolvedValue(null), // backend absent → fixture label
+  getOverview: vi.fn().mockResolvedValue({
+    dataSource: 'demo',
+    alerts: [],
+    sites: [],
+    planes: [],
+    changes: [],
+    launchpad: [],
+    stats: [],
+    syncedAt: null,
+  }),
   getSearchIndex: vi.fn().mockResolvedValue({ entries: [], dataSource: 'demo' }),
   getInventoryTree: vi.fn().mockResolvedValue({
     parentId: null,
@@ -69,12 +80,19 @@ afterEach(() => {
   resetBackendReachability();
   mockCenter.getNotificationCenter.mockReset().mockResolvedValue({ entries: [], unread: 0 });
   mockCenter.markNotificationCenterRead.mockReset().mockResolvedValue({ unread: 0 });
+  try {
+    window.localStorage?.removeItem?.(THEME_STORAGE_KEY);
+    document.documentElement.removeAttribute('data-nd-theme');
+  } catch {
+    /* ignore */
+  }
 });
 
 /** Renders the shell at a site drill-down route, with a stub content outlet. */
 function renderShellAtSite(path: string) {
   return render(
     <SettingsProvider>
+      <ToastProvider>
       <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
           <Route element={<AppShellLayout />}>
@@ -82,6 +100,7 @@ function renderShellAtSite(path: string) {
           </Route>
         </Routes>
       </MemoryRouter>
+    </ToastProvider>
     </SettingsProvider>,
   );
 }
@@ -102,7 +121,7 @@ describe('AppShellLayout site-route breadcrumbs', () => {
     renderShellAtSite('/sites/foo%25');
 
     // The shell itself rendered (wordmark + breadcrumb nav + routed outlet).
-    expect(screen.getByText('NightDesk')).toBeTruthy();
+    expect(screen.getAllByText('NightDesk').length).toBeGreaterThan(0);
     expect(screen.getByText('site content stub')).toBeTruthy();
 
     const crumbs = screen.getByRole('navigation', { name: 'Breadcrumbs' });
@@ -132,6 +151,36 @@ describe('AppShellLayout site-route breadcrumbs', () => {
  * carries the correction because the substitution is global — the operator
  * could be on any screen when it happens.
  */
+describe('AppShellLayout platforms collapse', () => {
+  it('collapses Platforms by default and expands on toggle', async () => {
+    try {
+      window.localStorage?.setItem?.('hpe-nt.nav-platforms-open', '0');
+    } catch {
+      /* jsdom may stub storage */
+    }
+    render(
+      <SettingsProvider>
+        <ToastProvider>
+          <MemoryRouter
+            initialEntries={['/overview']}
+            future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+          >
+            <Routes>
+              <Route element={<AppShellLayout />}>
+                <Route path="/overview" element={<div>overview stub</div>} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </ToastProvider>
+      </SettingsProvider>,
+    );
+    // Collapsed: plane brand links hidden on overview (object-first nav).
+    expect(screen.queryByRole('button', { name: 'Central' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Platforms/i }));
+    expect(await screen.findByRole('button', { name: 'Central' })).toBeTruthy();
+  });
+});
+
 describe('AppShellLayout backend-unreachable banner', () => {
   it('says nothing while the backend is answering', () => {
     renderShellAtSite('/sites/campus-01');
@@ -182,6 +231,7 @@ describe('AppShellLayout notification bell', () => {
   function renderShellWithDevices(path = '/sites/campus-01') {
     return render(
       <SettingsProvider>
+      <ToastProvider>
         <MemoryRouter initialEntries={[path]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <Routes>
             <Route element={<AppShellLayout />}>
@@ -190,7 +240,8 @@ describe('AppShellLayout notification bell', () => {
             </Route>
           </Routes>
         </MemoryRouter>
-      </SettingsProvider>,
+      </ToastProvider>
+    </SettingsProvider>,
     );
   }
 
@@ -239,7 +290,7 @@ describe('AppShellLayout notification bell', () => {
 
     const bell = await screen.findByRole('button', { name: 'Notifications' });
     fireEvent.click(bell);
-    expect(await screen.findByText(/No notifications yet/)).toBeTruthy();
+    expect(await screen.findByText(/quiet|No notifications/i)).toBeTruthy();
   });
 
   it('marks an entry read on click-through and navigates to its url', async () => {
@@ -278,3 +329,52 @@ describe('AppShellLayout notification bell', () => {
     expect(await screen.findByText(/Notifications are unavailable/)).toBeTruthy();
   });
 });
+
+describe('Shell theme toggle (Loop 125)', () => {
+  const store = new Map<string, string>();
+
+  beforeEach(() => {
+    store.clear();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => store.clear(),
+    });
+    document.documentElement.removeAttribute('data-nd-theme');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.documentElement.removeAttribute('data-nd-theme');
+  });
+
+  it('read/write helpers default to dark and persist light', () => {
+    expect(readShellTheme()).toBe('dark');
+    writeShellTheme('light');
+    expect(store.get(THEME_STORAGE_KEY)).toBe('light');
+    expect(readShellTheme()).toBe('light');
+    expect(document.documentElement.getAttribute('data-nd-theme')).toBe('light');
+    writeShellTheme('dark');
+    expect(document.documentElement.hasAttribute('data-nd-theme')).toBe(false);
+  });
+
+  it('topbar button toggles light/dark on the document element', () => {
+    applyShellTheme('dark');
+    renderShellAtSite('/sites/campus-01');
+
+    const btn = screen.getByRole('button', { name: 'Switch to light theme' });
+    fireEvent.click(btn);
+    expect(document.documentElement.getAttribute('data-nd-theme')).toBe('light');
+    expect(store.get(THEME_STORAGE_KEY)).toBe('light');
+    expect(screen.getByRole('button', { name: 'Switch to dark theme' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to dark theme' }));
+    expect(document.documentElement.hasAttribute('data-nd-theme')).toBe(false);
+  });
+});
+

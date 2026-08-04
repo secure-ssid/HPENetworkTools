@@ -29,6 +29,7 @@ export function Modal({
   children,
   footer,
   width = 440,
+  className,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -37,6 +38,7 @@ export function Modal({
   children?: ReactNode;
   footer?: ReactNode;
   width?: number | string;
+  className?: string;
 }) {
   const titleId = useId();
   const descId = useId();
@@ -66,39 +68,39 @@ export function Modal({
   if (!open) return null;
 
   return createPortal(
-    <div className="nd-modal-root" role="presentation">
+    <div className="nd-modal-root nt-modal-root" role="presentation">
       <button
         type="button"
-        className="nd-modal__scrim"
+        className="nd-modal__scrim nt-modal__scrim"
         aria-label="Close dialog"
         onClick={() => onOpenChange(false)}
       />
       <div
         ref={panelRef}
-        className="nd-modal"
+        className={cx('nd-modal', 'nt-modal-panel', className)}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={description ? descId : undefined}
-        style={{ width }}
+        style={{ ['--nd-overlay-w' as string]: typeof width === 'number' ? `${width}px` : width }}
       >
-        <div className="nd-modal__header">
+        <div className="nd-modal__header nt-modal__header">
           <div>
-            <div id={titleId} className="nd-modal__title">
+            <div id={titleId} className="nd-modal__title nt-modal__title">
               {title}
             </div>
             {description ? (
-              <div id={descId} className="nd-modal__desc">
+              <div id={descId} className="nd-modal__desc nt-modal__desc">
                 {description}
               </div>
             ) : null}
           </div>
-          <button type="button" className="nd-modal__close" onClick={() => onOpenChange(false)} aria-label="Close">
+          <button type="button" className="nd-modal__close nt-modal__close" onClick={() => onOpenChange(false)} aria-label="Close">
             ×
           </button>
         </div>
-        {children ? <div className="nd-modal__body">{children}</div> : null}
-        {footer ? <div className="nd-modal__footer">{footer}</div> : null}
+        {children ? <div className="nd-modal__body nt-modal__body">{children}</div> : null}
+        {footer ? <div className="nd-modal__footer nt-modal__footer">{footer}</div> : null}
       </div>
     </div>,
     document.body,
@@ -132,6 +134,7 @@ export function ConfirmDialog({
       onOpenChange={onOpenChange}
       title={title}
       description={description}
+      className="nd-modal--write-ritual nd-modal--confirm nt-write-ritual nt-modal-panel"
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={busy}>
@@ -149,7 +152,9 @@ export function ConfirmDialog({
           </Button>
         </>
       }
-    />
+    >
+      <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
+    </Modal>
   );
 }
 
@@ -168,7 +173,7 @@ export function Tooltip({
   const id = useId();
   return (
     <span
-      className="nd-tooltip"
+      className="nd-tooltip nt-tooltip"
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
@@ -176,7 +181,7 @@ export function Tooltip({
     >
       <span aria-describedby={open ? id : undefined}>{children}</span>
       {open ? (
-        <span role="tooltip" id={id} className={cx('nd-tooltip__bubble', `nd-tooltip__bubble--${side}`)}>
+        <span role="tooltip" id={id} className={cx('nd-tooltip__bubble', `nd-tooltip__bubble--${side}`, 'nt-tooltip__bubble')}>
           {content}
         </span>
       ) : null}
@@ -220,7 +225,7 @@ export function Tabs({
   const ctx = useMemo(() => ({ value: current, setValue, idBase }), [current, setValue, idBase]);
   return (
     <TabsContext.Provider value={ctx}>
-      <div className={cx('nd-tabs', className)}>{children}</div>
+      <div className={cx('nd-tabs', 'nt-tabs', className)}>{children}</div>
     </TabsContext.Provider>
   );
 }
@@ -245,7 +250,8 @@ export function TabsTrigger({ value, children }: { value: string; children: Reac
       aria-selected={selected}
       aria-controls={`${ctx.idBase}-panel-${value}`}
       tabIndex={selected ? 0 : -1}
-      className={cx('nd-tabs__trigger', selected && 'nd-tabs__trigger--active')}
+      className={cx('nd-tabs__trigger', 'nd-tabs__tab', 'nt-tabs__trigger', selected && 'nd-tabs__trigger--active', selected && 'nt-tabs__trigger--active')}
+      data-active={selected ? 'true' : 'false'}
       onClick={() => ctx.setValue(value)}
     >
       {children}
@@ -305,9 +311,9 @@ export function Menu({
   }, [open, onOpenChange]);
 
   return (
-    <div ref={rootRef} className="nd-menu">
+    <div ref={rootRef} className="nd-menu nt-menu">
       <div
-        className="nd-menu__trigger"
+        className="nd-menu__trigger nt-menu__trigger"
         onClick={() => onOpenChange(!open)}
         onKeyDown={(e: ReactKeyboardEvent) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -321,8 +327,8 @@ export function Menu({
       {open ? (
         <div
           role="menu"
-          className={cx('nd-menu__panel', align === 'start' ? 'nd-menu__panel--start' : 'nd-menu__panel--end')}
-          style={{ width } satisfies CSSProperties}
+          className={cx('nd-menu__panel', 'nd-menu', 'nt-menu__panel', 'nt-panel-glass', align === 'start' ? 'nd-menu__panel--start' : 'nd-menu__panel--end')}
+          style={{ ['--nd-overlay-w' as string]: typeof width === 'number' ? `${width}px` : `${width}` } satisfies CSSProperties}
         >
           {children}
         </div>
@@ -346,7 +352,7 @@ export function MenuItem({
     <button
       type="button"
       role="menuitem"
-      className={cx('nd-menu__item', danger && 'nd-menu__item--danger')}
+      className={cx('nd-menu__item', 'nt-menu__item', danger && 'nd-menu__item--danger')}
       disabled={disabled}
       onClick={() => onSelect?.()}
     >
@@ -356,7 +362,7 @@ export function MenuItem({
 }
 
 export function MenuSeparator() {
-  return <div className="nd-menu__sep" role="separator" />;
+  return <div className="nd-menu__sep nt-menu__sep" role="separator" />;
 }
 
 /* ---------- Popover anchor helper for measured tooltips ---------- */

@@ -13,11 +13,31 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { SectionHeader, Select, Spinner } from '../../nightdesk';
+import { Button, SectionHeader, Select, Skeleton, useToast } from '../../nightdesk';
 import { getSiteApplications, type SiteApplicationsResult } from '../../api/client';
 import { countOf, detailHasRows, detailState } from '@hpe/shared';
 import type { CentralSiteRow } from '@hpe/shared';
+import { exportTableCsv } from '../../lib/csv';
 import { DpiApplicationsBody, dpiSectionNote } from './dpi';
+
+const APP_CSV_HEADERS = [
+  'siteId',
+  'name',
+  'id',
+  'risk',
+  'riskRaw',
+  'state',
+  'rxBytes',
+  'txBytes',
+  'totalBytes',
+  'categories',
+  'applicationHostType',
+  'destLocation',
+  'experience',
+  'lastUsedAt',
+  'tlsVersion',
+  'certificateExpiryAt',
+] as const;
 
 export function ApplicationsSection({
   sites,
@@ -29,6 +49,7 @@ export function ApplicationsSection({
    *  name a site to read, and says so instead of guessing one. */
   sitesReported: boolean;
 }) {
+  const { toast } = useToast();
   const options = useMemo(
     () => sites.map((s) => ({ value: s.siteId, label: s.siteName })),
     [sites],
@@ -66,6 +87,9 @@ export function ApplicationsSection({
 
   const appsState =
     result?.kind === 'ok' ? detailState(result.applications.source, 'apps') : null;
+  const hasTable =
+    result?.kind === 'ok' &&
+    detailHasRows(result.applications.source, 'apps', result.applications.apps);
   const meta =
     options.length === 0
       ? sitesReported
@@ -81,9 +105,64 @@ export function ApplicationsSection({
               ? `${countOf(result.applications.apps?.length ?? 0, 'APP').toUpperCase()} · CENTRAL DPI`
               : (appsState ?? '').toUpperCase().replace('-', ' ');
 
+  const copySectionLink = () => {
+    const url = `${window.location.origin}/central?section=applications#applications`;
+    void navigator.clipboard.writeText(url).then(
+      () =>
+        toast('Applications section link copied', {
+          description: 'section=applications',
+          tone: 'success',
+        }),
+      () => toast('Could not copy link', { description: url, tone: 'warning' }),
+    );
+  };
+
+  const exportCsv = () => {
+    if (!hasTable || result?.kind !== 'ok' || selected === null) return;
+    const apps = result.applications.apps ?? [];
+    const n = exportTableCsv(
+      `central-applications-${selected}.csv`,
+      [...APP_CSV_HEADERS],
+      apps.map((a) => [
+        selected,
+        a.name,
+        a.id,
+        a.risk,
+        a.riskRaw ?? '',
+        a.state ?? '',
+        a.rxBytes ?? '',
+        a.txBytes ?? '',
+        a.totalBytes ?? '',
+        a.categories.join(';'),
+        a.applicationHostType ?? '',
+        a.destLocation.join(';'),
+        a.experience ?? '',
+        a.lastUsedAt ?? '',
+        a.tlsVersion ?? '',
+        a.certificateExpiryAt ?? '',
+      ]),
+    );
+    toast(`Exported ${n} app${n === 1 ? '' : 's'}`, {
+      description: 'Client-side CSV of the loaded DPI table for the selected site.',
+    });
+  };
+
   return (
-    <div className="nt-stack nt-gap-10">
-      <SectionHeader label="Application visibility" meta={meta} />
+    <div id="central-section-applications" className="nt-stack nt-gap-10 nt-central-section nt-section-panel">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Central DPI theater · app visibility</div>
+      <div className="nt-row-between-12">
+        <SectionHeader label="Application visibility" meta={meta} />
+        <div className="nt-wrap-6">
+          <Button variant="ghost" size="sm" onClick={copySectionLink}>
+            Copy section link
+          </Button>
+          {hasTable ? (
+            <Button variant="ghost" size="sm" onClick={exportCsv}>
+              Export CSV
+            </Button>
+          ) : null}
+        </div>
+      </div>
       {options.length === 0 && !sitesReported ? (
         <div className="nt-service-note">
           Central did not report its site list this cycle, so no site can be named for the DPI
@@ -107,8 +186,11 @@ export function ApplicationsSection({
             />
           </div>
           {result === null ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
-              <Spinner size="sm" />
+            <div className="nt-center-pad-24">
+              <div role="status" aria-label="NightDesk · loading applications" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
+                <Skeleton height={12} width="30%" />
+                <Skeleton height={28} />
+              </div>
             </div>
           ) : result.kind === 'not-reported' ? (
             <div className="nt-service-note">

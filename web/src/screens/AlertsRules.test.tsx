@@ -17,7 +17,11 @@
  *      as the tri-state clear (null), not silently kept;
  *  (e) the enabled switch PUTs {enabled} and the list re-reads;
  *  (f) delete goes through the confirm drawer — Cancel deletes nothing,
- *      Delete rule issues the DELETE and the list re-reads.
+ *      Delete rule issues the DELETE and the list re-reads;
+ *  (g) Export CSV dumps the visible rules client-side;
+ *  (h) Copy policy link writes `?tab=policy`, and that deep-link opens Policy;
+ *  (i) Download server CSV hits /api/alert-rules/export when reachable;
+ *  (j) Download server CSV is hidden on the demo-rule fallback.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,6 +34,19 @@ import { getAlerts } from '../api/client';
 import { resetBackendReachability } from '../api/core';
 import type { AlertsData } from '../api/client';
 import type { AlertRow, DeviceDownRule, DeviceDownRuleInput } from '@hpe/shared';
+import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
+
+vi.mock('../lib/csv', () => ({
+  exportTableCsv: vi.fn((_filename: string, _headers: string[], rows: Array<Array<unknown>>) => rows.length),
+}));
+
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
+const mockExportTableCsv = vi.mocked(exportTableCsv);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -174,9 +191,9 @@ function liveData(over: Partial<AlertsData> = {}): AlertsData {
   return { alerts: [AP_ROW], syncedAt: null, dataSource: 'live', ...over };
 }
 
-function renderAlerts() {
+function renderAlerts(initialPath = '/alerts') {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[initialPath]}>
       <ToastProvider>
         <SettingsProvider>
           <Alerts />
@@ -202,6 +219,8 @@ function rulesSection() {
 beforeEach(() => {
   mockGetAlerts.mockReset();
   fetchMock.mockReset();
+  mockExportTableCsv.mockClear();
+  mockDownloadApiCsv.mockReset();
 });
 
 afterEach(() => {
@@ -385,5 +404,81 @@ describe('the device-down rules section', () => {
     expect(
       await screen.findByText(/No device-down rules — a device that stops reporting raises nothing/),
     ).toBeTruthy();
+  });
+
+  it('(g) Export CSV dumps the visible rules client-side', async () => {
+    stubFetch([RULE_AP, RULE_ALL]);
+    mockGetAlerts.mockResolvedValue(liveData());
+    renderAlerts();
+    await goToPolicyTab();
+
+    fireEvent.click(await rulesSection().findByRole('button', { name: 'Export CSV' }));
+    expect(mockExportTableCsv).toHaveBeenCalledTimes(1);
+    const [filename, headers, rows] = mockExportTableCsv.mock.calls[0]!;
+    expect(filename).toBe('device-down-rules.csv');
+    expect(headers).toEqual([
+      'id',
+      'enabled',
+      'siteFilter',
+      'deviceTypeFilter',
+      'offlineMinutes',
+      'cooldownMinutes',
+      'createdAt',
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual(['arl-ap1', 'true', 'Campus-01 HQ', 'ap', 10, 120, RULE_AP.createdAt]);
+    expect(await screen.findByText(/Exported 2 rules/)).toBeTruthy();
+  });
+
+  it('(h) Copy policy link writes ?tab=policy, and that deep-link opens Policy', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    stubFetch([RULE_AP]);
+    mockGetAlerts.mockResolvedValue(liveData());
+    renderAlerts();
+    await goToPolicyTab();
+
+    fireEvent.click(await rulesSection().findByRole('button', { name: 'Copy policy link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/[?&]tab=policy(?:&|$)/);
+    expect(screen.getByText(/Policy link copied/i)).toBeTruthy();
+
+    cleanup();
+    stubFetch([RULE_AP]);
+    mockGetAlerts.mockResolvedValue(liveData());
+    renderAlerts('/alerts?tab=policy');
+    // Deep-link opens Policy content without clicking the tab.
+    expect(await screen.findByText('DEVICE-DOWN RULES (1)')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Policy' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('(i) Download server CSV hits /api/alert-rules/export when the backend is reachable (Loop 80)', async () => {
+    stubFetch([RULE_AP]);
+    mockGetAlerts.mockResolvedValue(liveData());
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderAlerts();
+    await goToPolicyTab();
+
+    fireEvent.click(await rulesSection().findByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/alert-rules/export',
+        'device-down-rules.csv',
+      ),
+    );
+    expect(await screen.findByText(/Server CSV downloaded/i)).toBeTruthy();
+  });
+
+  it('(j) hides Download server CSV when falling back to the demo rule', async () => {
+    stubFetch('reject');
+    mockGetAlerts.mockResolvedValue(liveData());
+    renderAlerts();
+    await goToPolicyTab();
+    expect(await screen.findByText(/demo fixture — the backend is unreachable/)).toBeTruthy();
+    expect(rulesSection().queryByRole('button', { name: 'Download server CSV' })).toBeNull();
   });
 });

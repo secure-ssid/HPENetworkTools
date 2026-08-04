@@ -12,6 +12,15 @@
  * the change is STAGED (not applied) and a dedicated retry-commit action is
  * offered instead of replaying the write.
  *
+ * Share/export polish: `sseKind`/`sseQ` query params, Copy view link (Systems
+ * deep-link), client Export CSV of the filtered summary rows, and server
+ * Download CSV via GET /api/sse/objects/:kind/export — never vendor `raw`.
+ * Multi-select raises **Export selected**, **Copy IDs** (unique newline-joined
+ * object ids), **Copy selection link** (`?sseIds=` of marked ids with kind/q;
+ * clearable chip while active — Loop 183), and Clear. Toolbar
+ * `KeyboardShortcuts` surfaces the object inventory grid map (Loop 201).
+ * Filtered empties offer **Clear selection filter** / **Clear search**.
+ *
  * `canWrite` is the plane's declared write scope (PlaneCapabilities.
  * directWrite, read off GET /api/systems/state) — every mutating control is
  * hidden without it, never merely disabled-and-clickable, and a builtIn
@@ -19,21 +28,25 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   ConfirmDialog,
   Badge,
   Button,
   Checkbox,
+  DataTable,
+  DATATABLE_ROW_SHORTCUTS,
   Drawer,
   EmptyState,
   FormField,
   Input,
+  KeyboardShortcuts,
   SectionHeader,
   Select,
-  Spinner,
-  Table,
+  Skeleton,
   Textarea,
   useToast,
+  type DataTableColumn,
 } from '../nightdesk';
 import {
   cleanupSseManualReconciliation,
@@ -46,8 +59,13 @@ import {
   updateSseObject,
   type SseKindListing,
 } from '../api/client';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
+import { namesFilterForParam } from '../app/nav';
 import { useLabConfigMode } from '../hooks/useLabConfigMode';
+import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import {
+  countOf,
   SSE_OBJECT_KINDS,
   SSE_OBJECT_KIND_LABELS,
   type SseCacheRefreshOutcome,
@@ -59,6 +77,92 @@ import {
 } from '@hpe/shared';
 
 const KIND_OPTIONS = SSE_OBJECT_KINDS.map((k) => ({ value: k, label: SSE_OBJECT_KIND_LABELS[k] }));
+
+const SSE_CSV_HEADERS = ['kind', 'id', 'name', 'description', 'enabled', 'builtIn', 'detail'] as const;
+
+function parseSseKindParam(raw: string | null, fallback: SseObjectKind): SseObjectKind {
+  if (raw && (SSE_OBJECT_KINDS as readonly string[]).includes(raw)) return raw as SseObjectKind;
+  return fallback;
+}
+
+/** Shareable Systems deep-link with the current kind/search filters. */
+function buildSseViewLink(kind: SseObjectKind, q: string, ids?: readonly string[]): string {
+  const next = new URLSearchParams();
+  next.set('plane', 'sse');
+  next.set('sseKind', kind);
+  if (q.trim()) next.set('sseQ', q.trim());
+  if (ids && ids.length > 0) next.set('sseIds', ids.join('\n'));
+  return `${window.location.origin}/systems?${next.toString()}`;
+}
+
+function sseSummaryCsvRows(rows: SseObjectSummary[]): Array<Array<unknown>> {
+  return rows.map((r) => [
+    r.kind,
+    r.id,
+    r.name,
+    r.description ?? '',
+    r.enabled === undefined ? '' : r.enabled ? 'true' : 'false',
+    r.builtIn === true ? 'true' : r.builtIn === false ? 'false' : '',
+    r.detail ?? '',
+  ]);
+}
+
+function sseInventoryColumns(opts: {
+  canWrite: boolean;
+  onEdit: (row: SseObjectSummary) => void;
+  onDelete: (row: SseObjectSummary) => void;
+}): Array<DataTableColumn<SseObjectSummary>> {
+  const { canWrite, onEdit, onDelete } = opts;
+  return [
+    {
+      key: 'name',
+      title: 'Name',
+      hideable: false,
+      sortValue: (row) => row.name,
+      render: (row) => row.name,
+    },
+    {
+      key: 'detail',
+      title: 'Detail',
+      sortValue: (row) => row.detail ?? row.description ?? '',
+      render: (row) => row.detail ?? row.description ?? '—',
+    },
+    {
+      key: 'state',
+      title: 'State',
+      sortValue: (row) => (row.builtIn ? 'built-in' : row.enabled === false ? 'disabled' : 'enabled'),
+      render: (row) =>
+        row.builtIn ? (
+          <Badge tone="neutral">built-in</Badge>
+        ) : row.enabled === false ? (
+          <Badge tone="warning">disabled</Badge>
+        ) : (
+          <Badge tone="success">enabled</Badge>
+        ),
+    },
+    {
+      key: 'actions',
+      title: 'Actions',
+      numeric: true,
+      render: (row) =>
+        !row.builtIn && canWrite ? (
+          <div className="nt-end-gap-6">
+            <Button size="sm" variant="ghost" onClick={() => onEdit(row)}>
+              Edit
+            </Button>
+            <Button size="sm" variant="danger" onClick={() => onDelete(row)}>
+              Delete
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" variant="ghost" onClick={() => onEdit(row)}>
+            View
+          </Button>
+        ),
+    },
+  ];
+}
+
 const TENANT_WIDE_RECOVERY_WARNING =
   'Recovery may need a tenant-wide Commit that can apply other changes already staged on this SSE tenant.';
 /**
@@ -196,13 +300,21 @@ export function SseInventoryPanel({
 }: SseInventoryPanelProps) {
   const { toast } = useToast();
   const { lab } = useLabConfigMode();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [pendingDelete, setPendingDelete] = useState<null | { row: SseObjectSummary; rowKind: SseObjectKind; query: string }>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
-  const [kind, setKind] = useState<SseObjectKind>(initialKind);
-  const [q, setQ] = useState('');
+  const seededKind = parseSseKindParam(searchParams.get('sseKind'), initialKind);
+  const seededQuery = searchParams.get('sseQ') ?? '';
+  const [kind, setKind] = useState<SseObjectKind>(seededKind);
+  const [q, setQ] = useState(seededQuery);
+  /* Keyboard multi-select (x toggles focused row) raises Export selected /
+   * Copy IDs / Copy selection link. */
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  /* Deep link: /systems?plane=sse&sseIds=a\nb (bulk Copy selection link). */
+  const idsFilter = namesFilterForParam(searchParams.get('sseIds'));
   const [listingState, setListingState] = useState<ListingState>({
-    kind: initialKind,
-    query: '',
+    kind: seededKind,
+    query: seededQuery,
     listing: null,
     loading: true,
   });
@@ -309,7 +421,23 @@ export function SseInventoryPanel({
     void getSseInventory();
   }, []);
 
+  const syncFilterParams = (nextKind: SseObjectKind, nextQuery: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('sseKind', nextKind);
+    if (nextQuery.trim()) next.set('sseQ', nextQuery.trim());
+    else next.delete('sseQ');
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  };
+
+  const selectKind = (nextKind: SseObjectKind) => {
+    setKind(nextKind);
+    syncFilterParams(nextKind, q);
+  };
+
   const search = async () => {
+    syncFilterParams(kind, q);
     await load(kind, q);
   };
 
@@ -624,11 +752,74 @@ export function SseInventoryPanel({
 
   const listing = listingState.kind === kind ? listingState.listing : null;
   const loading = listingState.kind !== kind || listingState.loading;
-  const rows = useMemo(() => listing?.rows ?? [], [listing]);
+  const allRows = useMemo(() => listing?.rows ?? [], [listing]);
+  const rows = useMemo(() => {
+    if (idsFilter === null) return allRows;
+    return allRows.filter((r) => idsFilter.includes(r.id));
+  }, [allRows, idsFilter]);
+  const idsPresent =
+    idsFilter === null ? 0 : idsFilter.filter((id) => allRows.some((r) => r.id === id)).length;
+  /* Drop bulk marks that left the filtered list (kind/search change). */
+  const [prevRowKeys, setPrevRowKeys] = useState<string>('');
+  const rowKeySig = allRows.map((r) => r.id).join('\n');
+  if (prevRowKeys !== rowKeySig) {
+    setPrevRowKeys(rowKeySig);
+    const keep = new Set(allRows.map((r) => r.id));
+    const pruned = selectedKeys.filter((k) => keep.has(k));
+    if (pruned.length !== selectedKeys.length) setSelectedKeys(pruned);
+  }
   const failure = readFailure(SSE_OBJECT_KIND_LABELS[kind], listing);
 
+  const exportFilteredCsv = () => {
+    const n = exportTableCsv(`sse-${kind}.csv`, [...SSE_CSV_HEADERS], sseSummaryCsvRows(rows));
+    toast(n === 0 ? 'No results to export' : `Exported ${n} object${n === 1 ? '' : 's'}`, {
+      description:
+        n === 0
+          ? 'The current filtered list is empty.'
+          : `sse-${kind}.csv — summary fields for rows currently in view (no raw bodies).`,
+      tone: n === 0 ? 'warning' : 'success',
+    });
+  };
+
+  const downloadServerCsv = () => {
+    void (async () => {
+      const qs = q.trim() ? `?q=${encodeURIComponent(q.trim())}` : '';
+      const res = await downloadApiCsv(
+        `/api/sse/objects/${encodeURIComponent(kind)}/export${qs}`,
+        `sse-${kind}.csv`,
+      );
+      if (res.ok) {
+        toast('Server CSV downloaded', {
+          description: `sse-${kind}.csv — cached inventory export (summary fields only).`,
+          tone: 'success',
+        });
+      } else {
+        toast('Server CSV failed', {
+          description: res.error ?? 'Could not download export',
+          tone: 'warning',
+        });
+      }
+    })();
+  };
+
+  const copyViewLink = () => {
+    void (async () => {
+      const url = buildSseViewLink(kind, q);
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('View link copied', {
+          description: [kind, q.trim() ? `q=${q.trim()}` : null].filter(Boolean).join(' · '),
+          tone: 'success',
+        });
+      } catch {
+        toast('Could not copy link', { description: url, tone: 'warning' });
+      }
+    })();
+  };
+
   return (
-    <div className="nt-stack nt-gap-12">
+    <div className="nt-stack nt-gap-12 nt-recon-reveal nt-sse-shell nt-section-panel">
+      <div className="nt-plane-theater" role="note">NightDesk · SSE inventory · brokered estate slice</div>
       <SectionHeader
         label="Object inventory"
         meta={
@@ -640,34 +831,27 @@ export function SseInventoryPanel({
         }
       />
 
+      <VisualReferencePanel
+        target={{ kind: 'connector', id: 'sse', plane: 'SSE' }}
+        editable={false}
+      />
+
       <div
-        style={{
-          padding: '10px 12px',
-          border: '1px solid var(--nd-warning)',
-          borderRadius: 6,
-          fontSize: 12.5,
-        }}
+        className="nt-warn-box"
       >
         <strong>Commit is tenant-wide.</strong> It may apply other changes already staged on this SSE tenant, not only
         the change being applied here.
       </div>
 
       {commitWarning ? (
-        <div style={{ color: 'var(--nd-warning)', fontSize: 12.5 }}>
+        <div className="nt-warn-text-125">
           <strong>Commit warning:</strong> {commitWarning}
         </div>
       ) : null}
 
       {cacheRefresh ? (
         <div
-          style={{
-            padding: '8px 10px',
-            border: `1px solid var(--nd-${
-              cacheRefresh.status === 'refreshed' && !mutationUnverified ? 'success' : 'warning'
-            })`,
-            borderRadius: 6,
-            fontSize: 12,
-          }}
+          className={cacheRefresh.status === 'refreshed' && !mutationUnverified ? 'nt-sse-banner nt-border-success' : 'nt-sse-banner nt-border-warning'}
         >
           <strong>
             Cached inventory {cacheRefresh.status === 'refreshed' ? 'refreshed' : cacheRefresh.status}.
@@ -688,16 +872,7 @@ export function SseInventoryPanel({
 
       {stagedNotice ? (
         <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'stretch',
-            gap: 8,
-            padding: '10px 12px',
-            border: '1px solid var(--nd-warning)',
-            borderRadius: 6,
-            fontSize: 12.5,
-          }}
+          className="nt-warn-box nt-stack-8"
         >
           <span>{stagedNotice}</span>
           {!lab ? <Checkbox
@@ -733,13 +908,13 @@ export function SseInventoryPanel({
         </div>
       ) : null}
 
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+      <div className="nt-end-wrap-10">
         <FormField label="Object kind">
           <Select
             size="sm"
             options={KIND_OPTIONS}
             value={kind}
-            onValueChange={(v) => setKind(v as SseObjectKind)}
+            onValueChange={(v) => selectKind(v as SseObjectKind)}
           />
         </FormField>
         <FormField label="Search">
@@ -756,80 +931,251 @@ export function SseInventoryPanel({
         <Button size="sm" variant="secondary" onClick={() => void search()}>
           Search
         </Button>
+        <Button size="sm" variant="ghost" onClick={copyViewLink}>
+          Copy view link
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={exportFilteredCsv}
+          disabled={loading || Boolean(failure)}
+        >
+          Export CSV
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={downloadServerCsv}
+          disabled={loading || Boolean(failure)}
+        >
+          Download server CSV
+        </Button>
         {canWrite ? (
           <Button size="sm" variant="primary" onClick={openCreate}>
             New {SSE_OBJECT_KIND_LABELS[kind].replace(/s$/, '')}
           </Button>
         ) : null}
+        {/* Object inventory multi-select is a keyboard grid (j/k/x/Esc) — surface the map (Loop 201). */}
+        <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
       </div>
 
+      {idsFilter !== null && !loading && !failure ? (
+        <div className="nt-chip-row" role="group" aria-label="Selection deep link">
+          <button
+            type="button"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete('sseIds');
+              setSearchParams(next, { replace: true });
+              setSelectedKeys([]);
+            }}
+            title={idsFilter.join(', ')}
+            className="nt-chip nt-chip--active"
+          >
+            {idsPresent === idsFilter.length
+              ? `${idsFilter.length} selected object${idsFilter.length === 1 ? '' : 's'}`
+              : `${idsPresent} of ${idsFilter.length} selected objects present`}
+            {' — clear'}
+          </button>
+        </div>
+      ) : null}
       {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
-          <Spinner size="sm" />
+        <div className="nt-center-pad-24" role="status" aria-label="Loading inventory">
+          <div className="nt-stack nt-gap-6">
+            <Skeleton height={12} width="34%" />
+            <Skeleton height={28} />
+            <Skeleton height={28} />
+            <Skeleton height={28} />
+          </div>
         </div>
       ) : failure ? (
         <EmptyState {...failure} />
       ) : rows.length === 0 ? (
-        <EmptyState title={`No ${SSE_OBJECT_KIND_LABELS[kind].toLowerCase()}`} description={q ? 'No rows match the search.' : 'The plane reports none of this kind.'} />
+        <EmptyState
+          title={
+            idsFilter !== null
+              ? 'No selected objects in this kind'
+              : `No ${SSE_OBJECT_KIND_LABELS[kind].toLowerCase()}`
+          }
+          description={
+            idsFilter !== null
+              ? 'Clear the selection chip to restore the full kind list.'
+              : q
+                ? 'No rows match the search.'
+                : 'The plane reports none of this kind.'
+          }
+        >
+          {idsFilter !== null ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.delete('sseIds');
+                setSearchParams(next, { replace: true });
+              }}
+            >
+              Clear selection filter
+            </Button>
+          ) : q ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setQ('');
+                const next = new URLSearchParams(searchParams);
+                next.delete('sseQ');
+                setSearchParams(next, { replace: true });
+              }}
+            >
+              Clear search
+            </Button>
+          ) : null}
+        </EmptyState>
       ) : (
-        <Table density="compact">
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Name</Table.HeaderCell>
-              <Table.HeaderCell>Detail</Table.HeaderCell>
-              <Table.HeaderCell>State</Table.HeaderCell>
-              <Table.HeaderCell />
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {rows.map((row) => (
-              <Table.Row key={row.id}>
-                <Table.Cell>{row.name}</Table.Cell>
-                <Table.Cell>{row.detail ?? row.description ?? '—'}</Table.Cell>
-                <Table.Cell>
-                  {row.builtIn ? (
-                    <Badge tone="neutral">built-in</Badge>
-                  ) : row.enabled === false ? (
-                    <Badge tone="warning">disabled</Badge>
-                  ) : (
-                    <Badge tone="success">enabled</Badge>
-                  )}
-                </Table.Cell>
-                <Table.Cell numeric>
-                  {!row.builtIn && canWrite ? (
-                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => void openEdit(row, listingState.kind, listingState.query)}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        onClick={() => void remove(row, listingState.kind, listingState.query)}
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void openEdit(row, listingState.kind, listingState.query)}
-                    >
-                      View
-                    </Button>
-                  )}
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <DataTable
+          ariaLabel={`${SSE_OBJECT_KIND_LABELS[kind]} inventory`}
+          density="compact"
+          columns={sseInventoryColumns({
+            canWrite,
+            onEdit: (row) => void openEdit(row, listingState.kind, listingState.query),
+            onDelete: (row) => void remove(row, listingState.kind, listingState.query),
+          })}
+          rows={rows}
+          rowKey={(row) => row.id}
+          selectedKeys={selectedKeys}
+          onSelectionChange={setSelectedKeys}
+        />
       )}
+      {selectedKeys.length > 0 ? (
+        <div
+          className="nt-configure-bulk-bar nt-bulk-glass"
+          role="region"
+          aria-label="SSE object selection actions"
+        >
+          <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
+          <span className="nt-configure-bulk-bar__hint">
+            export, copy ids, or share a selection link for only the objects you marked — full list export stays in the header
+          </span>
+          <span className="nt-configure-bulk-bar__actions">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const selected = new Set(selectedKeys);
+                const picked = rows.filter((r) => selected.has(r.id));
+                if (picked.length === 0) {
+                  toast('No selected objects still in view', {
+                    description: 'Clear selection or adjust filters.',
+                    tone: 'info',
+                  });
+                  return;
+                }
+                const n = exportTableCsv(
+                  `sse-${kind}-selected.csv`,
+                  [...SSE_CSV_HEADERS],
+                  sseSummaryCsvRows(picked),
+                );
+                toast(`Exported ${countOf(n, 'selected object')}`, {
+                  description: `sse-${kind}-selected.csv — summary fields only (no raw bodies).`,
+                  tone: 'success',
+                });
+              }}
+            >
+              Export selected
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = rows.filter((r) => selected.has(r.id));
+                  if (picked.length === 0) {
+                    toast('No selected objects still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const ids = [
+                    ...new Set(
+                      picked
+                        .map((r) => (r.id ?? '').trim())
+                        .filter((id) => id.length > 0),
+                    ),
+                  ];
+                  if (ids.length === 0) {
+                    toast('No ids on the selected objects', {
+                      description: 'Export CSV for names instead.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const text = ids.join('\n');
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    toast(`Copied ${countOf(ids.length, 'id')}`, {
+                      description:
+                        ids.length < picked.length
+                          ? `${picked.length - ids.length} selected without an id skipped`
+                          : 'newline-joined · paste into a ticket or change window',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy ids', { description: text, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy IDs
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const selected = new Set(selectedKeys);
+                  const picked = rows.filter((r) => selected.has(r.id));
+                  if (picked.length === 0) {
+                    toast('No selected objects still in view', {
+                      description: 'Clear selection or adjust filters.',
+                      tone: 'info',
+                    });
+                    return;
+                  }
+                  const ids = picked.map((r) => r.id);
+                  const url = buildSseViewLink(kind, q, ids);
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    /* Keep the share params in the address bar so the chip appears. */
+                    const next = new URLSearchParams(searchParams);
+                    next.set('plane', 'sse');
+                    next.set('sseKind', kind);
+                    if (q.trim()) next.set('sseQ', q.trim());
+                    else next.delete('sseQ');
+                    next.set('sseIds', ids.join('\n'));
+                    setSearchParams(next, { replace: true });
+                    toast('Selection link copied', {
+                      description: `${ids.length} object${ids.length === 1 ? '' : 's'} · sseIds=`,
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy selection link
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
+              Clear
+            </Button>
+          </span>
+        </div>
+      ) : null}
       {listing?.truncated ? (
-        <span style={{ fontSize: 11, color: 'var(--nd-text-muted)' }}>
+        <span className="nt-fs-11-muted">
           list truncated at the per-kind cap — refine the search to find a specific object
         </span>
       ) : null}
@@ -840,6 +1186,11 @@ export function SseInventoryPanel({
           if (!open) closeDrawer();
         }}
         width="md"
+        className={
+          drawerMode === 'create' || (drawerMode === 'edit' && canWrite && !drawerBuiltIn)
+            ? 'nd-drawer--write-ritual nt-write-ritual'
+            : undefined
+        }
         title={
           drawerMode === 'create'
             ? `New ${SSE_OBJECT_KIND_LABELS[activeDrawerKind]}`
@@ -851,9 +1202,16 @@ export function SseInventoryPanel({
             : `${lab ? 'This direct write applies immediately.' : 'Review the change before it applies.'} Commit is tenant-wide and may include other staged tenant changes; a failed commit stages this change for a safe retry.`
         }
       >
+        {drawerMode === 'create' || (drawerMode === 'edit' && canWrite && !drawerBuiltIn) ? (
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
+        ) : null}
         {drawerLoading ? (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 32 }}>
-            <Spinner size="sm" />
+          <div className="nt-center-pad-32" role="status" aria-label="Loading object">
+            <div className="nt-stack nt-gap-6">
+              <Skeleton height={12} width="40%" />
+              <Skeleton height={28} />
+              <Skeleton height={28} />
+            </div>
           </div>
         ) : (
           <div className="nt-stack nt-gap-14">
@@ -901,7 +1259,7 @@ export function SseInventoryPanel({
                 }}
               />
             </FormField>
-            {form.extraError ? <span style={{ color: 'var(--nd-danger)', fontSize: 12 }}>{form.extraError}</span> : null}
+            {form.extraError ? <span className="nt-danger-text-12">{form.extraError}</span> : null}
 
             {!drawerBuiltIn && canWrite ? (
               <>

@@ -11,9 +11,10 @@
  */
 
 import { Link } from 'react-router-dom';
-import { Badge, SectionHeader } from '../../nightdesk';
+import { Badge, Button, SectionHeader, useToast } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { AlertRow } from '@hpe/shared';
+import { exportTableCsv } from '../../lib/csv';
 
 /** How many rows the section shows before the remainder becomes the
  *  hand-off count — the queue itself always has the rest. */
@@ -26,6 +27,7 @@ export function AlertsSection({
   alerts: AlertRow[];
   alertsReported: boolean;
 }) {
+  const { toast } = useToast();
   const shown = alerts.slice(0, RECENT_LIMIT);
   const meta = !alertsReported
     ? 'NOT REPORTED'
@@ -33,9 +35,50 @@ export function AlertsSection({
       ? 'NONE ACTIVE'
       : `${countOf(alerts.length, 'ALERT').toUpperCase()} · CENTRAL`;
 
+  const copySectionLink = () => {
+    const url = `${window.location.origin}/central?section=alerts#alerts`;
+    void navigator.clipboard.writeText(url).then(
+      () => toast('Alerts section link copied', { description: 'section=alerts', tone: 'success' }),
+      () => toast('Could not copy link', { description: url, tone: 'warning' }),
+    );
+  };
+
+  const exportCsv = () => {
+    if (alerts.length === 0) return;
+    const n = exportTableCsv(
+      'central-alerts.csv',
+      ['sev', 'title', 'site', 'plane', 'age', 'device', 'state'],
+      alerts.map((a) => [
+        a.sev,
+        a.title,
+        a.siteName,
+        a.plane,
+        a.age,
+        a.device ?? '',
+        a.state ?? '',
+      ]),
+    );
+    toast(`Exported ${n} alert${n === 1 ? '' : 's'}`, {
+      description: 'central-alerts.csv — Central-cut queue on this screen.',
+    });
+  };
+
   return (
-    <div className="nt-stack nt-gap-2">
-      <SectionHeader label="Recent alerts" meta={meta} />
+    <div id="central-section-alerts" className="nt-stack nt-gap-2 nt-central-section nt-section-panel">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · Central alerts lane · severity owns hue</div>
+      <div className="nt-row-between-12">
+        <SectionHeader label="Recent alerts" meta={meta} />
+        <div className="nt-wrap-6">
+          <Button variant="ghost" size="sm" onClick={copySectionLink}>
+            Copy section link
+          </Button>
+          {alerts.length > 0 ? (
+            <Button variant="ghost" size="sm" onClick={exportCsv}>
+              Export CSV
+            </Button>
+          ) : null}
+        </div>
+      </div>
       {!alertsReported ? (
         <div className="nt-service-note">
           Central did not report its alert feed this cycle — the estate may be louder than this
@@ -51,34 +94,28 @@ export function AlertsSection({
           {shown.map((a, i) => (
             <div
               key={`${a.plane}|${a.title}|${a.device}|${a.age}|${i}`}
-              style={{
-                display: 'flex',
-                alignItems: 'baseline',
-                gap: 12,
-                padding: '8px 0',
-                borderBottom: '1px solid var(--nd-border-subtle)',
-              }}
+              className="nt-alert-base-row"
             >
               <Badge tone={a.tone}>{a.sev}</Badge>
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
+              <span className="nt-flex-1">
+                <span className="nt-fs-12-pri">
                   {a.title}
                 </span>
-                <span className="nt-hint-muted" style={{ marginLeft: 8 }}>
+                <span className="nt-hint-muted nt-ml-8">
                   {a.siteName}
                   {a.state !== 'open' ? ` · ${a.state}` : ''}
                 </span>
               </span>
-              <span className="nt-hint-muted" style={{ flexShrink: 0 }}>
+              <span className="nt-hint-muted nt-shrink-0">
                 {a.age}
               </span>
             </div>
           ))}
-          <div className="nt-service-note" style={{ fontSize: 10.5, paddingTop: 6 }}>
+          <div className="nt-service-note nt-fs-105-pt6">
             {alerts.length > shown.length
               ? `+${countOf(alerts.length - shown.length, 'more')} — the `
               : 'The '}
-            <Link to="/alerts?plane=CENTRAL" style={{ color: 'var(--nd-accent)' }}>
+            <Link to="/alerts?plane=CENTRAL" className="nt-accent-text">
               full queue, filtered to Central
             </Link>
             , has ack, silence and rule management.

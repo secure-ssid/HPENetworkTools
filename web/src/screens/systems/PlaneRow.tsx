@@ -25,21 +25,42 @@ import {
  * ten planes read as a table rather than ten stacked cards; anything that does
  * not fit truncates with the full value kept in the cell's own title.
  */
+function ecgFillClass(tone: Tone): string {
+  if (tone === 'success') return 'nt-plane-ecg__fill--ok';
+  if (tone === 'warning') return 'nt-plane-ecg__fill--warn';
+  if (tone === 'danger') return 'nt-plane-ecg__fill--danger';
+  return 'nt-plane-ecg__fill--muted';
+}
+
 export function PlaneRow({ view: v, onOpen }: { view: PlaneView; onOpen: (v: PlaneView) => void }) {
   const count = countFact(v.facts);
   const lastSync = factValue(v.facts, 'Last sync') ?? '—';
   const calls = factValue(v.facts, 'Calls today') ?? '—';
   const auth = factValue(v.facts, 'Token') ?? '—';
+  const hot = v.stateTone === 'danger' || v.stateTone === 'warning' || Boolean(v.live?.stale);
+  const ecgTone: Tone = v.live?.stale ? 'warning' : v.stateTone;
   return (
     <button
       type="button"
       role="row"
-      className="nt-plane-row nt-plane-row--link"
+      className={`nt-plane-row nt-plane-row--link${hot ? ' nt-plane-row--ecg' : ''}`}
+      data-tone={v.stateTone}
+      data-stale={v.live?.stale ? 'true' : undefined}
       onClick={() => onOpen(v)}
     >
       <span role="cell" className="nt-plane-row__identity">
         <strong title={v.row.name}>{v.row.name}</strong>
         <small title={v.row.kind}>{v.row.kind}</small>
+        <span
+          className="nt-plane-ecg nt-plane-row__ecg nt-ecg-trace"
+          aria-hidden
+          title={`Plane health · ${v.stateLabel}${v.live?.stale ? ' · unverified' : ''}`}
+        >
+          <span
+            className={`nt-plane-ecg__fill ${ecgFillClass(ecgTone)}`}
+            data-level={v.live?.stale ? 'stale' : v.stateTone}
+          />
+        </span>
       </span>
       <span role="cell" className="nt-plane-row__status">
         <Badge tone={v.stateTone} dot>
@@ -222,10 +243,11 @@ export interface HistoryRow {
  *  zero results show an empty state, never a heading over nothing. */
 export function NothingReported({ label }: { label: string }) {
   return (
-    <div
-      className="nt-hint-muted" style={{ padding: "8px 0" }}
-    >
-      {label}
+    <div className="nt-hint-muted nt-pad-8-0 nt-nothing-reported" role="status">
+      <span className="nt-nothing-reported__mark" aria-hidden>
+        ND
+      </span>
+      <span>{label}</span>
     </div>
   );
 }

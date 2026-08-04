@@ -27,7 +27,7 @@ export function uptimeText(sec: number): string {
 /** One small gauge: a label, a track bar and the value, all nightdesk tokens. */
 function Gauge({ label, pct, value }: { label: string; pct: number | null; value: string }) {
   return (
-    <div className="nt-stack nt-gap-5" style={{ minWidth: 0 }}>
+    <div className="nt-mist-section nt-section-panel nt-stack nt-gap-5 nt-min-w-0">
       <span
         className="nt-mono-label"
       >
@@ -39,7 +39,7 @@ function Gauge({ label, pct, value }: { label: string; pct: number | null; value
           className="nt-bar-track"
         >
           <span
-            className="nt-bar-fill" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+            className="nt-bar-fill" style={{ ["--nd-health" as string]: `${Math.min(100, Math.max(0, pct))}%` }}
           />
         </span>
       ) : null}
@@ -58,12 +58,12 @@ function Gauge({ label, pct, value }: { label: string; pct: number | null; value
 const AIRTIME_SEGMENTS: Array<{
   key: 'utilTxPct' | 'utilRxInBssPct' | 'utilRxOtherBssPct' | 'utilNonWifiPct';
   label: string;
-  color: string;
+  seg: 'tx' | 'rx' | 'other' | 'nonwifi';
 }> = [
-  { key: 'utilTxPct', label: 'tx', color: 'var(--nd-accent)' },
-  { key: 'utilRxInBssPct', label: 'rx', color: 'var(--nd-info)' },
-  { key: 'utilRxOtherBssPct', label: 'other BSS', color: 'var(--nd-warning)' },
-  { key: 'utilNonWifiPct', label: 'non-Wi-Fi', color: 'var(--nd-danger)' },
+  { key: 'utilTxPct', label: 'tx', seg: 'tx' },
+  { key: 'utilRxInBssPct', label: 'rx', seg: 'rx' },
+  { key: 'utilRxOtherBssPct', label: 'other BSS', seg: 'other' },
+  { key: 'utilNonWifiPct', label: 'non-Wi-Fi', seg: 'nonwifi' },
 ];
 
 /** One radio: band, tuning facts, the stacked airtime bar and its legend. */
@@ -73,9 +73,9 @@ function RadioRow({ radio }: { radio: MistApRadioStats }) {
     <div
       className="nt-stack nt-gap-5 nt-rule-row"
     >
-      <div className="nt-row-baseline" style={{ gap: 10 }}>
+      <div className="nt-row-baseline nt-gap-10">
         <span
-          className="nt-mono-11 nt-w-58 nt-text-pri-12" style={{ lineHeight: "inherit" }}
+          className="nt-mono-11 nt-w-58 nt-text-pri-12 nt-lh-inherit"
         >
           {radio.band}
         </span>
@@ -92,7 +92,7 @@ function RadioRow({ radio }: { radio: MistApRadioStats }) {
         </span>
         {radio.utilAllPct !== null ? (
           <span
-            className="nt-mono-11 nt-hint-muted nt-text-sec" style={{ whiteSpace: "nowrap" }}
+            className="nt-mono-11 nt-hint-muted nt-text-sec nt-nowrap"
           >
             util {radio.utilAllPct}%
           </span>
@@ -107,7 +107,9 @@ function RadioRow({ radio }: { radio: MistApRadioStats }) {
             {segments.map((s) => (
               <span
                 key={s.key}
-                className="nt-bar-fill" style={{ width: `${Math.min(100, Math.max(0, radio[s.key] as number))}%`, background: s.color }}
+                className="nt-bar-fill"
+                data-seg={s.seg}
+                style={{ ["--nd-health" as string]: `${Math.min(100, Math.max(0, radio[s.key] as number))}%` }}
               />
             ))}
           </span>
@@ -115,8 +117,8 @@ function RadioRow({ radio }: { radio: MistApRadioStats }) {
             className="nt-row nt-hint-muted nt-gap-10"
           >
             {segments.map((s) => (
-              <span key={s.key} className="nt-row-center nt-gap-4" style={{ display: "inline-flex" }}>
-                <span aria-hidden className="nt-swatch" style={{ background: s.color }} />
+              <span key={s.key} className="nt-row-center nt-gap-4 nt-inline-flex">
+                <span aria-hidden className="nt-swatch" data-seg={s.seg} />
                 {`${s.label} ${radio[s.key]}%`}
               </span>
             ))}
@@ -148,6 +150,7 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
   const lldp = row.lldpUplink;
   return (
     <div className="nt-stack nt-gap-2">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · AP RF theater · Mist stats</div>
       <SectionHeader label="AP health & RF" meta="MIST AP STATS" />
 
       <div
@@ -221,7 +224,7 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
           className="nt-row-center nt-gap-10 nt-rule-row"
         >
           <span
-            className="nt-fact-row__k nt-mono-11 nt-text-pri-12" style={{ lineHeight: "inherit" }}
+            className="nt-fact-row__k nt-mono-11 nt-text-pri-12 nt-lh-inherit"
           >
             {port.name}
           </span>

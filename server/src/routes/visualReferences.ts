@@ -2,6 +2,7 @@
  * server/src/routes/visualReferences.ts — visual reference CRUD + asset stream.
  *
  *   GET    /api/visual-references?kind=&id=&plane=   list (optionally filtered)
+ *   GET    /api/visual-references/export             CSV metadata (no binary bytes)
  *   POST   /api/visual-references                    create url/native/product
  *   DELETE /api/visual-references/:id                remove one
  *   POST   /api/visual-assets                        binary upload (headers carry draft)
@@ -15,6 +16,7 @@ import {
   type VisualReferenceDraft,
   type VisualTargetKind,
 } from '@hpe/shared';
+import { sendCsv } from '../lib/csv';
 import { h } from './handler';
 import { VisualReferenceError, visualReferences } from '../services/visualReferences';
 
@@ -32,26 +34,90 @@ function sendError(res: Response, err: unknown): boolean {
   return false;
 }
 
+function parseVisualListFilter(req: Request):
+  | { ok: true; filter?: { kind: VisualTargetKind; id: string; plane?: string } }
+  | { ok: false; error: string } {
+  const kind = typeof req.query.kind === 'string' ? req.query.kind : undefined;
+  const id = typeof req.query.id === 'string' ? req.query.id : undefined;
+  const plane = typeof req.query.plane === 'string' ? req.query.plane : undefined;
+  if ((kind && !id) || (!kind && id)) {
+    return { ok: false, error: 'kind and id must be supplied together' };
+  }
+  if (kind && id) {
+    return {
+      ok: true,
+      filter: {
+        kind: kind as VisualTargetKind,
+        id,
+        ...(plane ? { plane } : {}),
+      },
+    };
+  }
+  return { ok: true };
+}
+
 visualReferencesRouter.get(
   '/visual-references',
   h((req, res) => {
-    const kind = typeof req.query.kind === 'string' ? req.query.kind : undefined;
-    const id = typeof req.query.id === 'string' ? req.query.id : undefined;
-    const plane = typeof req.query.plane === 'string' ? req.query.plane : undefined;
-    if ((kind && !id) || (!kind && id)) {
-      res.status(400).json({ error: 'kind and id must be supplied together', code: 'VISUAL_REFERENCE_VALIDATION' });
+    const parsed = parseVisualListFilter(req);
+    if (!parsed.ok) {
+      res.status(400).json({ error: parsed.error, code: 'VISUAL_REFERENCE_VALIDATION' });
       return;
     }
-    const references = visualReferences.list(
-      kind && id
-        ? {
-            kind: kind as VisualTargetKind,
-            id,
-            ...(plane ? { plane } : {}),
-          }
-        : undefined,
+    res.json({ references: visualReferences.list(parsed.filter) });
+  }),
+);
+
+/**
+ * GET /api/visual-references/export — CSV of reference metadata only
+ * (title/source/owner/url/asset id…). Never streams binary bytes or PEMs.
+ * Optional kind+id (+plane) match the list filter.
+ */
+visualReferencesRouter.get(
+  '/visual-references/export',
+  h((req, res) => {
+    const parsed = parseVisualListFilter(req);
+    if (!parsed.ok) {
+      res.status(400).json({ error: parsed.error, code: 'VISUAL_REFERENCE_VALIDATION' });
+      return;
+    }
+    const references = visualReferences.list(parsed.filter);
+    sendCsv(
+      res,
+      'visual-references.csv',
+      [
+        'id',
+        'targetKind',
+        'targetId',
+        'targetPlane',
+        'kind',
+        'title',
+        'source',
+        'owner',
+        'updatedAt',
+        'url',
+        'assetId',
+        'mimeType',
+        'attribution',
+        'unavailable',
+      ],
+      references.map((r) => [
+        r.id,
+        r.target.kind,
+        r.target.id,
+        r.target.plane ?? '',
+        r.kind,
+        r.title,
+        r.source,
+        r.owner,
+        r.updatedAt,
+        r.url ?? '',
+        r.assetId ?? '',
+        r.mimeType ?? '',
+        r.attribution ?? '',
+        r.unavailable ? 'yes' : 'no',
+      ]),
     );
-    res.json({ references });
   }),
 );
 

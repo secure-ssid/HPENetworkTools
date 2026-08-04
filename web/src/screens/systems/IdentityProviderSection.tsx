@@ -30,6 +30,7 @@ import {
   type AuthTestResult,
 } from '../../api/auth';
 import { Alert, Badge, Button, FormField, Input, SectionHeader, useToast } from '../../nightdesk';
+import { buildSystemsSectionUrl, systemsSectionDomId } from './share';
 
 interface Draft {
   issuer: string;
@@ -147,11 +148,29 @@ export function IdentityProviderSection() {
   const editable = cfg?.editable ?? false;
   const disabled = !editable || busy !== null;
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <SectionHeader label="Identity provider" meta="OIDC · WHO MAY USE THIS PORTAL" />
+  const copySectionLink = () => {
+    const url = buildSystemsSectionUrl('identity');
+    void navigator.clipboard.writeText(url).then(
+      () =>
+        toast('Identity section link copied', {
+          description: 'section=identity',
+          tone: 'success',
+        }),
+      () => toast('Could not copy link', { description: url, tone: 'warning' }),
+    );
+  };
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+  return (
+    <div id={systemsSectionDomId('identity')} className="nt-systems-section nt-section-panel nt-stack-14">
+      <div className="nt-filter-bar nt-gap-8">
+        <SectionHeader label="Identity provider" meta="OIDC · WHO MAY USE THIS PORTAL" />
+        <Button variant="ghost" size="sm" className="nt-ml-auto" onClick={copySectionLink}>
+          Copy section link
+        </Button>
+      </div>
+      <div className="nt-plane-theater" role="note">NightDesk · identity · who may enter</div>
+
+      <div className="nt-row-wrap-8">
         {cfg ? (
           <>
             <Badge tone={cfg.active ? 'success' : cfg.configured ? 'warning' : 'danger'} dot>
@@ -200,7 +219,7 @@ export function IdentityProviderSection() {
         </Alert>
       ) : null}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}>
+      <div className="nt-grid-2-14">
         <FormField
           label="OIDC issuer"
           help="Authentik has no server-wide discovery document — use https://<host>/application/o/<slug>/ including the trailing slash."
@@ -251,7 +270,7 @@ export function IdentityProviderSection() {
         </FormField>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div className="nt-row nt-gap-8 nt-flex-wrap">
         <Button onClick={() => void runTest()} disabled={busy !== null || !draft.issuer.trim()}>
           {busy === 'test' ? 'Testing…' : 'Test provider'}
         </Button>
@@ -274,10 +293,10 @@ export function IdentityProviderSection() {
             {test.message}
             {typeof test.ms === 'number' ? ` (${test.ms}ms)` : ''}
           </div>
-          {test.hint ? <div style={{ marginTop: 6 }}>{test.hint}</div> : null}
+          {test.hint ? <div className="nt-mt-6">{test.hint}</div> : null}
           {test.endpoints ? (
             <div
-              className="nt-hint-muted" style={{ marginTop: 6, wordBreak: "break-all" }}
+              className="nt-hint-muted nt-mt-6-break"
             >
               <div>authorize: {test.endpoints.authorization}</div>
               <div>token: {test.endpoints.token}</div>
@@ -285,7 +304,7 @@ export function IdentityProviderSection() {
             </div>
           ) : null}
           {test.cautions?.length ? (
-            <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+            <ul className="nt-ul-indent">
               {test.cautions.map((c) => (
                 <li key={c}>{c}</li>
               ))}

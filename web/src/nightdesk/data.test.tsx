@@ -52,7 +52,9 @@ describe('Stat', () => {
     );
     const delta = container.querySelector('.nd-stat__delta') as HTMLElement;
     expect(delta.textContent).toBe('+6');
-    expect(delta.className).toBe(`nd-stat__delta ${expected}`);
+    expect(delta.className).toContain('nd-stat__delta');
+    expect(delta.className).toContain(expected);
+    expect(delta.className).toContain('nt-metric-tile__note');
   });
 
   it('drops an empty delta string rather than painting an empty coloured chip', () => {
@@ -67,7 +69,9 @@ describe('Badge', () => {
   it('defaults to the neutral tone', () => {
     const { container } = render(<Badge>Unknown</Badge>);
     const el = container.firstElementChild as HTMLElement;
-    expect(el.className).toBe('nd-badge nd-badge--neutral');
+    expect(el.className).toContain('nd-badge');
+    expect(el.className).toContain('nd-badge--neutral');
+    expect(el.className).toContain('nt-status-chip');
     expect(el.textContent).toBe('Unknown');
   });
 
@@ -75,9 +79,9 @@ describe('Badge', () => {
     'maps tone %s onto its own class',
     (tone) => {
       const { container } = render(<Badge tone={tone}>Up</Badge>);
-      expect((container.firstElementChild as HTMLElement).className).toBe(
-        `nd-badge nd-badge--${tone}`,
-      );
+      expect((container.firstElementChild as HTMLElement).className).toContain('nd-badge');
+      expect((container.firstElementChild as HTMLElement).className).toContain(`nd-badge--${tone}`);
+      expect((container.firstElementChild as HTMLElement).className).toContain('nt-status-chip');
     },
   );
 
@@ -133,7 +137,9 @@ describe('Avatar', () => {
     ['md', 'nd-avatar--md'],
   ] as const)('maps size %s onto %s', (size, expected) => {
     const { container } = render(<Avatar name="R. Okafor" size={size} />);
-    expect((container.firstElementChild as HTMLElement).className).toBe(`nd-avatar ${expected}`);
+    expect((container.firstElementChild as HTMLElement).className).toContain('nd-avatar');
+    expect((container.firstElementChild as HTMLElement).className).toContain(expected);
+    expect((container.firstElementChild as HTMLElement).className).toContain('nt-avatar');
   });
 });
 
@@ -141,28 +147,29 @@ describe('Avatar', () => {
 
 describe('Progress', () => {
   const fillOf = (c: HTMLElement) => c.querySelector('.nd-progress__fill') as HTMLElement;
+  const healthOf = (c: HTMLElement) => fillOf(c).style.getPropertyValue('--nd-health');
 
   it('declares an explicit 0% width at zero, so an empty reading is drawn empty', () => {
-    // The fill div carries no width in components.css: whatever width the
+    // The fill div carries no width in components.css: whatever --nd-health the
     // inline style declares is the only thing stopping a block-level div from
     // filling its track edge to edge.
     const { container } = render(<Progress value={0} />);
-    expect(fillOf(container).style.width).toBe('0%');
+    expect(healthOf(container)).toBe('0%');
   });
 
   it('clamps a negative reading to 0% instead of inverting the bar', () => {
     const { container } = render(<Progress value={-20} />);
-    expect(fillOf(container).style.width).toBe('0%');
+    expect(healthOf(container)).toBe('0%');
   });
 
   it('clamps an over-max reading to 100% so the fill never escapes the track', () => {
     const { container } = render(<Progress value={140} />);
-    expect(fillOf(container).style.width).toBe('100%');
+    expect(healthOf(container)).toBe('100%');
   });
 
   it('scales against a non-default max', () => {
     const { container } = render(<Progress value={24} max={60} />);
-    expect(fillOf(container).style.width).toBe('40%');
+    expect(healthOf(container)).toBe('40%');
   });
 
   it('reports the raw value and max to assistive tech, not the clamped percentage', () => {
@@ -182,12 +189,12 @@ describe('Progress', () => {
    */
   it('draws an unknown share empty rather than full when max is 0', () => {
     const { container } = render(<Progress value={9} max={0} />);
-    expect(fillOf(container).style.width).toBe('0%');
+    expect(healthOf(container)).toBe('0%');
   });
 
   it('draws an unknown share empty rather than full when the reading is NaN', () => {
     const { container } = render(<Progress value={Number.NaN} />);
-    expect(fillOf(container).style.width).toBe('0%');
+    expect(healthOf(container)).toBe('0%');
   });
 
   it('omits aria-valuenow for an unknown reading, so it announces as indeterminate', () => {
@@ -206,7 +213,7 @@ describe('Progress', () => {
     const head = container.querySelector('.nd-progress__head') as HTMLElement;
     expect(head.children).toHaveLength(2);
     expect(head.children[0].textContent).toBe('');
-    expect((head.children[1] as HTMLElement).className).toBe('nd-progress__note');
+    expect((head.children[1] as HTMLElement).className).toContain('nd-progress__note');
     expect(head.children[1].textContent).toBe('1,842 of 2,046 leases');
     expect(container.querySelector('.nd-micro-label')).toBeNull();
   });
@@ -227,12 +234,12 @@ describe('Progress', () => {
     ['danger', 'nd-progress__fill--danger'],
   ] as const)('maps tone %s onto %s', (tone, expected) => {
     const { container } = render(<Progress value={50} tone={tone} />);
-    expect(fillOf(container).className).toBe(`nd-progress__fill ${expected}`);
+    expect(fillOf(container).className).toBe(`nd-progress__fill ${expected} nt-progress-rail__fill`);
   });
 
   it('appends a caller className to the wrapper only', () => {
     const { container } = render(<Progress value={50} className="wide" />);
-    expect((container.firstElementChild as HTMLElement).className).toBe('nd-progress wide');
+    expect((container.firstElementChild as HTMLElement).className).toBe('nd-progress nt-progress-rail wide');
   });
 });
 
@@ -267,7 +274,13 @@ describe('EmptyState', () => {
       </EmptyState>,
     );
     const kids = Array.from((container.firstElementChild as HTMLElement).children);
-    expect(kids.map((k) => k.className)).toEqual(['nd-empty__title', 'nd-empty__desc', '']);
+    expect(kids.map((k) => k.className)).toEqual([
+      'nt-empty-wake__mark',
+      'nd-empty__kicker nt-empty-cinema__kicker',
+      'nd-empty__title nt-empty-cinema__title',
+      'nd-empty__desc nt-empty-cinema__body',
+      '',
+    ]);
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
@@ -279,7 +292,9 @@ describe('Spinner', () => {
   it('announces itself as a loading status and defaults to the small size', () => {
     render(<Spinner />);
     const el = screen.getByRole('status', { name: 'Loading' });
-    expect(el.className).toBe('nd-spinner nd-spinner--sm');
+    expect(el.className).toContain('nd-spinner');
+    expect(el.className).toContain('nd-spinner--sm');
+    expect(el.className).toContain('nt-spinner');
   });
 
   it('carries the md size', () => {
@@ -292,7 +307,7 @@ describe('Skeleton', () => {
   it('defaults to a 12px bar and declares no width, so it fills its container', () => {
     const { container } = render(<Skeleton />);
     const el = container.firstElementChild as HTMLElement;
-    expect(el.className).toBe('nd-skeleton');
+    expect(el.className).toBe('nd-skeleton nt-skeleton-block');
     expect(el.style.height).toBe('12px');
     expect(el.style.width).toBe('');
   });
@@ -308,7 +323,7 @@ describe('Skeleton', () => {
   it('lets a caller style and className override the computed defaults', () => {
     const { container } = render(<Skeleton className="tall" height={12} style={{ height: 40 }} />);
     const el = container.firstElementChild as HTMLElement;
-    expect(el.className).toBe('nd-skeleton tall');
+    expect(el.className).toBe('nd-skeleton nt-skeleton-block tall');
     expect(el.style.height).toBe('40px');
   });
 });
@@ -409,7 +424,7 @@ describe('Pagination', () => {
     expect(onChange).toHaveBeenLastCalledWith(2);
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     expect(onChange).toHaveBeenLastCalledWith(4);
-    fireEvent.click(screen.getByRole('button', { name: '10' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Page 10' }));
     expect(onChange).toHaveBeenLastCalledWith(10);
   });
 

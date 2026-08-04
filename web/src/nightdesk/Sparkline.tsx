@@ -49,7 +49,7 @@ export function Sparkline({ points, width = 96, height = 18, label, stroke, mark
   const flagCount = markers?.length ?? 0;
   const ariaLabel = flagCount > 0 ? `${label} · ${countOf(flagCount, 'point')} flagged unusual` : label;
   return (
-    <span role="img" aria-label={ariaLabel} title={ariaLabel} style={{ display: 'inline-flex', verticalAlign: 'middle' }}>
+    <span role="img" aria-label={ariaLabel} title={ariaLabel} className="nt-inline-flex nt-v-mid nt-spark-frame">
       <svg aria-hidden="true" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
         {points.length === 1 ? (
           <circle cx={width / 2} cy={height / 2} r={1.5} fill={color} />

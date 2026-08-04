@@ -119,6 +119,29 @@ describe('ClearPass endpoint-page client', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/clearpass/endpoints?offset=50&limit=25');
   });
 
+  it('passes q/status/category on the endpoint page request (Loop 86)', async () => {
+    const fetchMock = mockFetchCapture({
+      ok: true,
+      body: {
+        dataSource: 'demo',
+        state: 'ok',
+        endpoints: [],
+        offset: 0,
+        limit: 50,
+        total: 0,
+        nextOffset: null,
+        more: 'no',
+      },
+    });
+    await getClearPassEndpointPage(0, 50, { q: 'aa:bb', status: 'Known', category: 'Computer' });
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('offset=0');
+    expect(url).toContain('limit=50');
+    expect(url).toContain('q=aa%3Abb');
+    expect(url).toContain('status=Known');
+    expect(url).toContain('category=Computer');
+  });
+
   it('reports an unreachable or malformed page as failed rather than substituting demo endpoints', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')));
 

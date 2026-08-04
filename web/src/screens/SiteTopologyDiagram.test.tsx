@@ -12,6 +12,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { SiteTopology, SiteTopologyLive, TopologyDeviceNode, TopologyLink } from '@hpe/shared';
+import { ToastProvider } from '../nightdesk';
 import { SiteTopologyDiagram, buildLiveSiteTopology } from './SiteTopology';
 
 if (!window.matchMedia) {
@@ -74,8 +75,12 @@ function renderDiagram(onDevice = vi.fn()) {
     { name: 'ap-1' },
   ] as never[];
   const diagram = buildLiveSiteTopology(TOPOLOGY, devices);
-  const utils = render(<SiteTopologyDiagram topology={diagram} onDevice={onDevice} />);
-  return { onDevice, ...utils };
+  const utils = render(
+    <ToastProvider>
+      <SiteTopologyDiagram topology={diagram} onDevice={onDevice} />
+    </ToastProvider>,
+  );
+  return { onDevice, diagram, ...utils };
 }
 
 function cardOpacity(name: RegExp): string {
@@ -178,6 +183,32 @@ describe('SiteTopologyDiagram — while focused', () => {
   });
 });
 
+describe('SiteTopologyDiagram — export CSV', () => {
+  it('offers Export CSV when the diagram has nodes or edges', () => {
+    const createObjectURL = vi.fn(() => 'blob:site-topo');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    renderDiagram();
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+    expect(createObjectURL).toHaveBeenCalled();
+    expect(click).toHaveBeenCalled();
+
+    click.mockRestore();
+  });
+
+  it('Copy view link shares section=topology (Loop 71)', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    renderDiagram();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    expect(writeText).toHaveBeenCalled();
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/\?section=topology#topology/);
+  });
+});
+
 describe('SiteTopologyDiagram — groups under focus', () => {
   it('an expanded group member focuses through its chip: the parent edge stays lit', () => {
     // Two APs sharing one parent collapse into a group chip — the recorded-
@@ -204,7 +235,11 @@ describe('SiteTopologyDiagram — groups under focus', () => {
       edges: [{ from: 'dev:access-1', to: 'grp:access-1:ap', label: null }],
       note: 'wiring from recorded uplink and chain data',
     };
-    render(<SiteTopologyDiagram topology={diagram} onDevice={vi.fn()} />);
+    render(
+      <ToastProvider>
+        <SiteTopologyDiagram topology={diagram} onDevice={vi.fn()} />
+      </ToastProvider>,
+    );
 
     // Expand the group, then shift+click a member: it focuses through the
     // chip, so the member and the parent switch stay lit and ap-2 dims.

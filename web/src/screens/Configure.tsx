@@ -10,8 +10,10 @@
  * checkbox column, a select-all header checkbox, and the controlled
  * selectedKeys/onSelectionChange pair (x toggles the focused row, Esc
  * clears). A selection raises a contextual action bar — "N selected —
- * Approve / Reject" — that applies the EXISTING per-item push/discard flow
- * in sequence: every change still goes through its own brokered review,
+ * Approve / Reject / Export selected / Copy IDs / Copy selection link
+ * (`?ids=` of queue row keys with `section=queue`; clearable chip — Loop 183)
+ * / Clear" — Approve/Reject still apply the EXISTING per-item push/discard
+ * flow in sequence: every change still goes through its own brokered review,
  * lease and audit line, the bar only iterates, and the summary toast names
  * the per-item outcomes (applied / accepted / failed / skipped) with the
  * failures named.
@@ -22,12 +24,20 @@
  * The header's "Change history" opens a second drawer over the write broker's
  * audit log (GET /api/configure/history): ts / event+kind / changeId / ticket /
  * result, and never the rendered payload body — the log records what happened
- * to a change, not what was in it.
+ * to a change, not what was in it. A **Kind** chip row (counts over the loaded
+ * result+ticket slice — Loop 153) toggles the same kind filter as the Select.
+ * A **Result** chip row (counts over the loaded kind+ticket slice — Loop 157)
+ * toggles the same result filter as the Input (exact, case-insensitive; client-
+ * side so chips keep the full mix). CSV still sends kind=/result=/ticket=.
  * Data: getConfigure() — live /api/configure when the server is up, fixtures
  * otherwise. Queue/dry-run/push/discard go through the write broker
  * (/api/configure/*) whenever the backend is reachable — the server queue is
  * then authoritative; the previous local-only behavior remains as the
  * offline fallback.
+ * Header **LIVE** stamps pure live and configure blend feeds alike (Loop 165).
+ * Queue table carries keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS —
+ * Loop 195). Port filter empties offer **Clear filters**; queue selection-empty
+ * offers **Clear selection filter** (Loop 205).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -40,13 +50,15 @@ import {
   Checkbox,
   Code,
   DataTable,
+  DATATABLE_ROW_SHORTCUTS,
   Drawer,
   EmptyState,
   FormField,
   Input,
+  KeyboardShortcuts,
   SectionHeader,
   Select,
-  Spinner,
+  Skeleton,
   Stat,
   Switch,
   useToast,
@@ -113,7 +125,9 @@ import type {
   VlanScope,
 } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
+import { namesFilterForParam } from '../app/nav';
 import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import {
@@ -143,9 +157,7 @@ import {
 } from './configure/preview';
 import {
   HistoryState,
-  MICRO_LINK,
   QueueEntry,
-  ROW,
   auditTone,
   queuedEntryFor,
   queueRowKey,
@@ -281,6 +293,92 @@ function assignmentAppliedTitle(assignments: readonly SsidScopeAssignmentResult[
     : `Applied — ${n} scope ${n === 1 ? 'assignment was' : 'assignments were'} not confirmed`;
 }
 
+/** In-page Configure sections operators can deep-link with `?section=` / `#…`. */
+const CONFIGURE_SECTIONS = ['ssids', 'ports', 'vlans', 'queue', 'targets'] as const;
+type ConfigureSection = (typeof CONFIGURE_SECTIONS)[number];
+
+function parseConfigureSection(raw: string | null | undefined): ConfigureSection | null {
+  if (!raw) return null;
+  const key = raw.replace(/^#/, '').trim().toLowerCase();
+  return (CONFIGURE_SECTIONS as readonly string[]).includes(key) ? (key as ConfigureSection) : null;
+}
+
+/** Share URL for the current Configure view — keeps a valid `section` query.
+ *  Uses the router path (not window.location alone) so MemoryRouter tests and
+ *  the live shell agree, and strips one-shot SSID editor identity keys. */
+function configureViewUrl(
+  pathname: string,
+  search: string,
+  section: ConfigureSection | null,
+): string {
+  const params = new URLSearchParams(search);
+  for (const key of ['edit', 'plane', 'name', 'vlan', 'targets']) params.delete(key);
+  if (section) params.set('section', section);
+  else params.delete('section');
+  const qs = params.toString();
+  const hash = section ? `#${section}` : '';
+  return `${window.location.origin}${pathname}${qs ? `?${qs}` : ''}${hash}`;
+}
+
+/** Client CSV of the visible queue — summary columns only, never payload bodies. */
+export function queueExportRows(queue: readonly QueueEntry[]): Array<Array<unknown>> {
+  return queue.map((q) => [q.id ?? '', q.state, q.what, q.where, q.ticket, q.expiresAt ?? '']);
+}
+
+export const SSID_EXPORT_HEADERS = ['name', 'vlan', 'security', 'targets', 'plane', 'origin', 'enabled', 'note'] as const;
+export const PORT_EXPORT_HEADERS = [
+  'device',
+  'plane',
+  'serial',
+  'port',
+  'desc',
+  'summary',
+  'state',
+  'origin',
+] as const;
+export const VLAN_EXPORT_HEADERS = ['id', 'name', 'detail', 'role', 'plane', 'scope', 'origin'] as const;
+
+/** SSID inventory rows — display fields only; notes stay the redacted marker text. */
+export function ssidExportRows(ssids: readonly SsidObject[]): Array<Array<unknown>> {
+  return ssids.map((w) => [
+    w.name,
+    w.vlan,
+    w.security,
+    w.targets,
+    w.plane,
+    w.origin ?? '',
+    w.enabled === undefined ? '' : w.enabled ? 'yes' : 'no',
+    w.note ?? '',
+  ]);
+}
+
+/** Port inventory rows — no rendered config bodies. */
+export function portExportRows(ports: readonly PortObject[]): Array<Array<unknown>> {
+  return ports.map((p) => [
+    p.device,
+    p.plane ?? '',
+    p.serial ?? '',
+    p.port,
+    p.desc,
+    p.summary,
+    p.state,
+    p.origin ?? '',
+  ]);
+}
+
+/** VLAN inventory rows — summary columns only. */
+export function vlanExportRows(vlans: readonly VlanObject[]): Array<Array<unknown>> {
+  return vlans.map((v) => [
+    v.id,
+    v.name,
+    v.detail,
+    v.role,
+    v.plane ?? '',
+    v.scope ?? '',
+    v.origin ?? '',
+  ]);
+}
+
 export default function Configure() {
   const { showPlatformTags } = useSettings();
   const { toast } = useToast();
@@ -318,6 +416,10 @@ export default function Configure() {
   const [now, setNow] = useState(() => Date.now());
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<HistoryState>({ kind: 'loading' });
+  /** Drawer filters for broker audit rows (server + client; CSV honours both). */
+  const [historyKind, setHistoryKind] = useState<'all' | 'ssid' | 'port' | 'vlan'>('all');
+  const [historyResult, setHistoryResult] = useState('');
+  const [historyTicket, setHistoryTicket] = useState('');
   const [portQuery, setPortQuery] = useState('');
   const [expandedSwitches, setExpandedSwitches] = useState<Set<string>>(new Set());
   const [visiblePorts, setVisiblePorts] = useState<Record<string, number>>({});
@@ -666,6 +768,29 @@ export default function Configure() {
     navigate({ pathname: location.pathname, search: search ? `?${search}` : '', hash: location.hash }, { replace: true });
   }, [data, handleDeepLink, location, navigate, queue]);
 
+  const sectionParam =
+    parseConfigureSection(new URLSearchParams(location.search).get('section')) ??
+    parseConfigureSection(location.hash);
+
+  /* Deep link: /configure?section=queue&ids=a\nb (bulk Copy selection link). */
+  const queueIdsFilter = namesFilterForParam(
+    new URLSearchParams(location.search).get('ids'),
+  );
+
+  /* Deep-link scroll: `?section=` / `#section` lands on the matching panel once
+   * the configure body is painted. Unknown keys and lab-hidden queue are no-ops. */
+  useEffect(() => {
+    if (!data || !queue || data.apiError || !sectionParam) return;
+    if (labConfigMode && sectionParam === 'queue') return;
+    const t = window.setTimeout(() => {
+      document.getElementById(`configure-section-${sectionParam}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    }, 50);
+    return () => window.clearTimeout(t);
+  }, [data, labConfigMode, queue, sectionParam]);
+
   const toggleSwitch = (key: string) => {
     setExpandedSwitches((current) => {
       const next = new Set(current);
@@ -689,12 +814,23 @@ export default function Configure() {
   const dormantTargets = data.capabilities.filter((c) => !c.linked);
   const writableTargets = data.capabilities.filter((c) => c.linked);
 
+  /* `?ids=` deep-link (Copy selection link) scopes the queue table; full broker
+     estate stays in `queue` for push/export counts outside the chip. */
+  const queueView =
+    queueIdsFilter === null
+      ? queue
+      : queue.filter((q) => queueIdsFilter.includes(queueRowKey(q)));
+  const queueIdsPresent =
+    queueIdsFilter === null
+      ? 0
+      : queueIdsFilter.filter((id) => queue.some((q) => queueRowKey(q) === id)).length;
+
   /* The queue table's columns. The first is the selection checkbox — its
      header is the select-all — and 'change' is non-hideable because it is the
      row's primary identifier (the same rule the Alerts queue gives its
      'alert' column). Selection itself lives in the controlled queueSel pair,
      so the bulk bar below the table reads exactly what the checkboxes show. */
-  const allQueueSelected = queue.length > 0 && queueSel.length === queue.length;
+  const allQueueSelected = queueView.length > 0 && queueSel.length === queueView.length;
   const queueColumns: Array<DataTableColumn<QueueEntry>> = [
     {
       key: 'select',
@@ -705,7 +841,7 @@ export default function Configure() {
         <Checkbox
           aria-label="Select all queued changes"
           checked={allQueueSelected}
-          onChange={() => setQueueSel(allQueueSelected ? [] : queue.map(queueRowKey))}
+          onChange={() => setQueueSel(allQueueSelected ? [] : queueView.map(queueRowKey))}
         />
       ),
       render: (q) => {
@@ -744,8 +880,7 @@ export default function Configure() {
             </span>
             {lease ? (
               <span
-                className="nt-hint-muted"
-                style={{ color: leaseGone ? 'var(--nd-warning)' : 'var(--nd-text-muted)' }}
+                className={[`nt-hint-muted`, leaseGone ? 'nt-tone-warning' : 'nt-tone-muted'].filter(Boolean).join(" ")}
               >
                 {lease}
               </span>
@@ -824,14 +959,71 @@ export default function Configure() {
    * the log grows with each push, and a cached list would be a stale claim
    * about what has been brokered.
    */
-  const openHistory = async () => {
+  const openHistory = async (
+    _kindFilter: 'all' | 'ssid' | 'port' | 'vlan' = historyKind,
+    _resultFilter: string = historyResult,
+    ticketFilter: string = historyTicket,
+  ) => {
     setHistoryOpen(true);
     setHistory({ kind: 'loading' });
-    const r = await getChangeHistory();
+    /* Kind + result are applied client-side so Kind chips (Loop 153) and Result
+     * chips (Loop 157) can count the full mix over the complementary filter +
+     * ticket. CSV download still sends kind=/result=/ticket= to the server. */
+    const r = await getChangeHistory(50, {
+      ...(ticketFilter.trim() ? { ticket: ticketFilter.trim() } : {}),
+    });
     if (isApiError(r)) setHistory({ kind: 'error', message: r.error });
     else if (r === null) setHistory({ kind: 'offline' });
     else setHistory({ kind: 'ok', events: r.events, unreadable: r.unreadable });
   };
+
+  const HISTORY_KIND_META = [
+    { key: 'ssid' as const, label: 'SSID' },
+    { key: 'port' as const, label: 'Port' },
+    { key: 'vlan' as const, label: 'VLAN' },
+  ];
+  const historyResultNeedle = historyResult.trim().toLowerCase();
+  const historyMatchesResult = (e: { result?: string | null }) =>
+    !historyResultNeedle || String(e.result ?? '').toLowerCase() === historyResultNeedle;
+  const historyMatchesKind = (e: { kind?: string | null }) =>
+    historyKind === 'all' || String(e.kind ?? '').toLowerCase() === historyKind;
+  const historyKindChips =
+    history.kind === 'ok'
+      ? HISTORY_KIND_META.map((m) => ({
+          ...m,
+          count: history.events.filter(
+            (e) => historyMatchesResult(e) && String(e.kind ?? '').toLowerCase() === m.key,
+          ).length,
+        })).filter((c) => c.count > 0 || historyKind === c.key)
+      : [];
+  const historyResultChips =
+    history.kind === 'ok'
+      ? (() => {
+          const keys = [
+            ...new Set(
+              history.events
+                .filter(historyMatchesKind)
+                .map((e) => String(e.result ?? '').trim())
+                .filter(Boolean),
+            ),
+          ].sort((a, b) => a.localeCompare(b));
+          if (historyResult.trim() && !keys.some((k) => k.toLowerCase() === historyResultNeedle)) {
+            keys.unshift(historyResult.trim());
+          }
+          return keys.map((key) => ({
+            key,
+            label: key,
+            count: history.events.filter(
+              (e) => historyMatchesKind(e) && String(e.result ?? '').toLowerCase() === key.toLowerCase(),
+            ).length,
+            pressed: historyResultNeedle !== '' && key.toLowerCase() === historyResultNeedle,
+          })).filter((c) => c.count > 0 || c.pressed);
+        })()
+      : [];
+  const historyEventsVisible =
+    history.kind === 'ok'
+      ? history.events.filter((e) => historyMatchesKind(e) && historyMatchesResult(e))
+      : [];
 
   /** Re-read the broker's queue; false when the backend dropped out from under us. */
   const refreshServerQueue = async (preserveLocal = true): Promise<boolean> => {
@@ -1195,13 +1387,38 @@ export default function Configure() {
   };
 
   return (
-    <div className="nt-configure">
+    <div className="nt-configure nt-recon-reveal nt-configure-shell nt-section-panel">
       <ScreenHeader
         overline="Configure / Changes"
         title="Configuration"
         subtitle="Edit the object, not the console — the portal renders it for whichever plane owns it."
         actions={
           <>
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · write lane
+            </span>
+            {liveMode ? <Badge tone="info">LIVE</Badge> : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                // Prefer an explicit section; otherwise share the broker queue
+                // (or capability matrix in lab mode, where the queue is hidden).
+                const section =
+                  sectionParam ?? (labConfigMode ? ('targets' as const) : ('queue' as const));
+                const url = configureViewUrl(location.pathname, location.search, section);
+                void navigator.clipboard.writeText(url).then(
+                  () =>
+                    toast('View link copied', {
+                      description: `section=${section}`,
+                      tone: 'success',
+                    }),
+                  () => toast('Could not copy link', { description: url, tone: 'danger' }),
+                );
+              }}
+            >
+              Copy view link
+            </Button>
             <Button variant="ghost" size="sm" onClick={() => void openHistory()}>
               Change history
             </Button>
@@ -1216,6 +1433,7 @@ export default function Configure() {
           </>
         }
       />
+      <div className="nt-plane-theater" role="note">NightDesk · write lane · brokered ritual armed</div>
 
       <div className="nt-stat-grid nt-configure__stats">
         {data.stats.map((s) => (
@@ -1264,21 +1482,72 @@ export default function Configure() {
       <div className="nt-configure__layout">
         {/* ---------------- left: the three object lists ---------------- */}
         <div className="nt-configure__col">
-          <div>
-            <SectionHeader
-              label="Wireless SSIDs"
-              meta={
-                <button type="button" style={MICRO_LINK} onClick={() => openSsid()}>
-                  + Add SSID
-                </button>
-              }
-            />
+          <div id="configure-section-ssids">
+            <div className="nt-row-between-8">
+              <SectionHeader
+                label="Wireless SSIDs"
+                meta={
+                  <button type="button" className="nt-micro-link" onClick={() => openSsid()}>
+                    + Add SSID
+                  </button>
+                }
+              />
+              {data.ssids.length > 0 ? (
+                <div className="nt-row nt-gap-6">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      const n = exportTableCsv(
+                        'configure-ssids.csv',
+                        [...SSID_EXPORT_HEADERS],
+                        ssidExportRows(data.ssids),
+                      );
+                      toast(`Exported ${n} SSID${n === 1 ? '' : 's'}`, {
+                        description:
+                          'configure-ssids.csv — inventory summary only (PSK notes stay redacted markers).',
+                        tone: 'success',
+                      });
+                    }}
+                  >
+                    Export SSIDs CSV
+                  </Button>
+                  {data.dataSource === 'live' || data.blended?.includes('configure') ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const res = await downloadApiCsv(
+                            '/api/configure/export?part=ssids',
+                            'configure-ssids.csv',
+                          );
+                          if (res.ok) {
+                            toast('Server CSV downloaded', {
+                              description: 'configure-ssids.csv — inventory summary (no secrets).',
+                              tone: 'success',
+                            });
+                          } else {
+                            toast('Server CSV failed', {
+                              description: res.error ?? 'Could not download export',
+                              tone: 'warning',
+                            });
+                          }
+                        })();
+                      }}
+                    >
+                      Download server CSV
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             {data.ssids.map((w) => (
               <button
                 key={w.name}
                 type="button"
                 className="nt-rowlink nt-configure-row"
-                style={ROW}
+               
                 onClick={() => openSsid(w)}
               >
                 <div className="nt-configure-row__name">
@@ -1326,17 +1595,69 @@ export default function Configure() {
             ) : null}
           </div>
 
-          <div>
-            <SectionHeader
-              label="Switch ports"
-              meta={
-                !labConfigMode || !liveMode ? (
-                  <button type="button" style={MICRO_LINK} onClick={() => openPort()}>
-                    + Configure a port
-                  </button>
-                ) : undefined
-              }
-            />
+          <div id="configure-section-ports">
+            <div className="nt-row-between-8">
+              <SectionHeader
+                label="Switch ports"
+                meta={
+                  !labConfigMode || !liveMode ? (
+                    <button type="button" className="nt-micro-link" onClick={() => openPort()}>
+                      + Configure a port
+                    </button>
+                  ) : undefined
+                }
+              />
+              {data.ports.length > 0 ? (
+                <div className="nt-row nt-gap-6">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      const n = exportTableCsv(
+                        'configure-ports.csv',
+                        [...PORT_EXPORT_HEADERS],
+                        portExportRows(data.ports),
+                      );
+                      toast(`Exported ${n} port${n === 1 ? '' : 's'}`, {
+                        description: 'configure-ports.csv — inventory summary only (no config bodies).',
+                        tone: 'success',
+                      });
+                    }}
+                  >
+                    Export ports CSV
+                  </Button>
+                  {data.dataSource === 'live' || data.blended?.includes('configure') ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const qs = new URLSearchParams({ part: 'ports' });
+                          if (portQuery.trim()) qs.set('q', portQuery.trim());
+                          const res = await downloadApiCsv(
+                            `/api/configure/export?${qs.toString()}`,
+                            'configure-ports.csv',
+                          );
+                          if (res.ok) {
+                            toast('Server CSV downloaded', {
+                              description: 'configure-ports.csv — inventory summary (no config bodies).',
+                              tone: 'success',
+                            });
+                          } else {
+                            toast('Server CSV failed', {
+                              description: res.error ?? 'Could not download export',
+                              tone: 'warning',
+                            });
+                          }
+                        })();
+                      }}
+                    >
+                      Download server CSV
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             {data.ports.length > 0 ? (
               <div className="nt-switch-tree__toolbar">
                 <Input
@@ -1392,7 +1713,7 @@ export default function Configure() {
                         key={`${group.key}-${p.port}`}
                         type="button"
                         className="nt-rowlink nt-configure-row nt-switch-tree__port"
-                        style={ROW}
+                       
                         onClick={() => openPort(p)}
                       >
                         <div className="nt-configure-row__name">
@@ -1431,7 +1752,16 @@ export default function Configure() {
               })}
             </div>
             {data.ports.length > 0 && filteredSwitchGroups.length === 0 ? (
-              <EmptyState title="No switches match" description="Clear the port filter or search another identity." />
+              <EmptyState
+                title="No switches match"
+                description="Clear the port filter or search another identity."
+              >
+                {portQuery.trim() ? (
+                  <Button variant="secondary" size="sm" onClick={() => setPortQuery('')}>
+                    Clear filters
+                  </Button>
+                ) : null}
+              </EmptyState>
             ) : null}
             {data.ports.length === 0 ? (
               <EmptyState
@@ -1447,23 +1777,73 @@ export default function Configure() {
             ) : null}
           </div>
 
-          <div>
-            <SectionHeader
-              label="VLANs & roles"
-              meta={
-                !labConfigMode || !liveMode ? (
-                  <button type="button" style={MICRO_LINK} onClick={() => openVlan()}>
-                    + Add VLAN
-                  </button>
-                ) : undefined
-              }
-            />
+          <div id="configure-section-vlans">
+            <div className="nt-row-between-8">
+              <SectionHeader
+                label="VLANs & roles"
+                meta={
+                  !labConfigMode || !liveMode ? (
+                    <button type="button" className="nt-micro-link" onClick={() => openVlan()}>
+                      + Add VLAN
+                    </button>
+                  ) : undefined
+                }
+              />
+              {data.vlans.length > 0 ? (
+                <div className="nt-row nt-gap-6">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      const n = exportTableCsv(
+                        'configure-vlans.csv',
+                        [...VLAN_EXPORT_HEADERS],
+                        vlanExportRows(data.vlans),
+                      );
+                      toast(`Exported ${n} VLAN${n === 1 ? '' : 's'}`, {
+                        description: 'configure-vlans.csv — inventory summary only.',
+                        tone: 'success',
+                      });
+                    }}
+                  >
+                    Export VLANs CSV
+                  </Button>
+                  {data.dataSource === 'live' || data.blended?.includes('configure') ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const res = await downloadApiCsv(
+                            '/api/configure/export?part=vlans',
+                            'configure-vlans.csv',
+                          );
+                          if (res.ok) {
+                            toast('Server CSV downloaded', {
+                              description: 'configure-vlans.csv — inventory summary only.',
+                              tone: 'success',
+                            });
+                          } else {
+                            toast('Server CSV failed', {
+                              description: res.error ?? 'Could not download export',
+                              tone: 'warning',
+                            });
+                          }
+                        })();
+                      }}
+                    >
+                      Download server CSV
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             {data.vlans.map((v) => (
               <button
                 key={v.id}
                 type="button"
                 className="nt-rowlink nt-configure-row nt-configure-row--vlan"
-                style={ROW}
+               
                 onClick={() => openVlan(v)}
               >
                 <span className="nt-configure-row__name">{v.id}</span>
@@ -1500,10 +1880,44 @@ export default function Configure() {
         {/* ---------------- right: queue + capability matrix ---------------- */}
         <div className="nt-configure__col">
           {!labConfigMode ? (
-            <div className="nt-configure__queue">
-            <div className="nt-configure__queue-title">Brokered write ritual</div>
-            <SectionHeader label="Queued changes" meta={String(queue.length)} />
-            {queue.length > 0 ? (
+            <div id="configure-section-queue" className="nt-configure__queue nt-config-queue nt-write-ritual">
+            <div className="nt-configure__queue-title nt-write-ritual__title">Brokered write ritual</div>
+            <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · change queue · review before broker</div>
+            <div className="nt-row-between">
+              <SectionHeader label="Queued changes" meta={String(queueView.length)} />
+              {queueView.length > 0 ? <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} /> : null}
+            </div>
+            {queueIdsFilter !== null ? (
+              <div className="nt-chip-row" role="group" aria-label="Selection deep link">
+                <span className="nt-chip-row__label">Selection</span>
+                <button
+                  type="button"
+                  className="nt-chip nt-chip--active"
+                  title={queueIdsFilter.join(', ')}
+                  onClick={() => {
+                    const next = new URLSearchParams(location.search);
+                    next.delete('ids');
+                    const search = next.toString();
+                    navigate(
+                      {
+                        pathname: location.pathname,
+                        search: search ? `?${search}` : '',
+                        hash: location.hash,
+                      },
+                      { replace: true },
+                    );
+                  }}
+                >
+                  {queueIdsPresent === queueIdsFilter.length
+                    ? `${queueIdsFilter.length} selected change${queueIdsFilter.length === 1 ? '' : 's'}`
+                    : `${queueIdsPresent} of ${queueIdsFilter.length} selected changes present`}
+                  <span className="nt-chip__x" aria-hidden>
+                    ×
+                  </span>
+                </button>
+              </div>
+            ) : null}
+            {queueView.length > 0 ? (
               <Button
                 variant="ghost"
                 size="sm"
@@ -1511,41 +1925,77 @@ export default function Configure() {
                   const n = exportTableCsv(
                     'configure-queue.csv',
                     ['id', 'state', 'what', 'where', 'ticket', 'expiresAt'],
-                    queue.map((q) => [q.id ?? '', q.state, q.what, q.where, q.ticket, q.expiresAt ?? '']),
+                    queueExportRows(queueView),
                   );
                   toast(`Exported ${n} queued change${n === 1 ? '' : 's'}`, {
-                    description: 'configure-queue.csv — current broker queue snapshot.',
+                    description:
+                      'configure-queue.csv — summary columns only (id/state/what/where/ticket/lease). No payload bodies.',
+                    tone: 'success',
                   });
                 }}
               >
                 Export queue CSV
               </Button>
             ) : null}
-            {queue.length > 0 ? (
+            {queueView.length > 0 ? (
               <DataTable
                 ariaLabel="Queued changes"
                 columns={queueColumns}
-                rows={queue}
+                rows={queueView}
                 rowKey={queueRowKey}
                 selectedKeys={queueSel}
                 onSelectionChange={setQueueSel}
+                rowTone={(q) => q.tone}
               />
             ) : null}
-            {queue.length === 0 ? (
+            {queueView.length === 0 ? (
               <EmptyState
-                title="No changes queued"
-                description="Edit an SSID, port or VLAN to render a payload and queue it against a ticket."
-              />
+                title={queueIdsFilter !== null ? 'No matching queued changes' : 'No changes queued'}
+                description={
+                  queueIdsFilter !== null
+                    ? 'The selection deep link does not match any brokered change still in the queue. Clear the selection filter to see the full queue.'
+                    : queueSource === 'server'
+                      ? 'The write broker has nothing pending. Ticketed port and VLAN changes appear here after Queue the change; SSIDs apply directly and never enter this list. Push stays disabled until a ready entry exists.'
+                      : 'Nothing is waiting locally. When the broker answers, ticketed port and VLAN changes queue here; SSIDs apply directly and never enter this list. An empty list is not a failed read.'
+                }
+              >
+                {queueIdsFilter !== null ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const next = new URLSearchParams(location.search);
+                      next.delete('ids');
+                      const search = next.toString();
+                      navigate(
+                        {
+                          pathname: location.pathname,
+                          search: search ? `?${search}` : '',
+                          hash: location.hash,
+                        },
+                        { replace: true },
+                      );
+                      setQueueSel([]);
+                    }}
+                  >
+                    Clear selection filter
+                  </Button>
+                ) : null}
+              </EmptyState>
             ) : null}
             {/* The bulk bar is contextual — it exists only while rows are
                 selected, and it never opens a new path: Approve/Reject run
                 the same per-item push/discard the buttons below run, one
                 change at a time, with the per-item outcomes named. */}
             {queueSel.length > 0 ? (
-              <div className="nt-configure-bulk-bar">
+              <div
+                className="nt-configure-bulk-bar nt-bulk-glass"
+                role="region"
+                aria-label="Queued change selection actions"
+              >
                 <span className="nt-configure-bulk-bar__count">{`${queueSel.length} SELECTED`}</span>
                 <span className="nt-configure-bulk-bar__hint">
-                  each change still goes through its own brokered review — the bar just iterates
+                  approve/reject still broker each change — export, copy ids, or share a selection link for the rows you marked
                 </span>
                 <span className="nt-configure-bulk-bar__actions">
                   <Button
@@ -1564,13 +2014,123 @@ export default function Configure() {
                   >
                     {bulkBusy === 'reject' ? 'Rejecting…' : 'Reject'}
                   </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={bulkBusy !== null}
+                    onClick={() => {
+                      const selected = new Set(queueSel);
+                      const picked = queueView.filter((q) => selected.has(queueRowKey(q)));
+                      if (picked.length === 0) {
+                        toast('No selected changes still in view', {
+                          description: 'Clear selection or adjust the selection link.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const n = exportTableCsv(
+                        'configure-queue-selected.csv',
+                        ['id', 'state', 'what', 'where', 'ticket', 'expiresAt'],
+                        queueExportRows(picked),
+                      );
+                      toast(`Exported ${countOf(n, 'selected change')}`, {
+                        description:
+                          'configure-queue-selected.csv — summary columns only (id/state/what/where/ticket/lease). No payload bodies.',
+                        tone: 'success',
+                      });
+                    }}
+                  >
+                    Export selected
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={bulkBusy !== null}
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(queueSel);
+                        const picked = queueView.filter((q) => selected.has(queueRowKey(q)));
+                        if (picked.length === 0) {
+                          toast('No selected changes still in view', {
+                            description: 'Clear selection or adjust the selection link.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const ids = [
+                          ...new Set(
+                            picked
+                              .map((q) => (q.id ?? '').trim())
+                              .filter((id) => id.length > 0),
+                          ),
+                        ];
+                        if (ids.length === 0) {
+                          toast('No broker ids on the selection', {
+                            description:
+                              'Local offline rows have no broker id — export CSV for ticket/what instead.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const text = ids.join('\n');
+                        try {
+                          await navigator.clipboard.writeText(text);
+                          toast(`Copied ${countOf(ids.length, 'id')}`, {
+                            description:
+                              ids.length < picked.length
+                                ? `${picked.length - ids.length} selected without a broker id skipped`
+                                : 'newline-joined · paste into a ticket or change window',
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy ids', { description: text, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy IDs
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={bulkBusy !== null}
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(queueSel);
+                        const picked = queueView.filter((q) => selected.has(queueRowKey(q)));
+                        if (picked.length === 0) {
+                          toast('No selected changes still in view', {
+                            description: 'Clear selection or adjust the selection link.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const next = new URLSearchParams(location.search);
+                        next.set('ids', picked.map(queueRowKey).join('\n'));
+                        next.set('section', 'queue');
+                        const qs = next.toString();
+                        const url = `${window.location.origin}${location.pathname}${qs ? `?${qs}` : ''}#queue`;
+                        try {
+                          await navigator.clipboard.writeText(url);
+                          toast('Selection link copied', {
+                            description: `${picked.length} change${picked.length === 1 ? '' : 's'} · ids= · section=queue`,
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy link', { description: url, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy selection link
+                  </Button>
                   <Button variant="ghost" size="sm" disabled={bulkBusy !== null} onClick={() => setQueueSel([])}>
                     Clear
                   </Button>
                 </span>
               </div>
             ) : null}
-            <div className="nt-row nt-wrap-6 nt-gap-8" style={{ paddingTop: 12 }}>
+            <div className="nt-row nt-wrap-6 nt-gap-8 nt-pt-12">
               <Button
                 variant="secondary"
                 size="sm"
@@ -1586,7 +2146,7 @@ export default function Configure() {
             </div>
           ) : null}
 
-          <div>
+          <div id="configure-section-targets">
             <SectionHeader
               label="Where a change can go"
               meta={dormantTargets.length > 0 ? `${writableTargets.length} REACHABLE` : undefined}
@@ -1634,6 +2194,7 @@ export default function Configure() {
           if (!v) setKind(null);
         }}
         width="lg"
+        className="nd-drawer--write-ritual nt-write-ritual"
         title={kind ? CONFIG_EDIT_TITLES[kind] : ''}
         description={
           kind
@@ -1647,6 +2208,7 @@ export default function Configure() {
       >
         {kind ? (
           <div className="nt-drawer-stack">
+            <div className="nt-write-ritual nt-write-ritual--banner" />
             {kind === 'ssid' ? (
               <div className="nt-drawer-stack">
                 {mistDirectAvailable ? (
@@ -1729,6 +2291,7 @@ export default function Configure() {
                     and the section itself disappears when the Mist mode needs nothing (Open). */}
                 {!mistSsid || ssidRequirement.passphrase ? (
                 <div className="nt-stack nt-gap-12">
+                  <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · SSID dependencies · security fabric</div>
                   <SectionHeader label="Security dependencies" meta={ssidCatalogLoading ? 'loading…' : undefined} />
                   {/* FormField only clones an id onto a SINGLE child element for the
                       label's htmlFor — the "unavailable" note is a sibling below it,
@@ -1809,8 +2372,12 @@ export default function Configure() {
                 <div className="nt-stack nt-gap-8">
                   <SectionHeader label="Scope" meta={`${ssid.scopeIds?.length ?? 0} selected`} />
                   {ssidCatalogLoading ? (
-                    <div className="nt-center-pad">
-                      <Spinner size="sm" />
+                    <div className="nt-center-pad" role="status" aria-label="Loading scope catalog">
+                      <div className="nt-stack nt-gap-6">
+                        <Skeleton height={12} width="36%" />
+                        <Skeleton height={28} />
+                        <Skeleton height={28} />
+                      </div>
                     </div>
                   ) : ssidCatalogError ? (
                     <Alert tone="danger" title="The scope catalog could not be read">
@@ -1980,7 +2547,7 @@ export default function Configure() {
             {kind === 'vlan' ? (
               <div className="nt-drawer-stack">
                 <div
-                  className="nt-form-grid" style={{ gridTemplateColumns: "80px minmax(0, 1fr)", gap: 14 }}
+                  className="nt-form-grid nt-cfg-grid-review"
                 >
                   <FormField label="ID">
                     <Input
@@ -2024,11 +2591,13 @@ export default function Configure() {
             ) : null}
 
             <div className="nt-stack nt-gap-10">
+              <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · write preview · plane truth</div>
               <SectionHeader label={labConfigMode ? 'What will be applied' : 'What gets pushed'} meta={previewMeta} />
               <Code block>{preview}</Code>
             </div>
 
             <div className="nt-stack nt-gap-2">
+              <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · blast radius · impact owns hue</div>
               <SectionHeader label={liveMode ? 'Impact evidence' : 'Blast radius'} />
               {radius.map((r) => (
                 <div
@@ -2060,13 +2629,7 @@ export default function Configure() {
                     return (
                       <div
                         key={scopeId}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                          padding: '6px 0',
-                          borderBottom: '1px solid var(--nd-border-subtle)',
-                        }}
+                        className="nt-cfg-audit-row"
                       >
                         <span className="nt-body-sec nt-flex-1">
                           {option?.label ?? scopeId}
@@ -2091,7 +2654,7 @@ export default function Configure() {
                 ) : null}
                 {valueProblems.length > 0 ? (
                   <Alert tone="warning" title={`Apply is disabled — ${mistSsid ? 'Mist' : 'Central'} would refuse this form`}>
-                    <div className="nt-stack" style={{ gap: 4, fontSize: 13 }}>
+                    <div className="nt-stack nt-gap-4 nt-fs-13">
                       {valueProblems.map((problem) => (
                         <span key={problem}>{problem}</span>
                       ))}
@@ -2105,7 +2668,7 @@ export default function Configure() {
                     </span>
                   </Alert>
                 ) : null}
-                <div className="nt-filter-bar nt-gap-8">
+                <div className="nt-filter-bar nt-gap-8 nt-sticky-filters">
                   <Button variant="primary" size="md" disabled={ssidApplyDisabled} onClick={() => void applySsid()}>
                     {ssidApplying ? 'Applying…' : labConfigMode ? 'Apply' : 'Apply directly'}
                   </Button>
@@ -2150,13 +2713,7 @@ export default function Configure() {
                         {ssidApplyResult.result.assignments.map((a) => (
                           <span
                             key={a.scopeId}
-                            style={{
-                              fontSize: 12.5,
-                              color:
-                                a.verified === false || isUnconfirmed(a)
-                                  ? 'var(--nd-warning)'
-                                  : 'var(--nd-text-secondary)',
-                            }}
+                            className={[`nt-fs-125`, a.verified === false || isUnconfirmed(a) ? 'nt-fs-125 nt-tone-warning' : 'nt-fs-125 nt-tone-secondary'].filter(Boolean).join(" ")}
                           >
                             {assignmentMark(a)} {a.label} — {a.message}
                           </span>
@@ -2196,7 +2753,7 @@ export default function Configure() {
                 ) : null}
                 {valueProblems.length > 0 ? (
                   <Alert tone="warning" title="Apply is disabled — Central would refuse this form">
-                    <div className="nt-stack" style={{ gap: 4, fontSize: 13 }}>
+                    <div className="nt-stack nt-gap-4 nt-fs-13">
                       {valueProblems.map((problem) => (
                         <span key={problem}>{problem}</span>
                       ))}
@@ -2244,7 +2801,7 @@ export default function Configure() {
                             : 'Not applied'
                       }
                     >
-                      <div className="nt-stack-col nt-gap-6" style={{ fontSize: 13 }}>
+                      <div className="nt-stack-col nt-gap-6 nt-fs-13">
                         <span>{directApply.result.message}</span>
                         {directApply.result.cacheRefresh?.attempted && !directApply.result.cacheRefresh.ok ? (
                           <span>
@@ -2279,7 +2836,7 @@ export default function Configure() {
                 ) : null}
                 {valueProblems.length > 0 ? (
                   <Alert tone="warning" title="Queueing is disabled — the broker would refuse this form">
-                    <div className="nt-stack" style={{ gap: 4, fontSize: 13 }}>
+                    <div className="nt-stack nt-gap-4 nt-fs-13">
                       {valueProblems.map((problem) => (
                         <span key={problem}>{problem}</span>
                       ))}
@@ -2365,7 +2922,7 @@ export default function Configure() {
       >
         <div className="nt-stack nt-gap-2">
           <div className="nt-filter-bar nt-gap-8">
-            <div className="nt-flex-1-wide" style={{ minWidth: 160 }}>
+            <div className="nt-flex-1-wide nt-min-w-160">
               <SectionHeader
                 label={labConfigMode ? 'Direct applies' : 'Brokered changes'}
                 // A bare count reads as "this is how many there are". When a
@@ -2373,10 +2930,68 @@ export default function Configure() {
                 meta={
                   history.kind === 'ok'
                     ? history.unreadable.length > 0
-                      ? `${history.events.length} readable`
-                      : String(history.events.length)
+                      ? `${historyEventsVisible.length} readable`
+                      : historyKind !== 'all'
+                        ? `${historyEventsVisible.length} of ${history.events.length}`
+                        : String(history.events.length)
                     : undefined
                 }
+              />
+            </div>
+            <div className="nt-w-120">
+              <Select
+                options={[
+                  { value: 'all', label: 'All kinds' },
+                  { value: 'ssid', label: 'SSID' },
+                  { value: 'port', label: 'Port' },
+                  { value: 'vlan', label: 'VLAN' },
+                ]}
+                value={historyKind}
+                onValueChange={(v) => {
+                  const next =
+                    v === 'ssid' || v === 'port' || v === 'vlan' ? v : 'all';
+                  setHistoryKind(next);
+                }}
+                size="sm"
+                aria-label="Filter history by kind"
+              />
+            </div>
+            <div className="nt-w-140">
+              <Input
+                size="sm"
+                mono
+                placeholder="result…"
+                value={historyResult}
+                onChange={(e) => setHistoryResult(e.target.value)}
+                onBlur={() => {
+                  void openHistory(historyKind, historyResult, historyTicket);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void openHistory(historyKind, historyResult, historyTicket);
+                  }
+                }}
+                aria-label="Filter history by result"
+              />
+            </div>
+            <div className="nt-w-140">
+              <Input
+                size="sm"
+                mono
+                placeholder="ticket…"
+                value={historyTicket}
+                onChange={(e) => setHistoryTicket(e.target.value)}
+                onBlur={() => {
+                  void openHistory(historyKind, historyResult, historyTicket);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void openHistory(historyKind, historyResult, historyTicket);
+                  }
+                }}
+                aria-label="Filter history by ticket"
               />
             </div>
             <Button
@@ -2384,15 +2999,87 @@ export default function Configure() {
               size="sm"
               disabled={history.kind !== 'ok' || history.events.length === 0}
               onClick={() => {
-                window.open('/api/configure/history/export?limit=200', '_blank', 'noopener,noreferrer');
+                void (async () => {
+                  const qs = new URLSearchParams();
+                  qs.set('limit', '200');
+                  if (historyKind !== 'all') qs.set('kind', historyKind);
+                  if (historyResult.trim()) qs.set('result', historyResult.trim());
+                  if (historyTicket.trim()) qs.set('ticket', historyTicket.trim());
+                  const res = await downloadApiCsv(
+                    `/api/configure/history/export?${qs.toString()}`,
+                    'configure-history.csv',
+                  );
+                  if (res.ok) {
+                    toast('Server CSV downloaded', {
+                      description: 'configure-history.csv — broker audit events (no payloads).',
+                      tone: 'success',
+                    });
+                  } else {
+                    toast('Server CSV failed', {
+                      description: res.error ?? 'Could not download history export',
+                      tone: 'warning',
+                    });
+                  }
+                })();
               }}
             >
-              Download CSV
+              Download server CSV
             </Button>
           </div>
+          {historyKindChips.length > 0 ? (
+            <div className="nt-chip-row" role="group" aria-label="History kind">
+              <span className="nt-chip-row__label">Kind</span>
+              {historyKindChips.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  onClick={() => setHistoryKind(historyKind === c.key ? 'all' : c.key)}
+                  className={
+                    historyKind === c.key
+                      ? 'nt-chip nt-chip--active nt-toggle-chip'
+                      : 'nt-chip nt-toggle-chip'
+                  }
+                  aria-pressed={historyKind === c.key}
+                >
+                  <Badge tone="neutral">{c.label}</Badge>
+                  <span className="nt-chip__count">{c.count}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {historyResultChips.length > 0 ? (
+            <div className="nt-chip-row" role="group" aria-label="History result">
+              <span className="nt-chip-row__label">Result</span>
+              {historyResultChips.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  onClick={() =>
+                    setHistoryResult(
+                      historyResultNeedle && c.key.toLowerCase() === historyResultNeedle
+                        ? ''
+                        : c.key,
+                    )
+                  }
+                  className={
+                    c.pressed ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+                  }
+                  aria-pressed={c.pressed}
+                  data-result={c.key}
+                >
+                  <Badge tone="neutral">{c.label}</Badge>
+                  <span className="nt-chip__count">{c.count}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
           {history.kind === 'loading' ? (
-            <div className="nt-center-pad nt-center-pad" style={{ padding: 32 }}>
-              <Spinner size="sm" />
+            <div className="nt-center-pad nt-pad-32" role="status" aria-label="Loading change history">
+              <div className="nt-stack nt-gap-6">
+                <Skeleton height={12} width="34%" />
+                <Skeleton height={28} />
+                <Skeleton height={28} />
+              </div>
             </div>
           ) : null}
           {history.kind === 'error' ? (
@@ -2426,7 +3113,7 @@ export default function Configure() {
             </Alert>
           ) : null}
           {history.kind === 'ok'
-            ? history.events.map((e, i) => (
+            ? historyEventsVisible.map((e, i) => (
                 <div
                   key={`${e.ts}-${e.changeId}-${e.event}-${i}`}
                   className="nt-configure-drawer-row nt-configure-drawer-row--lg"
@@ -2437,7 +3124,7 @@ export default function Configure() {
                     {hhmm(e.ts)}
                   </span>
                   <div className="nt-stack-col--flex nt-gap-3">
-                    <span className="nt-text-pri-12" style={{ fontSize: 12.5 }}>
+                    <span className="nt-text-pri-12 nt-fs-125">
                       {e.event} {e.kind}
                     </span>
                     <span
@@ -2464,6 +3151,16 @@ export default function Configure() {
                   : "Every dry run, queue, push and discard is written to the broker's audit log. Nothing has gone through it on this install."
               }
             />
+          ) : null}
+          {history.kind === 'ok' && history.events.length > 0 && historyEventsVisible.length === 0 ? (
+            <EmptyState
+              title="No history rows match this kind"
+              description="Clear the kind filter (or pick another chip) to see the rest of the audit log."
+            >
+              <Button variant="ghost" size="sm" onClick={() => setHistoryKind('all')}>
+                Clear kind filter
+              </Button>
+            </EmptyState>
           ) : null}
         </div>
       </Drawer>

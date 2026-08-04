@@ -57,8 +57,8 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import DeviceDetail from './DeviceDetail';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -2508,5 +2508,604 @@ describe('DeviceDetail — hardware trends panel', () => {
       (await screen.findAllByRole('img', { name: /line broken where samples are missing/ })).length,
     ).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('31 in the window')).toBeTruthy();
+  });
+});
+
+describe('DeviceDetail — copy view link + summary export', () => {
+  it('offers Copy view link and Export summary on the live header', async () => {
+    const device = {
+      ...DEVICES.find((d) => d.name === 'ap-3f-12')!,
+      claimCode: 'KV4M9Q2X7RND3H1',
+    };
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:device-summary'),
+      revokeObjectURL: vi.fn(),
+    });
+
+    renderDeviceDetailAtPath('/devices/ap-3f-12?plane=MIST&serial=SN1');
+
+    expect(await screen.findByRole('heading', { name: 'ap-3f-12' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Export summary' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]?.[0]).toMatch(/^https?:\/\//);
+    fireEvent.click(screen.getByRole('button', { name: 'Export summary' }));
+    expect(await screen.findByText(/Exported 1 device summary/)).toBeTruthy();
+  });
+});
+
+/* Loop 67 — Clients-on-this-device sub-table export. */
+describe('DeviceDetail — Export clients', () => {
+  it('exports the attached clients sub-table on the demo branch', async () => {
+    const profile = deviceProfile('sw-core-a');
+    const clients = DEVICE_CLIENT_SETS[profile.kind];
+    expect(clients.rows.length).toBeGreaterThan(0);
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients,
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:device-clients'),
+      revokeObjectURL: vi.fn(),
+    });
+
+    renderDeviceDetail('sw-core-a');
+
+    expect(await screen.findByText('Clients on this device')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Export clients' }));
+    expect(await screen.findByText(new RegExp(`Exported ${clients.rows.length} client`))).toBeTruthy();
+  });
+});
+
+describe('DeviceDetail — configuration ?tab= share', () => {
+  function SearchProbe() {
+    const location = useLocation();
+    return <div data-testid="search">{location.search}</div>;
+  }
+
+  function renderWithSearch(path: string) {
+    return render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
+        <SettingsProvider>
+          <ToastProvider>
+            <Routes>
+              <Route path="/devices/:name" element={<DeviceDetail />} />
+            </Routes>
+            <SearchProbe />
+          </ToastProvider>
+        </SettingsProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  function seedConfigDetail() {
+    const profile = deviceProfile('sw-core-a');
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+  }
+
+  it('honours ?tab=diff on Configuration and writes tab back when changed', async () => {
+    seedConfigDetail();
+    renderWithSearch('/devices/sw-core-a?plane=CENTRAL&tab=diff');
+
+    expect(
+      (await screen.findByRole('tab', { name: 'Drift vs. baseline' })).getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(screen.getByTestId('search').textContent).toContain('tab=diff');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }));
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toContain('tab=history'));
+    expect(screen.getByTestId('search').textContent).toContain('plane=CENTRAL');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Running' }));
+    await waitFor(() => expect(screen.getByTestId('search').textContent).not.toContain('tab='));
+    expect(screen.getByTestId('search').textContent).toContain('plane=CENTRAL');
+  });
+});
+
+/* Loop 171 — DeviceDetail header LIVE badge honesty (pure live + devices blend). */
+describe('DeviceDetail Loop 171 residuals', () => {
+  it('stamps LIVE on pure live inventory-only detail', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+    expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
+    expect(screen.getByText('LIVE')).toBeTruthy();
+  });
+
+  it('stamps LIVE when devices arrive via blend', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'demo',
+      blended: ['devices'],
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+    expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
+    expect(screen.getByText('LIVE')).toBeTruthy();
+  });
+
+  it('keeps pure demo chrome quiet (no LIVE badge)', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    const profile = deviceProfile('sw-core-a');
+    if (!profile) throw new Error('profile fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+    expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+/* Loop 180 — DeviceDetail clients multi-select Export selected + Copy MACs bulk bar. */
+describe('DeviceDetail clients bulk selection (Loop 180)', () => {
+  it('shows bulk bar for selection: Export selected, Copy MACs, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:device-clients-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const profile = deviceProfile('sw-core-a');
+    if (!profile) throw new Error('profile fixture missing');
+    const base = DEVICE_CLIENT_SETS[profile.kind];
+    const clients = {
+      ...base,
+      rows: [
+        {
+          name: 'infusion-4A-12',
+          detail: 'port 1/1/20 · MAB · vlan 820',
+          model: 'Infuser',
+          mac: 'aa:bb:cc:dd:ee:01',
+          ip: '10.20.30.40',
+          where: 'port 1/1/20',
+          state: 'up',
+          tone: 'success' as const,
+        },
+        {
+          name: 'voip-3f-114',
+          detail: 'port 1/1/31 · 802.1X · vlan 816',
+          model: 'Phone',
+          mac: 'aa:bb:cc:dd:ee:02',
+          ip: '10.20.30.41',
+          where: 'port 1/1/31',
+          state: 'up',
+          tone: 'success' as const,
+        },
+      ],
+    };
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients,
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    const { container } = renderDeviceDetail('sw-core-a');
+    expect(await screen.findByText('Clients on this device')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Device client selection actions' })).toBeNull();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Clients on this device"]') as HTMLElement | null;
+      if (!el) throw new Error('Clients table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Device client selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected client/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy MACs' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('aa:bb:cc:dd:ee:01');
+    expect(await screen.findByText(/Copied 1 MAC/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Device client selection actions' })).toBeNull(),
+    );
+  });
+});
+
+/* Loop 184 — DeviceDetail clients bulk Copy selection link (?macs=) + clearable chip. */
+describe('DeviceDetail clients selection link (Loop 184)', () => {
+  it('Copy selection link writes macs=', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const profile = deviceProfile('sw-core-a');
+    if (!profile) throw new Error('profile fixture missing');
+    const base = DEVICE_CLIENT_SETS[profile.kind];
+    const clients = {
+      ...base,
+      rows: [
+        {
+          name: 'infusion-4A-12',
+          detail: 'port 1/1/20 · MAB · vlan 820',
+          model: 'Infuser',
+          mac: 'aa:bb:cc:dd:ee:01',
+          ip: '10.20.30.40',
+          where: 'port 1/1/20',
+          state: 'up',
+          tone: 'success' as const,
+        },
+        {
+          name: 'voip-3f-114',
+          detail: 'port 1/1/31 · 802.1X · vlan 816',
+          model: 'Phone',
+          mac: 'aa:bb:cc:dd:ee:02',
+          ip: '10.20.30.41',
+          where: 'port 1/1/31',
+          state: 'up',
+          tone: 'success' as const,
+        },
+      ],
+    };
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients,
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    const { container } = renderDeviceDetail('sw-core-a');
+    expect(await screen.findByText('Clients on this device')).toBeTruthy();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Clients on this device"]') as HTMLElement | null;
+      if (!el) throw new Error('Clients table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Device client selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = decodeURIComponent(String(writeText.mock.calls[0]![0]));
+    expect(url).toMatch(/macs=/);
+    expect(url).toContain('aa:bb:cc:dd:ee:01');
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?macs= and shows a clearable selection chip', async () => {
+    const profile = deviceProfile('sw-core-a');
+    if (!profile) throw new Error('profile fixture missing');
+    const base = DEVICE_CLIENT_SETS[profile.kind];
+    const clients = {
+      ...base,
+      rows: [
+        {
+          name: 'infusion-4A-12',
+          detail: 'port 1/1/20 · MAB · vlan 820',
+          model: 'Infuser',
+          mac: 'aa:bb:cc:dd:ee:01',
+          ip: '10.20.30.40',
+          where: 'port 1/1/20',
+          state: 'up',
+          tone: 'success' as const,
+        },
+        {
+          name: 'voip-3f-114',
+          detail: 'port 1/1/31 · 802.1X · vlan 816',
+          model: 'Phone',
+          mac: 'aa:bb:cc:dd:ee:02',
+          ip: '10.20.30.41',
+          where: 'port 1/1/31',
+          state: 'up',
+          tone: 'success' as const,
+        },
+      ],
+    };
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients,
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    const { container } = renderDeviceDetailAtPath(
+      `/devices/sw-core-a?macs=${encodeURIComponent('aa:bb:cc:dd:ee:01')}`,
+    );
+    expect(await screen.findByText('Clients on this device')).toBeTruthy();
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Clients on this device"]') as HTMLElement | null;
+      if (!el) throw new Error('Clients table missing');
+      return el;
+    });
+    expect(within(table).queryByText('voip-3f-114')).toBeNull();
+    expect(within(table).getByText('infusion-4A-12')).toBeTruthy();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected MAC/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Selection deep link' })).toBeNull());
+    expect(await within(table).findByText('voip-3f-114')).toBeTruthy();
+  });
+});
+
+/* Loop 187 — DeviceDetail profile ports multi-select Export selected + Copy ports + selection link. */
+describe('DeviceDetail ports bulk selection (Loop 187)', () => {
+  it('shows bulk bar for selection: Export selected, Copy ports, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:device-ports-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const profile = deviceProfile('sw-core-a');
+    if (!profile) throw new Error('profile fixture missing');
+    expect(profile.ports.length).toBeGreaterThan(0);
+    const firstPort = profile.ports[0]!.id;
+
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    const { container } = renderDeviceDetail('sw-core-a');
+    expect(await screen.findByText('Ports of interest')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Device port selection actions' })).toBeNull();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector(`[aria-label="${profile.listTitle}"]`) as HTMLElement | null;
+      if (!el) throw new Error('Ports table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Device port selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected port/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy ports' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain(firstPort);
+    expect(await screen.findByText(/Copied 1 port/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Device port selection actions' })).toBeNull(),
+    );
+  });
+
+  it('Copy selection link writes ports= and deep-link chip clears', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const base = deviceProfile('sw-core-a');
+    if (!base) throw new Error('profile fixture missing');
+    const profile = {
+      ...base,
+      ports: [
+        { ...base.ports[0]!, id: '1/1/10' },
+        { ...base.ports[0]!, id: '1/1/11', what: 'loop187-extra' },
+      ],
+    };
+
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    const { container } = renderDeviceDetail('sw-core-a');
+    expect(await screen.findByText('Ports of interest')).toBeTruthy();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector(`[aria-label="${profile.listTitle}"]`) as HTMLElement | null;
+      if (!el) throw new Error('Ports table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Device port selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = decodeURIComponent(String(writeText.mock.calls[0]![0]));
+    expect(url).toMatch(/ports=/);
+    expect(url).toContain('1/1/10');
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+
+    cleanup();
+    mockGetDeviceDetail.mockResolvedValue({
+      device: DEVICES.find((d) => d.name === 'sw-core-a') ?? null,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    const second = renderDeviceDetailAtPath(
+      `/devices/sw-core-a?ports=${encodeURIComponent('1/1/10')}`,
+    );
+    expect(await screen.findByText('Ports of interest')).toBeTruthy();
+    const table2 = await waitFor(() => {
+      const el = second.container.querySelector(`[aria-label="${profile.listTitle}"]`) as HTMLElement | null;
+      if (!el) throw new Error('Ports table missing');
+      return el;
+    });
+    expect(within(table2).queryByText('loop187-extra')).toBeNull();
+    expect(within(table2).getByText('1/1/10')).toBeTruthy();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected port/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Selection deep link' })).toBeNull());
+    expect(await within(table2).findByText('loop187-extra')).toBeTruthy();
+  });
+});
+
+
+/* Loop 199 — keyboard shortcuts help on ports/clients grids. */
+describe('DeviceDetail Loop 199 residuals', () => {
+  it('exposes keyboard shortcuts help on the device hero', async () => {
+    const device = DEVICES.find((d) => d.name === 'sw-core-a');
+    if (!device) throw new Error('fixture missing');
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile: null,
+      config: null,
+      clients: null,
+      dataSource: 'live',
+    });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+
+    renderDeviceDetail('sw-core-a');
+    expect(await screen.findByRole('heading', { name: 'sw-core-a' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});
+
+/* Loop 207 — ports selection-empty Clear selection filter CTA. */
+describe('DeviceDetail Loop 207 residuals', () => {
+  it('offers Clear selection filter when ports deep link matches nothing', async () => {
+    const profile = deviceProfile('sw-core-a');
+    const device = DEVICES.find((d) => d.name === 'sw-core-a') ?? null;
+    if (!profile || !device) throw new Error('fixture missing');
+    expect(profile.ports.length).toBeGreaterThan(0);
+    mockGetDeviceDetail.mockResolvedValue({
+      device,
+      profile,
+      config: DEVICE_CONFIGS[profile.kind],
+      clients: DEVICE_CLIENT_SETS[profile.kind],
+      dataSource: 'demo',
+    });
+    mockGetTickets.mockResolvedValue({ tickets: [], dataSource: 'demo' });
+    mockGetTerminalSessions.mockResolvedValue([]);
+    mockGetTerminalSession.mockResolvedValue(null);
+
+    const { container } = renderDeviceDetailAtPath(
+      `/devices/sw-core-a?ports=${encodeURIComponent('missing-port')}`,
+    );
+    expect(await screen.findByText('No ports match this selection')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection filter' }));
+    await waitFor(() => expect(screen.queryByText('No ports match this selection')).toBeNull());
+    expect(
+      await waitFor(() => {
+        const el = container.querySelector(`[aria-label="${profile.listTitle}"]`) as HTMLElement | null;
+        if (!el) throw new Error('Ports table missing');
+        return el;
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByRole('group', { name: 'Selection deep link' })).toBeNull();
   });
 });

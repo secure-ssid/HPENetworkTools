@@ -14,6 +14,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { MistSection } from './MistSection';
 import { ToastProvider } from '../../nightdesk';
 import { MIST_AUDIT_LOG } from '@hpe/shared';
@@ -22,6 +23,7 @@ import type {
   MistWebhookRegistrationResult,
   MistWebhookRegistrationStatus,
 } from '@hpe/shared';
+import * as csv from '../../lib/csv';
 
 const { mockLabConfigMode } = vi.hoisted(() => ({ mockLabConfigMode: vi.fn(() => ({ lab: false })) }));
 vi.mock('../../hooks/useLabConfigMode', () => ({ useLabConfigMode: mockLabConfigMode }));
@@ -89,9 +91,11 @@ function stubMistFetch(opts: MistFetchOpts = {}) {
 
 function renderPanel() {
   return render(
-    <ToastProvider>
-      <MistSection />
-    </ToastProvider>,
+    <MemoryRouter>
+      <ToastProvider>
+        <MistSection />
+      </ToastProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -236,10 +240,29 @@ describe('MistSection — org audit log', () => {
     expect(screen.getByText(/org-wide/)).toBeTruthy();
   });
 
+  it('offers Export CSV + Copy section link for the audit log (Loop 49)', async () => {
+    stubMistFetch();
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
+    const spy = vi.spyOn(csv, 'exportTableCsv').mockReturnValue(3);
+    renderPanel();
+    expect(await screen.findByText(/Updated WLAN 'MRDN-Research'/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy section link' }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenCalled());
+    expect(String(clipboard.writeText.mock.calls[0]![0])).toMatch(/\/mist\?section=audit/);
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+    expect(spy).toHaveBeenCalled();
+    expect(spy.mock.calls[0]![0]).toBe('mist-audit-log.csv');
+    spy.mockRestore();
+  });
+
   it('an honest empty when Mist reports no admin changes', async () => {
     stubMistFetch({ audit: { entries: [], source: { plane: 'mist', at: '2026-07-26T11:59:00.000Z', sections: { logs: 'empty' } } } });
     renderPanel();
     expect(await screen.findByText('Mist reported no admin changes for this org.')).toBeTruthy();
+    // Empty list: no client Export CSV; share link still available.
+    expect(screen.getByRole('button', { name: 'Copy section link' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Export CSV' })).toBeNull();
   });
 
   it('no linked plane is a straight sentence, and a failed read says it broke', async () => {

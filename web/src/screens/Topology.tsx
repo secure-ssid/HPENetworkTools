@@ -23,28 +23,58 @@
  * neighbours — everything else dims, cards and edges alike. While a focus is
  * active every card click moves it (navigation is suspended, never triggered);
  * the exit chip, Esc or a click on the canvas background restores the graph.
+ *
+ * A **Plane** chip row (counts over the q+type+ghosts universe) toggles the
+ * same `?plane=` as the plane Select, a **Type** chip row (counts over the
+ * q+plane+ghosts universe) toggles the same `?type=` as the device-type Select,
+ * and a **Ghosts** chip row (counts over q+plane+type — Loop 148) toggles the
+ * same `?ghosts=` as the Ghosts-only Switch —
+ * click either again to clear. Header **LIVE** stamps pure live and blend feeds
+ * alike; the footer provenance stamp follows the same rule (Loop 163).
+ *
+ * Filtered **nodes** table multi-select (Loop 186) raises **Export selected**,
+ * **Copy serials** (unique newline-joined inventory serials — Devices pattern),
+ * **Copy selection link** (`?ids=` of marked node ids — Sites pattern; clearable
+ * chip), and **Clear**. Full graph CSV stays in the header. Nodes table carries
+ * keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS — Loop 192). Filtered /
+ * bare empties offer **Clear filters** / **Inventory** / **Connected systems**
+ * (Loop 192). Selection-empty `?ids=` offers **Clear selection filter** (Loop 208).
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { countOf, hhmmLocal as hhmm } from '@hpe/shared';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { countOf, filterTopologyGraph, hhmmLocal as hhmm } from '@hpe/shared';
 import type {
   DeviceType,
   StatDef,
-  Tone,
   TopologyGraph,
   TopologyGraphEdge,
   TopologyGraphNode,
   TopologyGraphSite,
 } from '@hpe/shared';
 import {
-  PageSkeleton, Alert, Badge, Button, EmptyState, useToast } from '../nightdesk';
+  PageSkeleton,
+  Alert,
+  Badge,
+  Button,
+  DataTable,
+  DATATABLE_ROW_SHORTCUTS,
+  EmptyState,
+  Input,
+  KeyboardShortcuts,
+  SectionHeader,
+  Select,
+  Switch,
+  useToast,
+  type DataTableColumn,
+} from '../nightdesk';
 import { getTopology } from '../api/client';
 import type { TopologyData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
-import { deviceDetailPath } from '../app/nav';
+import { deviceDetailPath, namesFilterForParam } from '../app/nav';
 import { ScreenHeader } from './ScreenHeader';
 import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
 import { Topology3DCanvas } from './Topology3DCanvas';
@@ -52,7 +82,105 @@ import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { DeviceTypeBadge } from '../components/DeviceTypeBadge';
 
+/** Re-export for screen tests that import the helper from this module. */
+export { filterTopologyGraph };
+
 export const UNFILED_KEY = '__filed-nowhere__';
+
+export type TopologyFocus = { kind: 'site' | 'node'; id: string };
+
+/** Parse `focus=site:ID` / `focus=node:ID` from the share URL. */
+export function focusFromParam(raw: string | null): TopologyFocus | null {
+  if (!raw) return null;
+  const sep = raw.indexOf(':');
+  if (sep <= 0) return null;
+  const kind = raw.slice(0, sep);
+  const id = raw.slice(sep + 1).trim();
+  if (!id) return null;
+  if (kind === 'site' || kind === 'node') return { kind, id };
+  return null;
+}
+
+export function focusToParam(focus: TopologyFocus | null): string | null {
+  if (!focus) return null;
+  return `${focus.kind}:${focus.id}`;
+}
+
+
+/** Unique plane labels present on the graph (for the filter Select). */
+export function topologyPlaneOptions(graph: TopologyGraph): string[] {
+  const set = new Set<string>();
+  for (const n of graph.nodes) for (const p of n.planes) set.add(p);
+  for (const s of graph.sites) for (const p of s.planes) set.add(p);
+  return [...set].sort();
+}
+
+/** Unique non-empty node.type labels present on the graph (for the type filter). */
+export function topologyTypeOptions(graph: TopologyGraph): string[] {
+  const set = new Set<string>();
+  for (const n of graph.nodes) {
+    const t = (n.type ?? '').trim();
+    if (t) set.add(t);
+  }
+  return [...set].sort();
+}
+
+const topologyNodeColumns: Array<DataTableColumn<TopologyGraphNode>> = [
+  {
+    key: 'name',
+    title: 'Node',
+    hideable: false,
+    sortValue: (n) => n.name,
+    render: (n) => (
+      <span>
+        <strong>{n.name}</strong>
+        {n.ghost ? (
+          <small className="nt-hint-muted nt-ml-8">ghost</small>
+        ) : n.siteName ? (
+          <small className="nt-hint-muted nt-ml-8">{n.siteName}</small>
+        ) : null}
+      </span>
+    ),
+  },
+  {
+    key: 'type',
+    title: 'Type',
+    sortValue: (n) => n.type ?? '',
+    render: (n) => {
+      const known = new Set(['switch', 'ap', 'gateway', 'controller', 'sensor', 'policy']);
+      if (n.type && known.has(n.type)) {
+        return <DeviceTypeBadge type={n.type as DeviceType} />;
+      }
+      return n.type?.trim() || '—';
+    },
+  },
+  {
+    key: 'serial',
+    title: 'Serial',
+    sortValue: (n) => n.serial ?? '',
+    render: (n) => <span className="nt-mono">{n.serial ?? '—'}</span>,
+  },
+  {
+    key: 'planes',
+    title: 'Planes',
+    sortValue: (n) => (n.planes ?? []).join('|'),
+    render: (n) => (
+      <span className="nt-wrap-6">
+        {(n.planes ?? []).map((p) => (
+          <Badge key={p} plane>
+            {p}
+          </Badge>
+        ))}
+      </span>
+    ),
+  },
+  {
+    key: 'state',
+    title: 'State',
+    sortValue: (n) => n.state ?? '',
+    render: (n) => n.state ?? '—',
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Wording — edge labels, ghost subs, stats
@@ -66,15 +194,6 @@ function stateWorthDrawing(state: string | null): string | null {
   const text = state.trim();
   return text === '' || QUIET_STATES.has(text.toLowerCase()) ? null : text;
 }
-
-const DOT: Partial<Record<Tone, string>> = {
-  success: 'var(--nd-success)',
-  warning: 'var(--nd-warning)',
-  danger: 'var(--nd-danger)',
-  neutral: 'var(--nd-border-strong)',
-  accent: 'var(--nd-accent)',
-  info: 'var(--nd-info, var(--nd-border-strong))',
-};
 
 function formatBps(bps: number | null): string | null {
   if (typeof bps !== 'number' || !Number.isFinite(bps) || bps <= 0) return null;
@@ -131,11 +250,6 @@ function ghostSub(node: TopologyGraphNode, edges: readonly TopologyGraphEdge[]):
 // The diagram
 // ---------------------------------------------------------------------------
 
-interface Focus {
-  kind: 'site' | 'node';
-  id: string;
-}
-
 function SiteCard({
   site,
   nodes,
@@ -166,7 +280,7 @@ function SiteCard({
   onToggle: (siteId: string) => void;
   onOpenSite: (siteId: string) => void;
   onOpenDevice: (node: TopologyGraphNode) => void;
-  onFocus: (focus: Focus) => void;
+  onFocus: (focus: TopologyFocus) => void;
 }) {
   const internal = edges.filter((e) => {
     const a = nodeById.get(e.from);
@@ -187,21 +301,15 @@ function SiteCard({
   };
   return (
     <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        minWidth: 0,
-        minHeight: expanded ? 280 : 84,
-        background: 'var(--nd-bg-raised)',
-        border: `1px solid ${focused ? 'var(--nd-accent)' : 'var(--nd-border-subtle)'}`,
-        borderRadius: 2,
-        opacity: dimmed ? 0.25 : 1,
-        overflow: 'hidden',
-      }}
+      className="nt-topo-site-card nt-site-card"
+      data-expanded={expanded ? 'true' : 'false'}
+      data-focused={focused ? 'true' : 'false'}
+      data-dimmed={dimmed ? 'true' : 'false'}
     >
       <button
         type="button"
-        className="nt-rowlink"
+        className="nt-rowlink nt-topo-site-card__head"
+        data-expanded={expanded ? 'true' : 'false'}
         aria-label={
           focusActive
             ? `Focus ${site.name}`
@@ -211,22 +319,11 @@ function SiteCard({
         }
         aria-expanded={expanded}
         onClick={handleClick}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 9,
-          padding: '10px 12px',
-          background: 'transparent',
-          border: 'none',
-          borderBottom: expanded ? '1px solid var(--nd-border-subtle)' : 'none',
-          cursor: 'pointer',
-          font: 'inherit',
-          textAlign: 'left',
-        }}
       >
         <span
           aria-hidden
-          className="nt-topo-dot" style={{ background: DOT[site.tone] ?? 'var(--nd-border-strong)' }}
+          className="nt-topo-dot"
+          data-tone={site.tone ?? 'neutral'}
         />
         <span className="nt-stack nt-gap-2 nt-flex-1">
           <span
@@ -235,9 +332,7 @@ function SiteCard({
             {site.name}
           </span>
           <span
-            className="nt-hint-muted" style={{ whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis' }}
+            className="nt-hint-muted nt-ellipsis"
           >
             {summary}
             {site.externalEdges > 0 ? ` · ${countOf(site.externalEdges, 'inter-site link')}` : ''}
@@ -246,7 +341,7 @@ function SiteCard({
         </span>
         <span className="nt-chip-end">
           {site.planes.map((plane) => (
-            <Badge key={plane} tone="neutral">
+            <Badge key={plane} plane>
               {plane}
             </Badge>
           ))}
@@ -284,8 +379,7 @@ function SiteCard({
               {internal.map((edge) => (
                 <span
                   key={edge.id}
-                  className="nt-hint-muted nt-ellipsis"
-                  style={{ color: edge.stale ? 'var(--nd-warning)' : 'var(--nd-text-muted)' }}
+                  className={[`nt-hint-muted nt-ellipsis`, edge.stale ? 'nt-tone-warning' : 'nt-tone-muted'].filter(Boolean).join(" ")}
                 >
                   {topologyEdgeLabel(edge, nodeById)}
                 </span>
@@ -325,7 +419,7 @@ function DeviceChip({
   focused: boolean;
   focusActive: boolean;
   onOpen: (node: TopologyGraphNode) => void;
-  onFocus: (focus: Focus) => void;
+  onFocus: (focus: TopologyFocus) => void;
 }) {
   const shownState = stateWorthDrawing(node.state);
   const knownTypes = new Set(['switch', 'ap', 'gateway', 'controller', 'sensor', 'policy']);
@@ -342,45 +436,31 @@ function DeviceChip({
   return (
     <button
       type="button"
-      className="nt-rowlink"
+      className="nt-rowlink nt-topo-node"
+      data-ghost={node.ghost ? 'true' : 'false'}
+      data-focused={focused ? 'true' : 'false'}
+      data-dimmed={dimmed ? 'true' : 'false'}
+      data-tone={node.tone ?? 'neutral'}
       aria-label={
         (focusActive || node.ghost ? `Focus ${node.name}` : `Open device ${node.name}`) +
         (shownState !== null ? `, ${shownState}` : '') +
         (node.ghost ? ' — reported, not in the inventory' : '')
       }
       onClick={handleClick}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 7,
-        padding: '5px 9px',
-        background: 'var(--nd-bg-surface)',
-        border: `1px ${node.ghost ? 'dashed' : 'solid'} ${
-          focused ? 'var(--nd-accent)' : node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-border-subtle)'
-        }`,
-        borderRadius: 2,
-        cursor: 'pointer',
-        font: 'inherit',
-        opacity: dimmed ? 0.25 : 1,
-        maxWidth: '100%',
-      }}
     >
       <span
         aria-hidden
-        className="nt-topo-dot nt-topo-dot--sm" style={{ background: DOT[node.tone] ?? 'var(--nd-border-strong)' }}
+        className="nt-topo-dot nt-topo-dot--sm"
+        data-tone={node.tone ?? 'neutral'}
       />
-      <span className="nt-stack nt-gap-0" style={{ minWidth: 0, textAlign: "left" }}>
+      <span className="nt-stack nt-gap-0 nt-ta-left nt-min-w-0">
         <span
           className="nt-topo-title nt-ellipsis nt-mono-11"
         >
           {node.name}
         </span>
         <span
-          className="nt-row nt-mono-label nt-ellipsis"
-          style={{
-            gap: 5,
-            color: shownState !== null && node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-text-muted)',
-          }}
+          className={[`nt-row nt-mono-label nt-ellipsis nt-row-center nt-gap-5`, shownState !== null && node.tone === "danger" ? "nt-tone-danger" : "nt-tone-muted"].filter(Boolean).join(" ")}
         >
           {deviceType ? <DeviceTypeBadge type={deviceType} /> : null}
           <span>
@@ -397,13 +477,29 @@ export function TopologyGraphView({
   graph,
   onOpenSite,
   onOpenDevice,
+  initialFocus = null,
+  onFocusChange,
 }: {
   graph: TopologyGraph;
   onOpenSite: (siteId: string) => void;
   onOpenDevice: (node: TopologyGraphNode) => void;
+  /** Seed focus from a share URL (`?focus=site:…` / `node:…`). */
+  initialFocus?: TopologyFocus | null;
+  /** Notify parent so Copy view link / URL can carry the active focus. */
+  onFocusChange?: (focus: TopologyFocus | null) => void;
 }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [focus, setFocus] = useState<Focus | null>(null);
+  const [focus, setFocusState] = useState<TopologyFocus | null>(initialFocus);
+
+  const setFocus = (next: TopologyFocus | null) => {
+    setFocusState(next);
+    onFocusChange?.(next);
+  };
+
+  // Re-seed when the share URL changes (e.g. colleague paste / back-forward).
+  useEffect(() => {
+    setFocusState(initialFocus);
+  }, [initialFocus?.kind, initialFocus?.id]);
 
   const nodeById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
   // Nodes filed nowhere the site list names: ghosts first (reported, never
@@ -533,7 +629,7 @@ export function TopologyGraphView({
           </Button>
         </div>
       ) : null}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, alignItems: 'start' }}>
+      <div className="nt-topology-grid">
         {graph.sites.map((site) => {
           return (
             <SiteCard
@@ -559,16 +655,7 @@ export function TopologyGraphView({
         {crossing.length > 0 ? (
           <section
             aria-label="Site connections"
-            style={{
-              gridColumn: '1 / -1',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 6,
-              background: 'var(--nd-bg-raised)',
-              border: '1px solid var(--nd-border-subtle)',
-              borderRadius: 2,
-              padding: '10px 12px',
-            }}
+            className="nt-topology-banner"
           >
             <span className="nt-mono-label">
               SITE CONNECTIONS — reported links between sites or unfiled neighbours
@@ -576,12 +663,9 @@ export function TopologyGraphView({
             {crossing.map((edge) => (
               <span
                 key={edge.id}
-                className="nt-hint-muted"
-                style={{
-                  color: edge.stale ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
-                  opacity: edgeIsLit(edge) ? 1 : 0.2,
-                  overflowWrap: 'anywhere',
-                }}
+                className="nt-hint-muted nt-topo-edge-lit"
+                data-stale={edge.stale ? 'true' : 'false'}
+                data-lit={edgeIsLit(edge) ? 'true' : 'false'}
               >
                 {topologyEdgeLabel(edge, nodeById)}
               </span>
@@ -592,17 +676,7 @@ export function TopologyGraphView({
         {unfiled.length > 0 ? (
           <section
             aria-label="Reported neighbours without inventory"
-            style={{
-              gridColumn: '1 / -1',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              background: 'var(--nd-bg-raised)',
-              border: '1px dashed var(--nd-border-subtle)',
-              borderRadius: 2,
-              padding: '10px 12px',
-              opacity: lit !== null && !lit.cells.has(UNFILED_KEY) ? 0.25 : 1,
-            }}
+            className="nt-topology-banner nt-topology-banner--dashed"
           >
             <span
               className="nt-mono-label"
@@ -689,8 +763,54 @@ export default function Topology() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { pollIntervalSec } = useSettings();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<TopologyData | null>(null);
-  const [viewMode, setViewMode] = useState<'2d' | '3d'>(() => (hasWebGLSupport() ? '3d' : '2d'));
+
+  const q = searchParams.get('q') ?? '';
+  const plane = searchParams.get('plane') ?? 'all';
+  const typeFilter = searchParams.get('type') ?? 'all';
+  const ghostsRaw = (searchParams.get('ghosts') ?? '').trim().toLowerCase();
+  const ghostsOnly =
+    ghostsRaw === '1' || ghostsRaw === 'true' || ghostsRaw === 'yes' || ghostsRaw === 'on';
+  const viewParam = searchParams.get('view');
+  const resolvedDefaultView: '2d' | '3d' = hasWebGLSupport() ? '3d' : '2d';
+  const viewMode: '2d' | '3d' =
+    viewParam === '2d' || viewParam === '3d' ? viewParam : resolvedDefaultView;
+  const focusParam = focusFromParam(searchParams.get('focus'));
+  const [focus, setFocus] = useState<TopologyFocus | null>(focusParam);
+  /* Keyboard multi-select on filtered nodes raises Export selected /
+   * Copy serials / Copy selection link (?ids=; Loop 186). */
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  /* Deep link: /topology?ids=a\nb (bulk Copy selection link). */
+  const idsFilter = namesFilterForParam(searchParams.get('ids'));
+  const idsFilterLc =
+    idsFilter === null
+      ? null
+      : idsFilter.map((id) => id.trim().toLowerCase()).filter(Boolean);
+
+  useEffect(() => {
+    setFocus(focusParam);
+  }, [focusParam?.kind, focusParam?.id]);
+
+  const patchParams = (patch: Record<string, string | null>) => {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null || value === '') next.delete(key);
+      else next.set(key, value);
+    }
+    setSearchParams(next, { replace: true });
+  };
+
+  /* Persist the resolved canvas mode when the address bar omits `view` so
+   * refresh / Copy view link / colleague paste always match what is drawn
+   * (WebGL → 3d, otherwise 2d). Explicit `view=2d|3d` is left alone. */
+  useEffect(() => {
+    if (viewParam === '2d' || viewParam === '3d') return;
+    const next = new URLSearchParams(searchParams);
+    next.set('view', resolvedDefaultView);
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [viewParam, resolvedDefaultView, searchParams, setSearchParams]);
 
   /* Same poll cadence as Sites: the footer stamps a sync time, so a NOC tab
      must not sit on a mount-time snapshot under it. One fetch at a time. */
@@ -717,31 +837,140 @@ export default function Topology() {
     };
   }, [pollIntervalSec]);
 
+  const fullGraph = data?.graph;
+  /* Type chips count over q+plane+ghosts (not type); plane chips over
+   * q+type+ghosts (not plane); ghosts chips over q+plane+type (not ghosts) so
+   * each row still shows the full mix while its own chip is on (Loop 148). */
+  const typeUniverse = useMemo(() => {
+    if (!fullGraph) return null;
+    return filterTopologyGraph(fullGraph, { q, plane, ghostsOnly, type: 'all' });
+  }, [fullGraph, q, plane, ghostsOnly]);
+  const planeUniverse = useMemo(() => {
+    if (!fullGraph) return null;
+    return filterTopologyGraph(fullGraph, { q, plane: 'all', ghostsOnly, type: typeFilter });
+  }, [fullGraph, q, typeFilter, ghostsOnly]);
+  const ghostsUniverse = useMemo(() => {
+    if (!fullGraph) return null;
+    return filterTopologyGraph(fullGraph, { q, plane, ghostsOnly: false, type: typeFilter });
+  }, [fullGraph, q, plane, typeFilter]);
+  const filteredGraph = useMemo(() => {
+    if (!fullGraph) return null;
+    return filterTopologyGraph(fullGraph, { q, plane, ghostsOnly, type: typeFilter });
+  }, [fullGraph, q, plane, ghostsOnly, typeFilter]);
+  /* Selection deep-link narrows the nodes table (and keeps graph filter bar). */
+  const tableNodes = useMemo(() => {
+    const nodes = filteredGraph?.nodes ?? fullGraph?.nodes ?? [];
+    if (idsFilterLc === null) return nodes;
+    return nodes.filter((n) => idsFilterLc.includes(n.id.trim().toLowerCase()));
+  }, [filteredGraph, fullGraph, idsFilterLc]);
+  const idsPresent =
+    idsFilterLc === null
+      ? 0
+      : idsFilterLc.filter((id) =>
+          (filteredGraph?.nodes ?? fullGraph?.nodes ?? []).some(
+            (n) => n.id.trim().toLowerCase() === id,
+          ),
+        ).length;
+
   if (!data) {
     return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
-  const graph = data.graph;
+  const graph = filteredGraph ?? data.graph;
   const notes = data.notes ?? [];
-  const live = data.dataSource === 'live';
-  const sourceLabel = live ? `LIVE · SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : 'NEVER'}` : 'DEMO FIXTURE';
+  const sectionLive =
+    data.dataSource === 'live' || (data.blended?.includes('topology') ?? false);
+  const sourceLabel = sectionLive
+    ? `LIVE · SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : 'NEVER'}`
+    : 'DEMO FIXTURE';
+  const planeOptions = topologyPlaneOptions(data.graph);
+  const typeOptions = topologyTypeOptions(data.graph);
+  const typeChipKeys = topologyTypeOptions(typeUniverse ?? data.graph);
+  if (
+    typeFilter !== 'all' &&
+    typeFilter !== '' &&
+    !typeChipKeys.some((t) => t.toLowerCase() === typeFilter.toLowerCase())
+  ) {
+    typeChipKeys.unshift(typeFilter);
+  }
+  const typeChips = typeChipKeys
+    .map((key) => ({
+      key,
+      label: key,
+      count: (typeUniverse ?? data.graph).nodes.filter(
+        (n) => (n.type ?? '').trim().toLowerCase() === key.toLowerCase(),
+      ).length,
+    }))
+    .filter((c) => c.count > 0 || c.key.toLowerCase() === typeFilter.toLowerCase());
+  const planeChipKeys = topologyPlaneOptions(planeUniverse ?? data.graph);
+  if (
+    plane !== 'all' &&
+    plane !== '' &&
+    !planeChipKeys.some((p) => p.toLowerCase() === plane.toLowerCase())
+  ) {
+    planeChipKeys.unshift(plane);
+  }
+  const planeChips = planeChipKeys
+    .map((key) => ({
+      key,
+      label: key,
+      count: (planeUniverse ?? data.graph).nodes.filter((n) =>
+        n.planes.some((p) => p.toLowerCase() === key.toLowerCase()),
+      ).length,
+    }))
+    .filter((c) => c.count > 0 || c.key.toLowerCase() === plane.toLowerCase());
+  const ghostsBase = ghostsUniverse ?? data.graph;
+  const ghostNodeCount = ghostsBase.nodes.filter((n) => n.ghost).length;
+  /* Ghosts chip toggles the same ghosts=1 as the Switch — click again to clear. */
+  const ghostsChips =
+    ghostNodeCount > 0 || ghostsOnly
+      ? [{ key: '1' as const, label: 'Ghosts', tone: 'warning' as const, count: ghostNodeCount }]
+      : [];
+  const filtersActive =
+    Boolean(q.trim()) ||
+    (plane !== 'all' && plane !== '') ||
+    (typeFilter !== 'all' && typeFilter !== '') ||
+    ghostsOnly;
+
+  const buildShareUrl = () => {
+    const next = new URLSearchParams();
+    if (q.trim()) next.set('q', q.trim());
+    if (plane !== 'all' && plane !== '') next.set('plane', plane);
+    if (typeFilter !== 'all' && typeFilter !== '') next.set('type', typeFilter);
+    if (ghostsOnly) next.set('ghosts', '1');
+    if (viewMode === '2d') next.set('view', '2d');
+    else if (viewMode === '3d') next.set('view', '3d');
+    const fp = focusToParam(focus);
+    if (fp) next.set('focus', fp);
+    const qs = next.toString();
+    return `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+  };
 
   return (
-    <div className="nt-stack">
+    <div className="nt-stack nt-recon-reveal nt-topology-shell nt-section-panel">
       <ScreenHeader
         overline="Operate / Topology"
         title="Topology"
         subtitle="Every reported neighbour fact across every plane — sites collapsed to cards, expanded on click, provenance on every edge."
         actions={
           <div className="nt-chip-wrap nt-chip-wrap--tight">
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · graph
+            </span>
+            {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <Button
               size="sm"
               variant="ghost"
               onClick={() => {
-                void navigator.clipboard.writeText(window.location.href).then(
-                  () => toast('View link copied', { tone: 'success' }),
-                  () => toast('Could not copy link', { tone: 'danger' }),
+                const url = buildShareUrl();
+                void navigator.clipboard.writeText(url).then(
+                  () =>
+                    toast('View link copied', {
+                      description: url.includes('?') ? url.split('?')[1] : 'full estate topology',
+                      tone: 'success',
+                    }),
+                  () => toast('Could not copy link', { description: url, tone: 'danger' }),
                 );
               }}
             >
@@ -776,34 +1005,97 @@ export default function Topology() {
                     ]),
                   );
                   toast(`Exported ${nNodes} nodes, ${nEdges} edges`, {
-                    description: 'topology-nodes.csv and topology-edges.csv — reported facts only.',
+                    description: filtersActive
+                      ? 'Filtered view — topology-nodes.csv and topology-edges.csv.'
+                      : 'topology-nodes.csv and topology-edges.csv — reported facts only.',
                   });
                 }}
               >
                 Export CSV
               </Button>
             ) : null}
-            <div
-              style={{
-                display: 'flex',
-                gap: 6,
-                background: 'var(--nd-bg-raised)',
-                padding: 3,
-                borderRadius: 4,
-                border: '1px solid var(--nd-border-subtle)',
-              }}
-            >
+            {data.dataSource === 'live' && (data.graph.nodes.length > 0 || data.graph.edges.length > 0) ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    void (async () => {
+                      const qs = new URLSearchParams();
+                      qs.set('part', 'nodes');
+                      if (q.trim()) qs.set('q', q.trim());
+                      if (plane !== 'all' && plane !== '') qs.set('plane', plane);
+                      if (typeFilter !== 'all' && typeFilter !== '') qs.set('type', typeFilter);
+                      if (ghostsOnly) qs.set('ghosts', '1');
+                      const res = await downloadApiCsv(
+                        `/api/topology/export?${qs.toString()}`,
+                        'topology-nodes.csv',
+                      );
+                      if (res.ok) {
+                        toast('Server CSV downloaded', {
+                          description: filtersActive
+                            ? 'topology-nodes.csv — filtered reported graph nodes.'
+                            : 'topology-nodes.csv — reported graph nodes.',
+                          tone: 'success',
+                        });
+                      } else {
+                        toast('Server CSV failed', {
+                          description: res.error ?? 'Could not download export',
+                          tone: 'warning',
+                        });
+                      }
+                    })();
+                  }}
+                >
+                  Download server CSV (nodes)
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    void (async () => {
+                      const qs = new URLSearchParams();
+                      qs.set('part', 'edges');
+                      if (q.trim()) qs.set('q', q.trim());
+                      if (plane !== 'all' && plane !== '') qs.set('plane', plane);
+                      if (typeFilter !== 'all' && typeFilter !== '') qs.set('type', typeFilter);
+                      if (ghostsOnly) qs.set('ghosts', '1');
+                      const res = await downloadApiCsv(
+                        `/api/topology/export?${qs.toString()}`,
+                        'topology-edges.csv',
+                      );
+                      if (res.ok) {
+                        toast('Server CSV downloaded', {
+                          description: filtersActive
+                            ? 'topology-edges.csv — filtered reported neighbour edges.'
+                            : 'topology-edges.csv — reported neighbour edges.',
+                          tone: 'success',
+                        });
+                      } else {
+                        toast('Server CSV failed', {
+                          description: res.error ?? 'Could not download export',
+                          tone: 'warning',
+                        });
+                      }
+                    })();
+                  }}
+                >
+                  Download server CSV (edges)
+                </Button>
+              </>
+            ) : null}
+            <div className="nt-topology-mode-switch">
               <Button
                 size="sm"
                 variant={viewMode === '3d' ? 'primary' : 'ghost'}
-                onClick={() => setViewMode('3d')}
+                onClick={() => patchParams({ view: '3d' })}
               >
                 3D Graph
               </Button>
               <Button
                 size="sm"
                 variant={viewMode === '2d' ? 'primary' : 'ghost'}
-                onClick={() => setViewMode('2d')}
+                onClick={() => patchParams({ view: '2d' })}
               >
                 2D Cards
               </Button>
@@ -811,19 +1103,150 @@ export default function Topology() {
           </div>
         }
       />
+      <div className="nt-plane-theater" role="note">NightDesk · graph theater · path · focus node</div>
       <StatRow stats={topologyStats(graph, data.dataSource)} />
+      <div className="nt-filter-bar nt-gap-10">
+        <Input
+          aria-label="Filter topology"
+          placeholder="Filter sites, devices, serials…"
+          value={q}
+          onChange={(e) => patchParams({ q: e.target.value || null })}
+        />
+        <Select
+          aria-label="Plane filter"
+          value={plane}
+          onChange={(e) => patchParams({ plane: e.target.value === 'all' ? null : e.target.value })}
+        >
+          <option value="all">All planes</option>
+          {planeOptions.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </Select>
+        <Select
+          aria-label="Device type filter"
+          value={typeFilter}
+          onChange={(e) => patchParams({ type: e.target.value === 'all' ? null : e.target.value })}
+        >
+          <option value="all">All types</option>
+          {typeOptions.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </Select>
+        <Switch
+          checked={ghostsOnly}
+          onCheckedChange={(on) => patchParams({ ghosts: on ? '1' : null })}
+          label="Ghosts only"
+          aria-label="Ghosts only"
+        />
+        {filtersActive ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => patchParams({ q: null, plane: null, type: null, ghosts: null })}
+          >
+            Clear filters
+          </Button>
+        ) : null}
+      </div>
+      {planeChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Topology plane">
+          <span className="nt-chip-row__label">Plane</span>
+          {planeChips.map((c) => {
+            const active = plane.toLowerCase() === c.key.toLowerCase();
+            return (
+              <button
+                key={c.key}
+                type="button"
+                onClick={() => patchParams({ plane: active ? null : c.key })}
+                className={active ? 'nt-chip nt-chip--active' : 'nt-chip'}
+                aria-pressed={active}
+              >
+                <Badge tone="neutral">{c.label}</Badge>
+                <span className="nt-chip__count">{c.count}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {typeChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Device type">
+          <span className="nt-chip-row__label">Type</span>
+          {typeChips.map((c) => {
+            const active = typeFilter.toLowerCase() === c.key.toLowerCase();
+            return (
+              <button
+                key={c.key}
+                type="button"
+                onClick={() => patchParams({ type: active ? null : c.key })}
+                className={active ? 'nt-chip nt-chip--active' : 'nt-chip'}
+                aria-pressed={active}
+              >
+                <Badge tone="neutral">{c.label}</Badge>
+                <span className="nt-chip__count">{c.count}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {ghostsChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Topology ghosts">
+          <span className="nt-chip-row__label">Ghosts</span>
+          {ghostsChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => patchParams({ ghosts: ghostsOnly ? null : '1' })}
+              className={
+                ghostsOnly ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={ghostsOnly}
+              data-ghosts={c.key}
+            >
+              <Badge tone={c.tone}>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <VisualReferencePanel target={{ kind: 'estate', id: 'topology' }} />
       <ConfigRecommendationsPanel title="Topology-related recommendations" limit={6} />
       {graph.nodes.length === 0 ? (
         <EmptyState
-          title="Nothing to draw yet"
-          description={notes[0] ?? 'No device inventory and no neighbour facts have been reported.'}
-        />
+          title={filtersActive ? 'Nothing matches that filter' : 'Nothing to draw yet'}
+          description={
+            filtersActive
+              ? 'Widen the text/plane filter or clear ghosts-only to restore the estate graph.'
+              : (notes[0] ?? 'No device inventory and no neighbour facts have been reported.')
+          }
+        >
+          {filtersActive ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => patchParams({ q: null, plane: null, type: null, ghosts: null })}
+            >
+              Clear filters
+            </Button>
+          ) : (
+            <span className="nt-row nt-gap-8">
+              <Button variant="secondary" size="sm" onClick={() => navigate('/inventory')}>
+                Inventory
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => navigate('/systems')}>
+                Connected systems
+              </Button>
+            </span>
+          )}
+        </EmptyState>
       ) : (
         <>
           {graph.omissions.length > 0 ? (
             <Alert tone="warning" title="Some reported wiring is not drawn">
-              <ul className="nt-lh-15" style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+              <ul className="nt-lh-15 nt-list-tight">
                 {graph.omissions.map((reason) => (
                   <li key={reason}>{reason}</li>
                 ))}
@@ -851,6 +1274,11 @@ export default function Topology() {
           ) : (
             <TopologyGraphView
               graph={graph}
+              initialFocus={focusParam}
+              onFocusChange={(next) => {
+                setFocus(next);
+                patchParams({ focus: focusToParam(next) });
+              }}
               onOpenSite={(siteId) => navigate(`/sites/${encodeURIComponent(siteId)}`)}
               onOpenDevice={(node) =>
                 navigate(
@@ -863,16 +1291,215 @@ export default function Topology() {
               }
             />
           )}
-          <div
-            className="nt-hint-muted" style={{ lineHeight: 1.6,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4 }}
-          >
+          <div className="nt-stack nt-gap-10">
+            <div className="nt-row-between">
+              <SectionHeader
+                label="Nodes"
+                meta={`${countOf(tableNodes.length, 'NODE').toUpperCase()}${
+                  idsFilterLc !== null || filtersActive ? ' · FILTERED' : ''
+                }`}
+              />
+              <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
+            </div>
+            {idsFilterLc !== null ? (
+              <div className="nt-chip-row" role="group" aria-label="Selection deep link">
+                <button
+                  type="button"
+                  onClick={() => {
+                    patchParams({ ids: null });
+                    setSelectedKeys([]);
+                  }}
+                  title={idsFilter?.join(', ')}
+                  className="nt-chip nt-chip--active"
+                >
+                  {idsPresent === idsFilterLc.length
+                    ? `${idsFilterLc.length} selected node${idsFilterLc.length === 1 ? '' : 's'}`
+                    : `${idsPresent} of ${idsFilterLc.length} selected nodes present`}
+                  {' — clear'}
+                </button>
+              </div>
+            ) : null}
+            {tableNodes.length === 0 ? (
+              idsFilterLc !== null ? (
+                <div className="nt-stack nt-gap-8">
+                  <div className="nt-service-note">
+                    No topology nodes match the selection deep link — clear the selection filter to
+                    restore the filtered node list.
+                  </div>
+                  <div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        patchParams({ ids: null });
+                        setSelectedKeys([]);
+                      }}
+                    >
+                      Clear selection filter
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="nt-service-note">No nodes in the current filter.</div>
+              )
+            ) : (
+              <DataTable
+                ariaLabel="Topology nodes"
+                density="compact"
+                columns={topologyNodeColumns}
+                rows={tableNodes}
+                rowKey={(n) => n.id}
+                selectedKeys={selectedKeys}
+                onSelectionChange={setSelectedKeys}
+                onRowActivate={(node) =>
+                  navigate(
+                    deviceDetailPath({
+                      name: node.name,
+                      plane: node.planes[0],
+                      serial: node.serial ?? undefined,
+                    }),
+                  )
+                }
+              />
+            )}
+            {selectedKeys.length > 0 ? (
+              <div
+                className="nt-configure-bulk-bar nt-bulk-glass"
+                role="region"
+                aria-label="Topology node selection actions"
+              >
+                <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
+                <span className="nt-configure-bulk-bar__hint">
+                  export, copy serials, or share a selection link for only the nodes you marked — full
+                  graph CSV stays in the header
+                </span>
+                <span className="nt-configure-bulk-bar__actions">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const selected = new Set(selectedKeys);
+                      const picked = tableNodes.filter((n) => selected.has(n.id));
+                      if (picked.length === 0) {
+                        toast('No selected nodes still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const n = exportTableCsv(
+                        'topology-nodes-selected.csv',
+                        ['id', 'name', 'type', 'siteId', 'serial', 'ghost', 'planes', 'state'],
+                        picked.map((node) => [
+                          node.id,
+                          node.name,
+                          node.type ?? '',
+                          node.siteId ?? '',
+                          node.serial ?? '',
+                          node.ghost ? 'yes' : 'no',
+                          (node.planes ?? []).join('|'),
+                          node.state ?? '',
+                        ]),
+                      );
+                      toast(`Exported ${countOf(n, 'selected node')}`, {
+                        description: 'topology-nodes-selected.csv — filtered fields only.',
+                        tone: 'success',
+                      });
+                    }}
+                  >
+                    Export selected
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(selectedKeys);
+                        const picked = tableNodes.filter((n) => selected.has(n.id));
+                        if (picked.length === 0) {
+                          toast('No selected nodes still in view', {
+                            description: 'Clear selection or adjust filters.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const serials = [
+                          ...new Set(
+                            picked
+                              .map((n) => (n.serial ?? '').trim())
+                              .filter((serial) => serial && serial !== '—'),
+                          ),
+                        ];
+                        if (serials.length === 0) {
+                          toast('No serials on the selected nodes', {
+                            description:
+                              'Those rows did not publish a serial — export CSV for names instead.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const text = serials.join('\n');
+                        try {
+                          await navigator.clipboard.writeText(text);
+                          toast(`Copied ${countOf(serials.length, 'serial')}`, {
+                            description:
+                              serials.length < picked.length
+                                ? `${picked.length - serials.length} selected without a serial skipped`
+                                : 'newline-joined · paste into a ticket or RMA',
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy serials', { description: text, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy serials
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(selectedKeys);
+                        const picked = tableNodes.filter((n) => selected.has(n.id));
+                        if (picked.length === 0) {
+                          toast('No selected nodes still in view', {
+                            description: 'Clear selection or adjust filters.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const next = new URLSearchParams(searchParams);
+                        next.set('ids', picked.map((n) => n.id).join('\n'));
+                        const qs = next.toString();
+                        const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                        try {
+                          await navigator.clipboard.writeText(url);
+                          toast('Selection link copied', {
+                            description: `${picked.length} node${picked.length === 1 ? '' : 's'} · ids=`,
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy link', { description: url, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy selection link
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
+                    Clear
+                  </Button>
+                </span>
+              </div>
+            ) : null}
+          </div>
+          <div className="nt-hint-muted nt-stack-lh">
             {notes.map((note) => (
               <span key={note}>{note}</span>
             ))}
-            <span>{`${countOf(graph.nodes.length, 'node')} · ${countOf(graph.edges.length, 'reported link')} · ${sourceLabel}`}</span>
+            <span>{`${countOf(graph.nodes.length, 'node')} · ${countOf(graph.edges.length, 'reported link')} · ${sourceLabel}${filtersActive ? ' · filtered' : ''}`}</span>
           </div>
         </>
       )}

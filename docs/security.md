@@ -284,6 +284,23 @@ Audits intentionally omit:
 - Diagnostic targets and raw traceroute output.
 - Sensitive filesystem paths.
 
+### CSV exports
+
+Authenticated `GET /api/…/export` downloads are column-whitelisted operator
+summaries. They do not include connector secrets, notification payload bodies,
+ticket note bodies, or vendor `raw` objects. Mist audit `before`/`after`
+snapshots are secret-scrubbed at the plane mapper before they can reach CSV.
+As defense in depth, every CSV cell also runs through `redactExportCell`
+(URL userinfo, password/token/bearer/Basic assignments, compact JWTs,
+PEM/private-key blocks, and `Cookie:` / `Set-Cookie:` / `cookie=` header
+material) in `server/src/lib/csv.ts`. Bare labels like device name
+`token-sw-01` or the word "cookie" stay intact. After redaction, cells that
+open with spreadsheet formula lead-ins (`=`, `+`, `-`, `@`, TAB, CR) are
+prefixed with a single quote so Excel/Sheets will not execute them; pure
+signed numbers (`-12.5`) stay numeric-looking (Loop 108). Every `sendCsv`
+response carries dual `Content-Disposition` (`filename=` + RFC 5987
+`filename*=UTF-8''…`).
+
 Review deployment log retention and access permissions before using the portal
 outside a lab.
 

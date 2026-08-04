@@ -15,14 +15,25 @@
  * carried an empty answer" (says THAT), and rows. `notReported` names the
  * first; the stats tiles over those datasets already read '—' server-side.
  *
+ * Header **LIVE** stamps pure live and central blend feeds alike (Loop 166) —
+ * demo chrome with live Central sections is not quiet fixture chrome.
+ * Header keyboard shortcuts help (`?` / DATATABLE_ROW_SHORTCUTS — Loop 198)
+ * covers sites / firmware / WLANs tables that already wire j/k/x/Enter.
+ *
  * Data: getCentral() — live /api/central when the server is up, the same
  * shared demo composition otherwise (see web/src/api/screens.ts).
  */
 
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  PageSkeleton, Alert, Badge, Button, useToast,
+  PageSkeleton,
+  Alert,
+  Badge,
+  Button,
+  DATATABLE_ROW_SHORTCUTS,
+  KeyboardShortcuts,
+  useToast,
 } from '../nightdesk';
 import { getCentral } from '../api/client';
 import type { CentralData } from '../api/client';
@@ -33,13 +44,23 @@ import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
 import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { PlaneHeader } from './central/PlaneHeader';
 import { SitesSection } from './central/SitesSection';
 import { ApplicationsSection } from './central/ApplicationsSection';
 import { FirmwareSection } from './central/FirmwareSection';
 import { WlanSection } from './central/WlanSection';
 import { AlertsSection } from './central/AlertsSection';
-import { noteStyle } from './central/style';
+
+/** In-page Central sections operators can deep-link with `?section=` / `#…`. */
+const CENTRAL_SECTIONS = ['sites', 'applications', 'firmware', 'wlans', 'alerts'] as const;
+type CentralSectionKey = (typeof CENTRAL_SECTIONS)[number];
+
+function parseCentralSection(raw: string | null | undefined): CentralSectionKey | null {
+  if (!raw) return null;
+  const key = raw.replace(/^#/, '').trim().toLowerCase();
+  return (CENTRAL_SECTIONS as readonly string[]).includes(key) ? (key as CentralSectionKey) : null;
+}
 
 export default function Central() {
   const { density } = useSettings();
@@ -72,9 +93,27 @@ function CentralView({
 }) {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [searchParams] = useSearchParams();
+  const sectionParam =
+    parseCentralSection(searchParams.get('section')) ??
+    parseCentralSection(typeof window !== 'undefined' ? window.location.hash : null);
   const notReported = data.notReported ?? [];
   const devicesReported = !notReported.includes('devices');
   const unlinked = data.dataSource === 'live' && !data.plane.linked;
+  /* Pure live or central blend (demo chrome + live Central sections). */
+  const sectionLive =
+    data.dataSource === 'live' || (data.blended?.includes('central') ?? false);
+
+  useEffect(() => {
+    if (!sectionParam) return;
+    const t = window.setTimeout(() => {
+      document.getElementById(`central-section-${sectionParam}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [sectionParam, data]);
 
   /* The fleet line under the tiles: types then states, both verbatim — the
    * tiles headline, this enumerates. */
@@ -86,14 +125,30 @@ function CentralView({
     .join(' · ');
 
   return (
-    <div className="nt-stack">
+    <div className="nt-stack nt-recon-reveal nt-central-shell nt-section-panel nt-plane-shell">
       <ScreenHeader
         overline="Operate / Central"
         title="HPE Aruba Central"
         subtitle="What the plane manages — fleet, sites, application visibility, firmware and WLANs, read off the poller cache."
         actions={
           <>
-            {data.dataSource === 'live' ? <Badge tone="info">LIVE</Badge> : null}
+            <span className="nt-systems-brand" aria-hidden>
+              NightDesk · plane
+            </span>
+            <Badge plane>Central</Badge>
+            {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void navigator.clipboard.writeText(window.location.href).then(
+                  () => toast('View link copied', { tone: 'success' }),
+                  () => toast('Could not copy link', { tone: 'danger' }),
+                );
+              }}
+            >
+              Copy view link
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -173,19 +228,82 @@ function CentralView({
             >
               Export CSV
             </Button>
+            {data.dataSource === 'live' ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    /* Deep-linked section picks a dedicated server CSV slice when
+                       one exists; otherwise ship the combined devices+sites file. */
+                    const part =
+                      sectionParam === 'sites'
+                        ? 'site'
+                        : sectionParam === 'firmware'
+                          ? 'firmware'
+                          : sectionParam === 'wlans'
+                            ? 'wlans'
+                            : sectionParam === 'alerts'
+                              ? 'alerts'
+                              : '';
+                    const path = part
+                      ? `/api/central/export?part=${part}`
+                      : '/api/central/export';
+                    const file =
+                      part === 'site'
+                        ? 'central-sites.csv'
+                        : part === 'firmware'
+                          ? 'central-firmware.csv'
+                          : part === 'wlans'
+                            ? 'central-wlans.csv'
+                            : part === 'alerts'
+                              ? 'central-alerts.csv'
+                              : 'central-export.csv';
+                    const res = await downloadApiCsv(path, file);
+                    if (res.ok) {
+                      const description =
+                        part === 'site'
+                          ? 'central-sites.csv — site summary only.'
+                          : part === 'firmware'
+                            ? 'central-firmware.csv — behind-train rows only.'
+                            : part === 'wlans'
+                              ? 'central-wlans.csv — WLAN inventory (no PSKs).'
+                              : part === 'alerts'
+                                ? 'central-alerts.csv — Central alert queue summary.'
+                                : 'central-export.csv — devices + site summary.';
+                      toast('Server CSV downloaded', {
+                        description,
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
+            {/* Sites / firmware / WLANs tables are keyboard grids — surface the map (Loop 198). */}
+            <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
           </>
         }
       />
+
+      <div className="nt-plane-theater" role="note">NightDesk · Central ECG · monochrome plane · state owns hue</div>
 
       <PlaneHeader plane={data.plane} dataSource={data.dataSource} />
 
       {unlinked ? (
         <Alert tone="warning" title="HPE Aruba Central is not linked — no credentials stored">
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-fs-13">
             Every section below can only report what an unlinked plane manages: nothing the portal
             can see. Link it from Connected systems.
           </span>
-          <div style={{ marginTop: 8 }}>
+          <div className="nt-mt-8">
             <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
               Connected systems
             </Button>
@@ -197,7 +315,7 @@ function CentralView({
       <VisualReferencePanel target={{ kind: 'connector', id: 'central', plane: 'CENTRAL' }} />
       <ConfigRecommendationsPanel title="Central estate recommendations" limit={6} />
       {devicesReported && data.fleet.total > 0 ? (
-        <div style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', marginTop: -12 }}>
+        <div className="nt-note-mt-neg nt-service-note">
           {`${typeMix}${stateMix ? ` — ${stateMix}` : ''}`}
         </div>
       ) : null}
@@ -213,7 +331,11 @@ function CentralView({
         density={density}
       />
 
-      <WlanSection wlans={data.wlans} wlansReported={!notReported.includes('wlans')} />
+      <WlanSection
+        wlans={data.wlans}
+        wlansReported={!notReported.includes('wlans')}
+        density={density}
+      />
 
       <AlertsSection alerts={data.alerts} alertsReported={!notReported.includes('alerts')} />
     </div>

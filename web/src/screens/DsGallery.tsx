@@ -52,16 +52,6 @@ const DEVICES = [
   { name: 'cppm-01', model: 'C3000V', site: 'Core services', plane: 'CLEARPASS', clients: 0, state: 'up', tone: 'success' as const },
 ];
 
-const mono = { fontFamily: 'var(--nd-font-mono)' } as const;
-
-const subtitle = {
-  fontFamily: 'var(--nd-font-display)',
-  fontStyle: 'italic',
-  fontSize: 15,
-  color: 'var(--nd-text-secondary)',
-  marginTop: 6,
-} as const;
-
 export function DsGallery() {
   const { toast } = useToast();
   const [density, setDensity] = useState<'comfortable' | 'compact'>('comfortable');
@@ -81,23 +71,16 @@ export function DsGallery() {
   const sidebar = (
     <>
       <div>
-        <div className="nd-micro-label" style={{ color: 'var(--nd-accent-text)', marginBottom: 4 }}>
-          HPE
+        <div className="nd-micro-label nt-micro-label nt-dsg-brand-kicker">
+          NightDesk
         </div>
-        <div
-          style={{
-            fontFamily: 'var(--nd-font-display)',
-            fontStyle: 'italic',
-            fontSize: 19,
-            color: 'var(--nd-text-primary)',
-          }}
-        >
+        <div className="nt-dsg-brand-title">
           NightDesk
         </div>
       </div>
       <Stack gap={16}>
         <Stack gap={4}>
-          <div className="nd-micro-label" style={{ padding: '0 8px 4px' }}>
+          <div className="nd-micro-label nt-dsg-nav-label">
             Operate
           </div>
           <AppShell.NavItem label="Overview" onClick={() => toast('Overview — not built yet')} />
@@ -105,28 +88,22 @@ export function DsGallery() {
           <AppShell.NavItem label="Clients" onClick={() => toast('Clients — not built yet')} />
         </Stack>
         <Stack gap={4}>
-          <div className="nd-micro-label" style={{ padding: '0 8px 4px' }}>
+          <div className="nd-micro-label nt-dsg-nav-label">
             Inventory
           </div>
           <AppShell.NavItem label="Sites" onClick={() => toast('Sites — not built yet')} />
           <AppShell.NavItem label="Devices" onClick={() => toast('Devices — not built yet')} />
         </Stack>
         <Stack gap={4}>
-          <div className="nd-micro-label" style={{ padding: '0 8px 4px' }}>
+          <div className="nd-micro-label nt-dsg-nav-label">
             Design
           </div>
           <AppShell.NavItem label="Design gallery" active />
         </Stack>
       </Stack>
-      <div
-        style={{
-          marginTop: 'auto',
-          padding: '12px 8px 0',
-          borderTop: '1px solid var(--nd-border-subtle)',
-        }}
-      >
+      <div className="nt-dsg-workspace">
         <Stack gap={6}>
-          <span className="nd-micro-label">Workspace</span>
+          <span className="nd-micro-label nt-micro-label">Workspace</span>
           <Text size={12}>
             Meridian Health{' '}
             <Text as="span" size={10} mono tone="muted">
@@ -146,34 +123,24 @@ export function DsGallery() {
       <Breadcrumbs
         items={[{ label: 'Meridian Health' }, { label: 'Design' }, { label: 'Gallery' }]}
       />
-      <div style={{ marginLeft: 'auto', position: 'relative', width: 420 }}>
+      <div className="nt-dsg-search">
         <Input
           mono
           placeholder="Jump to a site, device, MAC, IP or ticket…"
-          style={{ paddingRight: 74 }}
+          className="nt-dsg-search__input"
           aria-label="Global search"
         />
-        <div
-          style={{
-            position: 'absolute',
-            right: 8,
-            top: 7,
-            display: 'flex',
-            gap: 4,
-            alignItems: 'center',
-            pointerEvents: 'none',
-          }}
-        >
+        <div className="nt-dsg-search__kbd">
           <Kbd>⌘</Kbd>
           <Kbd>K</Kbd>
         </div>
       </div>
       <Stack direction="row" gap={10} align="center">
-        <div style={{ textAlign: 'right' }}>
+        <div className="nt-dsg-user">
           <Text as="div" size={12}>
             R. Okafor
           </Text>
-          <div className="nd-micro-label">NetOps</div>
+          <div className="nd-micro-label nt-micro-label">NetOps</div>
         </div>
         <Avatar name="R. Okafor" size="sm" />
       </Stack>
@@ -181,25 +148,19 @@ export function DsGallery() {
   );
 
   return (
-    <AppShell sidebar={sidebar} topbar={topbar}>
+    <AppShell className="nt-dsg-shell" sidebar={sidebar} topbar={topbar}>
+      <div className="nt-dsg-content nt-section-panel nt-recon-reveal">
       <Stack gap={22}>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-end',
-            justifyContent: 'space-between',
-            gap: 24,
-            flexWrap: 'wrap',
-          }}
-        >
+        <div className="nt-plane-theater" role="note">NightDesk · design system · copper primitives</div>
+        <div className="nt-hero-split">
           <div>
             <Heading level={2} overline="Meridian Health / Design system">
               Design gallery
             </Heading>
-            <div style={subtitle}>Every primitive, exercised against network-ops content.</div>
+            <div className="nt-dsg-subtitle">Every primitive, exercised against network-ops content.</div>
           </div>
           <Stack direction="row" gap={8} align="center">
-            <span style={{ ...mono, fontSize: 10, color: 'var(--nd-text-muted)', letterSpacing: '.08em' }}>
+            <span className="nt-dsg-sync">
               SYNCED 09:41 · AUTO 60s
             </span>
             <Button variant="ghost" size="sm">
@@ -230,13 +191,7 @@ export function DsGallery() {
           snapshot.
         </Alert>
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
-            gap: 18,
-          }}
-        >
+        <div className="nt-dsg-stats">
           <Stat label="Devices reachable" value="404 / 418" delta="▼ 3 since 08:00" deltaTone="negative" />
           <Stat label="Open alerts" value="7" delta="▲ 2 critical" deltaTone="negative" />
           <Stat label="Config drift" value="12" delta="▼ 4 this week" deltaTone="positive" />
@@ -246,14 +201,7 @@ export function DsGallery() {
 
         <Divider variant="flair" />
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)',
-            gap: 34,
-            alignItems: 'start',
-          }}
-        >
+        <div className="nt-dsg-main">
           <Stack gap={26}>
             <Stack gap={2}>
               <SectionHeader
@@ -273,7 +221,7 @@ export function DsGallery() {
                   </span>
                 }
               />
-              <Table density={density}>
+              <Table density={density} ariaLabel="Sample devices">
                 <Table.Head>
                   <Table.Row>
                     <Table.HeaderCell>Device</Table.HeaderCell>
@@ -294,12 +242,12 @@ export function DsGallery() {
                       }
                     >
                       <Table.Cell>
-                        <span style={{ ...mono, fontSize: 'var(--nd-text-12)', color: 'var(--nd-accent-text)' }}>
+                        <span className="nt-dsg-device-name">
                           {d.name}
                         </span>
                       </Table.Cell>
                       <Table.Cell>
-                        <span style={{ ...mono, fontSize: 'var(--nd-text-11)', color: 'var(--nd-text-secondary)' }}>
+                        <span className="nt-dsg-device-model">
                           {d.model}
                         </span>
                       </Table.Cell>
@@ -321,9 +269,7 @@ export function DsGallery() {
 
             <Stack gap={16}>
               <SectionHeader label="Form controls" />
-              <div
-                style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 16 }}
-              >
+              <div className="nt-dsg-form-grid">
                 <FormField label="Filter text" help="matches title, detail and site">
                   <Input
                     size="sm"
@@ -506,7 +452,7 @@ export function DsGallery() {
                   </Badge>
                 </Stack>
               </Stack>
-              <div style={{ border: '1px solid var(--nd-border-subtle)', borderRadius: 12, padding: 12 }}>
+              <div className="nt-dsg-swatch-card">
                 <Text size={11} mono tone="muted">
                   Page skeleton
                 </Text>
@@ -655,7 +601,7 @@ export function DsGallery() {
             <Badge tone="warning" dot>
               degraded
             </Badge>
-            <Badge tone="neutral">MIST</Badge>
+            <Badge plane>MIST</Badge>
             <Text size={11} mono tone="muted">
               session 4d 02:17
             </Text>
@@ -680,7 +626,7 @@ export function DsGallery() {
           </FormField>
           <Switch label="Broadcast SSID" defaultChecked />
           <Stack gap={6}>
-            <span className="nd-micro-label">What gets pushed</span>
+            <span className="nd-micro-label nt-micro-label">What gets pushed</span>
             <Code block>{`wlan ssid-profile "MRDN-Imaging"
    essid "MRDN-Imaging"
    vlan 812
@@ -702,6 +648,7 @@ export function DsGallery() {
           </Stack>
         </Stack>
       </Drawer>
+      </div>
     </AppShell>
   );
 }

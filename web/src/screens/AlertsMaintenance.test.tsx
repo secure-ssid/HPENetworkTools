@@ -15,7 +15,11 @@
  *  (d) toggle and delete call PATCH/DELETE and re-read the list;
  *  (e) the Timeline drawer renders the served join with its correlation line;
  *  (f) offline, the flapping-AP group still gets its authored demo spine —
- *      labelled as what it is.
+ *      labelled as what it is;
+ *  (g) Export CSV dumps the visible windows client-side;
+ *  (h) Copy policy link writes `?tab=policy` for the Policy section;
+ *  (i) Download server CSV hits /api/maintenance-windows/export when reachable (Loop 93);
+ *  (j) hides Download server CSV when falling back to demo windows.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,6 +33,19 @@ import { resetBackendReachability } from '../api/core';
 import type { AlertsData } from '../api/client';
 import type { AlertRow, MaintenanceWindowView } from '@hpe/shared';
 import { DEMO_TIMELINE_FINGERPRINT } from '@hpe/shared';
+import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
+
+vi.mock('../lib/csv', () => ({
+  exportTableCsv: vi.fn((_filename: string, _headers: string[], rows: Array<Array<unknown>>) => rows.length),
+}));
+
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
+const mockExportTableCsv = vi.mocked(exportTableCsv);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -150,6 +167,8 @@ async function goToPolicyTab() {
 beforeEach(() => {
   mockGetAlerts.mockReset();
   fetchMock.mockReset();
+  mockExportTableCsv.mockClear();
+  mockDownloadApiCsv.mockReset();
 });
 
 afterEach(() => {
@@ -249,6 +268,82 @@ describe('the maintenance windows section', () => {
       expect(String(del![0])).toBe('/api/maintenance-windows/mw-1');
     });
   });
+
+  it('(g) Export CSV dumps the visible windows client-side', async () => {
+    stubFetch({ windows: [ACTIVE_WINDOW, UPCOMING_WINDOW] });
+    mockGetAlerts.mockResolvedValue(liveData());
+    renderAlerts();
+    await goToPolicyTab();
+
+    // Two Export CSV buttons on Policy (rules + windows); target the windows one
+    // by walking from the section title.
+    const label = await screen.findByText(/^MAINTENANCE WINDOWS/);
+    const header = label.closest('div');
+    if (!header || !header.parentElement) throw new Error('windows section not found');
+    fireEvent.click(within(header.parentElement).getByRole('button', { name: 'Export CSV' }));
+
+    expect(mockExportTableCsv).toHaveBeenCalledTimes(1);
+    const [filename, headers, rows] = mockExportTableCsv.mock.calls[0]!;
+    expect(filename).toBe('maintenance-windows.csv');
+    expect(headers).toContain('reason');
+    expect(headers).toContain('schedule');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]![0]).toBe('mw-1');
+    expect(rows[0]![3]).toBe('ISP cutover, ticket NET-4211');
+    expect(await screen.findByText(/Exported 2 windows/)).toBeTruthy();
+  });
+
+  it('(h) Copy policy link writes ?tab=policy', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    stubFetch({ windows: [ACTIVE_WINDOW] });
+    mockGetAlerts.mockResolvedValue(liveData());
+    renderAlerts();
+    await goToPolicyTab();
+
+    const label = await screen.findByText(/^MAINTENANCE WINDOWS/);
+    const header = label.closest('div');
+    if (!header || !header.parentElement) throw new Error('windows section not found');
+    fireEvent.click(within(header.parentElement).getByRole('button', { name: 'Copy policy link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/[?&]tab=policy(?:&|$)/);
+    expect(screen.getByText(/Policy link copied/i)).toBeTruthy();
+  });
+
+  it('(i) Download server CSV hits /api/maintenance-windows/export when reachable (Loop 93)', async () => {
+    stubFetch({ windows: [ACTIVE_WINDOW] });
+    mockGetAlerts.mockResolvedValue(liveData());
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderAlerts();
+    await goToPolicyTab();
+
+    const label = await screen.findByText(/^MAINTENANCE WINDOWS/);
+    const header = label.closest('div');
+    if (!header || !header.parentElement) throw new Error('windows section not found');
+    fireEvent.click(within(header.parentElement).getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() =>
+      expect(mockDownloadApiCsv).toHaveBeenCalledWith(
+        '/api/maintenance-windows/export',
+        'maintenance-windows.csv',
+      ),
+    );
+    expect(await screen.findByText(/Server CSV downloaded/i)).toBeTruthy();
+  });
+
+  it('(j) hides Download server CSV when falling back to demo windows', async () => {
+    stubFetch({ windows: 'reject' });
+    mockGetAlerts.mockResolvedValue(liveData());
+    renderAlerts();
+    await goToPolicyTab();
+    expect(await screen.findByText(/demo fixtures — the backend is unreachable/)).toBeTruthy();
+    const label = await screen.findByText(/^MAINTENANCE WINDOWS/);
+    const header = label.closest('div');
+    if (!header || !header.parentElement) throw new Error('windows section not found');
+    expect(within(header.parentElement).queryByRole('button', { name: 'Download server CSV' })).toBeNull();
+  });
 });
 
 describe('the occurrence timeline drawer', () => {
@@ -278,6 +373,7 @@ describe('the occurrence timeline drawer', () => {
     expect(within(dialog).getByText(/2 alerts fired within 30m after change chg-1/)).toBeTruthy();
     // Approximate firing times are marked as such.
     expect(within(dialog).getByText(/≈/)).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Download server CSV' })).toBeTruthy();
   });
 
   it('(f) offline, the flapping AP keeps its authored demo spine — labelled', async () => {

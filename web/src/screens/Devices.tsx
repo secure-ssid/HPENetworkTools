@@ -4,8 +4,13 @@
  * ("Unified table" | "Platform lanes") bound to the global inventoryView
  * setting (the prototype's local-override bug is not carried over), filter
  * row (search, type Select, FacetFilter popovers — plane, state, site, each a
- * checklist with live counts, OR-within / AND-across — "Reconciliation issues
- * only" Switch, saved-views dropdown, mono `N of M indexed` count), warning
+ * checklist with live counts, OR-within / AND-across — **Type** chips (counts over
+ * issues+q+names+state — Loop 153) + **Issues** chips +
+ * "Reconciliation issues only" Switch sharing `?issues=`, **State** chips sharing
+ * the same `?state=` deep-link write-back (Loop 154), **Plane** chips sharing the
+ * same `plane` facet / `?plane=` write-back (Loop 157), **Site** chips sharing the
+ * same `site` facet / `?site=` write-back (Loop 156), saved-views dropdown,
+ * mono `N of M indexed` count), warning
  * Alert with the reconciliation truth
  * (counts from the payload's reconciliation block — live reconciler totals, or
  * the authored estate figures in demo, never a tally of the sample rows), then
@@ -26,17 +31,25 @@
  * payload in live/blend — it never asserts a fixture count over real data.
  * Deep links it honours: ?plane= (Systems drawer — seeds the plane facet),
  * ?names= (a Compliance
- * finding's set) and ?state= (an availability count's state slice) — each
+ * finding's set) and ?state= (an availability count's state slice — also the
+ * **State** chip row) — each
  * read straight off the URL and each showing a clearable chip while it
- * narrows the list.
+ * narrows the list. Filter-row state also writes back to the address bar
+ * (`q`, `type`, `issues`, `plane`, `site`) so **Copy view link** shares the
+ * same slice a refresh would reopen — same Sites pattern.
  *
  * The unified table is the nightdesk DataTable reference integration: the
  * column manager (View options dropdown + header-edge resize) persists its
  * controlled config through SettingsContext under the 'devices' table id,
  * the rows are a keyboard grid (j/↓ k/↑ move, Enter/→ opens the device, x
- * selects, Esc clears — '?' lists them), and no column tints because nothing
- * here has a meaningful threshold. The rollout guide for the other screens
- * lives in DataTable.tsx's module comment. Saved views (the Views dropdown)
+ * selects, Esc clears — '?' lists them). A non-empty selection raises the
+ * bulk bar: Export selected, Copy selection link (`?names=` of the marked
+ * devices), **Copy serials** (newline-joined inventory serials for paste into
+ * a ticket / RMA), and Clear. Filtered empties offer **Clear filters** (Loop 202).
+ * Header **LIVE** stamps pure live and blend feeds
+ * alike (Loop 163). No column tints because nothing here has a
+ * meaningful threshold. The rollout guide for the other screens lives in
+ * DataTable.tsx's module comment. Saved views (the Views dropdown)
  * capture the facet selection, free text, type and issues-only switch, the
  * column config and the density, named and persisted through SettingsContext
  * under the 'devices' screen id; the URL deep links are NOT captured — a
@@ -73,16 +86,32 @@ import { applyFacets, FacetFilter, sanitizeFacetSelection } from '../components/
 import type { FacetDef, FacetSelection } from '../components/FacetFilter';
 import { SavedViews } from '../components/SavedViews';
 import { deviceDetailPath, namesFilterForParam, planeFilterForParam, stateFilterForParam } from '../app/nav';
+import {
+  paletteActionCue,
+  parsePaletteAction,
+  stripActionParam,
+  type PaletteActionId,
+} from '../app/actionDeepLink';
 import { UNKNOWN_LANE_META, countOf } from '@hpe/shared';
 import type { DeviceRow, MetricsHistoryEnvelope, Plane, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { ApiErrorState } from './ApiErrorState';
 import { DeviceTypeBadge } from '../components/DeviceTypeBadge';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { getTaxonomySummary } from '../api/recommendations';
 import type { CategoryBucket } from '@hpe/shared';
 import '../app/app.css';
+
+/** `?issues=` triage — 1/true = issues only, 0/false = clean only, else all. */
+export function parseDevicesIssuesFilter(raw: string | null): 'all' | '1' | '0' {
+  const v = raw?.trim().toLowerCase() ?? '';
+  if (v === '1' || v === 'true' || v === 'yes' || v === 'on') return '1';
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return '0';
+  return 'all';
+}
 
 function displayField(value: string): string {
   const normal = value.trim().toLowerCase();
@@ -93,16 +122,6 @@ const VIEW_OPTIONS = [
   { value: 'Unified table', label: 'Unified table' },
   { value: 'Platform lanes', label: 'Platform lanes' },
 ];
-
-/** Lane-row state dot per Badge tone (prototype `dotFor` map). */
-const DOT_COLORS: Record<Tone, string> = {
-  success: 'var(--nd-success)',
-  warning: 'var(--nd-warning)',
-  danger: 'var(--nd-danger)',
-  info: 'var(--nd-info)',
-  neutral: 'var(--nd-border-strong)',
-  accent: 'var(--nd-accent)',
-};
 
 /** Fallback for a plane the payload carries no lane meta for. Honesty rule 1:
  *  a lane with no freshness stamp says so — it never claims to be linked. The
@@ -129,7 +148,7 @@ function DeviceClientsSpark({
   const latest = series.length > 0 ? series[series.length - 1]!.v : null;
   if (series.length >= 2 && latest !== null) {
     return (
-      <span className="nt-row-center nt-gap-6" style={{ display: "inline-flex" }}>
+      <span className="nt-row-center nt-gap-6 nt-inline-flex">
         <Sparkline
           points={series}
           width={72}
@@ -180,22 +199,42 @@ export default function Devices() {
    * not the devices payload: one extra small GET, and null (older server,
    * unreachable API) hides the column rather than painting invented history. */
   const [metrics, setMetrics] = useState<MetricsHistoryEnvelope | null>(null);
-  /* Row selection for the unified table's keyboard grid. Nothing on this
-   * screen consumes the selection yet — it is the controlled-props reference
-   * for the change-queue bulk-actions work, which will. */
+  /* Row selection for the unified table's keyboard grid. Selection raises the
+   * bulk bar (Export selected / Copy selection link) — same contextual pattern
+   * as Alerts and Configure's queue. */
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [searchParams, setSearchParams] = useSearchParams();
-  const [q, setQ] = useState('');
-  const [type, setType] = useState('all');
+  const [q, setQ] = useState(() => searchParams.get('q') ?? '');
+  const [type, setType] = useState(() => {
+    const t = searchParams.get('type')?.trim();
+    return t && t.length > 0 ? t : 'all';
+  });
   /* Faceted filtering (plane / state / site) — OR within a facet, AND across
    * facets, composed with the search, type Select, switch and URL filters.
-   * The ?plane= deep link seeds the plane facet. */
+   * The ?plane= / ?site= deep links seed the matching facets. */
   const [facets, setFacets] = useState<FacetSelection>(() => {
-    const p = planeFilterForParam(searchParams.get('plane'));
-    const initial: FacetSelection = p === 'all' ? {} : { plane: [p] };
+    const initial: FacetSelection = {};
+    const planes = (searchParams.get('plane') ?? '')
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => planeFilterForParam(p))
+      .filter((p) => p !== 'all');
+    if (planes.length > 0) initial.plane = planes;
+    const sites = (searchParams.get('site') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (sites.length > 0) initial.site = sites;
     return initial;
   });
-  const [issuesOnly, setIssuesOnly] = useState(false);
+  /* Issues triage: all | issues-only (`1`) | clean-only (`0`) — chips + Switch
+   * share the same `?issues=` write-back (Loop 145). */
+  const [issuesFilter, setIssuesFilter] = useState<'all' | '1' | '0'>(() =>
+    parseDevicesIssuesFilter(searchParams.get('issues')),
+  );
+  const issuesOnly = issuesFilter === '1';
+  const setIssuesOnly = (on: boolean) => setIssuesFilter(on ? '1' : 'all');
   const [typeBuckets, setTypeBuckets] = useState<CategoryBucket[]>([]);
   /* Deep link: /devices?names=a\nb\nc (a Compliance finding's count). Read
      straight off the URL rather than mirrored into state — a filter that
@@ -238,7 +277,14 @@ export default function Devices() {
       toast(res.message, { tone: 'danger' });
       return;
     }
-    const fresh = await getDevices({ limit: DEVICE_PAGE });
+    const fresh = await getDevices({
+      limit: DEVICE_PAGE,
+      ...(q.trim() ? { q: q.trim() } : {}),
+      ...(type !== 'all' ? { type } : {}),
+      ...(issuesFilter !== 'all' ? { issues: issuesFilter } : {}),
+      ...((facets.plane ?? []).length > 0 ? { plane: (facets.plane ?? []).join(',') } : {}),
+      ...((facets.site ?? []).length > 0 ? { site: (facets.site ?? []).join(',') } : {}),
+    });
     devicesAccRef.current = fresh.devices;
     nextDeviceCursorRef.current = fresh.page?.nextCursor ?? null;
     setDeviceHasMore(Boolean(fresh.page?.nextCursor));
@@ -252,7 +298,9 @@ export default function Devices() {
      the same pattern Overview.tsx runs. One fetch at a time — a slow response
      never stacks up behind the interval; fixture reads poll harmlessly.
      Live lists request optional pages (limit=250) so large estates can Load more
-     without forcing every poll to ship the full inventory. */
+     without forcing every poll to ship the full inventory.
+     q/type/issues/plane/site/state ride the request so Load more pages the
+     filtered set (server applyDeviceListFilters). */
   const devicesAccRef = useRef<DeviceRow[]>([]);
   const nextDeviceCursorRef = useRef<string | null>(null);
   const loadMoreDevicesRef = useRef<() => void>(() => {});
@@ -260,6 +308,19 @@ export default function Devices() {
   const [devicePageTotal, setDevicePageTotal] = useState<number | null>(null);
   const [loadingMoreDevices, setLoadingMoreDevices] = useState(false);
   const DEVICE_PAGE = 250;
+
+  const serverQ = q.trim();
+  const serverType = type !== 'all' ? type : undefined;
+  const serverIssues = issuesFilter !== 'all' ? issuesFilter : undefined;
+  const serverPlane =
+    (facets.plane ?? []).length > 0 ? (facets.plane ?? []).join(',') : undefined;
+  const serverSite =
+    (facets.site ?? []).length > 0 ? (facets.site ?? []).join(',') : undefined;
+  const serverState = (() => {
+    if (stateFilter) return stateFilter;
+    const st = facets.state ?? [];
+    return st.length > 0 ? st.join(',') : undefined;
+  })();
 
   useEffect(() => {
     let live = true;
@@ -271,6 +332,12 @@ export default function Devices() {
       if (mode === 'append') setLoadingMoreDevices(true);
       void getDevices({
         limit: DEVICE_PAGE,
+        ...(serverQ ? { q: serverQ } : {}),
+        ...(serverType ? { type: serverType } : {}),
+        ...(serverIssues ? { issues: serverIssues } : {}),
+        ...(serverPlane ? { plane: serverPlane } : {}),
+        ...(serverSite ? { site: serverSite } : {}),
+        ...(serverState ? { state: serverState } : {}),
         ...(mode === 'append' && nextDeviceCursorRef.current
           ? { cursor: nextDeviceCursorRef.current }
           : {}),
@@ -309,6 +376,8 @@ export default function Devices() {
       }
     };
     loadMoreDevicesRef.current = () => pull('append');
+    nextDeviceCursorRef.current = null;
+    devicesAccRef.current = [];
     pull('replace');
     const every = Math.max(pollIntervalSec, 10) * 1000;
     const id = setInterval(() => pull('replace'), every);
@@ -316,7 +385,15 @@ export default function Devices() {
       live = false;
       clearInterval(id);
     };
-  }, [pollIntervalSec]);
+  }, [
+    pollIntervalSec,
+    serverQ,
+    serverType,
+    serverIssues,
+    serverPlane,
+    serverSite,
+    serverState,
+  ]);
 
   /* Deep link: /devices?plane=<registryId> (from the Systems plane drawer).
      Applied when the URL changes while the screen is mounted — state adjusted
@@ -326,15 +403,79 @@ export default function Devices() {
     setPrevParams(searchParams);
     const pp = searchParams.get('plane');
     if (pp !== null) {
-      const p = planeFilterForParam(pp);
+      const planes = pp
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .map((p) => planeFilterForParam(p))
+        .filter((p) => p !== 'all');
       setFacets((cur) => {
         const next = { ...cur };
-        if (p === 'all') delete next.plane;
-        else next.plane = [p];
+        if (planes.length === 0) delete next.plane;
+        else next.plane = planes;
+        return next;
+      });
+    }
+    const qParam = searchParams.get('q');
+    if (qParam !== null) setQ(qParam);
+    const typeParam = searchParams.get('type');
+    if (typeParam !== null) setType(typeParam.trim() || 'all');
+    const issuesParam = searchParams.get('issues');
+    if (issuesParam !== null) {
+      setIssuesFilter(parseDevicesIssuesFilter(issuesParam));
+    } else {
+      setIssuesFilter('all');
+    }
+    const siteParam = searchParams.get('site');
+    if (siteParam !== null) {
+      const sites = siteParam
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      setFacets((cur) => {
+        const next = { ...cur };
+        if (sites.length === 0) delete next.site;
+        else next.site = sites;
         return next;
       });
     }
   }
+
+  /* ⌘K quick-action landing cue (`?action=diagnostics`) — one-shot. */
+  const [actionCue, setActionCue] = useState<PaletteActionId | null>(() =>
+    parsePaletteAction(searchParams.get('action')),
+  );
+  useEffect(() => {
+    const parsed = parsePaletteAction(searchParams.get('action'));
+    if (parsed !== 'diagnostics') return;
+    setActionCue(parsed);
+    const stripped = stripActionParam(searchParams);
+    if (stripped) setSearchParams(stripped, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  /* Keep filter-row params aligned with local state so a refresh or shared URL
+     opens the same client-side slice. Deep-link params (`names`, `state`) are
+     preserved; empty defaults are omitted rather than written as q=&type=all.
+     Never re-write `action` — the cue consumes it once. */
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('action');
+    const qTrim = q.trim();
+    if (qTrim) next.set('q', qTrim);
+    else next.delete('q');
+    if (type !== 'all') next.set('type', type);
+    else next.delete('type');
+    if (issuesFilter !== 'all') next.set('issues', issuesFilter);
+    else next.delete('issues');
+    const planes = facets.plane ?? [];
+    if (planes.length > 0) next.set('plane', planes.join(','));
+    else next.delete('plane');
+    const sites = facets.site ?? [];
+    if (sites.length > 0) next.set('site', sites.join(','));
+    else next.delete('site');
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [q, type, issuesFilter, facets, searchParams, setSearchParams]);
 
   if (!data) {
     return <PageSkeleton variant="list" />;
@@ -364,10 +505,87 @@ export default function Devices() {
      switch, URL deep links, free text) let through. The FacetFilter counts
      describe this set, and applyFacets narrows it to the rows the table and
      lanes show — so a count never promises rows the search box would hide. */
+  const matchesIssues = (d: DeviceRow): boolean => {
+    if (issuesFilter === '1') return Boolean(d.reconciliationIssue);
+    if (issuesFilter === '0') return !d.reconciliationIssue;
+    return true;
+  };
+  const uniq = <T,>(xs: T[]): T[] => xs.filter((v, i, a) => a.indexOf(v) === i);
+  /* Type chips count over issues+q+names+state (not type); issues chips over
+   * type+q+names+state (not issues) so each row still shows the full mix while
+   * its own chip is on — Loop 153 type / Loop 145 issues. */
+  const typeUniverse = devices.filter(
+    (d) =>
+      matchesIssues(d) &&
+      (nameFilter === null || nameFilter.includes(d.name)) &&
+      (stateFilter === null || d.state === stateFilter) &&
+      matchesQuery(d),
+  );
+  const issuesUniverse = devices.filter(
+    (d) =>
+      (type === 'all' || d.type === type) &&
+      (nameFilter === null || nameFilter.includes(d.name)) &&
+      (stateFilter === null || d.state === stateFilter) &&
+      matchesQuery(d),
+  );
+  const typeChipKeys = uniq(typeUniverse.map((d) => d.type).filter(Boolean)).sort((a, b) =>
+    a.localeCompare(b),
+  ) as string[];
+  if (type !== 'all' && type && !typeChipKeys.includes(type)) typeChipKeys.unshift(type);
+  const typeChips = typeChipKeys.map((key) => {
+    const bucket = typeBuckets.find((b) => b.key === key);
+    return {
+      key,
+      label: bucket?.label ?? key,
+      tone: (bucket?.tone ?? 'neutral') as Tone,
+      count: typeUniverse.filter((d) => d.type === key).length,
+    };
+  });
+  const ISSUES_CHIP_META: Array<{ key: '1' | '0'; label: string; tone: Tone }> = [
+    { key: '1', label: 'Issues', tone: 'warning' },
+    { key: '0', label: 'Clean', tone: 'success' },
+  ];
+  const issuesChips = ISSUES_CHIP_META.map((m) => ({
+    ...m,
+    count: issuesUniverse.filter((d) =>
+      m.key === '1' ? Boolean(d.reconciliationIssue) : !d.reconciliationIssue,
+    ).length,
+  })).filter((c) => c.count > 0 || issuesFilter === c.key);
+  /* State chips count over type+q+names+issues (not state) and toggle the same
+   * `?state=` deep link the availability counts / clearable chip use (Loop 154). */
+  const stateUniverse = devices.filter(
+    (d) =>
+      (type === 'all' || d.type === type) &&
+      matchesIssues(d) &&
+      (nameFilter === null || nameFilter.includes(d.name)) &&
+      matchesQuery(d),
+  );
+  const stateChipKeys = uniq(
+    stateUniverse.map((d) => String(d.state ?? '').trim()).filter(Boolean),
+  ).sort((a, b) => a.localeCompare(b));
+  if (stateFilter && !stateChipKeys.includes(stateFilter)) stateChipKeys.unshift(stateFilter);
+  const stateChips = stateChipKeys
+    .map((key) => {
+      const sample = stateUniverse.find((d) => d.state === key);
+      return {
+        key,
+        label: key,
+        tone: (sample?.stateTone ?? 'neutral') as Tone,
+        count: stateUniverse.filter((d) => d.state === key).length,
+        pressed: stateFilter === key,
+      };
+    })
+    .filter((c) => c.count > 0 || c.pressed);
+  const toggleStateChip = (key: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (stateFilter === key) next.delete('state');
+    else next.set('state', key);
+    setSearchParams(next, { replace: true });
+  };
   const baseRows = devices.filter(
     (d) =>
       (type === 'all' || d.type === type) &&
-      (!issuesOnly || d.reconciliationIssue) &&
+      matchesIssues(d) &&
       (nameFilter === null || nameFilter.includes(d.name)) &&
       (stateFilter === null || d.state === stateFilter) &&
       matchesQuery(d),
@@ -386,23 +604,120 @@ export default function Devices() {
       formatValue: (id) => devices.find((d) => d.siteId === id)?.siteName ?? id,
     },
   ];
+  /* Plane chips count over the non-facet universe (same as FacetFilter's
+   * baseRows) and toggle the `plane` facet / `?plane=` write-back — single-select
+   * click again to clear (Loop 157). */
+  const activePlanes = facets.plane ?? [];
+  const planeChipKeys = uniq(
+    baseRows.map((d) => String(d.plane ?? '').trim()).filter(Boolean),
+  ).sort((a, b) => a.localeCompare(b));
+  for (const p of activePlanes) {
+    if (p && !planeChipKeys.includes(p)) planeChipKeys.unshift(p);
+  }
+  const planeChips = planeChipKeys
+    .map((key) => {
+      const sample = baseRows.find((d) => d.plane === key);
+      return {
+        key,
+        label: key,
+        tone: (sample?.planeTone ?? 'neutral') as Tone,
+        count: baseRows.filter((d) => d.plane === key).length,
+        pressed: activePlanes.length === 1 && activePlanes[0] === key,
+      };
+    })
+    .filter((c) => c.count > 0 || c.pressed);
+  const togglePlaneChip = (key: string) => {
+    const cur = facets.plane ?? [];
+    if (cur.length === 1 && cur[0] === key) {
+      const next = { ...facets };
+      delete next.plane;
+      setFacets(next);
+      return;
+    }
+    setFacets({ ...facets, plane: [key] });
+  };
+  /* Site chips count over the non-facet universe (same as FacetFilter's
+   * baseRows) and toggle the `site` facet / `?site=` write-back — single-select
+   * click again to clear (Loop 156). Keys are siteIds; labels prefer siteName. */
+  const activeSites = facets.site ?? [];
+  const siteChipKeys = uniq(
+    baseRows.map((d) => String(d.siteId ?? '').trim()).filter(Boolean),
+  ).sort((a, b) => {
+    const an = devices.find((d) => d.siteId === a)?.siteName ?? a;
+    const bn = devices.find((d) => d.siteId === b)?.siteName ?? b;
+    return an.localeCompare(bn);
+  });
+  for (const s of activeSites) {
+    if (s && !siteChipKeys.includes(s)) siteChipKeys.unshift(s);
+  }
+  const siteChips = siteChipKeys
+    .map((key) => {
+      const sample = baseRows.find((d) => d.siteId === key) ?? devices.find((d) => d.siteId === key);
+      return {
+        key,
+        label: sample?.siteName ?? key,
+        count: baseRows.filter((d) => d.siteId === key).length,
+        pressed: activeSites.length === 1 && activeSites[0] === key,
+      };
+    })
+    .filter((c) => c.count > 0 || c.pressed);
+  const toggleSiteChip = (key: string) => {
+    const cur = facets.site ?? [];
+    if (cur.length === 1 && cur[0] === key) {
+      const next = { ...facets };
+      delete next.site;
+      setFacets(next);
+      return;
+    }
+    setFacets({ ...facets, site: [key] });
+  };
   const rows = applyFacets(baseRows, deviceFacets, facets);
+  const deviceFiltersActive =
+    q.trim().length > 0 ||
+    type !== 'all' ||
+    issuesFilter !== 'all' ||
+    Object.keys(facets).length > 0 ||
+    nameFilter !== null ||
+    stateFilter !== null;
+  const clearDeviceFilters = () => {
+    setQ('');
+    setType('all');
+    setIssuesFilter('all');
+    setFacets({});
+    setSelectedKeys([]);
+    if (nameFilter !== null || stateFilter !== null) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('names');
+      next.delete('state');
+      setSearchParams(next, { replace: true });
+    }
+  };
 
   /* A saved view snapshots the facet selection, free text, type and the
      issues switch, the column-manager config and the density. The URL deep
      links (?names=, ?state=) are deliberately NOT captured: a filter that
      narrows the estate this hard belongs to the address that explains it. */
   const captureView = (): Omit<SavedView, 'name'> => ({
-    filters: { facets, q, type, issuesOnly },
+    filters: { facets, q, type, issuesOnly, issuesFilter },
     tableColumns: tableColumns.devices ?? {},
     density,
   });
   const applyView = (view: SavedView) => {
-    const f = view.filters as { facets?: unknown; q?: unknown; type?: unknown; issuesOnly?: unknown };
+    const f = view.filters as {
+      facets?: unknown;
+      q?: unknown;
+      type?: unknown;
+      issuesOnly?: unknown;
+      issuesFilter?: unknown;
+    };
     setFacets(sanitizeFacetSelection(f.facets));
     setQ(typeof f.q === 'string' ? f.q : '');
     setType(typeof f.type === 'string' ? f.type : 'all');
-    setIssuesOnly(f.issuesOnly === true);
+    if (f.issuesFilter === '1' || f.issuesFilter === '0' || f.issuesFilter === 'all') {
+      setIssuesFilter(f.issuesFilter);
+    } else {
+      setIssuesOnly(f.issuesOnly === true);
+    }
     if (view.tableColumns) setTableColumns('devices', view.tableColumns);
     if (view.density) setDensity(view.density);
   };
@@ -412,7 +727,6 @@ export default function Devices() {
   const namedPresent =
     nameFilter === null ? 0 : nameFilter.filter((name) => devices.some((d) => d.name === name)).length;
 
-  const uniq = <T,>(xs: T[]): T[] => xs.filter((v, i, a) => a.indexOf(v) === i);
   const typeOptions = [{ value: 'all', label: 'All types' }].concat(
     uniq(devices.map((d) => d.type)).map((t) => ({ value: t, label: t })),
   );
@@ -473,7 +787,7 @@ export default function Devices() {
         <button
           type="button"
           onClick={() => navigate(deviceDetailPath({ name: d.name, plane: d.plane, serial: d.serial }))}
-          className="nt-mono-link nt-body-sm" style={{ textAlign: "left" }}
+          className="nt-mono-link nt-body-sm nt-ta-left"
         >
           {d.name}
         </button>
@@ -492,7 +806,7 @@ export default function Devices() {
         <button
           type="button"
           onClick={() => navigate(`/sites/${encodeURIComponent(d.siteId)}`)}
-          className="nt-body-sm nt-body-sm" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--nd-text-primary)", textAlign: "left" }}
+          className="nt-body-sm nt-btn-plain-primary"
         >
           {displayField(d.siteName)}
         </button>
@@ -539,15 +853,9 @@ export default function Devices() {
         // quiet cell is the honest rendering of "nothing to act on".
         const behind = d.firmwareTarget !== undefined && !d.firmwareApproved && fw !== 'Not reported';
         return (
-          <span className="nt-row-center nt-gap-6" style={{ display: "inline-flex", flexWrap: "wrap" }}>
+          <span className="nt-row-center nt-gap-6 nt-inline-wrap">
             <span
-              className="nt-mono-11"
-              style={{
-                color:
-                  fw === 'Not reported' || d.firmwareApproved
-                    ? 'var(--nd-text-secondary)'
-                    : 'var(--nd-warning)',
-              }}
+              className={[`nt-mono-11`, fw === 'Not reported' || d.firmwareApproved ? 'nt-tone-secondary' : 'nt-tone-warning'].filter(Boolean).join(" ")}
             >
               {fw}
             </span>
@@ -577,13 +885,7 @@ export default function Devices() {
               <>
                 Clients
                 <span
-                  style={{
-                    display: 'block',
-                    fontSize: 9,
-                    letterSpacing: '0.02em',
-                    textTransform: 'none',
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-micro-muted"
                 >
                   {metricsWindowLabel(metrics)}
                 </span>
@@ -606,7 +908,7 @@ export default function Devices() {
                 type="button"
                 onClick={() => void hideDevice(d.name)}
                 aria-label={`Hide ${d.name} from the demo inventory`}
-                className="nt-mono-label nt-mono-label" style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
+                className="nt-mono-label nt-btn-plain"
               >
                 hide
               </button>
@@ -616,24 +918,49 @@ export default function Devices() {
       : []),
   ];
 
+  const diagnosticsCue =
+    actionCue === 'diagnostics' ? paletteActionCue('diagnostics') : null;
+
   return (
-    <div className="nt-stack">
+    <div className="nt-stack nt-recon-reveal nt-devices-shell nt-section-panel">
       <ScreenHeader
         overline="Inventory / Devices"
         title="Devices"
         subtitle={subtitle}
         actions={
           <>
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · fleet
+            </span>
+            {!isDemo ? <Badge tone="info">LIVE</Badge> : null}
             <Button
               variant="ghost"
               size="sm"
               onClick={() => {
                 void (async () => {
-                  const url = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+                  /* Prefer the live address bar (filter write-back keeps it
+                     complete); fall back to building from state if empty. */
+                  const qs =
+                    window.location.search ||
+                    (() => {
+                      const next = new URLSearchParams();
+                      if (q.trim()) next.set('q', q.trim());
+                      if (type !== 'all') next.set('type', type);
+                      if (issuesFilter !== 'all') next.set('issues', issuesFilter);
+                      const planes = facets.plane ?? [];
+                      if (planes.length > 0) next.set('plane', planes.join(','));
+                      const sites = facets.site ?? [];
+                      if (sites.length > 0) next.set('site', sites.join(','));
+                      if (nameFilter) next.set('names', nameFilter.join('\n'));
+                      if (stateFilter) next.set('state', stateFilter);
+                      const s = next.toString();
+                      return s ? `?${s}` : '';
+                    })();
+                  const url = `${window.location.origin}${window.location.pathname}${qs}`;
                   try {
                     await navigator.clipboard.writeText(url);
                     toast('View link copied', {
-                      description: window.location.search || 'unfiltered devices list',
+                      description: qs || 'unfiltered devices list',
                       tone: 'success',
                     });
                   } catch {
@@ -672,6 +999,38 @@ export default function Devices() {
             >
               Export CSV
             </Button>
+            {data.dataSource === 'live' ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const qs = new URLSearchParams();
+                    if (serverQ) qs.set('q', serverQ);
+                    if (serverType) qs.set('type', serverType);
+                    if (serverIssues) qs.set('issues', serverIssues);
+                    if (serverPlane) qs.set('plane', serverPlane);
+                    if (serverSite) qs.set('site', serverSite);
+                    if (serverState) qs.set('state', serverState);
+                    const suffix = qs.toString() ? `?${qs}` : '';
+                    const res = await downloadApiCsv(`/api/devices/export${suffix}`, 'devices.csv');
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description: 'devices.csv — filtered portal inventory export.',
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
             <SegmentedControl
               options={VIEW_OPTIONS}
               value={inventoryView}
@@ -681,29 +1040,126 @@ export default function Devices() {
           </>
         }
       />
+      <div className="nt-plane-theater" role="note">NightDesk · fleet theater · health owns hue · monochrome planes</div>
 
-      {typeBuckets.length > 0 ? (
-        <div className="nt-chip-row" role="group" aria-label="Device categories">
-          <span className="nt-chip-row__label">Categories</span>
-          {typeBuckets.map((b) => (
+      {typeChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Device type">
+          <span className="nt-chip-row__label">Type</span>
+          {typeChips.map((c) => (
             <button
-              key={b.key}
+              key={c.key}
               type="button"
-              onClick={() => setType(b.key === type ? 'all' : b.key)}
-              className={type === b.key ? 'nt-chip nt-chip--active' : 'nt-chip'}
-              aria-pressed={type === b.key}
+              onClick={() => setType(c.key === type ? 'all' : c.key)}
+              className={type === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'}
+              aria-pressed={type === c.key}
             >
-              <Badge tone={b.tone ?? 'neutral'}>{b.label}</Badge>
-              <span className="nt-chip__count">{b.count}</span>
+              <Badge tone={c.tone}>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
             </button>
           ))}
         </div>
       ) : null}
 
+      {issuesChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Device issues">
+          <span className="nt-chip-row__label">Issues</span>
+          {issuesChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setIssuesFilter(issuesFilter === c.key ? 'all' : c.key)}
+              className={
+                issuesFilter === c.key ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={issuesFilter === c.key}
+              data-issues={c.key}
+            >
+              <Badge tone={c.tone}>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {stateChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Device state">
+          <span className="nt-chip-row__label">State</span>
+          {stateChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => toggleStateChip(c.key)}
+              className={
+                c.pressed ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={c.pressed}
+              data-state={c.key}
+            >
+              <Badge tone={c.tone}>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {planeChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Device plane">
+          <span className="nt-chip-row__label">Plane</span>
+          {planeChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => togglePlaneChip(c.key)}
+              className={
+                c.pressed ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={c.pressed}
+              data-plane={c.key}
+            >
+              <Badge plane>{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {siteChips.length > 0 ? (
+        <div className="nt-chip-row" role="group" aria-label="Device site">
+          <span className="nt-chip-row__label">Site</span>
+          {siteChips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => toggleSiteChip(c.key)}
+              className={
+                c.pressed ? 'nt-chip nt-chip--active nt-toggle-chip' : 'nt-chip nt-toggle-chip'
+              }
+              aria-pressed={c.pressed}
+              data-site={c.key}
+            >
+              <Badge tone="neutral">{c.label}</Badge>
+              <span className="nt-chip__count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <VisualReferencePanel target={{ kind: 'service', id: 'devices' }} editable={false} />
       <ConfigRecommendationsPanel title="Device recommendations" limit={6} />
 
-      <div className="nt-filter-bar">
-        <div className="nt-filter-field nt-filter-field--xl" style={{ width: 250 }}>
+      {diagnosticsCue ? (
+        <Alert
+          tone="info"
+          title={diagnosticsCue.title}
+          dismissible
+          onDismiss={() => setActionCue(null)}
+        >
+          <span className="nt-body-sm">{diagnosticsCue.body}</span>
+        </Alert>
+      ) : null}
+
+      <div className="nt-filter-bar nt-sticky-filters">
+        <div className="nt-filter-field nt-filter-field--xl nt-w-250">
           <Input
             size="sm"
             mono
@@ -798,7 +1254,7 @@ export default function Devices() {
           tone="warning"
           title={`${missing.length} linked inventor${missing.length === 1 ? 'y is' : 'ies are'} not represented below: ${missing.join(', ')}`}
         >
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-fs-13">
             These planes are linked but their device read has not come back, so whatever they manage is missing from
             this list and from the reconciliation counts. This is not an empty inventory — it is an unread one. Check
             them in Connected systems before treating this list as the estate.
@@ -811,7 +1267,7 @@ export default function Devices() {
           tone="warning"
           title={`Reconciliation: ${countOf(doubleClaimed, 'device')} claimed by two inventories, ${unclaimed} by none`}
         >
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-fs-13">
             {isDemo
               ? 'sw-riv-2, ap-riv-01 and ap-riv-06 exist in both Central Classic and the local collector with different firmware records. Fourteen Warehouse switches appear in no cloud plane at all — they are only visible over SSH.'
               : 'These counts come from the current live inventory reconciliation. Open an affected device to inspect its reporting planes and identity evidence.'}
@@ -832,12 +1288,146 @@ export default function Devices() {
             onRowActivate={(d) => navigate(deviceDetailPath({ name: d.name, plane: d.plane, serial: d.serial }))}
             selectedKeys={selectedKeys}
             onSelectionChange={setSelectedKeys}
+            rowTone={(d) => d.stateTone}
           />
+          {selectedKeys.length > 0 ? (
+            <div className="nt-configure-bulk-bar nt-bulk-glass" role="region" aria-label="Device selection actions">
+              <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
+              <span className="nt-configure-bulk-bar__hint">
+                export or share only the devices you marked — full list export stays in the header
+              </span>
+              <span className="nt-configure-bulk-bar__actions">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const selected = new Set(selectedKeys);
+                    const picked = rows.filter((d) => selected.has(`${d.name}:${d.serial ?? d.plane}`));
+                    if (picked.length === 0) {
+                      toast('No selected devices still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const n = exportTableCsv(
+                      'devices-selected.csv',
+                      ['name', 'type', 'model', 'site', 'plane', 'state', 'firmware', 'serial', 'mac', 'ip', 'licence'],
+                      picked.map((d) => [
+                        d.name,
+                        d.type,
+                        d.model,
+                        d.siteName,
+                        d.plane,
+                        d.state,
+                        d.firmware,
+                        d.serial ?? '',
+                        d.mac ?? '',
+                        d.ip ?? '',
+                        d.licence,
+                      ]),
+                    );
+                    toast(`Exported ${countOf(n, 'selected device')}`, {
+                      description: 'devices-selected.csv — inventory fields only.',
+                      tone: 'success',
+                    });
+                  }}
+                >
+                  Export selected
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((d) => selected.has(`${d.name}:${d.serial ?? d.plane}`));
+                      if (picked.length === 0) {
+                        toast('No selected devices still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      /* Reuse the Compliance ?names= deep link so a shared
+                         selection reopens the same named set on refresh. */
+                      const next = new URLSearchParams(searchParams);
+                      next.set('names', picked.map((d) => d.name).join('\n'));
+                      const qs = next.toString();
+                      const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                      try {
+                        await navigator.clipboard.writeText(url);
+                        toast('Selection link copied', {
+                          description: `${picked.length} named device${picked.length === 1 ? '' : 's'} · names=`,
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy link', { description: url, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy selection link
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((d) => selected.has(`${d.name}:${d.serial ?? d.plane}`));
+                      if (picked.length === 0) {
+                        toast('No selected devices still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const serials = picked
+                        .map((d) => (d.serial ?? '').trim())
+                        .filter(Boolean);
+                      if (serials.length === 0) {
+                        toast('No serials on the selected devices', {
+                          description: 'Those rows did not publish a serial — export CSV for names instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = serials.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(serials.length, 'serial')}`, {
+                          description:
+                            serials.length < picked.length
+                              ? `${picked.length - serials.length} selected without a serial skipped`
+                              : 'newline-joined · paste into a ticket or RMA',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy serials', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy serials
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
+                  Clear
+                </Button>
+              </span>
+            </div>
+          ) : null}
           {rows.length === 0 ? (
             <EmptyState
               title="Nothing matches that filter"
               description="Loosen the search or the type filter and facets to see the rest of the inventory."
-            />
+            >
+              {devices.length > 0 && deviceFiltersActive ? (
+                <Button variant="secondary" size="sm" onClick={clearDeviceFilters}>
+                  Clear filters
+                </Button>
+              ) : null}
+            </EmptyState>
           ) : null}
           {deviceHasMore || devicePageTotal != null ? (
             <div className="nt-filter-bar">
@@ -871,15 +1461,15 @@ export default function Devices() {
             // local filters excluded the rows it did report.
             const planeReportedNothing = !present.includes(p);
             return (
-              <div key={p} className="nt-stack" style={{ gap: 10, minWidth: 0 }}>
+              <div key={p} className="nt-stack nt-gap-10 nt-min-w-0">
                 <div
-                  className="nt-fleet-lane" style={{ borderBottom: `2px solid ${meta.mark}` }}
+                  className="nt-fleet-lane nt-lane-mark"
                 >
                   <div
                     className="nt-fleet-lane__head"
                   >
                     <span
-                      className="nt-mono-label nt-text-pri-12" style={{ lineHeight: "inherit" }}
+                      className="nt-mono-label nt-text-pri-12 nt-lh-inherit"
                     >
                       {p}
                     </span>
@@ -907,31 +1497,18 @@ export default function Devices() {
                     <button
                       key={`${d.name}:${d.serial ?? d.plane}`}
                       type="button"
-                      className="nt-rowlink nt-device-lane-row"
+                      className="nt-rowlink nt-device-lane-row nt-device-nav-btn"
+                      data-tone={d.stateTone}
                       onClick={() => navigate(deviceDetailPath({ name: d.name, plane: d.plane, serial: d.serial }))}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 3,
-                        alignItems: 'stretch',
-                        textAlign: 'left',
-                        background: 'none',
-                        border: 'none',
-                        borderBottom: '1px solid var(--nd-border-subtle)',
-                        borderLeft: '2px solid transparent',
-                        padding: '9px 8px',
-                        cursor: 'pointer',
-                        width: '100%',
-                      }}
                     >
                       <div className="nt-row nt-gap-6">
                         <span
-                          className="nt-ellipsis nt-mono-11 nt-mono-11" style={{ color: "var(--nd-text-primary)", flex: 1 }}
+                          className="nt-ellipsis nt-mono-11 nt-text-primary-flex"
                         >
                           {d.name}
                         </span>
                         <span
-                          className="nt-dot-6" style={{ background: DOT_COLORS[d.stateTone] }}
+                          className="nt-dot-6" data-tone={d.stateTone}
                         />
                       </div>
                       <span

@@ -1,13 +1,32 @@
 /**
  * Read-only configuration recommendations. Never pushes — only hands off to
  * existing screens (Configure, ClearPass, Systems, device detail).
+ *
+ * Scope filters prefer explicit props; otherwise
+ * `?device=&site=&client=&severity=&category=` from the URL (full-page / deep-link).
+ * **Copy panel context link** always shares the canonical `/recommendations`
+ * surface with those filters.
+ *
+ * Multi-select (Loop 186) raises **Export selected**, **Copy IDs** (unique
+ * newline-joined recommendation ids), **Copy selection link** (canonical
+ * `/recommendations?ids=` plus active scope filters; clearable chip), and
+ * **Clear**. Selection-empty deep links offer **Clear selection filter**
+ * (Loop 205). Full-list CSV stays in the header.
  */
 
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import type { ConfigRecommendation, RecommendationSeverity } from '@hpe/shared';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { countOf } from '@hpe/shared';
+import type {
+  ConfigRecommendation,
+  RecommendationCategory,
+  RecommendationSeverity,
+} from '@hpe/shared';
 import { getRecommendations } from '../api/recommendations';
-import { Alert, Badge, Button, EmptyState, SectionHeader, Spinner } from '../nightdesk';
+import { namesFilterForParam, recommendationsPath } from '../app/nav';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
+import { exportTableCsv } from '../lib/csv';
+import { Alert, Badge, Button, EmptyState, SectionHeader, Skeleton, useToast } from '../nightdesk';
 
 const SEVERITY_TONE: Record<RecommendationSeverity, 'info' | 'warning' | 'danger' | 'neutral'> = {
   info: 'info',
@@ -15,26 +34,88 @@ const SEVERITY_TONE: Record<RecommendationSeverity, 'info' | 'warning' | 'danger
   warning: 'danger',
 };
 
+const CATEGORIES: RecommendationCategory[] = [
+  'firmware',
+  'configuration',
+  'redundancy',
+  'security',
+  'performance',
+  'compliance',
+  'inventory',
+];
+
+function trimParam(value: string | null | undefined): string | undefined {
+  const t = value?.trim();
+  return t ? t : undefined;
+}
+
+function parseSeverityParam(raw: string | null | undefined): RecommendationSeverity | undefined {
+  const v = raw?.trim().toLowerCase();
+  if (v === 'warning' || v === 'suggestion' || v === 'info') return v;
+  return undefined;
+}
+
+function parseCategoryParam(raw: string | null | undefined): RecommendationCategory | undefined {
+  const v = raw?.trim().toLowerCase() ?? '';
+  if ((CATEGORIES as readonly string[]).includes(v)) return v as RecommendationCategory;
+  return undefined;
+}
+
 export function ConfigRecommendationsPanel({
   device,
   site,
   clientMac,
+  severity,
+  category,
   limit = 12,
   title = 'Recommendations',
   initialRecommendations,
+  /** When false, hide Copy panel context link (full-page owns share chrome). */
+  showCopyLink = true,
 }: {
   device?: string;
   site?: string;
   clientMac?: string;
+  severity?: RecommendationSeverity;
+  category?: RecommendationCategory;
   limit?: number;
   title?: string;
   /** Test seam */
   initialRecommendations?: ConfigRecommendation[];
+  showCopyLink?: boolean;
 }) {
   const navigate = useNavigate();
+  const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState<ConfigRecommendation[] | null>(initialRecommendations ?? null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  /* Deep link: /recommendations?ids=a\nb (bulk Copy selection link). */
+  const idsFilter = namesFilterForParam(searchParams.get('ids'));
+  const idsFilterLc =
+    idsFilter === null
+      ? null
+      : idsFilter.map((id) => id.trim().toLowerCase()).filter(Boolean);
+
+  const effectiveDevice = device ?? trimParam(searchParams.get('device'));
+  const effectiveSite = site ?? trimParam(searchParams.get('site'));
+  const effectiveClient = clientMac ?? trimParam(searchParams.get('client'));
+  const effectiveSeverity = severity ?? parseSeverityParam(searchParams.get('severity'));
+  const effectiveCategory = category ?? parseCategoryParam(searchParams.get('category'));
+
+  const scopeKey = useMemo(
+    () =>
+      JSON.stringify({
+        device: effectiveDevice ?? '',
+        site: effectiveSite ?? '',
+        client: effectiveClient ?? '',
+        severity: effectiveSeverity ?? '',
+        category: effectiveCategory ?? '',
+        limit,
+      }),
+    [effectiveDevice, effectiveSite, effectiveClient, effectiveSeverity, effectiveCategory, limit],
+  );
 
   useEffect(() => {
     if (initialRecommendations) return;
@@ -43,9 +124,11 @@ export function ConfigRecommendationsPanel({
       try {
         setError(null);
         const res = await getRecommendations({
-          device,
-          site,
-          client: clientMac,
+          device: effectiveDevice,
+          site: effectiveSite,
+          client: effectiveClient,
+          severity: effectiveSeverity,
+          category: effectiveCategory,
           limit,
         });
         if (cancelled) return;
@@ -60,22 +143,198 @@ export function ConfigRecommendationsPanel({
     return () => {
       cancelled = true;
     };
-  }, [device, site, clientMac, limit, initialRecommendations]);
+    // scopeKey captures the effective filters + limit
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional stable key
+  }, [scopeKey, initialRecommendations]);
+
+  const exportClientCsv = () => {
+    if (!rows || rows.length === 0) return;
+    const n = exportTableCsv(
+      'config-recommendations.csv',
+      [
+        'id',
+        'ruleId',
+        'severity',
+        'category',
+        'title',
+        'detail',
+        'actionType',
+        'evidence',
+        'evidenceNote',
+        'device',
+        'site',
+        'clientMac',
+        'plane',
+        'handoffPath',
+        'impactCount',
+      ],
+      rows.map((r) => [
+        r.id,
+        r.ruleId,
+        r.severity,
+        r.category,
+        r.title,
+        r.detail,
+        r.actionType,
+        r.evidence,
+        r.evidenceNote ?? '',
+        r.device ?? '',
+        r.site ?? '',
+        r.clientMac ?? '',
+        r.plane ?? '',
+        r.handoffPath ?? '',
+        r.impactCount ?? '',
+      ]),
+    );
+    toast(`Exported ${n} recommendation${n === 1 ? '' : 's'}`, {
+      description: 'config-recommendations.csv — rows currently in view (read-only).',
+    });
+  };
+
+  const exportServerCsv = () => {
+    void (async () => {
+      const qs = new URLSearchParams();
+      if (effectiveDevice) qs.set('device', effectiveDevice);
+      if (effectiveSite) qs.set('site', effectiveSite);
+      if (effectiveClient) qs.set('client', effectiveClient);
+      if (effectiveSeverity) qs.set('severity', effectiveSeverity);
+      if (effectiveCategory) qs.set('category', effectiveCategory);
+      const suffix = qs.toString() ? `?${qs}` : '';
+      const res = await downloadApiCsv(
+        `/api/recommendations/export${suffix}`,
+        'config-recommendations.csv',
+      );
+      if (res.ok) {
+        toast('Server CSV downloaded', {
+          description: 'config-recommendations.csv — filtered suggestions (read-only).',
+          tone: 'success',
+        });
+      } else {
+        toast('Server CSV failed', {
+          description: res.error ?? 'Could not download recommendations export',
+          tone: 'warning',
+        });
+      }
+    })();
+  };
+
+  const copyPanelContextLink = () => {
+    void (async () => {
+      const path = recommendationsPath({
+        device: effectiveDevice,
+        site: effectiveSite,
+        client: effectiveClient,
+        severity: effectiveSeverity,
+        category: effectiveCategory,
+      });
+      const url = `${window.location.origin}${path}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('Panel context link copied', {
+          description: path,
+          tone: 'success',
+        });
+      } catch {
+        toast('Could not copy link', { description: url, tone: 'warning' });
+      }
+    })();
+  };
+
+  const viewRows = useMemo(() => {
+    if (!rows) return [];
+    if (idsFilterLc === null) return rows;
+    return rows.filter((r) => idsFilterLc.includes(r.id.trim().toLowerCase()));
+  }, [rows, idsFilterLc]);
+  const idsPresent =
+    idsFilterLc === null || !rows
+      ? 0
+      : idsFilterLc.filter((id) => rows.some((r) => r.id.trim().toLowerCase() === id)).length;
+
+  const toggleSelected = (id: string) => {
+    setSelectedKeys((prev) => (prev.includes(id) ? prev.filter((k) => k !== id) : [...prev, id]));
+  };
+
+  const clearIdsFilter = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('ids');
+    setSearchParams(next, { replace: true });
+    setSelectedKeys([]);
+  };
+
+  const recCsvRow = (r: ConfigRecommendation) => [
+    r.id,
+    r.ruleId,
+    r.severity,
+    r.category,
+    r.title,
+    r.detail,
+    r.actionType,
+    r.evidence,
+    r.evidenceNote ?? '',
+    r.device ?? '',
+    r.site ?? '',
+    r.clientMac ?? '',
+    r.plane ?? '',
+    r.handoffPath ?? '',
+    r.impactCount ?? '',
+  ];
+
+  const recCsvHeaders = [
+    'id',
+    'ruleId',
+    'severity',
+    'category',
+    'title',
+    'detail',
+    'actionType',
+    'evidence',
+    'evidenceNote',
+    'device',
+    'site',
+    'clientMac',
+    'plane',
+    'handoffPath',
+    'impactCount',
+  ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <SectionHeader label={title} meta="READ ONLY · NO AUTO-APPLY" />
+    <div className="nt-stack-12 nt-recs-shell nt-section-panel">
+      <div className="nt-plane-theater" role="note">NightDesk · recommendation lane · severity owns hue · never auto-applied</div>
+      <div className="nt-row-between-8">
+        <SectionHeader label={title} meta="READ ONLY · NO AUTO-APPLY" />
+        <div className="nt-wrap-6">
+          {showCopyLink ? (
+            <Button variant="ghost" size="sm" onClick={copyPanelContextLink}>
+              Copy panel context link
+            </Button>
+          ) : null}
+          {rows !== null && rows.length > 0 ? (
+            <>
+              <Button variant="ghost" size="sm" onClick={exportClientCsv}>
+                Export CSV
+              </Button>
+              <Button variant="ghost" size="sm" onClick={exportServerCsv}>
+                Download server CSV
+              </Button>
+            </>
+          ) : null}
+        </div>
+      </div>
       {note ? (
-        <div style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>{note}</div>
+        <div className="nt-fs-12-muted">{note}</div>
       ) : null}
       {error ? (
         <Alert tone="warning" title="Recommendations unavailable">
-          <span style={{ fontSize: 13 }}>{error}</span>
+          <span className="nt-fs-13">{error}</span>
         </Alert>
       ) : null}
-      {rows === null ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 16 }}>
-          <Spinner size="sm" />
+      {error ? null : rows === null ? (
+        <div className="nt-center-pad-16" role="status" aria-label="Loading recommendations">
+          <div className="nt-stack nt-gap-6">
+            <Skeleton height={12} width="40%" />
+            <Skeleton height={28} />
+            <Skeleton height={28} />
+          </div>
         </div>
       ) : rows.length === 0 ? (
         <EmptyState
@@ -83,42 +342,204 @@ export function ConfigRecommendationsPanel({
           description="Nothing stood out from observed inventory state for this scope."
         />
       ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {rows.map((rec) => (
-            <li
-              key={rec.id}
-              style={{
-                border: '1px solid var(--nd-border-default)',
-                background: 'var(--nd-bg-raised)',
-                padding: '12px 14px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-              }}
+        <>
+          {idsFilterLc !== null ? (
+            <div className="nt-chip-row" role="group" aria-label="Selection deep link">
+              <button
+                type="button"
+                onClick={clearIdsFilter}
+                title={idsFilter?.join(', ')}
+                className="nt-chip nt-chip--active"
+              >
+                {idsPresent === idsFilterLc.length
+                  ? `${idsFilterLc.length} selected recommendation${idsFilterLc.length === 1 ? '' : 's'}`
+                  : `${idsPresent} of ${idsFilterLc.length} selected recommendations present`}
+                {' — clear'}
+              </button>
+            </div>
+          ) : null}
+          {viewRows.length === 0 ? (
+            <EmptyState
+              title="No recommendations match this selection"
+              description="Clear the selection filter to restore the full recommendation list for this scope."
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                <strong style={{ fontSize: 13 }}>{rec.title}</strong>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <Badge tone={SEVERITY_TONE[rec.severity]}>{rec.severity}</Badge>
-                  <Badge tone="neutral">{rec.category}</Badge>
-                </div>
-              </div>
-              <div style={{ fontSize: 13, color: 'var(--nd-text-secondary)' }}>{rec.detail}</div>
-              {rec.evidenceNote ? (
-                <div className="nt-hint-muted">
-                  {rec.evidenceNote}
-                </div>
-              ) : null}
-              {rec.handoffPath ? (
-                <div>
-                  <Button variant="secondary" size="sm" onClick={() => navigate(rec.handoffPath!)}>
-                    Open related screen
-                  </Button>
-                </div>
-              ) : null}
-            </li>
-          ))}
-        </ul>
+              <Button variant="secondary" size="sm" onClick={clearIdsFilter}>
+                Clear selection filter
+              </Button>
+            </EmptyState>
+          ) : (
+            <ul className="nt-rec-list" aria-label="Configuration recommendations">
+              {viewRows.map((rec) => {
+                const marked = selectedKeys.includes(rec.id);
+                return (
+                  <li
+                    key={rec.id}
+                    className="nt-rec-card nt-card-lift"
+                    data-severity={rec.severity}
+                    data-tone={SEVERITY_TONE[rec.severity]}
+                    data-selected={marked ? 'true' : 'false'}
+                  >
+                    <div className="nt-row-between-8">
+                      <label className="nt-row nt-gap-8 nt-align-start">
+                        <input
+                          type="checkbox"
+                          checked={marked}
+                          onChange={() => toggleSelected(rec.id)}
+                          aria-label={`Select recommendation ${rec.title}`}
+                        />
+                        <strong className="nt-fs-13">{rec.title}</strong>
+                      </label>
+                      <div className="nt-wrap-6">
+                        <Badge tone={SEVERITY_TONE[rec.severity]}>{rec.severity}</Badge>
+                        <Badge tone="neutral">{rec.category}</Badge>
+                      </div>
+                    </div>
+                    <div className="nt-fs-13-sec">{rec.detail}</div>
+                    {rec.evidenceNote ? (
+                      <div className="nt-hint-muted">
+                        {rec.evidenceNote}
+                      </div>
+                    ) : null}
+                    {rec.handoffPath ? (
+                      <div>
+                        <Button variant="secondary" size="sm" onClick={() => navigate(rec.handoffPath!)}>
+                          Open related screen
+                        </Button>
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {selectedKeys.length > 0 ? (
+            <div
+              className="nt-configure-bulk-bar nt-bulk-glass"
+              role="region"
+              aria-label="Recommendation selection actions"
+            >
+              <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
+              <span className="nt-configure-bulk-bar__hint">
+                export, copy ids, or share a selection link for only the suggestions you marked —
+                full list export stays in the header · never auto-applies
+              </span>
+              <span className="nt-configure-bulk-bar__actions">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const selected = new Set(selectedKeys);
+                    const picked = viewRows.filter((r) => selected.has(r.id));
+                    if (picked.length === 0) {
+                      toast('No selected recommendations still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const n = exportTableCsv(
+                      'config-recommendations-selected.csv',
+                      recCsvHeaders,
+                      picked.map(recCsvRow),
+                    );
+                    toast(`Exported ${countOf(n, 'selected recommendation')}`, {
+                      description: 'config-recommendations-selected.csv — read-only fields only.',
+                      tone: 'success',
+                    });
+                  }}
+                >
+                  Export selected
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = viewRows.filter((r) => selected.has(r.id));
+                      if (picked.length === 0) {
+                        toast('No selected recommendations still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const ids = [...new Set(picked.map((r) => r.id.trim()).filter(Boolean))];
+                      if (ids.length === 0) {
+                        toast('No ids on the selected recommendations', {
+                          description: 'Export CSV for titles instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = ids.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(ids.length, 'id')}`, {
+                          description: 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy ids', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy IDs
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = viewRows.filter((r) => selected.has(r.id));
+                      if (picked.length === 0) {
+                        toast('No selected recommendations still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const ids = [...new Set(picked.map((r) => r.id.trim()).filter(Boolean))];
+                      if (ids.length === 0) {
+                        toast('No ids on the selected recommendations', {
+                          description: 'Export CSV for titles instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const path = recommendationsPath({
+                        device: effectiveDevice,
+                        site: effectiveSite,
+                        client: effectiveClient,
+                        severity: effectiveSeverity,
+                        category: effectiveCategory,
+                      });
+                      const u = new URL(path, window.location.origin);
+                      u.searchParams.set('ids', ids.join('\n'));
+                      const url = u.toString();
+                      try {
+                        await navigator.clipboard.writeText(url);
+                        toast('Selection link copied', {
+                          description: `${ids.length} recommendation${ids.length === 1 ? '' : 's'} · ids=`,
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy link', { description: url, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy selection link
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
+                  Clear
+                </Button>
+              </span>
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   );

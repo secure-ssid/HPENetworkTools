@@ -615,6 +615,165 @@ describe('alert-rules routes', () => {
     expect(body.rules).toEqual([]);
   });
 
+  it('GET /api/alert-rules/export returns CSV of rules on file (Loop 80)', async () => {
+    const empty = await fetch(`${base}/api/alert-rules/export`);
+    expect(empty.status).toBe(200);
+    expect(empty.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const emptyText = await empty.text();
+    expect(emptyText.split('\n')[0]).toContain('id');
+    expect(emptyText.split('\n')[0]).toContain('offlineMinutes');
+    expect(emptyText).not.toMatch(/password|secret|token|credential/i);
+
+    /* Seed via the store (no audit line) so later route tests that count
+       change-log create events stay at their expected lengths. */
+    const seeded = alertRuleStore.create({
+      siteFilter: 'Campus-01 HQ',
+      deviceTypeFilter: 'ap',
+      offlineMinutes: 10,
+      cooldownMinutes: 120,
+    });
+
+    const filled = await fetch(`${base}/api/alert-rules/export`);
+    expect(filled.status).toBe(200);
+    const text = await filled.text();
+    expect(text).toContain(seeded.id);
+    expect(text).toContain('Campus-01 HQ');
+    expect(text).toContain('ap');
+    expect(text).toMatch(/,10,/);
+    expect(text).toMatch(/,120,/);
+  });
+
+  it('GET /api/alert-rules and export honour enabled= filter (Loop 90)', async () => {
+    const { filterAlertRulesByEnabled } = await import('../src/routes/alertRules');
+    expect(
+      filterAlertRulesByEnabled(
+        { query: { enabled: '1' } },
+        [
+          { id: 'on', enabled: true },
+          { id: 'off', enabled: false },
+        ],
+      ).map((r) => r.id),
+    ).toEqual(['on']);
+    expect(
+      filterAlertRulesByEnabled(
+        { query: { enabled: 'false' } },
+        [
+          { id: 'on', enabled: true },
+          { id: 'off', enabled: false },
+        ],
+      ).map((r) => r.id),
+    ).toEqual(['off']);
+    expect(
+      filterAlertRulesByEnabled({ query: {} }, [
+        { id: 'on', enabled: true },
+        { id: 'off', enabled: false },
+      ]),
+    ).toHaveLength(2);
+
+    const on = alertRuleStore.create({
+      siteFilter: 'Loop90-On',
+      offlineMinutes: 7,
+      cooldownMinutes: 30,
+      enabled: true,
+    });
+    const off = alertRuleStore.create({
+      siteFilter: 'Loop90-Off',
+      offlineMinutes: 8,
+      cooldownMinutes: 40,
+      enabled: false,
+    });
+
+    const enabledList = await fetch(`${base}/api/alert-rules?enabled=1`);
+    expect(enabledList.status).toBe(200);
+    const enabledBody = (await enabledList.json()) as {
+      rules: Array<{ id: string; enabled: boolean }>;
+    };
+    expect(enabledBody.rules.every((r) => r.enabled)).toBe(true);
+    expect(enabledBody.rules.some((r) => r.id === on.id)).toBe(true);
+    expect(enabledBody.rules.some((r) => r.id === off.id)).toBe(false);
+
+    const disabledCsv = await fetch(`${base}/api/alert-rules/export?enabled=0`);
+    expect(disabledCsv.status).toBe(200);
+    const csv = await disabledCsv.text();
+    expect(csv).toContain(off.id);
+    expect(csv).toContain('Loop90-Off');
+    expect(csv).not.toContain(on.id);
+  });
+
+  it('GET /api/alert-rules and export honour deviceType= filter (Loop 111)', async () => {
+    const { filterAlertRulesByEnabled } = await import('../src/routes/alertRules');
+    expect(
+      filterAlertRulesByEnabled(
+        { query: { deviceType: 'AP' } },
+        [
+          { id: 'ap', enabled: true, deviceTypeFilter: 'ap' },
+          { id: 'sw', enabled: true, deviceTypeFilter: 'switch' },
+          { id: 'all', enabled: true, deviceTypeFilter: 'all' },
+        ],
+      ).map((r) => r.id),
+    ).toEqual(['ap']);
+    expect(
+      filterAlertRulesByEnabled(
+        { query: { deviceType: 'switches' } },
+        [
+          { id: 'ap', enabled: true, deviceTypeFilter: 'ap' },
+          { id: 'sw', enabled: true, deviceTypeFilter: 'switch' },
+        ],
+      ).map((r) => r.id),
+    ).toEqual(['sw']);
+    // Unknown token is an honest no-op (full list), never coerced to 'all'.
+    expect(
+      filterAlertRulesByEnabled(
+        { query: { deviceType: 'nonsense' } },
+        [
+          { id: 'ap', enabled: true, deviceTypeFilter: 'ap' },
+          { id: 'sw', enabled: true, deviceTypeFilter: 'switch' },
+        ],
+      ),
+    ).toHaveLength(2);
+    // deviceType=all keeps every rule.
+    expect(
+      filterAlertRulesByEnabled(
+        { query: { deviceType: 'all' } },
+        [
+          { id: 'ap', enabled: true, deviceTypeFilter: 'ap' },
+          { id: 'sw', enabled: true, deviceTypeFilter: 'switch' },
+        ],
+      ),
+    ).toHaveLength(2);
+
+    const ap = alertRuleStore.create({
+      siteFilter: 'Loop111-AP',
+      deviceTypeFilter: 'ap',
+      offlineMinutes: 9,
+      cooldownMinutes: 45,
+      enabled: true,
+    });
+    const sw = alertRuleStore.create({
+      siteFilter: 'Loop111-SW',
+      deviceTypeFilter: 'switch',
+      offlineMinutes: 11,
+      cooldownMinutes: 55,
+      enabled: true,
+    });
+
+    const list = await fetch(`${base}/api/alert-rules?deviceType=access-point`);
+    expect(list.status).toBe(200);
+    const listBody = (await list.json()) as {
+      rules: Array<{ id: string; deviceTypeFilter?: string }>;
+    };
+    expect(listBody.rules.every((r) => (r.deviceTypeFilter ?? 'all') === 'ap')).toBe(true);
+    expect(listBody.rules.some((r) => r.id === ap.id)).toBe(true);
+    expect(listBody.rules.some((r) => r.id === sw.id)).toBe(false);
+
+    const csv = await fetch(`${base}/api/alert-rules/export?deviceType=sw&enabled=1`);
+    expect(csv.status).toBe(200);
+    const text = await csv.text();
+    expect(text).toContain(sw.id);
+    expect(text).toContain('Loop111-SW');
+    expect(text).not.toContain(ap.id);
+  });
+
   it('POST refuses invalid minutes, unknown type filters and empty site filters', async () => {
     for (const payload of [
       { offlineMinutes: 0 },

@@ -131,9 +131,15 @@ export interface NotificationDeliveries {
 }
 
 /** GET /api/notifications/deliveries — live attempt log (no payload bodies). */
-export async function getNotificationDeliveries(): Promise<{ deliveries: NotificationDeliveries } | Err> {
+export async function getNotificationDeliveries(
+  query?: { result?: 'delivered' | 'failed' | 'demo'; q?: string },
+): Promise<{ deliveries: NotificationDeliveries } | Err> {
+  const params = new URLSearchParams();
+  if (query?.result) params.set('result', query.result);
+  if (query?.q?.trim()) params.set('q', query.q.trim());
+  const qs = params.toString();
   return call(
-    '/api/notifications/deliveries',
+    `/api/notifications/deliveries${qs ? `?${qs}` : ''}`,
     undefined,
     (b: { demoMode?: boolean; entries?: unknown }) =>
       typeof b.demoMode === 'boolean' && Array.isArray(b.entries)
@@ -227,9 +233,15 @@ export async function getReportPreview(): Promise<{ report: FleetReport } | Err>
 }
 
 /** GET /api/notifications/ssl-hosts — the certificate watch list. */
-export async function getSslHosts(): Promise<{ hosts: SslProbeHost[] } | Err> {
-  return call('/api/notifications/ssl-hosts', undefined, (b: { hosts?: SslProbeHost[] }) =>
-    Array.isArray(b.hosts) ? { hosts: b.hosts } : undefined,
+/** GET /api/notifications/ssl-hosts — optional `q=` substring (Loop 116). */
+export async function getSslHosts(query?: { q?: string }): Promise<{ hosts: SslProbeHost[] } | Err> {
+  const params = new URLSearchParams();
+  if (query?.q?.trim()) params.set('q', query.q.trim());
+  const qs = params.toString();
+  return call(
+    `/api/notifications/ssl-hosts${qs ? `?${qs}` : ''}`,
+    undefined,
+    (b: { hosts?: SslProbeHost[] }) => (Array.isArray(b.hosts) ? { hosts: b.hosts } : undefined),
   );
 }
 

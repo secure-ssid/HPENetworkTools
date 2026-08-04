@@ -10,31 +10,6 @@ import {
   type SsidForm,
   type VlanForm,
 } from '@hpe/shared';
-import { type CSSProperties } from 'react';
-
-export const MICRO_LINK: CSSProperties = {
-  background: 'none',
-  border: 'none',
-  padding: 0,
-  cursor: 'pointer',
-  fontFamily: 'var(--nd-font-mono)',
-  fontSize: 10,
-  letterSpacing: '.08em',
-  color: 'var(--nd-accent-text)',
-  textTransform: 'uppercase',
-};
-
-export const ROW: CSSProperties = {
-  width: '100%',
-  textAlign: 'left',
-  background: 'none',
-  border: 'none',
-  borderBottom: '1px solid var(--nd-border-subtle)',
-  borderLeft: '2px solid transparent',
-  padding: '12px 10px',
-  cursor: 'pointer',
-};
-
 /**
  * The broker writes its own outcome word into every audit row ('applied',
  * 'rejected', 'lease-expired', 'render-only (read-only plane)', …). The badge

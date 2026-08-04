@@ -192,11 +192,11 @@ function FacetPopover<Row>({
   const options = facetOptionCounts(rows, facets, facet, selection);
 
   return (
-    <div className="nd-viewopts" ref={rootRef}>
+    <div className="nd-viewopts nt-view-options nt-facet-filter nt-facets" ref={rootRef}>
       <button
         type="button"
         ref={triggerRef}
-        className="nd-btn nd-btn--secondary nd-btn--sm"
+        className="nd-btn nt-btn nd-btn--secondary nt-btn--secondary nd-btn--sm nt-btn--sm"
         aria-expanded={open}
         title={ticked.length > 0 ? ticked.map((v) => options.find((o) => o.value === v)?.label ?? v).join(', ') : undefined}
         onClick={() => setOpen((value) => !value)}
@@ -208,16 +208,15 @@ function FacetPopover<Row>({
         /* Left-anchored: filter-row triggers sit mid-row, where the
            nd-viewopts right anchor would overflow the viewport edge. */
         <div
-          className="nd-viewopts__panel"
+          className="nd-viewopts__panel nt-view-options__panel nt-menu-left"
           role="group"
           aria-label={`${facet.label} filter`}
-          style={{ right: 'auto', left: 0 }}
         >
-          <div className="nd-viewopts__heading">{facet.label}</div>
-          <ul className="nd-viewopts__list">
+          <div className="nd-viewopts__heading nt-view-options__heading">{facet.label}</div>
+          <ul className="nd-viewopts__list nt-view-options__list">
             {options.map((option) => (
-              <li key={option.value} className="nd-viewopts__item">
-                <label className={cx('nd-checkbox', 'nd-viewopts__check')}>
+              <li key={option.value} className="nd-viewopts__item nt-view-options__item">
+                <label className={cx('nd-checkbox', 'nt-checkbox', 'nd-viewopts__check', 'nt-view-options__check')}>
                   <input
                     type="checkbox"
                     checked={ticked.includes(option.value)}
@@ -226,7 +225,7 @@ function FacetPopover<Row>({
                   <span>{option.label}</span>
                 </label>
                 <span
-                  className="nt-hint-muted" style={{ color: option.count > 0 ? 'var(--nd-text-muted)' : 'var(--nd-border-strong)' }}
+                  className={[`nt-hint-muted`, option.count > 0 ? 'nt-tone-muted' : 'nt-tone-faint'].filter(Boolean).join(" ")}
                 >
                   {option.count}
                 </span>
@@ -236,7 +235,7 @@ function FacetPopover<Row>({
           {ticked.length > 0 ? (
             <button
               type="button"
-              className="nd-viewopts__reset"
+              className="nd-viewopts__reset nt-view-options__reset"
               onClick={() => {
                 const next = { ...selection };
                 delete next[facet.key];

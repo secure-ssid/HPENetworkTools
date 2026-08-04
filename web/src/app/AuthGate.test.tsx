@@ -89,7 +89,7 @@ describe('AuthGate', () => {
         <div>portal</div>
       </AuthGate>,
     );
-    expect(await screen.findByText('Server unreachable')).toBeTruthy();
+    expect(await screen.findByText(/server unreachable/i)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull();
     expect(screen.queryByText('portal')).toBeNull();
   });
@@ -103,7 +103,7 @@ describe('AuthGate', () => {
         <div>portal</div>
       </AuthGate>,
     );
-    expect(await screen.findByText('Server unreachable')).toBeTruthy();
+    expect(await screen.findByText(/server unreachable/i)).toBeTruthy();
     expect(screen.queryByText('portal')).toBeNull();
   });
 
@@ -114,7 +114,7 @@ describe('AuthGate', () => {
         <div>portal</div>
       </AuthGate>,
     );
-    expect(await screen.findByText('Server unreachable')).toBeTruthy();
+    expect(await screen.findByText(/server unreachable/i)).toBeTruthy();
   });
 
   it('retries on demand and renders the portal once the server answers', async () => {
@@ -128,7 +128,7 @@ describe('AuthGate', () => {
         <div>portal</div>
       </AuthGate>,
     );
-    await screen.findByText('Server unreachable');
+    await screen.findByText(/server unreachable/i);
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('portal')).toBeTruthy();
   });

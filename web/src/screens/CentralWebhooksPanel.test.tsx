@@ -15,7 +15,8 @@
 
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { CentralWebhooksPanel } from './CentralWebhooksPanel';
 import { ToastProvider } from '../nightdesk';
 import {
@@ -104,11 +105,16 @@ function detail(overrides: Partial<WebhookDetail> = {}): WebhookDetail {
   };
 }
 
-function renderPanel() {
+function renderPanel(initialEntry = '/systems?plane=central&tab=config') {
   return render(
-    <ToastProvider>
-      <CentralWebhooksPanel />
-    </ToastProvider>,
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
+      <ToastProvider>
+        <CentralWebhooksPanel />
+      </ToastProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -193,7 +199,7 @@ describe('list, pagination, and envelope states', () => {
     mockList.mockResolvedValue(envelope({ totalCount: 25, hasMore: true }));
     renderPanel();
     await waitFor(() => expect(mockList).toHaveBeenCalledWith({ limit: 10, offset: 0, q: '' }));
-    const page2 = await screen.findByRole('button', { name: '2' });
+    const page2 = await screen.findByRole('button', { name: 'Page 2' });
     fireEvent.click(page2);
     await waitFor(() => expect(mockList).toHaveBeenCalledWith({ limit: 10, offset: 10, q: '' }));
   });
@@ -202,7 +208,7 @@ describe('list, pagination, and envelope states', () => {
     mockList.mockResolvedValue(envelope());
     renderPanel();
     await waitFor(() => expect(screen.getByText('servicenow-incidents')).toBeTruthy());
-    expect(screen.queryByRole('button', { name: '2' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Page 2/ })).toBeNull();
   });
 
   it('an unlinked/unsupported Central answers an honest unavailable state, never a fabricated empty list', async () => {
@@ -252,6 +258,55 @@ describe('list, pagination, and envelope states', () => {
     fireEvent.change(screen.getByLabelText('Search webhooks'), { target: { value: '  noc  ' } });
     fireEvent.keyDown(screen.getByLabelText('Search webhooks'), { key: 'Enter' });
     await waitFor(() => expect(mockList).toHaveBeenLastCalledWith({ limit: 10, offset: 0, q: 'noc' }));
+  });
+
+  it('Copy view link shares Systems Central config deep-link (no secrets)', async () => {
+    mockList.mockResolvedValue(envelope());
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('servicenow-incidents')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy view link' }));
+    await waitFor(() =>
+      expect(clipboard.writeText).toHaveBeenCalledWith(
+        expect.stringMatching(/\/systems\?plane=central&tab=config$/),
+      ),
+    );
+    expect(await screen.findByText(/view link copied/i)).toBeTruthy();
+  });
+
+  it('Export CSV dumps summary fields only (never secrets)', async () => {
+    const csv = await import('../lib/csv');
+    const spy = vi.spyOn(csv, 'exportTableCsv').mockReturnValue(1);
+    mockList.mockResolvedValue(envelope());
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('servicenow-incidents')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+    expect(spy).toHaveBeenCalledWith(
+      'central-webhooks.csv',
+      ['id', 'name', 'endpoint', 'authMechanism', 'generation', 'createdAt', 'updatedAt'],
+      [
+        [
+          'wh-1',
+          'servicenow-incidents',
+          'https://example.service-now.com/hooks',
+          'API_KEY',
+          1,
+          '2026-01-01T00:00:00Z',
+          '2026-02-01T00:00:00Z',
+        ],
+      ],
+    );
+    expect(await screen.findByText(/exported 1 webhook/i)).toBeTruthy();
+    spy.mockRestore();
+  });
+
+  it('hides Export CSV when the list is empty', async () => {
+    mockList.mockResolvedValue(envelope({ items: [], totalCount: 0, count: 0 }));
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('No webhooks')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Copy view link' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Export CSV' })).toBeNull();
   });
 });
 
@@ -679,11 +734,16 @@ describe('create/rotate unknown outcomes require reconciliation before a new rev
     mockList.mockResolvedValue(envelope());
     mockCreate.mockReturnValueOnce(result.promise);
     const rendered = render(
-      <StrictMode>
-        <ToastProvider>
-          <CentralWebhooksPanel />
-        </ToastProvider>
-      </StrictMode>,
+      <MemoryRouter
+        initialEntries={['/systems?plane=central&tab=config']}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <StrictMode>
+          <ToastProvider>
+            <CentralWebhooksPanel />
+          </ToastProvider>
+        </StrictMode>
+      </MemoryRouter>,
     );
     await waitFor(() => expect(screen.getByText('servicenow-incidents')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'New webhook' }));
@@ -1174,5 +1234,99 @@ describe('detail request race safety — stale responses can never cross-populat
     expect((screen.getByLabelText('Target URL') as HTMLInputElement).value).toBe('https://noc.example/hook');
     expect(screen.getByText('Edit noc-pager')).toBeTruthy();
     expect(screen.queryByDisplayValue('https://stale-reconcile.invalid/hook')).toBeNull();
+  });
+});
+
+/* Loop 190 — webhooks list multi-select bulk bar. */
+describe('Central webhooks bulk (Loop 190)', () => {
+  it('shows bulk bar for selection: Export selected, Copy names, Copy selection link, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:webhooks-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockList.mockResolvedValue(
+      envelope({
+        items: [row(), row({ id: 'wh-2', name: 'noc-pager', endpoint: 'https://noc.example/hook' })],
+        totalCount: 2,
+        count: 2,
+      }),
+    );
+    renderPanel();
+    expect(await screen.findByRole('grid', { name: 'Central webhooks' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Webhook selection actions' })).toBeNull();
+
+    const table = screen.getByRole('grid', { name: 'Central webhooks' });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Webhook selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected webhook/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/servicenow-incidents|noc-pager/);
+
+    writeText.mockClear();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const link = String(writeText.mock.calls[0]![0]);
+    expect(link).toMatch(/\/systems\?/);
+    expect(link).toMatch(/plane=central/);
+    expect(link).toMatch(/tab=config/);
+    expect(link).toMatch(/webhookIds=/);
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Webhook selection actions' })).toBeNull(),
+    );
+  });
+
+  it('deep-links ?webhookIds= and shows a clearable selection chip', async () => {
+    mockList.mockResolvedValue(
+      envelope({
+        items: [row(), row({ id: 'wh-2', name: 'noc-pager', endpoint: 'https://noc.example/hook' })],
+        totalCount: 2,
+        count: 2,
+      }),
+    );
+    renderPanel('/systems?plane=central&tab=config&webhookIds=wh-1');
+    const chip = await screen.findByRole('button', { name: /1 selected webhook/i });
+    expect(chip.textContent ?? '').toMatch(/^1 selected webhook/);
+    const table = screen.getByRole('grid', { name: 'Central webhooks' });
+    expect(within(table).getByText('servicenow-incidents')).toBeTruthy();
+    expect(within(table).queryByText('noc-pager')).toBeNull();
+    fireEvent.click(chip);
+    await waitFor(() => expect(screen.getByText('noc-pager')).toBeTruthy());
+  });
+});
+
+/* Loop 201 — keyboard shortcuts help + search empty CTA on Central webhooks list. */
+describe('Central webhooks Loop 201 residuals', () => {
+  it('exposes keyboard shortcuts help on the webhooks toolbar', async () => {
+    mockList.mockResolvedValue(envelope());
+    renderPanel();
+    expect(await screen.findByRole('grid', { name: 'Central webhooks' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+
+  it('offers Clear search when the list is search-empty', async () => {
+    mockList.mockResolvedValue(envelope({ items: [], totalCount: 0, count: 0, note: 'none' }));
+    renderPanel();
+    const input = await screen.findByLabelText('Search webhooks');
+    fireEvent.change(input, { target: { value: 'nope' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(await screen.findByText('No webhooks match the search.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Clear search' })).toBeTruthy();
   });
 });

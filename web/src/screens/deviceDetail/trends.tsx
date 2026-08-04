@@ -23,7 +23,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { SectionHeader, SegmentedControl } from '../../nightdesk';
+import { Button, SectionHeader, SegmentedControl, useToast } from '../../nightdesk';
 import {
   AP_TREND_METRICS,
   countOf,
@@ -45,7 +45,9 @@ import {
   type DeviceDetailIdentity,
   type DeviceTrendResult,
 } from '../../api/client';
-import { speedText } from './facts';
+import { exportTableCsv } from '../../lib/csv';
+import { downloadApiCsv } from '../../lib/downloadApiCsv';
+import { isSecretDeviceField, speedText } from './facts';
 import { LiveGapNote } from './tables';
 
 // ---------------------------------------------------------------------------
@@ -92,6 +94,22 @@ function seriesLabel(key: string): string {
 export function rateText(bps: number | null | undefined): string | null {
   const text = speedText(bps);
   return text === null ? null : `${text}/s`;
+}
+
+/**
+ * Flatten trend series to CSV rows. Only metric key / timestamp / numeric
+ * sample — never device secrets, claim codes, or raw vendor bodies.
+ */
+export function trendSeriesExportRows(seriesList: readonly TrendSeries[]): Array<Array<string | number>> {
+  const rows: Array<Array<string | number>> = [];
+  for (const s of seriesList) {
+    if (isSecretDeviceField(s.key)) continue;
+    for (const p of s.points ?? []) {
+      if (p == null || p.v == null) continue;
+      rows.push([s.key, p.t, p.v]);
+    }
+  }
+  return rows;
 }
 
 /** One series value with its unit, as the series' own kind dictates. */
@@ -188,7 +206,7 @@ export function TrendSpark({
   );
   const ariaLabel = broken ? `${label} · line broken where samples are missing` : label;
   return (
-    <span role="img" aria-label={ariaLabel} title={ariaLabel} style={{ display: 'inline-flex', verticalAlign: 'middle' }}>
+    <span role="img" aria-label={ariaLabel} title={ariaLabel} className="nt-inline-flex nt-v-mid">
       <svg aria-hidden="true" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
         {runs.map((run, index) =>
           run.length === 1 ? (
@@ -218,7 +236,7 @@ export function TrendSpark({
  *  it came from — "current" is always the latest sample, never a live claim. */
 function TrendTile({ label, value, caption, pct }: { label: string; value: string; caption: string; pct?: number | null }) {
   return (
-    <div className="nt-stack" style={{ gap: 5, minWidth: 0 }}>
+    <div className="nt-device-section nt-section-panel nt-stack nt-gap-5 nt-min-w-0">
       <span
         className="nt-mono-label"
       >
@@ -227,21 +245,10 @@ function TrendTile({ label, value, caption, pct }: { label: string; value: strin
       {pct !== null && pct !== undefined ? (
         <span
           aria-hidden
-          style={{
-            display: 'block',
-            height: 4,
-            borderRadius: 2,
-            background: 'var(--nd-border-subtle)',
-            overflow: 'hidden',
-          }}
+          className="nt-trend-track"
         >
           <span
-            style={{
-              display: 'block',
-              height: '100%',
-              width: `${Math.min(100, Math.max(0, pct))}%`,
-              background: 'var(--nd-accent)',
-            }}
+            className="nt-trend-fill" style={{ ["--nd-health" as string]: `${Math.min(100, Math.max(0, pct))}%` }}
           />
         </span>
       ) : null}
@@ -264,27 +271,21 @@ function TrendRow({ series }: { series: TrendSeries }) {
   const latest = latestPoint(series);
   return (
     <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '7px 0',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-      }}
+      className="nt-trend-row"
     >
       <span
-        className="nt-mono-label" style={{ width: 104, flex: "0 0 104px" }}
+        className="nt-mono-label nt-w-104"
       >
         {seriesLabel(series.key)}
       </span>
-      <span style={{ flex: '0 0 auto' }}>
+      <span className="nt-flex-none">
         <TrendSpark
           points={series.points}
           label={`${seriesLabel(series.key)} trend, ${countOf(series.samples, 'sample')}`}
         />
       </span>
       <span
-        className="nt-mono-11 nt-ellipsis" style={{ flex: 1, minWidth: 0, textAlign: "right", color: "var(--nd-text-secondary)", whiteSpace: "nowrap" }}
+        className="nt-mono-11 nt-ellipsis nt-trend-val"
       >
         {latest ? `${seriesValueText(series, latest.v as number)} · at ${hhmm(latest.t)}` : 'no usable samples'}
       </span>
@@ -303,8 +304,7 @@ function TrendCaption({ live, section }: { live: SwitchHardwareTrendsLive | Swit
   const gap = gapPhrase(series);
   return (
     <div
-      className="nt-hint-muted" style={{ padding: '6px 0',
-        lineHeight: 1.6 }}
+      className="nt-hint-muted nt-pad-6-lh"
     >
       {[
         section,
@@ -408,6 +408,7 @@ function InterfaceErrors({ live }: { live: SwitchInterfaceTrendsLive }) {
   }
   return (
     <div className="nt-stack nt-gap-2">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · trend cinema · telemetry owns hue</div>
       <SectionHeader
         label="Interface errors"
         meta={moved.length > 0 ? `${countOf(moved.length, 'counter')} MOVED` : undefined}
@@ -415,24 +416,18 @@ function InterfaceErrors({ live }: { live: SwitchInterfaceTrendsLive }) {
       {moved.map((counter) => (
         <div
           key={counter.key}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '7px 0',
-            borderBottom: '1px solid var(--nd-border-subtle)',
-          }}
+          className="nt-trend-row"
         >
           <span
-            className="nt-mono-label" style={{ width: 104, flex: "0 0 104px" }}
+            className="nt-mono-label nt-w-104"
           >
             {counter.label}
           </span>
-          <span style={{ flex: '0 0 auto' }}>
+          <span className="nt-flex-none">
             <TrendSpark points={counter.series.points} label={`${counter.label} rate over the window`} />
           </span>
           <span
-            className="nt-mono-11 nt-ellipsis" style={{ flex: 1, minWidth: 0, textAlign: "right", color: "var(--nd-text-secondary)", whiteSpace: "nowrap" }}
+            className="nt-mono-11 nt-ellipsis nt-trend-val"
           >
             {formatCount(counter.total)} in the window
           </span>
@@ -505,12 +500,7 @@ function SwitchTrends({
       ) : (
         <>
           <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
-              gap: 14,
-              padding: '10px 0 4px',
-            }}
+            className="nt-stat-grid"
           >
             {cpu ? (
               <TrendTile
@@ -579,12 +569,7 @@ function ApTrends({ reads }: { reads: Partial<Record<ApTrendMetric, DeviceTrendR
     <>
       {okReads.length === 0 ? null : (
         <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
-            gap: 14,
-            padding: '10px 0 4px',
-          }}
+          className="nt-stat-grid"
         >
           {cpuLatest && cpu ? (
             <TrendTile
@@ -655,6 +640,7 @@ export function HardwareTrendsPanel({
    *  devices can never pull the other's telemetry. */
   identity: DeviceDetailIdentity;
 }) {
+  const { toast } = useToast();
   const [windowKey, setWindowKey] = useState<TrendWindowKey>('24h');
   const [state, setState] = useState<TrendsState | null>(null);
 
@@ -706,16 +692,123 @@ export function HardwareTrendsPanel({
         : null;
   const meta = [plane?.toUpperCase(), windowLabel.toUpperCase()].filter(Boolean).join(' · ');
 
+  const exportableSeries: TrendSeries[] = [];
+  if (state) {
+    if (type === 'switch') {
+      if (state.hardware?.kind === 'ok' && state.hardware.live.trends?.ok) {
+        exportableSeries.push(...state.hardware.live.trends.series);
+      }
+      if (state.interfaces?.kind === 'ok' && state.interfaces.live.trends?.ok) {
+        exportableSeries.push(...state.interfaces.live.trends.series);
+      }
+    } else {
+      for (const metric of AP_TREND_METRICS) {
+        const r = state.ap[metric];
+        if (r?.kind === 'ok' && r.live.trends?.ok) exportableSeries.push(...r.live.trends.series);
+      }
+    }
+  }
+  const exportRows = trendSeriesExportRows(exportableSeries);
+
+  const downloadServerCsv = () => {
+    void (async () => {
+      const endMs = Date.now();
+      const baseQs = new URLSearchParams();
+      baseQs.set('start', new Date(endMs - TREND_WINDOW_MS[windowKey]).toISOString());
+      baseQs.set('end', new Date(endMs).toISOString());
+      if (identity.plane) baseQs.set('plane', identity.plane);
+      if (identity.serial) baseQs.set('serial', identity.serial);
+
+      const jobs: Array<{ part: string; metric?: string; file: string }> = [];
+      if (type === 'switch') {
+        if (state?.hardware?.kind === 'ok' && state.hardware.live.trends?.ok) {
+          jobs.push({ part: 'hardware', file: `device-trends-${name}-hardware.csv` });
+        }
+        if (state?.interfaces?.kind === 'ok' && state.interfaces.live.trends?.ok) {
+          jobs.push({ part: 'interfaces', file: `device-trends-${name}-interfaces.csv` });
+        }
+      } else {
+        for (const metric of AP_TREND_METRICS) {
+          const r = state?.ap[metric];
+          if (r?.kind === 'ok' && r.live.trends?.ok) {
+            jobs.push({
+              part: 'ap',
+              metric,
+              file: `device-trends-${name}-ap-${metric}.csv`,
+            });
+          }
+        }
+      }
+      if (jobs.length === 0) {
+        toast('No server trends to download', {
+          description: 'Wait for a successful on-demand read first.',
+          tone: 'warning',
+        });
+        return;
+      }
+
+      let ok = 0;
+      let lastError: string | undefined;
+      for (const job of jobs) {
+        const qs = new URLSearchParams(baseQs);
+        qs.set('part', job.part);
+        if (job.metric) qs.set('metric', job.metric);
+        const res = await downloadApiCsv(
+          `/api/devices/${encodeURIComponent(name)}/trends/export?${qs.toString()}`,
+          job.file,
+        );
+        if (res.ok) ok += 1;
+        else lastError = res.error;
+      }
+      if (ok > 0) {
+        toast('Server CSV downloaded', {
+          description: `${ok} trend file${ok === 1 ? '' : 's'} — metric/t/v only, no secrets.`,
+          tone: 'success',
+        });
+      } else {
+        toast('Server CSV failed', {
+          description: lastError ?? 'Could not download export',
+          tone: 'warning',
+        });
+      }
+    })();
+  };
+
   return (
     <div className="nt-stack nt-gap-2">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · trend cinema · telemetry owns hue</div>
       <SectionHeader label="Hardware trends" meta={meta || undefined} />
-      <div style={{ alignSelf: 'flex-start', padding: '4px 0' }}>
+      <div className="nt-row nt-gap-8 nt-self-start nt-pad-4-0">
         <SegmentedControl
           options={TREND_WINDOWS}
           value={windowKey}
           onValueChange={(v) => setWindowKey(v as TrendWindowKey)}
           ariaLabel="Trend window"
         />
+        {exportRows.length > 0 ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              const n = exportTableCsv(
+                `device-trends-${name}-${windowKey}.csv`,
+                ['metric', 't', 'v'],
+                exportRows,
+              );
+              toast(`Exported ${n} trend sample${n === 1 ? '' : 's'}`, {
+                description: 'Metric key, timestamp, value only — no secrets.',
+                tone: 'success',
+              });
+            }}
+          >
+            Export trends
+          </Button>
+        ) : null}
+        {exportRows.length > 0 ? (
+          <Button variant="ghost" size="sm" onClick={downloadServerCsv}>
+            Download server CSV
+          </Button>
+        ) : null}
       </div>
       {state === null ? (
         <LiveGapNote>

@@ -14,6 +14,7 @@ import {
 import { CODEX_MODEL_OPTIONS } from '@hpe/shared';
 import { Badge, Button, FormField, Input, SectionHeader, Select, Switch, useToast } from '../../nightdesk';
 import { useEffect, useState } from 'react';
+import { buildSystemsSectionUrl, systemsSectionDomId } from './share';
 
 const PROVIDERS: Record<AssistantProviderId, { title: string; defaultModel: string }> = {
   codex: { title: 'Codex', defaultModel: 'gpt-5.3-spark' },
@@ -190,12 +191,30 @@ export function AssistantSection() {
     }
   };
 
-  return (
-    <div className="nt-stack nt-gap-10">
-      <SectionHeader label="Assistant" meta="PROVIDER · MODEL · TOOLS" />
-      {loadError ? <span role="status" style={{ fontSize: 12, color: 'var(--nd-danger)' }}>{loadError}</span> : null}
+  const copySectionLink = () => {
+    const url = buildSystemsSectionUrl('assistant');
+    void navigator.clipboard.writeText(url).then(
+      () =>
+        toast('Assistant section link copied', {
+          description: 'section=assistant',
+          tone: 'success',
+        }),
+      () => toast('Could not copy link', { description: url, tone: 'warning' }),
+    );
+  };
 
-      <div aria-label="Assistant providers" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+  return (
+    <div id={systemsSectionDomId('assistant')} className="nt-stack nt-gap-10 nt-assistant-section nt-section-panel">
+      <div className="nt-filter-bar nt-gap-8">
+        <SectionHeader label="Assistant" meta="PROVIDER · MODEL · TOOLS" />
+        <Button variant="ghost" size="sm" className="nt-ml-auto" onClick={copySectionLink}>
+          Copy section link
+        </Button>
+      </div>
+      <div className="nt-plane-theater" role="note">NightDesk · assistant providers · lab write gated</div>
+      {loadError ? <span role="status" className="nt-danger-12">{loadError}</span> : null}
+
+      <div aria-label="Assistant providers" className="nt-wrap-6">
         {ASSISTANT_PROVIDER_IDS.map((id) => {
           const item = status?.providers?.find((provider) => provider.id === id);
           const active = settings?.activeProvider === id;
@@ -211,9 +230,9 @@ export function AssistantSection() {
               aria-label={`${PROVIDERS[id].title}${active ? ', selected' : editing ? ', editing' : ''}`}
               disabled={offline || busy}
               onClick={() => chooseProvider(id)}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 7px', borderRadius: 4, border: editing ? '1px solid var(--nd-accent)' : '1px solid var(--nd-border)', background: editing ? 'var(--nd-surface-raised)' : 'transparent', color: 'var(--nd-text)', cursor: offline ? 'not-allowed' : 'pointer' }}
+              className={`nt-assistant-chip nt-toggle-chip${editing ? " nt-assistant-chip--editing" : ""}`}
             >
-              <span style={{ fontSize: 12 }}>{PROVIDERS[id].title}</span>
+              <span className="nt-fs-12">{PROVIDERS[id].title}</span>
               {active ? <Badge tone="neutral">active</Badge> : null}
               <Badge tone={ready ? 'success' : 'neutral'}>{draft ? 'draft' : ready ? 'ready' : 'unavailable'}</Badge>
               <span className="nt-hint-muted">{model ?? '—'}</span>
@@ -223,14 +242,14 @@ export function AssistantSection() {
       </div>
 
       {selectedConfig ? <>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="nt-row-center nt-gap-8">
           <Badge tone={!statusIsDraft(selected) && providerReady(selectedStatus) ? 'success' : 'neutral'} dot>{statusIsDraft(selected) ? 'draft' : providerReady(selectedStatus) ? 'ready' : 'unavailable'}</Badge>
           <span className="nt-hint-muted">
             {statusIsDraft(selected) ? selectedConfig.model : selectedStatus?.resolvedModel ?? selectedConfig.model ?? PROVIDERS[selected].defaultModel}
           </span>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+        <div className="nt-grid-2-10">
           {'baseUrl' in selectedConfig ? <FormField label="Provider endpoint"><Input mono aria-label="Provider endpoint" value={selectedConfig.baseUrl} disabled={offline || busy} onChange={(event) => updateSelected({ baseUrl: event.target.value })} /></FormField> : null}
           {selected === 'codex' ? <FormField label="Model"><Select aria-label="Model" value={selectedConfig.model} disabled={offline || busy} options={CODEX_MODEL_OPTIONS.map(({ id, label }) => ({ value: id, label }))} onValueChange={(model) => updateSelected({ model })} /></FormField> : selected === 'copilot' ? <FormField label="Mode"><Select aria-label="Mode" value={selectedConfig.model} disabled={offline || busy} options={[{ value: 'auto', label: 'Auto · adaptive' }, { value: 'gpt-5.6-terra', label: 'Terra · alternate' }]} onValueChange={(model) => updateSelected({ model, effort: model === 'auto' ? 'adaptive' : 'low' })} /></FormField> : <FormField label="Model"><Input mono aria-label="Model" value={selectedConfig.model} disabled={offline || busy} onChange={(event) => updateSelected({ model: event.target.value })} /></FormField>}
           {'reasoningEffort' in selectedConfig ? <FormField label="Reasoning"><Select aria-label="Reasoning" value={selectedConfig.reasoningEffort} disabled={offline || busy} options={selected === 'codex' ? [{ value: 'auto', label: 'Auto · normal' }, { value: 'low', label: 'low · fast' }, { value: 'medium', label: 'medium · balanced' }, { value: 'high', label: 'high · thorough' }] : [{ value: 'low', label: 'low · fast' }]} onValueChange={(reasoningEffort) => updateSelected({ reasoningEffort })} /></FormField> : null}
@@ -241,13 +260,13 @@ export function AssistantSection() {
         <div className="nt-filter-bar nt-gap-8">
           <Button size="sm" variant="primary" disabled={busy || offline} onClick={() => void save()}>{saving ? 'Saving…' : 'Save assistant'}</Button>
           <Button size="sm" variant="ghost" disabled={busy || offline} onClick={() => void runTest()}>{testing ? 'Testing…' : 'Test provider'}</Button>
-          {testResult ? <span role="status" style={{ fontSize: 11, color: providerReady(testResult) ? 'var(--nd-success)' : 'var(--nd-danger)' }}>{providerReady(testResult) ? `${testResult.latencyMs ?? 0} ms · ${testResult.resolvedModel ?? 'model resolved'}` : testResult.message}</span> : null}
+          {testResult ? <span role="status" className={`nt-fs-11-muted ${providerReady(testResult) ? 'nt-tone-success' : 'nt-tone-danger'}`}>{providerReady(testResult) ? `${testResult.latencyMs ?? 0} ms · ${testResult.resolvedModel ?? 'model resolved'}` : testResult.message}</span> : null}
         </div>
       </> : null}
 
-      <div style={{ borderTop: '1px solid var(--nd-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="nt-assistant-footer">
         <SectionHeader label="Tool access" meta="CENTRALMCP · LAB" />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+        <div className="nt-grid-2-10">
           <FormField label="Endpoint"><Input mono aria-label="centralmcp endpoint" value={settings?.mcp.endpoint ?? ''} disabled={offline || busy} onChange={(event) => updateSharedSettings((current) => ({ ...current, mcp: { ...current.mcp, endpoint: event.target.value } }))} /></FormField>
           <FormField label="Auth token"><Input mono aria-label="centralmcp auth token" type="password" placeholder="Enter replacement token" value={mcpToken} disabled={offline || busy} onChange={(event) => { setMcpToken(event.target.value); setSharedStatusDraft(true); setTestResult(null); }} /></FormField>
         </div>

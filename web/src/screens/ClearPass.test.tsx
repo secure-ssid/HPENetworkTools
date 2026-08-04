@@ -48,7 +48,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import ClearPass from './ClearPass';
 import { SettingsProvider } from '../app/SettingsContext';
 import { ToastProvider } from '../nightdesk';
@@ -61,6 +61,7 @@ import {
   updateClearPassLocalUser,
   getClearPassEndpointPage,
 } from '../api/clearpass';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import {
   AUTH_EVENTS,
   CLEARPASS_AUTH_SOURCES,
@@ -113,6 +114,10 @@ vi.mock('../api/clearpass', () => ({
   getClearPassEndpointPage: vi.fn(),
 }));
 
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(),
+}));
+
 const mockGetClearPass = vi.mocked(getClearPass);
 const mockGetServiceDetail = vi.mocked(getClearPassServiceDetail);
 const mockRegister = vi.mocked(registerClearPassEndpoint);
@@ -120,6 +125,7 @@ const mockUpdateEndpoint = vi.mocked(updateClearPassEndpoint);
 const mockCreateUser = vi.mocked(createClearPassLocalUser);
 const mockUpdateUser = vi.mocked(updateClearPassLocalUser);
 const mockGetEndpointPage = vi.mocked(getClearPassEndpointPage);
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 /** Demo envelope from the real fixtures — deviceGroups stays absent. */
 function demoData(over: Partial<ClearPassData> = {}): ClearPassData {
@@ -165,12 +171,30 @@ function endpointPage(over: Partial<Awaited<ReturnType<typeof getClearPassEndpoi
   };
 }
 
-function renderClearPass() {
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="loc">{`${location.pathname}${location.search}`}</div>;
+}
+
+function renderClearPass(entry = '/clearpass') {
   return render(
-    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <MemoryRouter
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      initialEntries={[entry]}
+    >
       <ToastProvider>
         <SettingsProvider>
-          <ClearPass />
+          <Routes>
+            <Route
+              path="/clearpass"
+              element={
+                <>
+                  <ClearPass />
+                  <LocationProbe />
+                </>
+              }
+            />
+          </Routes>
         </SettingsProvider>
       </ToastProvider>
     </MemoryRouter>,
@@ -192,19 +216,19 @@ afterEach(() => {
 });
 
 describe('ClearPass', () => {
-  it('loads a separate 50-row endpoint page and labels filters as page-only', async () => {
+  it('loads a separate endpoint page and documents filter scope', async () => {
     mockGetClearPass.mockResolvedValue(demoData({ endpoints: [] }));
     mockGetEndpointPage.mockResolvedValue(endpointPage({ endpoints: [CLEARPASS_ENDPOINTS[0]], total: 101, nextOffset: 50, more: 'yes' }));
     renderClearPass();
 
-    await waitFor(() => expect(mockGetEndpointPage).toHaveBeenCalledWith(0, 50));
+    await waitFor(() => expect(mockGetEndpointPage).toHaveBeenCalledWith(0, 50, {}));
     expect(screen.getByText('1 loaded endpoint row')).toBeTruthy();
-    expect(screen.getByLabelText('Filter loaded endpoint page')).toBeTruthy();
-    expect(screen.getByText('Filters apply only to the 1 row loaded on this page.')).toBeTruthy();
+    expect(screen.getByLabelText('Filter endpoints')).toBeTruthy();
+    expect(screen.getByText('Showing 1 endpoint on this page.')).toBeTruthy();
     expect(screen.getByText('Ward 3E rounds iPad — Dr. Okonjo')).toBeTruthy();
   });
 
-  it('loads exact next and previous offsets, and resets to the first page when a page-only filter changes', async () => {
+  it('loads exact next and previous offsets, and resets to the first page when a filter changes', async () => {
     mockGetClearPass.mockResolvedValue(demoData({ endpoints: [] }));
     mockGetEndpointPage
       .mockResolvedValueOnce(endpointPage({ endpoints: [CLEARPASS_ENDPOINTS[0]], total: 101, nextOffset: 50, more: 'yes' }))
@@ -214,9 +238,11 @@ describe('ClearPass', () => {
 
     await screen.findByRole('button', { name: 'Next endpoint page' });
     fireEvent.click(screen.getByRole('button', { name: 'Next endpoint page' }));
-    await waitFor(() => expect(mockGetEndpointPage).toHaveBeenLastCalledWith(50, 50));
-    fireEvent.change(screen.getByLabelText('Filter loaded endpoint page'), { target: { value: CLEARPASS_ENDPOINTS[0].mac } });
-    await waitFor(() => expect(mockGetEndpointPage).toHaveBeenLastCalledWith(0, 50));
+    await waitFor(() => expect(mockGetEndpointPage).toHaveBeenLastCalledWith(50, 50, {}));
+    fireEvent.change(screen.getByLabelText('Filter endpoints'), { target: { value: CLEARPASS_ENDPOINTS[0].mac } });
+    await waitFor(() =>
+      expect(mockGetEndpointPage).toHaveBeenLastCalledWith(0, 50, { q: CLEARPASS_ENDPOINTS[0].mac }),
+    );
     expect(screen.getByRole('button', { name: 'Previous endpoint page' })).toBeTruthy();
   });
 
@@ -234,7 +260,7 @@ describe('ClearPass', () => {
 
     await screen.findByText(CLEARPASS_ENDPOINTS[0].mac);
     fireEvent.click(screen.getByRole('button', { name: 'Next endpoint page' }));
-    fireEvent.change(screen.getByLabelText('Filter loaded endpoint page'), { target: { value: CLEARPASS_ENDPOINTS[0].mac } });
+    fireEvent.change(screen.getByLabelText('Filter endpoints'), { target: { value: CLEARPASS_ENDPOINTS[0].mac } });
 
     await act(async () => {
       resolveReset(endpointPage({ dataSource: 'live', endpoints: [CLEARPASS_ENDPOINTS[0]], total: 101, nextOffset: 50, more: 'yes' }));
@@ -368,8 +394,9 @@ describe('ClearPass', () => {
     expect(screen.getByText('Device Admin (TACACS+)')).toBeTruthy();
     // the enabled/disabled state as a badge — the eduroam pilot is the demo's
     // one disabled service ('Disabled' also labels a stat card, so the badge
-    // is asserted on its own row)
-    expect(screen.getAllByText('Enabled')).toHaveLength(3);
+    // is asserted on its own row). Loop 95 services filter Select also exposes
+    // an "Enabled" option, so count includes that control.
+    expect(screen.getAllByText('Enabled').length).toBeGreaterThanOrEqual(3);
     // type + template, hit count and order
     expect(screen.getByText('TACACS')).toBeTruthy();
     expect(screen.getByText('TACACS+ Enforcement')).toBeTruthy();
@@ -942,5 +969,484 @@ describe('ClearPass reviewed writes', () => {
     });
     expect(screen.queryByRole('button', { name: 'Register endpoint' })).toBeNull();
     expect(screen.queryByRole('dialog', { name: 'Register endpoint' })).toBeNull();
+  });
+});
+
+describe('ClearPass tab + filter deep links (Loop 64)', () => {
+  it('opens the named tab from ?tab= and write-back keeps tab + endpoint filters shareable', async () => {
+    mockGetClearPass.mockResolvedValue(
+      demoData({
+        networkDevices: CLEARPASS_NETWORK_DEVICES,
+        roles: CLEARPASS_ROLES,
+      }),
+    );
+    renderClearPass('/clearpass?tab=network');
+    expect(await screen.findByRole('tab', { name: 'Network devices', selected: true })).toBeTruthy();
+    expect(screen.getByTestId('loc').textContent).toContain('tab=network');
+
+    openTab('Endpoints');
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toContain('tab='));
+    fireEvent.change(screen.getByLabelText('Filter endpoints'), {
+      target: { value: 'aa:bb' },
+    });
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toContain('q=aa%3Abb'));
+  });
+
+  it('Copy filter link includes the written-back tab query', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ roles: CLEARPASS_ROLES }));
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderClearPass('/clearpass?tab=roles');
+    await screen.findByRole('tab', { name: 'Roles', selected: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Copy filter link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/tab=roles/);
+  });
+});
+
+describe('ClearPass server CSV filters (Loop 80)', () => {
+  it('Download server CSV passes status/category and part=endpoints on the endpoints tab', async () => {
+    mockGetClearPass.mockResolvedValue(
+      liveData({
+        endpoints: CLEARPASS_ENDPOINTS,
+        authEvents: AUTH_EVENTS,
+      }),
+    );
+    mockGetEndpointPage.mockResolvedValue(endpointPage({ dataSource: 'live' }));
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+
+    const known = CLEARPASS_ENDPOINTS.find((e) => e.status === 'Known');
+    const status = known?.status ?? 'Known';
+    const category = known?.category ?? 'Computer';
+
+    renderClearPass(`/clearpass?status=${encodeURIComponent(status)}&category=${encodeURIComponent(category)}`);
+    await screen.findByRole('button', { name: 'Download server CSV' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]![0]);
+    expect(path.startsWith('/api/clearpass/export?')).toBe(true);
+    const qs = new URLSearchParams(path.split('?')[1]);
+    expect(qs.get('part')).toBe('endpoints');
+    expect(qs.get('status')).toBe(status);
+    expect(qs.get('category')).toBe(category);
+  });
+
+  it('Download server CSV uses part=sessions on the Auth events tab', async () => {
+    mockGetClearPass.mockResolvedValue(liveData({ authEvents: AUTH_EVENTS }));
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderClearPass('/clearpass?tab=auth');
+    await screen.findByRole('tab', { name: 'Auth events', selected: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]![0]);
+    const qs = new URLSearchParams(path.split('?')[1] ?? '');
+    expect(qs.get('part')).toBe('sessions');
+  });
+
+  it('Download server CSV uses part=services + enabled/q on Services tab (Loop 95)', async () => {
+    mockGetClearPass.mockResolvedValue(
+      liveData({
+        services: CLEARPASS_SERVICES,
+      }),
+    );
+    mockDownloadApiCsv.mockResolvedValue({ ok: true });
+    renderClearPass('/clearpass?tab=services&q=eduroam&enabled=0');
+    await screen.findByRole('tab', { name: 'Services', selected: true });
+    expect(await screen.findByDisplayValue('eduroam')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = String(mockDownloadApiCsv.mock.calls[0]![0]);
+    expect(path.startsWith('/api/clearpass/export?')).toBe(true);
+    const qs = new URLSearchParams(path.split('?')[1]);
+    expect(qs.get('part')).toBe('services');
+    expect(qs.get('q')).toBe('eduroam');
+    expect(qs.get('enabled')).toBe('0');
+    expect(String(mockDownloadApiCsv.mock.calls[0]![1])).toBe('clearpass-services.csv');
+  });
+});
+
+describe('ClearPass services filter helper (Loop 95)', () => {
+  it('filterServicesForView honours q and enabled', async () => {
+    const { filterServicesForView } = await import('./ClearPass');
+    const all = filterServicesForView(CLEARPASS_SERVICES, '', 'all');
+    expect(all?.length).toBe(CLEARPASS_SERVICES.length);
+    const q = filterServicesForView(CLEARPASS_SERVICES, 'eduroam', 'all');
+    expect(q?.every((s) => s.name.toLowerCase().includes('eduroam'))).toBe(true);
+    const disabled = filterServicesForView(CLEARPASS_SERVICES, '', '0');
+    expect(disabled?.length).toBeGreaterThan(0);
+    expect(disabled?.every((s) => s.enabled === false)).toBe(true);
+    const miss = filterServicesForView(CLEARPASS_SERVICES, '__nope__', 'all');
+    expect(miss).toEqual([]);
+  });
+});
+
+/* Loop 136 — Status chip row toggles the same status= filter as the Select. */
+describe('ClearPass endpoint status chips (Loop 136)', () => {
+  it('status chips filter the endpoint table and write status back to the URL', async () => {
+    mockGetClearPass.mockResolvedValue(
+      liveData({
+        endpoints: CLEARPASS_ENDPOINTS,
+        authEvents: AUTH_EVENTS,
+      }),
+    );
+    /* Full repository page so chip counts stay visible while a status is active. */
+    mockGetEndpointPage.mockResolvedValue(
+      endpointPage({ dataSource: 'live', endpoints: CLEARPASS_ENDPOINTS }),
+    );
+
+    const known = CLEARPASS_ENDPOINTS.find((e) => e.status === 'Known');
+    const unknown = CLEARPASS_ENDPOINTS.find((e) => e.status === 'Unknown');
+    expect(known && unknown).toBeTruthy();
+
+    renderClearPass('/clearpass');
+    await screen.findByText(known!.mac);
+    expect(screen.getByText(unknown!.mac)).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Endpoint status' });
+    const unknownChip = within(chips).getByRole('button', { name: /Unknown/i });
+    expect(unknownChip.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(unknownChip);
+    await waitFor(() => expect(screen.getByText(unknown!.mac)).toBeTruthy());
+    expect(screen.queryByText(known!.mac)).toBeNull();
+    expect(screen.getByTestId('loc').textContent).toContain('status=Unknown');
+    expect(unknownChip.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(unknownChip);
+    await waitFor(() => expect(screen.getByText(known!.mac)).toBeTruthy());
+    expect(screen.getByText(unknown!.mac)).toBeTruthy();
+    expect(screen.getByTestId('loc').textContent).not.toContain('status=');
+  });
+});
+
+/* Loop 142 — Category chip row toggles the same category= filter as the Select. */
+describe('ClearPass endpoint category chips (Loop 142)', () => {
+  it('category chips filter the endpoint table and write category back to the URL', async () => {
+    mockGetClearPass.mockResolvedValue(
+      liveData({
+        endpoints: CLEARPASS_ENDPOINTS,
+        authEvents: AUTH_EVENTS,
+      }),
+    );
+    mockGetEndpointPage.mockResolvedValue(
+      endpointPage({ dataSource: 'live', endpoints: CLEARPASS_ENDPOINTS }),
+    );
+
+    const printer = CLEARPASS_ENDPOINTS.find((e) => e.category === 'Printer');
+    const phone = CLEARPASS_ENDPOINTS.find((e) => e.category === 'Phone');
+    expect(printer && phone).toBeTruthy();
+
+    renderClearPass('/clearpass');
+    await screen.findByText(printer!.mac);
+    expect(screen.getByText(phone!.mac)).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'Endpoint category' });
+    const printerChip = within(chips).getByRole('button', { name: /Printer/i });
+    expect(printerChip.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(printerChip);
+    await waitFor(() => expect(screen.getByText(printer!.mac)).toBeTruthy());
+    expect(screen.queryByText(phone!.mac)).toBeNull();
+    expect(screen.getByTestId('loc').textContent).toContain('category=Printer');
+    expect(printerChip.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(printerChip);
+    await waitFor(() => expect(screen.getByText(phone!.mac)).toBeTruthy());
+    expect(screen.getByText(printer!.mac)).toBeTruthy();
+    expect(screen.getByTestId('loc').textContent).not.toContain('category=');
+  });
+});
+
+/* Loop 149 — Enabled chip row toggles the same enabled= filter as the Select. */
+describe('ClearPass service enabled chips (Loop 149)', () => {
+  it('enabled chips filter services and write enabled back to the URL', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ services: CLEARPASS_SERVICES }));
+    renderClearPass('/clearpass?tab=services');
+    const chips = await screen.findByRole('group', { name: 'Service enabled state' });
+    const buttons = within(chips).getAllByRole('button');
+    expect(buttons.length).toBeGreaterThan(0);
+    const enabledChip = within(chips).queryByRole('button', { name: /Enabled/i })
+      ?? buttons[0]!;
+    expect(enabledChip.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(enabledChip);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toMatch(/enabled=1/));
+    expect(enabledChip.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(enabledChip);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/[?&]enabled=/));
+    expect(enabledChip.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('disabled chip writes enabled=0', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ services: CLEARPASS_SERVICES }));
+    renderClearPass('/clearpass?tab=services');
+    const chips = await screen.findByRole('group', { name: 'Service enabled state' });
+    const disabled = within(chips).getByRole('button', { name: /Disabled/i });
+    fireEvent.click(disabled);
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toMatch(/enabled=0/));
+    expect(disabled.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+/* Loop 162 — endpoint multi-select Export selected + Copy MACs bulk bar. */
+describe('ClearPass endpoint bulk selection (Loop 162)', () => {
+  it('shows bulk bar for selection: Export selected, Copy MACs, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:clearpass-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetClearPass.mockResolvedValue(
+      liveData({
+        endpoints: CLEARPASS_ENDPOINTS,
+        authEvents: AUTH_EVENTS,
+      }),
+    );
+    mockGetEndpointPage.mockResolvedValue(
+      endpointPage({ dataSource: 'live', endpoints: CLEARPASS_ENDPOINTS }),
+    );
+
+    const firstMac = CLEARPASS_ENDPOINTS[0]!.mac;
+    const { container } = renderClearPass('/clearpass');
+    expect(await screen.findByText(firstMac)).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Endpoint selection actions' })).toBeNull();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Endpoint selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected endpoint/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy MACs' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain(firstMac);
+    expect(await screen.findByText(/Copied 1 MAC/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Endpoint selection actions' })).toBeNull(),
+    );
+  });
+});
+
+/* Loop 175 — endpoint bulk Copy selection link (?macs=) + clearable chip. */
+describe('ClearPass Loop 175 residuals', () => {
+  it('Copy selection link writes macs= and the deep link filters endpoints', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetClearPass.mockResolvedValue(
+      liveData({
+        endpoints: CLEARPASS_ENDPOINTS,
+        authEvents: AUTH_EVENTS,
+      }),
+    );
+    mockGetEndpointPage.mockResolvedValue(
+      endpointPage({ dataSource: 'live', endpoints: CLEARPASS_ENDPOINTS }),
+    );
+
+    const firstMac = CLEARPASS_ENDPOINTS[0]!.mac;
+    const secondMac = CLEARPASS_ENDPOINTS[1]!.mac;
+    const { container } = renderClearPass('/clearpass');
+    expect(await screen.findByText(firstMac)).toBeTruthy();
+    expect(screen.getByText(secondMac)).toBeTruthy();
+
+    const first = container.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Endpoint selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copied = decodeURIComponent(String(writeText.mock.calls[0]![0]));
+    expect(copied).toMatch(/macs=/);
+    expect(copied).toContain(firstMac);
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?macs= and shows a clearable selection chip', async () => {
+    mockGetClearPass.mockResolvedValue(
+      liveData({
+        endpoints: CLEARPASS_ENDPOINTS,
+        authEvents: AUTH_EVENTS,
+      }),
+    );
+    mockGetEndpointPage.mockResolvedValue(
+      endpointPage({ dataSource: 'live', endpoints: CLEARPASS_ENDPOINTS }),
+    );
+
+    const firstMac = CLEARPASS_ENDPOINTS[0]!.mac;
+    const secondMac = CLEARPASS_ENDPOINTS[1]!.mac;
+    renderClearPass(`/clearpass?macs=${encodeURIComponent(firstMac)}`);
+    expect(await screen.findByText(firstMac)).toBeTruthy();
+    expect(screen.queryByText(secondMac)).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected MAC/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/macs=/));
+    expect(await screen.findByText(secondMac)).toBeTruthy();
+  });
+});
+
+/* Loop 168 — LIVE badge honesty (pure live + clearpass blend). */
+describe('ClearPass Loop 168 residuals', () => {
+  it('stamps LIVE on pure live ClearPass', async () => {
+    mockGetClearPass.mockResolvedValue(liveData({ authEvents: AUTH_EVENTS }));
+    mockGetEndpointPage.mockResolvedValue(endpointPage({ dataSource: 'live' }));
+    renderClearPass('/clearpass');
+    expect(await screen.findByRole('heading', { name: 'ClearPass' })).toBeTruthy();
+    expect(screen.getByText('LIVE')).toBeTruthy();
+  });
+
+  it('stamps LIVE when clearpass arrives via blend', async () => {
+    mockGetClearPass.mockResolvedValue(
+      demoData({ blended: ['clearpass'], syncedAt: '2026-07-26T11:59:00.000Z' }),
+    );
+    mockGetEndpointPage.mockResolvedValue(endpointPage());
+    renderClearPass('/clearpass');
+    expect(await screen.findByRole('heading', { name: 'ClearPass' })).toBeTruthy();
+    expect(screen.getByText('LIVE')).toBeTruthy();
+  });
+
+  it('hides LIVE on demo fixtures without blend', async () => {
+    mockGetClearPass.mockResolvedValue(demoData());
+    mockGetEndpointPage.mockResolvedValue(endpointPage());
+    renderClearPass('/clearpass');
+    expect(await screen.findByRole('heading', { name: 'ClearPass' })).toBeTruthy();
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+/* Loop 174 — services multi-select Export selected + Copy names bulk bar. */
+describe('ClearPass services bulk selection (Loop 174)', () => {
+  it('shows bulk bar for selection: Export selected, Copy names, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:clearpass-services-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetClearPass.mockResolvedValue(demoData());
+    mockGetEndpointPage.mockResolvedValue(endpointPage());
+
+    const firstName = CLEARPASS_SERVICES[0]!.name;
+    const { container } = renderClearPass('/clearpass?tab=services');
+    expect(await screen.findByText(firstName)).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Service selection actions' })).toBeNull();
+
+    const table = container.querySelector('[aria-label="ClearPass services"]') as HTMLElement;
+    expect(table).toBeTruthy();
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Service selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected service/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain(firstName);
+    expect(await screen.findByText(/Copied 1 name/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Service selection actions' })).toBeNull(),
+    );
+  });
+});
+
+/* Loop 181 — services bulk Copy selection link (?services=) + clearable chip. */
+describe('ClearPass services selection link (Loop 181)', () => {
+  it('Copy selection link writes services= and tab=services', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    mockGetClearPass.mockResolvedValue(demoData({ services: CLEARPASS_SERVICES }));
+    mockGetEndpointPage.mockResolvedValue(endpointPage());
+
+    const firstId = CLEARPASS_SERVICES[0]!.id;
+    const firstName = CLEARPASS_SERVICES[0]!.name;
+    const { container } = renderClearPass('/clearpass?tab=services');
+    expect(await screen.findByText(firstName)).toBeTruthy();
+
+    const table = container.querySelector('[aria-label="ClearPass services"]') as HTMLElement;
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Service selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = decodeURIComponent(String(writeText.mock.calls[0]![0]));
+    expect(url).toMatch(/services=/);
+    expect(url).toContain(firstId);
+    expect(url).toMatch(/tab=services/);
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?services= and shows a clearable selection chip', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ services: CLEARPASS_SERVICES }));
+    mockGetEndpointPage.mockResolvedValue(endpointPage());
+
+    const firstId = CLEARPASS_SERVICES[0]!.id;
+    const firstName = CLEARPASS_SERVICES[0]!.name;
+    const secondName = CLEARPASS_SERVICES[1]!.name;
+    const { container } = renderClearPass(
+      `/clearpass?tab=services&services=${encodeURIComponent(firstId)}`,
+    );
+    expect(await screen.findByText(firstName)).toBeTruthy();
+    const table = container.querySelector('[aria-label="ClearPass services"]') as HTMLElement;
+    expect(table).toBeTruthy();
+    expect(within(table).queryByText(secondName)).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected service/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).not.toMatch(/services=/));
+    expect(await within(table).findByText(secondName)).toBeTruthy();
+  });
+});
+
+/* Loop 195 — keyboard shortcuts help on the endpoints table. */
+describe('ClearPass Loop 195 residuals', () => {
+  it('exposes keyboard shortcuts help beside the endpoints table', async () => {
+    mockGetClearPass.mockResolvedValue(demoData({ endpoints: [] }));
+    mockGetEndpointPage.mockResolvedValue(endpointPage());
+    renderClearPass('/clearpass');
+    // Selection-wired DataTable is an ARIA grid (j/k/x), not a plain table.
+    expect(await screen.findByRole('grid', { name: 'ClearPass endpoints' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
   });
 });

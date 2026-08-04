@@ -12,9 +12,11 @@ describe('Alert', () => {
   it('defaults to the info tone and announces itself', () => {
     render(<Alert title="Heads up">Two reconciliation gaps worth money</Alert>);
     const alert = screen.getByRole('alert');
-    expect(alert.className).toBe('nd-alert nd-alert--info');
-    expect(screen.getByText('Heads up').className).toBe('nd-alert__title');
-    expect(screen.getByText('Two reconciliation gaps worth money').className).toBe('nd-alert__body');
+    expect(alert.className).toContain('nd-alert');
+    expect(alert.className).toContain('nd-alert--info');
+    expect(alert.className).toContain('nt-callout-glass');
+    expect(screen.getByText('Heads up').className).toContain('nd-alert__title');
+    expect(screen.getByText('Two reconciliation gaps worth money').className).toContain('nd-alert__body');
   });
 
   it.each([
@@ -25,7 +27,9 @@ describe('Alert', () => {
     ['neutral', 'nd-alert--neutral'],
   ] as const)('maps tone %s onto %s', (tone, expected) => {
     render(<Alert tone={tone}>body</Alert>);
-    expect(screen.getByRole('alert').className).toBe(`nd-alert ${expected}`);
+    expect(screen.getByRole('alert').className).toContain('nd-alert');
+    expect(screen.getByRole('alert').className).toContain(expected);
+    expect(screen.getByRole('alert').className).toContain('nt-callout-glass');
   });
 
   it('omits the title and body wrappers when nothing was given for them', () => {
@@ -108,9 +112,11 @@ describe('ToastProvider / useToast', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reboot' }));
 
     const toastEl = container.querySelector('.nd-toast') as HTMLElement;
-    expect(toastEl.className).toBe('nd-toast nd-toast--warning');
-    expect(screen.getByText('Reboot queued').className).toBe('nd-toast__title');
-    expect(screen.getByText('ap-lake-01 · ticket CHG-1042').className).toBe('nd-toast__desc');
+    expect(toastEl.className).toContain('nd-toast');
+    expect(toastEl.className).toContain('nd-toast--warning');
+    expect(toastEl.className).toContain('nt-toast');
+    expect(screen.getByText('Reboot queued').className).toContain('nd-toast__title');
+    expect(screen.getByText('ap-lake-01 · ticket CHG-1042').className).toContain('nd-toast__desc');
   });
 
   it('leaves off the tone modifier and the description node when neither was given', () => {
@@ -120,7 +126,8 @@ describe('ToastProvider / useToast', () => {
       </ToastProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
-    expect((container.querySelector('.nd-toast') as HTMLElement).className).toBe('nd-toast');
+    expect((container.querySelector('.nd-toast') as HTMLElement).className).toContain('nd-toast');
+    expect((container.querySelector('.nd-toast') as HTMLElement).className).toContain('nt-toast');
     expect(container.querySelector('.nd-toast__desc')).toBeNull();
   });
 

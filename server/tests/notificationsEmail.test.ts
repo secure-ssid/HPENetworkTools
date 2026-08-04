@@ -361,4 +361,53 @@ describe('SSL host routes', () => {
     expect((await sendJson('DELETE', `/api/notifications/ssl-hosts/${added.body.host.id}`)).status).toBe(404);
     expect((await getJson('/api/notifications/ssl-hosts')).body.hosts).toHaveLength(0);
   });
+
+  it('GET /api/notifications/ssl-hosts/export returns watch-list CSV without PEMs (Loop 96)', async () => {
+    const added = await sendJson('POST', '/api/notifications/ssl-hosts', { host: 'edge.example.com:8443' });
+    expect(added.status).toBe(201);
+
+    const r = await fetch(`${base}/api/notifications/ssl-hosts/export`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await r.text();
+    const header = text.split('\n')[0] ?? '';
+    expect(header).toContain('host');
+    expect(header).toContain('port');
+    expect(header).toContain('probeOk');
+    expect(header).toContain('notAfter');
+    expect(text).toMatch(/edge\.example\.com/);
+    expect(text).toMatch(/8443/);
+    expect(text).not.toMatch(/BEGIN CERTIFICATE|PRIVATE KEY|password|secret|hmac/i);
+
+    await sendJson('DELETE', `/api/notifications/ssl-hosts/${(added.body.host as { id: string }).id}`);
+  });
+
+  it('GET /api/notifications/ssl-hosts and export honour q= text filter (Loop 116)', async () => {
+    const a = await sendJson('POST', '/api/notifications/ssl-hosts', { host: 'alpha-edge.example.com:8443' });
+    const b = await sendJson('POST', '/api/notifications/ssl-hosts', { host: 'beta-core.example.com' });
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+
+    const all = await getJson('/api/notifications/ssl-hosts');
+    expect((all.body.hosts as unknown[]).length).toBeGreaterThanOrEqual(2);
+
+    const hit = await getJson('/api/notifications/ssl-hosts?q=alpha-edge');
+    expect(hit.status).toBe(200);
+    const hitHosts = hit.body.hosts as Array<{ host: string }>;
+    expect(hitHosts.length).toBeGreaterThan(0);
+    for (const h of hitHosts) expect(h.host).toMatch(/alpha-edge/i);
+
+    const miss = await getJson('/api/notifications/ssl-hosts?q=zz-no-such-host-zz');
+    expect((miss.body.hosts as unknown[]).length).toBe(0);
+
+    const csv = await fetch(`${base}/api/notifications/ssl-hosts/export?q=alpha-edge`);
+    expect(csv.status).toBe(200);
+    const text = await csv.text();
+    expect(text).toMatch(/alpha-edge/i);
+    expect(text).not.toMatch(/beta-core/i);
+    expect(text).not.toMatch(/BEGIN CERTIFICATE|PRIVATE KEY|password|secret/i);
+
+    await sendJson('DELETE', `/api/notifications/ssl-hosts/${(a.body.host as { id: string }).id}`);
+    await sendJson('DELETE', `/api/notifications/ssl-hosts/${(b.body.host as { id: string }).id}`);
+  });
 });

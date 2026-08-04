@@ -16,7 +16,7 @@ export function DeviceTypeBadge({
 }) {
   const tax = classifyDevice({ type, model, name });
   return (
-    <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+    <span className="nt-badge-row">
       <Badge tone={tax.typeTone}>{tax.typeLabel}</Badge>
       {showFamily && tax.family ? <Badge tone="neutral">{tax.family}</Badge> : null}
       {showRole && tax.roleHint ? <Badge tone="info">{tax.roleHint}</Badge> : null}

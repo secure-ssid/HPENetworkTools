@@ -108,7 +108,7 @@ export function KeyboardShortcuts({
     <>
       <button
         type="button"
-        className="nd-shortcuts__trigger"
+        className="nd-shortcuts__trigger nt-hotkey-trigger"
         aria-label="Keyboard shortcuts"
         title="Keyboard shortcuts (?)"
         onClick={() => setOpen(true)}
@@ -117,33 +117,36 @@ export function KeyboardShortcuts({
       </button>
       {open
         ? createPortal(
-            <div className="nd-shortcuts-root">
-              <div className="nd-shortcuts-overlay" onClick={() => setOpen(false)} />
+            <div className="nd-shortcuts-root nt-hotkey-root">
+              <div className="nd-shortcuts-overlay nt-hotkey-scrim" onClick={() => setOpen(false)} />
               <div
                 ref={panelRef}
-                className="nd-shortcuts"
+                className="nd-shortcuts nt-hotkey-overlay nt-panel-glass"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby={titleId}
                 tabIndex={-1}
               >
-                <div className="nd-shortcuts__header">
-                  <div id={titleId} className="nd-shortcuts__title">
+                <div className="nd-shortcuts__header nt-hotkey-overlay__header">
+                  <div className="nd-shortcuts__brand nt-hotkey-overlay__brand" aria-hidden>
+                    NightDesk · key map
+                  </div>
+                  <div id={titleId} className="nd-shortcuts__title nt-hotkey-overlay__title">
                     {title}
                   </div>
                   <button
                     type="button"
-                    className="nd-shortcuts__close"
+                    className="nd-shortcuts__close nt-hotkey-overlay__close"
                     aria-label="Close keyboard shortcuts"
                     onClick={() => setOpen(false)}
                   >
                     ×
                   </button>
                 </div>
-                <ul className="nd-shortcuts__list">
+                <ul className="nd-shortcuts__list nt-hotkey-overlay__list">
                   {entries.map((entry) => (
-                    <li key={entry.keys} className="nd-shortcuts__item">
-                      <kbd className="nd-kbd">{entry.keys}</kbd>
+                    <li key={entry.keys} className="nd-shortcuts__item nt-hotkey-overlay__item">
+                      <kbd className="nd-kbd nt-kbd">{entry.keys}</kbd>
                       <span>{entry.action}</span>
                     </li>
                   ))}

@@ -192,6 +192,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'Configure', view: 'configure' },
       { label: 'Compliance', view: 'compliance' },
+      { label: 'Recommendations', view: 'recommendations' },
       { label: 'Licences', view: 'licenses' },
     ],
   },
@@ -249,6 +250,7 @@ export const CRUMBS: CrumbMap = {
   greenlake: [{ label: 'Platforms' }, { label: 'GreenLake workspace' }],
   configure: [{ label: 'Change' }, { label: 'Configuration' }],
   compliance: [{ label: 'Change' }, { label: 'Compliance' }],
+  recommendations: [{ label: 'Change' }, { label: 'Recommendations' }],
   systems: [{ label: 'Platforms' }, { label: 'Connected systems' }],
 };
 

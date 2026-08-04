@@ -2,10 +2,12 @@
 
 import {
   Badge,
+  Button,
   Code,
   EmptyState,
   SectionHeader,
   SegmentedControl,
+  useToast,
 } from '../../nightdesk';
 import {
   CFG_TABS,
@@ -26,6 +28,8 @@ import {
   PortTable,
 } from './tables';
 import { DiffCode } from '../../lib/DiffCode';
+import { downloadApiCsv } from '../../lib/downloadApiCsv';
+import { exportTableCsv } from '../../lib/csv';
 import {
   detailHasRows,
   detailState,
@@ -50,7 +54,8 @@ export function RadiosPanel({ detail, plane }: { detail: DeviceDetailLive | null
       )
     : [];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-device-section nt-section-panel nt-stack-gap-2">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · device lane · state owns hue</div>
       <SectionHeader
         label="Radios"
         meta={radios.length > 0 ? `${radios.length} ON AIR` : undefined}
@@ -113,7 +118,8 @@ export function WlansPanel({ detail, plane }: { detail: DeviceDetailLive | null;
     ? (detail?.wlans ?? [])
     : [];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack-gap-2">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · device lane · state owns hue</div>
       <SectionHeader
         label="SSIDs broadcast"
         meta={wlans.length > 0 ? `${wlans.length} WLAN${wlans.length === 1 ? '' : 'S'}` : undefined}
@@ -156,7 +162,21 @@ export function WlansPanel({ detail, plane }: { detail: DeviceDetailLive | null;
  *  neighbour) are listed, worst far-end health first — the physical link to a
  *  gateway that is down is exactly what this screen has to surface. The header
  *  names the total so the filter can never read as "the switch has 8 ports". */
-export function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null; plane: string }) {
+export function PortsPanel({
+  detail,
+  plane,
+  deviceName,
+  devicePlane,
+  deviceSerial,
+}: {
+  detail: DeviceDetailLive | null;
+  plane: string;
+  /** When set, Export / Download server CSV use this device identity. */
+  deviceName?: string;
+  devicePlane?: string;
+  deviceSerial?: string;
+}) {
+  const { toast } = useToast();
   const state = detailState(detail?.source, 'ports');
   const all: DevicePort[] = detailHasRows(detail?.source, 'ports', detail?.ports)
     ? (detail?.ports ?? [])
@@ -184,7 +204,8 @@ export function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null;
   const adminDown = all.filter((p) => portAdminDown(p) === true);
   const hiddenAdminDown = adminDown.filter((p) => !interesting.includes(p)).length;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack-gap-2">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · device lane · state owns hue</div>
       <SectionHeader
         label="Ports of interest"
         meta={
@@ -193,6 +214,61 @@ export function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null;
             : undefined
         }
       />
+      {all.length > 0 && deviceName ? (
+        <div className="nt-filter-bar nt-gap-8">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              const n = exportTableCsv(
+                `device-ports-${deviceName}.csv`,
+                ['port', 'what', 'state', 'neighbour', 'neighbourPort'],
+                all.map((p) => [
+                  p.name,
+                  p.status || p.operStatus || '',
+                  p.operStatus || p.status || '',
+                  p.neighbour ?? '',
+                  p.neighbourPort ?? '',
+                ]),
+              );
+              toast(`Exported ${n} port row${n === 1 ? '' : 's'}`, {
+                description: 'Current ports table on this device.',
+              });
+            }}
+          >
+            Export ports
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              void (async () => {
+                const qs = new URLSearchParams();
+                if (devicePlane) qs.set('plane', String(devicePlane));
+                if (deviceSerial) qs.set('serial', String(deviceSerial));
+                const suffix = qs.toString() ? `?${qs}` : '';
+                const res = await downloadApiCsv(
+                  `/api/devices/${encodeURIComponent(deviceName)}/ports/export${suffix}`,
+                  `device-ports-${deviceName}.csv`,
+                );
+                if (res.ok) {
+                  toast('Server CSV downloaded', {
+                    description: 'Port/interface rows from the portal inventory.',
+                    tone: 'success',
+                  });
+                } else {
+                  toast('Server CSV failed', {
+                    description: res.error ?? 'Could not download ports export',
+                    tone: 'warning',
+                  });
+                }
+              })();
+            }}
+          >
+            Download server CSV
+          </Button>
+        </div>
+      ) : null}
       {all.length === 0 ? (
         <LiveGapNote>
           {detailGapSentence(state, {
@@ -213,7 +289,7 @@ export function PortsPanel({ detail, plane }: { detail: DeviceDetailLive | null;
            '5 Gb · full · Trunk 5 + 5,200 · PoE …' forced the eye to re-read
            the same words to find the one that differed. In columns the
            repetition collapses and the outlier is the only thing that moves. */
-        <PortTable rows={interesting} />
+        <PortTable rows={interesting} exportName={deviceName ? `device-ports-${deviceName}` : undefined} />
       )}
       {interesting.length > 0 && hiddenAdminDown > 0 ? (
         <LiveGapNote>
@@ -245,20 +321,16 @@ export function CompliancePanel({
 }) {
   const scored = evidence !== null && evidence.mode !== 'unavailable' && evidence.checks.length > 0;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="nt-stack-gap-10">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · device lane · state owns hue</div>
       <SectionHeader label="Compliance" />
       {scored ? (
         <>
           {evidence.checks.map((c) => (
-            <div key={c.rule ?? c.label} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div key={c.rule ?? c.label} className="nt-row-center-10">
               <Badge tone={c.tone}>{c.mark}</Badge>
               <span
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: 'var(--nd-text-12)',
-                  color: 'var(--nd-text-secondary)',
-                }}
+                className="nt-fs-12-sec"
               >
                 {c.label}
               </span>
@@ -309,7 +381,7 @@ export function ConfigTabs({
   const provenance = cfg.provenance;
   return (
     <>
-      <div style={{ alignSelf: 'flex-start' }}>
+      <div className="nt-self-start">
         <SegmentedControl
           options={CFG_TABS}
           value={cfgTab}
@@ -335,32 +407,20 @@ export function ConfigTabs({
         )
       ) : null}
       {cfgTab === 'history' ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        <div className="nt-stack-gap-0">
           {historyRows.map((h, i) => (
             <div
               key={`${h.when}-${i}`}
-              style={{
-                display: 'flex',
-                gap: 14,
-                padding: '11px 0',
-                borderBottom: '1px solid var(--nd-border-subtle)',
-              }}
+              className="nt-session-row"
             >
               <span
-                className="nt-hint-muted" style={{
-width: 88,
-                  flex: '0 0 88px'
-}}
+                className="nt-hint-muted nt-w-88"
               >
                 {provenance ? hhmm(h.when) : h.when}
               </span>
-              <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="nt-flex-1">
                 <div
-                  style={{
-                    fontSize: 'var(--nd-text-12)',
-                    color: 'var(--nd-text-primary)',
-                    lineHeight: 1.4,
-                  }}
+                  className="nt-fs-12-pri"
                 >
                   {h.what}
                 </div>

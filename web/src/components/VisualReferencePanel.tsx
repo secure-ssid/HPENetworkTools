@@ -12,7 +12,8 @@ import {
   uploadVisualReference,
   visualAssetUrl,
 } from '../api/visualReferences';
-import { Alert, Button, EmptyState, Input, SectionHeader, Spinner } from '../nightdesk';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
+import { Alert, Button, EmptyState, Input, SectionHeader, Skeleton, useToast } from '../nightdesk';
 
 const KIND_OPTIONS: Array<{ value: VisualKind; label: string }> = [
   { value: 'floorplan', label: 'Floorplan' },
@@ -35,6 +36,7 @@ export function VisualReferencePanel({
   /** Test seam — skip the network when provided. */
   initialReferences?: VisualReference[];
 }) {
+  const { toast } = useToast();
   const [references, setReferences] = useState<VisualReference[] | null>(initialReferences ?? null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -42,6 +44,27 @@ export function VisualReferencePanel({
   const [url, setUrl] = useState('');
   const [kind, setKind] = useState<VisualKind>('floorplan');
   const [attribution, setAttribution] = useState('');
+
+  const downloadServerCsv = () => {
+    void (async () => {
+      const qs = new URLSearchParams();
+      qs.set('kind', target.kind);
+      qs.set('id', target.id);
+      if (target.plane) qs.set('plane', String(target.plane));
+      const res = await downloadApiCsv(
+        `/api/visual-references/export?${qs.toString()}`,
+        'visual-references.csv',
+      );
+      if (!res.ok) {
+        toast('Server export failed', { description: res.error, tone: 'danger' });
+        return;
+      }
+      toast('Downloaded server CSV', {
+        description: 'visual-references.csv — metadata only (no binary assets).',
+        tone: 'success',
+      });
+    })();
+  };
 
   const reload = useCallback(async () => {
     if (initialReferences) {
@@ -135,21 +158,33 @@ export function VisualReferencePanel({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <SectionHeader
-        label="Visual references"
-        meta="OPERATOR CONTEXT · NOT TELEMETRY"
-      />
+    <div className="nt-visual-ref nt-recon-reveal nt-visual-ref-shell nt-section-panel">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · visual lane · operator sketches · never telemetry</div>
+      <div className="nt-row-between-12">
+        <SectionHeader
+          label="Visual references"
+          meta="OPERATOR CONTEXT · NOT TELEMETRY"
+        />
+        <Button variant="secondary" size="sm" onClick={downloadServerCsv}>
+          Download references CSV
+        </Button>
+      </div>
 
       {error ? (
         <Alert tone="warning" title="Visual references unavailable">
-          <span style={{ fontSize: 13 }}>{error}</span>
+          <span className="nt-fs-13">{error}</span>
         </Alert>
       ) : null}
 
       {references === null ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
-          <Spinner size="sm" />
+        <div className="nt-visual-ref__loading nt-debug-wake" aria-busy="true" aria-live="polite">
+          <span className="nt-chat-pending__pulse" aria-hidden />
+          <div className="nt-stack nt-gap-8 nt-flex-1">
+            <Skeleton height={14} width="38%" />
+            <Skeleton height={64} />
+            <Skeleton height={64} />
+          </div>
+          <span className="nt-hint-muted nt-chat-pending__label">NightDesk · visual lane…</span>
         </div>
       ) : references.length === 0 ? (
         <EmptyState
@@ -157,45 +192,35 @@ export function VisualReferencePanel({
           description="Attach a floorplan, port map, document, or native console link. These never replace live topology or telemetry."
         />
       ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <ul className="nt-visual-ref__list">
           {references.map((ref) => (
-            <li
-              key={ref.id}
-              style={{
-                border: '1px solid var(--nd-border-default)',
-                background: 'var(--nd-bg-raised)',
-                padding: '12px 14px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
-                <strong style={{ fontSize: 13 }}>{ref.title}</strong>
-                <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>
+            <li key={ref.id} className="nt-visual-ref__card nt-card-lift nt-panel-glass">
+              <div className="nt-visual-ref__card-head">
+                <strong className="nt-visual-ref__title">{ref.title}</strong>
+                <span className="nt-visual-ref__meta">
                   {ref.kind} · {ref.source}
                 </span>
               </div>
               {ref.unavailable ? (
                 <Alert tone="danger" title="Asset unavailable">
-                  <span style={{ fontSize: 12 }}>The stored file is missing; re-upload or remove this reference.</span>
+                  <span className="nt-fs-12">The stored file is missing; re-upload or remove this reference.</span>
                 </Alert>
               ) : ref.assetId && ref.mimeType?.startsWith('image/') ? (
                 <img
                   src={visualAssetUrl(ref.assetId)}
                   alt={ref.title}
-                  style={{ maxWidth: '100%', maxHeight: 220, objectFit: 'contain', background: 'var(--nd-bg-inset)' }}
+                  className="nt-visual-ref__img"
                 />
               ) : ref.url ? (
-                <a href={ref.url} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
+                <a href={ref.url} target="_blank" rel="noreferrer" className="nt-visual-ref__link">
                   {ref.source === 'native' ? 'Open native console' : ref.url}
                 </a>
               ) : ref.assetId ? (
-                <a href={visualAssetUrl(ref.assetId)} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
+                <a href={visualAssetUrl(ref.assetId)} target="_blank" rel="noreferrer" className="nt-visual-ref__link">
                   Open document
                 </a>
               ) : null}
-              <div style={{ fontSize: 11, color: 'var(--nd-text-muted)', fontFamily: 'var(--nd-font-mono)' }}>
+              <div className="nt-visual-ref__owner">
                 {ref.source === 'upload' ? 'Uploaded' : 'Linked'} by {ref.owner}
                 {ref.attribution ? ` · ${ref.attribution}` : ''}
                 {ref.updatedAt ? ` · ${new Date(ref.updatedAt).toLocaleString()}` : ''}
@@ -213,31 +238,14 @@ export function VisualReferencePanel({
       )}
 
       {editable ? (
-        <div
-          style={{
-            border: '1px solid var(--nd-border-subtle)',
-            padding: 12,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-          }}
-        >
-          <div style={{ fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--nd-text-muted)' }}>
-            Add visual reference
-          </div>
+        <div className="nt-visual-ref__composer">
+          <div className="nt-visual-ref__composer-label">Add visual reference</div>
           <Input size="sm" placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
           <select
             aria-label="Reference kind"
             value={kind}
             onChange={(e) => setKind(e.target.value as VisualKind)}
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 12,
-              padding: '6px 8px',
-              background: 'var(--nd-bg-inset)',
-              color: 'var(--nd-text-primary)',
-              border: '1px solid var(--nd-border-default)',
-            }}
+            className="nt-visual-ref__select"
           >
             {KIND_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -258,11 +266,11 @@ export function VisualReferencePanel({
             value={attribution}
             onChange={(e) => setAttribution(e.target.value)}
           />
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="nt-visual-ref__actions">
             <Button variant="secondary" size="sm" disabled={busy || !title.trim() || !url.trim()} onClick={() => void addLink()}>
               Add link
             </Button>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+            <label className="nt-visual-ref__upload">
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,text/markdown"

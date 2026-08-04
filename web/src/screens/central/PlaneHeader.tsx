@@ -23,13 +23,15 @@ export function PlaneHeader({
 }) {
   return (
     <div
-      className="nt-filter-bar" style={{ paddingBottom: 4,
-        borderBottom: '1px solid var(--nd-border-subtle)' }}
+      className="nt-filter-bar nt-plane-head-rule nt-plane-head nt-toolbar-glass"
+      data-tone={plane.tone}
+      data-live={dataSource === 'live' ? '1' : '0'}
     >
+      <Badge plane>Central</Badge>
       <Badge tone={plane.tone} dot>
         {plane.linked ? plane.health : 'not linked'}
       </Badge>
-      <span className="nt-hint-muted">
+      <span className="nt-hint-muted nt-plane-head__meta">
         {dataSource === 'live' ? 'LIVE' : 'DEMO FIXTURE'}
         {' · '}
         {plane.linked
@@ -39,8 +41,8 @@ export function PlaneHeader({
       {plane.note ? (
         <span className="nt-hint-muted">{plane.note}</span>
       ) : null}
-      <span style={{ flex: 1 }} />
-      <Link to="/systems" className="nt-hint-muted" style={{ color: "var(--nd-accent)" }}>
+      <span className="nt-flex-only" />
+      <Link to="/systems" className="nt-hint-muted nt-accent-text nt-plane-head__link">
         Scope, credentials and webhooks in Connected systems
       </Link>
     </div>

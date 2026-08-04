@@ -23,13 +23,13 @@ export function Alert({
     onDismiss?.();
   };
   return (
-    <div className={`nd-alert nd-alert--${tone}`} role="alert">
-      <div className="nd-alert__content">
-        {title ? <div className="nd-alert__title">{title}</div> : null}
-        {children ? <div className="nd-alert__body">{children}</div> : null}
+    <div className={`nd-alert nd-alert--${tone} nt-callout-glass`} role="alert" data-tone={tone}>
+      <div className="nd-alert__content nt-callout-glass__content">
+        {title ? <div className="nd-alert__title nt-callout-glass__title">{title}</div> : null}
+        {children ? <div className="nd-alert__body nt-callout-glass__body">{children}</div> : null}
       </div>
       {dismissible ? (
-        <button type="button" className="nd-alert__dismiss" onClick={dismiss}>
+        <button type="button" className="nd-alert__dismiss nt-callout-glass__dismiss" onClick={dismiss}>
           Dismiss
         </button>
       ) : null}
@@ -83,11 +83,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ toast }}>
       {children}
-      <div className="nd-toast-region" role="status" aria-live="polite" aria-atomic="false">
+      <div className="nd-toast-region nt-toast-region" role="status" aria-live="polite" aria-atomic="false">
         {items.map((t) => (
-          <div key={t.id} className={`nd-toast${t.tone ? ` nd-toast--${t.tone}` : ''}`}>
-            <div className="nd-toast__title">{t.title}</div>
-            {t.description ? <div className="nd-toast__desc">{t.description}</div> : null}
+          <div key={t.id} className={`nd-toast nt-toast${t.tone ? ` nd-toast--${t.tone} nt-toast--${t.tone}` : ''}`} data-tone={t.tone || undefined}>
+            <div className="nd-toast__title nt-toast__title">{t.title}</div>
+            {t.description ? <div className="nd-toast__desc nt-toast__desc">{t.description}</div> : null}
           </div>
         ))}
       </div>

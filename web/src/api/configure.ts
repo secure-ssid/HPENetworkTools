@@ -128,9 +128,17 @@ export interface ChangeHistory {
   unreadable: string[];
 }
 
-export async function getChangeHistory(limit = 50): Promise<ChangeHistory | ApiError | null> {
+export async function getChangeHistory(
+  limit = 50,
+  filters?: { kind?: string; result?: string; ticket?: string },
+): Promise<ChangeHistory | ApiError | null> {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  if (filters?.kind?.trim()) params.set('kind', filters.kind.trim());
+  if (filters?.result?.trim()) params.set('result', filters.result.trim());
+  if (filters?.ticket?.trim()) params.set('ticket', filters.ticket.trim());
   const result = await fetchScreen<{ events: BrokerAuditEvent[]; unreadable?: unknown }>(
-    `/api/configure/history?limit=${encodeURIComponent(String(limit))}`,
+    `/api/configure/history?${params.toString()}`,
   );
   if (result.kind === 'ok') {
     // Same rule as an HTTP error: a wrong-shaped 200 must not collapse into an

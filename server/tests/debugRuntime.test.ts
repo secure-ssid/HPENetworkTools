@@ -30,7 +30,7 @@ afterAll(async () => {
 });
 
 describe('GET /api/debug/runtime', () => {
-  it('returns process and plane facts without secrets', async () => {
+  it('returns process, plane, and integrity facts without secrets', async () => {
     const r = await fetch(`${base}/api/debug/runtime`);
     expect(r.status).toBe(200);
     const body = (await r.json()) as {
@@ -39,6 +39,7 @@ describe('GET /api/debug/runtime', () => {
       portal: { demoMode: boolean; auth: string };
       planes: Array<{ id: string; linked: boolean }>;
       notifier: { deliveryLogSize: number };
+      integrity: { devices: number; doubleClaimed: number; unclaimed: number };
     };
     expect(body.ok).toBe(true);
     expect(body.process.node).toMatch(/^v/);
@@ -48,17 +49,55 @@ describe('GET /api/debug/runtime', () => {
     expect(Array.isArray(body.planes)).toBe(true);
     expect(body.planes.length).toBeGreaterThan(0);
     expect(typeof body.notifier.deliveryLogSize).toBe('number');
+    expect(body.integrity).toEqual(
+      expect.objectContaining({
+        devices: expect.any(Number),
+        doubleClaimed: expect.any(Number),
+        unclaimed: expect.any(Number),
+      }),
+    );
+    expect(body.integrity.devices).toBeGreaterThanOrEqual(0);
+    expect(body.integrity.doubleClaimed).toBeGreaterThanOrEqual(0);
+    expect(body.integrity.unclaimed).toBeGreaterThanOrEqual(0);
     const raw = JSON.stringify(body);
     expect(raw).not.toMatch(/password|secret|token|apiKey/i);
   });
 
-  it('exports plane facts as CSV without secrets', async () => {
+  it('exports connector/plane integrity CSV without secrets', async () => {
     const r = await fetch(`${base}/api/debug/runtime/export`);
     expect(r.status).toBe(200);
     expect(r.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const cd = r.headers.get('content-disposition') ?? '';
+    expect(cd).toMatch(/connector-integrity\.csv/);
     const text = await r.text();
-    expect(text.split('\n')[0]).toContain('id,linked,health');
+    const header = text.split('\n')[0];
+    expect(header).toContain('kind,id,linked,health');
+    expect(header).toContain('count');
+    expect(text).toMatch(/^integrity,devices,/m);
+    expect(text).toMatch(/^integrity,doubleClaimed,/m);
+    expect(text).toMatch(/^integrity,unclaimed,/m);
+    expect(text).toMatch(/^plane,/m);
     expect(text).not.toMatch(/password|secret|token|apiKey/i);
-    expect(text.split('\n').length).toBeGreaterThan(2);
+    expect(text.split('\n').length).toBeGreaterThan(5);
+  });
+
+  it('honours ?filter= on runtime export (Loop 89)', async () => {
+    const all = await fetch(`${base}/api/debug/runtime/export`);
+    expect(all.status).toBe(200);
+    const allText = await all.text();
+    const allPlanes = allText.split('\n').filter((l) => l.startsWith('plane,')).length;
+
+    const unlinked = await fetch(`${base}/api/debug/runtime/export?filter=unlinked`);
+    expect(unlinked.status).toBe(200);
+    const unlinkedText = await unlinked.text();
+    // Integrity tallies always ship regardless of plane filter.
+    expect(unlinkedText).toMatch(/^integrity,devices,/m);
+    const unlinkedPlanes = unlinkedText.split('\n').filter((l) => l.startsWith('plane,')).length;
+    expect(unlinkedPlanes).toBeLessThanOrEqual(allPlanes);
+
+    const bad = await fetch(`${base}/api/debug/runtime/export?filter=purple`);
+    expect(bad.status).toBe(400);
+    const body = (await bad.json()) as { error: string };
+    expect(body.error).toMatch(/filter must be/);
   });
 });

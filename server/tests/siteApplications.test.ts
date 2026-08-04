@@ -80,6 +80,16 @@ describe('site applications route — demo mode', () => {
     const { status } = await getJson('/api/sites/no-such-place/applications');
     expect(status).toBe(404);
   });
+
+  it('GET /api/sites/campus-01/applications/export serves CSV of DPI rows', async () => {
+    const res = await fetch(`${base}/api/sites/campus-01/applications/export`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type') ?? '').toContain('text/csv');
+    const text = await res.text();
+    expect(text.split('\n')[0]).toContain('name,id,risk');
+    expect(text).toContain('Microsoft 365');
+    expect(text).not.toMatch(/password|token|secret/i);
+  });
 });
 
 describe('site applications route — live mode', () => {

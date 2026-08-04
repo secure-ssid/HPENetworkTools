@@ -165,8 +165,10 @@ export function compareSortValues(
 type DataTableProps<Row> = {
   columns: Array<DataTableColumn<Row>>;
   rows: Row[];
-  /** Stable row identity — drives row keys, the roving tabindex and selection. */
-  rowKey: (row: Row) => string;
+  /** Stable row identity — drives row keys, the roving tabindex and selection.
+   *  Index is the position in the current (post-sort) row list — use it when
+   *  the row payload alone is not unique (auth feeds, license rows). */
+  rowKey: (row: Row, index: number) => string;
   density?: 'comfortable' | 'compact';
   className?: string;
   /** Accessible name for the table/grid. */
@@ -181,6 +183,8 @@ type DataTableProps<Row> = {
   /** Controlled selection (row keys). Pair with onSelectionChange. */
   selectedKeys?: ReadonlyArray<string>;
   onSelectionChange?: (keys: string[]) => void;
+  /** Optional state tone for left-rail cinema (severity / health owns hue). */
+  rowTone?: (row: Row) => string | undefined;
 };
 
 /** Clicks and keys inside a nested control belong to that control, not the row. */
@@ -200,6 +204,7 @@ export function DataTable<Row>({
   onRowActivate,
   selectedKeys,
   onSelectionChange,
+  rowTone,
 }: DataTableProps<Row>) {
   const visible = useMemo(() => visibleColumns(columns, columnsConfig), [columns, columnsConfig]);
   const keyboard = onRowActivate !== undefined || onSelectionChange !== undefined;
@@ -236,7 +241,7 @@ export function DataTable<Row>({
       .map((entry) => entry.row);
   }, [rows, sort, columns]);
 
-  const keys = useMemo(() => sortedRows.map(rowKey), [sortedRows, rowKey]);
+  const keys = useMemo(() => sortedRows.map((row, index) => rowKey(row, index)), [sortedRows, rowKey]);
   const effectiveActiveKey =
     activeKey !== null && keys.includes(activeKey) ? activeKey : (keys[0] ?? null);
 
@@ -377,11 +382,20 @@ export function DataTable<Row>({
   const colSpan = Math.max(1, visible.length);
 
   return (
-    <div ref={scrollRef} className={cx('nd-table-scroll', virtualized && 'nd-table-scroll--virtual')}>
+    <div
+      ref={scrollRef}
+      className={cx('nd-table-scroll', 'nt-table-scroll', virtualized && 'nd-table-scroll--virtual')}
+      data-virtualized={virtualized ? 'true' : undefined}
+      data-row-count={sortedRows.length}
+    >
       <table
         className={cx('nd-table', 'nd-table--open', density === 'compact' && 'nd-table--compact', className)}
         role={keyboard ? 'grid' : undefined}
-        aria-label={ariaLabel}
+        aria-label={
+          virtualized
+            ? `${ariaLabel ?? 'Table'} · virtualized ${sortedRows.length} rows`
+            : ariaLabel
+        }
         aria-rowcount={keyboard ? rows.length + 1 : undefined}
         aria-colcount={keyboard ? visible.length : undefined}
         onKeyDown={keyboard ? onTableKeyDown : undefined}
@@ -406,7 +420,16 @@ export function DataTable<Row>({
                   className={cx('nd-table__th', column.numeric && 'nd-table__th--numeric')}
                 >
                   {sortable ? (
-                    <button type="button" className="nd-table__sort" onClick={() => cycleSort(column)}>
+                    <button
+                      type="button"
+                      className="nd-table__sort nt-table__sort"
+                      onClick={() => cycleSort(column)}
+                      aria-label={
+                        isSorted
+                          ? `${column.title}, sorted ${sort.dir === 'asc' ? 'ascending' : 'descending'}`
+                          : `Sort ${column.title}`
+                      }
+                    >
                       {column.header ?? column.title}
                       <span className={cx('nd-table__sort-mark', isSorted && 'nd-table__sort-mark--active')} aria-hidden="true">
                         {isSorted ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}
@@ -417,7 +440,7 @@ export function DataTable<Row>({
                   )}
                   {onColumnsConfigChange ? (
                     <span
-                      className="nd-table__resize"
+                      className="nd-table__resize nt-table__resize"
                       aria-hidden="true"
                       onPointerDown={(event) => startResize(event, column)}
                     />
@@ -429,8 +452,8 @@ export function DataTable<Row>({
         </thead>
         <tbody>
           {virtualized && virtualWindow.top > 0 ? (
-            <tr aria-hidden="true" className="nd-table__tr--spacer">
-              <td colSpan={colSpan} style={{ height: virtualWindow.top, padding: 0, border: 0 }} />
+            <tr aria-hidden="true" className="nd-table__tr--spacer nt-table__tr--spacer">
+              <td colSpan={colSpan} className="nd-table-spacer nt-table-spacer" style={{ height: virtualWindow.top }} />
             </tr>
           ) : null}
           {paintedRows.map((row, paintedIndex) => {
@@ -450,7 +473,9 @@ export function DataTable<Row>({
                 className={cx(
                   onRowActivate && 'nd-table__tr--interactive',
                   selectable && selected.has(key) && 'nd-table__tr--selected',
+                  rowTone?.(row) && 'nd-table__tr--tone',
                 )}
+                data-tone={rowTone?.(row)}
                 tabIndex={keyboard ? (key === effectiveActiveKey ? 0 : -1) : undefined}
                 onFocus={keyboard ? () => setActiveKey(key) : undefined}
                 onClick={
@@ -482,8 +507,8 @@ export function DataTable<Row>({
             );
           })}
           {virtualized && virtualWindow.bottom > 0 ? (
-            <tr aria-hidden="true" className="nd-table__tr--spacer">
-              <td colSpan={colSpan} style={{ height: virtualWindow.bottom, padding: 0, border: 0 }} />
+            <tr aria-hidden="true" className="nd-table__tr--spacer nt-table__tr--spacer">
+              <td colSpan={colSpan} className="nd-table-spacer nt-table-spacer" style={{ height: virtualWindow.bottom }} />
             </tr>
           ) : null}
         </tbody>

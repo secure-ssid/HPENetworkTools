@@ -16,10 +16,16 @@
  *    straight sentence rather than an empty drill;
  *  - the read itself failing (HTTP 500, unreachable) is a failure sentence,
  *    never an empty drill.
+ *
+ * Share: `?section=sle` lands on the section; `?section=sle&metric=<wire-name>`
+ * also opens that metric's drill drawer. Closing the drawer drops `metric`
+ * while keeping `section=sle`. Copy section / Copy drill link use the same
+ * tokens so a colleague reopens the same drawer.
  */
 
-import { useEffect, useState } from 'react';
-import { Badge, Drawer, SectionHeader, Sparkline, Spinner } from '../../nightdesk';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Badge, Button, Drawer, SectionHeader, Sparkline, Skeleton, useToast } from '../../nightdesk';
 import { getSleMetricDetail, type SleMetricDetailResult } from '../../api/client';
 import { countOf, detailHasRows, detailState, hhmmLocal as hhmm } from '@hpe/shared';
 import type {
@@ -32,6 +38,86 @@ import type {
   MistSleTrend,
   Tone,
 } from '@hpe/shared';
+import { exportTableCsv } from '../../lib/csv';
+import { downloadApiCsv } from '../../lib/downloadApiCsv';
+
+/** Canonical share target for the site SLE section (optional open metric). */
+export function siteSleSectionUrl(
+  pathname: string = typeof window !== 'undefined' ? window.location.pathname : '',
+  metric: string | null = null,
+): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const base = pathname || '/sites';
+  const next = new URLSearchParams();
+  next.set('section', 'sle');
+  const m = metric?.trim();
+  if (m) next.set('metric', m);
+  return `${origin}${base}?${next.toString()}#sle`;
+}
+
+/** Wire metric name from `?metric=` — empty/unknown → null. */
+export function sleMetricFromParam(raw: string | null): string | null {
+  const m = raw?.trim();
+  return m ? m : null;
+}
+
+export const SLE_METRIC_CSV_HEADERS = [
+  'metric',
+  'success',
+  'samples',
+  'degraded',
+  'impactUsers',
+  'impactTotalUsers',
+  'impactAps',
+  'impactTotalAps',
+] as const;
+
+/** Client CSV rows for the polled SLE metric list (headline or per-metric). */
+export function sleMetricCsvRows(sle: MistSleRow): Array<Array<string | number>> {
+  if (sle.metrics && sle.metrics.length > 0) {
+    return sle.metrics.map((m) => [
+      m.name,
+      m.success === null ? '' : m.success,
+      m.samples ?? '',
+      m.degraded ?? '',
+      m.impact?.numUsers ?? '',
+      m.impact?.totalUsers ?? '',
+      m.impact?.numAps ?? '',
+      m.impact?.totalAps ?? '',
+    ]);
+  }
+  return [
+    ['coverage', sle.coverage ?? '', '', '', '', '', '', ''],
+    ['capacity', sle.capacity ?? '', '', '', '', '', '', ''],
+    ['roaming', sle.roaming ?? '', '', '', '', '', '', ''],
+    ['ap-health', sle.apHealth ?? '', '', '', '', '', '', ''],
+    ['wan', sle.wan ?? '', '', '', '', '', '', ''],
+  ];
+}
+
+export const SLE_DRILL_CSV_HEADERS = ['section', 'name', 'mac', 'samples', 'degraded', 'durationSec'] as const;
+
+/** Flatten one metric drill payload — classifiers / clients / APs only (no secrets). */
+export function sleDrillCsvRows(detail: MistSleMetricDetail): Array<Array<string | number>> {
+  const rows: Array<Array<string | number>> = [];
+  for (const c of detail.classifiers ?? []) {
+    rows.push([
+      'classifier',
+      c.name,
+      '',
+      c.samples ?? '',
+      c.degraded ?? '',
+      c.durationSec ?? '',
+    ]);
+  }
+  for (const c of detail.impactedClients ?? []) {
+    rows.push(['impacted-client', c.name ?? '', c.mac, '', c.degraded ?? '', '']);
+  }
+  for (const ap of detail.impactedAps ?? []) {
+    rows.push(['impacted-ap', ap.name ?? '', ap.mac, '', ap.degraded ?? '', '']);
+  }
+  return rows;
+}
 
 /** ≥0.9 good, 0.7–0.9 moderate, <0.7 poor — the SLE badge's own thresholds,
  *  the same rule the Sites screen's badge follows (Mist scores per
@@ -127,7 +213,7 @@ function TrendSection({ detail }: { detail: MistSleMetricDetail }) {
       ? `${hhmm(new Date(trend.startSec * 1000).toISOString())}–${hhmm(new Date(trend.endSec * 1000).toISOString())}`
       : null;
   return (
-    <div className="nt-stack nt-gap-8">
+    <div className="nt-site-section nt-section-panel nt-stack nt-gap-8">
       <SectionHeader label="Trend" meta={windowLabel ?? undefined} />
       {detailHasRows(detail.source, 'trend', points) ? (
         <>
@@ -157,19 +243,12 @@ function ClassifierRow({ c }: { c: MistSleClassifier }) {
   const duration = durationLabel(c.durationSec);
   return (
     <div
-      style={{
-        display: 'flex',
-        alignItems: 'baseline',
-        justifyContent: 'space-between',
-        gap: 12,
-        padding: '8px 0',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-      }}
+      className="nt-sle-row"
     >
-      <span className="nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>
+      <span className="nt-body-sm nt-text-primary">
         {metricLabel(c.name)}
       </span>
-      <span className="nt-hint-muted" style={{ textAlign: "right" }}>
+      <span className="nt-hint-muted nt-ta-right">
         {c.degraded !== null ? `${c.degraded.toLocaleString()} degraded` : '—'}
         {c.samples !== null ? ` of ${c.samples.toLocaleString()} samples` : ''}
         {duration ? ` · ${duration}` : ''}
@@ -182,21 +261,14 @@ function ClassifierRow({ c }: { c: MistSleClassifier }) {
 function ImpactedRow({ name, mac, degraded }: { name: string | null; mac: string; degraded: number | null }) {
   return (
     <div
-      style={{
-        display: 'flex',
-        alignItems: 'baseline',
-        justifyContent: 'space-between',
-        gap: 12,
-        padding: '8px 0',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-      }}
+      className="nt-sle-row"
     >
-      <span style={{ minWidth: 0 }}>
-        <span className="nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>
+      <span className="nt-min-w-0">
+        <span className="nt-body-sm nt-text-primary">
           {name ?? mac}
         </span>
         {name !== null ? (
-          <span className="nt-hint-muted" style={{ marginLeft: 8 }}>{mac}</span>
+          <span className="nt-hint-muted nt-ml-8">{mac}</span>
         ) : null}
       </span>
       <span className="nt-hint-muted">
@@ -207,7 +279,15 @@ function ImpactedRow({ name, mac, degraded }: { name: string | null; mac: string
 }
 
 /** The drill drawer's body for one settled read. */
-function DrillBody({ result }: { result: SleMetricDetailResult }) {
+function DrillBody({
+  result,
+  onExport,
+  onServerExport,
+}: {
+  result: SleMetricDetailResult;
+  onExport?: (detail: MistSleMetricDetail) => void;
+  onServerExport?: (detail: MistSleMetricDetail) => void;
+}) {
   if (result.kind === 'not-reported') {
     return (
       <div className="nt-service-note">
@@ -218,17 +298,32 @@ function DrillBody({ result }: { result: SleMetricDetailResult }) {
   }
   if (result.kind === 'failed') {
     return (
-      <div className="nt-hint-muted" style={{ color: "var(--nd-danger)" }}>
+      <div className="nt-hint-muted nt-danger-text">
         The drill-down read failed — {result.message}
       </div>
     );
   }
   const { detail } = result;
   const readAt = hhmm(detail.source.at);
+  const drillRows = sleDrillCsvRows(detail);
   return (
     <div className="nt-stack nt-gap-22">
-      <div className="nt-hint-muted">
-        {`MIST · READ ${readAt}${detail.source.cached ? ' · CACHED' : ''}`}
+      <div className="nt-row-between-8">
+        <div className="nt-hint-muted">
+          {`MIST · READ ${readAt}${detail.source.cached ? ' · CACHED' : ''}`}
+        </div>
+        <div className="nt-wrap-6">
+          {onExport && drillRows.length > 0 ? (
+            <Button variant="ghost" size="sm" onClick={() => onExport(detail)}>
+              Export drill CSV
+            </Button>
+          ) : null}
+          {onServerExport && drillRows.length > 0 ? (
+            <Button variant="ghost" size="sm" onClick={() => onServerExport(detail)}>
+              Download server CSV
+            </Button>
+          ) : null}
+        </div>
       </div>
       <TrendSection detail={detail} />
       <div className="nt-stack nt-gap-2">
@@ -263,21 +358,10 @@ function MetricRow({ metric, onOpen }: { metric: MistSleMetric; onOpen: () => vo
     <button
       type="button"
       onClick={onOpen}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        width: '100%',
-        padding: '9px 0',
-        border: 'none',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-        background: 'none',
-        cursor: 'pointer',
-        textAlign: 'left',
-      }}
+      className="nt-sle-btn-row"
     >
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <span className="nt-body-sm" style={{ display: "block", color: "var(--nd-text-primary)" }}>
+      <span className="nt-flex-1">
+        <span className="nt-body-sm nt-block-primary">
           {metricLabel(metric.name)}
         </span>
         <span className="nt-hint-muted">
@@ -308,20 +392,13 @@ function HeadlineRows({ sle }: { sle: MistSleRow }) {
       {rows.map((row) => (
         <div
           key={row.k}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            padding: '9px 0',
-            borderBottom: '1px solid var(--nd-border-subtle)',
-          }}
+          className="nt-sle-metric-row"
         >
-          <span className="nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{row.k}</span>
+          <span className="nt-body-sm nt-text-primary">{row.k}</span>
           <Badge tone={sleTone(row.v)}>{pct(row.v)}</Badge>
         </div>
       ))}
-      <div className="nt-hint-muted" style={{ paddingTop: 6 }}>
+      <div className="nt-hint-muted nt-pt-6">
         Per-metric detail was not reported for this site, so there is nothing to drill into.
       </div>
     </>
@@ -348,11 +425,51 @@ export function SiteSle({
   siteKey: string;
   siteName: string;
 }) {
+  const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const metricParam = sleMetricFromParam(searchParams.get('metric'));
   /* The open drill: which metric, and its read result (null = in flight).
    * Keyed by metric so a late answer is filed against the metric asked about,
    * and re-opening a metric this mount re-reads (the server TTL-caches, so a
    * reopen inside the window costs no plane call). */
   const [drill, setDrill] = useState<{ metric: string; result: SleMetricDetailResult | null } | null>(null);
+  /* Close clears drill before ?metric= leaves the URL; suppress auto-open for
+   * that beat so the drawer does not bounce back open. */
+  const suppressMetricOpen = useRef(false);
+
+  const openMetric = (metric: string) => {
+    suppressMetricOpen.current = false;
+    setDrill({ metric, result: null });
+    const next = new URLSearchParams(searchParams);
+    next.set('section', 'sle');
+    next.set('metric', metric);
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  };
+
+  const closeDrill = () => {
+    suppressMetricOpen.current = true;
+    setDrill(null);
+    if (!searchParams.has('metric')) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('metric');
+    setSearchParams(next, { replace: true });
+  };
+
+  /* Deep-link: open the named metric once when ?metric= is present and scored. */
+  useEffect(() => {
+    if (!metricParam) {
+      suppressMetricOpen.current = false;
+      return;
+    }
+    if (suppressMetricOpen.current) return;
+    if (!sle?.metrics?.length) return;
+    if (drill?.metric === metricParam) return;
+    const known = sle.metrics.some((m) => m.name === metricParam);
+    if (!known) return;
+    setDrill({ metric: metricParam, result: null });
+  }, [metricParam, sle, drill?.metric]);
 
   useEffect(() => {
     if (!drill || drill.result !== null) return;
@@ -376,12 +493,105 @@ export function SiteSle({
     };
   }, [drill, siteKey]);
 
+  const copySectionLink = (metric: string | null = drill?.metric ?? null) => {
+    const url = siteSleSectionUrl(window.location.pathname, metric);
+    const desc = metric ? `section=sle · metric=${metric}` : 'section=sle';
+    void navigator.clipboard.writeText(url).then(
+      () =>
+        toast(metric ? 'SLE drill link copied' : 'SLE section link copied', {
+          description: desc,
+          tone: 'success',
+        }),
+      () => toast('Could not copy link', { description: url, tone: 'warning' }),
+    );
+  };
+
+  const exportMetricsCsv = () => {
+    if (!sle) return;
+    const n = exportTableCsv(
+      `site-sle-${siteKey}.csv`,
+      [...SLE_METRIC_CSV_HEADERS],
+      sleMetricCsvRows(sle),
+    );
+    toast(`Exported ${n} SLE metric${n === 1 ? '' : 's'}`, {
+      description: `site-sle-${siteKey}.csv — scores and impact counts only.`,
+    });
+  };
+
+  const downloadMetricsServerCsv = () => {
+    void (async () => {
+      const path = `/api/sites/${encodeURIComponent(siteKey)}/sle/export`;
+      const res = await downloadApiCsv(path, `site-sle-${siteKey}.csv`);
+      if (res.ok) {
+        toast('Server CSV downloaded', {
+          description: 'SLE metric scores — summary columns only.',
+          tone: 'success',
+        });
+      } else {
+        toast('Server CSV failed', {
+          description: res.error ?? 'Could not download export',
+          tone: 'warning',
+        });
+      }
+    })();
+  };
+
+  const exportDrillCsv = (detail: MistSleMetricDetail) => {
+    const rows = sleDrillCsvRows(detail);
+    if (rows.length === 0) return;
+    const n = exportTableCsv(
+      `site-sle-${siteKey}-${detail.metric}.csv`,
+      [...SLE_DRILL_CSV_HEADERS],
+      rows,
+    );
+    toast(`Exported ${n} drill row${n === 1 ? '' : 's'}`, {
+      description: 'Classifiers and impacted clients/APs — no secrets.',
+      tone: 'success',
+    });
+  };
+
+  const downloadDrillServerCsv = (detail: MistSleMetricDetail) => {
+    void (async () => {
+      const path = `/api/sites/${encodeURIComponent(siteKey)}/sle/${encodeURIComponent(detail.metric)}/export`;
+      const res = await downloadApiCsv(path, `site-sle-${siteKey}-${detail.metric}.csv`);
+      if (res.ok) {
+        toast('Server CSV downloaded', {
+          description: 'Classifiers and impacted clients/APs — no secrets.',
+          tone: 'success',
+        });
+      } else {
+        toast('Server CSV failed', {
+          description: res.error ?? 'Could not download export',
+          tone: 'warning',
+        });
+      }
+    })();
+  };
+
   return (
-    <div className="nt-stack nt-gap-2">
-      <SectionHeader
-        label="Wireless experience"
-        meta={sle ? `OVERALL ${pct(sle.overall)} · MIST SLE` : 'NOT REPORTED'}
-      />
+    <div className="nt-stack nt-gap-2 nt-recon-reveal">
+      <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · wireless theater · SLE owns hue · Mist ECG</div>
+      <div className="nt-row-between-8">
+        <SectionHeader
+          label="Wireless experience"
+          meta={sle ? `OVERALL ${pct(sle.overall)} · MIST SLE` : 'NOT REPORTED'}
+        />
+        <div className="nt-wrap-6">
+          <Button variant="ghost" size="sm" onClick={() => copySectionLink()}>
+            Copy section link
+          </Button>
+          {sle ? (
+            <Button variant="ghost" size="sm" onClick={exportMetricsCsv}>
+              Export CSV
+            </Button>
+          ) : null}
+          {sle ? (
+            <Button variant="ghost" size="sm" onClick={downloadMetricsServerCsv}>
+              Download server CSV
+            </Button>
+          ) : null}
+        </div>
+      </div>
       {sle === undefined ? (
         <div className="nt-service-note">The portal did not say whether this site reports SLE scores.</div>
       ) : sle === null ? (
@@ -394,7 +604,7 @@ export function SiteSle({
         <>
           {sle.metrics && sle.metrics.length > 0 ? (
             sle.metrics.map((m) => (
-              <MetricRow key={m.name} metric={m} onOpen={() => setDrill({ metric: m.name, result: null })} />
+              <MetricRow key={m.name} metric={m} onOpen={() => openMetric(m.name)} />
             ))
           ) : (
             <HeadlineRows sle={sle} />
@@ -404,7 +614,7 @@ export function SiteSle({
       <Drawer
         open={drill !== null}
         onOpenChange={(open) => {
-          if (!open) setDrill(null);
+          if (!open) closeDrill();
         }}
         width="lg"
         title={drill ? metricLabel(drill.metric) : undefined}
@@ -412,11 +622,26 @@ export function SiteSle({
       >
         {drill ? (
           drill.result === null ? (
-            <div className="nt-center-pad" style={{ padding: 48 }}>
-              <Spinner size="md" />
+            <div className="nt-center-pad nt-pad-48">
+              <div role="status" aria-label="NightDesk · loading SLE drill" className="nt-stack nt-gap-6 nt-debug-wake nt-debug-wake--compact">
+                <Skeleton height={14} width="36%" />
+                <Skeleton height={40} />
+                <Skeleton height={40} />
+              </div>
             </div>
           ) : (
-            <DrillBody result={drill.result} />
+            <div className="nt-stack nt-gap-10">
+              <div className="nt-wrap-6">
+                <Button variant="ghost" size="sm" onClick={() => copySectionLink(drill.metric)}>
+                  Copy drill link
+                </Button>
+              </div>
+              <DrillBody
+                result={drill.result}
+                onExport={exportDrillCsv}
+                onServerExport={downloadDrillServerCsv}
+              />
+            </div>
           )
         ) : (
           <></>

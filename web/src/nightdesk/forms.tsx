@@ -32,7 +32,7 @@ export function Button({
   return (
     <button
       type={type}
-      className={cx('nd-btn', `nd-btn--${variant}`, `nd-btn--${size}`, className)}
+      className={cx('nd-btn', `nd-btn--${variant}`, `nd-btn--${size}`, 'nt-btn', className)}
       {...rest}
     />
   );
@@ -50,7 +50,7 @@ export function Input({ size = 'md', mono, className, id, ...rest }: InputProps)
   return (
     <input
       id={id ?? generatedId}
-      className={cx('nd-input', `nd-input--${size}`, mono && 'nd-input--mono', className)}
+      className={cx('nd-input', `nd-input--${size}`, mono && 'nd-input--mono', 'nt-field', className)}
       {...rest}
     />
   );
@@ -63,7 +63,7 @@ export function Textarea({
   ...rest
 }: TextareaHTMLAttributes<HTMLTextAreaElement> & { mono?: boolean }) {
   const generatedId = useId();
-  return <textarea id={id ?? generatedId} className={cx('nd-textarea', mono && 'nd-textarea--mono', className)} {...rest} />;
+  return <textarea id={id ?? generatedId} className={cx('nd-textarea', mono && 'nd-textarea--mono', 'nt-field', 'nt-field--area', className)} {...rest} />;
 }
 
 /* ---------- Select ---------- */
@@ -88,10 +88,10 @@ export function Select({
 }: SelectProps) {
   const generatedId = useId();
   return (
-    <span className={cx('nd-select-wrap', className)}>
+    <span className={cx('nd-select-wrap', 'nt-select-wrap', className)}>
       <select
         id={id ?? generatedId}
-        className={`nd-select nd-select--${size}`}
+        className={`nd-select nd-select--${size} nt-field nt-select`}
         onChange={(e) => {
           onChange?.(e);
           onValueChange?.(e.target.value);
@@ -118,7 +118,7 @@ export function Checkbox({
   ...rest
 }: Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> & { label?: ReactNode }) {
   return (
-    <label className={cx('nd-checkbox', className)}>
+    <label className={cx('nd-checkbox', 'nt-check', className)}>
       <input type="checkbox" {...rest} />
       {label != null ? <span>{label}</span> : null}
     </label>
@@ -155,7 +155,7 @@ export function Switch({
     onCheckedChange?.(next);
   };
   return (
-    <label className={cx('nd-switch', disabled && 'nd-switch--disabled')}>
+    <label className={cx('nd-switch', 'nt-switch', disabled && 'nd-switch--disabled')}>
       <button
         type="button"
         role="switch"
@@ -163,15 +163,15 @@ export function Switch({
         aria-label={ariaLabel}
         disabled={disabled}
         className={cx(
-          'nd-switch__track',
-          size === 'sm' && 'nd-switch__track--sm',
-          isOn && 'nd-switch__track--on',
+          'nd-switch__track', 'nt-switch__track',
+          size === 'sm' && 'nd-switch__track--sm', 'nt-switch__track--sm',
+          isOn && 'nd-switch__track--on', 'nt-switch__track--on',
         )}
         onClick={toggle}
       >
-        <span className="nd-switch__knob" />
+        <span className="nd-switch__knob nt-switch__knob" />
       </button>
-      {label != null ? <span className="nd-switch__label">{label}</span> : null}
+      {label != null ? <span className="nd-switch__label nt-switch__label">{label}</span> : null}
     </label>
   );
 }
@@ -196,12 +196,12 @@ export function FormField({
   const labelFor = htmlFor ?? (isValidElement<{ id?: string }>(child) ? child.props.id : undefined);
 
   return (
-    <div className="nd-field">
-      <label className="nd-micro-label" htmlFor={labelFor}>
+    <div className="nd-field nt-field-block">
+      <label className="nd-micro-label nt-micro-label" htmlFor={labelFor}>
         {label}
       </label>
       {child}
-      {help ? <div className="nd-field__help">{help}</div> : null}
+      {help ? <div className="nd-field__help nt-field-block__help">{help}</div> : null}
     </div>
   );
 }
@@ -220,14 +220,16 @@ export function SegmentedControl({
   ariaLabel?: string;
 }) {
   return (
-    <div className="nd-seg" role="tablist" aria-label={ariaLabel}>
+    <div className="nd-seg nt-segmented" role="tablist" aria-label={ariaLabel}>
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           role="tab"
           aria-selected={o.value === value}
-          className={cx('nd-seg__btn', o.value === value && 'nd-seg__btn--active')}
+          aria-pressed={o.value === value}
+          data-active={o.value === value ? 'true' : 'false'}
+          className={cx('nd-seg__btn', 'nt-segmented__btn', o.value === value && 'nd-seg__btn--active', o.value === value && 'nt-segmented__btn--active')}
           onClick={() => onValueChange(o.value)}
         >
           {o.label}

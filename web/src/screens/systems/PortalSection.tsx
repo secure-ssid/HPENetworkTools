@@ -11,6 +11,7 @@ import {
 } from '../../app/SettingsContext';
 import {
   Badge,
+  Button,
   FormField,
   Input,
   SectionHeader,
@@ -34,6 +35,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { buildSystemsSectionUrl, systemsSectionDomId } from './share';
 
 /**
  * The portal's own controls: demo mode and poll cadence live in the server
@@ -214,9 +216,27 @@ export function PortalSection() {
     }
   };
 
+  const copySectionLink = () => {
+    const url = buildSystemsSectionUrl('portal');
+    void navigator.clipboard.writeText(url).then(
+      () =>
+        toast('Portal section link copied', {
+          description: 'section=portal',
+          tone: 'success',
+        }),
+      () => toast('Could not copy link', { description: url, tone: 'warning' }),
+    );
+  };
+
   return (
-    <div className="nt-stack nt-gap-14">
-      <SectionHeader label="Portal" meta="THIS APP · POLLER" />
+    <div id={systemsSectionDomId('portal')} className="nt-systems-section nt-section-panel nt-stack nt-gap-14">
+      <div className="nt-filter-bar nt-gap-8">
+        <SectionHeader label="Portal" meta="THIS APP · POLLER" />
+        <Button variant="ghost" size="sm" className="nt-ml-auto" onClick={copySectionLink}>
+          Copy section link
+        </Button>
+      </div>
+      <div className="nt-plane-theater" role="note">NightDesk · portal · workspace · preferences</div>
       <div className="nt-filter-bar nt-gap-8">
         {portal ? (
           <>
@@ -235,7 +255,7 @@ export function PortalSection() {
       </div>
 
       <div
-        style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
+        className="nt-grid-2-14"
       >
         <FormField label="Workspace name" help="Shown in the sidebar, footer and breadcrumbs.">
           <Input
@@ -268,7 +288,7 @@ export function PortalSection() {
         </FormField>
       </div>
 
-      <div className="nt-row" style={{ gap: 22, flexWrap: 'wrap' }}>
+      <div className="nt-row nt-wrap-22">
         <Switch
           checked={portal?.demoMode ?? true}
           onCheckedChange={(v) => void toggleDemo(v)}
@@ -301,7 +321,7 @@ export function PortalSection() {
 
       <SectionHeader label="Screen sources" meta="OVERRIDE THE PORTAL DEFAULT PER SCREEN" />
       <div
-        style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14 }}
+        className="nt-grid-3-14"
       >
         {SCREEN_SECTIONS.map((s) => (
           <FormField key={s} label={SECTION_LABEL[s]}>

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { InventoryTreeNode, InventoryTreePage } from '@hpe/shared';
-import { Badge, Spinner } from '../nightdesk';
+import { Badge, Skeleton } from '../nightdesk';
 import { getInventoryTree } from '../api/client';
 
 interface BranchPage {
@@ -17,15 +17,29 @@ export function InventoryTree({
   compact = false,
   selectedId = null,
   onSelect,
+  expandedIds,
+  onExpandedChange,
 }: {
   compact?: boolean;
   selectedId?: string | null;
   onSelect?: (node: InventoryTreeNode) => void;
+  /** Optional shareable expand set (e.g. from `?exp=`). When provided, seeds
+   *  open branches on first paint; subsequent toggles still call
+   *  onExpandedChange so the parent can keep the URL in sync. */
+  expandedIds?: string[];
+  onExpandedChange?: (ids: string[]) => void;
 }) {
   const navigate = useNavigate();
   const branchKey = (parentId: string | null) => parentId ?? '__root__';
   const [branches, setBranches] = useState<Record<string, BranchPage>>({});
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const seededExpand = useRef(false);
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    if (expandedIds && expandedIds.length > 0) {
+      seededExpand.current = true;
+      return new Set(expandedIds);
+    }
+    return new Set();
+  });
   // The root read starts out marked: the mount effect below owns it, and a
   // synchronous setState from an effect body is a cascading render. Seeding
   // the mark here means the first committed frame already shows the spinner
@@ -34,10 +48,17 @@ export function InventoryTree({
   const [error, setError] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const refs = useRef(new Map<string, HTMLDivElement>());
+  const onExpandedChangeRef = useRef(onExpandedChange);
+  onExpandedChangeRef.current = onExpandedChange;
+
+  const publishExpanded = (next: Set<string>) => {
+    onExpandedChangeRef.current?.([...next]);
+  };
 
   /** Folds a fetched page into branch state. The root page also expands and
-   *  focuses its first node; that node's own read is kicked off by the
-   *  fetchBranch continuation that revealed it. */
+   *  focuses its first node when the operator has not already shared an
+   *  expand set; that node's own read is kicked off by the fetchBranch
+   *  continuation that revealed it. */
   const applyPage = (parentId: string | null, page: InventoryTreePage, append: boolean) => {
     const key = branchKey(parentId);
     setBranches((current) => ({
@@ -52,8 +73,16 @@ export function InventoryTree({
       },
     }));
     if (parentId === null && page.nodes[0]) {
-      setExpanded((current) => new Set(current).add(page.nodes[0]!.id));
       setFocusId((current) => current ?? page.nodes[0]!.id);
+      if (!seededExpand.current) {
+        seededExpand.current = true;
+        setExpanded((current) => {
+          if (current.size > 0) return current;
+          const next = new Set(current).add(page.nodes[0]!.id);
+          publishExpanded(next);
+          return next;
+        });
+      }
     }
   };
 
@@ -72,13 +101,26 @@ export function InventoryTree({
     })
       .then((page) => {
         if (signal?.aborted) return;
+        // Capture whether a shared expand set already owns the open branches
+        // before applyPage may seed the default first-root expand.
+        const hadSeededExpand = seededExpand.current;
         applyPage(parentId, page, append);
-        // The tree opens grown one level: the first root node's branch read
-        // starts here, in the continuation that revealed the node.
-        const first = parentId === null ? page.nodes[0] : undefined;
-        if (first && !branches[first.id]) {
-          setLoading((current) => new Set(current).add(first.id));
-          void fetchBranch(first.id, false);
+        // Prefetch children for the default first-root expand and for any
+        // shared expand ids that land on this page.
+        const prefetchIds = new Set<string>();
+        if (parentId === null && page.nodes[0] && !hadSeededExpand) {
+          prefetchIds.add(page.nodes[0].id);
+        }
+        for (const node of page.nodes) {
+          if (node.hasChildren && (expanded.has(node.id) || expandedIds?.includes(node.id))) {
+            prefetchIds.add(node.id);
+          }
+        }
+        for (const id of prefetchIds) {
+          if (!branches[id]) {
+            setLoading((current) => new Set(current).add(id));
+            void fetchBranch(id, false);
+          }
         }
       })
       .catch((cause) => {
@@ -135,6 +177,7 @@ export function InventoryTree({
       const next = new Set(current);
       if (opening) next.add(node.id);
       else next.delete(node.id);
+      publishExpanded(next);
       return next;
     });
     if (opening && !branches[node.id]) await load(node.id);
@@ -190,14 +233,21 @@ export function InventoryTree({
 
   if (!branches.__root__ && loading.has('__root__')) {
     return (
-      <div role="status" aria-label="Loading inventory">
-        <Spinner />
+      <div role="status" aria-label="Loading inventory" className="nt-debug-wake">
+        <span className="nt-chat-pending__pulse" aria-hidden />
+        <div className="nt-stack nt-gap-6 nt-flex-1">
+          <Skeleton height={12} width="44%" />
+          <Skeleton height={22} width="78%" />
+          <Skeleton height={22} width="62%" />
+          <Skeleton height={22} width="70%" />
+        </div>
+        <span className="nt-hint-muted nt-chat-pending__label">NightDesk · inventory tree…</span>
       </div>
     );
   }
 
   return (
-    <div className={`nt-inventory-tree${compact ? ' nt-inventory-tree--compact' : ''}`}>
+    <div className={`nt-inventory-tree nt-inventory-tree-shell${compact ? ' nt-inventory-tree--compact' : ''}`}>
       {error ? <div className="nt-inventory-tree__error">{error}</div> : null}
       <div role="tree" aria-label="Inventory hierarchy">
         {visible.map(({ node, level }, index) => {
@@ -216,8 +266,9 @@ export function InventoryTree({
                 aria-selected={selectedId === node.id}
                 aria-expanded={node.hasChildren ? expanded.has(node.id) : undefined}
                 tabIndex={focusId === node.id || (!focusId && index === 0) ? 0 : -1}
-                className={`nt-inventory-tree__row${selectedId === node.id ? ' nt-inventory-tree__row--selected' : ''}`}
-                style={{ paddingLeft: 6 + (level - 1) * 14 }}
+                className={`nt-inventory-tree__row nt-inventory-tree__node nt-card-lift${selectedId === node.id ? ' nt-inventory-tree__row--selected' : ''}`}
+                data-active={selectedId === node.id ? 'true' : undefined}
+                style={{ ['--nd-tree-level' as string]: level } as CSSProperties}
                 onFocus={() => setFocusId(node.id)}
                 onKeyDown={(event) => onKeyDown(event, node)}
               >
@@ -243,7 +294,7 @@ export function InventoryTree({
                 {node.status !== 'current' ? <Badge tone={node.tone}>{node.status}</Badge> : null}
               </div>
               {expanded.has(node.id) && loading.has(node.id) ? (
-                <div className="nt-inventory-tree__loading" style={{ paddingLeft: 34 + level * 14 }}>
+                <div className="nt-inventory-tree__loading" style={{ ['--nd-tree-level' as string]: level } as CSSProperties}>
                   loading…
                 </div>
               ) : null}
@@ -251,7 +302,7 @@ export function InventoryTree({
                 <button
                   type="button"
                   className="nt-inventory-tree__more"
-                  style={{ paddingLeft: 34 + level * 14 }}
+                  style={{ ['--nd-tree-level' as string]: level } as CSSProperties}
                   onClick={() => void load(node.id, true)}
                 >
                   Load more
@@ -260,7 +311,7 @@ export function InventoryTree({
               {expanded.has(node.id) && branch?.moved ? (
                 // Without this the button simply disappears, which reads as
                 // "that was all of them" over a branch that got shorter.
-                <div className="nt-inventory-tree__loading" style={{ paddingLeft: 34 + level * 14 }}>
+                <div className="nt-inventory-tree__loading" style={{ ['--nd-tree-level' as string]: level } as CSSProperties}>
                   list changed while loading — collapse and reopen for the current children
                 </div>
               ) : null}

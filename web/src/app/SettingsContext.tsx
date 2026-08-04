@@ -199,6 +199,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [savedViews, setSavedViewsState] = useState<SavedViewsMap>(loadInitialSavedViews);
   const [settingsError, setSettingsError] = useState<string | null>(null);
 
+  /* Shell-wide density tokens (html[data-nd-density]) — tables also take the
+   * density prop; this attribute drives page chrome / compact CSS. */
+  useEffect(() => {
+    try {
+      document.documentElement.setAttribute('data-nd-density', settings.density);
+    } catch {
+      /* ignore */
+    }
+  }, [settings.density]);
+
   useEffect(() => {
     let active = true;
     void getSettings()

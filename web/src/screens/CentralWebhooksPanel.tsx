@@ -31,27 +31,41 @@
  *
  * Create/rotate use the same reviewed one-time secure handoff in normal live
  * operation and are not gated by demo or config modes.
+ *
+ * List multi-select (Loop 190) raises **Export selected**, **Copy names**
+ * (unique newline-joined webhook names), **Copy selection link**
+ * (`/systems?plane=central&tab=config&webhookIds=`; clearable chip), and
+ * **Clear**. Header `KeyboardShortcuts` surfaces the webhooks multi-select
+ * grid map (Loop 201). Search empties offer **Clear search**. Selection never
+ * includes secrets or one-time HMAC material.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Badge,
   Button,
   Checkbox,
+  DataTable,
+  DATATABLE_ROW_SHORTCUTS,
   Drawer,
   EmptyState,
   FormField,
   Input,
+  KeyboardShortcuts,
   Pagination,
   SectionHeader,
   Select,
-  Spinner,
-  Table,
+  Skeleton,
   useToast,
+  type DataTableColumn,
 } from '../nightdesk';
+import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { DiffCode } from '../lib/DiffCode';
 import { useLabConfigMode } from '../hooks/useLabConfigMode';
+import { namesFilterForParam } from '../app/nav';
 import {
   acknowledgeCentralWebhookHandoff,
   apiFetch,
@@ -75,6 +89,7 @@ import {
   buildWebhookReviewDiff,
   canonicalizeWebhookCreateForm,
   canonicalWebhookCreateCandidate,
+  countOf,
   isCreateFormComplete,
   matchesCanonicalWebhookCreateCandidate,
   validateWebhookForm,
@@ -92,9 +107,131 @@ import {
   type WebhookReceiverSource,
   type WebhookReceiverStatusEnvelope,
   type WebhookSummary,
+  type WebhookReceiverSourceStatus,
 } from '@hpe/shared';
 
 type DrawerMode = 'create' | 'edit' | 'delete' | 'rotate' | null;
+
+function webhookListColumns(opts: {
+  canWrite: boolean;
+  anyPendingHandoff: unknown;
+  openEdit: (row: WebhookSummary) => void;
+  openRotate: (row: WebhookSummary) => void;
+  openDelete: (row: WebhookSummary) => void;
+}): Array<DataTableColumn<WebhookSummary>> {
+  const { canWrite, anyPendingHandoff, openEdit, openRotate, openDelete } = opts;
+  return [
+    { key: 'name', title: 'Name', hideable: false, sortValue: (r) => r.name, render: (r) => r.name },
+    {
+      key: 'endpoint',
+      title: 'Endpoint',
+      sortValue: (r) => r.endpoint,
+      render: (r) => <span className="nt-mono-11">{r.endpoint}</span>,
+    },
+    {
+      key: 'auth',
+      title: 'Auth',
+      sortValue: (r) => r.authMechanism,
+      render: (r) => (
+        <Badge tone={r.authMechanism === 'OIDC' ? 'accent' : 'neutral'}>{r.authMechanism}</Badge>
+      ),
+    },
+    {
+      key: 'updated',
+      title: 'Updated',
+      sortValue: (r) => r.updatedAt,
+      render: (r) => fmtTime(r.updatedAt),
+    },
+    {
+      key: 'actions',
+      title: 'Actions',
+      render: (r) => (
+        <div className="nt-row nt-gap-6">
+          <Button variant="secondary" size="sm" disabled={!canWrite} onClick={() => void openEdit(r)}>
+            Edit
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            title="Rotate the one-time HMAC key"
+            disabled={!canWrite || anyPendingHandoff !== null}
+            onClick={() => openRotate(r)}
+          >
+            Rotate HMAC
+          </Button>
+          <Button variant="danger" size="sm" disabled={!canWrite} onClick={() => openDelete(r)}>
+            Delete
+          </Button>
+        </div>
+      ),
+    },
+  ];
+}
+
+const receiverColumns: Array<DataTableColumn<WebhookReceiverSourceStatus>> = [
+  { key: 'source', title: 'Source', hideable: false, render: (r) => r.label },
+  {
+    key: 'url',
+    title: 'Register this URL',
+    render: (r) => (
+      <span className="nt-mono-11">{`${window.location.origin}${r.path}`}</span>
+    ),
+  },
+  {
+    key: 'secret',
+    title: 'Signing secret',
+    render: (r) => (
+      <Badge
+        tone={r.secret === 'operator' ? 'success' : r.secret === 'demo' ? 'warning' : 'danger'}
+      >
+        {r.secret === 'operator' ? 'configured' : r.secret === 'demo' ? 'demo secret' : 'not configured'}
+      </Badge>
+    ),
+  },
+  {
+    key: 'last',
+    title: 'Last received',
+    render: (r) => (r.lastReceivedAt ? fmtTime(r.lastReceivedAt) : 'Nothing received yet'),
+  },
+  {
+    key: 'events',
+    title: 'Events',
+    numeric: true,
+    render: (r) => r.receivedCount,
+  },
+];
+
+const receivedEventColumns: Array<DataTableColumn<WebhookReceivedEvent>> = [
+  {
+    key: 'received',
+    title: 'Received',
+    sortValue: (e) => e.receivedAt,
+    render: (e) => fmtTime(e.receivedAt),
+  },
+  {
+    key: 'source',
+    title: 'Source',
+    render: (e) => (
+      <span className="nt-inline-gap-4">
+        <Badge tone="neutral">{e.source === 'mist' ? 'Mist' : 'New Central'}</Badge>
+        {e.demo ? <Badge tone="warning">demo</Badge> : null}
+      </span>
+    ),
+  },
+  {
+    key: 'severity',
+    title: 'Severity',
+    sortValue: (e) => e.sev,
+    render: (e) => <Badge tone={RECEIVER_SEV_TONE[e.sev]}>{e.sev}</Badge>,
+  },
+  { key: 'event', title: 'Event', sortValue: (e) => e.title, render: (e) => e.title },
+  {
+    key: 'device',
+    title: 'Device',
+    sortValue: (e) => e.device ?? '',
+    render: (e) => e.device || '—',
+  },
+];
 
 const PAGE_SIZE = 10;
 
@@ -231,12 +368,31 @@ const RECEIVER_SEV_TONE: Record<Sev, 'danger' | 'warning' | 'info'> = {
   P3: 'info',
 };
 
+function PanelSkeleton({ label }: { label: string }) {
+  return (
+    <div role="status" aria-label={label} className="nt-stack nt-gap-8 nt-panel-skel">
+      <div className="nt-plane-theater" aria-hidden>
+        NightDesk · {label}
+      </div>
+      <Skeleton height={14} width="36%" />
+      <Skeleton height={32} />
+      <Skeleton height={32} />
+      <Skeleton height={32} />
+    </div>
+  );
+}
+
 export function CentralWebhooksPanel() {
   const { toast } = useToast();
   const { lab } = useLabConfigMode();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [listing, setListing] = useState<WebhookListEnvelope | null>(null);
+  /* List multi-select (Loop 190). */
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  /* Deep link: /systems?plane=central&tab=config&webhookIds=a\nb */
+  const webhookIdsFilter = namesFilterForParam(searchParams.get('webhookIds'));
   const canWrite = listing?.canWrite === true;
   // The mount effect reads the list immediately, so the panel mounts into the
   // spinner rather than flashing a "No webhooks" empty state for one frame.
@@ -1133,7 +1289,15 @@ export function CentralWebhooksPanel() {
     openRotate(result);
   };
 
-  const rows = listing?.items ?? [];
+  const listedRows = listing?.items ?? [];
+  const rows =
+    webhookIdsFilter === null
+      ? listedRows
+      : listedRows.filter((r) => webhookIdsFilter.includes(r.id));
+  const webhookIdsPresent =
+    webhookIdsFilter === null
+      ? 0
+      : webhookIdsFilter.filter((id) => listedRows.some((r) => r.id === id)).length;
   const anyPendingHandoff =
     pendingReconciliations.create ?? pendingReconciliations.rotations[0] ?? null;
   const pendingCreate = drawerMode === 'create' ? pendingReconciliations.create : null;
@@ -1144,29 +1308,128 @@ export function CentralWebhooksPanel() {
   const readError = listing?.error;
   const honestEmpty =
     !!listing &&
-    rows.length === 0 &&
+    listedRows.length === 0 &&
     listing.totalCount === 0 &&
     typeof listing.note === 'string' &&
     listing.note.length > 0;
   const emptyProvenanceError =
-    listing && rows.length === 0 && !q.trim() && !honestEmpty
+    listing && listedRows.length === 0 && !q.trim() && !honestEmpty && webhookIdsFilter === null
       ? 'The portal returned an empty webhook list without recognized empty-list provenance.'
       : undefined;
   const displayedReadError = readError ?? emptyProvenanceError;
 
+  const copyViewLink = () => {
+    /* Opens Systems → Central plane → Configuration (webhooks live there).
+       Never embeds secrets or one-time HMAC material — inventory only.
+       Preserves bulk webhookIds= deep links from Copy selection link. */
+    const next = new URLSearchParams();
+    next.set('plane', 'central');
+    next.set('tab', 'config');
+    if (webhookIdsFilter && webhookIdsFilter.length > 0) {
+      next.set('webhookIds', webhookIdsFilter.join('\n'));
+    }
+    const url = `${window.location.origin}/systems?${next.toString()}`;
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('View link copied', {
+          description: webhookIdsFilter
+            ? 'plane=central · tab=config · webhookIds='
+            : 'plane=central · tab=config',
+          tone: 'success',
+        });
+      } catch {
+        toast('Could not copy link', { description: url, tone: 'warning' });
+      }
+    })();
+  };
+
+  const exportWebhooksCsv = () => {
+    if (listedRows.length === 0) return;
+    const n = exportTableCsv(
+      'central-webhooks.csv',
+      ['id', 'name', 'endpoint', 'authMechanism', 'generation', 'createdAt', 'updatedAt'],
+      listedRows.map((r) => [
+        r.id,
+        r.name,
+        r.endpoint,
+        r.authMechanism,
+        r.generation,
+        r.createdAt,
+        r.updatedAt ?? '',
+      ]),
+    );
+    toast(`Exported ${n} webhook${n === 1 ? '' : 's'}`, {
+      description: 'central-webhooks.csv — summary fields only (no secrets).',
+    });
+  };
+
+  const downloadWebhooksServerCsv = () => {
+    void (async () => {
+      const qs = new URLSearchParams();
+      if (q.trim()) qs.set('q', q.trim());
+      const suffix = qs.toString() ? `?${qs.toString()}` : '';
+      const res = await downloadApiCsv(
+        `/api/central/webhooks/export${suffix}`,
+        'central-webhooks.csv',
+      );
+      if (!res.ok) {
+        toast('Server export failed', { description: res.error, tone: 'danger' });
+        return;
+      }
+      toast('Downloaded server CSV', {
+        description: 'central-webhooks.csv — summary fields only (no secrets/HMAC).',
+        tone: 'success',
+      });
+    })();
+  };
+
+  const downloadEventsServerCsv = () => {
+    void (async () => {
+      const res = await downloadApiCsv(
+        `/api/hooks/events/export?limit=${RECEIVER_EVENTS_PAGE}`,
+        'webhook-events.csv',
+      );
+      if (!res.ok) {
+        toast('Server export failed', { description: res.error, tone: 'danger' });
+        return;
+      }
+      toast('Downloaded server CSV', {
+        description: 'webhook-events.csv — summary fields only (no payloads/secrets).',
+        tone: 'success',
+      });
+    })();
+  };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+    <div className="nt-stack-14 nt-recon-reveal nt-webhooks-panel nt-webhooks-shell nt-section-panel">
+      <div className="nt-plane-theater" role="note">NightDesk · webhook theater · management · one-time HMAC ritual</div>
+      <div className="nt-row-between-12">
         <SectionHeader label="Webhooks" meta="API GATEWAY \u00b7 NETWORK-SERVICES/V1" />
-        <Button
-          variant="primary"
-          size="sm"
-          title={!canWrite ? 'The Central connector has no write grant' : lab ? 'Create webhook' : 'Create a reviewed webhook'}
-          disabled={!canWrite || anyPendingHandoff !== null}
-          onClick={openCreate}
-        >
-          New webhook
-        </Button>
+        <div className="nt-wrap-6">
+          <Button variant="ghost" size="sm" onClick={copyViewLink}>
+            Copy view link
+          </Button>
+          {listedRows.length > 0 ? (
+            <Button variant="ghost" size="sm" onClick={exportWebhooksCsv}>
+              Export CSV
+            </Button>
+          ) : null}
+          <Button variant="secondary" size="sm" onClick={downloadWebhooksServerCsv}>
+            Download server CSV
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            title={!canWrite ? 'The Central connector has no write grant' : lab ? 'Create webhook' : 'Create a reviewed webhook'}
+            disabled={!canWrite || anyPendingHandoff !== null}
+            onClick={openCreate}
+          >
+            New webhook
+          </Button>
+          {/* Webhooks multi-select is a keyboard grid (j/k/x/Esc) — surface the map (Loop 201). */}
+          <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
+        </div>
       </div>
 
       <Alert tone="warning" title="One-time HMAC secure handoff">
@@ -1192,7 +1455,7 @@ export function CentralWebhooksPanel() {
           tone="danger"
           title={`Pending webhook handoff · ${anyPendingHandoff.operationId}`}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div className="nt-stack-8">
             <span>
               State: {anyPendingHandoff.state}. The one-time key is unrecoverable after navigation or response
               loss. Automatic retry is disabled.
@@ -1241,60 +1504,212 @@ export function CentralWebhooksPanel() {
       />
 
       {loading ? (
-        <Spinner />
+        <PanelSkeleton label="Loading webhooks" />
       ) : displayedReadError ? (
         <EmptyState title="Webhooks unavailable" description={displayedReadError} />
-      ) : rows.length === 0 ? (
+      ) : listedRows.length === 0 ? (
         <EmptyState
           title="No webhooks"
           description={q ? 'No webhooks match the search.' : listing?.note ?? 'Central reports no configured webhooks for this tenant.'}
-        />
+        >
+          {q ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setQ('');
+                setPage(1);
+                void load('', 1);
+              }}
+            >
+              Clear search
+            </Button>
+          ) : null}
+        </EmptyState>
+      ) : rows.length === 0 ? (
+        <EmptyState
+          title="No webhooks match this selection"
+          description="Clear the webhookIds deep link, or widen the search."
+        >
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete('webhookIds');
+              setSearchParams(next, { replace: true });
+            }}
+          >
+            Clear selection filter
+          </Button>
+        </EmptyState>
       ) : (
         <>
-          <Table density="compact">
-            <Table.Head>
-              <Table.Row>
-                <Table.HeaderCell>Name</Table.HeaderCell>
-                <Table.HeaderCell>Endpoint</Table.HeaderCell>
-                <Table.HeaderCell>Auth</Table.HeaderCell>
-                <Table.HeaderCell>Updated</Table.HeaderCell>
-                <Table.HeaderCell>Actions</Table.HeaderCell>
-              </Table.Row>
-            </Table.Head>
-            <Table.Body>
-              {rows.map((row) => (
-                <Table.Row key={row.id}>
-                  <Table.Cell>{row.name}</Table.Cell>
-                  <Table.Cell>
-                    <span className="nt-mono-11">{row.endpoint}</span>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <Badge tone={row.authMechanism === 'OIDC' ? 'accent' : 'neutral'}>{row.authMechanism}</Badge>
-                  </Table.Cell>
-                  <Table.Cell>{fmtTime(row.updatedAt)}</Table.Cell>
-                  <Table.Cell>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <Button variant="secondary" size="sm" disabled={!canWrite} onClick={() => void openEdit(row)}>
-                        Edit
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        title="Rotate the one-time HMAC key"
-                        disabled={!canWrite || anyPendingHandoff !== null}
-                        onClick={() => openRotate(row)}
-                      >
-                        Rotate HMAC
-                      </Button>
-                      <Button variant="danger" size="sm" disabled={!canWrite} onClick={() => openDelete(row)}>
-                        Delete
-                      </Button>
-                    </div>
-                  </Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table>
+          {webhookIdsFilter !== null ? (
+            <div className="nt-chip-row" role="group" aria-label="Webhook selection deep link">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.delete('webhookIds');
+                  setSearchParams(next, { replace: true });
+                }}
+                title={webhookIdsFilter.join(', ')}
+                className="nt-chip nt-chip--active"
+              >
+                {webhookIdsPresent === webhookIdsFilter.length
+                  ? `${webhookIdsFilter.length} selected webhook${webhookIdsFilter.length === 1 ? '' : 's'}`
+                  : `${webhookIdsPresent} of ${webhookIdsFilter.length} selected webhooks present`}
+                {' — clear'}
+              </button>
+            </div>
+          ) : null}
+          <DataTable
+            ariaLabel="Central webhooks"
+            density="compact"
+            columns={webhookListColumns({
+              canWrite,
+              anyPendingHandoff,
+              openEdit,
+              openRotate,
+              openDelete,
+            })}
+            rows={rows}
+            rowKey={(row) => row.id}
+            selectedKeys={selectedKeys}
+            onSelectionChange={setSelectedKeys}
+          />
+          {selectedKeys.length > 0 ? (
+            <div
+              className="nt-configure-bulk-bar nt-bulk-glass"
+              role="region"
+              aria-label="Webhook selection actions"
+            >
+              <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
+              <span className="nt-configure-bulk-bar__hint">
+                export, copy names, or share a selection link for only the webhooks you marked —
+                summary fields only, never secrets
+              </span>
+              <span className="nt-configure-bulk-bar__actions">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const selected = new Set(selectedKeys);
+                    const picked = rows.filter((r) => selected.has(r.id));
+                    if (picked.length === 0) {
+                      toast('No selected webhooks still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const n = exportTableCsv(
+                      'central-webhooks-selected.csv',
+                      ['id', 'name', 'endpoint', 'authMechanism', 'generation', 'createdAt', 'updatedAt'],
+                      picked.map((r) => [
+                        r.id,
+                        r.name,
+                        r.endpoint,
+                        r.authMechanism,
+                        r.generation,
+                        r.createdAt,
+                        r.updatedAt ?? '',
+                      ]),
+                    );
+                    toast(`Exported ${countOf(n, 'selected webhook')}`, {
+                      description: 'central-webhooks-selected.csv — summary fields only (no secrets).',
+                      tone: 'success',
+                    });
+                  }}
+                >
+                  Export selected
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((r) => selected.has(r.id));
+                      if (picked.length === 0) {
+                        toast('No selected webhooks still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((r) => (r.name ?? '').trim())
+                            .filter((name) => name && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected webhooks', {
+                          description: 'Those rows did not publish a name — export CSV for ids instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = names.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(`Copied ${countOf(names.length, 'name')}`, {
+                          description:
+                            names.length < picked.length
+                              ? `${picked.length - names.length} selected without a name skipped`
+                              : 'newline-joined · paste into a ticket or change window',
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy names', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy names
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((r) => selected.has(r.id));
+                      if (picked.length === 0) {
+                        toast('No selected webhooks still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const next = new URLSearchParams();
+                      next.set('plane', 'central');
+                      next.set('tab', 'config');
+                      next.set('webhookIds', picked.map((r) => r.id).join('\n'));
+                      const url = `${window.location.origin}/systems?${next.toString()}`;
+                      try {
+                        await navigator.clipboard.writeText(url);
+                        toast('Selection link copied', {
+                          description: `${picked.length} webhook${picked.length === 1 ? '' : 's'} · webhookIds=`,
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy link', { description: url, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy selection link
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
+                  Clear
+                </Button>
+              </span>
+            </div>
+          ) : null}
           {totalPages > 1 ? <Pagination page={page} total={totalPages} onChange={setPage} /> : null}
         </>
       )}
@@ -1303,55 +1718,18 @@ export function CentralWebhooksPanel() {
       {receiverError ? (
         <EmptyState title="Receiver status unavailable" description={receiverError} />
       ) : receivers === null ? (
-        <Spinner />
+        <PanelSkeleton label="Loading" />
       ) : (
         <>
-          <Table density="compact">
-            <Table.Head>
-              <Table.Row>
-                <Table.HeaderCell>Source</Table.HeaderCell>
-                <Table.HeaderCell>Register this URL</Table.HeaderCell>
-                <Table.HeaderCell>Signing secret</Table.HeaderCell>
-                <Table.HeaderCell>Last received</Table.HeaderCell>
-                <Table.HeaderCell>Events</Table.HeaderCell>
-              </Table.Row>
-            </Table.Head>
-            <Table.Body>
-              {receivers.receivers.map((receiver) => (
-                <Table.Row key={receiver.source}>
-                  <Table.Cell>{receiver.label}</Table.Cell>
-                  <Table.Cell>
-                    <span className="nt-mono-11">
-                      {`${window.location.origin}${receiver.path}`}
-                    </span>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <Badge
-                      tone={
-                        receiver.secret === 'operator'
-                          ? 'success'
-                          : receiver.secret === 'demo'
-                            ? 'warning'
-                            : 'danger'
-                      }
-                    >
-                      {receiver.secret === 'operator'
-                        ? 'configured'
-                        : receiver.secret === 'demo'
-                          ? 'demo secret'
-                          : 'not configured'}
-                    </Badge>
-                  </Table.Cell>
-                  <Table.Cell>
-                    {receiver.lastReceivedAt ? fmtTime(receiver.lastReceivedAt) : 'Nothing received yet'}
-                  </Table.Cell>
-                  <Table.Cell>{receiver.receivedCount}</Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table>
+          <DataTable
+            ariaLabel="Webhook receivers"
+            density="compact"
+            columns={receiverColumns}
+            rows={receivers.receivers}
+            rowKey={(r) => r.source}
+          />
           {receivers.demoMode ? (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="nt-row-center nt-gap-8 nt-flex-wrap">
               <Button
                 variant="secondary"
                 size="sm"
@@ -1370,7 +1748,7 @@ export function CentralWebhooksPanel() {
               >
                 {simulating === 'central' ? 'Simulating…' : 'Simulate Central event'}
               </Button>
-              <span style={{ fontSize: 11.5, color: 'var(--nd-text-muted)' }}>
+              <span className="nt-fs-115-muted">
                 Signed with the demo secret, then verified, normalized and queued exactly like a real delivery.
               </span>
             </div>
@@ -1378,12 +1756,18 @@ export function CentralWebhooksPanel() {
         </>
       )}
 
-      <SectionHeader
-        label="Received events"
-        meta={receiverEvents !== null && receiverEvents.length > 0 ? String(receiverEvents.length) : undefined}
-      />
+      <div className="nt-row-between-12">
+        <SectionHeader
+          label="Received events"
+          meta={receiverEvents !== null && receiverEvents.length > 0 ? String(receiverEvents.length) : undefined}
+        />
+        <Button variant="secondary" size="sm" onClick={downloadEventsServerCsv}>
+          Download server CSV
+        </Button>
+      </div>
+      <div className="nt-plane-theater" role="note">NightDesk · webhook theater · ingress · severity owns hue</div>
       {receiverEvents === null ? (
-        <Spinner />
+        <PanelSkeleton label="Loading" />
       ) : receiverEvents.length === 0 ? (
         <EmptyState
           title="No events received yet"
@@ -1393,35 +1777,14 @@ export function CentralWebhooksPanel() {
           }
         />
       ) : (
-        <Table density="compact">
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Received</Table.HeaderCell>
-              <Table.HeaderCell>Source</Table.HeaderCell>
-              <Table.HeaderCell>Severity</Table.HeaderCell>
-              <Table.HeaderCell>Event</Table.HeaderCell>
-              <Table.HeaderCell>Device</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {receiverEvents.map((event) => (
-              <Table.Row key={event.id}>
-                <Table.Cell>{fmtTime(event.receivedAt)}</Table.Cell>
-                <Table.Cell>
-                  <span style={{ display: 'inline-flex', gap: 4 }}>
-                    <Badge tone="neutral">{event.source === 'mist' ? 'Mist' : 'New Central'}</Badge>
-                    {event.demo ? <Badge tone="warning">demo</Badge> : null}
-                  </span>
-                </Table.Cell>
-                <Table.Cell>
-                  <Badge tone={RECEIVER_SEV_TONE[event.sev]}>{event.sev}</Badge>
-                </Table.Cell>
-                <Table.Cell>{event.title}</Table.Cell>
-                <Table.Cell>{event.device || '—'}</Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table>
+        <DataTable
+          ariaLabel="Received webhook events"
+          density="compact"
+          columns={receivedEventColumns}
+          rows={receiverEvents}
+          rowKey={(e) => e.id}
+          rowTone={(e) => RECEIVER_SEV_TONE[e.sev]}
+        />
       )}
 
       <Drawer
@@ -1432,6 +1795,7 @@ export function CentralWebhooksPanel() {
             closeDrawer();
           }
         }}
+        className="nd-drawer--write-ritual nt-write-ritual"
         title={
           drawerMode === 'create'
             ? 'Create webhook'
@@ -1442,11 +1806,12 @@ export function CentralWebhooksPanel() {
                 : `Delete ${drawerRow?.name ?? 'webhook'}`
         }
       >
+        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
         {drawerLoading ? (
-          <Spinner />
+          <PanelSkeleton label="Loading" />
         ) : drawerMode === 'delete' ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div style={{ fontSize: 12.5, color: 'var(--nd-text-primary)' }}>
+          <div className="nt-stack-14">
+            <div className="nt-fs-125-primary">
               This permanently deletes webhook &quot;{drawerRow?.name}&quot;. Central will stop delivering any
               notification rule pointed at it.
             </div>
@@ -1481,12 +1846,12 @@ export function CentralWebhooksPanel() {
             </Button>
           </div>
         ) : drawerMode === 'rotate' ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div className="nt-stack-14">
             <Alert tone="warning" title="The new HMAC key is returned once">
               GET cannot retrieve the key later. If the successful response is lost, reconcile before making a
               new request.
             </Alert>
-            <div style={{ fontSize: 12.5, color: 'var(--nd-text-primary)' }}>
+            <div className="nt-fs-125-primary">
               Rotate the signing key for &quot;{drawerRow?.name}&quot; at generation {drawerRow?.generation}.
             </div>
             <div className="nt-hint-muted">
@@ -1572,7 +1937,7 @@ export function CentralWebhooksPanel() {
             ) : null}
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div className="nt-stack-14">
             <FormField label="Name">
               <Input value={form.name} onChange={(e) => updateForm({ name: e.target.value })} maxLength={64} />
             </FormField>
@@ -1789,23 +2154,25 @@ export function CentralWebhooksPanel() {
         onOpenChange={(open) => {
           if (!open) clearOneTimeSecret();
         }}
+        className="nd-drawer--write-ritual nt-write-ritual"
         title="Copy the one-time HMAC key now"
         description="This modal cannot be reopened after it closes."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div className="nt-stack-14">
+          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <Alert tone="danger" title="GET cannot retrieve this secret later">
             Copy the {oneTimeSecretAction === 'created' ? 'new webhook' : 'rotated'} HMAC key before closing.
             It is not saved by this portal.
           </Alert>
           <div
             aria-label="One-time HMAC key"
-            className="nt-mono-11" style={{ padding: 12, borderRadius: 6, background: "var(--nd-surface-raised)", overflowWrap: "anywhere" }}
+            className="nt-mono-11 nt-webhook-pre"
           >
             {oneTimeSecretRevealed
               ? oneTimeSecret
               : '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="nt-row nt-gap-8 nt-flex-wrap">
             <Button
               variant="secondary"
               onClick={() => setOneTimeSecretRevealed((revealed) => !revealed)}

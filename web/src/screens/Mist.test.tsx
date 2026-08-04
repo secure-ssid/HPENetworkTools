@@ -23,13 +23,15 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { ToastProvider } from '../nightdesk';
 import Mist from './Mist';
 import { getMist } from '../api/client';
 import type { MistData } from '../api/client';
 import { pathForView, viewForPath } from '../app/nav';
+import * as csv from '../lib/csv';
+import * as downloadApiCsvMod from '../lib/downloadApiCsv';
 import {
   CRUMBS,
   DEVICES,
@@ -44,6 +46,10 @@ import {
   hhmmLocal,
 } from '@hpe/shared';
 import type { MistAuditLogLive, MistWebhookRegistrationStatus } from '@hpe/shared';
+
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
 
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
@@ -126,9 +132,9 @@ function stubOpsFetch(opts: { statusHttp?: number; audit?: MistAuditLogLive | nu
   return fn;
 }
 
-function renderScreen() {
+function renderScreen(entry = '/mist') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[entry]}>
       <ToastProvider>
         <Mist />
       </ToastProvider>
@@ -164,7 +170,7 @@ describe('Mist screen — demo payload', () => {
     expect(screen.getByText('1 rogue BSSID on your infrastructure')).toBeTruthy();
 
     // SLE worst-first: Southpoint (55%) leads, Campus-02 (96%) trails.
-    const sleSection = screen.getByText('Wireless experience across sites').closest('div')!.parentElement!;
+    const sleSection = document.getElementById('mist-section-sle') as HTMLElement;
     const siteLinks = within(sleSection).getAllByRole('link');
     expect(siteLinks.map((a) => a.getAttribute('href'))).toEqual([
       '/sites/southpoint',
@@ -218,9 +224,9 @@ describe('Mist screen — demo payload', () => {
     mockGetMist.mockResolvedValue(demoData());
     stubOpsFetch();
     renderScreen();
-    const firmwareLabel = await screen.findByText('Firmware');
-    const firmwareSection = firmwareLabel.closest('div')!.parentElement!;
-    const behind = await within(firmwareSection).findByText('ap-3f-14');
+    const firmwareSection = (await screen.findByText('Firmware')).closest('#mist-section-devices')!;
+    expect(firmwareSection).toBeTruthy();
+    const behind = await within(firmwareSection as HTMLElement).findByText('ap-3f-14');
     const deviceLink = behind.closest('a')!;
     // The authored fixture carries no serial, so the link is plane-only.
     expect(deviceLink.getAttribute('href')).toBe('/devices/ap-3f-14?plane=MIST');
@@ -298,6 +304,150 @@ describe('Mist screen — honest states', () => {
   });
 });
 
+describe('Mist section share helpers (Loop 74)', () => {
+  it('parses section tokens and builds share URLs for every section', async () => {
+    const { parseMistSection, buildMistShareUrl, mistSectionDomId, MIST_SECTIONS } = await import('./mist/share');
+    expect(MIST_SECTIONS).toEqual(['sle', 'rogues', 'ap-health', 'wlans', 'devices', 'licenses', 'audit']);
+    expect(parseMistSection('ap')).toBe('ap-health');
+    expect(parseMistSection('firmware')).toBe('devices');
+    expect(parseMistSection('mist-section-rogues')).toBe('rogues');
+    expect(mistSectionDomId('wlans')).toBe('mist-section-wlans');
+    expect(buildMistShareUrl('sle', 'http://x', '/mist')).toBe(
+      'http://x/mist?section=sle#mist-section-sle',
+    );
+    expect(buildMistShareUrl(null, 'http://x', '/mist')).toBe('http://x/mist');
+  });
+});
+
+describe('Mist screen — export and share (Loop 49)', () => {
+  it('header Export CSV includes Mist-claimed devices (not only rogues/APs)', async () => {
+    mockGetMist.mockResolvedValue(demoData());
+    stubOpsFetch();
+    const spy = vi.spyOn(csv, 'exportTableCsv').mockReturnValue(4);
+    renderScreen();
+    await screen.findByRole('heading', { name: 'Mist' });
+    const headerExport = screen
+      .getAllByRole('button', { name: 'Export CSV' })
+      .find((b) => !b.closest('[id^="mist-section-"]'));
+    expect(headerExport).toBeTruthy();
+    fireEvent.click(headerExport!);
+    expect(spy).toHaveBeenCalled();
+    const deviceCall = spy.mock.calls.find((c) => c[0] === 'mist-devices.csv');
+    expect(deviceCall).toBeTruthy();
+    expect(deviceCall![1]).toEqual(
+      expect.arrayContaining(['name', 'type', 'model', 'site', 'state', 'firmware', 'serial']),
+    );
+    spy.mockRestore();
+  });
+
+  it('live header Download SLE CSV hits part=sle (Loop 98)', async () => {
+    mockGetMist.mockResolvedValue(demoData({ dataSource: 'live' }));
+    stubOpsFetch();
+    const dlSpy = vi.spyOn(downloadApiCsvMod, 'downloadApiCsv').mockResolvedValue({ ok: true });
+    renderScreen();
+    await screen.findByRole('heading', { name: 'Mist' });
+    fireEvent.click(screen.getByRole('button', { name: 'Download SLE CSV' }));
+    await waitFor(() =>
+      expect(dlSpy).toHaveBeenCalledWith('/api/mist/export?part=sle', 'mist-sle.csv'),
+    );
+    dlSpy.mockRestore();
+  });
+
+  it('live header Download WLANs/licences CSV hits part=wlans|licenses (Loop 104)', async () => {
+    mockGetMist.mockResolvedValue(demoData({ dataSource: 'live' }));
+    stubOpsFetch();
+    const dlSpy = vi.spyOn(downloadApiCsvMod, 'downloadApiCsv').mockResolvedValue({ ok: true });
+    renderScreen();
+    await screen.findByRole('heading', { name: 'Mist' });
+    fireEvent.click(screen.getByRole('button', { name: 'Download WLANs CSV' }));
+    await waitFor(() =>
+      expect(dlSpy).toHaveBeenCalledWith('/api/mist/export?part=wlans', 'mist-wlans.csv'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Download licences CSV' }));
+    await waitFor(() =>
+      expect(dlSpy).toHaveBeenCalledWith('/api/mist/export?part=licenses', 'mist-licenses.csv'),
+    );
+    dlSpy.mockRestore();
+  });
+
+  it('Firmware section offers inventory CSV, compliance CSV for behind rows, + section link', async () => {
+    mockGetMist.mockResolvedValue(demoData());
+    stubOpsFetch();
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
+    const spy = vi.spyOn(csv, 'exportTableCsv').mockReturnValue(4);
+    renderScreen();
+    await screen.findByText('behind → 0.14.29');
+    const firmwareLabel = screen.getByText('Firmware');
+    const firmwareHeader = firmwareLabel.closest('.nt-row-between-12') ?? firmwareLabel.parentElement!;
+    fireEvent.click(within(firmwareHeader as HTMLElement).getByRole('button', { name: 'Copy section link' }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenCalled());
+    expect(String(clipboard.writeText.mock.calls[0]![0])).toMatch(/\/mist\?section=devices/);
+    fireEvent.click(within(firmwareHeader as HTMLElement).getByRole('button', { name: 'Export compliance CSV' }));
+    expect(spy.mock.calls.some((c) => c[0] === 'mist-firmware-compliance.csv')).toBe(true);
+    fireEvent.click(within(firmwareHeader as HTMLElement).getByRole('button', { name: 'Export CSV' }));
+    expect(spy.mock.calls.some((c) => c[0] === 'mist-devices.csv')).toBe(true);
+    spy.mockRestore();
+  });
+
+  it('Org audit log offers Export CSV, server CSV, and section share link', async () => {
+    mockGetMist.mockResolvedValue(demoData());
+    stubOpsFetch();
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
+    const exportSpy = vi.spyOn(csv, 'exportTableCsv').mockReturnValue(3);
+    const dlSpy = vi.spyOn(downloadApiCsvMod, 'downloadApiCsv').mockResolvedValue({ ok: true });
+    renderScreen();
+    expect(await screen.findByText(/Updated WLAN 'MRDN-Research'/)).toBeTruthy();
+    const auditLabel = screen.getByText('Org audit log');
+    const auditHeader = auditLabel.closest('.nt-row-between-12') ?? auditLabel.parentElement!;
+    fireEvent.click(within(auditHeader as HTMLElement).getByRole('button', { name: 'Copy section link' }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenCalled());
+    expect(String(clipboard.writeText.mock.calls[0]![0])).toMatch(/\/mist\?section=audit/);
+    fireEvent.click(within(auditHeader as HTMLElement).getByRole('button', { name: 'Export CSV' }));
+    expect(exportSpy.mock.calls.some((c) => c[0] === 'mist-audit-log.csv')).toBe(true);
+    fireEvent.click(within(auditHeader as HTMLElement).getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(dlSpy).toHaveBeenCalledWith('/api/mist/audit-log/export', 'mist-audit-log.csv'));
+    exportSpy.mockRestore();
+    dlSpy.mockRestore();
+  });
+
+  it('every poll-time section offers Copy section link (Loop 74)', async () => {
+    mockGetMist.mockResolvedValue(demoData());
+    stubOpsFetch();
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
+    renderScreen();
+    await screen.findByRole('heading', { name: 'Mist' });
+
+    const cases: Array<{ label: string | RegExp; section: string }> = [
+      { label: 'Wireless experience across sites', section: 'sle' },
+      { label: 'Rogue & neighbor APs', section: 'rogues' },
+      { label: 'AP health', section: 'ap-health' },
+      { label: 'WLANs', section: 'wlans' },
+      { label: 'Licence usage per site', section: 'licenses' },
+    ];
+    for (const c of cases) {
+      clipboard.writeText.mockClear();
+      const labelEl = screen.getByText(c.label);
+      const header = labelEl.closest('.nt-row-between-12') ?? labelEl.parentElement!;
+      fireEvent.click(within(header as HTMLElement).getByRole('button', { name: 'Copy section link' }));
+      await waitFor(() => expect(clipboard.writeText).toHaveBeenCalled());
+      expect(String(clipboard.writeText.mock.calls[0]![0])).toMatch(
+        new RegExp(`/mist\\?section=${c.section.replace('-', '\\-')}`),
+      );
+      expect(String(clipboard.writeText.mock.calls[0]![0])).toMatch(
+        new RegExp(`#mist-section-${c.section.replace('-', '\\-')}`),
+      );
+    }
+    expect(document.getElementById('mist-section-sle')).toBeTruthy();
+    expect(document.getElementById('mist-section-rogues')).toBeTruthy();
+    expect(document.getElementById('mist-section-ap-health')).toBeTruthy();
+    expect(document.getElementById('mist-section-wlans')).toBeTruthy();
+    expect(document.getElementById('mist-section-licenses')).toBeTruthy();
+  });
+});
+
 describe('Mist screen — nav wiring', () => {
   it('/mist resolves to the mist view, its path, crumbs and Operate-group item', async () => {
     expect(viewForPath('/mist')).toBe('mist');
@@ -320,5 +470,611 @@ describe('Mist screen — nav wiring', () => {
     expect(screen.queryByText('Wireless experience across sites')).toBeNull();
     resolve(demoData());
     await waitFor(() => expect(screen.getByText('Wireless experience across sites')).toBeTruthy());
+  });
+});
+
+/* Loop 140 — Enabled chip row toggles the same enabled= filter as the Select. */
+describe('Mist WLAN enabled chips (Loop 140)', () => {
+  it('enabled chips filter WLANs and write enabled back to the URL', async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    mockGetMist.mockResolvedValue(
+      demoData({
+        wlans: [
+          {
+            kind: 'ssid',
+            name: 'Enabled-SSID',
+            vlan: 'vlan 1',
+            security: 'WPA2',
+            targets: 'site-a',
+            plane: 'MIST',
+            tone: 'info',
+            enabled: true,
+          },
+          {
+            kind: 'ssid',
+            name: 'Disabled-SSID',
+            vlan: 'vlan 2',
+            security: 'WPA2',
+            targets: 'site-b',
+            plane: 'MIST',
+            tone: 'info',
+            enabled: false,
+          },
+        ],
+      }),
+    );
+    stubOpsFetch();
+
+    function SearchProbe() {
+      const loc = useLocation();
+      return <div data-testid="search">{loc.search}</div>;
+    }
+
+    render(
+      <MemoryRouter
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        initialEntries={['/mist?section=wlans']}
+      >
+        <ToastProvider>
+          <Mist />
+          <SearchProbe />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('Enabled-SSID')).toBeTruthy();
+    expect(screen.getByText('Disabled-SSID')).toBeTruthy();
+
+    const chips = screen.getByRole('group', { name: 'WLAN enabled' });
+    const disabledChip = within(chips).getByRole('button', { name: /Disabled/i });
+    expect(disabledChip.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(disabledChip);
+    await waitFor(() => expect(screen.getByText('Disabled-SSID')).toBeTruthy());
+    expect(screen.queryByText('Enabled-SSID')).toBeNull();
+    expect(screen.getByTestId('search').textContent).toMatch(/enabled=0/);
+    expect(disabledChip.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(disabledChip);
+    await waitFor(() => expect(screen.getByText('Enabled-SSID')).toBeTruthy());
+    expect(screen.getByText('Disabled-SSID')).toBeTruthy();
+    expect(screen.getByTestId('search').textContent).not.toMatch(/enabled=/);
+  });
+});
+
+
+/* Loop 165 — LIVE badge honesty (pure live + mist blend). */
+describe('Mist Loop 165 residuals', () => {
+  it('stamps LIVE on pure live Mist estate', async () => {
+    mockGetMist.mockResolvedValue(demoData({ dataSource: 'live' }));
+    stubOpsFetch();
+    renderScreen();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('stamps LIVE when mist arrives via blend', async () => {
+    mockGetMist.mockResolvedValue(demoData({ dataSource: 'demo', blended: ['mist'] }));
+    stubOpsFetch();
+    renderScreen();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
+  });
+
+  it('hides LIVE on demo fixtures without blend', async () => {
+    mockGetMist.mockResolvedValue(demoData({ dataSource: 'demo' }));
+    stubOpsFetch();
+    renderScreen();
+    await screen.findByText(/DEMO FIXTURE/i);
+    expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+/* Loop 180 — Mist firmware multi-select Export selected + Copy serials bulk bar. */
+describe('Mist firmware bulk selection (Loop 180)', () => {
+  it('shows bulk bar for selection: Export selected, Copy serials, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:mist-firmware-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const devices = DEVICES.filter((d) => d.plane === 'MIST').map((d, i) =>
+      d.name === 'ap-3f-14'
+        ? { ...d, serial: 'MST-BEHIND-1' }
+        : i === 0
+          ? { ...d, serial: d.serial ?? 'MST-OTHER-1' }
+          : d,
+    );
+    // Ensure at least one behind row with a known serial for Copy serials.
+    const withBehind = devices.some((d) => d.firmwareApproved === false && d.firmwareTarget)
+      ? devices
+      : [
+          {
+            ...DEVICES.find((d) => d.plane === 'MIST')!,
+            name: 'ap-behind-loop180',
+            serial: 'MST-BEHIND-1',
+            firmware: '0.13.18',
+            firmwareApproved: false as const,
+            firmwareTarget: '0.14.29',
+            firmwareUpdate: 'inprogress',
+          },
+          ...devices,
+        ];
+
+    mockGetMist.mockResolvedValue(demoData({ devices: withBehind }));
+    stubOpsFetch();
+    const { container } = renderScreen();
+
+    expect(await screen.findByText('behind → 0.14.29')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Mist firmware selection actions' })).toBeNull();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector(
+        '[aria-label="Mist firmware behind recommended trains"]',
+      ) as HTMLElement | null;
+      if (!el) throw new Error('Mist firmware table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Mist firmware selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected firmware row/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy serials' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain('MST-BEHIND-1');
+    expect(await screen.findByText(/Copied 1 serial/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Mist firmware selection actions' })).toBeNull(),
+    );
+  });
+});
+
+/* Loop 184 — Mist firmware bulk Copy selection link (?serials=) + clearable chip. */
+describe('Mist firmware selection link (Loop 184)', () => {
+  it('Copy selection link writes serials= and section=devices', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const devices = [
+      {
+        ...DEVICES.find((d) => d.plane === 'MIST')!,
+        name: 'ap-behind-loop184',
+        serial: 'MST-BEHIND-184',
+        firmware: '0.13.18',
+        firmwareApproved: false as const,
+        firmwareTarget: '0.14.29',
+        firmwareUpdate: 'inprogress',
+      },
+      ...DEVICES.filter((d) => d.plane === 'MIST'),
+    ];
+    mockGetMist.mockResolvedValue(demoData({ devices }));
+    stubOpsFetch();
+    const { container } = renderScreen();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector(
+        '[aria-label="Mist firmware behind recommended trains"]',
+      ) as HTMLElement | null;
+      if (!el) throw new Error('Mist firmware table missing');
+      return el;
+    });
+    expect(await within(table).findByText('ap-behind-loop184')).toBeTruthy();
+    const marks = await within(table).findAllByText('behind → 0.14.29');
+    expect(marks.length).toBeGreaterThan(0);
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Mist firmware selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = decodeURIComponent(String(writeText.mock.calls[0]![0]));
+    expect(url).toMatch(/serials=/);
+    expect(url).toContain('MST-BEHIND-184');
+    expect(url).toMatch(/section=devices/);
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+  });
+
+  it('deep-links ?serials= and shows a clearable selection chip', async () => {
+    const devices = [
+      {
+        ...DEVICES.find((d) => d.plane === 'MIST')!,
+        name: 'ap-behind-a',
+        serial: 'MST-BEHIND-A',
+        firmware: '0.13.18',
+        firmwareApproved: false as const,
+        firmwareTarget: '0.14.29',
+      },
+      {
+        ...DEVICES.find((d) => d.plane === 'MIST')!,
+        name: 'ap-behind-b',
+        serial: 'MST-BEHIND-B',
+        firmware: '0.13.18',
+        firmwareApproved: false as const,
+        firmwareTarget: '0.14.29',
+      },
+    ];
+    mockGetMist.mockResolvedValue(demoData({ devices }));
+    stubOpsFetch();
+    const { container } = renderScreen(
+      `/mist?section=devices&serials=${encodeURIComponent('MST-BEHIND-A')}`,
+    );
+
+    expect(await screen.findByText('ap-behind-a')).toBeTruthy();
+    const table = await waitFor(() => {
+      const el = container.querySelector(
+        '[aria-label="Mist firmware behind recommended trains"]',
+      ) as HTMLElement | null;
+      if (!el) throw new Error('Mist firmware table missing');
+      return el;
+    });
+    expect(within(table).queryByText('ap-behind-b')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected serial/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Selection deep link' })).toBeNull());
+    expect(await within(table).findByText('ap-behind-b')).toBeTruthy();
+  });
+});
+
+/* Loop 187 — Mist WLANs multi-select Export selected + Copy names + selection link. */
+describe('Mist WLANs bulk selection (Loop 187)', () => {
+  it('shows bulk bar for selection: Export selected, Copy names, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:mist-wlans-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const payload = demoData();
+    expect(payload.wlans && payload.wlans.length).toBeGreaterThan(0);
+    const firstName = payload.wlans![0]!.name;
+    mockGetMist.mockResolvedValue(payload);
+    stubOpsFetch();
+    const { container } = renderScreen('/mist?section=wlans');
+
+    expect(await screen.findAllByText(firstName)).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Mist WLAN selection actions' })).toBeNull();
+
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Mist WLANs"]') as HTMLElement | null;
+      if (!el) throw new Error('Mist WLANs table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Mist WLAN selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected WLAN/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy names' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain(firstName);
+    expect(await screen.findByText(/Copied 1 name/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Mist WLAN selection actions' })).toBeNull(),
+    );
+  });
+
+  it('Copy selection link writes names= and section=wlans; deep-link chip clears', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const base = demoData();
+    const two = {
+      ...base,
+      wlans: [
+        base.wlans![0]!,
+        {
+          ...base.wlans![0]!,
+          name: 'MRDN-Loop187-Extra',
+          vlan: 'vlan 999',
+          targets: 'branch-only',
+        },
+      ],
+    };
+    mockGetMist.mockResolvedValue(two);
+    stubOpsFetch();
+    const { container } = renderScreen('/mist?section=wlans');
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Mist WLANs"]') as HTMLElement | null;
+      if (!el) throw new Error('Mist WLANs table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Mist WLAN selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = decodeURIComponent(String(writeText.mock.calls[0]![0]));
+    expect(url).toMatch(/names=/);
+    expect(url).toContain(two.wlans![0]!.name);
+    expect(url).toMatch(/section=wlans/);
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+
+    cleanup();
+    mockGetMist.mockResolvedValue(two);
+    stubOpsFetch();
+    const second = renderScreen(
+      `/mist?section=wlans&names=${encodeURIComponent(two.wlans![0]!.name)}`,
+    );
+    expect(await screen.findAllByText(two.wlans![0]!.name)).toBeTruthy();
+    const table2 = await waitFor(() => {
+      const el = second.container.querySelector('[aria-label="Mist WLANs"]') as HTMLElement | null;
+      if (!el) throw new Error('Mist WLANs table missing');
+      return el;
+    });
+    expect(within(table2).queryByText('MRDN-Loop187-Extra')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected WLAN/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Selection deep link' })).toBeNull());
+    expect(await within(table2).findByText('MRDN-Loop187-Extra')).toBeTruthy();
+  });
+});
+
+/* Loop 187 — Mist licence usage multi-select Export selected + Copy site ids + selection link. */
+describe('Mist licences bulk selection (Loop 187)', () => {
+  it('shows bulk bar for selection: Export selected, Copy site ids, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:mist-licenses-selected');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const payload = demoData();
+    expect(payload.licenseUsages && payload.licenseUsages.length).toBeGreaterThan(0);
+    const firstId = payload.licenseUsages![0]!.siteId;
+    mockGetMist.mockResolvedValue(payload);
+    stubOpsFetch();
+    const { container } = renderScreen('/mist?section=licenses');
+
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Mist licence usage"]') as HTMLElement | null;
+      if (!el) throw new Error('Mist licence table missing');
+      return el;
+    });
+    expect(within(table).getByText(payload.licenseUsages![0]!.siteName)).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Mist licence selection actions' })).toBeNull();
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Mist licence selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected site/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy site ids' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toContain(firstId);
+    expect(await screen.findByText(/Copied 1 site id/)).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Mist licence selection actions' })).toBeNull(),
+    );
+  });
+
+  it('Copy selection link writes siteIds= and section=licenses; deep-link chip clears', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const base = demoData();
+    const two = {
+      ...base,
+      licenseUsages: [
+        base.licenseUsages![0]!,
+        {
+          ...base.licenseUsages![0]!,
+          siteId: 'southpoint' as const,
+          siteName: 'Loop187 Extra Site',
+        },
+      ],
+    };
+    mockGetMist.mockResolvedValue(two);
+    stubOpsFetch();
+    const { container } = renderScreen('/mist?section=licenses');
+    const table = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Mist licence usage"]') as HTMLElement | null;
+      if (!el) throw new Error('Mist licence table missing');
+      return el;
+    });
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Mist licence selection actions' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = decodeURIComponent(String(writeText.mock.calls[0]![0]));
+    expect(url).toMatch(/siteIds=/);
+    expect(url).toContain(two.licenseUsages![0]!.siteId);
+    expect(url).toMatch(/section=licenses/);
+    expect(await screen.findByText(/Selection link copied/)).toBeTruthy();
+
+    cleanup();
+    mockGetMist.mockResolvedValue(two);
+    stubOpsFetch();
+    const second = renderScreen(
+      `/mist?section=licenses&siteIds=${encodeURIComponent(two.licenseUsages![0]!.siteId)}`,
+    );
+    const table2 = await waitFor(() => {
+      const el = second.container.querySelector('[aria-label="Mist licence usage"]') as HTMLElement | null;
+      if (!el) throw new Error('Mist licence table missing');
+      return el;
+    });
+    expect(within(table2).getByText(two.licenseUsages![0]!.siteName)).toBeTruthy();
+    expect(within(table2).queryByText('Loop187 Extra Site')).toBeNull();
+    const chip = screen.getByRole('group', { name: 'Selection deep link' });
+    expect(within(chip).getByText(/1 selected site/)).toBeTruthy();
+    fireEvent.click(within(chip).getByRole('button'));
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Selection deep link' })).toBeNull());
+    expect(await within(table2).findByText('Loop187 Extra Site')).toBeTruthy();
+  });
+});
+
+
+
+/* Loop 193 — Mist estate rogues + audit multi-select bulk bars. */
+describe('Mist estate rogues bulk (Loop 193)', () => {
+  it('shows bulk bar: Export selected, Copy BSSIDs, Copy selection link, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:mist-rogues-selected');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    mockGetMist.mockResolvedValue(demoData());
+    stubOpsFetch();
+    renderScreen();
+
+    const table = await screen.findByRole('grid', { name: 'Mist rogue and neighbor APs' });
+    expect(screen.queryByRole('region', { name: 'Mist rogue selection actions' })).toBeNull();
+
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Mist rogue selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected rogue/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy BSSIDs' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/:/);
+
+    writeText.mockClear();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = decodeURIComponent(String(writeText.mock.calls[0]![0]));
+    expect(url).toMatch(/bssids=/);
+    expect(url).toMatch(/section=rogues/);
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Mist rogue selection actions' })).toBeNull(),
+    );
+  });
+});
+
+describe('Mist audit log bulk (Loop 193)', () => {
+  it('shows bulk bar: Export selected, Copy admins, Copy selection link, Clear', async () => {
+    const createObjectURL = vi.fn(() => 'blob:mist-audit-selected');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    mockGetMist.mockResolvedValue(demoData());
+    stubOpsFetch({ audit: AUDIT });
+    renderScreen();
+
+    const table = await screen.findByRole('grid', { name: 'Mist org audit log' });
+    expect(screen.queryByRole('region', { name: 'Mist audit selection actions' })).toBeNull();
+
+    const first = table.querySelector('tbody tr') as HTMLElement;
+    expect(first).toBeTruthy();
+    first.focus();
+    fireEvent.keyDown(first, { key: 'x' });
+
+    const bar = await screen.findByRole('region', { name: 'Mist audit selection actions' });
+    expect(within(bar).getByText('1 SELECTED')).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Export selected' }));
+    expect(await screen.findByText(/Exported 1 selected audit entry/)).toBeTruthy();
+    expect(createObjectURL).toHaveBeenCalled();
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy admins' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(String(writeText.mock.calls[0]![0])).toMatch(/@/);
+
+    writeText.mockClear();
+    fireEvent.click(within(bar).getByRole('button', { name: 'Copy selection link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const url = decodeURIComponent(String(writeText.mock.calls[0]![0]));
+    expect(url).toMatch(/auditIds=/);
+    expect(url).toMatch(/section=audit/);
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Clear' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Mist audit selection actions' })).toBeNull(),
+    );
+  });
+});
+
+/* Loop 198 — keyboard shortcuts help on Mist estate tables. */
+describe('Mist Loop 198 residuals', () => {
+  it('exposes keyboard shortcuts help on the Mist header', async () => {
+    mockGetMist.mockResolvedValue(demoData());
+    stubOpsFetch();
+    renderScreen();
+    expect(await screen.findByRole('heading', { name: 'Mist' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+  });
+});
+
+/* Loop 204 — Mist WLANs filtered empty Clear filters CTA. */
+describe('Mist Loop 204 residuals', () => {
+  it('offers Clear filters when the WLANs q filter matches nothing', async () => {
+    const payload = demoData();
+    expect(payload.wlans && payload.wlans.length).toBeGreaterThan(0);
+    const firstName = payload.wlans![0]!.name;
+    mockGetMist.mockResolvedValue(payload);
+    stubOpsFetch();
+    renderScreen('/mist?section=wlans&q=zzzz-no-match');
+
+    expect(
+      await screen.findByText(/Nothing matches this WLAN filter/i),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findAllByText(firstName)).toBeTruthy();
   });
 });

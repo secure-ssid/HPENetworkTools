@@ -1,6 +1,8 @@
+import type { ReactElement } from 'react';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { VisualReference } from '@hpe/shared';
+import { ToastProvider } from '../nightdesk';
 import { VisualReferencePanel } from './VisualReferencePanel';
 
 afterEach(() => {
@@ -21,9 +23,13 @@ const floorplan: VisualReference = {
   unavailable: false,
 };
 
+function renderPanel(ui: ReactElement) {
+  return render(<ToastProvider>{ui}</ToastProvider>);
+}
+
 describe('VisualReferencePanel', () => {
   it('renders an image reference with attribution and add controls', () => {
-    render(
+    renderPanel(
       <VisualReferencePanel
         target={{ kind: 'site', id: 'northgate', plane: 'mist' }}
         initialReferences={[floorplan]}
@@ -33,10 +39,11 @@ describe('VisualReferencePanel', () => {
     expect(screen.getByRole('img', { name: /northgate layout/i })).toBeTruthy();
     expect(screen.getByText(/uploaded by local operator/i)).toBeTruthy();
     expect(screen.getByText(/add visual reference/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /download references csv/i })).toBeTruthy();
   });
 
   it('shows empty state when there are no references', () => {
-    render(
+    renderPanel(
       <VisualReferencePanel
         target={{ kind: 'device', id: 'sw-01' }}
         initialReferences={[]}
@@ -48,7 +55,7 @@ describe('VisualReferencePanel', () => {
   });
 
   it('marks unavailable assets', () => {
-    render(
+    renderPanel(
       <VisualReferencePanel
         target={{ kind: 'site', id: 'northgate' }}
         initialReferences={[{ ...floorplan, unavailable: true, assetId: 'missing' }]}

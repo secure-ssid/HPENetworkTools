@@ -358,6 +358,83 @@ describe('maintenance-window routes', () => {
     expect(typeof ap.spanStart).toBe('string');
   });
 
+  it('GET /api/maintenance-windows/export returns CSV (Loop 93) and honours state=', async () => {
+    const csv = await fetch(`${base}/api/maintenance-windows/export`);
+    expect(csv.status).toBe(200);
+    expect(csv.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await csv.text();
+    const header = text.split('\n')[0] ?? '';
+    expect(header).toContain('id');
+    expect(header).toContain('reason');
+    expect(header).toContain('schedule');
+    expect(header).toContain('state');
+    expect(text).toContain('mw-demo-ap3f');
+    expect(text).not.toMatch(/api[_-]?key\s*[:=]|bearer\s+[a-z0-9._-]+|password|secret/i);
+
+    const active = await fetch(`${base}/api/maintenance-windows/export?state=active`);
+    expect(active.status).toBe(200);
+    const activeText = await active.text();
+    expect(activeText).toContain('mw-demo-ap3f');
+    // Firmware demo fixture is upcoming, not active.
+    expect(activeText).not.toContain('mw-demo-firmware');
+
+    const enabledOff = await fetch(`${base}/api/maintenance-windows/export?enabled=0`);
+    expect(enabledOff.status).toBe(200);
+    // Demo fixtures are enabled; disabled filter should be headers-only or no demo ids.
+    const offText = await enabledOff.text();
+    expect(offText.split('\n')[0]).toContain('id');
+    expect(offText).not.toContain('mw-demo-ap3f');
+  });
+
+  it('GET /api/maintenance-windows and export honour q= text filter (Loop 114)', async () => {
+    const { filterMaintenanceWindows } = await import('../src/routes/maintenance');
+    const sample = [
+      {
+        id: 'mw-loop114-ap',
+        enabled: true,
+        state: 'active' as const,
+        reason: 'RF survey night window',
+        matchers: { device: 'ap-floor-loop114', plane: 'MIST' },
+        schedule: { kind: 'once' as const, start: '2027-01-01T00:00:00.000Z', end: '2027-01-01T01:00:00.000Z' },
+        createdAt: '2026-08-04T00:00:00.000Z',
+      },
+      {
+        id: 'mw-loop114-core',
+        enabled: true,
+        state: 'upcoming' as const,
+        reason: 'Core switch cutover',
+        matchers: { device: 'sw-core-1', site: 'HQ' },
+        schedule: { kind: 'once' as const, start: '2027-02-01T00:00:00.000Z', end: '2027-02-01T02:00:00.000Z' },
+        createdAt: '2026-08-04T00:00:00.000Z',
+      },
+    ];
+    expect(
+      filterMaintenanceWindows({ query: { q: 'survey' } }, sample as any).map((w) => w.id),
+    ).toEqual(['mw-loop114-ap']);
+    expect(
+      filterMaintenanceWindows({ query: { q: 'MIST' } }, sample as any).map((w) => w.id),
+    ).toEqual(['mw-loop114-ap']);
+    expect(
+      filterMaintenanceWindows({ query: { q: 'sw-core' } }, sample as any).map((w) => w.id),
+    ).toEqual(['mw-loop114-core']);
+    expect(filterMaintenanceWindows({ query: { q: 'nope' } }, sample as any)).toEqual([]);
+    expect(filterMaintenanceWindows({ query: {} }, sample as any)).toHaveLength(2);
+    // unknown state is a no-op (full list)
+    expect(filterMaintenanceWindows({ query: { state: 'bogus' } }, sample as any)).toHaveLength(2);
+
+    const list = await fetch(`${base}/api/maintenance-windows?q=ap3f`);
+    expect(list.status).toBe(200);
+    const body = (await list.json()) as { windows: Array<{ id: string }> };
+    expect(body.windows.some((w) => w.id === 'mw-demo-ap3f')).toBe(true);
+    expect(body.windows.every((w) => /ap3f|ap-3f|3f/i.test(JSON.stringify(w)))).toBe(true);
+
+    const csv = await fetch(`${base}/api/maintenance-windows/export?q=firmware&state=upcoming`);
+    expect(csv.status).toBe(200);
+    const text = await csv.text();
+    expect(text).toContain('mw-demo-firmware');
+    expect(text).not.toContain('mw-demo-ap3f');
+  });
+
   it('POST requires a reason and caps it', async () => {
     const noReason = await sendJson('POST', '/api/maintenance-windows', {
       matchers: { device: 'a' },

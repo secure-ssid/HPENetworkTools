@@ -18,34 +18,43 @@
  * the demo branch, with a null answering share rendering '—' rather than 0%)
  * — so they render from whichever source answered, and the header states
  * which source that was and how fresh it is (demo fixtures are never dressed
- * up as a live sync). Its header
- * actions are derived, never hardcoded: "Open in <plane>" only when a plane
- * claimed the site, "Local terminal" only when a switch-like device row names
- * a target — an AP is not silently promoted to a terminal target — and, on the
- * authored branch, only while the profile still names a core (it is blanked
- * when the operator hid that fixture device, and a headless button would open
- * a device page that no longer exists).
+ * up as a live sync). Header **LIVE** stamps pure live and sites blend feeds
+ * alike (Loop 169). Devices multi-select raises **Export selected**, **Copy
+ * serials** (unique newline-joined inventory serials — Devices **Copy serials**
+ * pattern; Loop 174), **Copy selection link** (`?names=` of marked device
+ * names — Devices `?names=` pattern; clearable chip while active; Loop 181),
+ * and Clear. Selection-empty `?names=` offers **Clear selection filter**
+ * (Loop 208). Header `KeyboardShortcuts` surfaces the devices (and rogue) grid
+ * map (Loop 199). Its header actions are derived, never hardcoded: "Open in
+ * <plane>" only when a plane claimed the site, "Local terminal" only when a
+ * switch-like device row names a target — an AP is not silently promoted to a
+ * terminal target — and, on the authored branch, only while the profile still
+ * names a core (it is blanked when the operator hid that fixture device, and a
+ * headless button would open a device page that no longer exists).
  */
 
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   PageSkeleton,
   Alert,
   Badge,
   Button,
+  DataTable,
+  DATATABLE_ROW_SHORTCUTS,
   Divider,
   EmptyState,
+  KeyboardShortcuts,
   Progress,
   SectionHeader, Stat,
-  Table,
   useToast,
+  type DataTableColumn,
 } from '../nightdesk';
 import { getSiteDetail, type SiteDetailData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import type { Density } from '../app/SettingsContext';
-import { deviceDetailPath } from '../app/nav';
-import { hhmmLocal as hhmm, SITE_CHAIN, buildSiteTopology, detailState, planeKeyOf } from '@hpe/shared';
+import { deviceDetailPath, namesFilterForParam } from '../app/nav';
+import { countOf, hhmmLocal as hhmm, SITE_CHAIN, buildSiteTopology, detailState, planeKeyOf } from '@hpe/shared';
 import type {
   MistRogueApRow,
   SilencedSiteAlertRow,
@@ -66,9 +75,17 @@ import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ConfigActionPanel } from '../components/ConfigActionPanel';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import { SiteRogueAps } from './siteDetail/RogueAps';
 import { SiteSle } from './siteDetail/Sle';
 import { SiteApplications } from './siteDetail/Applications';
+
+/** Server CSV path for this site's device inventory (`site=` matches id or name). */
+export function siteDevicesExportPath(siteKey: string): string {
+  const key = siteKey.trim();
+  if (!key) return '/api/devices/export';
+  return `/api/devices/export?site=${encodeURIComponent(key)}`;
+}
 
 /** The per-site sections the live/blend envelope carries alongside the site
  *  row (server: liveSiteSections). Optional on the wire — a server that does
@@ -132,54 +149,295 @@ function SiteDeviceTable({
   showPlatformTags: boolean;
   onOpen: (device: SiteDeviceRow) => void;
 }) {
-  return (
-    <div className="nt-stack" style={{ gap: 10, minWidth: 0 }}>
-      <SectionHeader label="Devices at this site" meta="MIXED PLANES" />
-      <Table density={density}>
-        <Table.Head>
-          <Table.Row>
-            <Table.HeaderCell>Device</Table.HeaderCell>
-            <Table.HeaderCell>Model</Table.HeaderCell>
-            <Table.HeaderCell>Managed by</Table.HeaderCell>
-            <Table.HeaderCell>Role</Table.HeaderCell>
-            <Table.HeaderCell>State</Table.HeaderCell>
-            <Table.HeaderCell numeric>Uptime</Table.HeaderCell>
-          </Table.Row>
-        </Table.Head>
-        <Table.Body>
-          {devices.map((d) => (
-            <Table.Row key={`${d.name}:${d.serial ?? d.plane}`}>
-              <Table.Cell>
-                <button
-                  type="button"
-                  onClick={() => onOpen(d)}
-                  className="nt-mono-link" style={{ textAlign: "left", fontSize: "var(--nd-text-12)" }}
-                >
-                  {d.name}
-                </button>
-              </Table.Cell>
-              <Table.Cell>{d.model}</Table.Cell>
-              <Table.Cell>
-                {showPlatformTags ? <Badge plane>{d.plane}</Badge> : null}
-              </Table.Cell>
-              <Table.Cell>{d.role}</Table.Cell>
-              <Table.Cell>
-                <Badge tone={d.stateTone} dot>
-                  {d.state}
-                </Badge>
-              </Table.Cell>
-              <Table.Cell numeric>{d.uptime}</Table.Cell>
-            </Table.Row>
-          ))}
-        </Table.Body>
-      </Table>
-      {devices.length === 0 ? (
-        <div
-          className="nt-hint-muted"
+  const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  /* Deep link: /sites/:id?names=a\nb (bulk Copy selection link). */
+  const namesFilter = namesFilterForParam(searchParams.get('names'));
+  const namesFilterLc =
+    namesFilter === null
+      ? null
+      : namesFilter.map((name) => name.trim().toLowerCase()).filter(Boolean);
+  const rows =
+    namesFilterLc === null
+      ? devices
+      : devices.filter((d) => namesFilterLc.includes((d.name ?? '').trim().toLowerCase()));
+  const namesPresent =
+    namesFilterLc === null
+      ? 0
+      : namesFilterLc.filter((name) =>
+          devices.some((d) => (d.name ?? '').trim().toLowerCase() === name),
+        ).length;
+  const rowKeyOf = (d: SiteDeviceRow) => `${d.name}:${d.serial ?? d.plane}`;
+  const columns: Array<DataTableColumn<SiteDeviceRow>> = [
+    {
+      key: 'name',
+      title: 'Device',
+      hideable: false,
+      sortValue: (d) => d.name,
+      render: (d) => (
+        <button
+          type="button"
+          onClick={() => onOpen(d)}
+          className="nt-mono-link nt-body-sm nt-ta-left"
         >
-          no device claimed this site in the last pull
-        </div>
-      ) : null}
+          {d.name}
+        </button>
+      ),
+    },
+    {
+      key: 'model',
+      title: 'Model',
+      sortValue: (d) => d.model,
+      render: (d) => d.model,
+    },
+    {
+      key: 'plane',
+      title: 'Managed by',
+      sortValue: (d) => d.plane,
+      render: (d) => (showPlatformTags ? <Badge plane>{d.plane}</Badge> : null),
+    },
+    {
+      key: 'role',
+      title: 'Role',
+      sortValue: (d) => d.role,
+      render: (d) => d.role,
+    },
+    {
+      key: 'state',
+      title: 'State',
+      sortValue: (d) => d.state,
+      render: (d) => (
+        <Badge tone={d.stateTone} dot>
+          {d.state}
+        </Badge>
+      ),
+    },
+    {
+      key: 'uptime',
+      title: 'Uptime',
+      numeric: true,
+      sortValue: (d) => d.uptime,
+      render: (d) => d.uptime,
+    },
+  ];
+
+  return (
+    <div className="nt-stack nt-gap-10 nt-min-w-0">
+      <SectionHeader
+        label="Devices at this site"
+        meta={
+          namesFilterLc !== null
+            ? `${countOf(rows.length, 'DEVICE').toUpperCase()} OF ${devices.length} · MIXED PLANES`
+            : 'MIXED PLANES'
+        }
+      />
+      {devices.length === 0 ? (
+        <div className="nt-hint-muted">no device claimed this site in the last pull</div>
+      ) : (
+        <>
+          {namesFilterLc !== null ? (
+            <div className="nt-chip-row" role="group" aria-label="Selection deep link">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.delete('names');
+                  setSearchParams(next, { replace: true });
+                  setSelectedKeys([]);
+                }}
+                title={namesFilter?.join(', ')}
+                className="nt-chip nt-chip--active"
+              >
+                {namesPresent === namesFilterLc.length
+                  ? `${namesFilterLc.length} selected device${namesFilterLc.length === 1 ? '' : 's'}`
+                  : `${namesPresent} of ${namesFilterLc.length} selected devices present`}
+                {' — clear'}
+              </button>
+            </div>
+          ) : null}
+          {rows.length === 0 ? (
+            <div className="nt-stack nt-gap-8">
+              <div className="nt-hint-muted">
+                No devices match the selection deep link — clear the selection filter to restore the
+                site roster.
+              </div>
+              <div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('names');
+                    setSearchParams(next, { replace: true });
+                    setSelectedKeys([]);
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <DataTable
+              ariaLabel="Devices at this site"
+              density={density}
+              columns={columns}
+              rows={rows}
+              rowKey={rowKeyOf}
+              selectedKeys={selectedKeys}
+              onSelectionChange={setSelectedKeys}
+              onRowActivate={onOpen}
+              rowTone={(d) => d.stateTone}
+            />
+          )}
+          {selectedKeys.length > 0 ? (
+            <div
+              className="nt-configure-bulk-bar nt-bulk-glass"
+              role="region"
+              aria-label="Site device selection actions"
+            >
+              <span className="nt-configure-bulk-bar__count">{`${selectedKeys.length} SELECTED`}</span>
+              <span className="nt-configure-bulk-bar__hint">
+                export, copy serials, or share a selection link for only the devices you marked — full list export stays in the header
+              </span>
+              <span className="nt-configure-bulk-bar__actions">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const selected = new Set(selectedKeys);
+                    const picked = rows.filter((d) => selected.has(rowKeyOf(d)));
+                    if (picked.length === 0) {
+                      toast('No selected devices still in view', {
+                        description: 'Clear selection or adjust filters.',
+                        tone: 'info',
+                      });
+                      return;
+                    }
+                    const n = exportTableCsv(
+                      'site-devices-selected.csv',
+                      ['name', 'model', 'plane', 'role', 'state', 'uptime', 'serial'],
+                      picked.map((d) => [
+                        d.name,
+                        d.model,
+                        d.plane,
+                        d.role,
+                        d.state,
+                        d.uptime,
+                        d.serial ?? '',
+                      ]),
+                    );
+                    toast(`Exported ${n} selected device${n === 1 ? '' : 's'}`, {
+                      description: 'site-devices-selected.csv — site inventory fields only.',
+                      tone: 'success',
+                    });
+                  }}
+                >
+                  Export selected
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((d) => selected.has(rowKeyOf(d)));
+                      if (picked.length === 0) {
+                        toast('No selected devices still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const serials = [
+                        ...new Set(
+                          picked
+                            .map((d) => (d.serial ?? '').trim())
+                            .filter((serial) => serial && serial !== '—'),
+                        ),
+                      ];
+                      if (serials.length === 0) {
+                        toast('No serials on the selected devices', {
+                          description: 'Those rows did not publish a serial — export CSV for names instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const text = serials.join('\n');
+                      try {
+                        await navigator.clipboard.writeText(text);
+                        toast(
+                          `Copied ${serials.length} serial${serials.length === 1 ? '' : 's'}`,
+                          {
+                            description:
+                              serials.length < picked.length
+                                ? `${picked.length - serials.length} selected without a serial skipped`
+                                : 'newline-joined · paste into a ticket or RMA',
+                            tone: 'success',
+                          },
+                        );
+                      } catch {
+                        toast('Could not copy serials', { description: text, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy serials
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const selected = new Set(selectedKeys);
+                      const picked = rows.filter((d) => selected.has(rowKeyOf(d)));
+                      if (picked.length === 0) {
+                        toast('No selected devices still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const names = [
+                        ...new Set(
+                          picked
+                            .map((d) => (d.name ?? '').trim())
+                            .filter((name) => name && name !== '—'),
+                        ),
+                      ];
+                      if (names.length === 0) {
+                        toast('No names on the selected devices', {
+                          description: 'Those rows did not publish a name — export CSV instead.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const next = new URLSearchParams(searchParams);
+                      next.set('names', names.join('\n'));
+                      const qs = next.toString();
+                      const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                      try {
+                        await navigator.clipboard.writeText(url);
+                        toast('Selection link copied', {
+                          description: `${names.length} device${names.length === 1 ? '' : 's'} · names=`,
+                          tone: 'success',
+                        });
+                      } catch {
+                        toast('Could not copy link', { description: url, tone: 'warning' });
+                      }
+                    })();
+                  }}
+                >
+                  Copy selection link
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setSelectedKeys([])}>
+                  Clear
+                </Button>
+              </span>
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -205,13 +463,9 @@ function LocalReachabilityPanel({
   return (
     <div className="nt-stack nt-gap-12">
       <SectionHeader label="Local reachability" />
-      <div className="nt-stack" style={{ gap: 12, padding: '2px 0 4px' }}>
+      <div className="nt-stack nt-gap-12 nt-pad-2-0-4">
         <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 10 }}
+          className="nt-row-between"
         >
           <span className="nt-body-sm">SSH collector</span>
           <Badge tone={collectorTone} dot>
@@ -220,14 +474,9 @@ function LocalReachabilityPanel({
         </div>
         {reachValue === null ? (
           <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 10,
-            }}
+            className="nt-row-between"
           >
-            <span className="nd-micro-label">Devices answering directly</span>
+            <span className="nd-micro-label nt-micro-label">Devices answering directly</span>
             <span
               className="nt-hint-muted"
             >
@@ -252,53 +501,111 @@ function LocalReachabilityPanel({
   );
 }
 
+/** Rows for site open/silenced alerts CSV (summary fields only). */
+export function siteOpenAlertsExportRows(
+  alerts: readonly SiteAlertRow[],
+  silenced: readonly SilencedSiteAlertRow[] = [],
+): Array<Array<string>> {
+  const open = alerts.map((a) => [a.sev, a.tone, a.title, a.meta, 'open', '', '']);
+  const hush = silenced.map((a) => [
+    a.sev,
+    a.tone,
+    a.title,
+    a.meta,
+    'silenced',
+    a.reason ?? '',
+    a.until ?? '',
+  ]);
+  return [...open, ...hush];
+}
+
 /** "Open here" (README §7) — the site's open alerts, from whichever source
  *  answered, with the jump-out to the filtered queue. A firing an active
  *  silence benched leaves the active list for the site's own SILENCED (N)
  *  group below it — reason and expiry attached, the same moved-never-hidden
  *  story the Alerts screen tells, so the silence-aware 'clear' badge and this
  *  section never disagree. Silence management itself stays on the Alerts
- *  screen; the "All alerts →" meta is the hand-off. */
+ *  screen; the "All alerts →" meta is the hand-off.
+ *  Export CSV + Copy section link keep the site alerts slice shareable. */
 function OpenHereList({
   alerts,
   silenced = [],
   onAllAlerts,
+  siteName,
 }: {
   alerts: SiteAlertRow[];
   silenced?: SilencedSiteAlertRow[];
   onAllAlerts: () => void;
+  siteName?: string;
 }) {
+  const { toast } = useToast();
+
+  const copySectionLink = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('section', 'alerts');
+    url.hash = 'alerts';
+    const href = url.toString();
+    void navigator.clipboard.writeText(href).then(
+      () =>
+        toast('Alerts section link copied', {
+          description: 'section=alerts',
+          tone: 'success',
+        }),
+      () => toast('Could not copy link', { description: href, tone: 'warning' }),
+    );
+  };
+
+  const exportAlerts = () => {
+    const safe =
+      (siteName ?? 'site')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') || 'site';
+    const rows = siteOpenAlertsExportRows(alerts, silenced);
+    const n = exportTableCsv(
+      `site-alerts-${safe}.csv`,
+      ['sev', 'tone', 'title', 'meta', 'state', 'silenceReason', 'silenceUntil'],
+      rows,
+    );
+    toast(`Exported ${n} alert row${n === 1 ? '' : 's'}`, {
+      description: 'Open + silenced summary — no payloads.',
+      tone: 'success',
+    });
+  };
+
+  const canExport = alerts.length > 0 || silenced.length > 0;
+
   return (
     <div className="nt-stack nt-gap-2">
-      <SectionHeader
-        label="Open here"
-        meta={
-          <button type="button" className="nd-link" onClick={onAllAlerts}>
-            All alerts →
-          </button>
-        }
-      />
+      <div className="nt-filter-bar nt-gap-8">
+        <SectionHeader
+          label="Open here"
+          meta={
+            <button type="button" className="nd-link nt-text-link" onClick={onAllAlerts}>
+              All alerts →
+            </button>
+          }
+        />
+        <Button variant="ghost" size="sm" className="nt-ml-auto" onClick={copySectionLink}>
+          Copy section link
+        </Button>
+        {canExport ? (
+          <Button variant="ghost" size="sm" onClick={exportAlerts}>
+            Export alerts
+          </Button>
+        ) : null}
+      </div>
       {alerts.map((a) => (
         <div
           key={a.title}
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: 10,
-            padding: '10px 0',
-            borderBottom: '1px solid var(--nd-border-subtle)',
-          }}
+          className="nt-row-start nt-gap-10 nt-rule-row nt-pad-10-0"
         >
           <Badge tone={a.tone} dot>
             {a.sev}
           </Badge>
           <div className="nt-flex-1">
             <div
-              style={{
-                fontSize: 'var(--nd-text-12)',
-                color: 'var(--nd-text-primary)',
-                lineHeight: 1.4,
-              }}
+              className="nt-text-pri-12"
             >
               {a.title}
             </div>
@@ -399,7 +706,7 @@ function LiveTopologyPanel({
       <SectionHeader label="Topology" meta={sourceMeta} />
       {omissions.length > 0 ? (
         <Alert tone="warning" title="This diagram is not the whole graph the plane reported">
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.5 }}>
+          <ul className="nt-lh-15 nt-list-tight">
             {omissions.map((reason) => (
               <li key={reason}>{reason}</li>
             ))}
@@ -421,13 +728,7 @@ function LiveTopologyPanel({
         {links.map((link, index) => (
           <div
             key={`${link.from}:${link.to}:${index}`}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(180px, .8fr) minmax(220px, 1.2fr)',
-              gap: 16,
-              padding: '8px 0',
-              borderBottom: '1px solid var(--nd-border-subtle)',
-            }}
+            className="nt-site-fact-grid"
           >
             <span className="nt-text-sec">
               {names.get(link.from) ?? link.from} ↔ {names.get(link.to) ?? link.to}
@@ -453,11 +754,47 @@ function LiveTopologyPanel({
   );
 }
 
+/** In-page sections operators can deep-link with `?section=` or `#…`. */
+const SITE_SECTIONS = [
+  'topology',
+  'floorplan',
+  'rogues',
+  'applications',
+  'devices',
+  'sle',
+  'facts',
+  'reachability',
+  'alerts',
+] as const;
+type SiteSection = (typeof SITE_SECTIONS)[number];
+
+function parseSiteSection(raw: string | null | undefined): SiteSection | null {
+  if (!raw) return null;
+  const key = raw.replace(/^#/, '').trim().toLowerCase();
+  return (SITE_SECTIONS as readonly string[]).includes(key) ? (key as SiteSection) : null;
+}
+
+function siteViewUrl(section: SiteSection | null): string {
+  const url = new URL(window.location.href);
+  if (section) {
+    url.searchParams.set('section', section);
+    url.hash = section;
+  } else {
+    url.searchParams.delete('section');
+    url.hash = '';
+  }
+  return url.toString();
+}
+
 export default function SiteDetail() {
   const navigate = useNavigate();
   const { density, showPlatformTags, pollIntervalSec } = useSettings();
   const { toast } = useToast();
   const { siteId: param = '' } = useParams();
+  const [searchParams] = useSearchParams();
+  const sectionParam =
+    parseSiteSection(searchParams.get('section')) ??
+    parseSiteSection(typeof window !== 'undefined' ? window.location.hash : null);
   const [detail, setDetail] = useState<SiteDetailData | null>(null); // null = loading
 
   /* Navigating site-to-site keeps this screen mounted: the previous site's
@@ -498,6 +835,19 @@ export default function SiteDetail() {
     };
   }, [param, pollIntervalSec]);
 
+  /* Deep-link scroll: `?section=` / `#section` lands on the matching panel once
+     the detail body is painted. Unknown section keys are ignored. */
+  useEffect(() => {
+    if (!detail || detail.apiError || !sectionParam) return;
+    const id = window.setTimeout(() => {
+      document.getElementById(`site-section-${sectionParam}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    }, 50);
+    return () => window.clearTimeout(id);
+  }, [detail, sectionParam]);
+
   if (detail === null) {
     return <PageSkeleton variant="detail" />;
   }
@@ -512,7 +862,7 @@ export default function SiteDetail() {
     // 'multiple') that no inventory row backs: without a site row there is
     // nothing to show, and a profile on its own would be a fabricated page.
     return (
-      <div className="nt-stack">
+      <div className="nt-stack nt-recon-reveal nt-site-detail-shell nt-section-panel">
         <div>
           <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
             ← All sites
@@ -572,7 +922,7 @@ export default function SiteDetail() {
       liveDevices.find((d) => /switch|\bsw\b|sw-/i.test(`${d.role} ${d.name}`))?.name ??
       null;
     return (
-      <div className="nt-stack">
+      <div className="nt-stack nt-recon-reveal nt-site-detail-shell nt-section-panel">
         <ScreenHeader
           overline={`Sites / ${name}`}
           title={name}
@@ -583,9 +933,36 @@ export default function SiteDetail() {
           }
           actions={
             <>
+              <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+                NightDesk · site
+              </span>
               <ProvenanceNote label={source} />
+              {/* LIVE on pure live and sites blend alike — provenance mono stamp alone is easy to miss. */}
+              {detail.dataSource === 'live' || (detail.blended?.includes('sites') ?? false) ? (
+                <Badge tone="info">LIVE</Badge>
+              ) : null}
               <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
                 ← All sites
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const url = siteViewUrl(sectionParam);
+                    try {
+                      await navigator.clipboard.writeText(url);
+                      toast('View link copied', {
+                        description: sectionParam ? `section=${sectionParam}` : name,
+                        tone: 'success',
+                      });
+                    } catch {
+                      toast('Could not copy link', { description: url, tone: 'warning' });
+                    }
+                  })();
+                }}
+              >
+                Copy view link
               </Button>
               {liveDevices.length > 0 ? (
                 <Button
@@ -613,6 +990,32 @@ export default function SiteDetail() {
                   Export devices
                 </Button>
               ) : null}
+              {detail.dataSource === 'live' ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void (async () => {
+                      const siteKey = String(site.id || site.name || param).trim();
+                      const path = siteDevicesExportPath(siteKey);
+                      const res = await downloadApiCsv(path, 'devices.csv');
+                      if (res.ok) {
+                        toast('Server CSV downloaded', {
+                          description: `devices.csv — site=${siteKey} portal inventory.`,
+                          tone: 'success',
+                        });
+                      } else {
+                        toast('Server CSV failed', {
+                          description: res.error ?? 'Could not download export',
+                          tone: 'warning',
+                        });
+                      }
+                    })();
+                  }}
+                >
+                  Download server CSV
+                </Button>
+              ) : null}
               {launchPlane ? (
                 <Button
                   variant="secondary"
@@ -636,9 +1039,12 @@ export default function SiteDetail() {
                   Local terminal
                 </Button>
               ) : null}
+              {/* Devices / rogues tables are keyboard grids — surface the map (Loop 199). */}
+              <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
             </>
           }
         />
+      <div className="nt-plane-theater" role="note">NightDesk · site detail · topology · estate slice</div>
 
         <div className="nt-stat-grid">
           <Stat label="Devices" value={String(site.devices)} delta="reported inventory rows" deltaTone="neutral" />
@@ -670,57 +1076,69 @@ export default function SiteDetail() {
 
         <Divider variant="flair" />
 
-        <LiveTopologyPanel
-          topology={liveTopology}
-          devices={liveDevices}
-          onDevice={(deviceName) => navigate(`/devices/${encodeURIComponent(deviceName)}`)}
-        />
+        <div id="site-section-topology">
+          <LiveTopologyPanel
+            topology={liveTopology}
+            devices={liveDevices}
+            onDevice={(deviceName) => navigate(`/devices/${encodeURIComponent(deviceName)}`)}
+          />
+        </div>
 
-        <SiteFloorPlan maps={sections.maps} clients={sections.mapClients} mistClaimed={mistClaimed} />
+        <div id="site-section-floorplan">
+          <SiteFloorPlan maps={sections.maps} clients={sections.mapClients} mistClaimed={mistClaimed} />
+        </div>
 
         <VisualReferencePanel target={{ kind: 'site', id: String(site.id) }} />
         <ConfigActionPanel targetKind="ssid" plane={mistClaimed ? 'MIST' : centralClaimed ? 'CENTRAL' : undefined} target={{ kind: 'site', id: String(site.id) }} />
         <ConfigRecommendationsPanel site={String(site.name ?? site.id)} />
 
-        <SiteRogueAps rogues={sections.rogues} mistClaimed={mistClaimed} />
+        <div id="site-section-rogues">
+          <SiteRogueAps
+            rogues={sections.rogues}
+            mistClaimed={mistClaimed}
+            siteKey={String(site.id)}
+            live={detail.dataSource === 'live' || (detail.blended?.includes('sites') ?? false)}
+          />
+        </div>
 
-        <SiteApplications centralClaimed={centralClaimed} siteKey={String(site.id)} />
+        <div id="site-section-applications">
+          <SiteApplications
+            centralClaimed={centralClaimed}
+            siteKey={String(site.id)}
+            live={detail.dataSource === 'live' || (detail.blended?.includes('sites') ?? false)}
+          />
+        </div>
 
         {/* Same two columns as the authored branch (README §7): the per-site
             device table on the left, facts / reachability / open alerts on the
             right — the API sends both projections with a live site row. */}
         <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)',
-            gap: 34,
-            alignItems: 'start',
-          }}
+          className="nt-split-site"
         >
-          <SiteDeviceTable
-            devices={liveDevices}
-            density={density}
-            showPlatformTags={showPlatformTags}
-            onOpen={(device) => navigate(deviceDetailPath({ name: device.name, plane: device.plane, serial: device.serial }))}
-          />
-
-          <div className="nt-stack" style={{ gap: 26, minWidth: 0 }}>
-            <SiteSle
-              sle={sections.sle}
-              mistClaimed={mistClaimed}
-              siteKey={String(site.id)}
-              siteName={name}
+          <div id="site-section-devices">
+            <SiteDeviceTable
+              devices={liveDevices}
+              density={density}
+              showPlatformTags={showPlatformTags}
+              onOpen={(device) => navigate(deviceDetailPath({ name: device.name, plane: device.plane, serial: device.serial }))}
             />
-            <div className="nt-stack nt-gap-2">
+          </div>
+
+          <div className="nt-stack nt-stack-col nt-gap-26-min">
+            <div id="site-section-sle">
+              <SiteSle
+                sle={sections.sle}
+                mistClaimed={mistClaimed}
+                siteKey={String(site.id)}
+                siteName={name}
+              />
+            </div>
+            <div id="site-section-facts" className="nt-stack nt-gap-2">
               <SectionHeader label="Live site facts" />
               {facts.map((fact) => (
                 <div
                   key={fact.k}
-                  style={{
-                    display: 'flex',
-                    gap: 12,
-                    padding: '9px 0',
-                    borderBottom: '1px solid var(--nd-border-subtle)' }}
+                  className="nt-row nt-gap-12 nt-rule-row"
                 >
                   <span
                     className="nt-mono-label nt-w-100"
@@ -732,27 +1150,32 @@ export default function SiteDetail() {
               ))}
             </div>
 
-            {reachability ? (
-              <LocalReachabilityPanel
-                reachability={reachability}
-                onTerminal={(target) => navigate(`/devices/${encodeURIComponent(target)}`)}
-              />
-            ) : (
-              <div className="nt-stack nt-gap-10">
-                <SectionHeader label="Local reachability" meta="NOT REPORTED" />
-                <div
-                  className="nt-hint-muted nt-lh-16"
-                >
-                  No linked local collector reported reachability for this site.
+            <div id="site-section-reachability">
+              {reachability ? (
+                <LocalReachabilityPanel
+                  reachability={reachability}
+                  onTerminal={(target) => navigate(`/devices/${encodeURIComponent(target)}`)}
+                />
+              ) : (
+                <div className="nt-stack nt-gap-10">
+                  <SectionHeader label="Local reachability" meta="NOT REPORTED" />
+                  <div
+                    className="nt-hint-muted nt-lh-16"
+                  >
+                    No linked local collector reported reachability for this site.
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
-            <OpenHereList
-              alerts={liveAlerts}
-              silenced={liveSilenced}
-              onAllAlerts={() => navigate('/alerts')}
-            />
+            <div id="site-section-alerts">
+              <OpenHereList
+                alerts={liveAlerts}
+                silenced={liveSilenced}
+                onAllAlerts={() => navigate('/alerts')}
+                siteName={name}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -769,7 +1192,7 @@ export default function SiteDetail() {
   const centralClaimed = site.planes.some((p) => planeKeyOf(p.name) === 'central');
 
   return (
-    <div className="nt-stack">
+    <div className="nt-stack nt-recon-reveal nt-site-detail-shell nt-section-panel">
       <ScreenHeader
         overline={`Sites / ${name}`}
         title={name}
@@ -780,9 +1203,36 @@ export default function SiteDetail() {
         }
         actions={
           <>
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · site
+            </span>
             <ProvenanceNote label={source} />
+            {/* LIVE on pure live and sites blend alike — provenance mono stamp alone is easy to miss. */}
+            {detail.dataSource === 'live' || (detail.blended?.includes('sites') ?? false) ? (
+              <Badge tone="info">LIVE</Badge>
+            ) : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
               ← All sites
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const url = siteViewUrl(sectionParam);
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('View link copied', {
+                      description: sectionParam ? `section=${sectionParam}` : name,
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy view link
             </Button>
             {profile && profile.devices.length > 0 ? (
               <Button
@@ -808,6 +1258,32 @@ export default function SiteDetail() {
                 }}
               >
                 Export devices
+              </Button>
+            ) : null}
+            {detail.dataSource === 'live' ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    const siteKey = String(site.id || profile?.siteId || site.name || param).trim();
+                    const path = siteDevicesExportPath(siteKey);
+                    const res = await downloadApiCsv(path, 'devices.csv');
+                    if (res.ok) {
+                      toast('Server CSV downloaded', {
+                        description: `devices.csv — site=${siteKey} portal inventory.`,
+                        tone: 'success',
+                      });
+                    } else {
+                      toast('Server CSV failed', {
+                        description: res.error ?? 'Could not download export',
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
               </Button>
             ) : null}
             {profile ? (
@@ -840,6 +1316,8 @@ export default function SiteDetail() {
                 ) : null}
               </>
             ) : null}
+            {/* Devices / rogues tables are keyboard grids — surface the map (Loop 199). */}
+            <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
           </>
         }
       />
@@ -893,7 +1371,7 @@ export default function SiteDetail() {
           <Divider variant="flair" />
 
           {topology && topology.nodes.length > 0 ? (
-            <div className="nt-stack nt-gap-10">
+            <div id="site-section-topology" className="nt-stack nt-gap-10">
               <SectionHeader label="Topology" meta="RECORDED UPLINKS" />
               <SiteTopologyDiagram
                 topology={topology}
@@ -905,52 +1383,64 @@ export default function SiteDetail() {
                 {topology.note}
               </div>
             </div>
-          ) : null}
+          ) : (
+            <div id="site-section-topology" hidden aria-hidden />
+          )}
 
-          <SiteFloorPlan maps={detail.maps} clients={detail.mapClients} mistClaimed={mistClaimed} />
+          <div id="site-section-floorplan">
+            <SiteFloorPlan maps={detail.maps} clients={detail.mapClients} mistClaimed={mistClaimed} />
+          </div>
 
           <VisualReferencePanel target={{ kind: 'site', id: String(site.id) }} />
           <ConfigActionPanel targetKind="ssid" plane={mistClaimed ? 'MIST' : centralClaimed ? 'CENTRAL' : undefined} target={{ kind: 'site', id: String(site.id) }} />
           <ConfigRecommendationsPanel site={String(site.name ?? site.id)} />
 
-          <SiteRogueAps rogues={sections.rogues} mistClaimed={mistClaimed} />
+          <div id="site-section-rogues">
+            <SiteRogueAps
+              rogues={sections.rogues}
+              mistClaimed={mistClaimed}
+              siteKey={String(site.id)}
+              live={detail.dataSource === 'live' || (detail.blended?.includes('sites') ?? false)}
+            />
+          </div>
 
-          <SiteApplications centralClaimed={centralClaimed} siteKey={String(site.id)} />
+          <div id="site-section-applications">
+            <SiteApplications
+              centralClaimed={centralClaimed}
+              siteKey={String(site.id)}
+              live={detail.dataSource === 'live' || (detail.blended?.includes('sites') ?? false)}
+            />
+          </div>
 
           <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)',
-              gap: 34,
-              alignItems: 'start',
-            }}
+            className="nt-split-site"
           >
             {/* ---------------- left column ---------------- */}
-            <SiteDeviceTable
-              devices={profile.devices}
-              density={density}
-              showPlatformTags={showPlatformTags}
-              onOpen={(device) => navigate(deviceDetailPath({ name: device.name, plane: device.plane, serial: device.serial }))}
-            />
+            <div id="site-section-devices">
+              <SiteDeviceTable
+                devices={profile.devices}
+                density={density}
+                showPlatformTags={showPlatformTags}
+                onOpen={(device) => navigate(deviceDetailPath({ name: device.name, plane: device.plane, serial: device.serial }))}
+              />
+            </div>
 
             {/* ---------------- right column ---------------- */}
-            <div className="nt-stack" style={{ gap: 26, minWidth: 0 }}>
-              <SiteSle
-                sle={detail.sle}
-                mistClaimed={mistClaimed}
-                siteKey={String(site.id)}
-                siteName={name}
-              />
-              <div className="nt-stack nt-gap-2">
+            <div className="nt-stack nt-stack-col nt-gap-26-min">
+              <div id="site-section-sle">
+                <SiteSle
+                  sle={detail.sle}
+                  mistClaimed={mistClaimed}
+                  siteKey={String(site.id)}
+                  siteName={name}
+                />
+              </div>
+              <div id="site-section-facts" className="nt-stack nt-gap-2">
                 <SectionHeader label="Site facts" />
                 {profile.facts.map((f) => (
                   <div
                     key={f.k}
-                    style={{
-                      display: 'flex',
-                      gap: 12,
-                      padding: '9px 0',
-                      borderBottom: '1px solid var(--nd-border-subtle)' }}
+                    className="nt-row nt-gap-12 nt-rule-row"
                   >
                     <span
                       className="nt-fact-row__k nt-w-96"
@@ -958,12 +1448,7 @@ export default function SiteDetail() {
                       {f.k}
                     </span>
                     <span
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        fontSize: 13,
-                        color: 'var(--nd-text-secondary)',
-                      }}
+                      className="nt-flex-1 nt-text-sec nt-fs-13"
                     >
                       {f.v}
                     </span>
@@ -974,18 +1459,26 @@ export default function SiteDetail() {
               {/* Same component as the live branch, fed from the authored
                   profile — the two sources can never phrase this panel
                   differently. */}
-              <LocalReachabilityPanel
-                reachability={{
-                  collector: profile.collector,
-                  collectorTone: profile.collectorTone,
-                  reachValue: profile.reachValue,
-                  collectorNote: profile.collectorNote,
-                  core: profile.core,
-                }}
-                onTerminal={(target) => navigate(`/devices/${encodeURIComponent(target)}`)}
-              />
+              <div id="site-section-reachability">
+                <LocalReachabilityPanel
+                  reachability={{
+                    collector: profile.collector,
+                    collectorTone: profile.collectorTone,
+                    reachValue: profile.reachValue,
+                    collectorNote: profile.collectorNote,
+                    core: profile.core,
+                  }}
+                  onTerminal={(target) => navigate(`/devices/${encodeURIComponent(target)}`)}
+                />
+              </div>
 
-              <OpenHereList alerts={profile.alerts} onAllAlerts={() => navigate('/alerts')} />
+              <div id="site-section-alerts">
+                <OpenHereList
+                  alerts={profile.alerts}
+                  onAllAlerts={() => navigate('/alerts')}
+                  siteName={name}
+                />
+              </div>
             </div>
           </div>
         </>

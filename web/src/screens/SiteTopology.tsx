@@ -35,7 +35,17 @@ import type {
 } from '@hpe/shared';
 import { countOf } from '@hpe/shared';
 import { relativeAge } from '@hpe/shared';
-import { Badge, Button } from '../nightdesk';
+import { Badge, Button, useToast } from '../nightdesk';
+import { exportTableCsv } from '../lib/csv';
+
+/** Canonical share target for the site topology diagram section. */
+export function siteTopologySectionUrl(
+  pathname: string = typeof window !== 'undefined' ? window.location.pathname : '',
+): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const base = pathname || '/sites';
+  return `${origin}${base}?section=topology#topology`;
+}
 
 const ROW_H = 96;
 const CARD_H = 56;
@@ -79,16 +89,6 @@ const LAYER_LABEL: Record<TopologyLayerKey, string> = {
   core: 'CORE',
   access: 'ACCESS',
   edge: 'EDGE',
-};
-
-/** Status-dot colours — the same token map the client path chain uses. */
-const DOT: Partial<Record<Tone, string>> = {
-  success: 'var(--nd-success)',
-  warning: 'var(--nd-warning)',
-  danger: 'var(--nd-danger)',
-  neutral: 'var(--nd-border-strong)',
-  accent: 'var(--nd-accent)',
-  info: 'var(--nd-info, var(--nd-border-strong))',
 };
 
 /**
@@ -377,32 +377,17 @@ function Card({
     <>
       <span
         aria-hidden
-        style={{
-          width: 9,
-          height: 9,
-          borderRadius: '50%',
-          background: DOT[node.tone] ?? 'var(--nd-border-strong)',
-          flex: '0 0 9px',
-        }}
+        className="nt-topo-dot-9"
+        data-tone={node.tone ?? 'neutral'}
       />
-      <span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, textAlign: 'left' }}>
+      <span className="nt-stack-left">
         <span
-          className="nt-topo-title" style={{
-color: 'var(--nd-text-primary)',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis'
-}}
+          className="nt-topo-title nt-ellipsis-primary"
         >
           {node.label}
         </span>
         <span
-          className="nt-mono-label" style={{
-color: 'var(--nd-text-muted)',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis'
-}}
+          className="nt-mono-label nt-ellipsis-muted"
         >
           {isGroup ? `${node.sub} · expand` : node.sub}
         </span>
@@ -412,12 +397,7 @@ color: 'var(--nd-text-muted)',
             operator in twelve who cannot tell it from the green beside it. */}
         {shownState !== null ? (
           <span
-            className="nt-mono-label" style={{
-color: node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-warning)',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis'
-}}
+            className={[`nt-mono-label`, node.tone === "danger" ? "nt-ellipsis-clamp nt-tone-danger" : "nt-ellipsis-clamp nt-tone-warning"].filter(Boolean).join(" ")}
           >
             {shownState}
           </span>
@@ -426,24 +406,12 @@ color: node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-warning)',
     </>
   );
   const style: React.CSSProperties = {
-    position: 'absolute',
-    left: `${xPct}%`,
-    top: layerIdx * ROW_H + (ROW_H - CARD_H) / 2,
-    transform: 'translateX(-50%)',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 9,
-    width: 168,
-    height: CARD_H,
-    padding: '0 12px',
-    background: 'var(--nd-bg-raised)',
-    border: `1px solid ${
-      focused ? 'var(--nd-accent)' : node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-border-subtle)'
-    }`,
-    borderRadius: 2,
-    cursor: 'pointer',
+    ['--nd-topo-x' as string]: `${xPct}%`,
+    ['--nd-topo-y' as string]: `${layerIdx * ROW_H + (ROW_H - CARD_H) / 2}px`,
+    ['--nd-topo-h' as string]: `${CARD_H}px`,
     opacity: dimmed ? 0.25 : 1,
   };
+  const cardTone = focused ? 'focus' : node.tone === 'danger' ? 'danger' : 'default';
   /* Focus mode's pointer rules, kept beside the only click handler: a plain
      click keeps its existing meaning (open the device, expand the group)
      while no focus is active; shift+click always focuses; and once a focus
@@ -464,7 +432,7 @@ color: node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-warning)',
     <button
       key={node.id}
       type="button"
-      className="nt-rowlink"
+      className={`nt-rowlink nt-font-inherit nt-topo-node-card nt-topo-node-card--${cardTone}`}
       aria-label={
         (focusActive || !navigable
           ? `Focus ${node.label}`
@@ -473,7 +441,7 @@ color: node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-warning)',
             : `Expand ${node.label} ${node.sub}`) + (shownState !== null ? `, ${shownState}` : '')
       }
       onClick={handleClick}
-      style={{ ...style, font: 'inherit' }}
+      style={style}
     >
       {inner}
     </button>
@@ -487,6 +455,7 @@ export function SiteTopologyDiagram({
   topology: SiteTopology;
   onDevice?: (name: string) => void;
 }) {
+  const { toast } = useToast();
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   // Focus mode: one node plus its 1-hop neighbours stay lit, everything else
   // dims. Entered by shift+click on any card (or a plain click on a card with
@@ -593,21 +562,67 @@ export function SiteTopologyDiagram({
     return [];
   };
 
+  const canExport = topology.nodes.length > 0 || topology.edges.length > 0;
+
+  const copyViewLink = () => {
+    const url = siteTopologySectionUrl();
+    void navigator.clipboard.writeText(url).then(
+      () =>
+        toast('Topology section link copied', {
+          description: 'section=topology',
+          tone: 'success',
+        }),
+      () => toast('Could not copy link', { description: url, tone: 'warning' }),
+    );
+  };
+
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+      className="nt-stack-gap-8 nt-recon-reveal nt-topo-surface nt-site-topo-shell nt-section-panel"
       onClick={() => {
         if (focusId !== null) setFocusId(null);
       }}
     >
+      <div className="nt-plane-theater" role="note">
+        NightDesk · site topology · path owns attention · state owns hue
+      </div>
+      <div className="nt-row-wrap-10 nt-toolbar-glass" onClick={(event) => event.stopPropagation()}>
+        <Button variant="ghost" size="sm" onClick={copyViewLink}>
+          Copy view link
+        </Button>
+        {canExport ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              exportTableCsv(
+                'site-topology-nodes.csv',
+                ['id', 'layer', 'label', 'sub', 'state', 'device'],
+                topology.nodes.map((n) => [
+                  n.id,
+                  n.layer,
+                  n.label,
+                  n.sub ?? '',
+                  n.state ?? '',
+                  n.device ?? '',
+                ]),
+              );
+              exportTableCsv(
+                'site-topology-edges.csv',
+                ['from', 'to', 'label'],
+                topology.edges.map((e) => [e.from, e.to, e.label ?? '']),
+              );
+            }}
+          >
+            Export CSV
+          </Button>
+        ) : null}
+      </div>
       {focus !== null ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div className="nt-row-wrap-10">
           <Badge tone="accent">focus</Badge>
           <span
-            className="nt-hint-muted" style={{
-flex: 1,
-              minWidth: 0
-}}
+            className="nt-hint-muted nt-flex-1-min"
           >
             {`${focus.label} · ${countOf(focus.neighbours.size, 'neighbour')} in view · click another node to move the focus · Esc or click the background to leave`}
           </span>
@@ -623,18 +638,14 @@ flex: 1,
           </Button>
         </div>
       ) : null}
-      <div style={{ display: 'flex', gap: 12, overflowX: 'auto' }}>
+      <div className="nt-row-gap-12-scroll">
         {/* layer micro-labels */}
-        <div style={{ width: 64, flex: '0 0 64px', position: 'relative', height }}>
+        <div className="nt-topo-lane" style={{ ['--nd-topo-h' as string]: `${height}px` }}>
           {topology.layers.map((layer, i) => (
             <span
               key={layer}
-              className="nt-mono-label" style={{
-position: 'absolute',
-                top: i * ROW_H + ROW_H / 2,
-                transform: 'translateY(-50%)',
-                color: 'var(--nd-text-muted)'
-}}
+              className="nt-mono-label nt-topo-layer-label"
+              style={{ ['--nd-topo-y' as string]: `${i * ROW_H + ROW_H / 2}px` }}
             >
               {LAYER_LABEL[layer]}
             </span>
@@ -642,14 +653,20 @@ position: 'absolute',
         </div>
 
         {/* diagram area */}
-        <div style={{ position: 'relative', flex: '1 0 auto', minWidth: diagramMinWidth, height }}>
+        <div
+          className="nt-topo-diagram"
+          style={{
+            ['--nd-topo-min-w' as string]: `${diagramMinWidth}px`,
+            ['--nd-topo-h' as string]: `${height}px`,
+          }}
+        >
           <svg
             aria-hidden
             width="100%"
             height="100%"
             viewBox={`0 0 100 ${height}`}
             preserveAspectRatio="none"
-            style={{ position: 'absolute', inset: 0 }}
+            className="nt-abs-inset"
           >
             {topology.edges.flatMap((e, i) => {
               const froms = targetsFor(e.from);
@@ -685,17 +702,12 @@ position: 'absolute',
             return (
               <span
                 key={`label-${i}`}
-                className="nt-hint-muted" style={{
-position: 'absolute',
-                  left: `${(f.xPct + t.xPct) / 2}%`,
-                  top: (f.layerIdx + t.layerIdx + 1) * ROW_H - 7,
-                  transform: 'translate(-50%, -50%)',
-                  letterSpacing: '.04em',
-                  background: 'var(--nd-bg-surface)',
-                  padding: '0 6px',
-                  whiteSpace: 'nowrap',
-                  opacity: edgeLit ? 1 : 0.2
-}}
+                className="nt-hint-muted nt-topo-edge-tag"
+                data-lit={edgeLit ? 'true' : 'false'}
+                style={{
+                  ['--nd-topo-x' as string]: `${(f.xPct + t.xPct) / 2}%`,
+                  ['--nd-topo-y' as string]: `${(f.layerIdx + t.layerIdx + 1) * ROW_H - 7}px`,
+                }}
               >
                 {e.label}
               </span>

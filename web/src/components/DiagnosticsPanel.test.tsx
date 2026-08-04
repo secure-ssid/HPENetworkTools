@@ -10,6 +10,7 @@ import {
   reviewDiagnostic,
   startDiagnostic,
 } from '../api/client';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
 import type {
   DiagnosticAuditEntry,
   DiagnosticEligibleDevice,
@@ -30,6 +31,20 @@ vi.mock('../api/client', async (importOriginal) => {
     startDiagnostic: vi.fn(),
   };
 });
+
+vi.mock('../lib/downloadApiCsv', () => ({
+  downloadApiCsv: vi.fn(async () => ({ ok: true })),
+}));
+
+vi.mock('../nightdesk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../nightdesk')>();
+  return {
+    ...actual,
+    useToast: () => ({ toast: vi.fn() }),
+  };
+});
+
+const mockDownloadApiCsv = vi.mocked(downloadApiCsv);
 
 const eligibility = vi.mocked(getDiagnosticEligibility);
 const history = vi.mocked(getDiagnosticHistory);
@@ -344,6 +359,33 @@ describe('DiagnosticsPanel', () => {
     const targetInput = await screen.findByLabelText('Traceroute target') as HTMLInputElement;
     expect(targetInput.value).toBe('');
     expect(eligibility).toHaveBeenCalledTimes(2);
+  });
+
+  it('Download server CSV hits diagnostics history export with device/plane (Loop 101)', async () => {
+    eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
+    history.mockResolvedValue(
+      historyOf([
+        {
+          id: 'h1',
+          at: '2026-07-29T10:00:00Z',
+          device: 'ap-1',
+          serial: 'AP-SERIAL',
+          plane: 'CENTRAL',
+          operation: 'traceroute',
+          state: 'reviewed',
+          target: '[redacted]',
+        },
+      ]),
+    );
+    mockDownloadApiCsv.mockClear();
+    render(<DiagnosticsPanel deviceName="ap-1" plane="CENTRAL" serial="AP-SERIAL" />);
+    expect(await screen.findByText(/Recent audit history/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Download server CSV' }));
+    await waitFor(() => expect(mockDownloadApiCsv).toHaveBeenCalled());
+    const path = mockDownloadApiCsv.mock.calls[0]?.[0] ?? '';
+    expect(path).toContain('/api/diagnostics/history/export');
+    expect(path).toContain('device=AP-SERIAL');
+    expect(path).toContain('plane=CENTRAL');
   });
 
   it('never shows a review response that arrives after switching devices', async () => {

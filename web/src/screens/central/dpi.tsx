@@ -89,26 +89,19 @@ export function dpiSectionNote(applications: SiteApplicationsLive): string {
 function WatchRow({ app }: { app: SiteAppRow }) {
   return (
     <div
-      style={{
-        display: 'flex',
-        alignItems: 'baseline',
-        justifyContent: 'space-between',
-        gap: 12,
-        padding: '8px 0',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-      }}
+      className="nt-dpi-row nt-dpi-row--between"
     >
-      <span style={{ minWidth: 0 }}>
+      <span className="nt-min-w-0">
         <span className="nt-text-pri-12">
           {app.name}
         </span>
         {app.riskRaw && app.riskRaw !== app.risk ? (
-          <span className="nt-hint-muted" style={{ marginLeft: 8 }}>
+          <span className="nt-hint-muted nt-ml-8">
             {`plane risk: ${app.riskRaw}`}
           </span>
         ) : null}
       </span>
-      <span className="nt-row-center nt-gap-10" style={{ flexShrink: 0 }}>
+      <span className="nt-row-center nt-gap-10 nt-shrink-0">
         <span className="nt-hint-muted">
           {app.totalBytes !== null ? formatBytes(app.totalBytes) : 'bytes not reported'}
         </span>
@@ -122,15 +115,9 @@ function WatchRow({ app }: { app: SiteAppRow }) {
 function TalkerRow({ app, rank }: { app: SiteAppRow; rank: number }) {
   return (
     <div
-      style={{
-        display: 'flex',
-        alignItems: 'baseline',
-        gap: 12,
-        padding: '8px 0',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-      }}
+      className="nt-dpi-row"
     >
-      <span className="nt-hint-muted" style={{ width: 22, flex: "0 0 22px" }}>
+      <span className="nt-hint-muted nt-w-22">
         {rank}
       </span>
       <span className="nt-flex-1">
@@ -138,12 +125,12 @@ function TalkerRow({ app, rank }: { app: SiteAppRow; rank: number }) {
           {app.name}
         </span>
         {app.categories.length > 0 ? (
-          <span className="nt-hint-muted" style={{ marginLeft: 8 }}>
+          <span className="nt-hint-muted nt-ml-8">
             {app.categories.join(' · ')}
           </span>
         ) : null}
       </span>
-      <span className="nt-hint-muted" style={{ flexShrink: 0 }}>
+      <span className="nt-hint-muted nt-shrink-0">
         {app.totalBytes !== null ? formatBytes(app.totalBytes) : '—'}
       </span>
     </div>
@@ -161,7 +148,7 @@ export function DpiApplicationsBody({ applications }: { applications: SiteApplic
   const rollup = rollupAppCategories(apps);
   const span = windowSpan(applications.window);
   return (
-    <div className="nt-stack nt-gap-18">
+    <div className="nt-stack nt-gap-18 nt-central-section nt-section-panel">
       <div className="nt-hint-muted">
         {`CENTRAL · READ ${hhmm(applications.source.at)}${applications.source.cached ? ' · CACHED' : ''}`}
       </div>
@@ -178,6 +165,7 @@ export function DpiApplicationsBody({ applications }: { applications: SiteApplic
       </div>
 
       <div className="nt-stack nt-gap-2">
+        <div className="nt-plane-theater nt-plane-theater--compact" role="note">NightDesk · DPI theater · estimates · share of largest</div>
         <SectionHeader
           label="Watchlist"
           meta={flagged > 0 ? countOf(flagged, 'flagged app').toUpperCase() : 'NOTHING FLAGGED'}
@@ -188,7 +176,7 @@ export function DpiApplicationsBody({ applications }: { applications: SiteApplic
           <>
             {watchlist.unclassified.length > 0 ? (
               <>
-                <div className="nt-service-note" style={{ padding: "8px 0 2px" }}>
+                <div className="nt-service-note nt-pad-y-8-2">
                   {"Unclassified — Aruba doesn't know what this is and doesn't like it:"}
                 </div>
                 {watchlist.unclassified.map((app) => (
@@ -225,53 +213,38 @@ export function DpiApplicationsBody({ applications }: { applications: SiteApplic
         {rollup.map((row) => (
           <div
             key={row.category}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(140px, .9fr) minmax(120px, 1.1fr) auto',
-              gap: 12,
-              alignItems: 'center',
-            }}
+            className="nt-dpi-grid"
           >
             <span className="nt-text-pri-12">
               {row.category}
             </span>
             <span
-              style={{
-                display: 'block',
-                height: 6,
-                background: 'var(--nd-bg-raised)',
-                border: '1px solid var(--nd-border-subtle)',
-              }}
+              className="nt-dpi-track"
             >
               <span
-                style={{
-                  display: 'block',
-                  height: '100%',
-                  width: `${Math.round(row.share * 100)}%`,
-                  background: 'var(--nd-accent)',
-                }}
+                className="nt-bar-fill" style={{ ["--nd-health" as string]: `${Math.round(row.share * 100)}%` }}
               />
             </span>
-            <span className="nt-hint-muted" style={{ textAlign: "right" }}>
+            <span className="nt-hint-muted nt-ta-right">
               {`${countOf(row.apps, 'app')} · ${formatBytes(row.bytes)}`}
             </span>
           </div>
         ))}
-        <div className="nt-service-note nt-hint-muted" style={{ fontSize: 10.5 }}>
+        <div className="nt-service-note nt-hint-muted nt-fs-105">
           Bar length is the share of the largest category — an app's bytes count toward every
           category it carries, so these are not shares of the total.
         </div>
       </div>
 
       <div className="nt-stack nt-gap-3">
-        <div className="nt-service-note nt-hint-muted" style={{ fontSize: 10.5 }}>
+        <div className="nt-service-note nt-hint-muted nt-fs-105">
           {span
             ? `${span} window — the API refuses anything wider than 7 days; the default is 24 h.`
             : 'The API refuses a window wider than 7 days; the default is 24 h.'}
         </div>
-        <div className="nt-service-note nt-hint-muted" style={{ fontSize: 10.5 }}>{DPI_BYTES_ARE_ESTIMATES}</div>
+        <div className="nt-service-note nt-hint-muted nt-fs-105">{DPI_BYTES_ARE_ESTIMATES}</div>
         {applications.truncated ? (
-          <div className="nt-service-note nt-hint-muted" style={{ fontSize: 10.5 }}>
+          <div className="nt-service-note nt-hint-muted nt-fs-105">
             {applications.source.note ??
               'The paged walk did not finish — the table is a prefix of the full ranking.'}
           </div>

@@ -4,7 +4,8 @@
  * two columns (1.5fr / 1fr). Left: "Needs you now" alert rows (the site is its
  * own element — and a link — whenever the row carries `siteName`/`siteId`,
  * falling back to the authored `meta` prefix when it does not) + Sites table
- * with the 64×3px health bar. Right: Management planes, Launchpad, Change log.
+ * with the 64×3px health bar and a **Health** chip row (same `?health=` as the
+ * Sites Select). Right: Management planes, Launchpad, Change log.
  * A live section that reported nothing keeps its named empty state and drops its
  * "all N →" link rather than pointing at an empty screen.
  * The stat tiles are links (LibreNMS availability-map pattern): each one leads
@@ -12,47 +13,99 @@
  * to the queue, drift to Compliance, licences to Licences, plane health to
  * Connected systems — so a figure is never a dead end the operator has to
  * re-navigate to.
+ * Header **LIVE** stamps pure live (Loop 168 — pure live used to leave the
+ * header quiet). Blend mode keeps per-section LIVE/DEMO badges instead.
+ * Needs-you-now multi-select (Loop 190) raises **Export selected**, **Copy
+ * devices** (unique newline-joined device names), **Copy selection link**
+ * (`?devices=`; clearable chip), and **Clear**. Sites preview multi-select
+ * raises **Export selected**, **Copy names**, **Copy selection link**
+ * (`?siteIds=`; clearable chip), and **Clear**. Header `KeyboardShortcuts`
+ * surfaces the alerts/sites grid map (Loop 201).
  * Data: getOverview() — live /api/overview when the server is up, shared
  * fixtures otherwise (header then shows the demo SYNCED stamp).
  */
 
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Badge,
   Button,
+  DataTable,
+  DATATABLE_ROW_SHORTCUTS,
   Divider,
   EmptyState,
+  KeyboardShortcuts,
   PageSkeleton,
   SectionHeader,
+  Select,
   Sparkline,
-  Table,
   useToast,
+  type DataTableColumn,
 } from '../nightdesk';
 import { getMetricsHistory, getOverview, metricsWindowLabel } from '../api/client';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { useIncident } from '../app/IncidentContext';
-import { deviceDetailPath, pathForView } from '../app/nav';
+import { deviceDetailPath, namesFilterForParam, pathForView } from '../app/nav';
 import { hhmmLocal as hhmm, countOf, envelopeAnomalies, planeMetricsKey } from '@hpe/shared';
-import type { LaunchpadRow, MetricsHistoryEnvelope, OverviewAlert, SiteHealthTone, SiteId } from '@hpe/shared';
+import type {
+  LaunchpadRow,
+  MetricsHistoryEnvelope,
+  OverviewAlert,
+  OverviewSiteRow,
+  SiteHealthTone,
+  SiteId,
+} from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import '../app/app.css';
 import { StatRow } from './StatRow';
 import { exportTableCsv } from '../lib/csv';
+import { downloadApiCsv } from '../lib/downloadApiCsv';
+import { overviewActionChips } from '../lib/overviewDeltas';
 
-const HEALTH_COLORS: Record<SiteHealthTone, string> = {
-  ok: 'var(--nd-success)',
-  warn: 'var(--nd-warning)',
-  bad: 'var(--nd-danger)',
-  stale: 'var(--nd-border-strong)',
-};
+/** Stable row key for Needs-you-now multi-select (plane|device|title). */
+export function overviewAlertKey(a: OverviewAlert): string {
+  return `${a.plane}|${a.device}|${a.title}`;
+}
 
 /** Rows of the Sites preview — the design lists six of the estate. */
 const SITES_PREVIEW = 6;
+
+const HEALTH_FILTERS: Array<{ value: 'all' | SiteHealthTone; label: string }> = [
+  { value: 'all', label: 'All health' },
+  { value: 'ok', label: 'Healthy' },
+  { value: 'warn', label: 'Warning' },
+  { value: 'bad', label: 'Critical' },
+  { value: 'stale', label: 'Unreported' },
+];
+
+/** Parse Overview / Sites `?health=` (ok|warn|bad|stale). */
+export function parseOverviewHealthFilter(raw: string | null): 'all' | SiteHealthTone {
+  if (raw === 'ok' || raw === 'warn' || raw === 'bad' || raw === 'stale') return raw;
+  return 'all';
+}
+
+/** Build a shareable Overview URL (`health`, bulk `devices=`, bulk `siteIds=`). */
+export function buildOverviewShareUrl(opts: {
+  health?: 'all' | SiteHealthTone;
+  devices?: string[] | null;
+  siteIds?: string[] | null;
+  origin?: string;
+  pathname?: string;
+}): string {
+  const origin = opts.origin ?? (typeof window !== 'undefined' ? window.location.origin : '');
+  const pathname = opts.pathname ?? (typeof window !== 'undefined' ? window.location.pathname : '/overview');
+  const next = new URLSearchParams();
+  if (opts.health && opts.health !== 'all') next.set('health', opts.health);
+  if (opts.devices && opts.devices.length > 0) next.set('devices', opts.devices.join('\n'));
+  if (opts.siteIds && opts.siteIds.length > 0) next.set('siteIds', opts.siteIds.join('\n'));
+  const qs = next.toString();
+  return `${origin}${pathname}${qs ? `?${qs}` : ''}`;
+}
 
 /**
  * Where a stat tile leads: the screen whose list the tile's number summarises.
@@ -111,16 +164,187 @@ function siteOf(a: OverviewAlert): { name: string | null; id: SiteId | null; met
   return { name, id: a.siteId ?? null, meta };
 }
 
+function overviewAlertColumns(opts: {
+  showPlatformTags: boolean;
+  navigate: (path: string) => void;
+  patchIncident: (patch: {
+    alertTitle: string;
+    deviceName: string;
+    devicePlane: OverviewAlert['plane'];
+    sourcePath: string;
+  }) => void;
+}): Array<DataTableColumn<OverviewAlert>> {
+  const { showPlatformTags, navigate, patchIncident } = opts;
+  const cols: Array<DataTableColumn<OverviewAlert>> = [
+    {
+      key: 'sev',
+      title: 'Sev',
+      hideable: false,
+      render: (a) => (
+        <Badge tone={a.tone} dot>
+          {a.sev}
+        </Badge>
+      ),
+    },
+    {
+      key: 'alert',
+      title: 'Alert',
+      render: (a) => <span className="nt-fs-12-primary">{a.title}</span>,
+    },
+    {
+      key: 'where',
+      title: 'Where',
+      render: (a) => {
+        const site = siteOf(a);
+        return (
+          <div className="nt-filter-bar nt-gap-8">
+            {site.name !== null ? (
+              site.id !== null ? (
+                <button
+                  type="button"
+                  onClick={() => navigate(`/sites/${encodeURIComponent(site.id as SiteId)}`)}
+                  className="nt-body-sm nt-link-btn"
+                >
+                  {site.name}
+                </button>
+              ) : (
+                <span className="nt-fs-11-sec">{site.name}</span>
+              )
+            ) : null}
+            {site.meta ? <span className="nt-hint-muted">{site.meta}</span> : null}
+          </div>
+        );
+      },
+    },
+  ];
+  if (showPlatformTags) {
+    cols.push({
+      key: 'plane',
+      title: 'Plane',
+      render: (a) => <Badge plane>{a.plane}</Badge>,
+    });
+  }
+  cols.push(
+    {
+      key: 'age',
+      title: 'Age',
+      numeric: true,
+      render: (a) => <span className="nt-hint-muted">{a.age}</span>,
+    },
+    {
+      key: 'inspect',
+      title: 'Inspect',
+      render: (a) => (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            patchIncident({
+              alertTitle: a.title,
+              deviceName: a.device,
+              devicePlane: a.plane,
+              sourcePath: '/overview',
+            });
+            navigate(deviceDetailPath({ name: a.device, plane: a.plane }));
+          }}
+        >
+          Inspect
+        </Button>
+      ),
+    },
+  );
+  return cols;
+}
+
+function overviewSiteColumns(
+  navigate: (path: string) => void,
+): Array<DataTableColumn<OverviewSiteRow>> {
+  return [
+    {
+      key: 'site',
+      title: 'Site',
+      hideable: false,
+      render: (s) => (
+        <button
+          type="button"
+          onClick={() => navigate(`/sites/${encodeURIComponent(s.siteId)}`)}
+          className="nt-linkish"
+        >
+          {s.name}
+        </button>
+      ),
+    },
+    {
+      key: 'plane',
+      title: 'Managed by',
+      render: (s) => <span className="nt-mono-11 nt-tone-secondary">{s.plane}</span>,
+    },
+    { key: 'devices', title: 'Devices', numeric: true, render: (s) => s.devices },
+    { key: 'clients', title: 'Clients', numeric: true, render: (s) => s.clients },
+    {
+      key: 'health',
+      title: 'Health',
+      render: (s) => (
+        <div className="nt-row nt-row-center-8">
+          {s.healthPct !== '—' ? (
+            <div className="nt-health-bar nt-plane-ecg">
+              <div
+                className={`nt-health-bar__fill nt-health-fill nt-plane-ecg__fill nt-fill-${s.tone}`}
+                style={{ ['--nd-health' as string]: s.healthPct }}
+              />
+            </div>
+          ) : null}
+          <span className="nt-mono-label">{s.health ?? '—'}</span>
+        </div>
+      ),
+    },
+    {
+      key: 'alerts',
+      title: 'Alerts',
+      render: (s) => <Badge tone={s.alertTone}>{s.alerts}</Badge>,
+    },
+  ];
+}
+
 export default function Overview() {
   const { patchIncident } = useIncident();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { density, showPlatformTags, workspaceName, pollIntervalSec } = useSettings();
   const { toast } = useToast();
   const [data, setData] = useState<OverviewData | null>(null);
+  /* Sites preview health filter — same ok/warn/bad/stale vocabulary as Sites
+   * (`?health=`). Shareable via Copy view link / refresh. */
+  const [health, setHealth] = useState<'all' | SiteHealthTone>(() =>
+    parseOverviewHealthFilter(searchParams.get('health')),
+  );
   /* Per-plane device-count sparklines ride the metrics-history envelope, not
    * the overview payload; null (older server, unreachable API) simply leaves
    * the rows without a series rather than painting invented history. */
   const [metrics, setMetrics] = useState<MetricsHistoryEnvelope | null>(null);
+  /* Needs-you-now + Sites preview multi-select (Loop 190). */
+  const [selectedAlertKeys, setSelectedAlertKeys] = useState<string[]>([]);
+  const [selectedSiteKeys, setSelectedSiteKeys] = useState<string[]>([]);
+  /* Deep link: /overview?devices=a\nb (alerts bulk Copy selection link). */
+  const devicesFilter = namesFilterForParam(searchParams.get('devices'));
+  /* Deep link: /overview?siteIds=a\nb (sites bulk Copy selection link). */
+  const siteIdsFilter = namesFilterForParam(searchParams.get('siteIds'));
+
+  /* Keep ?health= aligned with the Sites preview filter. Preserve bulk deep
+   * links (devices=/siteIds=) written by Copy selection link. */
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (health !== 'all') next.set('health', health);
+    else next.delete('health');
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: true });
+  }, [health, searchParams, setSearchParams]);
+
+  /* Re-seed when the address bar changes externally (shared link / back). */
+  useEffect(() => {
+    const fromUrl = parseOverviewHealthFilter(searchParams.get('health'));
+    setHealth((cur) => (cur === fromUrl ? cur : fromUrl));
+  }, [searchParams]);
 
   /* The header states a cadence ("AUTO 60s") that the server poller really runs
    * at, so the screen has to honour it — a NOC-wall tab left open must not sit
@@ -161,6 +385,9 @@ export default function Overview() {
    * sections, so the prototype's fixed 09:41 stamp would be asserted over live
    * data. Only a queue with nothing blended keeps the authored stamp. */
   const anyBlended = (data.blended?.length ?? 0) > 0;
+  /* Pure-live war room used to leave the header quiet — section LIVE badges
+   * only appear in blend mode. Stamp the header when the whole envelope is live. */
+  const pureLive = data.dataSource === 'live';
   const synced =
     data.dataSource === 'demo' && !anyBlended
       ? `SYNCED 09:41 · AUTO ${pollIntervalSec}s`
@@ -226,6 +453,8 @@ export default function Overview() {
     servedAnomalies !== null &&
     linkedPlanes.some((p) => (servedAnomalies.planes[planeMetricsKey(p.name)]?.devices?.length ?? 0) > 0);
   const retainedPhrase = metrics !== null ? retainedWindowPhrase(metrics) : 'what this portal has retained so far';
+  const actionChips = overviewActionChips(metrics, data.stats);
+
   /* A count-bearing link has to lead somewhere. A live section that reported
    * nothing gets no link at all — "All 0 alerts →" advertises a queue that is
    * not there, and the named empty state below already says what is true
@@ -234,10 +463,56 @@ export default function Overview() {
     !alertsLive ? 'All 7 alerts →'
     : data.alerts.length > 0 ? `All ${countOf(data.alerts.length, 'alert')} →`
     : null;
+  const sitesForHealthBase =
+    health === 'all' ? data.sites : data.sites.filter((s) => s.tone === health);
+  const sitesForHealth =
+    siteIdsFilter === null
+      ? sitesForHealthBase
+      : sitesForHealthBase.filter((s) => siteIdsFilter.includes(s.siteId));
+  const siteIdsPresent =
+    siteIdsFilter === null
+      ? 0
+      : siteIdsFilter.filter((id) => data.sites.some((s) => s.siteId === id)).length;
+  const alertsForDevices =
+    devicesFilter === null
+      ? data.alerts
+      : data.alerts.filter((a) => devicesFilter.includes(a.device));
+  const devicesPresent =
+    devicesFilter === null
+      ? 0
+      : devicesFilter.filter((d) => data.alerts.some((a) => a.device === d)).length;
+  const alertPreview = alertsForDevices.slice(0, 4);
+  const sitePreview = sitesForHealth.slice(0, SITES_PREVIEW);
+  /* Health chips count over the full sites preview (not health) so operators
+   * see the estate mix while a chip is active — same idea as Sites. */
+  const HEALTH_CHIP_META: Array<{
+    key: SiteHealthTone;
+    label: string;
+    tone: 'success' | 'warning' | 'danger' | 'neutral';
+  }> = [
+    { key: 'ok', label: 'Healthy', tone: 'success' },
+    { key: 'warn', label: 'Warning', tone: 'warning' },
+    { key: 'bad', label: 'Critical', tone: 'danger' },
+    { key: 'stale', label: 'Unreported', tone: 'neutral' },
+  ];
+  const healthChips = HEALTH_CHIP_META.map((m) => ({
+    ...m,
+    count: data.sites.filter((s) => s.tone === m.key).length,
+  })).filter((c) => c.count > 0 || health === c.key);
   const sitesLink =
-    !sitesLive ? 'All 10 sites →'
-    : data.sites.length > 0 ? `All ${countOf(data.sites.length, 'site')} →`
-    : null;
+    !sitesLive
+      ? 'All 10 sites →'
+      : sitesForHealth.length > 0
+        ? health === 'all'
+          ? `All ${countOf(data.sites.length, 'site')} →`
+          : `${countOf(sitesForHealth.length, 'site')} ${health} →`
+        : data.sites.length > 0
+          ? null
+          : null;
+  const openSitesList = () => {
+    const qs = health !== 'all' ? `?health=${encodeURIComponent(health)}` : '';
+    navigate(`/sites${qs}`);
+  };
   const subtitle =
     sitesLive || planesLive
       ? `${countOf(data.sites.length, 'site')}, ${countOf(data.planes.length, 'management plane')} — one queue of things that actually need you.`
@@ -258,10 +533,10 @@ export default function Overview() {
     const badge = sourceBadge(live);
     if (badge === null && link === null) return undefined;
     return (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      <span className="nt-inline-center-8">
         {badge}
         {link !== null ? (
-          <button type="button" className="nd-link" onClick={open}>
+          <button type="button" className="nd-link nt-text-link" onClick={open}>
             {link}
           </button>
         ) : null}
@@ -282,14 +557,47 @@ export default function Overview() {
   };
 
   return (
-    <div className="nt-stack nt-overview">
+    <div className="nt-stack nt-overview nt-recon-reveal nt-overview-shell nt-section-panel">
       <ScreenHeader
         overline={overline}
         title="Operations"
         subtitle={subtitle}
         actions={
           <>
+            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
+              NightDesk · war room
+            </span>
             <span className="nt-mono-label">{synced}</span>
+            {pureLive ? <Badge tone="info">LIVE</Badge> : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const url = buildOverviewShareUrl({
+                    health,
+                    devices: devicesFilter,
+                    siteIds: siteIdsFilter,
+                  });
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    const bits = [
+                      health !== 'all' ? `health=${health}` : null,
+                      devicesFilter ? 'devices=' : null,
+                      siteIdsFilter ? 'siteIds=' : null,
+                    ].filter(Boolean);
+                    toast('View link copied', {
+                      description: bits.length > 0 ? bits.join(' · ') : 'operations overview',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy view link
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -353,22 +661,110 @@ export default function Overview() {
             >
               Export CSV
             </Button>
+            {data.dataSource === 'live' ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void (async () => {
+                    /* Multi-slice server CSV matches client Export (alerts +
+                     * planes + sites + changes). Sites honour the active
+                     * health filter so the CSV matches the Sites preview. */
+                    const slices: Array<{ part: string; file: string; qs?: string }> = [
+                      { part: 'alerts', file: 'overview-alerts.csv' },
+                      { part: 'planes', file: 'overview-planes.csv' },
+                      {
+                        part: 'sites',
+                        file: 'overview-sites.csv',
+                        qs: health !== 'all' ? `health=${encodeURIComponent(health)}` : undefined,
+                      },
+                      { part: 'changes', file: 'overview-changes.csv' },
+                    ];
+                    const ok: string[] = [];
+                    let fail: string | null = null;
+                    for (const s of slices) {
+                      const params = new URLSearchParams({ part: s.part });
+                      if (s.qs) {
+                        const extra = new URLSearchParams(s.qs);
+                        extra.forEach((v, k) => params.set(k, v));
+                      }
+                      const res = await downloadApiCsv(
+                        `/api/overview/export?${params.toString()}`,
+                        s.file,
+                      );
+                      if (res.ok) ok.push(s.part);
+                      else if (!fail) fail = res.error ?? `Could not download ${s.file}`;
+                    }
+                    if (ok.length > 0) {
+                      toast('Server CSV downloaded', {
+                        description: `${ok.join(' · ')}${
+                          health !== 'all' && ok.includes('sites') ? ` (sites health=${health})` : ''
+                        } — operator facts only, no secrets.`,
+                        tone: fail ? 'warning' : 'success',
+                      });
+                    }
+                    if (fail) {
+                      toast(ok.length > 0 ? 'Some server CSV slices failed' : 'Server CSV failed', {
+                        description: fail,
+                        tone: 'warning',
+                      });
+                    }
+                  })();
+                }}
+              >
+                Download server CSV
+              </Button>
+            ) : null}
             <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
               Connected systems
             </Button>
+            {/* Needs-you-now + Sites preview multi-select are keyboard grids (j/k/x/Esc) — surface the map (Loop 201). */}
+            <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
           </>
         }
       />
+      <div className="nt-plane-theater" role="note">NightDesk · war-room spine · planes · freshness · P1 heat</div>
 
       <StatRow stats={data.stats} linkForStat={statLinkFor} />
 
+      {actionChips.length > 0 ? (
+        <div
+          className="nt-change-strip"
+          role="region"
+          aria-label="What needs attention now"
+        >
+          <span className="nt-change-strip__kicker">
+            {actionChips.some((c) => c.id !== 'licences') ? 'Last hour' : 'Attention'}
+          </span>
+          {actionChips.map((chip) => (
+            <button
+              key={chip.id}
+              type="button"
+              className={`nt-change-strip__chip nt-change-strip__chip--${chip.tone}`}
+              onClick={() => navigate(chip.href)}
+            >
+              {chip.label}
+            </button>
+          ))}
+          <span className="nt-change-strip__note">
+            {actionChips.some((c) => c.id === 'licences') &&
+            actionChips.every((c) => c.id === 'licences')
+              ? 'from licence inventory · not a prediction'
+              : actionChips.some((c) => c.id === 'licences')
+                ? 'samples + licence inventory · not a prediction'
+                : 'from plane count samples · not a prediction'}
+          </span>
+        </div>
+      ) : null}
+
+      <VisualReferencePanel target={{ kind: 'estate', id: 'overview' }} editable={false} />
       <ConfigRecommendationsPanel title="Top recommendations" limit={5} />
 
       <Divider variant="flair" />
 
       <div className="nt-overview__layout">
         {/* ---------------- left column ---------------- */}
-        <div className="nt-configure__col">
+        <div className="nt-configure__col nt-recon-reveal">
           <div className="nt-stack nt-gap-10">
             <SectionHeader
               label="Needs you now"
@@ -379,173 +775,468 @@ export default function Overview() {
                 title="Nothing needs you right now"
                 description={
                   alertsLive
-                    ? 'No open alerts across the linked planes as of the last poll.'
-                    : 'No open alerts across the linked planes.'
+                    ? 'No open alerts across the linked planes as of the last poll. The Alerts queue still carries history, silences, and rules.'
+                    : 'No open alerts in this snapshot. Open the Alerts queue for history, silences, and rules.'
                 }
-              />
+              >
+                <Button variant="secondary" size="sm" onClick={() => navigate('/alerts')}>
+                  Open Alerts
+                </Button>
+              </EmptyState>
+            ) : alertsForDevices.length === 0 ? (
+              <EmptyState
+                title="No alerts match this selection"
+                description="Clear the devices deep link, or open the full Alerts queue."
+              >
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('devices');
+                    setSearchParams(next, { replace: true });
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              </EmptyState>
             ) : (
             /* Titles repeat across devices in live data ('Config Out of Sync'),
-               so identity is the row, not its name. */
-            <Table density={density}>
-              <Table.Head>
-                <Table.Row>
-                  <Table.HeaderCell>Sev</Table.HeaderCell>
-                  <Table.HeaderCell>Alert</Table.HeaderCell>
-                  <Table.HeaderCell>Where</Table.HeaderCell>
-                  {showPlatformTags ? <Table.HeaderCell>Plane</Table.HeaderCell> : null}
-                  <Table.HeaderCell numeric>Age</Table.HeaderCell>
-                  <Table.HeaderCell />
-                </Table.Row>
-              </Table.Head>
-              <Table.Body>
-                {data.alerts.slice(0, 4).map((a, i) => {
-                  const site = siteOf(a);
-                  return (
-                    <Table.Row key={`${a.plane}|${a.device}|${a.title}|${i}`}>
-                      <Table.Cell>
-                        <Badge tone={a.tone} dot>
-                          {a.sev}
-                        </Badge>
-                      </Table.Cell>
-                      <Table.Cell>
-                        <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
-                          {a.title}
-                        </span>
-                      </Table.Cell>
-                      <Table.Cell>
-                        {/* The site as its own element when the row carries it —
-                            openable when it also carries the canonical id, plain
-                            text when the payload only named it. */}
-                        <div className="nt-filter-bar nt-gap-8">
-                          {site.name !== null ? (
-                            site.id !== null ? (
-                              <button
-                                type="button"
-                                onClick={() => navigate(`/sites/${encodeURIComponent(site.id as SiteId)}`)}
-                                className="nt-body-sm" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--nd-accent-text)", textAlign: "left" }}
-                              >
-                                {site.name}
-                              </button>
-                            ) : (
-                              <span style={{ fontSize: 'var(--nd-text-11)', color: 'var(--nd-text-secondary)' }}>
-                                {site.name}
-                              </span>
-                            )
-                          ) : null}
-                          {site.meta ? (
-                            <span
-                              className="nt-hint-muted"
-                            >
-                              {site.meta}
-                            </span>
-                          ) : null}
-                        </div>
-                      </Table.Cell>
-                      {showPlatformTags ? (
-                        <Table.Cell>
-                          <Badge plane>{a.plane}</Badge>
-                        </Table.Cell>
-                      ) : null}
-                      <Table.Cell numeric>
-                        <span
-                          className="nt-hint-muted"
-                        >
-                          {a.age}
-                        </span>
-                      </Table.Cell>
-                      <Table.Cell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            patchIncident({
-                              alertTitle: a.title,
-                              deviceName: a.device,
-                              devicePlane: a.plane,
-                              sourcePath: '/overview',
-                            });
-                            navigate(deviceDetailPath({ name: a.device, plane: a.plane }));
-                          }}
-                        >
-                          Inspect
-                        </Button>
-                      </Table.Cell>
-                    </Table.Row>
-                  );
-                })}
-              </Table.Body>
-            </Table>
+               so identity is plane|device|title (Loop 190 multi-select). */
+            <>
+            {devicesFilter !== null ? (
+              <div className="nt-chip-row" role="group" aria-label="Alert selection deep link">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('devices');
+                    setSearchParams(next, { replace: true });
+                  }}
+                  title={devicesFilter.join(', ')}
+                  className="nt-chip nt-chip--active"
+                >
+                  {devicesPresent === devicesFilter.length
+                    ? `${devicesFilter.length} selected device${devicesFilter.length === 1 ? '' : 's'}`
+                    : `${devicesPresent} of ${devicesFilter.length} selected devices present`}
+                  {' — clear'}
+                </button>
+              </div>
+            ) : null}
+            <DataTable
+              ariaLabel="Needs you now"
+              density={density}
+              columns={overviewAlertColumns({
+                showPlatformTags,
+                navigate,
+                patchIncident,
+              })}
+              rows={alertPreview}
+              rowKey={(a) => overviewAlertKey(a)}
+              selectedKeys={selectedAlertKeys}
+              onSelectionChange={setSelectedAlertKeys}
+              rowTone={(a) => a.tone}
+            />
+            {selectedAlertKeys.length > 0 ? (
+              <div
+                className="nt-configure-bulk-bar nt-bulk-glass"
+                role="region"
+                aria-label="Overview alert selection actions"
+              >
+                <span className="nt-configure-bulk-bar__count">{`${selectedAlertKeys.length} SELECTED`}</span>
+                <span className="nt-configure-bulk-bar__hint">
+                  export, copy devices, or share a selection link for only the alerts you marked —
+                  full export stays in the header
+                </span>
+                <span className="nt-configure-bulk-bar__actions">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const selected = new Set(selectedAlertKeys);
+                      const picked = alertPreview.filter((a) => selected.has(overviewAlertKey(a)));
+                      if (picked.length === 0) {
+                        toast('No selected alerts still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const n = exportTableCsv(
+                        'overview-alerts-selected.csv',
+                        ['sev', 'title', 'plane', 'age', 'device', 'site', 'meta'],
+                        picked.map((a) => [
+                          a.sev,
+                          a.title,
+                          a.plane,
+                          a.age,
+                          a.device,
+                          a.siteName ?? '',
+                          a.meta,
+                        ]),
+                      );
+                      toast(`Exported ${countOf(n, 'selected alert')}`, {
+                        description: 'overview-alerts-selected.csv — filtered fields only.',
+                        tone: 'success',
+                      });
+                    }}
+                  >
+                    Export selected
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(selectedAlertKeys);
+                        const picked = alertPreview.filter((a) => selected.has(overviewAlertKey(a)));
+                        if (picked.length === 0) {
+                          toast('No selected alerts still in view', {
+                            description: 'Clear selection or adjust filters.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const devices = [
+                          ...new Set(
+                            picked
+                              .map((a) => (a.device ?? '').trim())
+                              .filter((d) => d && d !== '—'),
+                          ),
+                        ];
+                        if (devices.length === 0) {
+                          toast('No devices on the selected alerts', {
+                            description: 'Those rows did not publish a device name — export CSV instead.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const text = devices.join('\n');
+                        try {
+                          await navigator.clipboard.writeText(text);
+                          toast(`Copied ${countOf(devices.length, 'device')}`, {
+                            description:
+                              devices.length < picked.length
+                                ? `${picked.length - devices.length} selected without a device skipped`
+                                : 'newline-joined · paste into a ticket or change window',
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy devices', { description: text, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy devices
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(selectedAlertKeys);
+                        const picked = alertPreview.filter((a) => selected.has(overviewAlertKey(a)));
+                        if (picked.length === 0) {
+                          toast('No selected alerts still in view', {
+                            description: 'Clear selection or adjust filters.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const devices = [
+                          ...new Set(
+                            picked
+                              .map((a) => (a.device ?? '').trim())
+                              .filter((d) => d && d !== '—'),
+                          ),
+                        ];
+                        if (devices.length === 0) {
+                          toast('No devices on the selected alerts', {
+                            description: 'Those rows did not publish a device name — export CSV instead.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const next = new URLSearchParams(searchParams);
+                        next.set('devices', devices.join('\n'));
+                        const qs = next.toString();
+                        const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                        try {
+                          await navigator.clipboard.writeText(url);
+                          toast('Selection link copied', {
+                            description: `${devices.length} device${devices.length === 1 ? '' : 's'} · devices=`,
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy link', { description: url, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy selection link
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setSelectedAlertKeys([])}>
+                    Clear
+                  </Button>
+                </span>
+              </div>
+            ) : null}
+            </>
             )}
           </div>
 
           <div className="nt-stack nt-gap-10">
-            <SectionHeader
-              label="Sites"
-              meta={sectionMeta(sitesLive, sitesLink, () => navigate('/sites'))}
-            />
+            <div className="nt-row-between-12">
+              <SectionHeader
+                label="Sites"
+                meta={sectionMeta(sitesLive, sitesLink, openSitesList)}
+              />
+              <Select
+                aria-label="Filter sites by health"
+                value={health}
+                onChange={(e) => setHealth(parseOverviewHealthFilter(e.target.value))}
+              >
+                {HEALTH_FILTERS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            {healthChips.length > 0 ? (
+              <div className="nt-chip-row" role="group" aria-label="Site health">
+                <span className="nt-chip-row__label">Health</span>
+                {healthChips.map((c) => (
+                  <button
+                    key={c.key}
+                    type="button"
+                    onClick={() => setHealth(health === c.key ? 'all' : c.key)}
+                    className={health === c.key ? 'nt-chip nt-chip--active' : 'nt-chip'}
+                    aria-pressed={health === c.key}
+                  >
+                    <Badge tone={c.tone}>{c.label}</Badge>
+                    <span className="nt-chip__count">{c.count}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             {data.sites.length === 0 ? (
               <EmptyState
                 title="No sites reported yet"
-                description="No linked plane has published a site — link one under Connected systems."
+                description={
+                  sitesLive
+                    ? 'No linked plane has published a site as of the last poll — link or repair a plane under Connected systems.'
+                    : 'No linked plane has published a site — link one under Connected systems.'
+                }
               >
                 <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
                   Connected systems
                 </Button>
               </EmptyState>
+            ) : sitesForHealthBase.length === 0 ? (
+              <EmptyState
+                title="No sites match this health"
+                description="Try another health filter, clear the filter, or open the full Sites list with the same health applied."
+              >
+                <span className="nt-inline-center-8">
+                  {health !== 'all' ? (
+                    <Button variant="secondary" size="sm" onClick={() => setHealth('all')}>
+                      Clear health filter
+                    </Button>
+                  ) : null}
+                  <Button variant="ghost" size="sm" onClick={openSitesList}>
+                    Open Sites
+                  </Button>
+                </span>
+              </EmptyState>
+            ) : sitesForHealth.length === 0 ? (
+              <EmptyState
+                title="No sites match this selection"
+                description="Clear the siteIds deep link, or open the full Sites list."
+              >
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('siteIds');
+                    setSearchParams(next, { replace: true });
+                  }}
+                >
+                  Clear selection filter
+                </Button>
+              </EmptyState>
             ) : (
-            <Table density={density}>
-              <Table.Head>
-                <Table.Row>
-                  <Table.HeaderCell>Site</Table.HeaderCell>
-                  <Table.HeaderCell>Managed by</Table.HeaderCell>
-                  <Table.HeaderCell numeric>Devices</Table.HeaderCell>
-                  <Table.HeaderCell numeric>Clients</Table.HeaderCell>
-                  <Table.HeaderCell>Health</Table.HeaderCell>
-                  <Table.HeaderCell>Alerts</Table.HeaderCell>
-                </Table.Row>
-              </Table.Head>
-              <Table.Body>
-                {/* A preview, not the estate — the section link carries the total. */}
-                {data.sites.slice(0, SITES_PREVIEW).map((s) => (
-                  <Table.Row key={s.name}>
-                    <Table.Cell>
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/sites/${encodeURIComponent(s.siteId)}`)}
-                        className="nt-linkish"
-                      >
-                        {s.name}
-                      </button>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <span
-                        className="nt-mono-11" style={{ color: "var(--nd-text-secondary)" }}
-                      >
-                        {s.plane}
-                      </span>
-                    </Table.Cell>
-                    <Table.Cell numeric>{s.devices}</Table.Cell>
-                    <Table.Cell numeric>{s.clients}</Table.Cell>
-                    <Table.Cell>
-                      <div className="nt-row" style={{ gap: 8, alignItems: 'center' }}>
-                        {s.healthPct !== '—' ? (
-                          <div className="nt-health-bar">
-                            <div
-                              className="nt-health-bar__fill"
-                              style={{ width: s.healthPct, background: HEALTH_COLORS[s.tone] }}
-                            />
-                          </div>
-                        ) : null}
-                        <span className="nt-mono-label">{s.health ?? '—'}</span>
-                      </div>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <Badge tone={s.alertTone}>{s.alerts}</Badge>
-                    </Table.Cell>
-                  </Table.Row>
-                ))}
-              </Table.Body>
-            </Table>
+            /* A preview, not the estate — the section link carries the total.
+               Multi-select (Loop 190) uses stable siteId keys. */
+            <>
+            {siteIdsFilter !== null ? (
+              <div className="nt-chip-row" role="group" aria-label="Site selection deep link">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams);
+                    next.delete('siteIds');
+                    setSearchParams(next, { replace: true });
+                  }}
+                  title={siteIdsFilter.join(', ')}
+                  className="nt-chip nt-chip--active"
+                >
+                  {siteIdsPresent === siteIdsFilter.length
+                    ? `${siteIdsFilter.length} selected site${siteIdsFilter.length === 1 ? '' : 's'}`
+                    : `${siteIdsPresent} of ${siteIdsFilter.length} selected sites present`}
+                  {' — clear'}
+                </button>
+              </div>
+            ) : null}
+            <DataTable
+              ariaLabel="Sites preview"
+              density={density}
+              columns={overviewSiteColumns(navigate)}
+              rows={sitePreview}
+              rowKey={(s) => s.siteId}
+              selectedKeys={selectedSiteKeys}
+              onSelectionChange={setSelectedSiteKeys}
+              onRowActivate={(s) => navigate(`/sites/${encodeURIComponent(s.siteId)}`)}
+              rowTone={(s) => {
+                if (s.alertTone === 'danger' || s.alertTone === 'warning') return s.alertTone;
+                if (s.tone === 'bad') return 'danger';
+                if (s.tone === 'warn') return 'warning';
+                if (s.tone === 'ok') return 'success';
+                return 'neutral';
+              }}
+            />
+            {selectedSiteKeys.length > 0 ? (
+              <div
+                className="nt-configure-bulk-bar nt-bulk-glass"
+                role="region"
+                aria-label="Overview site selection actions"
+              >
+                <span className="nt-configure-bulk-bar__count">{`${selectedSiteKeys.length} SELECTED`}</span>
+                <span className="nt-configure-bulk-bar__hint">
+                  export, copy names, or share a selection link for only the sites you marked — full
+                  list export stays in the header
+                </span>
+                <span className="nt-configure-bulk-bar__actions">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const selected = new Set(selectedSiteKeys);
+                      const picked = sitePreview.filter((s) => selected.has(s.siteId));
+                      if (picked.length === 0) {
+                        toast('No selected sites still in view', {
+                          description: 'Clear selection or adjust filters.',
+                          tone: 'info',
+                        });
+                        return;
+                      }
+                      const n = exportTableCsv(
+                        'overview-sites-selected.csv',
+                        ['name', 'siteId', 'plane', 'devices', 'clients', 'health', 'alerts'],
+                        picked.map((s) => [
+                          s.name,
+                          s.siteId,
+                          s.plane,
+                          s.devices,
+                          s.clients,
+                          s.health ?? '',
+                          s.alerts,
+                        ]),
+                      );
+                      toast(`Exported ${countOf(n, 'selected site')}`, {
+                        description: 'overview-sites-selected.csv — filtered fields only.',
+                        tone: 'success',
+                      });
+                    }}
+                  >
+                    Export selected
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(selectedSiteKeys);
+                        const picked = sitePreview.filter((s) => selected.has(s.siteId));
+                        if (picked.length === 0) {
+                          toast('No selected sites still in view', {
+                            description: 'Clear selection or adjust filters.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const names = [
+                          ...new Set(
+                            picked
+                              .map((s) => (s.name ?? '').trim())
+                              .filter((name) => name && name !== '—'),
+                          ),
+                        ];
+                        if (names.length === 0) {
+                          toast('No names on the selected sites', {
+                            description: 'Those rows did not publish a site name — export CSV for ids instead.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const text = names.join('\n');
+                        try {
+                          await navigator.clipboard.writeText(text);
+                          toast(`Copied ${countOf(names.length, 'name')}`, {
+                            description:
+                              names.length < picked.length
+                                ? `${picked.length - names.length} selected without a name skipped`
+                                : 'newline-joined · paste into a ticket or change window',
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy names', { description: text, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy names
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void (async () => {
+                        const selected = new Set(selectedSiteKeys);
+                        const picked = sitePreview.filter((s) => selected.has(s.siteId));
+                        if (picked.length === 0) {
+                          toast('No selected sites still in view', {
+                            description: 'Clear selection or adjust filters.',
+                            tone: 'info',
+                          });
+                          return;
+                        }
+                        const next = new URLSearchParams(searchParams);
+                        next.set('siteIds', picked.map((s) => s.siteId).join('\n'));
+                        const qs = next.toString();
+                        const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                        try {
+                          await navigator.clipboard.writeText(url);
+                          toast('Selection link copied', {
+                            description: `${picked.length} site${picked.length === 1 ? '' : 's'} · siteIds=`,
+                            tone: 'success',
+                          });
+                        } catch {
+                          toast('Could not copy link', { description: url, tone: 'warning' });
+                        }
+                      })();
+                    }}
+                  >
+                    Copy selection link
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setSelectedSiteKeys([])}>
+                    Clear
+                  </Button>
+                </span>
+              </div>
+            ) : null}
+            </>
             )}
           </div>
         </div>
@@ -556,7 +1247,7 @@ export default function Overview() {
             <SectionHeader
               label="Management planes"
               meta={
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <span className="nt-inline-center-8">
                   {sourceBadge(planesLive)}
                   <span>LAST SYNC</span>
                 </span>
@@ -565,7 +1256,11 @@ export default function Overview() {
             {data.planes.length === 0 ? (
               <EmptyState
                 title="No management planes linked"
-                description="The portal has nothing to poll until a plane is connected."
+                description={
+                  planesLive
+                    ? 'The live registry has no linked planes yet — connect one under Connected systems so inventory and alerts can land here.'
+                    : 'The portal has nothing to poll until a plane is connected under Connected systems.'
+                }
               >
                 <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
                   Connected systems
@@ -578,6 +1273,7 @@ export default function Overview() {
               <div
                 key={p.name}
                 className={`nt-plane-mini${hot ? ' nt-plane-mini--ecg' : ''}`}
+                data-tone={p.tone}
               >
                 <div className="nt-plane-mini__id">
                   <span>{p.name}</span>
@@ -613,11 +1309,48 @@ export default function Overview() {
                 carries anomaly dots the note says what they are and what
                 window they were judged against; no dots, no note. */}
             {metrics !== null && data.planes.length > 0 ? (
-              <div
-                className="nt-hint-muted" style={{ padding: "6px 0 2px" }}
-              >
-                {`devices reported per plane · ${metricsWindowLabel(metrics)}`}
-                {anyPlaneAnomaly ? ` · dots mark samples unusual vs ${retainedPhrase}` : null}
+              <div className="nt-filter-bar nt-gap-8 nt-pad-y-6-2">
+                <div className="nt-hint-muted">
+                  {`devices reported per plane · ${metricsWindowLabel(metrics)}`}
+                  {anyPlaneAnomaly ? ` · dots mark samples unusual vs ${retainedPhrase}` : null}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="nt-ml-auto"
+                  onClick={() => {
+                    void (async () => {
+                      const slices: Array<{ part: string; file: string }> = [
+                        { part: 'series', file: 'metrics-series.csv' },
+                        { part: 'anomalies', file: 'metrics-anomalies.csv' },
+                      ];
+                      const ok: string[] = [];
+                      let fail: string | null = null;
+                      for (const s of slices) {
+                        const res = await downloadApiCsv(
+                          `/api/metrics/export?part=${encodeURIComponent(s.part)}`,
+                          s.file,
+                        );
+                        if (res.ok) ok.push(s.part);
+                        else if (!fail) fail = res.error ?? `Could not download ${s.file}`;
+                      }
+                      if (ok.length > 0) {
+                        toast('Metrics server CSV downloaded', {
+                          description: `${ok.join(' · ')} — count samples / anomaly flags only.`,
+                          tone: fail ? 'warning' : 'success',
+                        });
+                      }
+                      if (fail) {
+                        toast(
+                          ok.length > 0 ? 'Some metrics CSV slices failed' : 'Metrics CSV failed',
+                          { description: fail, tone: 'warning' },
+                        );
+                      }
+                    })();
+                  }}
+                >
+                  Download metrics CSV
+                </Button>
               </div>
             ) : null}
           </div>
@@ -627,15 +1360,24 @@ export default function Overview() {
             {data.launchpad.length === 0 ? (
               <EmptyState
                 title="No launch targets"
-                description="Launchpad rows are built from the linked planes and the devices they report."
-              />
+                description="Launchpad rows are built from the linked planes and the devices they report. Connect a plane or open Inventory once estate data is available."
+              >
+                <span className="nt-inline-center-8">
+                  <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
+                    Connected systems
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => navigate('/inventory')}>
+                    Inventory
+                  </Button>
+                </span>
+              </EmptyState>
             ) : null}
             <div className="nt-stack nt-gap-0">
-              {data.launchpad.map((l) => (
+              <div className="nt-launchpad">{data.launchpad.map((l) => (
                 <button
                   key={l.label}
                   type="button"
-                  className="nt-rowlink nt-launchpad-row"
+                  className="nt-rowlink nt-launchpad-row nt-launchpad__tile"
                   onClick={() => runLaunch(l)}
                 >
                   <span className="nt-launchpad-row__label">
@@ -647,7 +1389,7 @@ export default function Overview() {
                     {l.hint}
                   </span>
                 </button>
-              ))}
+              ))}</div>
             </div>
           </div>
 
@@ -669,8 +1411,16 @@ export default function Overview() {
               ) : (
                 <EmptyState
                   title="No brokered changes yet"
-                  description="Every write the portal makes lands here with its authorising ticket."
-                />
+                  description={
+                    changesLive
+                      ? 'Every write the portal makes lands here with its authorising ticket. Review or stage the next change under Configure.'
+                      : 'Every write the portal makes lands here with its authorising ticket.'
+                  }
+                >
+                  <Button variant="secondary" size="sm" onClick={() => navigate('/configure')}>
+                    Open Configure
+                  </Button>
+                </EmptyState>
               )
             ) : (data.changesUnreadable ?? 0) > 0 ? (
               // A non-empty tail with a hole behind it: the rows shown are
@@ -690,12 +1440,7 @@ export default function Overview() {
             {data.changes.map((c, i) => (
               <div
                 key={`${c.time}|${c.text}|${c.who}|${i}`}
-                style={{
-                  display: 'flex',
-                  gap: 10,
-                  padding: '8px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
+                className="nt-changelog-row"
               >
                 <span
                   className="nt-sync-row__time"
@@ -704,11 +1449,7 @@ export default function Overview() {
                 </span>
                 <div className="nt-flex-1">
                   <div
-                    style={{
-                      fontSize: 'var(--nd-text-12)',
-                      color: 'var(--nd-text-secondary)',
-                      lineHeight: 1.4,
-                    }}
+                    className="nt-fs-12-sec-lh"
                   >
                     {c.text}
                   </div>
