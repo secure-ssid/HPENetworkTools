@@ -501,9 +501,11 @@ export function TopologyGraphView({
   // Re-seed when the share URL changes (e.g. colleague paste / back-forward).
   // Key by value — parent often rebuilds a fresh object with the same kind/id.
   const initialFocusKey = initialFocus ? `${initialFocus.kind}:${initialFocus.id}` : '';
-  useEffect(() => {
+  const [prevInitialFocusKey, setPrevInitialFocusKey] = useState(initialFocusKey);
+  if (prevInitialFocusKey !== initialFocusKey) {
+    setPrevInitialFocusKey(initialFocusKey);
     setFocusState(initialFocus);
-  }, [initialFocusKey]); // eslint-disable-line react-hooks/exhaustive-deps -- value key, not object identity
+  }
 
   const nodeById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
   // Nodes filed nowhere the site list names: ghosts first (reported, never
@@ -793,9 +795,11 @@ export default function Topology() {
   }, [idsFilterKey]);
 
   const focusParamKey = focusParam ? `${focusParam.kind}:${focusParam.id}` : '';
-  useEffect(() => {
+  const [prevFocusParamKey, setPrevFocusParamKey] = useState(focusParamKey);
+  if (prevFocusParamKey !== focusParamKey) {
+    setPrevFocusParamKey(focusParamKey);
     setFocus(focusParam);
-  }, [focusParamKey]); // eslint-disable-line react-hooks/exhaustive-deps -- value key, not object identity
+  }
 
   const patchParams = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams);
