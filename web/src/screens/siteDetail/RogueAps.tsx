@@ -52,7 +52,7 @@ export function SiteRogueAps({
         : `${onLan.length > 0 ? `${onLan.length} ON YOUR WIRE · ` : ''}${rows.length} HEARD · MIST`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="Rogue & neighbor APs" meta={meta} />
       {rogues === undefined ? (
         <div style={noteStyle}>The portal did not say whether this site reports rogue detection.</div>

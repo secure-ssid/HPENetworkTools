@@ -589,4 +589,25 @@ describe('notification routes', () => {
     expect(res.body.endpoints).toHaveLength(1);
     expect(res.body.endpoints[0].delivery).toBeNull();
   });
+
+  it('GET /api/notifications/deliveries lists attempt outcomes without payload bodies', async () => {
+    const created = await sendJson('POST', '/api/notifications/endpoints', {
+      name: 'noc',
+      url: 'https://hooks.example.com/demo',
+      template: 'slack',
+    });
+    const id = created.body.endpoint.id as string;
+    await sendJson('POST', `/api/notifications/endpoints/${id}/test`);
+    const res = await getJson('/api/notifications/deliveries');
+    expect(res.status).toBe(200);
+    expect(res.body.demoMode).toBe(true);
+    expect(Array.isArray(res.body.entries)).toBe(true);
+    expect(res.body.entries.length).toBeGreaterThan(0);
+    const entry = res.body.entries[0];
+    expect(entry.endpointId).toBe(id);
+    expect(entry.result).toBe('demo');
+    expect(entry.test).toBe(true);
+    expect(entry.body).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain('"text"');
+  });
 });

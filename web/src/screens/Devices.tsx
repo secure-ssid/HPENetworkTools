@@ -45,11 +45,12 @@
  * Data: getDevices() — live /api/devices when the server is up, fixtures otherwise.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Badge,
+  Button,
   DATATABLE_ROW_SHORTCUTS,
   DataTable,
   EmptyState,
@@ -58,7 +59,7 @@ import {
   SegmentedControl,
   Select,
   Sparkline,
-  Spinner,
+  PageSkeleton,
   Switch,
   TableViewOptions,
   useToast,
@@ -75,8 +76,10 @@ import { deviceDetailPath, namesFilterForParam, planeFilterForParam, stateFilter
 import { UNKNOWN_LANE_META, countOf } from '@hpe/shared';
 import type { DeviceRow, MetricsHistoryEnvelope, Plane, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
+import { exportTableCsv } from '../lib/csv';
 import { ApiErrorState } from './ApiErrorState';
 import { DeviceTypeBadge } from '../components/DeviceTypeBadge';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { getTaxonomySummary } from '../api/recommendations';
 import type { CategoryBucket } from '@hpe/shared';
 import '../app/app.css';
@@ -122,31 +125,30 @@ function DeviceClientsSpark({
   compact: boolean;
 }) {
   const windowLabel = metricsWindowLabel(metrics);
-  const muted = { fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)', color: 'var(--nd-text-muted)' } as const;
   const series = metrics.deviceClients[name] ?? [];
   const latest = series.length > 0 ? series[series.length - 1]!.v : null;
   if (series.length >= 2 && latest !== null) {
     return (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span className="nt-row-center nt-gap-6" style={{ display: "inline-flex" }}>
         <Sparkline
           points={series}
           width={72}
           height={compact ? 14 : 18}
           label={`${latest} attached client${latest === 1 ? '' : 's'} · ${windowLabel}`}
         />
-        <span style={{ ...muted, color: 'var(--nd-text-secondary)' }}>{latest}</span>
+        <span className="nt-mono-11 nt-text-sec">{latest}</span>
       </span>
     );
   }
   if (series.length === 1) {
     return (
-      <span style={muted} title={`one sample so far · ${windowLabel}`}>
+      <span className="nt-hint-muted" title={`one sample so far · ${windowLabel}`}>
         1 sample
       </span>
     );
   }
   return (
-    <span style={muted} title="no attached-client samples for this device">
+    <span className="nt-hint-muted" title="no attached-client samples for this device">
       —
     </span>
   );
@@ -236,7 +238,11 @@ export default function Devices() {
       toast(res.message, { tone: 'danger' });
       return;
     }
-    const fresh = await getDevices();
+    const fresh = await getDevices({ limit: DEVICE_PAGE });
+    devicesAccRef.current = fresh.devices;
+    nextDeviceCursorRef.current = fresh.page?.nextCursor ?? null;
+    setDeviceHasMore(Boolean(fresh.page?.nextCursor));
+    setDevicePageTotal(fresh.page?.total ?? null);
     setData(fresh);
     toast('Hidden demo devices restored', { tone: 'success' });
   };
@@ -244,34 +250,68 @@ export default function Devices() {
   /* The lanes view stamps each plane's freshness from this payload, so a NOC
      tab must not sit on a mount-time snapshot: poll on the settings cadence,
      the same pattern Overview.tsx runs. One fetch at a time — a slow response
-     never stacks up behind the interval; fixture reads poll harmlessly. */
+     never stacks up behind the interval; fixture reads poll harmlessly.
+     Live lists request optional pages (limit=250) so large estates can Load more
+     without forcing every poll to ship the full inventory. */
+  const devicesAccRef = useRef<DeviceRow[]>([]);
+  const nextDeviceCursorRef = useRef<string | null>(null);
+  const loadMoreDevicesRef = useRef<() => void>(() => {});
+  const [deviceHasMore, setDeviceHasMore] = useState(false);
+  const [devicePageTotal, setDevicePageTotal] = useState<number | null>(null);
+  const [loadingMoreDevices, setLoadingMoreDevices] = useState(false);
+  const DEVICE_PAGE = 250;
+
   useEffect(() => {
     let live = true;
     let inFlight = false;
-    const pull = () => {
-      if (inFlight) return;
-      inFlight = true;
-      void getDevices().then((d) => {
-        if (live) setData(d);
-      });
-      void getTaxonomySummary()
-        .then((t) => {
-          if (live) setTypeBuckets(t.devices.byType);
-        })
-        .catch(() => {
-          /* optional enrichment — inventory still works without it */
-        });
-      void getMetricsHistory()
-        .then((m) => {
-          if (live) setMetrics(m);
+    const pull = (mode: 'replace' | 'append' = 'replace') => {
+      if (mode === 'replace' && inFlight) return;
+      if (mode === 'append' && !nextDeviceCursorRef.current) return;
+      if (mode === 'replace') inFlight = true;
+      if (mode === 'append') setLoadingMoreDevices(true);
+      void getDevices({
+        limit: DEVICE_PAGE,
+        ...(mode === 'append' && nextDeviceCursorRef.current
+          ? { cursor: nextDeviceCursorRef.current }
+          : {}),
+      })
+        .then((d) => {
+          if (!live) return;
+          if (mode === 'append') {
+            const seen = new Set(devicesAccRef.current.map((r) => `${r.name}|${r.serial ?? ''}|${r.plane}`));
+            const extra = d.devices.filter((r) => !seen.has(`${r.name}|${r.serial ?? ''}|${r.plane}`));
+            const merged = [...devicesAccRef.current, ...extra];
+            devicesAccRef.current = merged;
+            setData({ ...d, devices: merged });
+          } else {
+            devicesAccRef.current = d.devices;
+            setData(d);
+          }
+          nextDeviceCursorRef.current = d.page?.nextCursor ?? null;
+          setDeviceHasMore(Boolean(d.page?.nextCursor));
+          setDevicePageTotal(d.page?.total ?? null);
         })
         .finally(() => {
-          inFlight = false;
+          if (mode === 'replace') inFlight = false;
+          if (mode === 'append') setLoadingMoreDevices(false);
         });
+      if (mode === 'replace') {
+        void getTaxonomySummary()
+          .then((t) => {
+            if (live) setTypeBuckets(t.devices.byType);
+          })
+          .catch(() => {
+            /* optional enrichment — inventory still works without it */
+          });
+        void getMetricsHistory().then((m) => {
+          if (live) setMetrics(m);
+        });
+      }
     };
-    pull();
+    loadMoreDevicesRef.current = () => pull('append');
+    pull('replace');
     const every = Math.max(pollIntervalSec, 10) * 1000;
-    const id = setInterval(pull, every);
+    const id = setInterval(() => pull('replace'), every);
     return () => {
       live = false;
       clearInterval(id);
@@ -297,11 +337,7 @@ export default function Devices() {
   }
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -437,16 +473,7 @@ export default function Devices() {
         <button
           type="button"
           onClick={() => navigate(deviceDetailPath({ name: d.name, plane: d.plane, serial: d.serial }))}
-          style={{
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            cursor: 'pointer',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-12)',
-            color: 'var(--nd-accent-text)',
-            textAlign: 'left',
-          }}
+          className="nt-mono-link nt-body-sm" style={{ textAlign: "left" }}
         >
           {d.name}
         </button>
@@ -465,16 +492,7 @@ export default function Devices() {
         <button
           type="button"
           onClick={() => navigate(`/sites/${encodeURIComponent(d.siteId)}`)}
-          style={{
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            cursor: 'pointer',
-            fontFamily: 'var(--nd-font-body)',
-            fontSize: 'var(--nd-text-12)',
-            color: 'var(--nd-text-primary)',
-            textAlign: 'left',
-          }}
+          className="nt-body-sm nt-body-sm" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--nd-text-primary)", textAlign: "left" }}
         >
           {displayField(d.siteName)}
         </button>
@@ -485,9 +503,9 @@ export default function Devices() {
       title: 'Managed by',
       render: (d) =>
         showPlatformTags ? (
-          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          <div className="nt-chip-wrap nt-chip-wrap--tight">
             {claimantsOf(d).map((p) => (
-              <Badge key={p} tone={p === d.plane ? d.planeTone : 'neutral'}>
+              <Badge key={p} plane>
                 {p}
               </Badge>
             ))}
@@ -500,7 +518,7 @@ export default function Devices() {
       render: (d) => {
         const mark = reconciliationMark(d);
         return (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+          <div className="nt-filter-bar nt-gap-4">
             <Badge tone={d.stateTone} dot>
               {d.state}
             </Badge>
@@ -521,11 +539,10 @@ export default function Devices() {
         // quiet cell is the honest rendering of "nothing to act on".
         const behind = d.firmwareTarget !== undefined && !d.firmwareApproved && fw !== 'Not reported';
         return (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <span className="nt-row-center nt-gap-6" style={{ display: "inline-flex", flexWrap: "wrap" }}>
             <span
+              className="nt-mono-11"
               style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
                 color:
                   fw === 'Not reported' || d.firmwareApproved
                     ? 'var(--nd-text-secondary)'
@@ -545,11 +562,7 @@ export default function Devices() {
       title: 'Licence',
       render: (d) => (
         <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 10.5,
-            color: 'var(--nd-text-muted)',
-          }}
+          className="nt-hint-muted"
         >
           {displayField(d.licence)}
         </span>
@@ -593,17 +606,7 @@ export default function Devices() {
                 type="button"
                 onClick={() => void hideDevice(d.name)}
                 aria-label={`Hide ${d.name} from the demo inventory`}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  padding: 0,
-                  cursor: 'pointer',
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10.5,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.06em',
-                  color: 'var(--nd-text-muted)',
-                }}
+                className="nt-mono-label nt-mono-label" style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
               >
                 hide
               </button>
@@ -614,51 +617,93 @@ export default function Devices() {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <ScreenHeader
         overline="Inventory / Devices"
         title="Devices"
         subtitle={subtitle}
         actions={
-          <SegmentedControl
-            options={VIEW_OPTIONS}
-            value={inventoryView}
-            onValueChange={(v) => setInventoryView(v as InventoryView)}
-            ariaLabel="Inventory presentation"
-          />
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const url = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('View link copied', {
+                      description: window.location.search || 'unfiltered devices list',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy view link
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const n = exportTableCsv(
+                  'devices.csv',
+                  ['name', 'type', 'model', 'site', 'plane', 'state', 'firmware', 'serial', 'mac', 'ip', 'licence'],
+                  rows.map((d) => [
+                    d.name,
+                    d.type,
+                    d.model,
+                    d.siteName,
+                    d.plane,
+                    d.state,
+                    d.firmware,
+                    d.serial ?? '',
+                    d.mac ?? '',
+                    d.ip ?? '',
+                    d.licence,
+                  ]),
+                );
+                toast(`Exported ${countOf(n, 'device')}`, {
+                  description: 'devices.csv — rows currently in view.',
+                });
+              }}
+            >
+              Export CSV
+            </Button>
+            <SegmentedControl
+              options={VIEW_OPTIONS}
+              value={inventoryView}
+              onValueChange={(v) => setInventoryView(v as InventoryView)}
+              ariaLabel="Inventory presentation"
+            />
+          </>
         }
       />
 
       {typeBuckets.length > 0 ? (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--nd-text-muted)' }}>
-            Categories
-          </span>
+        <div className="nt-chip-row" role="group" aria-label="Device categories">
+          <span className="nt-chip-row__label">Categories</span>
           {typeBuckets.map((b) => (
             <button
               key={b.key}
               type="button"
               onClick={() => setType(b.key === type ? 'all' : b.key)}
-              style={{
-                background: type === b.key ? 'var(--nd-bg-inset)' : 'none',
-                border: '1px solid var(--nd-border-default)',
-                borderRadius: 4,
-                padding: '2px 8px',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                gap: 6,
-                alignItems: 'center',
-              }}
+              className={type === b.key ? 'nt-chip nt-chip--active' : 'nt-chip'}
+              aria-pressed={type === b.key}
             >
               <Badge tone={b.tone ?? 'neutral'}>{b.label}</Badge>
-              <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>{b.count}</span>
+              <span className="nt-chip__count">{b.count}</span>
             </button>
           ))}
         </div>
       ) : null}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ width: 250 }}>
+      <ConfigRecommendationsPanel title="Device recommendations" limit={6} />
+
+      <div className="nt-filter-bar">
+        <div className="nt-filter-field nt-filter-field--xl" style={{ width: 250 }}>
           <Input
             size="sm"
             mono
@@ -668,7 +713,7 @@ export default function Devices() {
             aria-label="Filter devices"
           />
         </div>
-        <div style={{ width: 140 }}>
+        <div className="nt-filter-field nt-filter-field--sm">
           <Select
             options={typeOptions}
             value={type}
@@ -693,16 +738,7 @@ export default function Devices() {
               setSearchParams(next, { replace: true });
             }}
             title={nameFilter.join(', ')}
-            style={{
-              background: 'none',
-              border: '1px solid var(--nd-border)',
-              borderRadius: 4,
-              padding: '2px 8px',
-              cursor: 'pointer',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-accent-text)',
-            }}
+            className="nt-chip nt-chip--active"
           >
             {namedPresent === nameFilter.length
               ? `${nameFilter.length} named devices`
@@ -722,16 +758,7 @@ export default function Devices() {
               next.delete('state');
               setSearchParams(next, { replace: true });
             }}
-            style={{
-              background: 'none',
-              border: '1px solid var(--nd-border)',
-              borderRadius: 4,
-              padding: '2px 8px',
-              cursor: 'pointer',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-accent-text)',
-            }}
+            className="nt-chip nt-chip--active"
           >
             {`state: ${stateFilter} — clear`}
           </button>
@@ -740,15 +767,7 @@ export default function Devices() {
           <button
             type="button"
             onClick={() => void restoreHidden()}
-            style={{
-              background: 'none',
-              border: 'none',
-              padding: 0,
-              cursor: 'pointer',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-accent-text)',
-            }}
+            className="nt-mono-link"
           >
             {hiddenCount} hidden — restore
           </button>
@@ -769,14 +788,7 @@ export default function Devices() {
           onApply={applyView}
           onChange={(views) => setSavedViews('devices', views)}
         />
-        <span
-          style={{
-            marginLeft: 'auto',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-text-muted)',
-          }}
-        >
+        <span className="nt-filter-bar__count">
           {rows.length} of {devices.length} indexed{isDemo ? ' · 418 total incl. bulk APs' : ''}
         </span>
       </div>
@@ -827,15 +839,29 @@ export default function Devices() {
               description="Loosen the search or the type filter and facets to see the rest of the inventory."
             />
           ) : null}
+          {deviceHasMore || devicePageTotal != null ? (
+            <div className="nt-filter-bar">
+              {devicePageTotal != null ? (
+                <span className="nt-mono-label">
+                  Loaded {data.devices.length} of {devicePageTotal}
+                </span>
+              ) : null}
+              {deviceHasMore ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={loadingMoreDevices}
+                  onClick={() => loadMoreDevicesRef.current()}
+                >
+                  {loadingMoreDevices ? 'Loading…' : 'Load more'}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </>
       ) : (
         <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(196px, 1fr))',
-            gap: 16,
-            alignItems: 'start',
-          }}
+          className="nt-fleet-grid"
         >
           {lanePlanes.map((p) => {
             const meta = data.lanes[p] ?? FALLBACK_LANE;
@@ -845,74 +871,43 @@ export default function Devices() {
             // local filters excluded the rows it did report.
             const planeReportedNothing = !present.includes(p);
             return (
-              <div key={p} style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+              <div key={p} className="nt-stack" style={{ gap: 10, minWidth: 0 }}>
                 <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 6,
-                    paddingBottom: 9,
-                    borderBottom: `2px solid ${meta.mark}`,
-                  }}
+                  className="nt-fleet-lane" style={{ borderBottom: `2px solid ${meta.mark}` }}
                 >
                   <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 8,
-                    }}
+                    className="nt-fleet-lane__head"
                   >
                     <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-11)',
-                        letterSpacing: '.1em',
-                        textTransform: 'uppercase',
-                        color: 'var(--nd-text-primary)',
-                      }}
+                      className="nt-mono-label nt-text-pri-12" style={{ lineHeight: "inherit" }}
                     >
                       {p}
                     </span>
                     <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-11)',
-                        color: 'var(--nd-text-muted)',
-                      }}
+                      className="nt-hint-muted"
                     >
                       {inLane.length} shown
                     </span>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div className="nt-row nt-gap-6">
                     <Badge tone={meta.tone} dot>
                       {meta.sync}
                     </Badge>
                     <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-10)',
-                        color: 'var(--nd-text-muted)',
-                      }}
+                      className="nt-hint-muted"
                     >
                       {meta.note}
                     </span>
                   </div>
                 </div>
                 <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 2,
-                    maxHeight: 520,
-                    overflow: 'auto',
-                  }}
+                  className="nt-stack nt-fleet-list nt-stack-col"
                 >
                   {inLane.map((d) => (
                     <button
                       key={`${d.name}:${d.serial ?? d.plane}`}
                       type="button"
-                      className="nt-rowlink"
+                      className="nt-rowlink nt-device-lane-row"
                       onClick={() => navigate(deviceDetailPath({ name: d.name, plane: d.plane, serial: d.serial }))}
                       style={{
                         display: 'flex',
@@ -929,52 +924,23 @@ export default function Devices() {
                         width: '100%',
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div className="nt-row nt-gap-6">
                         <span
-                          style={{
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 11.5,
-                            color: 'var(--nd-text-primary)',
-                            flex: 1,
-                            minWidth: 0,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
+                          className="nt-ellipsis nt-mono-11 nt-mono-11" style={{ color: "var(--nd-text-primary)", flex: 1 }}
                         >
                           {d.name}
                         </span>
                         <span
-                          style={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: 99,
-                            background: DOT_COLORS[d.stateTone],
-                            flex: '0 0 6px',
-                          }}
+                          className="nt-dot-6" style={{ background: DOT_COLORS[d.stateTone] }}
                         />
                       </div>
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-body)',
-                          fontSize: 'var(--nd-text-11)',
-                          color: 'var(--nd-text-muted)',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
+                        className="nt-body-sm nt-ellipsis nt-hint-muted"
                       >
                         {displayField(d.model)}
                       </span>
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-10)',
-                          color: 'var(--nd-text-muted)',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
+                        className="nt-hint-muted nt-ellipsis"
                       >
                         {displayField(d.siteName)}
                       </span>
@@ -982,13 +948,7 @@ export default function Devices() {
                   ))}
                   {inLane.length === 0 ? (
                     <div
-                      style={{
-                        padding: '12px 4px',
-                        fontFamily: 'var(--nd-font-display)',
-                        fontStyle: 'italic',
-                        fontSize: 'var(--nd-text-12)',
-                        color: 'var(--nd-text-muted)',
-                      }}
+                      className="nt-empty-lane"
                     >
                       {planeReportedNothing
                         ? 'No inventory reported by this plane.'

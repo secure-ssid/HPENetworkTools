@@ -21,13 +21,18 @@
 
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Badge, Button, Spinner } from '../nightdesk';
+import {
+  PageSkeleton, Alert, Badge, Button, useToast,
+} from '../nightdesk';
 import { getCentral } from '../api/client';
 import type { CentralData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { ScreenHeader } from './ScreenHeader';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
+import { exportTableCsv } from '../lib/csv';
 import { PlaneHeader } from './central/PlaneHeader';
 import { SitesSection } from './central/SitesSection';
 import { ApplicationsSection } from './central/ApplicationsSection';
@@ -51,11 +56,7 @@ export default function Central() {
   }, []);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -70,6 +71,7 @@ function CentralView({
   density: 'comfortable' | 'compact';
 }) {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const notReported = data.notReported ?? [];
   const devicesReported = !notReported.includes('devices');
   const unlinked = data.dataSource === 'live' && !data.plane.linked;
@@ -84,12 +86,95 @@ function CentralView({
     .join(' · ');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <ScreenHeader
         overline="Operate / Central"
         title="HPE Aruba Central"
         subtitle="What the plane manages — fleet, sites, application visibility, firmware and WLANs, read off the poller cache."
-        actions={data.dataSource === 'live' ? <Badge tone="info">LIVE</Badge> : null}
+        actions={
+          <>
+            {data.dataSource === 'live' ? <Badge tone="info">LIVE</Badge> : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const parts: string[] = [];
+                if (data.sites.length > 0) {
+                  parts.push(
+                    `${exportTableCsv(
+                      'central-sites.csv',
+                      ['siteId', 'siteName', 'devices', 'clients', 'healthPct', 'openAlerts'],
+                      data.sites.map((s) => [
+                        s.siteId,
+                        s.siteName,
+                        s.devices,
+                        s.clients ?? '',
+                        s.healthPct ?? '',
+                        s.openAlerts ?? '',
+                      ]),
+                    )} sites`,
+                  );
+                }
+                if (data.wlans.length > 0) {
+                  parts.push(
+                    `${exportTableCsv(
+                      'central-wlans.csv',
+                      ['name', 'vlan', 'security', 'targets', 'plane', 'enabled'],
+                      data.wlans.map((w) => [
+                        w.name,
+                        w.vlan,
+                        w.security,
+                        w.targets,
+                        w.plane,
+                        w.enabled === undefined ? '' : w.enabled ? 'yes' : 'no',
+                      ]),
+                    )} wlans`,
+                  );
+                }
+                if (data.firmware.length > 0) {
+                  parts.push(
+                    `${exportTableCsv(
+                      'central-firmware.csv',
+                      ['name', 'model', 'type', 'site', 'firmware', 'target', 'update'],
+                      data.firmware.map((f) => [
+                        f.name,
+                        f.model,
+                        f.type,
+                        f.siteName,
+                        f.firmware,
+                        f.target ?? '',
+                        f.update ?? '',
+                      ]),
+                    )} firmware`,
+                  );
+                }
+                if (data.alerts.length > 0) {
+                  parts.push(
+                    `${exportTableCsv(
+                      'central-alerts.csv',
+                      ['sev', 'title', 'site', 'plane', 'age', 'device'],
+                      data.alerts.map((a) => [
+                        a.sev,
+                        a.title,
+                        a.siteName,
+                        a.plane,
+                        a.age,
+                        a.device ?? '',
+                      ]),
+                    )} alerts`,
+                  );
+                }
+                toast(parts.length ? `Exported ${parts.join(' · ')}` : 'Nothing to export', {
+                  description: parts.length
+                    ? 'Client-side CSV of the current Central payload.'
+                    : 'Sites, WLANs, firmware, and alerts are empty.',
+                });
+              }}
+            >
+              Export CSV
+            </Button>
+          </>
+        }
       />
 
       <PlaneHeader plane={data.plane} dataSource={data.dataSource} />
@@ -109,6 +194,8 @@ function CentralView({
       ) : null}
 
       <StatRow stats={data.stats} />
+      <VisualReferencePanel target={{ kind: 'connector', id: 'central', plane: 'CENTRAL' }} />
+      <ConfigRecommendationsPanel title="Central estate recommendations" limit={6} />
       {devicesReported && data.fleet.total > 0 ? (
         <div style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', marginTop: -12 }}>
           {`${typeMix}${stateMix ? ` — ${stateMix}` : ''}`}

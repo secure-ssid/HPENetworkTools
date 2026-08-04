@@ -430,14 +430,15 @@ describe('Alerts grouping and silences', () => {
     mockGetAlerts.mockResolvedValue(liveData({ alerts: [], groups: [], silenced: [SILENCED] }));
     renderAlerts();
 
+    // Queue is honest about hush; the benched group lives on Silences.
+    expect(await screen.findByText('Everything firing is silenced')).toBeTruthy();
+    expect(screen.getByText(/hushed, not quiet/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Inspect' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: /Silences/ }));
     expect(await screen.findByText('SILENCED (1)')).toBeTruthy();
     expect(screen.getByText(/ISP maintenance window · until /)).toBeTruthy();
     expect(screen.getByText('×2')).toBeTruthy();
-    // The active table holds nothing, and the empty state says why honestly.
-    expect(screen.getByText('Everything firing is silenced')).toBeTruthy();
-    expect(screen.getByText(/hushed, not quiet/)).toBeTruthy();
-    // The benched group is NOT in the active table.
-    expect(screen.queryByRole('button', { name: 'Inspect' })).toBeNull();
   });
 
   it('(n) Unsilence deletes the silence and refreshes the queue', async () => {
@@ -445,6 +446,7 @@ describe('Alerts grouping and silences', () => {
     mockDeleteSilence.mockResolvedValue({ ok: true });
     renderAlerts();
 
+    fireEvent.click(await screen.findByRole('tab', { name: /Silences/ }));
     fireEvent.click(await screen.findByRole('button', { name: 'Unsilence' }));
     await waitFor(() => expect(mockDeleteSilence).toHaveBeenCalledWith('sil-1'));
     await waitFor(() => expect(mockGetAlerts).toHaveBeenCalledTimes(2));

@@ -37,10 +37,7 @@ export function ConfigRecommendationsPanel({
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
-    if (initialRecommendations) {
-      setRows(initialRecommendations);
-      return;
-    }
+    if (initialRecommendations) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -108,7 +105,7 @@ export function ConfigRecommendationsPanel({
               </div>
               <div style={{ fontSize: 13, color: 'var(--nd-text-secondary)' }}>{rec.detail}</div>
               {rec.evidenceNote ? (
-                <div style={{ fontSize: 11, fontFamily: 'var(--nd-font-mono)', color: 'var(--nd-text-muted)' }}>
+                <div className="nt-hint-muted">
                   {rec.evidenceNote}
                 </div>
               ) : null}

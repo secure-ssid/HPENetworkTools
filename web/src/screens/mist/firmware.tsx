@@ -31,7 +31,7 @@ export function FirmwareSection({ devices }: { devices: DeviceRow[] }) {
   const unreported = devices.length - scored.length;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader
         label="Firmware"
         meta={

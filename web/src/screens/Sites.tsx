@@ -273,11 +273,7 @@ export default function Sites() {
                 >
                   <span style={{ fontSize: 13.5, color: 'var(--nd-text-primary)' }}>{s.name}</span>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {s.subnet}
                   </span>
@@ -297,11 +293,7 @@ export default function Sites() {
                     /* A site the plane reported without naming a manager —
                        say so rather than leaving the cell blank. */
                     <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 10.5,
-                        color: 'var(--nd-text-muted)',
-                      }}
+                      className="nt-hint-muted"
                     >
                       not reported
                     </span>
@@ -310,11 +302,7 @@ export default function Sites() {
               </Table.Cell>
               <Table.Cell>
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-hint-muted"
                 >
                   {s.mix}
                 </span>
@@ -352,11 +340,7 @@ export default function Sites() {
                     ) : null}
                   </div>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-11)',
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {s.health ?? '—'}
                   </span>
@@ -409,21 +393,12 @@ export default function Sites() {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 10.5,
-              color: 'var(--nd-text-muted)',
-            }}
+            className="nt-hint-muted"
           >
             {rows.length} of {sites.length} sites · {indexedDevices} devices indexed
           </span>
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-              letterSpacing: '.08em',
-            }}
+            className="nt-mono-label" style={{ color: 'var(--nd-text-muted)' }}
           >
             {sourceLabel}
           </span>
@@ -474,12 +449,7 @@ export default function Sites() {
             />
           </FormField>
           <div
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-              lineHeight: 1.5,
-            }}
+            className="nt-service-note"
           >
             The portal does not create sites locally — the request is handed to the managing plane,
             which owns site creation.

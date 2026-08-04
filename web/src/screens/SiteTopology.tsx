@@ -387,27 +387,22 @@ function Card({
       />
       <span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, textAlign: 'left' }}>
         <span
-          style={{
-            fontFamily: 'var(--nd-font-display)',
-            fontSize: 12.5,
-            color: 'var(--nd-text-primary)',
+          className="nt-topo-title" style={{
+color: 'var(--nd-text-primary)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
+            textOverflow: 'ellipsis'
+}}
         >
           {node.label}
         </span>
         <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 9.5,
-            letterSpacing: '.06em',
-            color: 'var(--nd-text-muted)',
+          className="nt-mono-label" style={{
+color: 'var(--nd-text-muted)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
+            textOverflow: 'ellipsis'
+}}
         >
           {isGroup ? `${node.sub} · expand` : node.sub}
         </span>
@@ -417,15 +412,12 @@ function Card({
             operator in twelve who cannot tell it from the green beside it. */}
         {shownState !== null ? (
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 9.5,
-              letterSpacing: '.06em',
-              color: node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-warning)',
+            className="nt-mono-label" style={{
+color: node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-warning)',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
+              textOverflow: 'ellipsis'
+}}
           >
             {shownState}
           </span>
@@ -612,13 +604,10 @@ export function SiteTopologyDiagram({
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <Badge tone="accent">focus</Badge>
           <span
-            style={{
-              flex: 1,
-              minWidth: 0,
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-            }}
+            className="nt-hint-muted" style={{
+flex: 1,
+              minWidth: 0
+}}
           >
             {`${focus.label} · ${countOf(focus.neighbours.size, 'neighbour')} in view · click another node to move the focus · Esc or click the background to leave`}
           </span>
@@ -640,15 +629,12 @@ export function SiteTopologyDiagram({
           {topology.layers.map((layer, i) => (
             <span
               key={layer}
-              style={{
-                position: 'absolute',
+              className="nt-mono-label" style={{
+position: 'absolute',
                 top: i * ROW_H + ROW_H / 2,
                 transform: 'translateY(-50%)',
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 9.5,
-                letterSpacing: '.12em',
-                color: 'var(--nd-text-muted)',
-              }}
+                color: 'var(--nd-text-muted)'
+}}
             >
               {LAYER_LABEL[layer]}
             </span>
@@ -699,20 +685,17 @@ export function SiteTopologyDiagram({
             return (
               <span
                 key={`label-${i}`}
-                style={{
-                  position: 'absolute',
+                className="nt-hint-muted" style={{
+position: 'absolute',
                   left: `${(f.xPct + t.xPct) / 2}%`,
                   top: (f.layerIdx + t.layerIdx + 1) * ROW_H - 7,
                   transform: 'translate(-50%, -50%)',
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 9.5,
                   letterSpacing: '.04em',
-                  color: 'var(--nd-text-muted)',
                   background: 'var(--nd-bg-surface)',
                   padding: '0 6px',
                   whiteSpace: 'nowrap',
-                  opacity: edgeLit ? 1 : 0.2,
-                }}
+                  opacity: edgeLit ? 1 : 0.2
+}}
               >
                 {e.label}
               </span>

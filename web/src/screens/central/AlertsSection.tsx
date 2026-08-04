@@ -14,7 +14,6 @@ import { Link } from 'react-router-dom';
 import { Badge, SectionHeader } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { AlertRow } from '@hpe/shared';
-import { noteStyle } from './style';
 
 /** How many rows the section shows before the remainder becomes the
  *  hand-off count — the queue itself always has the rest. */
@@ -35,15 +34,15 @@ export function AlertsSection({
       : `${countOf(alerts.length, 'ALERT').toUpperCase()} · CENTRAL`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="Recent alerts" meta={meta} />
       {!alertsReported ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           Central did not report its alert feed this cycle — the estate may be louder than this
           screen knows. Connected systems has the plane&rsquo;s poll state.
         </div>
       ) : alerts.length === 0 ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           Nothing active from Central — the reported feed has no open or acknowledged rows
           (silenced firings sit on the Alerts screen&rsquo;s bench, with their reasons).
         </div>
@@ -65,17 +64,17 @@ export function AlertsSection({
                 <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
                   {a.title}
                 </span>
-                <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', marginLeft: 8 }}>
+                <span className="nt-hint-muted" style={{ marginLeft: 8 }}>
                   {a.siteName}
                   {a.state !== 'open' ? ` · ${a.state}` : ''}
                 </span>
               </span>
-              <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', flexShrink: 0 }}>
+              <span className="nt-hint-muted" style={{ flexShrink: 0 }}>
                 {a.age}
               </span>
             </div>
           ))}
-          <div style={{ ...noteStyle, fontSize: 10.5, paddingTop: 6 }}>
+          <div className="nt-service-note" style={{ fontSize: 10.5, paddingTop: 6 }}>
             {alerts.length > shown.length
               ? `+${countOf(alerts.length - shown.length, 'more')} — the `
               : 'The '}

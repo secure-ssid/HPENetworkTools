@@ -9,6 +9,7 @@ import {
   Card,
   Checkbox,
   Code,
+  ConfirmDialog,
   Divider,
   Drawer,
   EmptyState,
@@ -16,6 +17,11 @@ import {
   Heading,
   Input,
   Kbd,
+  Menu,
+  MenuItem,
+  MenuSeparator,
+  Modal,
+  PageSkeleton,
   Pagination,
   Progress,
   SectionHeader,
@@ -27,8 +33,13 @@ import {
   Stat,
   Switch,
   Table,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   Text,
   Textarea,
+  Tooltip,
   useToast,
 } from '../nightdesk';
 
@@ -62,6 +73,10 @@ export function DsGallery() {
   const [note, setNote] = useState('Escalate to on-call if tunnel flaps recur.');
   const [brokered, setBrokered] = useState(true);
   const [readInventory, setReadInventory] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [galleryTab, setGalleryTab] = useState('queue');
 
   const sidebar = (
     <>
@@ -77,7 +92,7 @@ export function DsGallery() {
             color: 'var(--nd-text-primary)',
           }}
         >
-          Network Tools
+          NightDesk
         </div>
       </div>
       <Stack gap={16}>
@@ -244,7 +259,7 @@ export function DsGallery() {
               <SectionHeader
                 label="Devices"
                 meta={
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span className="nt-row">
                     <span>6 of 418</span>
                     <SegmentedControl
                       ariaLabel="Table density"
@@ -290,7 +305,7 @@ export function DsGallery() {
                       </Table.Cell>
                       <Table.Cell>{d.site}</Table.Cell>
                       <Table.Cell>
-                        <Badge tone="neutral">{d.plane}</Badge>
+                        <Badge plane>{d.plane}</Badge>
                       </Table.Cell>
                       <Table.Cell numeric>{d.clients}</Table.Cell>
                       <Table.Cell>
@@ -403,6 +418,130 @@ export function DsGallery() {
           </Stack>
 
           <Stack gap={26}>
+
+            <Stack gap={12}>
+              <SectionHeader label="Overlays" meta="NightDesk 2.0 primitives" />
+              <Stack direction="row" gap={8} wrap>
+                <Button variant="secondary" size="sm" onClick={() => setModalOpen(true)}>
+                  Open modal
+                </Button>
+                <Button variant="danger" size="sm" onClick={() => setConfirmOpen(true)}>
+                  Confirm dialog
+                </Button>
+                <Tooltip content="State owns hue · planes stay monochrome">
+                  <Button variant="ghost" size="sm">
+                    Hover tooltip
+                  </Button>
+                </Tooltip>
+                <Menu
+                  open={menuOpen}
+                  onOpenChange={setMenuOpen}
+                  align="start"
+                  trigger={
+                    <Button variant="secondary" size="sm">
+                      Menu ▾
+                    </Button>
+                  }
+                >
+                  <MenuItem
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      toast('Inspect', { tone: 'info' });
+                    }}
+                  >
+                    Inspect
+                  </MenuItem>
+                  <MenuItem
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      toast('Silence', { tone: 'warning' });
+                    }}
+                  >
+                    Silence
+                  </MenuItem>
+                  <MenuSeparator />
+                  <MenuItem
+                    danger
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      toast('Retire', { tone: 'danger' });
+                    }}
+                  >
+                    Retire plane
+                  </MenuItem>
+                </Menu>
+              </Stack>
+              <Tabs value={galleryTab} onValueChange={setGalleryTab}>
+                <TabsList>
+                  <TabsTrigger value="queue">Queue</TabsTrigger>
+                  <TabsTrigger value="silences">Silences</TabsTrigger>
+                  <TabsTrigger value="rules">Rules</TabsTrigger>
+                </TabsList>
+                <TabsContent value="queue">
+                  <Text size={12} tone="secondary">
+                    Active alert firings — the NOC default.
+                  </Text>
+                </TabsContent>
+                <TabsContent value="silences">
+                  <Text size={12} tone="secondary">
+                    Time-boxed hush with reason — never invisible.
+                  </Text>
+                </TabsContent>
+                <TabsContent value="rules">
+                  <Text size={12} tone="secondary">
+                    Correlation and escalation policy (read path).
+                  </Text>
+                </TabsContent>
+              </Tabs>
+              <Stack gap={8}>
+                <Text size={11} mono tone="muted">
+                  Plane chips stay monochrome
+                </Text>
+                <Stack direction="row" gap={6} wrap>
+                  <Badge plane>CENTRAL</Badge>
+                  <Badge plane>MIST</Badge>
+                  <Badge plane>CLEARPASS</Badge>
+                  <Badge tone="danger" dot>
+                    P1
+                  </Badge>
+                </Stack>
+              </Stack>
+              <div style={{ border: '1px solid var(--nd-border-subtle)', borderRadius: 12, padding: 12 }}>
+                <Text size={11} mono tone="muted">
+                  Page skeleton
+                </Text>
+                <PageSkeleton variant="list" />
+              </div>
+              <Modal
+                open={modalOpen}
+                onOpenChange={setModalOpen}
+                title="Brokered write"
+                description="Review the blast radius before the plane accepts the change."
+                footer={
+                  <>
+                    <Button variant="ghost" size="sm" onClick={() => setModalOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button variant="primary" size="sm" onClick={() => setModalOpen(false)}>
+                      Commit
+                    </Button>
+                  </>
+                }
+              >
+                <Text size={12} tone="secondary">
+                  NightDesk never pretends a write landed when the plane is behind.
+                </Text>
+              </Modal>
+              <ConfirmDialog
+                open={confirmOpen}
+                onOpenChange={setConfirmOpen}
+                title="Retire Classic?"
+                description="Stored credentials are cleared. Devices stay on the plane."
+                confirmLabel="Retire"
+                onConfirm={() => toast('Retired', { tone: 'success' })}
+              />
+            </Stack>
+
             <Stack gap={12}>
               <SectionHeader label="Badges" meta="live state with dot" />
               <Stack direction="row" gap={6} wrap>

@@ -36,13 +36,6 @@ const DOT: Partial<Record<Tone, string>> = {
   info: 'var(--nd-info, var(--nd-border-strong))',
 };
 
-const noteStyle = {
-  fontFamily: 'var(--nd-font-mono)',
-  fontSize: 'var(--nd-text-11)',
-  color: 'var(--nd-text-muted)',
-  lineHeight: 1.6,
-} as const;
-
 /** One floor plan: image, AP dots, the client dots the roster locates on THIS
  *  map, and the legend line naming what was placed. */
 function MapBlock({ map, clients }: { map: MistSiteMap; clients: SiteMapClientDot[] }) {
@@ -59,12 +52,12 @@ function MapBlock({ map, clients }: { map: MistSiteMap; clients: SiteMapClientDo
     .join(' · ');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className="nt-stack nt-gap-8">
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
           {map.name ?? 'Unnamed floor plan'}
         </span>
-        {dims ? <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)' }}>{dims}</span> : null}
+        {dims ? <span className="nt-service-note" style={{ fontSize: "var(--nd-text-10)" }}>{dims}</span> : null}
       </div>
       {map.imageUrl !== null && map.widthPx !== null && map.heightPx !== null ? (
         <svg
@@ -110,13 +103,13 @@ function MapBlock({ map, clients }: { map: MistSiteMap; clients: SiteMapClientDo
           ))}
         </svg>
       ) : (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           {map.imageUrl === null
             ? 'This map row carries no image — nothing is drawn rather than a guessed placeholder.'
             : 'This map row reports no image dimensions, so its pixel coordinates cannot be placed — nothing is drawn.'}
         </div>
       )}
-      <div style={{ ...noteStyle, fontSize: 10.5 }}>
+      <div className="nt-service-note" style={{ fontSize: 10.5 }}>
         {placedAps.length > 0
           ? `APs placed: ${placedAps.map((ap) => ap.deviceName).join(' · ')}`
           : 'No AP has a reported position on this map.'}
@@ -143,17 +136,17 @@ export function SiteFloorPlan({
 }) {
   if (maps === undefined) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="nt-stack nt-gap-10">
         <SectionHeader label="Floor plan" meta="NOT REPORTED" />
-        <div style={noteStyle}>The portal did not say whether this site has floor plans.</div>
+        <div className="nt-service-note">The portal did not say whether this site has floor plans.</div>
       </div>
     );
   }
   if (maps.length === 0) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="nt-stack nt-gap-10">
         <SectionHeader label="Floor plan" meta={mistClaimed ? 'NONE UPLOADED' : 'NOT PUBLISHED'} />
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           {mistClaimed
             ? 'No floor plan uploaded to Mist for this site — floor plans are uploaded in the Mist dashboard.'
             : 'No linked plane publishes a floor plan for this site.'}
@@ -162,7 +155,7 @@ export function SiteFloorPlan({
     );
   }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div className="nt-stack nt-gap-14">
       <SectionHeader
         label="Floor plan"
         meta={

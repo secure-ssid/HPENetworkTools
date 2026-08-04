@@ -34,10 +34,14 @@
  * shows all of them instead.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import type { Tone } from '@hpe/shared';
 import { cx } from './utils';
+
+/** Paint only a window once tables grow past this many rows. */
+const VIRTUALIZE_AFTER = 80;
+const VIRTUAL_OVERSCAN = 8;
 
 /* ---------- column definitions & config ---------- */
 
@@ -201,6 +205,10 @@ export function DataTable<Row>({
   const keyboard = onRowActivate !== undefined || onSelectionChange !== undefined;
   const selectable = selectedKeys !== undefined && onSelectionChange !== undefined;
   const selected = useMemo(() => new Set(selectedKeys ?? []), [selectedKeys]);
+  const rowHeight = density === 'compact' ? 32 : 40;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(480);
 
   // Roving tabindex: the key of the row holding the table's one tab stop.
   // State records where the user put it; the render falls back to the first
@@ -231,6 +239,49 @@ export function DataTable<Row>({
   const keys = useMemo(() => sortedRows.map(rowKey), [sortedRows, rowKey]);
   const effectiveActiveKey =
     activeKey !== null && keys.includes(activeKey) ? activeKey : (keys[0] ?? null);
+
+  const virtualized = sortedRows.length > VIRTUALIZE_AFTER;
+  const virtualWindow = useMemo(() => {
+    if (!virtualized) {
+      return { start: 0, end: sortedRows.length, top: 0, bottom: 0 };
+    }
+    const start = Math.max(0, Math.floor(scrollTop / rowHeight) - VIRTUAL_OVERSCAN);
+    const visibleCount = Math.ceil(viewportH / rowHeight) + VIRTUAL_OVERSCAN * 2;
+    const end = Math.min(sortedRows.length, start + visibleCount);
+    return {
+      start,
+      end,
+      top: start * rowHeight,
+      bottom: Math.max(0, (sortedRows.length - end) * rowHeight),
+    };
+  }, [virtualized, scrollTop, viewportH, rowHeight, sortedRows.length]);
+
+  useEffect(() => {
+    if (!virtualized) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => setScrollTop(el.scrollTop);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => setViewportH(el.clientHeight || 480)) : null;
+    setViewportH(el.clientHeight || 480);
+    el.addEventListener('scroll', onScroll, { passive: true });
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      ro?.disconnect();
+    };
+  }, [virtualized]);
+
+  useEffect(() => {
+    if (!virtualized || effectiveActiveKey === null) return;
+    const idx = keys.indexOf(effectiveActiveKey);
+    if (idx < 0) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const top = idx * rowHeight;
+    const bottom = top + rowHeight;
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
+  }, [effectiveActiveKey, virtualized, keys, rowHeight]);
 
   const toggleSelected = (key: string) => {
     if (!selectable) return;
@@ -322,8 +373,11 @@ export function DataTable<Row>({
     document.addEventListener('pointerup', onUp);
   };
 
+  const paintedRows = virtualized ? sortedRows.slice(virtualWindow.start, virtualWindow.end) : sortedRows;
+  const colSpan = Math.max(1, visible.length);
+
   return (
-    <div className="nd-table-scroll">
+    <div ref={scrollRef} className={cx('nd-table-scroll', virtualized && 'nd-table-scroll--virtual')}>
       <table
         className={cx('nd-table', 'nd-table--open', density === 'compact' && 'nd-table--compact', className)}
         role={keyboard ? 'grid' : undefined}
@@ -374,7 +428,13 @@ export function DataTable<Row>({
           </tr>
         </thead>
         <tbody>
-          {sortedRows.map((row, index) => {
+          {virtualized && virtualWindow.top > 0 ? (
+            <tr aria-hidden="true" className="nd-table__tr--spacer">
+              <td colSpan={colSpan} style={{ height: virtualWindow.top, padding: 0, border: 0 }} />
+            </tr>
+          ) : null}
+          {paintedRows.map((row, paintedIndex) => {
+            const index = virtualized ? virtualWindow.start + paintedIndex : paintedIndex;
             const key = keys[index] as string;
             return (
               <tr
@@ -421,6 +481,11 @@ export function DataTable<Row>({
               </tr>
             );
           })}
+          {virtualized && virtualWindow.bottom > 0 ? (
+            <tr aria-hidden="true" className="nd-table__tr--spacer">
+              <td colSpan={colSpan} style={{ height: virtualWindow.bottom, padding: 0, border: 0 }} />
+            </tr>
+          ) : null}
         </tbody>
       </table>
     </div>

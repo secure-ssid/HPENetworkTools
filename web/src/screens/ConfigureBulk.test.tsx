@@ -178,17 +178,17 @@ describe('Configure — the change-queue bulk action bar', () => {
     expect(queueSection().queryByText(/SELECTED/)).toBeNull();
 
     selectAll();
-    expect(queueSection().getByText('2 SELECTED')).toBeTruthy();
+    expect(queueSection().getByText(/2 selected/i)).toBeTruthy();
 
     // Unchecking one row narrows the same selection the bar reads.
     fireEvent.click(
       queueSection().getByRole('checkbox', { name: 'Select change: Add DHCP helper 10.44.0.20 to vlan 812' }),
     );
-    expect(queueSection().getByText('1 SELECTED')).toBeTruthy();
+    expect(queueSection().getByText(/1 selected/i)).toBeTruthy();
 
     // Select-all again checks everything, Clear empties it and the bar goes.
     selectAll();
-    expect(queueSection().getByText('2 SELECTED')).toBeTruthy();
+    expect(queueSection().getByText(/2 selected/i)).toBeTruthy();
     fireEvent.click(queueSection().getByRole('button', { name: 'Clear' }));
     expect(queueSection().queryByText(/SELECTED/)).toBeNull();
     expect(
@@ -324,7 +324,7 @@ describe('Configure — the change-queue bulk action bar', () => {
     await waitFor(() => expect(queueSection().getByText('NET-9999')).toBeTruthy());
 
     selectAll();
-    expect(queueSection().getByText('1 SELECTED')).toBeTruthy();
+    expect(queueSection().getByText(/1 selected/i)).toBeTruthy();
     fireEvent.click(queueSection().getByRole('button', { name: 'Approve' }));
 
     expect(await screen.findByText('Bulk approve — 0 of 1 applied')).toBeTruthy();

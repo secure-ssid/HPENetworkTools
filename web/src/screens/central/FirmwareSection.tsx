@@ -18,7 +18,6 @@ import { Badge, SectionHeader, Table } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { CentralFirmwareRow } from '@hpe/shared';
 import { deviceDetailPath } from '../../app/nav';
-import { noteStyle } from './style';
 
 export function FirmwareSection({
   rows,
@@ -38,15 +37,15 @@ export function FirmwareSection({
       : `${countOf(rows.length, 'DEVICE').toUpperCase()} BEHIND`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="Firmware" meta={meta} />
       {!devicesReported ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           Central did not report its device inventory this cycle, so no firmware verdict can be
           asserted — this is an unread estate, not a compliant one.
         </div>
       ) : rows.length === 0 ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           {fleetTotal > 0
             ? `Every one of the ${countOf(fleetTotal, 'device')} Central manages is on its approved firmware train.`
             : 'Central reported no devices — no firmware verdicts to give.'}
@@ -73,7 +72,7 @@ export function FirmwareSection({
                     >
                       {row.name}
                     </Link>
-                    <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', marginLeft: 8 }}>
+                    <span className="nt-hint-muted" style={{ marginLeft: 8 }}>
                       {row.model}
                     </span>
                   </Table.Cell>
@@ -82,16 +81,16 @@ export function FirmwareSection({
                     <Badge tone="warning">{row.firmware}</Badge>
                   </Table.Cell>
                   <Table.Cell>
-                    {row.target ?? <span style={noteStyle}>approved-train verdict</span>}
+                    {row.target ?? <span className="nt-service-note">approved-train verdict</span>}
                   </Table.Cell>
                   <Table.Cell>
-                    {row.update ?? <span style={noteStyle}>—</span>}
+                    {row.update ?? <span className="nt-service-note">—</span>}
                   </Table.Cell>
                 </Table.Row>
               ))}
             </Table.Body>
           </Table>
-          <div style={{ ...noteStyle, fontSize: 10.5, paddingTop: 6 }}>
+          <div className="nt-service-note" style={{ fontSize: 10.5, paddingTop: 6 }}>
             The verdict is the plane&rsquo;s own approved-train check; upgrades are scheduled in
             Central, not from here.
           </div>

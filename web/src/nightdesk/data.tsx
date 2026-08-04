@@ -32,14 +32,17 @@ export function Stat({
 export function Badge({
   tone = 'neutral',
   dot,
+  /** Plane / source chips stay monochrome — state owns hue. */
+  plane,
   children,
 }: {
   tone?: Tone;
   dot?: boolean;
+  plane?: boolean;
   children: ReactNode;
 }) {
   return (
-    <span className={`nd-badge nd-badge--${tone}`}>
+    <span className={cx('nd-badge', plane ? 'nd-badge--plane' : `nd-badge--${tone}`)}>
       {dot ? <span className="nd-badge__dot" /> : null}
       {children}
     </span>
@@ -147,6 +150,73 @@ export function Skeleton({
   style?: CSSProperties;
 }) {
   return <div className={cx('nd-skeleton', className)} style={{ width, height, ...style }} />;
+}
+
+/** Route/list first paint — copper-NOC skeleton choreography instead of a lone spinner. */
+export function PageSkeleton({
+  variant = 'list',
+}: {
+  variant?: 'list' | 'overview' | 'detail';
+}) {
+  if (variant === 'overview') {
+    return (
+      <div className="nd-page-skeleton" aria-busy="true" aria-label="Loading overview">
+        <div className="nd-page-skeleton__header">
+          <Skeleton width={220} height={28} />
+          <Skeleton width={140} height={28} />
+        </div>
+        <div className="nd-page-skeleton__stats">
+          {Array.from({ length: 5 }, (_, i) => (
+            <Skeleton key={i} height={72} className="nd-page-skeleton__row" />
+          ))}
+        </div>
+        <div className="nd-page-skeleton__grid">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {Array.from({ length: 6 }, (_, i) => (
+              <Skeleton key={i} height={40} className="nd-page-skeleton__row" />
+            ))}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {Array.from({ length: 5 }, (_, i) => (
+              <Skeleton key={i} height={36} className="nd-page-skeleton__row" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (variant === 'detail') {
+    return (
+      <div className="nd-page-skeleton" aria-busy="true" aria-label="Loading detail">
+        <div className="nd-page-skeleton__header">
+          <Skeleton width={280} height={28} />
+          <Skeleton width={180} height={28} />
+        </div>
+        <Skeleton height={64} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {Array.from({ length: 8 }, (_, i) => (
+            <Skeleton key={i} height={36} className="nd-page-skeleton__row" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="nd-page-skeleton" aria-busy="true" aria-label="Loading NightDesk">
+      <div className="nd-page-skeleton__header">
+        <Skeleton width={200} height={28} />
+        <Skeleton width={160} height={28} />
+      </div>
+      <Skeleton height={40} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {Array.from({ length: 10 }, (_, i) => (
+          <Skeleton key={i} height={38} className="nd-page-skeleton__row" />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /* ---------- Breadcrumbs ---------- */

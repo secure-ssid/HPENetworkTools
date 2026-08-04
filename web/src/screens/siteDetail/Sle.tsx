@@ -85,12 +85,7 @@ function durationLabel(sec: number | null): string | null {
   return `${(minutes / 60).toFixed(1)} h`;
 }
 
-const noteStyle = {
-  fontFamily: 'var(--nd-font-mono)',
-  fontSize: 'var(--nd-text-11)',
-  color: 'var(--nd-text-muted)',
-  lineHeight: 1.6,
-} as const;
+
 
 /** One drill section's honest sentence for the three no-rows outcomes. */
 function sectionNote(
@@ -132,7 +127,7 @@ function TrendSection({ detail }: { detail: MistSleMetricDetail }) {
       ? `${hhmm(new Date(trend.startSec * 1000).toISOString())}–${hhmm(new Date(trend.endSec * 1000).toISOString())}`
       : null;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className="nt-stack nt-gap-8">
       <SectionHeader label="Trend" meta={windowLabel ?? undefined} />
       {detailHasRows(detail.source, 'trend', points) ? (
         <>
@@ -143,12 +138,12 @@ function TrendSection({ detail }: { detail: MistSleMetricDetail }) {
             stroke="var(--nd-accent)"
             label={`${metricLabel(detail.metric)} success, ${countOf(points.length, 'interval')}${windowLabel ? ` · ${windowLabel}` : ''}`}
           />
-          <div style={{ ...noteStyle, fontSize: 10.5 }}>
+          <div className="nt-hint-muted">
             success per interval, from the summary trend's total/degraded counts
           </div>
         </>
       ) : (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           {detailState(detail.source, 'trend') === 'ok'
             ? 'The trend carried no countable intervals in the read window.'
             : sectionNote(detail, 'trend', 'trend')}
@@ -171,10 +166,10 @@ function ClassifierRow({ c }: { c: MistSleClassifier }) {
         borderBottom: '1px solid var(--nd-border-subtle)',
       }}
     >
-      <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
+      <span className="nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>
         {metricLabel(c.name)}
       </span>
-      <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', textAlign: 'right' }}>
+      <span className="nt-hint-muted" style={{ textAlign: "right" }}>
         {c.degraded !== null ? `${c.degraded.toLocaleString()} degraded` : '—'}
         {c.samples !== null ? ` of ${c.samples.toLocaleString()} samples` : ''}
         {duration ? ` · ${duration}` : ''}
@@ -197,14 +192,14 @@ function ImpactedRow({ name, mac, degraded }: { name: string | null; mac: string
       }}
     >
       <span style={{ minWidth: 0 }}>
-        <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
+        <span className="nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>
           {name ?? mac}
         </span>
         {name !== null ? (
-          <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', marginLeft: 8 }}>{mac}</span>
+          <span className="nt-hint-muted" style={{ marginLeft: 8 }}>{mac}</span>
         ) : null}
       </span>
-      <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)' }}>
+      <span className="nt-hint-muted">
         {degraded !== null ? `${countOf(degraded, 'degraded sample')}` : '—'}
       </span>
     </div>
@@ -215,7 +210,7 @@ function ImpactedRow({ name, mac, degraded }: { name: string | null; mac: string
 function DrillBody({ result }: { result: SleMetricDetailResult }) {
   if (result.kind === 'not-reported') {
     return (
-      <div style={noteStyle}>
+      <div className="nt-service-note">
         No drill-down was reported for this metric at this site — Mist publishes one only for a
         metric the site scored in the read window.
       </div>
@@ -223,7 +218,7 @@ function DrillBody({ result }: { result: SleMetricDetailResult }) {
   }
   if (result.kind === 'failed') {
     return (
-      <div style={{ ...noteStyle, color: 'var(--nd-danger)' }}>
+      <div className="nt-hint-muted" style={{ color: "var(--nd-danger)" }}>
         The drill-down read failed — {result.message}
       </div>
     );
@@ -231,32 +226,32 @@ function DrillBody({ result }: { result: SleMetricDetailResult }) {
   const { detail } = result;
   const readAt = hhmm(detail.source.at);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-      <div style={{ ...noteStyle, fontSize: 'var(--nd-text-10)' }}>
+    <div className="nt-stack nt-gap-22">
+      <div className="nt-hint-muted">
         {`MIST · READ ${readAt}${detail.source.cached ? ' · CACHED' : ''}`}
       </div>
       <TrendSection detail={detail} />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         <SectionHeader label="Classifiers" meta="WHY IT DEGRADES" />
         {detailHasRows(detail.source, 'classifiers', detail.classifiers)
           ? detail.classifiers!.map((c) => <ClassifierRow key={c.name} c={c} />)
-          : <div style={noteStyle}>{sectionNote(detail, 'classifiers', 'classifiers')}</div>}
+          : <div className="nt-service-note">{sectionNote(detail, 'classifiers', 'classifiers')}</div>}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         <SectionHeader label="Impacted clients" meta="WHO" />
         {detailHasRows(detail.source, 'impactedClients', detail.impactedClients)
           ? detail.impactedClients!.map((c) => (
               <ImpactedRow key={c.mac} name={c.name} mac={c.mac} degraded={c.degraded} />
             ))
-          : <div style={noteStyle}>{sectionNote(detail, 'impactedClients', 'impacted clients')}</div>}
+          : <div className="nt-service-note">{sectionNote(detail, 'impactedClients', 'impacted clients')}</div>}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         <SectionHeader label="Impacted APs" meta="WHERE" />
         {detailHasRows(detail.source, 'impactedAps', detail.impactedAps)
           ? detail.impactedAps!.map((ap) => (
               <ImpactedRow key={ap.mac} name={ap.name} mac={ap.mac} degraded={ap.degraded} />
             ))
-          : <div style={noteStyle}>{sectionNote(detail, 'impactedAps', 'impacted APs')}</div>}
+          : <div className="nt-service-note">{sectionNote(detail, 'impactedAps', 'impacted APs')}</div>}
       </div>
     </div>
   );
@@ -282,10 +277,10 @@ function MetricRow({ metric, onOpen }: { metric: MistSleMetric; onOpen: () => vo
       }}
     >
       <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: 'block', fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
+        <span className="nt-body-sm" style={{ display: "block", color: "var(--nd-text-primary)" }}>
           {metricLabel(metric.name)}
         </span>
-        <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)' }}>
+        <span className="nt-hint-muted">
           {metric.degraded !== null && metric.samples !== null
             ? `${metric.degraded.toLocaleString()} degraded of ${metric.samples.toLocaleString()} samples`
             : 'sample counts not reported'}
@@ -293,7 +288,7 @@ function MetricRow({ metric, onOpen }: { metric: MistSleMetric; onOpen: () => vo
         </span>
       </span>
       <Badge tone={sleTone(metric.success)}>{pct(metric.success)}</Badge>
-      <span style={{ ...noteStyle, fontSize: 'var(--nd-text-11)' }}>drill →</span>
+      <span className="nt-service-note">drill →</span>
     </button>
   );
 }
@@ -322,11 +317,11 @@ function HeadlineRows({ sle }: { sle: MistSleRow }) {
             borderBottom: '1px solid var(--nd-border-subtle)',
           }}
         >
-          <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>{row.k}</span>
+          <span className="nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{row.k}</span>
           <Badge tone={sleTone(row.v)}>{pct(row.v)}</Badge>
         </div>
       ))}
-      <div style={{ ...noteStyle, fontSize: 10.5, paddingTop: 6 }}>
+      <div className="nt-hint-muted" style={{ paddingTop: 6 }}>
         Per-metric detail was not reported for this site, so there is nothing to drill into.
       </div>
     </>
@@ -382,15 +377,15 @@ export function SiteSle({
   }, [drill, siteKey]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader
         label="Wireless experience"
         meta={sle ? `OVERALL ${pct(sle.overall)} · MIST SLE` : 'NOT REPORTED'}
       />
       {sle === undefined ? (
-        <div style={noteStyle}>The portal did not say whether this site reports SLE scores.</div>
+        <div className="nt-service-note">The portal did not say whether this site reports SLE scores.</div>
       ) : sle === null ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           {mistClaimed
             ? 'Mist reported no SLE scores for this site this cycle — an unscored window is "not reported", never a 0%.'
             : 'No linked plane publishes SLE scores for this site.'}
@@ -417,7 +412,7 @@ export function SiteSle({
       >
         {drill ? (
           drill.result === null ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+            <div className="nt-center-pad" style={{ padding: 48 }}>
               <Spinner size="md" />
             </div>
           ) : (

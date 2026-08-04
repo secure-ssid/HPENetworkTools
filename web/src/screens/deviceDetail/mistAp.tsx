@@ -27,45 +27,24 @@ export function uptimeText(sec: number): string {
 /** One small gauge: a label, a track bar and the value, all nightdesk tokens. */
 function Gauge({ label, pct, value }: { label: string; pct: number | null; value: string }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>
+    <div className="nt-stack nt-gap-5" style={{ minWidth: 0 }}>
       <span
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 'var(--nd-text-10)',
-          letterSpacing: '.1em',
-          textTransform: 'uppercase',
-          color: 'var(--nd-text-muted)',
-        }}
+        className="nt-mono-label"
       >
         {label}
       </span>
       {pct !== null ? (
         <span
           aria-hidden
-          style={{
-            display: 'block',
-            height: 4,
-            borderRadius: 2,
-            background: 'var(--nd-border-subtle)',
-            overflow: 'hidden',
-          }}
+          className="nt-bar-track"
         >
           <span
-            style={{
-              display: 'block',
-              height: '100%',
-              width: `${Math.min(100, Math.max(0, pct))}%`,
-              background: 'var(--nd-accent)',
-            }}
+            className="nt-bar-fill" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
           />
         </span>
       ) : null}
       <span
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 'var(--nd-text-11)',
-          color: 'var(--nd-text-primary)',
-        }}
+        className="nt-configure-row__name-primary"
       >
         {value}
       </span>
@@ -92,35 +71,16 @@ function RadioRow({ radio }: { radio: MistApRadioStats }) {
   const segments = AIRTIME_SEGMENTS.filter((s) => radio[s.key] !== null);
   return (
     <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 5,
-        padding: '9px 0',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-      }}
+      className="nt-stack nt-gap-5 nt-rule-row"
     >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+      <div className="nt-row-baseline" style={{ gap: 10 }}>
         <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-text-primary)',
-            width: 58,
-            flex: '0 0 58px',
-          }}
+          className="nt-mono-11 nt-w-58 nt-text-pri-12" style={{ lineHeight: "inherit" }}
         >
           {radio.band}
         </span>
         <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-text-muted)',
-            lineHeight: 1.6,
-          }}
+          className="nt-hint-muted nt-flex-1 nt-lh-16"
         >
           {joinFacts([
             radio.channel !== null ? `ch ${radio.channel}` : null,
@@ -132,56 +92,31 @@ function RadioRow({ radio }: { radio: MistApRadioStats }) {
         </span>
         {radio.utilAllPct !== null ? (
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-secondary)',
-              whiteSpace: 'nowrap',
-            }}
+            className="nt-mono-11 nt-hint-muted nt-text-sec" style={{ whiteSpace: "nowrap" }}
           >
             util {radio.utilAllPct}%
           </span>
         ) : null}
       </div>
       {segments.length > 0 ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingLeft: 68 }}>
+        <div className="nt-indent-68">
           <span
             aria-hidden
-            style={{
-              display: 'flex',
-              flex: '0 1 220px',
-              height: 5,
-              borderRadius: 2,
-              background: 'var(--nd-border-subtle)',
-              overflow: 'hidden',
-            }}
+            className="nt-bar-track--lg"
           >
             {segments.map((s) => (
               <span
                 key={s.key}
-                style={{
-                  display: 'block',
-                  height: '100%',
-                  width: `${Math.min(100, Math.max(0, radio[s.key] as number))}%`,
-                  background: s.color,
-                }}
+                className="nt-bar-fill" style={{ width: `${Math.min(100, Math.max(0, radio[s.key] as number))}%`, background: s.color }}
               />
             ))}
           </span>
           <span
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              flexWrap: 'wrap',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-            }}
+            className="nt-row nt-hint-muted nt-gap-10"
           >
             {segments.map((s) => (
-              <span key={s.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                <span aria-hidden style={{ width: 6, height: 6, borderRadius: 1, background: s.color }} />
+              <span key={s.key} className="nt-row-center nt-gap-4" style={{ display: "inline-flex" }}>
+                <span aria-hidden className="nt-swatch" style={{ background: s.color }} />
                 {`${s.label} ${radio[s.key]}%`}
               </span>
             ))}
@@ -212,16 +147,11 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
       : null;
   const lldp = row.lldpUplink;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="AP health & RF" meta="MIST AP STATS" />
 
       <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
-          gap: 14,
-          padding: '10px 0 4px',
-        }}
+        className="nt-metric-grid-auto"
       >
         {row.cpuUtilPct !== null ? <Gauge label="CPU" pct={row.cpuUtilPct} value={`${row.cpuUtilPct}%`} /> : null}
         {memPct !== null ? (
@@ -236,35 +166,15 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
       </div>
 
       <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          padding: '9px 0',
-          borderBottom: '1px solid var(--nd-border-subtle)',
-        }}
+        className="nt-row-center nt-gap-10 nt-rule-row"
       >
         <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            letterSpacing: '.1em',
-            textTransform: 'uppercase',
-            color: 'var(--nd-text-muted)',
-            width: 92,
-            flex: '0 0 92px',
-          }}
+          className="nt-mono-label nt-w-92"
         >
           Power
         </span>
         <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-text-secondary)',
-          }}
+          className="nt-mono-11 nt-flex-1 nt-text-sec"
         >
           {row.powerSrc ?? 'not reported'}
         </span>
@@ -274,35 +184,15 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
       </div>
 
       <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          padding: '9px 0',
-          borderBottom: '1px solid var(--nd-border-subtle)',
-        }}
+        className="nt-row-center nt-gap-10 nt-rule-row"
       >
         <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            letterSpacing: '.1em',
-            textTransform: 'uppercase',
-            color: 'var(--nd-text-muted)',
-            width: 92,
-            flex: '0 0 92px',
-          }}
+          className="nt-mono-label nt-w-92"
         >
           Environment
         </span>
         <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-text-secondary)',
-          }}
+          className="nt-mono-11 nt-flex-1 nt-text-sec"
         >
           {row.env === null
             ? // The AP32 class carries no env sensor block — "not reported"
@@ -317,13 +207,7 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
 
       {row.radios.length === 0 ? (
         <div
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-text-muted)',
-            padding: '8px 0',
-            lineHeight: 1.6,
-          }}
+          className="nt-hint-muted nt-service-note nt-pad-y-8"
         >
           The stats row carried no radio readings for this AP.
         </div>
@@ -334,34 +218,15 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
       {row.ports.map((port) => (
         <div
           key={port.name}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '9px 0',
-            borderBottom: '1px solid var(--nd-border-subtle)',
-          }}
+          className="nt-row-center nt-gap-10 nt-rule-row"
         >
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-text-primary)',
-              width: 92,
-              flex: '0 0 92px',
-            }}
+            className="nt-fact-row__k nt-mono-11 nt-text-pri-12" style={{ lineHeight: "inherit" }}
           >
             {port.name}
           </span>
           <span
-            style={{
-              flex: 1,
-              minWidth: 0,
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-              lineHeight: 1.6,
-            }}
+            className="nt-hint-muted nt-flex-1 nt-lh-16"
           >
             {portLine(port) || 'no port counters on this stats row'}
           </span>
@@ -370,36 +235,15 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
 
       {lldp !== null ? (
         <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '9px 0',
-            borderBottom: '1px solid var(--nd-border-subtle)',
-          }}
+          className="nt-row-center nt-gap-10 nt-rule-row"
         >
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              letterSpacing: '.1em',
-              textTransform: 'uppercase',
-              color: 'var(--nd-text-muted)',
-              width: 92,
-              flex: '0 0 92px',
-            }}
+            className="nt-mono-label nt-w-92"
           >
             LLDP uplink
           </span>
           <span
-            style={{
-              flex: 1,
-              minWidth: 0,
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-              lineHeight: 1.6,
-            }}
+            className="nt-hint-muted nt-flex-1 nt-lh-16"
           >
             {joinFacts([
               lldp.systemName !== null

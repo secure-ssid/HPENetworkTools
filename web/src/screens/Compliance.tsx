@@ -27,7 +27,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Badge,
@@ -47,12 +47,13 @@ import type { DataTableColumn } from '../nightdesk';
 import { getCompliance, getConfigBackups, getConfigBackupDiff, getConfigBackupVersions, syncSystems } from '../api/client';
 import type { ComplianceData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
-import { hhmmLocal as hhmm } from '@hpe/shared';
+import { countOf, hhmmLocal as hhmm } from '@hpe/shared';
 import { findingDevicesPath } from '../app/nav';
 import type { ConfigBackupDiff, ConfigBackupListEnvelope, FindingRow, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { DiffCode } from '../lib/DiffCode';
+import { exportTableCsv } from '../lib/csv';
 import { StatRow } from './StatRow';
 
 /**
@@ -95,10 +96,14 @@ function sevTint(f: FindingRow): Tone {
 
 export default function Compliance() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { density, showPlatformTags, tableColumns, setTableColumns } = useSettings();
   const { toast } = useToast();
   const [data, setData] = useState<ComplianceData | null>(null);
-  const [baseline, setBaseline] = useState('all');
+  const [baseline, setBaseline] = useState(() => {
+    const b = searchParams.get('baseline')?.trim();
+    return b && b.length > 0 ? b : 'all';
+  });
   const [showDrift, setShowDrift] = useState(true);
   const [scanning, setScanning] = useState(false);
   /* A scan finishes after the operator can have left. The load effect below
@@ -180,7 +185,7 @@ export default function Compliance() {
 
   if (!data) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
+      <div className="nt-center-pad" style={{ padding: 96 }}>
         <Spinner size="md" />
       </div>
     );
@@ -224,14 +229,10 @@ export default function Compliance() {
       title: 'Finding',
       hideable: false,
       render: (f) => (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-stack-col nt-gap-2">
           <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{f.title}</span>
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 10.5,
-              color: 'var(--nd-text-muted)',
-            }}
+            className="nt-hint-muted"
           >
             {f.detail}
           </span>
@@ -243,11 +244,7 @@ export default function Compliance() {
       title: 'Rule',
       render: (f) => (
         <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 10.5,
-            color: 'var(--nd-text-secondary)',
-          }}
+          className="nt-mono-11 nt-text-sec"
         >
           {f.rule}
         </span>
@@ -266,15 +263,7 @@ export default function Compliance() {
         <button
           type="button"
           onClick={() => navigate(findingDevicesPath(f.devices ?? [f.device]))}
-          style={{
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            cursor: 'pointer',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-12)',
-            color: 'var(--nd-accent-text)',
-          }}
+          className="nt-mono-link" style={{ fontSize: "var(--nd-text-12)" }}
         >
           {f.count}
         </button>
@@ -359,7 +348,7 @@ export default function Compliance() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack-col" style={{ gap: 20 }}>
       <ScreenHeader
         overline="Govern / Compliance"
         title="Config compliance"
@@ -379,6 +368,53 @@ export default function Compliance() {
                 aria-label="Baseline"
               />
             </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const url = new URL(window.location.href);
+                    url.search = '';
+                    if (baseline !== 'all') url.searchParams.set('baseline', baseline);
+                    await navigator.clipboard.writeText(url.toString());
+                    toast('Filter link copied', { tone: 'success' });
+                  } catch {
+                    toast('Could not copy link', { tone: 'danger' });
+                  }
+                })();
+              }}
+            >
+              Copy filter link
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={rows.length === 0}
+              onClick={() => {
+                const n = exportTableCsv(
+                  'compliance-findings',
+                  ['sev', 'title', 'detail', 'rule', 'plane', 'count', 'fix', 'device', 'baseline'],
+                  rows.map((f) => [
+                    f.sev,
+                    f.title,
+                    f.detail,
+                    f.rule,
+                    f.plane,
+                    f.count,
+                    f.fix,
+                    f.device,
+                    f.baseline,
+                  ]),
+                );
+                toast(
+                  n === 0 ? 'No findings to export' : `Exported ${countOf(n, 'finding')} (current baseline filter)`,
+                  { tone: n === 0 ? 'warning' : 'success' },
+                );
+              }}
+            >
+              Export CSV
+            </Button>
             <Button variant="secondary" size="sm" onClick={() => setShowDrift((v) => !v)} disabled={!data.diff}>
               {data.evidenceMode === 'coverage' ? 'Evidence text' : 'Diff selected'}
             </Button>
@@ -447,7 +483,7 @@ export default function Compliance() {
           <SectionHeader
             label="Findings"
             meta={
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+              <span className="nt-row-center nt-gap-10" style={{ display: "inline-flex" }}>
                 {`${rows.length} of ${findings.length} findings · ${scannedNote}`}
                 {/* The column manager for the table below — this screen's
                     filter (the baseline Select) lives in the header, so the
@@ -485,17 +521,13 @@ export default function Compliance() {
 
         {/* ---------------- right column ---------------- */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div className="nt-stack-col nt-gap-14">
             <SectionHeader label="Pass rate by baseline" />
             {data.baselines.map((b) => (
-              <div key={b.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div key={b.label} className="nt-stack-col nt-gap-4">
                 <Progress value={b.value} label={b.label} note={`${b.value}%`} />
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-hint-muted"
                 >
                   {b.note}
                 </span>
@@ -517,29 +549,21 @@ export default function Compliance() {
               devices drifted against their own previous snapshot, with the
               unified diff one click away. Demo snapshots say so. */}
           {backups ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="nt-stack-col nt-gap-10">
               <SectionHeader
                 label="Config drift — running-config snapshots"
                 meta={`${backups.summary.backedUp} backed up · ${backups.summary.drift} drifting`}
               />
               {backups.dataSource === 'demo' ? (
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-hint-muted"
                 >
                   {backups.note ?? 'Synthesized demo snapshots — no device was contacted.'}
                 </span>
               ) : null}
               {drifted.length === 0 ? (
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-hint-muted"
                 >
                   {backups.summary.backedUp === 0
                     ? 'No config snapshots collected yet — the first sweep has not landed.'
@@ -551,16 +575,12 @@ export default function Compliance() {
                     key={row.device}
                     style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
                   >
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-                      <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 12, color: 'var(--nd-text-primary)' }}>
+                    <div className="nt-stack-col nt-gap-2">
+                      <span className="nt-mono-11" style={{ fontSize: 12, color: "var(--nd-text-primary)" }}>
                         {row.device}
                       </span>
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-10)',
-                          color: 'var(--nd-text-muted)',
-                        }}
+                        className="nt-hint-muted"
                       >
                         {`${row.versions} versions · latest ${row.latest ? hhmm(row.latest.takenAt) : '—'} · ${row.latest?.source ?? 'unknown source'}`}
                       </span>
@@ -575,11 +595,11 @@ export default function Compliance() {
           ) : null}
 
           {showDrift && data.diff ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="nt-stack-col nt-gap-10">
               <SectionHeader label={data.evidenceMode === 'coverage' ? 'Evidence coverage, as text' : 'Drift, as text'} />
               <DiffCode text={data.diff} />
               {!sectionLive ? (
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div className="nt-row nt-gap-8">
                   <Button variant="secondary" size="sm" onClick={pushFix}>
                     Push fix to 2 devices
                   </Button>
@@ -610,7 +630,7 @@ export default function Compliance() {
         }
       >
         {driftView?.state === 'loading' ? (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+          <div className="nt-center-pad" style={{ padding: 48 }}>
             <Spinner size="md" />
           </div>
         ) : null}

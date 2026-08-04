@@ -18,7 +18,6 @@ import { getSiteApplications, type SiteApplicationsResult } from '../../api/clie
 import { countOf, detailHasRows, detailState } from '@hpe/shared';
 import type { CentralSiteRow } from '@hpe/shared';
 import { DpiApplicationsBody, dpiSectionNote } from './dpi';
-import { noteStyle } from './style';
 
 export function ApplicationsSection({
   sites,
@@ -83,22 +82,22 @@ export function ApplicationsSection({
               : (appsState ?? '').toUpperCase().replace('-', ' ');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="nt-stack nt-gap-10">
       <SectionHeader label="Application visibility" meta={meta} />
       {options.length === 0 && !sitesReported ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           Central did not report its site list this cycle, so no site can be named for the DPI
           read. The site page runs the same read for a site it already knows.
         </div>
       ) : options.length === 0 ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           Central reported no sites — there is no site to read application data for. DPI is
           site-scoped: a site the plane does not manage has no application table.
         </div>
       ) : (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)' }}>SITE</span>
+          <div className="nt-row nt-gap-10">
+            <span className="nt-hint-muted">SITE</span>
             <Select
               size="sm"
               aria-label="Site for the application read"
@@ -112,18 +111,18 @@ export function ApplicationsSection({
               <Spinner size="sm" />
             </div>
           ) : result.kind === 'not-reported' ? (
-            <div style={noteStyle}>
+            <div className="nt-service-note">
               No application table was reported for this site — Central publishes one only for a
               site it manages.
             </div>
           ) : result.kind === 'failed' ? (
-            <div style={{ ...noteStyle, color: 'var(--nd-danger)' }}>
+            <div className="nt-service-note nt-danger-text">
               {`The application read failed — ${result.message}`}
             </div>
           ) : detailHasRows(result.applications.source, 'apps', result.applications.apps) ? (
             <DpiApplicationsBody applications={result.applications} />
           ) : (
-            <div style={noteStyle}>{dpiSectionNote(result.applications)}</div>
+            <div className="nt-service-note">{dpiSectionNote(result.applications)}</div>
           )}
         </>
       )}

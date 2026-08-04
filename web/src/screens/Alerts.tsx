@@ -56,7 +56,7 @@
  * Data: getAlerts() — live /api/alerts when the server is up, fixtures otherwise.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -70,6 +70,11 @@ import {
   Input,
   KeyboardShortcuts,
   Select,
+  PageSkeleton,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   Spinner,
   Switch,
   TableViewOptions,
@@ -100,7 +105,9 @@ import { applyFacets, FacetFilter, sanitizeFacetSelection } from '../components/
 import type { FacetDef, FacetSelection } from '../components/FacetFilter';
 import { SavedViews } from '../components/SavedViews';
 import { deviceDetailPath } from '../app/nav';
+import { useIncident } from '../app/IncidentContext';
 import { ScreenHeader } from './ScreenHeader';
+import { exportTableCsv } from '../lib/csv';
 import { ApiErrorState } from './ApiErrorState';
 
 /** The silence durations the drawer offers, in minutes. */
@@ -444,6 +451,8 @@ function timelineKindLabel(kind: AlertTimeline['events'][number]['kind']): strin
 }
 
 export default function Alerts() {
+  const { patchIncident } = useIncident();
+  const [alertsTab, setAlertsTab] = useState('queue');
   const navigate = useNavigate();
   const { density, setDensity, showPlatformTags, pollIntervalSec, tableColumns, setTableColumns, savedViews, setSavedViews } = useSettings();
   const { toast } = useToast();
@@ -675,20 +684,53 @@ export default function Alerts() {
   /* The header stamps SYNCED hh:mm, so a NOC tab must not sit on a mount-time
      snapshot under it: poll on the settings cadence, the same pattern
      Overview.tsx runs. One fetch at a time — a slow response never stacks up
-     behind the interval; fixture reads poll harmlessly. */
+     behind the interval; fixture reads poll harmlessly. Active groups page at 100. */
+  const groupsAccRef = useRef<AlertGroup[]>([]);
+  const nextAlertCursorRef = useRef<string | null>(null);
+  const loadMoreAlertsRef = useRef<() => void>(() => {});
+  const [alertHasMore, setAlertHasMore] = useState(false);
+  const [alertPageTotal, setAlertPageTotal] = useState<number | null>(null);
+  const [loadingMoreAlerts, setLoadingMoreAlerts] = useState(false);
+  const ALERT_PAGE = 100;
+
+  const applyAlertsPayload = (d: AlertsData, mode: 'replace' | 'append') => {
+    if (mode === 'append' && d.groups) {
+      const seen = new Set(groupsAccRef.current.map((g) => g.fingerprint));
+      const extra = d.groups.filter((g) => !seen.has(g.fingerprint));
+      const merged = [...groupsAccRef.current, ...extra];
+      groupsAccRef.current = merged;
+      setData({ ...d, groups: merged });
+    } else {
+      groupsAccRef.current = d.groups ?? [];
+      setData(d);
+    }
+    nextAlertCursorRef.current = d.page?.nextCursor ?? null;
+    setAlertHasMore(Boolean(d.page?.nextCursor));
+    setAlertPageTotal(d.page?.total ?? null);
+  };
+
   useEffect(() => {
     let live = true;
     let inFlight = false;
-    const pull = () => {
-      if (inFlight) return;
-      inFlight = true;
-      void getAlerts()
+    const pull = (mode: 'replace' | 'append' = 'replace') => {
+      if (mode === 'replace' && inFlight) return;
+      if (mode === 'append' && !nextAlertCursorRef.current) return;
+      if (mode === 'replace') inFlight = true;
+      if (mode === 'append') setLoadingMoreAlerts(true);
+      void getAlerts({
+        limit: ALERT_PAGE,
+        ...(mode === 'append' && nextAlertCursorRef.current
+          ? { cursor: nextAlertCursorRef.current }
+          : {}),
+      })
         .then((d) => {
-          if (live) setData(d);
+          if (live) applyAlertsPayload(d, mode);
         })
         .finally(() => {
-          inFlight = false;
+          if (mode === 'replace') inFlight = false;
+          if (mode === 'append') setLoadingMoreAlerts(false);
         });
+      if (mode !== 'replace') return;
       // Windows ride the same cadence — a local read, cheap next to the queue.
       void fetchMaintenanceWindows().then((res) => {
         if (!live) return;
@@ -725,9 +767,10 @@ export default function Alerts() {
         }
       });
     };
-    pull();
+    loadMoreAlertsRef.current = () => pull('append');
+    pull('replace');
     const every = Math.max(pollIntervalSec, 10) * 1000;
-    const id = setInterval(pull, every);
+    const id = setInterval(() => pull('replace'), every);
     return () => {
       live = false;
       clearInterval(id);
@@ -815,7 +858,8 @@ export default function Alerts() {
 
   /** Re-read the queue after a silence lands or is lifted. */
   const refresh = async () => {
-    setData(await getAlerts());
+    const d = await getAlerts({ limit: ALERT_PAGE });
+    applyAlertsPayload(d, 'replace');
   };
 
   const confirmSilence = async () => {
@@ -1024,11 +1068,7 @@ export default function Alerts() {
   };
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -1106,9 +1146,9 @@ export default function Alerts() {
       render: (g) => {
         const a = g.latest;
         return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{a.title}</span>
+          <div className="nt-stack nt-gap-2">
+            <span className="nt-row nt-gap-6">
+              <span className="nt-body-sm" style={{ fontSize: 13, color: "var(--nd-text-primary)" }}>{a.title}</span>
               {/* One problem, N firings — the count is the noise level,
                   never N rows of the same thing. */}
               {g.count > 1 ? <Badge tone="neutral">×{g.count}</Badge> : null}
@@ -1121,11 +1161,7 @@ export default function Alerts() {
               ) : null}
             </span>
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 10.5,
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {g.count > 1 ? `${a.detail} · ${g.count} firings, first seen ${g.firstSeen} ago` : a.detail}
             </span>
@@ -1142,8 +1178,8 @@ export default function Alerts() {
         return (
           /* A row from a plane that is behind carries the design-rule-1
              marker next to its plane badge — unverified, not current. */
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {showPlatformTags ? <Badge tone="neutral">{a.plane}</Badge> : null}
+          <span className="nt-row nt-gap-6">
+            {showPlatformTags ? <Badge plane>{a.plane}</Badge> : null}
             {a.stale ? (
               <Badge tone="warning" dot>
                 stale
@@ -1158,11 +1194,9 @@ export default function Alerts() {
       title: 'State',
       render: (g) => (
         <span
+          className="nt-mono-11"
           style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color:
-              g.latest.state === 'open' ? 'var(--nd-text-secondary)' : 'var(--nd-text-muted)',
+            color: g.latest.state === 'open' ? 'var(--nd-text-secondary)' : 'var(--nd-text-muted)',
           }}
         >
           {g.latest.state}
@@ -1175,7 +1209,7 @@ export default function Alerts() {
       numeric: true,
       render: (g) =>
         g.latest.stale ? (
-          <span style={{ color: 'var(--nd-text-muted)' }}>{g.latest.age} · unverified</span>
+          <span className="nt-hint-muted">{g.latest.age} · unverified</span>
         ) : (
           g.latest.age
         ),
@@ -1190,23 +1224,26 @@ export default function Alerts() {
           /* Site/WAN/tenant-class live alerts honestly name no device
              (central.ts:407-410) — Inspect would drop the operator on the
              full inventory, so say so instead of offering a dead action. */
-          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span className="nt-row nt-gap-4">
             {a.device && a.device !== '—' ? (
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => navigate(deviceDetailPath({ name: a.device, plane: a.plane }))}
+                onClick={() => {
+                  patchIncident({
+                    alertId: a.alertId ?? g.fingerprint,
+                    alertTitle: a.title,
+                    deviceName: a.device,
+                    devicePlane: a.plane,
+                    sourcePath: '/alerts',
+                  });
+                  navigate(deviceDetailPath({ name: a.device, plane: a.plane }));
+                }}
               >
                 Inspect
               </Button>
             ) : (
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                }}
-              >
+              <span className="nt-mono-label">
                 no device
               </span>
             )}
@@ -1243,24 +1280,41 @@ export default function Alerts() {
   const missingSources = data.missingSources ?? [];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-alerts">
       <ScreenHeader
         overline="Operate / Alerts"
         title="Alerts"
         subtitle="Every plane's alarms in one queue, de-duplicated and aged."
         actions={
           <>
-            <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-10)',
-                color: 'var(--nd-text-muted)',
-                letterSpacing: '.08em',
+            <span className="nt-mono-label">{synced}</span>
+            {data.blended?.includes('alerts') ? <Badge tone="info">LIVE</Badge> : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const n = exportTableCsv(
+                  'alerts-queue.csv',
+                  ['severity', 'title', 'detail', 'state', 'plane', 'site', 'device', 'count', 'fingerprint'],
+                  rows.map((g) => [
+                    g.latest.sev,
+                    g.latest.title,
+                    g.latest.detail,
+                    g.latest.state,
+                    g.latest.plane,
+                    g.latest.siteName,
+                    g.latest.device ?? '',
+                    g.count,
+                    g.fingerprint,
+                  ]),
+                );
+                toast(`Exported ${n} alert group${n === 1 ? '' : 's'}`, {
+                  description: 'alerts-queue.csv — groups currently in view.',
+                });
               }}
             >
-              {synced}
-            </span>
-            {data.blended?.includes('alerts') ? <Badge tone="info">LIVE</Badge> : null}
+              Export CSV
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -1307,7 +1361,7 @@ export default function Alerts() {
             missingSources.length === 1 ? '' : 's'
           }: ${missingSources.join(', ')}`}
         >
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             These planes are linked but their alert read has not come back, so anything open on them is absent from the
             queue below — including anything P1. A short queue here is not a quiet estate. Check them in Connected
             systems.
@@ -1317,23 +1371,13 @@ export default function Alerts() {
 
       {banner ? (
         <Alert tone={banner.tone} title={banner.title}>
-          <span style={{ fontSize: 13 }}>{banner.body}</span>
+          <span className="nt-body-sm">{banner.body}</span>
         </Alert>
       ) : null}
 
       {ackTarget ? (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-end',
-            gap: 10,
-            flexWrap: 'wrap',
-            padding: '12px 14px',
-            border: '1px solid var(--nd-border-default)',
-            background: 'var(--nd-bg-raised)',
-          }}
-        >
-          <div style={{ flex: 1, minWidth: 240 }}>
+        <div className="nt-alerts__ack">
+          <div className="nt-flex-1-wide">
             <FormField
               label="Authorising ticket"
               help={
@@ -1344,14 +1388,7 @@ export default function Alerts() {
             >
               {ticketsLoaded && ackTickets.length === 0 ? (
                 <span
-                  style={{
-                    display: 'block',
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-muted)',
-                    lineHeight: 1.6,
-                    paddingTop: 4,
-                  }}
+                  className="nt-service-note nt-service-note" style={{ display: "block", paddingTop: 4 }}
                 >
                   No open ticket to authorise this acknowledge — writes are brokered, never
                   standing. Raise one from this alert first.
@@ -1390,15 +1427,17 @@ export default function Alerts() {
         </div>
       ) : null}
 
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          flexWrap: 'wrap',
-          paddingBottom: 4,
-        }}
-      >
+      <Tabs value={alertsTab} onValueChange={setAlertsTab} className="nt-alerts__tabs">
+        <TabsList aria-label="Alerts sections">
+          <TabsTrigger value="queue">Queue</TabsTrigger>
+          <TabsTrigger value="silences">
+            Silences{silencedGroups.length ? ` (${silencedGroups.length})` : ''}
+          </TabsTrigger>
+          <TabsTrigger value="policy">Policy</TabsTrigger>
+        </TabsList>
+
+      <TabsContent value="queue">
+      <div className="nt-alerts__toolbar">
         <FacetFilter facets={alertFacets} rows={baseRows} selection={facets} onChange={setFacets} />
         <div style={{ width: 230 }}>
           <Input
@@ -1436,14 +1475,7 @@ export default function Alerts() {
           onChange={(config) => setTableColumns('alerts', config)}
         />
         <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
-        <span
-          style={{
-            marginLeft: 'auto',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-text-muted)',
-          }}
-        >
+        <span className="nt-alerts__count">
           {`${countFirings(rows)} of ${queueTotal} alerts${
             clearedCount > 0 && !showCleared ? ` · ${clearedCount} cleared hidden` : ''
           }${silencedGroups.length > 0 ? ` · ${silencedGroups.length} silenced` : ''} · ${
@@ -1473,7 +1505,7 @@ export default function Alerts() {
           silencedGroups.length > 0 ? (
             <EmptyState
               title="Everything firing is silenced"
-              description="The queue is hushed, not quiet — the silenced groups below are still firing and return when their silence expires."
+              description="The queue is hushed, not quiet — open Silences to see groups still firing until their silence expires."
             />
           ) : (
             <EmptyState
@@ -1506,67 +1538,53 @@ export default function Alerts() {
         )
       ) : null}
 
+      {alertHasMore || alertPageTotal != null ? (
+        <div className="nt-filter-bar">
+          {alertPageTotal != null && data.groups ? (
+            <span className="nt-mono-label">
+              Loaded {data.groups.length} of {alertPageTotal} groups
+            </span>
+          ) : null}
+          {alertHasMore ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={loadingMoreAlerts}
+              onClick={() => loadMoreAlertsRef.current()}
+            >
+              {loadingMoreAlerts ? 'Loading…' : 'Load more'}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+
+      </TabsContent>
+
+      <TabsContent value="silences">
       {/* Suppression is always visible: every group an active silence benched,
           with the reason and expiry, and a way back. */}
       {silencedGroups.length > 0 ? (
-        <div
-          style={{
-            border: '1px solid var(--nd-border-default)',
-            background: 'var(--nd-bg-raised)',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: 10,
-              flexWrap: 'wrap',
-              padding: '10px 14px',
-              borderBottom: '1px solid var(--nd-border-default)',
-            }}
-          >
-            <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-secondary)',
-                letterSpacing: '.08em',
-              }}
-            >
-              {`SILENCED (${silencedGroups.length})`}
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+        <div className="nt-panel">
+          <div className="nt-panel__head">
+            <span className="nt-panel__title">{`SILENCED (${silencedGroups.length})`}</span>
+            <span className="nt-panel__hint">
               benched from the active queue until the silence expires — never hidden
             </span>
           </div>
           {silencedGroups.map(({ group, silence }) => (
-            <div
-              key={silence.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                flexWrap: 'wrap',
-                padding: '8px 14px',
-              }}
-            >
+            <div key={silence.id} className="nt-panel__row">
               <Badge tone={group.latest.tone} dot>
                 {group.latest.sev}
               </Badge>
-              <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{group.latest.title}</span>
+              <span className="nt-body-sm">{group.latest.title}</span>
               {group.count > 1 ? <Badge tone="neutral">×{group.count}</Badge> : null}
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                }}
-              >
+              <span className="nt-mono-label">
                 {silenceWindowId(silence)
                   ? `maintenance window ${silenceWindowId(silence)} · ${silence.reason} · until ${untilLabel(silence.until)}`
                   : `${silence.reason} · until ${untilLabel(silence.until)}`}
               </span>
-              <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span className="nt-panel__actions">
                 <Button variant="ghost" size="sm" onClick={() => openTimeline(group)}>
                   Timeline
                 </Button>
@@ -1583,85 +1601,47 @@ export default function Alerts() {
             </div>
           ))}
         </div>
-      ) : null}
+      ) : (
+        <EmptyState
+          title="No active silences"
+          description="When a group is hushed, it leaves the queue and lists here with reason and expiry — suppression is never invisible."
+        />
+      )}
+      </TabsContent>
 
+      <TabsContent value="policy">
       {/* Device-down rules: the queue watches what planes REPORT; these rules
           watch for devices that stop reporting at all. Created/edited/deleted
           here, always listed with their scope and thresholds — and with the
           backend unreachable the AUTHORED demo rule stands in, labelled. */}
-      <div
-        style={{
-          border: '1px solid var(--nd-border-default)',
-          background: 'var(--nd-bg-raised)',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: 10,
-            flexWrap: 'wrap',
-            padding: '10px 14px',
-            borderBottom: '1px solid var(--nd-border-default)',
-          }}
-        >
-          <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-text-secondary)',
-              letterSpacing: '.08em',
-            }}
-          >
-            {`DEVICE-DOWN RULES${rules ? ` (${rules.length})` : ''}`}
-          </span>
-          <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+      <div className="nt-panel">
+        <div className="nt-panel__head">
+          <span className="nt-panel__title">{`DEVICE-DOWN RULES${rules ? ` (${rules.length})` : ''}`}</span>
+          <span className="nt-panel__hint">
             a device that stops reporting raises no plane alert — these rules watch for it
           </span>
-          <span style={{ marginLeft: 'auto' }}>
+          <span className="nt-panel__actions">
             <Button variant="secondary" size="sm" onClick={() => openRuleForm(null)} disabled={rulesDemo}>
               New rule
             </Button>
           </span>
         </div>
         {rulesDemo ? (
-          <div
-            style={{
-              padding: '8px 14px',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-text-muted)',
-              borderBottom: '1px solid var(--nd-border-default)',
-            }}
-          >
+          <div className="nt-panel__note">
             demo fixture — the backend is unreachable, so the authored demo rule stands in; creating or
             changing a rule needs the server
           </div>
         ) : null}
         {rulesError ? (
-          <div
-            style={{
-              padding: '8px 14px',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-text-muted)',
-              borderBottom: '1px solid var(--nd-border-default)',
-            }}
-          >
+          <div className="nt-panel__note">
             {`device-down rules unavailable — ${rulesError}`}
           </div>
         ) : null}
         {rules?.map((r) => (
           <div
             key={r.id}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              flexWrap: 'wrap',
-              padding: '8px 14px',
-              opacity: r.enabled ? 1 : 0.55,
-            }}
+            className="nt-panel__row"
+            style={{ opacity: r.enabled ? 1 : 0.55 }}
           >
             {/* The demo rule is authored, not a row in the store — there is
                 nothing to toggle, edit or delete. */}
@@ -1674,22 +1654,16 @@ export default function Alerts() {
               />
             )}
             <Badge tone="neutral">{DEVICE_TYPE_LABELS[r.deviceTypeFilter ?? 'all']}</Badge>
-            <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>
-              {r.siteFilter ?? 'all sites'}
-            </span>
+            <span className="nt-body-sm">{r.siteFilter ?? 'all sites'}</span>
             {rulesDemo ? <Badge tone="neutral">demo</Badge> : null}
             {r.enabled ? null : <Badge tone="neutral">disabled</Badge>}
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {`alert after ${r.offlineMinutes}m offline · cooldown ${r.cooldownMinutes}m`}
             </span>
             {rulesDemo ? null : (
-              <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span className="nt-panel__actions">
                 <Button variant="ghost" size="sm" onClick={() => openRuleForm(r)}>
                   Edit
                 </Button>
@@ -1701,14 +1675,7 @@ export default function Alerts() {
           </div>
         ))}
         {rules && rules.length === 0 && !rulesError ? (
-          <div
-            style={{
-              padding: '10px 14px',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-text-muted)',
-            }}
-          >
+          <div className="nt-panel__empty">
             No device-down rules — a device that stops reporting raises nothing until one watches it.
           </div>
         ) : null}
@@ -1718,105 +1685,52 @@ export default function Alerts() {
           they are active — created here, enabled/disabled/deleted here, and
           always listed with their matchers and span so the calendar never
           hushes the queue invisibly. */}
-      <div
-        style={{
-          border: '1px solid var(--nd-border-default)',
-          background: 'var(--nd-bg-raised)',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: 10,
-            flexWrap: 'wrap',
-            padding: '10px 14px',
-            borderBottom: '1px solid var(--nd-border-default)',
-          }}
-        >
-          <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-text-secondary)',
-              letterSpacing: '.08em',
-            }}
-          >
-            {`MAINTENANCE WINDOWS${windows ? ` (${windows.length})` : ''}`}
-          </span>
-          <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+      <div className="nt-panel nt-mt-16">
+        <div className="nt-panel__head">
+          <span className="nt-panel__title">{`MAINTENANCE WINDOWS${windows ? ` (${windows.length})` : ''}`}</span>
+          <span className="nt-panel__hint">
             scheduled suppression — an active window silences its matches with the reason stamped
           </span>
-          <span style={{ marginLeft: 'auto' }}>
+          <span className="nt-panel__actions">
             <Button variant="secondary" size="sm" onClick={openWindowForm} disabled={windowsDemo}>
               New window
             </Button>
           </span>
         </div>
         {windowsDemo ? (
-          <div
-            style={{
-              padding: '8px 14px',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-text-muted)',
-              borderBottom: '1px solid var(--nd-border-default)',
-            }}
-          >
+          <div className="nt-panel__note">
             demo fixtures — the backend is unreachable, so these authored windows stand in; creating or
             changing one needs the server
           </div>
         ) : null}
         {windowsError ? (
-          <div
-            style={{
-              padding: '8px 14px',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-text-muted)',
-              borderBottom: '1px solid var(--nd-border-default)',
-            }}
-          >
+          <div className="nt-panel__note">
             {`maintenance windows unavailable — ${windowsError}`}
           </div>
         ) : null}
         {windows?.map((w) => (
           <div
             key={w.id}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              flexWrap: 'wrap',
-              padding: '8px 14px',
-              opacity: w.enabled ? 1 : 0.55,
-            }}
+            className="nt-panel__row"
+            style={{ opacity: w.enabled ? 1 : 0.55 }}
           >
             <Badge tone={w.state === 'active' ? 'success' : w.state === 'upcoming' ? 'info' : 'neutral'} dot>
               {w.state}
             </Badge>
-            <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{w.reason}</span>
+            <span className="nt-body-sm" style={{ fontSize: 13, color: "var(--nd-text-primary)" }}>{w.reason}</span>
             {w.demo ? <Badge tone="neutral">demo</Badge> : null}
             {w.enabled ? null : <Badge tone="neutral">disabled</Badge>}
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {matcherSummary(w)}
             </span>
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {scheduleSummary(w)}
             </span>
-            <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="nt-row-center nt-gap-8 nt-ml-auto">
               {/* Fixture windows are authored, not rows in the store — there is
                   nothing to toggle or delete. */}
               {w.demo ? null : (
@@ -1836,18 +1750,13 @@ export default function Alerts() {
           </div>
         ))}
         {windows && windows.length === 0 && !windowsError ? (
-          <div
-            style={{
-              padding: '10px 14px',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-11)',
-              color: 'var(--nd-text-muted)',
-            }}
-          >
+          <div className="nt-panel__empty">
             No maintenance windows — the queue hushes only for ad-hoc silences.
           </div>
         ) : null}
       </div>
+      </TabsContent>
+      </Tabs>
 
       <Drawer
         open={silenceTarget !== null}
@@ -1865,7 +1774,7 @@ export default function Alerts() {
             : undefined
         }
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="nt-drawer-stack">
           <FormField
             label="Duration"
             help="The group leaves the active queue until then — and stays listed under Silenced with its reason, so suppression is never invisible."
@@ -1885,7 +1794,7 @@ export default function Alerts() {
               aria-label="Silence reason"
             />
           </FormField>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <div className="nt-drawer-actions">
             <Button variant="ghost" size="sm" onClick={() => setSilenceTarget(null)}>
               Cancel
             </Button>
@@ -1912,7 +1821,7 @@ export default function Alerts() {
         title="Schedule a maintenance window"
         description="While the window is active, matching alert groups are silenced — reason stamped, expiry automatic, suppression always listed."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="nt-drawer-stack">
           <FormField label="Reason" help="Required — stamped on every silence this window raises, and audit-logged.">
             <Input
               value={wReason}
@@ -1925,7 +1834,7 @@ export default function Alerts() {
             label="Matchers"
             help="At least one of plane, device or title substring — every set matcher must hold. Site narrows a matcher; it cannot stand alone."
           >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div className="nt-stack nt-gap-8">
               <Input mono value={wPlane} onChange={(e) => setWPlane(e.target.value)} placeholder="plane — e.g. MIST" aria-label="Plane matcher" />
               <Input mono value={wDevice} onChange={(e) => setWDevice(e.target.value)} placeholder="device — e.g. ap-3f-12" aria-label="Device matcher" />
               <Input mono value={wSite} onChange={(e) => setWSite(e.target.value)} placeholder="site — e.g. Campus-02 Research" aria-label="Site matcher" />
@@ -1946,7 +1855,7 @@ export default function Alerts() {
           {wKind === 'weekly' ? (
             <>
               <FormField label="Weekdays">
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <div className="nt-wrap-6">
                   {DAY_LABELS.map((label, i) => (
                     <Button
                       key={label}
@@ -1961,7 +1870,7 @@ export default function Alerts() {
                 </div>
               </FormField>
               <FormField label="From / to" help="'HH:MM' wall time — an end earlier than the start runs into the next day.">
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div className="nt-row nt-gap-8">
                   <Input type="time" value={wStartTime} onChange={(e) => setWStartTime(e.target.value)} aria-label="Start time" />
                   <Input type="time" value={wEndTime} onChange={(e) => setWEndTime(e.target.value)} aria-label="End time" />
                 </div>
@@ -1972,7 +1881,7 @@ export default function Alerts() {
             </>
           ) : (
             <FormField label="Start / end" help="One fixed span, in your local time.">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div className="nt-stack nt-gap-8">
                 <Input type="datetime-local" value={wOnceStart} onChange={(e) => setWOnceStart(e.target.value)} aria-label="Start" />
                 <Input type="datetime-local" value={wOnceEnd} onChange={(e) => setWOnceEnd(e.target.value)} aria-label="End" />
               </div>
@@ -1980,16 +1889,12 @@ export default function Alerts() {
           )}
           {windowFormError ? (
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {windowFormError}
             </span>
           ) : null}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <div className="nt-drawer-actions">
             <Button variant="ghost" size="sm" onClick={() => setWindowForm(false)}>
               Cancel
             </Button>
@@ -2015,7 +1920,7 @@ export default function Alerts() {
         title={ruleEditing ? 'Edit device-down rule' : 'New device-down rule'}
         description="A device that stops reporting raises no plane alert — a matching rule fires instead, once per outage, after the offline threshold."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="nt-drawer-stack">
           <FormField label="Site filter" help="Site name or id, matched case-insensitively — blank watches every site.">
             <Input
               mono
@@ -2063,16 +1968,12 @@ export default function Alerts() {
           />
           {ruleFormError ? (
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {ruleFormError}
             </span>
           ) : null}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <div className="nt-drawer-actions">
             <Button
               variant="ghost"
               size="sm"
@@ -2101,12 +2002,12 @@ export default function Alerts() {
         title="Delete device-down rule"
         description={ruleDelete ? ruleSummary(ruleDelete) : undefined}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <span style={{ fontSize: 13, color: 'var(--nd-text-secondary)', lineHeight: 1.6 }}>
+        <div className="nt-drawer-stack">
+          <span className="nt-service-note" style={{ fontSize: 13, color: "var(--nd-text-secondary)" }}>
             The rule is removed immediately and the deletion is audit-logged. A device only this rule watched
             will page no one when it stops reporting.
           </span>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <div className="nt-drawer-actions">
             <Button variant="ghost" size="sm" onClick={() => setRuleDelete(null)}>
               Cancel
             </Button>
@@ -2135,19 +2036,14 @@ export default function Alerts() {
         }
       >
         {timelineLoading ? (
-          <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+          <div className="nt-center-pad" style={{ padding: 48 }}>
             <Spinner size="md" />
           </div>
         ) : timeline ? (
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
+          <div className="nt-stack-col">
             {timelineNote ? (
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                  paddingBottom: 8,
-                }}
+                className="nt-hint-muted" style={{ paddingBottom: 8 }}
               >
                 {timelineNote}
               </span>
@@ -2155,7 +2051,7 @@ export default function Alerts() {
             {timeline.correlation ? (
               <div style={{ paddingBottom: 10 }}>
                 <Alert tone="info" title="Correlation in time — not a proven cause">
-                  <span style={{ fontSize: 13 }}>{timeline.correlation}</span>
+                  <span className="nt-body-sm">{timeline.correlation}</span>
                 </Alert>
               </div>
             ) : null}
@@ -2170,31 +2066,22 @@ export default function Alerts() {
                 }}
               >
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-muted)',
-                    width: 76,
+                  className="nt-hint-muted" style={{ width: 76,
                     flexShrink: 0,
-                    paddingTop: 2,
-                  }}
+                    paddingTop: 2 }}
                 >
                   {`${untilLabel(e.ts)}${e.approximate ? ' ≈' : ''}`}
                 </span>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div className="nt-stack nt-gap-2">
+                  <span className="nt-row nt-gap-6">
                     <Badge tone={timelineTone(e.kind)} dot>
                       {timelineKindLabel(e.kind)}
                     </Badge>
-                    <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{e.label}</span>
+                    <span className="nt-body-sm" style={{ fontSize: 13, color: "var(--nd-text-primary)" }}>{e.label}</span>
                   </span>
                   {e.detail ? (
                     <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-11)',
-                        color: 'var(--nd-text-muted)',
-                      }}
+                      className="nt-hint-muted"
                     >
                       {e.detail}
                     </span>

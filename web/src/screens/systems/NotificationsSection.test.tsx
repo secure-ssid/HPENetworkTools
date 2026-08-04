@@ -21,6 +21,7 @@ import {
   createNotificationEndpoint,
   deleteNotificationEndpoint,
   getNotificationEndpoints,
+  getNotificationDeliveries,
   getNotificationOutbox,
   getNotificationStatus,
   getReportPreview,
@@ -44,6 +45,7 @@ vi.mock('../../api/notifications', async (importOriginal) => {
     getNotificationEndpoints: vi.fn(),
     getNotificationStatus: vi.fn(),
     getNotificationOutbox: vi.fn(),
+    getNotificationDeliveries: vi.fn(),
     createNotificationEndpoint: vi.fn(),
     updateNotificationEndpoint: vi.fn(),
     deleteNotificationEndpoint: vi.fn(),
@@ -112,6 +114,9 @@ beforeEach(() => {
   vi.mocked(getSmtpConfig).mockResolvedValue({ smtp: null });
   vi.mocked(getReportSchedule).mockResolvedValue({ report: { config: REPORT_DEFAULTS, demoMode: false, entries: [] } });
   vi.mocked(getSslHosts).mockResolvedValue({ hosts: [] });
+  vi.mocked(getNotificationDeliveries).mockResolvedValue({
+    deliveries: { demoMode: false, entries: [] },
+  });
 });
 
 afterEach(() => {
@@ -249,10 +254,12 @@ describe('notifications section', () => {
       .mockResolvedValue({ endpoints: [] });
     vi.mocked(getNotificationStatus).mockResolvedValue({ status: LIVE_STATUS });
     vi.mocked(deleteNotificationEndpoint).mockResolvedValue({ ok: true });
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     mount();
     await waitFor(() => expect(screen.getByText('ntfy-ops')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(screen.getByText(/Remove ntfy-ops/)).toBeTruthy());
+    const confirmBtns = screen.getAllByRole('button', { name: 'Remove' });
+    fireEvent.click(confirmBtns[confirmBtns.length - 1]!);
     await waitFor(() => expect(deleteNotificationEndpoint).toHaveBeenCalledWith('ntf-2'));
     await waitFor(() => expect(screen.getByText(/no endpoints yet/)).toBeTruthy());
   });
@@ -333,6 +340,9 @@ function rowOf(text: string): HTMLElement {
 function stubWebhooks(demoStatus: NotificationServiceStatus = LIVE_STATUS) {
   vi.mocked(getNotificationEndpoints).mockResolvedValue({ endpoints: [] });
   vi.mocked(getNotificationStatus).mockResolvedValue({ status: demoStatus });
+  vi.mocked(getNotificationDeliveries).mockResolvedValue({
+    deliveries: { demoMode: demoStatus.demoMode, entries: [] },
+  });
 }
 
 describe('smtp card', () => {

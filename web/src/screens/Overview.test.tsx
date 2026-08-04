@@ -27,6 +27,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import Overview from './Overview';
 import { SettingsProvider } from '../app/SettingsContext';
+import { ToastProvider } from '../nightdesk';
 import { getMetricsHistory, getOverview } from '../api/client';
 import type { OverviewData } from '../api/client';
 import { OVERVIEW_PLANES } from '@hpe/shared';
@@ -127,10 +128,12 @@ function PathProbe() {
 function renderOverview() {
   return render(
     <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <SettingsProvider>
-        <Overview />
-        <PathProbe />
-      </SettingsProvider>
+      <ToastProvider>
+        <SettingsProvider>
+          <Overview />
+          <PathProbe />
+        </SettingsProvider>
+      </ToastProvider>
     </MemoryRouter>,
   );
 }

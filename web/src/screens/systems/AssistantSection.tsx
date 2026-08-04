@@ -191,7 +191,7 @@ export function AssistantSection() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="nt-stack nt-gap-10">
       <SectionHeader label="Assistant" meta="PROVIDER · MODEL · TOOLS" />
       {loadError ? <span role="status" style={{ fontSize: 12, color: 'var(--nd-danger)' }}>{loadError}</span> : null}
 
@@ -216,7 +216,7 @@ export function AssistantSection() {
               <span style={{ fontSize: 12 }}>{PROVIDERS[id].title}</span>
               {active ? <Badge tone="neutral">active</Badge> : null}
               <Badge tone={ready ? 'success' : 'neutral'}>{draft ? 'draft' : ready ? 'ready' : 'unavailable'}</Badge>
-              <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}>{model ?? '—'}</span>
+              <span className="nt-hint-muted">{model ?? '—'}</span>
             </button>
           );
         })}
@@ -225,7 +225,7 @@ export function AssistantSection() {
       {selectedConfig ? <>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <Badge tone={!statusIsDraft(selected) && providerReady(selectedStatus) ? 'success' : 'neutral'} dot>{statusIsDraft(selected) ? 'draft' : providerReady(selectedStatus) ? 'ready' : 'unavailable'}</Badge>
-          <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>
+          <span className="nt-hint-muted">
             {statusIsDraft(selected) ? selectedConfig.model : selectedStatus?.resolvedModel ?? selectedConfig.model ?? PROVIDERS[selected].defaultModel}
           </span>
         </div>
@@ -238,7 +238,7 @@ export function AssistantSection() {
           {'apiKey' in selectedConfig || selected === 'ollama' || selected === 'openrouter' ? <FormField label="API key"><Input mono aria-label="API key" type="password" placeholder="Enter replacement key" value={providerKey} disabled={offline || busy} onChange={(event) => updateSelected({ apiKey: event.target.value })} /></FormField> : null}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div className="nt-filter-bar nt-gap-8">
           <Button size="sm" variant="primary" disabled={busy || offline} onClick={() => void save()}>{saving ? 'Saving…' : 'Save assistant'}</Button>
           <Button size="sm" variant="ghost" disabled={busy || offline} onClick={() => void runTest()}>{testing ? 'Testing…' : 'Test provider'}</Button>
           {testResult ? <span role="status" style={{ fontSize: 11, color: providerReady(testResult) ? 'var(--nd-success)' : 'var(--nd-danger)' }}>{providerReady(testResult) ? `${testResult.latencyMs ?? 0} ms · ${testResult.resolvedModel ?? 'model resolved'}` : testResult.message}</span> : null}
@@ -251,7 +251,7 @@ export function AssistantSection() {
           <FormField label="Endpoint"><Input mono aria-label="centralmcp endpoint" value={settings?.mcp.endpoint ?? ''} disabled={offline || busy} onChange={(event) => updateSharedSettings((current) => ({ ...current, mcp: { ...current.mcp, endpoint: event.target.value } }))} /></FormField>
           <FormField label="Auth token"><Input mono aria-label="centralmcp auth token" type="password" placeholder="Enter replacement token" value={mcpToken} disabled={offline || busy} onChange={(event) => { setMcpToken(event.target.value); setSharedStatusDraft(true); setTestResult(null); }} /></FormField>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div className="nt-filter-bar nt-gap-8">
           <Switch checked={settings?.chatWriteMode === 'enabled'} disabled={offline || busy} label="Lab assistant access" onCheckedChange={(enabled) => updateSharedSettings((current) => ({ ...current, chatWriteMode: enabled ? 'enabled' : 'read-only' }))} />
           <Badge tone={settings?.chatWriteMode === 'enabled' ? 'success' : 'neutral'}>{settings?.chatWriteMode === 'enabled' ? 'READ / WRITE' : 'READ ONLY'}</Badge>
         </div>

@@ -197,6 +197,20 @@ notificationsRouter.get(
   }),
 );
 
+/**
+ * Live delivery attempt log — outcome metadata only (no payload bodies).
+ * Complements the demo outbox: live mode fills this when POSTs happen.
+ */
+notificationsRouter.get(
+  '/notifications/deliveries',
+  h(async (_req, res) => {
+    res.json({
+      demoMode: notifier.status().demoMode,
+      entries: notifier.deliveries(),
+    });
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // SMTP relay configuration
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getInventoryNode, searchInventory } from '../api/client';
+import { ToastProvider } from '../nightdesk';
 import Inventory from './Inventory';
 
 vi.mock('../api/client', async (importOriginal) => {
@@ -67,11 +68,13 @@ describe('Inventory Explorer search', () => {
       });
 
     render(
+      <ToastProvider>
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>
-      </MemoryRouter>,
+      </MemoryRouter>
+      </ToastProvider>,
     );
 
     fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'switch' } });
@@ -118,11 +121,13 @@ describe('Inventory Explorer search', () => {
       .mockResolvedValueOnce({ nodes: [], total: 0, nextCursor: null, cursorState: 'past-end', query: 'switch' });
 
     render(
+      <ToastProvider>
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>
-      </MemoryRouter>,
+      </MemoryRouter>
+      </ToastProvider>,
     );
 
     fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'switch' } });
@@ -179,11 +184,13 @@ describe('Inventory Explorer search', () => {
       });
 
     render(
+      <ToastProvider>
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>
-      </MemoryRouter>,
+      </MemoryRouter>
+      </ToastProvider>,
     );
 
     fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'switch' } });
@@ -225,11 +232,13 @@ describe('Inventory Explorer search', () => {
     });
 
     render(
+      <ToastProvider>
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>
-      </MemoryRouter>,
+      </MemoryRouter>
+      </ToastProvider>,
     );
 
     fireEvent.change(screen.getByLabelText('Search inventory'), { target: { value: 'users' } });
@@ -248,11 +257,13 @@ describe('Inventory Explorer search', () => {
 describe('Inventory search completeness', () => {
   const renderInventory = () =>
     render(
+      <ToastProvider>
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/inventory']}>
         <Routes>
           <Route path="/inventory" element={<Inventory />} />
         </Routes>
-      </MemoryRouter>,
+      </MemoryRouter>
+      </ToastProvider>,
     );
 
   it('refuses to report a clean miss when a plane could not be searched', async () => {

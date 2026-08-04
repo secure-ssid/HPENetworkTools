@@ -15,7 +15,7 @@
  * hints. Datasets no plane reports stay honestly empty.
  */
 
-import { Router, type Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import {
   ALERTS,
   AP_TREND_METRICS,
@@ -233,6 +233,11 @@ import {
   sortLiveAlerts,
 } from './screens/liveCore';
 import {
+  applyListFilters,
+  applyListPaging,
+  sendCachedJson,
+} from './screens/listQuery';
+import {
   liveMistApStats,
   mistApStatsFor,
   mistLldpTopology,
@@ -255,6 +260,7 @@ import {
   liveSyncHistory,
   liveSystemRows,
 } from './screens/systemsModel';
+import { sendCsv } from '../lib/csv';
 
 // Re-exported: resetDetailCache belongs to the detail cache, but tests reach
 // for it through this module because that is the router they mount.
@@ -455,7 +461,7 @@ screensRouter.get('/overview', (_req, res) => {
 
 // -- Alerts / tickets ---------------------------------------------------------
 
-screensRouter.get('/alerts', (_req, res) => {
+function alertsBody(): Record<string, unknown> {
   if (sourceFor('alerts') === 'demo') {
     if (blendFor('alerts')) {
       const blended: string[] = [];
@@ -469,37 +475,72 @@ screensRouter.get('/alerts', (_req, res) => {
       // construction, so naming an unread plane against them would be a
       // warning about a queue those planes were never asked to fill.
       const swapped = blended.includes('alerts');
-      res.json(
-        withBlended(
-          envelopeFor('alerts', {
-            alerts: view.alerts,
-            groups: view.groups,
-            silenced: view.silenced,
-            ...(correlation === undefined ? {} : { correlation }),
-            ...(swapped ? { missingSources: planesMissingDataset('alerts') } : {}),
-          }),
-          blended,
-          'alerts',
-        ),
+      return withBlended(
+        envelopeFor('alerts', {
+          alerts: view.alerts,
+          groups: view.groups,
+          silenced: view.silenced,
+          ...(correlation === undefined ? {} : { correlation }),
+          ...(swapped ? { missingSources: planesMissingDataset('alerts') } : {}),
+        }),
+        blended,
+        'alerts',
       );
-      return;
     }
-    res.json(envelopeFor('alerts', { ...alertQueueView(withWebhookAlerts(ALERTS)) }));
-    return;
+    return envelopeFor('alerts', { ...alertQueueView(withWebhookAlerts(ALERTS)) });
   }
   const view = alertQueueView(sortLiveAlerts(withWebhookAlerts(liveAlerts())));
-  res.json(
-    envelopeFor('alerts', {
-      alerts: view.alerts,
-      groups: view.groups,
-      silenced: view.silenced,
-      correlation: liveCorrelation(view.alerts),
-      // A queue missing a plane's alerts is not a quiet estate. Without this
-      // an unread plane and a plane with nothing open look the same, and the
-      // empty state reads as all-clear (see liveCore.ts planesMissingDataset).
-      missingSources: planesMissingDataset('alerts'),
+  return envelopeFor('alerts', {
+    alerts: view.alerts,
+    groups: view.groups,
+    silenced: view.silenced,
+    correlation: liveCorrelation(view.alerts),
+    // A queue missing a plane's alerts is not a quiet estate. Without this
+    // an unread plane and a plane with nothing open look the same, and the
+    // empty state reads as all-clear (see liveCore.ts planesMissingDataset).
+    missingSources: planesMissingDataset('alerts'),
+  });
+}
+
+/**
+ * GET /api/alerts/export — CSV of active alert groups (latest row + count).
+ * Registered before /alerts/:fingerprint so Express does not treat "export"
+ * as a fingerprint.
+ */
+screensRouter.get('/alerts/export', (_req, res) => {
+  const body = alertsBody();
+  const groups = (body.groups as Array<Record<string, unknown>>) ?? [];
+  sendCsv(
+    res,
+    'alerts-queue.csv',
+    ['severity', 'title', 'detail', 'state', 'plane', 'site', 'device', 'count', 'fingerprint'],
+    groups.map((g) => {
+      const latest = (g.latest as Record<string, unknown> | undefined) ?? {};
+      return [
+        latest.sev,
+        latest.title,
+        latest.detail,
+        latest.state,
+        latest.plane,
+        latest.siteName,
+        latest.device ?? '',
+        g.count,
+        g.fingerprint,
+      ];
     }),
   );
+});
+
+screensRouter.get('/alerts', (req, res) => {
+  const body = alertsBody();
+  // Page active groups (the operator-facing queue); alerts[] stays full for
+  // stats/correlation honesty unless groups is absent.
+  const paged = applyListPaging(req, body, 'groups');
+  if ('error' in paged) {
+    res.status(400).json({ error: paged.error, code: 'PAGINATION_VALIDATION' });
+    return;
+  }
+  sendCachedJson(req, res, paged.body);
 });
 
 /**
@@ -518,13 +559,40 @@ screensRouter.get('/alerts/:fingerprint/timeline', (req, res) => {
   res.json(envelopeFor('alerts', { timeline }));
 });
 
-screensRouter.get('/tickets', (_req, res) => {
+function ticketsList(): Array<Record<string, unknown>> {
   // Raised tickets are real user data — they lead the queue in both modes.
   // A fixture ticket noted by an operator is promoted into the store, so the
   // fixture copy with that id drops out of the merged queue (no duplicates).
   const raised = ticketStore.list();
   const base = dataSource() === 'demo' ? TICKETS.filter((t) => !raised.some((r) => r.id === t.id)) : [];
-  res.json(envelope({ tickets: [...raised, ...base] }));
+  return [...raised, ...base] as unknown as Array<Record<string, unknown>>;
+}
+
+screensRouter.get('/tickets', (_req, res) => {
+  res.json(envelope({ tickets: ticketsList() }));
+});
+
+/** GET /api/tickets/export — CSV of the operator ticket queue (no note bodies). */
+screensRouter.get('/tickets/export', (_req, res) => {
+  const rows = ticketsList();
+  sendCsv(
+    res,
+    'tickets.csv',
+    ['id', 'pri', 'title', 'state', 'site', 'age', 'owner', 'reporter', 'planes', 'sla', 'inc'],
+    rows.map((t) => [
+      t.id,
+      t.pri ?? t.sev,
+      t.title,
+      t.state,
+      t.siteName ?? t.site,
+      t.age,
+      t.owner,
+      t.reporter,
+      t.planes ?? t.plane,
+      t.sla,
+      t.inc,
+    ]),
+  );
 });
 
 /**
@@ -904,10 +972,40 @@ async function clientDetailKeys(
  * the screen URL) or as a path segment, and both land here so the detail read
  * has exactly one implementation.
  */
-async function serveClients(res: Response, macParam: string | null): Promise<void> {
+const CLIENT_LIST_FIELDS = [
+  'name',
+  'mac',
+  'type',
+  'model',
+  'siteName',
+  'group',
+  'attach',
+  'where',
+  'os',
+  'user',
+  'plane',
+] as const;
+
+async function serveClients(req: Request, res: Response, macParam: string | null): Promise<void> {
   const wanted = macParam && macParam.trim() !== '' ? normalizeMac(macParam) : null;
   const pick = (rows: ClientRow[]): ClientRow | null =>
     wanted === null ? null : rows.find((c) => normalizeMac(c.mac) === wanted) ?? null;
+
+  const respond = (body: Record<string, unknown>): void => {
+    // Filter/page the roster only for list responses. A MAC detail request
+    // keeps the full clients[] so stats and pick stay honest for that session.
+    if (wanted !== null) {
+      res.json(body);
+      return;
+    }
+    const filtered = applyListFilters(req, body, 'clients', [...CLIENT_LIST_FIELDS]);
+    const paged = applyListPaging(req, filtered, 'clients');
+    if ('error' in paged) {
+      res.status(400).json({ error: paged.error, code: 'PAGINATION_VALIDATION' });
+      return;
+    }
+    sendCachedJson(req, res, paged.body);
+  };
 
   if (sourceFor('clients') === 'demo') {
     if (blendFor('clients')) {
@@ -915,7 +1013,7 @@ async function serveClients(res: Response, macParam: string | null): Promise<voi
       const blendClients = liveClients();
       if (blendClients.length > 0) {
         blended.push('clients');
-        res.json(
+        respond(
           withBlended(
             envelopeFor('clients', {
               stats: liveClientStats(blendClients),
@@ -936,7 +1034,7 @@ async function serveClients(res: Response, macParam: string | null): Promise<voi
     // always was. The Client 360 block is different: it is a JOIN over the
     // fixtures themselves (no plane call — the fixtures ARE the estate), so a
     // named client gets it in demo too, and the drawer demonstrates fully.
-    res.json(
+    respond(
       envelopeFor('clients', {
         stats: CLIENT_STATS,
         clients: CLIENTS,
@@ -955,7 +1053,7 @@ async function serveClients(res: Response, macParam: string | null): Promise<voi
     return;
   }
   const clients = liveClients();
-  res.json(
+  respond(
     envelopeFor('clients', {
       stats: liveClientStats(clients),
       clients,
@@ -967,8 +1065,67 @@ async function serveClients(res: Response, macParam: string | null): Promise<voi
   );
 }
 
+function clientsListRows(): ClientRow[] {
+  if (sourceFor('clients') === 'demo') {
+    if (blendFor('clients')) {
+      const blendClients = liveClients();
+      if (blendClients.length > 0) return blendClients;
+    }
+    return CLIENTS;
+  }
+  return liveClients();
+}
+
 screensRouter.get('/clients', (req, res) => {
-  settle(res, serveClients(res, typeof req.query.mac === 'string' ? req.query.mac : null));
+  settle(res, serveClients(req, res, typeof req.query.mac === 'string' ? req.query.mac : null));
+});
+
+/**
+ * GET /api/clients/export — CSV of client sessions (optional q/plane).
+ * Registered before /clients/:mac so "export" is not treated as a MAC.
+ */
+screensRouter.get('/clients/export', (req, res) => {
+  const clients = clientsListRows();
+  const filtered = applyListFilters(req, { clients }, 'clients', [...CLIENT_LIST_FIELDS]);
+  const rows = (filtered.clients as ClientRow[]) ?? [];
+  sendCsv(
+    res,
+    'clients-sessions.csv',
+    [
+      'client',
+      'mac',
+      'type',
+      'model',
+      'site',
+      'group',
+      'attached',
+      'where',
+      'plane',
+      'auth',
+      'authBy',
+      'role',
+      'vlan',
+      'health',
+      'session',
+    ],
+    rows.map((c) => [
+      c.name,
+      c.mac,
+      c.type,
+      c.model,
+      c.siteName,
+      c.group,
+      c.attach,
+      c.where,
+      c.plane,
+      c.auth,
+      c.authBy,
+      c.role,
+      c.vlan,
+      c.health,
+      c.session,
+    ]),
+  );
 });
 
 /**
@@ -981,7 +1138,7 @@ screensRouter.get('/clients', (req, res) => {
  * session": the roster is current and this MAC is not on it.
  */
 screensRouter.get('/clients/:mac', (req, res) => {
-  settle(res, serveClients(res, req.params.mac));
+  settle(res, serveClients(req, res, req.params.mac));
 });
 
 /** Live client stats — same five StatDefs as the fixtures, computed per poll. */
@@ -1050,45 +1207,88 @@ function withOwningPlane(events: LiveAuthEvent[]): LiveAuthEvent[] {
   });
 }
 
-screensRouter.get('/auth-events', (_req, res) => {
+function authEventsBody(): Record<string, unknown> {
   if (sourceFor('authEvents') === 'demo') {
     if (blendFor('authEvents')) {
       const events = withOwningPlane(poller.getCache().authEvents as LiveAuthEvent[]);
       if (events.length > 0) {
-        res.json(
-          withBlended(
-            envelopeFor('authEvents', {
-              stats: liveAuthStats(events),
-              events,
-              failReasons: liveFailReasons(events),
-              policyServices: livePolicyServices(events),
-            }),
-            ['authEvents'],
-            'authEvents',
-          ),
+        return withBlended(
+          envelopeFor('authEvents', {
+            stats: liveAuthStats(events),
+            events,
+            failReasons: liveFailReasons(events),
+            policyServices: livePolicyServices(events),
+          }),
+          ['authEvents'],
+          'authEvents',
         );
-        return;
       }
     }
-    res.json(
-      envelopeFor('authEvents', {
-        stats: AUTH_STATS,
-        events: AUTH_EVENTS,
-        failReasons: AUTH_FAIL_REASONS,
-        policyServices: POLICY_SERVICES,
-      }),
-    );
-    return;
+    return envelopeFor('authEvents', {
+      stats: AUTH_STATS,
+      events: AUTH_EVENTS,
+      failReasons: AUTH_FAIL_REASONS,
+      policyServices: POLICY_SERVICES,
+    });
   }
   const events = withOwningPlane(poller.getCache().authEvents as LiveAuthEvent[]);
-  res.json(
-    envelopeFor('authEvents', {
-      stats: liveAuthStats(events),
-      events,
-      failReasons: liveFailReasons(events),
-      policyServices: livePolicyServices(events),
-    }),
+  return envelopeFor('authEvents', {
+    stats: liveAuthStats(events),
+    events,
+    failReasons: liveFailReasons(events),
+    policyServices: livePolicyServices(events),
+  });
+}
+
+const AUTH_EVENT_LIST_FIELDS = [
+  'who',
+  'mac',
+  'result',
+  'service',
+  'method',
+  'reason',
+  'role',
+  'nas',
+  'plane',
+] as const;
+
+/**
+ * GET /api/auth-events/export — CSV of auth events (optional q/plane). Stats omitted.
+ */
+screensRouter.get('/auth-events/export', (req, res) => {
+  const body = authEventsBody();
+  const filtered = applyListFilters(req, body, 'events', [...AUTH_EVENT_LIST_FIELDS]);
+  const rows = (filtered.events as Array<Record<string, unknown>>) ?? [];
+  sendCsv(
+    res,
+    'auth-events.csv',
+    ['time', 'at', 'who', 'mac', 'result', 'service', 'method', 'role', 'reason', 'nas', 'plane'],
+    rows.map((e) => [
+      e.time,
+      e.at ?? '',
+      e.who,
+      e.mac,
+      e.result,
+      e.service,
+      e.method,
+      e.role,
+      e.reason,
+      e.nas,
+      e.plane,
+    ]),
   );
+});
+
+screensRouter.get('/auth-events', (req, res) => {
+  const body = authEventsBody();
+  // Filter then page events; stats/failReasons stay computed on the full set.
+  const filtered = applyListFilters(req, body, 'events', [...AUTH_EVENT_LIST_FIELDS]);
+  const paged = applyListPaging(req, filtered, 'events');
+  if ('error' in paged) {
+    res.status(400).json({ error: paged.error, code: 'AUTH_EVENTS_PAGING' });
+    return;
+  }
+  sendCachedJson(req, res, paged.body);
 });
 
 // -- UXI sensor fleet -----------------------------------------------------------
@@ -1107,17 +1307,40 @@ function uxiMissingSources(): Plane[] {
   return pull?.uxiSensors === undefined ? (['UXI'] as Plane[]) : [];
 }
 
-screensRouter.get('/uxi', (_req, res) => {
+function uxiSensorsBody(): { sensors: unknown[]; missingSources?: Plane[] } {
   if (sourceFor('uxi') === 'demo') {
-    res.json(envelopeFor('uxi', { sensors: UXI_SENSORS }));
-    return;
+    return { sensors: UXI_SENSORS };
   }
   const pull = poller.contributionsByPlane().get('uxi');
-  res.json(
-    envelopeFor('uxi', {
-      sensors: pull?.uxiSensors ?? [],
-      missingSources: uxiMissingSources(),
-    }),
+  return {
+    sensors: pull?.uxiSensors ?? [],
+    missingSources: uxiMissingSources(),
+  };
+}
+
+screensRouter.get('/uxi', (_req, res) => {
+  res.json(envelopeFor('uxi', uxiSensorsBody()));
+});
+
+/** GET /api/uxi/export — CSV of UXI sensors (no credentials). */
+screensRouter.get('/uxi/export', (_req, res) => {
+  const sensors = (uxiSensorsBody().sensors as Array<Record<string, unknown>>) ?? [];
+  sendCsv(
+    res,
+    'uxi-sensors.csv',
+    ['id', 'name', 'serial', 'model', 'site', 'isOnline', 'isTesting', 'issueCount', 'wifiMac', 'ethernetMac'],
+    sensors.map((s) => [
+      s.id,
+      s.name,
+      s.serial ?? '',
+      s.model ?? '',
+      s.site ?? '',
+      s.isOnline === null || s.isOnline === undefined ? '' : s.isOnline ? 'true' : 'false',
+      s.isTesting === null || s.isTesting === undefined ? '' : s.isTesting ? 'true' : 'false',
+      s.issueCount,
+      s.wifiMac ?? '',
+      s.ethernetMac ?? '',
+    ]),
   );
 });
 
@@ -1569,7 +1792,9 @@ screensRouter.get('/central', (_req, res) => {
 
 // -- Sites --------------------------------------------------------------------
 
-screensRouter.get('/sites', (_req, res) => {
+const SITE_LIST_FIELDS = ['name', 'id', 'subnet', 'mix', 'sync'] as const;
+
+function sitesBody(): Record<string, unknown> {
   if (sourceFor('sites') === 'demo') {
     if (blendFor('sites')) {
       const blended: string[] = [];
@@ -1577,23 +1802,19 @@ screensRouter.get('/sites', (_req, res) => {
       if (live.sites.length > 0) {
         blended.push('sites');
         const missing = planesMissingDevices();
-        res.json(
-          withBlended(
-            envelopeFor('sites', {
-              stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts, missing),
-              sites: live.sites,
-              missingSources: missing,
-              sleBySiteId: liveMistSle(),
-            }),
-            blended,
-            'sites',
-          ),
+        return withBlended(
+          envelopeFor('sites', {
+            stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts, missing),
+            sites: live.sites,
+            missingSources: missing,
+            sleBySiteId: liveMistSle(),
+          }),
+          blended,
+          'sites',
         );
-        return;
       }
     }
-    res.json(envelopeFor('sites', { stats: SITE_STATS, sites: SITES, sleBySiteId: SITE_SLE }));
-    return;
+    return envelopeFor('sites', { stats: SITE_STATS, sites: SITES, sleBySiteId: SITE_SLE });
   }
   const live = liveMerged();
   // Sites are derived from the merged inventory, so a plane that contributed
@@ -1601,13 +1822,51 @@ screensRouter.get('/sites', (_req, res) => {
   // the table entirely rather than shown empty. Without this the screen
   // reports a count for a smaller estate than the operator is asking about.
   const missing = planesMissingDevices();
-  res.json(
-    envelopeFor('sites', {
-      stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts, missing),
-      sites: live.sites,
-      missingSources: missing,
-      sleBySiteId: liveMistSle(),
-    }),
+  return envelopeFor('sites', {
+    stats: liveSiteStats(live.sites, live.devices, live.clients, live.alerts, missing),
+    sites: live.sites,
+    missingSources: missing,
+    sleBySiteId: liveMistSle(),
+  });
+}
+
+screensRouter.get('/sites', (req, res) => {
+  const body = sitesBody();
+  const paged = applyListPaging(
+    req,
+    applyListFilters(req, body, 'sites', [...SITE_LIST_FIELDS]),
+    'sites',
+  );
+  if ('error' in paged) {
+    res.status(400).json({ error: paged.error, code: 'PAGINATION_VALIDATION' });
+    return;
+  }
+  sendCachedJson(req, res, paged.body);
+});
+
+/** GET /api/sites/export — CSV of sites (optional q/plane). Before :siteId. */
+screensRouter.get('/sites/export', (req, res) => {
+  const body = sitesBody();
+  const filtered = applyListFilters(req, body, 'sites', [...SITE_LIST_FIELDS]);
+  const rows = (filtered.sites as Array<Record<string, unknown>>) ?? [];
+  sendCsv(
+    res,
+    'sites.csv',
+    ['name', 'id', 'subnet', 'mix', 'devices', 'clients', 'health', 'alerts', 'sync', 'planes'],
+    rows.map((s) => [
+      s.name,
+      s.id,
+      s.subnet,
+      s.mix,
+      s.devices,
+      s.clients,
+      s.health ?? s.healthPct ?? '',
+      s.alerts,
+      s.sync,
+      Array.isArray(s.planes)
+        ? (s.planes as unknown[]).map((p) => (typeof p === 'string' ? p : String((p as { plane?: string }).plane ?? p))).join('|')
+        : s.planes ?? '',
+    ]),
   );
 });
 
@@ -2180,54 +2439,157 @@ function snapshotDeviceConfig(device: string): DeviceCfg | null {
   };
 }
 
-screensRouter.get('/devices', (_req, res) => {
+const DEVICE_LIST_FIELDS = [
+  'name',
+  'model',
+  'siteName',
+  'serial',
+  'ip',
+  'type',
+  'state',
+  'plane',
+  'firmware',
+] as const;
+
+function devicesBody(): Record<string, unknown> {
   if (sourceFor('devices') === 'demo') {
     if (blendFor('devices')) {
       const { devices, doubleClaimed, unclaimed } = liveDeviceData();
       if (devices.length > 0) {
-        res.json(
-          withBlended(
-            envelopeFor('devices', {
-              devices,
-              lanes: liveLaneMeta(),
-              reconciliation: { doubleClaimed, unclaimed },
-              missingInventories: planesMissingDevices(),
-            }),
-            ['devices'],
-            'devices',
-          ),
+        return withBlended(
+          envelopeFor('devices', {
+            devices,
+            lanes: liveLaneMeta(),
+            reconciliation: { doubleClaimed, unclaimed },
+            missingInventories: planesMissingDevices(),
+          }),
+          ['devices'],
+          'devices',
         );
-        return;
       }
     }
     // Operator-pruned fixtures stay hidden from the demo inventory; the list
     // rides along so the UI can offer restore.
     const hidden = settings.get().hiddenDemoDevices ?? [];
     const hiddenSet = new Set(hidden);
-    res.json(
-      envelopeFor('devices', {
-        devices: DEVICES.filter((d) => !hiddenSet.has(d.name)),
-        lanes: LANE_META,
-        // The demo estate's authored reconciliation counts. Sent from the
-        // route like every other mode's counts, so the screen reads ONE key
-        // instead of keeping its own demo-mode fallback beside the payload.
-        reconciliation: DEVICE_RECONCILIATION,
-        hiddenDevices: hidden,
-      }),
-    );
-    return;
+    return envelopeFor('devices', {
+      devices: DEVICES.filter((d) => !hiddenSet.has(d.name)),
+      lanes: LANE_META,
+      // The demo estate's authored reconciliation counts. Sent from the
+      // route like every other mode's counts, so the screen reads ONE key
+      // instead of keeping its own demo-mode fallback beside the payload.
+      reconciliation: DEVICE_RECONCILIATION,
+      hiddenDevices: hidden,
+    });
   }
   const { devices, doubleClaimed, unclaimed } = liveDeviceData();
-  res.json(
+  return envelopeFor('devices', {
+    devices,
+    lanes: liveLaneMeta(),
+    reconciliation: { doubleClaimed, unclaimed },
+    // Which linked planes are NOT represented in the list above. Without
+    // this the reconciled inventory is shorter than the estate and says
+    // nothing about why (see liveCore.ts planesMissingDevices).
+    missingInventories: planesMissingDevices(),
+  });
+}
+
+screensRouter.get('/devices', (req, res) => {
+  const body = devicesBody();
+  const paged = applyListPaging(
+    req,
+    applyListFilters(req, body, 'devices', [...DEVICE_LIST_FIELDS]),
+    'devices',
+  );
+  if ('error' in paged) {
+    res.status(400).json({ error: paged.error, code: 'PAGINATION_VALIDATION' });
+    return;
+  }
+  sendCachedJson(req, res, paged.body);
+});
+
+/** GET /api/devices/export — CSV of device inventory (optional q/plane). Before :name. */
+screensRouter.get('/devices/export', (req, res) => {
+  const body = devicesBody();
+  const filtered = applyListFilters(req, body, 'devices', [...DEVICE_LIST_FIELDS]);
+  const rows = (filtered.devices as Array<Record<string, unknown>>) ?? [];
+  sendCsv(
+    res,
+    'devices.csv',
+    ['name', 'type', 'model', 'site', 'plane', 'state', 'firmware', 'serial', 'mac', 'ip', 'licence'],
+    rows.map((d) => [
+      d.name,
+      d.type,
+      d.model,
+      d.siteName ?? d.site,
+      d.plane,
+      d.state,
+      d.firmware,
+      d.serial ?? '',
+      d.mac ?? '',
+      d.ip ?? '',
+      d.licence,
+    ]),
+  );
+});
+
+/**
+ * GET /api/devices/bulk?serials=a,b&planes=mist,central
+ * Lookup by serial (max 50). Before /devices/:name so "bulk" is not a name.
+ */
+screensRouter.get('/devices/bulk', (req, res) => {
+  const raw =
+    typeof req.query.serials === 'string'
+      ? req.query.serials
+      : Array.isArray(req.query.serials)
+        ? req.query.serials.filter((v): v is string => typeof v === 'string').join(',')
+        : '';
+  const serials = [
+    ...new Set(
+      raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    ),
+  ].slice(0, 50);
+  if (serials.length === 0) {
+    res.status(400).json({ error: 'serials query required (comma-separated)', code: 'BULK_SERIALS_REQUIRED' });
+    return;
+  }
+  const planeFilterRaw =
+    typeof req.query.planes === 'string'
+      ? req.query.planes
+          .split(',')
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+  const planeSet = planeFilterRaw.length > 0 ? new Set(planeFilterRaw) : null;
+
+  const body = devicesBody();
+  const all = (body.devices as Array<Record<string, unknown>>) ?? [];
+  const wanted = new Set(serials.map((s) => s.toLowerCase()));
+  const devices = all.filter((d) => {
+    const serial = String(d.serial ?? '').trim();
+    if (!serial || !wanted.has(serial.toLowerCase())) return false;
+    if (!planeSet) return true;
+    const plane = String(d.plane ?? '').toLowerCase();
+    const claimed = Array.isArray(d.claimedBy)
+      ? (d.claimedBy as unknown[]).map((p) => String(p).toLowerCase())
+      : [];
+    return planeSet.has(plane) || claimed.some((p) => planeSet.has(p));
+  });
+  const found = new Set(
+    devices.map((d) => String(d.serial ?? '').trim().toLowerCase()).filter(Boolean),
+  );
+  const missing = serials.filter((s) => !found.has(s.toLowerCase()));
+  sendCachedJson(
+    req,
+    res,
     envelopeFor('devices', {
       devices,
-      lanes: liveLaneMeta(),
-      reconciliation: { doubleClaimed, unclaimed },
-      // Which linked planes are NOT represented in the list above. Without
-      // this the reconciled inventory is shorter than the estate and says
-      // nothing about why (see liveCore.ts planesMissingDevices).
-      missingInventories: planesMissingDevices(),
-    }),
+      missing,
+      requested: serials.length,
+    }) as Record<string, unknown>,
   );
 });
 
@@ -2786,36 +3148,36 @@ function liveMistLicenseUsages(): MistLicenseUsageRow[] | null {
   return poller.contributionsByPlane().get('mist')?.mistLicenseUsages ?? null;
 }
 
-screensRouter.get('/licenses', (_req, res) => {
+function licensesBody(): Record<string, unknown> {
   if (sourceFor('licenses') === 'demo') {
     if (blendFor('licenses')) {
       const subs = poller.getCache().subscriptions as LiveSubscription[];
       if (subs.length > 0) {
         const blendDevices = liveDeviceData().devices;
         const blendAssignments = liveAssignments();
-        res.json(
-          withBlended(
-            envelopeFor('licenses', {
-              stats: liveLicenseStats(subs, blendDevices, blendAssignments),
-              subscriptions: subs,
-              renewals: liveRenewals(subs),
-              orphans: liveOrphans(blendDevices, subs, blendAssignments, planesMissingDevices()),
-              // The usage rows follow the section they describe: a swapped
-              // payload carries what Mist really reported (null when it did
-              // not), not the authored fixtures.
-              mistLicenseUsages: liveMistLicenseUsages(),
-            }),
-            ['licenses'],
-            'licenses',
-          ),
+        return withBlended(
+          envelopeFor('licenses', {
+            stats: liveLicenseStats(subs, blendDevices, blendAssignments),
+            subscriptions: subs,
+            renewals: liveRenewals(subs),
+            orphans: liveOrphans(blendDevices, subs, blendAssignments, planesMissingDevices()),
+            // The usage rows follow the section they describe: a swapped
+            // payload carries what Mist really reported (null when it did
+            // not), not the authored fixtures.
+            mistLicenseUsages: liveMistLicenseUsages(),
+          }),
+          ['licenses'],
+          'licenses',
         );
-        return;
       }
     }
-    res.json(
-      envelopeFor('licenses', { stats: LICENSE_STATS, subscriptions: SUBSCRIPTIONS, renewals: RENEWALS, orphans: ORPHANS, mistLicenseUsages: MIST_LICENSE_USAGES }),
-    );
-    return;
+    return envelopeFor('licenses', {
+      stats: LICENSE_STATS,
+      subscriptions: SUBSCRIPTIONS,
+      renewals: RENEWALS,
+      orphans: ORPHANS,
+      mistLicenseUsages: MIST_LICENSE_USAGES,
+    });
   }
   // GreenLake subscriptions from the poller cache, with stats + renewals
   // computed from the rows' metric hints, and the reclaim list derived from
@@ -2825,14 +3187,38 @@ screensRouter.get('/licenses', (_req, res) => {
   const subs = poller.getCache().subscriptions as LiveSubscription[];
   const devices = liveDeviceData().devices;
   const assignments = liveAssignments();
-  res.json(
-    envelopeFor('licenses', {
-      stats: liveLicenseStats(subs, devices, assignments),
-      subscriptions: subs,
-      renewals: liveRenewals(subs),
-      orphans: liveOrphans(devices, subs, assignments, planesMissingDevices()),
-      mistLicenseUsages: liveMistLicenseUsages(),
-    }),
+  return envelopeFor('licenses', {
+    stats: liveLicenseStats(subs, devices, assignments),
+    subscriptions: subs,
+    renewals: liveRenewals(subs),
+    orphans: liveOrphans(devices, subs, assignments, planesMissingDevices()),
+    mistLicenseUsages: liveMistLicenseUsages(),
+  });
+}
+
+screensRouter.get('/licenses', (_req, res) => {
+  res.json(licensesBody());
+});
+
+/** GET /api/licenses/export — CSV of subscription rows (no secrets). */
+screensRouter.get('/licenses/export', (_req, res) => {
+  const body = licensesBody();
+  const rows = (body.subscriptions as Array<Record<string, unknown>>) ?? [];
+  sendCsv(
+    res,
+    'licenses.csv',
+    ['name', 'sku', 'plane', 'term', 'qty', 'assigned', 'pct', 'expires', 'status'],
+    rows.map((r) => [
+      r.name,
+      r.sku,
+      r.plane,
+      r.term,
+      r.qty,
+      r.assigned,
+      r.pct,
+      r.expires,
+      r.status,
+    ]),
   );
 });
 
@@ -2960,7 +3346,7 @@ screensRouter.get('/configure', (_req, res) => {
   );
 });
 
-screensRouter.get('/compliance', (_req, res) => {
+function complianceBody(): Record<string, unknown> {
   if (sourceFor('compliance') === 'demo') {
     // Blend: the authored findings describe the demo estate's drift. Once a
     // plane reports inventory, serve the live evidence-coverage run instead —
@@ -2968,29 +3354,23 @@ screensRouter.get('/compliance', (_req, res) => {
     if (blendFor('compliance') && datasetReported('devices')) {
       const blendMissing = planesMissingDataset('devices');
       const blendCompliance = liveComplianceData(liveDeviceData().devices, blendMissing, configBackups.summary());
-      res.json(
-        withBlended(
-          envelopeFor('compliance', {
-            ...blendCompliance,
-            missingInventories: blendMissing,
-            evidenceMode: 'coverage',
-          }),
-          ['compliance'],
-          'compliance',
-        ),
+      return withBlended(
+        envelopeFor('compliance', {
+          ...blendCompliance,
+          missingInventories: blendMissing,
+          evidenceMode: 'coverage',
+        }),
+        ['compliance'],
+        'compliance',
       );
-      return;
     }
-    res.json(
-      envelopeFor('compliance', {
-        stats: COMPLIANCE_STATS,
-        findings: FINDINGS,
-        baselines: BASELINE_PROGRESS,
-        diff: COMPLIANCE_DIFF,
-        evidenceMode: 'baseline',
-      }),
-    );
-    return;
+    return envelopeFor('compliance', {
+      stats: COMPLIANCE_STATS,
+      findings: FINDINGS,
+      baselines: BASELINE_PROGRESS,
+      diff: COMPLIANCE_DIFF,
+      evidenceMode: 'baseline',
+    });
   }
   const devicesReported = datasetReported('devices');
   // datasetReported is true as soon as ONE plane answers. Naming the planes
@@ -3000,12 +3380,36 @@ screensRouter.get('/compliance', (_req, res) => {
   const compliance = devicesReported
     ? liveComplianceData(liveDeviceData().devices, missingInventories, configBackups.summary())
     : { stats: [], findings: [], baselines: [], diff: '' };
-  res.json(
-    envelopeFor('compliance', {
-      ...compliance,
-      missingInventories,
-      evidenceMode: devicesReported ? 'coverage' : 'unavailable',
-    }),
+  return envelopeFor('compliance', {
+    ...compliance,
+    missingInventories,
+    evidenceMode: devicesReported ? 'coverage' : 'unavailable',
+  });
+}
+
+screensRouter.get('/compliance', (_req, res) => {
+  res.json(complianceBody());
+});
+
+/** GET /api/compliance/export — CSV of findings (no full diff dump). */
+screensRouter.get('/compliance/export', (_req, res) => {
+  const body = complianceBody();
+  const findings = (body.findings as Array<Record<string, unknown>>) ?? [];
+  sendCsv(
+    res,
+    'compliance-findings.csv',
+    ['sev', 'title', 'detail', 'rule', 'plane', 'count', 'fix', 'device', 'baseline'],
+    findings.map((f) => [
+      f.sev,
+      f.title,
+      f.detail,
+      f.rule,
+      f.plane,
+      f.count,
+      f.fix,
+      f.device,
+      f.baseline,
+    ]),
   );
 });
 

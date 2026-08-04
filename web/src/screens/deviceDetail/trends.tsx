@@ -218,15 +218,9 @@ export function TrendSpark({
  *  it came from — "current" is always the latest sample, never a live claim. */
 function TrendTile({ label, value, caption, pct }: { label: string; value: string; caption: string; pct?: number | null }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>
+    <div className="nt-stack" style={{ gap: 5, minWidth: 0 }}>
       <span
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 'var(--nd-text-10)',
-          letterSpacing: '.1em',
-          textTransform: 'uppercase',
-          color: 'var(--nd-text-muted)',
-        }}
+        className="nt-mono-label"
       >
         {label}
       </span>
@@ -252,20 +246,12 @@ function TrendTile({ label, value, caption, pct }: { label: string; value: strin
         </span>
       ) : null}
       <span
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 'var(--nd-text-11)',
-          color: 'var(--nd-text-primary)',
-        }}
+        className="nt-configure-row__name-primary"
       >
         {value}
       </span>
       <span
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 'var(--nd-text-10)',
-          color: 'var(--nd-text-muted)',
-        }}
+        className="nt-hint-muted"
       >
         {caption}
       </span>
@@ -287,15 +273,7 @@ function TrendRow({ series }: { series: TrendSeries }) {
       }}
     >
       <span
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 'var(--nd-text-10)',
-          letterSpacing: '.1em',
-          textTransform: 'uppercase',
-          color: 'var(--nd-text-muted)',
-          width: 104,
-          flex: '0 0 104px',
-        }}
+        className="nt-mono-label" style={{ width: 104, flex: "0 0 104px" }}
       >
         {seriesLabel(series.key)}
       </span>
@@ -306,15 +284,7 @@ function TrendRow({ series }: { series: TrendSeries }) {
         />
       </span>
       <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          textAlign: 'right',
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 'var(--nd-text-10)',
-          color: 'var(--nd-text-secondary)',
-          whiteSpace: 'nowrap',
-        }}
+        className="nt-mono-11 nt-ellipsis" style={{ flex: 1, minWidth: 0, textAlign: "right", color: "var(--nd-text-secondary)", whiteSpace: "nowrap" }}
       >
         {latest ? `${seriesValueText(series, latest.v as number)} · at ${hhmm(latest.t)}` : 'no usable samples'}
       </span>
@@ -333,13 +303,8 @@ function TrendCaption({ live, section }: { live: SwitchHardwareTrendsLive | Swit
   const gap = gapPhrase(series);
   return (
     <div
-      style={{
-        fontFamily: 'var(--nd-font-mono)',
-        fontSize: 'var(--nd-text-10)',
-        color: 'var(--nd-text-muted)',
-        padding: '6px 0',
-        lineHeight: 1.6,
-      }}
+      className="nt-hint-muted" style={{ padding: '6px 0',
+        lineHeight: 1.6 }}
     >
       {[
         section,
@@ -442,7 +407,7 @@ function InterfaceErrors({ live }: { live: SwitchInterfaceTrendsLive }) {
     }
   }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader
         label="Interface errors"
         meta={moved.length > 0 ? `${countOf(moved.length, 'counter')} MOVED` : undefined}
@@ -459,15 +424,7 @@ function InterfaceErrors({ live }: { live: SwitchInterfaceTrendsLive }) {
           }}
         >
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              letterSpacing: '.1em',
-              textTransform: 'uppercase',
-              color: 'var(--nd-text-muted)',
-              width: 104,
-              flex: '0 0 104px',
-            }}
+            className="nt-mono-label" style={{ width: 104, flex: "0 0 104px" }}
           >
             {counter.label}
           </span>
@@ -475,15 +432,7 @@ function InterfaceErrors({ live }: { live: SwitchInterfaceTrendsLive }) {
             <TrendSpark points={counter.series.points} label={`${counter.label} rate over the window`} />
           </span>
           <span
-            style={{
-              flex: 1,
-              minWidth: 0,
-              textAlign: 'right',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-secondary)',
-              whiteSpace: 'nowrap',
-            }}
+            className="nt-mono-11 nt-ellipsis" style={{ flex: 1, minWidth: 0, textAlign: "right", color: "var(--nd-text-secondary)", whiteSpace: "nowrap" }}
           >
             {formatCount(counter.total)} in the window
           </span>
@@ -758,7 +707,7 @@ export function HardwareTrendsPanel({
   const meta = [plane?.toUpperCase(), windowLabel.toUpperCase()].filter(Boolean).join(' · ');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="Hardware trends" meta={meta || undefined} />
       <div style={{ alignSelf: 'flex-start', padding: '4px 0' }}>
         <SegmentedControl

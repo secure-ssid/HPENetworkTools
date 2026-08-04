@@ -42,7 +42,7 @@ const RAIL_KEY = 'hpe-nt.nav-rail';
  */
 export function RouteFallback() {
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+    <div className="nt-center-pad" style={{ padding: 48 }}>
       <Spinner />
     </div>
   );
@@ -253,21 +253,7 @@ function NotificationBell() {
         {unread > 0 ? (
           <span
             aria-hidden="true"
-            style={{
-              position: 'absolute',
-              top: -4,
-              right: -6,
-              minWidth: 16,
-              height: 16,
-              padding: '0 4px',
-              borderRadius: 8,
-              background: 'var(--nd-danger)',
-              color: 'var(--nd-text-inverse, #fff)',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 10,
-              lineHeight: '16px',
-              textAlign: 'center',
-            }}
+            className="nt-mono-11 nt-badge-count"
           >
             {unread > 99 ? '99+' : unread}
           </span>
@@ -291,25 +277,25 @@ function NotificationBell() {
             zIndex: 30,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 6px' }}>
+          <div className="nt-row-between" style={{ padding: "4px 6px" }}>
             <span className="nd-micro-label">Notifications</span>
             <Button variant="ghost" size="sm" onClick={markAll} disabled={unread === 0}>
               Mark all read
             </Button>
           </div>
           {unavailable ? (
-            <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--nd-text-muted)' }}>
+            <div className="nt-notify-empty">
               Notifications are unavailable — the portal backend is not answering. The badge returns
               when it does; nothing here is a statement about your estate.
             </div>
           ) : view === null ? (
-            <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--nd-text-muted)' }}>Checking…</div>
+            <div className="nt-notify-empty">Checking…</div>
           ) : view.entries.length === 0 ? (
-            <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--nd-text-muted)' }}>
+            <div className="nt-notify-empty">
               No notifications yet — device-down alerts and their recoveries land here.
             </div>
           ) : (
-            <div style={{ maxHeight: 380, overflow: 'auto' }}>
+            <div className="nt-notify-scroll">
               {view.entries.map((entry) => (
                 <button
                   key={entry.id}
@@ -340,15 +326,15 @@ function NotificationBell() {
                     }}
                   />
                   <span style={{ minWidth: 0 }}>
-                    <span style={{ display: 'block', fontSize: 13, fontWeight: entry.read ? 400 : 600 }}>
+                    <span className={`nt-notify-title ${entry.read ? "nt-notify-title--read" : "nt-notify-title--unread"}`}>
                       {entry.title}
                       {entry.demo ? (
-                        <span style={{ marginLeft: 6, fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)', textTransform: 'uppercase', letterSpacing: '.08em' }}>
+                        <span className="nt-mono-label nt-ml-auto" style={{ marginLeft: 6 }}>
                           demo
                         </span>
                       ) : null}
                     </span>
-                    <span style={{ display: 'block', fontSize: 12, color: 'var(--nd-text-muted)', overflowWrap: 'anywhere' }}>
+                    <span className="nt-notify-body">
                       {entry.body}
                     </span>
                   </span>
@@ -447,8 +433,9 @@ export function AppShellLayout() {
     <>
       <div className="nt-shell-brand">
         <div className="nt-shell-brand__copy">
-          <div className="nt-shell-brand__kicker">HPE</div>
-          <div className="nt-shell-brand__name">Network Tools</div>
+          <div className="nt-shell-brand__kicker">HPE · Copper NOC</div>
+          <div className="nt-shell-brand__name">NightDesk</div>
+          <div className="nt-shell-brand__tagline">GreenLake midnight</div>
         </div>
         {collapsible ? (
         <button
@@ -514,14 +501,7 @@ export function AppShellLayout() {
       <NotificationBell />
       {settingsError ? (
         <span
-          className="nt-shell-settings-error"
-          role="status"
-          style={{
-            maxWidth: 260,
-            color: 'var(--nd-danger)',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-          }}
+          className="nt-shell-settings-error nt-mono-11 nt-danger-text" role="status" style={{ maxWidth: 260 }}
         >
           {settingsError}
         </span>
@@ -537,29 +517,12 @@ export function AppShellLayout() {
         <span className="nt-shell-assistant__shortcut">⌘J</span>
         <span className="nt-shell-assistant__compact" aria-hidden="true">AI</span>
       </Button>
-      <div
-        className="nt-shell-identity"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          paddingLeft: 6,
-          borderLeft: '1px solid var(--nd-border-subtle)',
-        }}
-      >
-        <div style={{ textAlign: 'right', lineHeight: 1.25 }}>
-          <div style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
+      <div className="nt-shell-identity">
+        <div className="nt-shell-identity__meta">
+          <div className="nt-shell-identity__name">
             {auth?.principal?.name ?? 'Operator'}
           </div>
-          <div
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-              textTransform: 'uppercase',
-              letterSpacing: '.1em',
-            }}
-          >
+          <div className="nt-mono-label nt-hint-muted">
             {auth?.principal?.email ?? (auth?.configured ? '' : 'no sign-in required')}
           </div>
         </div>

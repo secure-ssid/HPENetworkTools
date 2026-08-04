@@ -1266,7 +1266,7 @@ export function CentralWebhooksPanel() {
                 <Table.Row key={row.id}>
                   <Table.Cell>{row.name}</Table.Cell>
                   <Table.Cell>
-                    <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11.5 }}>{row.endpoint}</span>
+                    <span className="nt-mono-11">{row.endpoint}</span>
                   </Table.Cell>
                   <Table.Cell>
                     <Badge tone={row.authMechanism === 'OIDC' ? 'accent' : 'neutral'}>{row.authMechanism}</Badge>
@@ -1321,7 +1321,7 @@ export function CentralWebhooksPanel() {
                 <Table.Row key={receiver.source}>
                   <Table.Cell>{receiver.label}</Table.Cell>
                   <Table.Cell>
-                    <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11.5 }}>
+                    <span className="nt-mono-11">
                       {`${window.location.origin}${receiver.path}`}
                     </span>
                   </Table.Cell>
@@ -1450,7 +1450,7 @@ export function CentralWebhooksPanel() {
               This permanently deletes webhook &quot;{drawerRow?.name}&quot;. Central will stop delivering any
               notification rule pointed at it.
             </div>
-            <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>
+            <div className="nt-hint-muted">
               DELETE {targetUrl}
             </div>
             {drawerError ? <EmptyState title={outcomeUnknown ? 'Outcome unknown' : 'Delete failed'} description={drawerError} /> : null}
@@ -1489,7 +1489,7 @@ export function CentralWebhooksPanel() {
             <div style={{ fontSize: 12.5, color: 'var(--nd-text-primary)' }}>
               Rotate the signing key for &quot;{drawerRow?.name}&quot; at generation {drawerRow?.generation}.
             </div>
-            <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>
+            <div className="nt-hint-muted">
               POST {targetUrl}
             </div>
             {drawerError ? (
@@ -1632,7 +1632,7 @@ export function CentralWebhooksPanel() {
               label={lab ? 'Write summary' : 'Review'}
               meta={drawerMode === 'create' ? 'new webhook' : existing ? `generation ${existing.generation}` : undefined}
             />
-            <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>
+            <div className="nt-hint-muted">
               {drawerMode === 'create' ? 'POST' : 'PATCH'} {targetUrl}
             </div>
             <DiffCode text={diffLines.join('\n')} />
@@ -1799,13 +1799,7 @@ export function CentralWebhooksPanel() {
           </Alert>
           <div
             aria-label="One-time HMAC key"
-            style={{
-              padding: 12,
-              borderRadius: 6,
-              background: 'var(--nd-surface-raised)',
-              fontFamily: 'var(--nd-font-mono)',
-              overflowWrap: 'anywhere',
-            }}
+            className="nt-mono-11" style={{ padding: 12, borderRadius: 6, background: "var(--nd-surface-raised)", overflowWrap: "anywhere" }}
           >
             {oneTimeSecretRevealed
               ? oneTimeSecret

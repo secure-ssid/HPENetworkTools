@@ -33,8 +33,6 @@ Below is a prioritized backlog with concrete file anchors and expected impact.
 | Docs + smoke coverage | Done | `docs/user-guide.md`, `docs/security.md`, `scripts/smoke.sh`, README link |
 | Focused tests + monorepo typecheck | Green | shared/server/web visual + screen tests |
 
-**Still open from the broader backlog:** table virtualization, ETag/pagination on large lists, `screens.ts` split, OpenAPI, SSE bell, unmarked connector-plan checkboxes, ClearPass external TLS recovery.
-
 ### Swarm batch 2 (2026-08-03) — taxonomy + recommendations
 
 | Item | Status | Anchors |
@@ -46,6 +44,159 @@ Below is a prioritized backlog with concrete file anchors and expected impact.
 | ConfigRecommendationsPanel on Overview, Device, Site, Client, Licences | Done | screens + panel |
 | Category filter chips on Devices + Clients | Done | list screens |
 | Visual target kinds: estate, endpoint, service, license | Done | `shared/visualReferences.ts` |
+
+### Batch 3 + UI redesign (2026-08-03)
+
+| Item | Status | Anchors |
+|---|---|---|
+| Nightdesk visual redesign (tokens, shell glass, nav, cards, stats, buttons, headers) | Done | `web/src/nightdesk/tokens.css`, `components.css`, `app.css`, `ScreenHeader.tsx` |
+| DataTable window virtualization (>80 rows) | Done | `web/src/nightdesk/DataTable.tsx` |
+| Weak ETag + helpers on devices/recommendations | Done | `server/src/lib/httpCache.ts` |
+| Topology model extract from screens.ts | Done | `server/src/routes/screens/topologyModel.ts` |
+| OpenAPI route catalog stub | Done | `GET /api/openapi.json` |
+| Notification center SSE stream + bell client | Done | `.../center/stream`, `AppShell` NotificationBell |
+| Topology + Configure visual/recs depth | Done | Topology/Configure screens |
+| ClearPass TLS repair deep-link + copy | Done | `ClearPass.tsx` → `/systems?plane=clearpass` |
+
+### Loop 4 (2026-08-03) — keep searching and adding
+
+| Item | Status | Anchors |
+|---|---|---|
+| Shared client CSV helper | Done | `web/src/lib/csv.ts` |
+| Visual refs + config recs on Sites/Mist/Central/UXI/Inventory/Systems/Compliance/GreenLake/Tickets/AuthEvents/Alerts | Done | respective screens |
+| Export CSV on Sites, Devices, AuthEvents, Alerts, Compliance findings, GreenLake sections | Done | screen headers |
+| Tickets copy deep-link | Done | `Tickets.tsx` |
+| Optional `?limit=&cursor=` page envelope on devices/clients/sites/alerts groups | Done | `applyListPaging` in `screens.ts` |
+| ETag/304 on devices, clients, sites, alerts | Done | `sendCachedJson` |
+| `GET /api/devices/bulk?serials=` | Done | `screens.ts` |
+| `GET /api/configure/history/export` + Configure drawer download | Done | `configure.ts`, `Configure.tsx` |
+| OpenAPI catalog expanded | Done | `openapi.ts` |
+
+### Loop 5 (2026-08-03) — research / debug / load-more
+
+| Item | Status | Anchors |
+|---|---|---|
+| Live notification delivery attempt log (no bodies) | Done | `notifier.deliveries()`, `GET /api/notifications/deliveries`, Notifications UI |
+| Runtime debug API + Systems panel | Done | `GET /api/debug/runtime`, `RuntimeDebugSection.tsx` |
+| Client light/dark theme toggle | Done | `tokens.css` `data-nd-theme`, AppShell localStorage |
+| List filters `?q=` / `?plane=` on devices/clients/sites | Done | `applyListFilters` in `screens.ts` |
+| Devices/Clients Load more (page size 250) | Done | `ScreenListQuery`, Devices/Clients screens |
+| Systems state ETag/304 | Done | `systems.ts` + `httpCache` |
+| Health `?deep=1` process/notifier facts when allowed | Done | `index.ts` `/api/health` |
+| Server devices CSV export | Done | `GET /api/devices/export` |
+| OpenAPI + tests for deliveries/debug | Done | `openapi.ts`, `notifications.test.ts`, `debugRuntime.test.ts` |
+
+### Loop 6 (2026-08-03) — alerts load-more + plane health
+
+| Item | Status | Anchors |
+|---|---|---|
+| Alerts Load more (groups page size 100) | Done | `Alerts.tsx`, `getAlerts(ScreenListQuery)` |
+| `GET /api/systems/:plane/health` | Done | `systems.ts` — calls/events, noteChars only |
+| Runtime debug plane card drill-down | Done | `RuntimeDebugSection.tsx` |
+
+### Loop 7 (2026-08-03) — SSE reconnect, sites paging, exports, light polish
+
+| Item | Status | Anchors |
+|---|---|---|
+| NotificationBell SSE exponential reconnect + poll bridge | Done | `AppShell.tsx` |
+| Sites Load more (page size 100) + `getSites(ScreenListQuery)` | Done | `Sites.tsx`, `screens.ts` API |
+| `GET /api/clients/export` (before `:mac`) + OpenAPI | Done | `screens.ts`, `openapi.ts` |
+| UXI client filters + CSV export | Done | `Uxi.tsx` |
+| Delivery log CSV (outcomes only) | Done | `NotificationsSection.tsx` |
+| Inventory copy node id/path | Done | `Inventory.tsx` |
+| Topology nodes/edges CSV export | Done | `Topology.tsx` |
+| Tickets queue CSV export | Done | `Tickets.tsx` |
+| ClearPass endpoints page CSV export | Done | `ClearPass.tsx` |
+| Light theme shell polish (root/sidebar/topbar/nav) | Done | `components.css` |
+| Devices board duplicate `className` fix | Done | `Devices.tsx` |
+
+### Loop 8 (2026-08-03) — health deep UI, plane exports, sites export
+
+| Item | Status | Anchors |
+|---|---|---|
+| Runtime debug “Health deep” (`GET /api/health?deep=1`) | Done | `RuntimeDebugSection.tsx` — withheld when OIDC stranger |
+| Mist rogues + AP health CSV | Done | `Mist.tsx` |
+| Central sites/WLANs/firmware/alerts CSV | Done | `Central.tsx` |
+| `GET /api/sites/export` + OpenAPI | Done | `screens.ts` before `:siteId` |
+| Auth-events optional `?q=` filter (list only) | Done | `screens.ts` `applyListFilters` on events |
+| Systems tests: stub fetch + catalog timeout | Done | `Systems.test.tsx` |
+
+### Loop 9 (2026-08-03) — listQuery extract + Overview export
+
+| Item | Status | Anchors |
+|---|---|---|
+| Extract `applyListPaging` / `applyListFilters` / `sendCachedJson` | Done | `server/src/routes/screens/listQuery.ts` |
+| Overview alerts/sites/planes CSV export | Done | `Overview.tsx` |
+
+### Loop 10 (2026-08-04) — recommendations CSV + listQuery tests
+
+| Item | Status | Anchors |
+|---|---|---|
+| ConfigRecommendationsPanel Export CSV (real fields) | Done | `ConfigRecommendationsPanel.tsx` + ToastProvider tests |
+| `listQuery` unit tests | Done | `server/tests/listQuery.test.ts` |
+| OpenAPI `GET /api/health?deep=1` | Done | `openapi.ts` |
+
+### Loop 11 (2026-08-04) — auth-events paging, inventory/debug/recs export
+
+| Item | Status | Anchors |
+|---|---|---|
+| Auth-events optional `?limit=&cursor=` paging + Load more (250) | Done | `screens.ts`, `getAuthEvents(ScreenListQuery)`, `AuthEvents.tsx` |
+| Inventory search results CSV | Done | `Inventory.tsx` |
+| Runtime debug planes CSV | Done | `RuntimeDebugSection.tsx` |
+| `GET /api/recommendations/export` + OpenAPI | Done | `recommendations.ts`, `openapi.ts` |
+| OpenAPI `/api/auth-events` | Done | `openapi.ts` |
+
+### Loop 12 (2026-08-04) — more server exports + detail CSVs
+
+| Item | Status | Anchors |
+|---|---|---|
+| `GET /api/auth-events/export` | Done | `screens.ts` (shared `authEventsBody`) |
+| `GET /api/tickets/export` | Done | `screens.ts` (no note bodies) |
+| `GET /api/uxi/export` | Done | `screens.ts` |
+| `server/src/lib/csv.ts` helper | Done | shared escape/send helpers |
+| SiteDetail Export devices | Done | live + demo headers |
+| DeviceDetail Export ports | Done | ports table |
+| Configure Export queue CSV | Done | broker queue snapshot |
+| OpenAPI auth-events/tickets/uxi export | Done | `openapi.ts` |
+
+### Loop 13 (2026-08-04) — alerts/compliance export + auth share link
+
+| Item | Status | Anchors |
+|---|---|---|
+| `GET /api/alerts/export` (before `:fingerprint`) | Done | `screens.ts` `alertsBody` |
+| `GET /api/compliance/export` | Done | `screens.ts` `complianceBody` |
+| AuthEvents Copy view link (q/plane/range) | Done | `AuthEvents.tsx` |
+| OpenAPI alerts/compliance export | Done | `openapi.ts` |
+
+### Loop 14 (2026-08-04) — licenses export + share links + Sites polish
+
+| Item | Status | Anchors |
+|---|---|---|
+| `GET /api/licenses/export` | Done | `screens.ts` `licensesBody` + `sendCsv` |
+| Devices / Clients Copy view link | Done | current URL clipboard |
+| Sites Load more (100) + Export CSV + Copy filter link + `?q=`/`?plane=` deep-link | Done | `Sites.tsx` |
+| Sites VisualReference + ConfigRecommendations panels | Done | service target `sites` |
+| OpenAPI licenses export | Done | `openapi.ts` |
+
+### Loop 15 (2026-08-04) — recovery, more CSVs, debug export
+
+| Item | Status | Anchors |
+|---|---|---|
+| Restored wiped `screens.ts` body builders + list paging + all `/export` routes | Done | `alertsBody` / `authEventsBody` / `sitesBody` / `devicesBody` / … + `sendCsv` |
+| Client CSV: Compliance findings, UXI sensors, Inventory search results | Done | `Compliance.tsx`, `Uxi.tsx`, `Inventory.tsx` |
+| `sendCsv` on recommendations + configure history exports | Done | `recommendations.ts`, `configure.ts` |
+| `GET /api/debug/runtime/export` plane health CSV | Done | `debug.ts` (no secrets/notes) |
+| OpenAPI debug runtime export | Done | `openapi.ts` |
+
+### Loop 16 (2026-08-04) — devices bulk + debug CSV tests
+
+| Item | Status | Anchors |
+|---|---|---|
+| Restored `GET /api/devices/bulk?serials=` (max 50, optional planes) | Done | `screens.ts` before `:name` |
+| Debug runtime CSV test | Done | `debugRuntime.test.ts` |
+| Devices bulk HTTP tests | Done | `devicesBulk.test.ts` |
+
+**Still open (next loops):** more `screens.ts` domain splits, full connector-integrity plan checkboxes, deeper connector form audit.
 
 ---
 

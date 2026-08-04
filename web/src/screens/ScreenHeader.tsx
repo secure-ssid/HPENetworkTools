@@ -1,11 +1,10 @@
 /**
- * web/src/screens/ScreenHeader.tsx — the compact header band every screen opens
- * with: title, one-line subtitle, right-aligned actions, hairline rule.
+ * web/src/screens/ScreenHeader.tsx — stacked header band for every screen.
  *
- * The `overline` prop is kept because callers pass a "Group / Screen" path, but
- * it is no longer painted: the sticky topbar already renders the same trail as
- * breadcrumbs, and repeating it cost a whole row of vertical space on every
- * screen. It is exposed as `data-path` for tests and deep-link tooling.
+ * Overline (workflow path) + title + one-line subtitle, with optional actions
+ * on the right. The sticky topbar still carries breadcrumbs; the overline is
+ * a local section cue so each page reads as a designed surface, not a bare
+ * H1.
  */
 
 import type { ReactNode } from 'react';
@@ -25,6 +24,7 @@ export function ScreenHeader({
   return (
     <div className="nt-screen-header" data-path={overline}>
       <div className="nt-screen-header__copy">
+        <p className="nt-screen-header__overline">{overline}</p>
         <Heading level={1} className="nt-screen-header__title">
           {title}
         </Heading>

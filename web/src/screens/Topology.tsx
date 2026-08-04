@@ -29,6 +29,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { countOf, hhmmLocal as hhmm } from '@hpe/shared';
 import type {
+  DeviceType,
   StatDef,
   Tone,
   TopologyGraph,
@@ -36,15 +37,20 @@ import type {
   TopologyGraphNode,
   TopologyGraphSite,
 } from '@hpe/shared';
-import { Alert, Badge, Button, EmptyState, Spinner } from '../nightdesk';
+import {
+  PageSkeleton, Alert, Badge, Button, EmptyState, useToast } from '../nightdesk';
 import { getTopology } from '../api/client';
 import type { TopologyData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
 import { deviceDetailPath } from '../app/nav';
 import { ScreenHeader } from './ScreenHeader';
+import { exportTableCsv } from '../lib/csv';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
 import { Topology3DCanvas } from './Topology3DCanvas';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { DeviceTypeBadge } from '../components/DeviceTypeBadge';
 
 export const UNFILED_KEY = '__filed-nowhere__';
 
@@ -220,44 +226,25 @@ function SiteCard({
       >
         <span
           aria-hidden
-          style={{
-            width: 9,
-            height: 9,
-            borderRadius: '50%',
-            background: DOT[site.tone] ?? 'var(--nd-border-strong)',
-            flex: '0 0 9px',
-          }}
+          className="nt-topo-dot" style={{ background: DOT[site.tone] ?? 'var(--nd-border-strong)' }}
         />
-        <span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }}>
+        <span className="nt-stack nt-gap-2 nt-flex-1">
           <span
-            style={{
-              fontFamily: 'var(--nd-font-display)',
-              fontSize: 13,
-              color: 'var(--nd-text-primary)',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
+            className="nt-topo-title nt-ellipsis"
           >
             {site.name}
           </span>
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 9.5,
-              letterSpacing: '.06em',
-              color: 'var(--nd-text-muted)',
-              whiteSpace: 'nowrap',
+            className="nt-hint-muted" style={{ whiteSpace: 'nowrap',
               overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
+              textOverflow: 'ellipsis' }}
           >
             {summary}
             {site.externalEdges > 0 ? ` · ${countOf(site.externalEdges, 'inter-site link')}` : ''}
             {expanded ? ' · collapse' : ' · expand'}
           </span>
         </span>
-        <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <span className="nt-chip-end">
           {site.planes.map((plane) => (
             <Badge key={plane} tone="neutral">
               {plane}
@@ -266,14 +253,14 @@ function SiteCard({
         </span>
       </button>
       {expanded ? (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="nt-topo-card__body">
           {site.nodeCount === 0 ? (
-            <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)', lineHeight: 1.6 }}>
+            <span className="nt-hint-muted nt-lh-16">
               No device in the merged inventory is filed at this site — the card stays so the estate picture is
               complete, not because a graph reaches here.
             </span>
           ) : (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            <div className="nt-wrap-6">
               {nodes.map((node) => (
                 <DeviceChip
                   key={node.id}
@@ -288,28 +275,17 @@ function SiteCard({
             </div>
           )}
           {internal.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="nt-stack nt-gap-2">
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 9.5,
-                  letterSpacing: '.12em',
-                  color: 'var(--nd-text-muted)',
-                }}
+                className="nt-mono-label"
               >
                 REPORTED LINKS INSIDE
               </span>
               {internal.map((edge) => (
                 <span
                   key={edge.id}
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: edge.stale ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
+                  className="nt-hint-muted nt-ellipsis"
+                  style={{ color: edge.stale ? 'var(--nd-warning)' : 'var(--nd-text-muted)' }}
                 >
                   {topologyEdgeLabel(edge, nodeById)}
                 </span>
@@ -352,6 +328,9 @@ function DeviceChip({
   onFocus: (focus: Focus) => void;
 }) {
   const shownState = stateWorthDrawing(node.state);
+  const knownTypes = new Set(['switch', 'ap', 'gateway', 'controller', 'sensor', 'policy']);
+  const deviceType =
+    node.type && knownTypes.has(node.type) ? (node.type as DeviceType) : null;
   const handleClick = (event: React.MouseEvent) => {
     event.stopPropagation();
     if (event.shiftKey || focusActive || node.ghost) {
@@ -388,39 +367,26 @@ function DeviceChip({
     >
       <span
         aria-hidden
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: '50%',
-          background: DOT[node.tone] ?? 'var(--nd-border-strong)',
-          flex: '0 0 7px',
-        }}
+        className="nt-topo-dot nt-topo-dot--sm" style={{ background: DOT[node.tone] ?? 'var(--nd-border-strong)' }}
       />
-      <span style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0, textAlign: 'left' }}>
+      <span className="nt-stack nt-gap-0" style={{ minWidth: 0, textAlign: "left" }}>
         <span
-          style={{
-            fontFamily: 'var(--nd-font-display)',
-            fontSize: 11.5,
-            color: 'var(--nd-text-primary)',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
+          className="nt-topo-title nt-ellipsis nt-mono-11"
         >
           {node.name}
         </span>
         <span
+          className="nt-row nt-mono-label nt-ellipsis"
           style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 9,
-            letterSpacing: '.05em',
+            gap: 5,
             color: shownState !== null && node.tone === 'danger' ? 'var(--nd-danger)' : 'var(--nd-text-muted)',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
           }}
         >
-          {[node.type, shownState].filter(Boolean).join(' · ') || 'reported neighbour'}
+          {deviceType ? <DeviceTypeBadge type={deviceType} /> : null}
+          <span>
+            {[!deviceType ? node.type : null, shownState].filter(Boolean).join(' · ') ||
+              (node.ghost ? 'reported neighbour' : '')}
+          </span>
         </span>
       </span>
     </button>
@@ -542,22 +508,16 @@ export function TopologyGraphView({
 
   return (
     <div
-      style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+      className="nt-stack nt-gap-8"
       onClick={() => {
         if (focus !== null) setFocus(null);
       }}
     >
       {lit !== null && focus !== null ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div className="nt-filter-bar nt-gap-10">
           <Badge tone="accent">focus</Badge>
           <span
-            style={{
-              flex: 1,
-              minWidth: 0,
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-            }}
+            className="nt-hint-muted nt-flex-1"
           >
             {`${lit.label} · ${countOf(lit.nodes.size, 'node')} in view · click another card to move the focus · Esc or click the background to leave`}
           </span>
@@ -610,15 +570,14 @@ export function TopologyGraphView({
               padding: '10px 12px',
             }}
           >
-            <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 9.5, letterSpacing: '.12em', color: 'var(--nd-text-muted)' }}>
+            <span className="nt-mono-label">
               SITE CONNECTIONS — reported links between sites or unfiled neighbours
             </span>
             {crossing.map((edge) => (
               <span
                 key={edge.id}
+                className="nt-hint-muted"
                 style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-10)',
                   color: edge.stale ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
                   opacity: edgeIsLit(edge) ? 1 : 0.2,
                   overflowWrap: 'anywhere',
@@ -646,16 +605,11 @@ export function TopologyGraphView({
             }}
           >
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 9.5,
-                letterSpacing: '.12em',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-mono-label"
             >
               REPORTED, FILED NOWHERE — neighbours with no inventory row, and devices with no physical site
             </span>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            <div className="nt-wrap-6">
               {unfiled.map((node) => (
                 <DeviceChip
                   key={node.id}
@@ -668,7 +622,7 @@ export function TopologyGraphView({
                 />
               ))}
             </div>
-            <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}>
+            <span className="nt-hint-muted">
               {unfiled
                 .filter((n) => n.ghost)
                 .map((n) => `${n.name} — ${ghostSub(n, graph.edges)}`)
@@ -733,6 +687,7 @@ function hasWebGLSupport(): boolean {
 
 export default function Topology() {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const { pollIntervalSec } = useSettings();
   const [data, setData] = useState<TopologyData | null>(null);
   const [viewMode, setViewMode] = useState<'2d' | '3d'>(() => (hasWebGLSupport() ? '3d' : '2d'));
@@ -763,11 +718,7 @@ export default function Topology() {
   }, [pollIntervalSec]);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -777,31 +728,92 @@ export default function Topology() {
   const sourceLabel = live ? `LIVE · SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : 'NEVER'}` : 'DEMO FIXTURE';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <ScreenHeader
         overline="Operate / Topology"
         title="Topology"
         subtitle="Every reported neighbour fact across every plane — sites collapsed to cards, expanded on click, provenance on every edge."
         actions={
-          <div style={{ display: 'flex', gap: 6, background: 'var(--nd-bg-raised)', padding: 3, borderRadius: 4, border: '1px solid var(--nd-border-subtle)' }}>
+          <div className="nt-chip-wrap nt-chip-wrap--tight">
             <Button
               size="sm"
-              variant={viewMode === '3d' ? 'primary' : 'ghost'}
-              onClick={() => setViewMode('3d')}
+              variant="ghost"
+              onClick={() => {
+                void navigator.clipboard.writeText(window.location.href).then(
+                  () => toast('View link copied', { tone: 'success' }),
+                  () => toast('Could not copy link', { tone: 'danger' }),
+                );
+              }}
             >
-              3D Graph
+              Copy view link
             </Button>
-            <Button
-              size="sm"
-              variant={viewMode === '2d' ? 'primary' : 'ghost'}
-              onClick={() => setViewMode('2d')}
+            {graph.nodes.length > 0 || graph.edges.length > 0 ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  const nNodes = exportTableCsv(
+                    'topology-nodes.csv',
+                    ['id', 'name', 'type', 'siteId', 'serial', 'ghost', 'planes'],
+                    graph.nodes.map((n) => [
+                      n.id,
+                      n.name,
+                      n.type ?? '',
+                      n.siteId ?? '',
+                      n.serial ?? '',
+                      n.ghost ? 'yes' : 'no',
+                      (n.planes ?? []).join('|'),
+                    ]),
+                  );
+                  const nEdges = exportTableCsv(
+                    'topology-edges.csv',
+                    ['from', 'to', 'crossSite', 'stale'],
+                    graph.edges.map((e) => [
+                      e.from,
+                      e.to,
+                      e.crossSite ? 'yes' : 'no',
+                      e.stale ? 'yes' : 'no',
+                    ]),
+                  );
+                  toast(`Exported ${nNodes} nodes, ${nEdges} edges`, {
+                    description: 'topology-nodes.csv and topology-edges.csv — reported facts only.',
+                  });
+                }}
+              >
+                Export CSV
+              </Button>
+            ) : null}
+            <div
+              style={{
+                display: 'flex',
+                gap: 6,
+                background: 'var(--nd-bg-raised)',
+                padding: 3,
+                borderRadius: 4,
+                border: '1px solid var(--nd-border-subtle)',
+              }}
             >
-              2D Cards
-            </Button>
+              <Button
+                size="sm"
+                variant={viewMode === '3d' ? 'primary' : 'ghost'}
+                onClick={() => setViewMode('3d')}
+              >
+                3D Graph
+              </Button>
+              <Button
+                size="sm"
+                variant={viewMode === '2d' ? 'primary' : 'ghost'}
+                onClick={() => setViewMode('2d')}
+              >
+                2D Cards
+              </Button>
+            </div>
           </div>
         }
       />
       <StatRow stats={topologyStats(graph, data.dataSource)} />
+      <VisualReferencePanel target={{ kind: 'estate', id: 'topology' }} />
+      <ConfigRecommendationsPanel title="Topology-related recommendations" limit={6} />
       {graph.nodes.length === 0 ? (
         <EmptyState
           title="Nothing to draw yet"
@@ -811,7 +823,7 @@ export default function Topology() {
         <>
           {graph.omissions.length > 0 ? (
             <Alert tone="warning" title="Some reported wiring is not drawn">
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.5 }}>
+              <ul className="nt-lh-15" style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
                 {graph.omissions.map((reason) => (
                   <li key={reason}>{reason}</li>
                 ))}
@@ -852,15 +864,10 @@ export default function Topology() {
             />
           )}
           <div
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 10.5,
-              color: 'var(--nd-text-muted)',
-              lineHeight: 1.6,
+            className="nt-hint-muted" style={{ lineHeight: 1.6,
               display: 'flex',
               flexDirection: 'column',
-              gap: 4,
-            }}
+              gap: 4 }}
           >
             {notes.map((note) => (
               <span key={note}>{note}</span>

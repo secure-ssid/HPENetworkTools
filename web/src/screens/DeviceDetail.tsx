@@ -67,6 +67,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
+  PageSkeleton,
   Alert,
   Badge,
   Button,
@@ -77,9 +78,7 @@ import {
   FormField,
   Heading,
   SectionHeader,
-  Select,
-  Spinner,
-  Stat,
+  Select, Stat,
   Table,
   useToast,
 } from '../nightdesk';
@@ -102,6 +101,7 @@ import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ConfigActionPanel } from '../components/ConfigActionPanel';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { DeviceTypeBadge } from '../components/DeviceTypeBadge';
+import { exportTableCsv } from '../lib/csv';
 import { ApiErrorState } from './ApiErrorState';
 import { RecordedSessions } from './deviceDetail/RecordedSessions';
 import {
@@ -372,11 +372,7 @@ export default function DeviceDetail() {
   }, [rebootOpen]);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="detail" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -456,7 +452,7 @@ export default function DeviceDetail() {
       title={`Reboot ${name}`}
       description="A reboot drops every client on this device. It is a brokered write: ticket-stamped, audit-logged, and only ever claimed when the plane accepts it."
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="nt-drawer-stack">
         <div style={{ fontSize: 13, color: 'var(--nd-text-secondary)', lineHeight: 1.6 }}>
           Central-managed devices reboot through the troubleshooting API (
           <Code>POST …/reboot</Code>, accepted on HTTP 202). Local switches get an honest
@@ -473,7 +469,7 @@ export default function DeviceDetail() {
             aria-label="Authorising ticket"
           />
         </FormField>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div className="nt-row nt-gap-10">
           <Button
             variant="primary"
             size="sm"
@@ -505,7 +501,7 @@ export default function DeviceDetail() {
           : 'In no cloud plane — this row comes from the local collector only'
       }
     >
-      <span style={{ fontSize: 13 }}>
+      <span className="nt-body-sm">
         {doubleClaimed
           ? `Claimed by ${
               claimants.length > 1
@@ -523,7 +519,7 @@ export default function DeviceDetail() {
     if (!device) {
       // Answered 404: the device is not in any linked plane's cache.
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div className="nt-stack">
           <div>
             <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
               ← Inventory
@@ -634,7 +630,7 @@ export default function DeviceDetail() {
     ];
 
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div className="nt-stack">
         <div
           style={{
             display: 'flex',
@@ -655,19 +651,15 @@ export default function DeviceDetail() {
                 {device.state}
               </Badge>
               <DeviceTypeBadge type={device.type} model={device.model} name={device.name} showFamily showRole />
-              {showPlatformTags ? <Badge tone={device.planeTone}>{device.plane}</Badge> : null}
+              {showPlatformTags ? <Badge plane>{device.plane}</Badge> : null}
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                }}
+                className="nt-hint-muted"
               >
                 {liveIdentity}
               </span>
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="nt-row nt-gap-8">
             <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
               ← Inventory
             </Button>
@@ -691,7 +683,7 @@ export default function DeviceDetail() {
                 Open in {device.plane}
               </Button>
             ) : null}
-            <Button variant="ghost" size="sm" style={{ color: 'var(--nd-danger)' }} onClick={() => setRebootOpen(true)}>
+            <Button variant="ghost" size="sm" className="nt-btn-danger-ghost" onClick={() => setRebootOpen(true)}>
               Reboot
             </Button>
           </div>
@@ -860,7 +852,7 @@ export default function DeviceDetail() {
 
           {/* ---------------- identity rail ---------------- */}
           <div className="nt-device-layout__rail">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="nt-stack nt-gap-2">
               {/* An 'unverified' row is only actionable next to the age of the
                   cache it came from, so the envelope's stamp is rendered. */}
               <SectionHeader
@@ -872,39 +864,9 @@ export default function DeviceDetail() {
                 }
               />
               {liveFacts.map((f) => (
-                <div
-                  key={f.k}
-                  style={{
-                    display: 'flex',
-                    gap: 12,
-                    padding: '8px 0',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      letterSpacing: '.1em',
-                      textTransform: 'uppercase',
-                      color: 'var(--nd-text-muted)',
-                      width: 92,
-                      flex: '0 0 92px',
-                      paddingTop: 2,
-                    }}
-                  >
-                    {f.k}
-                  </span>
-                  <span
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 11.5,
-                      color: f.tone ?? 'var(--nd-text-secondary)',
-                      overflowWrap: 'anywhere',
-                    }}
-                  >
+                <div key={f.k} className="nt-fact-row">
+                  <span className="nt-fact-row__k">{f.k}</span>
+                  <span className="nt-fact-row__v" style={{ color: f.tone ?? undefined }}>
                     {f.v}
                   </span>
                 </div>
@@ -939,7 +901,6 @@ export default function DeviceDetail() {
   const headerState = device?.state ?? profile.state;
   const headerStateTone = device?.stateTone ?? profile.stateTone;
   const headerPlane = device?.plane ?? profile.plane;
-  const headerPlaneTone = device?.planeTone ?? profile.planeTone;
   const headerModel = device?.model ?? profile.model;
   const headerSite = device?.siteName ?? profile.site;
   const headerIp = device?.ip ?? profile.ip;
@@ -989,7 +950,7 @@ export default function DeviceDetail() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <div
         style={{
           display: 'flex',
@@ -1009,19 +970,15 @@ export default function DeviceDetail() {
             <Badge tone={headerStateTone} dot>
               {headerState}
             </Badge>
-            {showPlatformTags ? <Badge tone={headerPlaneTone}>{headerPlane}</Badge> : null}
+            {showPlatformTags ? <Badge plane>{headerPlane}</Badge> : null}
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {headerModel} · {headerSite} · {headerIp}
             </span>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className="nt-row nt-gap-8">
           <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
             ← Inventory
           </Button>
@@ -1040,7 +997,7 @@ export default function DeviceDetail() {
           <Button variant="secondary" size="sm" onClick={saveConfig}>
             Save config
           </Button>
-          <Button variant="ghost" size="sm" style={{ color: 'var(--nd-danger)' }} onClick={() => setRebootOpen(true)}>
+          <Button variant="ghost" size="sm" className="nt-btn-danger-ghost" onClick={() => setRebootOpen(true)}>
             Reboot
           </Button>
         </div>
@@ -1062,8 +1019,26 @@ export default function DeviceDetail() {
           {/* A Mist AP's live health/RF row leads the telemetry, ahead of the
               authored class list — the same panel the live branch renders. */}
           {data.mistAp ? <MistApPanel row={data.mistAp} /> : null}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div className="nt-stack nt-gap-2">
             <SectionHeader label={profile.listTitle} meta={profile.listMeta} />
+            {profile.ports.length > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const n = exportTableCsv(
+                    `device-ports-${device?.name ?? 'export'}.csv`,
+                    ['port', 'what', 'state'],
+                    profile.ports.map((p) => [p.id, p.what, p.state]),
+                  );
+                  toast(`Exported ${n} port row${n === 1 ? '' : 's'}`, {
+                    description: 'Current ports table on this device.',
+                  });
+                }}
+              >
+                Export ports
+              </Button>
+            ) : null}
             <Table density="compact" className="nt-port-table">
               <Table.Head>
                 <Table.Row>
@@ -1084,12 +1059,7 @@ export default function DeviceDetail() {
                           not an interface) gets no line — never an invented 0. */}
                       {p.counters ? (
                         <div
-                          style={{
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 'var(--nd-text-10)',
-                            color: 'var(--nd-text-muted)',
-                            paddingTop: 2,
-                          }}
+                          className="nt-hint-muted" style={{ paddingTop: 2 }}
                         >
                           {portCountersText(p.counters)}
                         </div>
@@ -1117,7 +1087,7 @@ export default function DeviceDetail() {
             />
           ) : null}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div className="nt-stack nt-gap-2">
             <SectionHeader label="Clients on this device" meta={clients.meta} />
             <ClientTable rows={clients.rows} />
             <div style={{ paddingTop: 10 }}>
@@ -1211,44 +1181,12 @@ export default function DeviceDetail() {
 
         {/* ---------------- identity rail ---------------- */}
         <div className="nt-device-layout__rail">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div className="nt-stack nt-gap-2">
             <SectionHeader label="Identity" />
             {facts.map((f) => (
-              <div
-                key={f.k}
-                style={{
-                  display: 'flex',
-                  gap: 12,
-                  padding: '8px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    letterSpacing: '.1em',
-                    textTransform: 'uppercase',
-                    color: 'var(--nd-text-muted)',
-                    width: 92,
-                    flex: '0 0 92px',
-                    paddingTop: 2,
-                  }}
-                >
-                  {f.k}
-                </span>
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 11.5,
-                    color: 'var(--nd-text-secondary)',
-                    overflowWrap: 'anywhere',
-                  }}
-                >
-                  {f.v}
-                </span>
+              <div key={f.k} className="nt-fact-row">
+                <span className="nt-fact-row__k">{f.k}</span>
+                <span className="nt-fact-row__v">{f.v}</span>
               </div>
             ))}
           </div>

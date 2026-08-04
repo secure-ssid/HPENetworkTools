@@ -170,7 +170,7 @@ export function IdentityProviderSection() {
           </>
         ) : (
           <span
-            style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' }}
+            className="nt-hint-muted"
           >
             {loadError ?? 'reading identity provider…'}
           </span>
@@ -277,12 +277,7 @@ export function IdentityProviderSection() {
           {test.hint ? <div style={{ marginTop: 6 }}>{test.hint}</div> : null}
           {test.endpoints ? (
             <div
-              style={{
-                marginTop: 6,
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 10.5,
-                wordBreak: 'break-all',
-              }}
+              className="nt-hint-muted" style={{ marginTop: 6, wordBreak: "break-all" }}
             >
               <div>authorize: {test.endpoints.authorization}</div>
               <div>token: {test.endpoints.token}</div>

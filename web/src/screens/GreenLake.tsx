@@ -26,14 +26,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
+  PageSkeleton,
   Alert,
   Badge,
   Button,
   Card,
   Input,
-  SectionHeader,
-  Spinner,
-  Table,
+  SectionHeader, Table,
   useToast,
 } from '../nightdesk';
 import { getGreenLakeInventory, runGreenLakeAction } from '../api/client';
@@ -43,7 +42,10 @@ import { countOf, shortDateLocal } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
 import { useLabConfigMode } from '../hooks/useLabConfigMode';
 import { ScreenHeader } from './ScreenHeader';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ApiErrorState } from './ApiErrorState';
+import { exportTableCsv } from '../lib/csv';
 
 /** Human label per section, used by both the headers and the failure notes. */
 const SECTION_LABEL: Record<GreenLakeSectionKey, string> = {
@@ -67,7 +69,7 @@ function SectionFailure({
       : 'This section has not been read yet; run a sync to obtain its current status.';
   return (
     <Alert tone="warning" title={`${SECTION_LABEL[section]} could not be read`}>
-      <span style={{ fontSize: 13 }}>{message}</span>
+      <span className="nt-body-sm">{message}</span>
     </Alert>
   );
 }
@@ -87,7 +89,7 @@ function Field({
   width?: number;
 }) {
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <label className="nt-stack nt-gap-4">
       <span
         style={{
           fontSize: 'var(--nd-text-10)',
@@ -216,18 +218,14 @@ export default function GreenLake() {
     );
   }
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
 
   const has = (s: GreenLakeSectionKey) => !data.unavailable.includes(s);
   const readOnly = !data.canWrite;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <ScreenHeader
         overline="Govern / GreenLake"
         title="GreenLake workspace"
@@ -235,18 +233,81 @@ export default function GreenLake() {
         actions={
           <>
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-10)',
-                color: 'var(--nd-text-muted)',
-                letterSpacing: '.08em',
-              }}
+              className="nt-mono-label"
             >
               {data.source.toUpperCase()}
             </span>
             <Badge tone={readOnly ? 'neutral' : 'accent'}>
               {readOnly ? 'read only — no write scope' : lab ? 'direct writes' : 'reviewed writes'}
             </Badge>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!has('users') || data.users.length === 0}
+              onClick={() => {
+                const n = exportTableCsv(
+                  'greenlake-users.csv',
+                  ['id', 'username', 'firstName', 'lastName', 'status', 'lastLogin'],
+                  data.users.map((u) => [
+                    u.id,
+                    u.username,
+                    u.firstName ?? '',
+                    u.lastName ?? '',
+                    u.status ?? '',
+                    u.lastLogin ?? '',
+                  ]),
+                );
+                toast(`Exported ${n} member${n === 1 ? '' : 's'}`, { tone: 'success' });
+              }}
+            >
+              Export users
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!has('locations') || data.locations.length === 0}
+              onClick={() => {
+                const n = exportTableCsv(
+                  'greenlake-locations.csv',
+                  ['id', 'name', 'type', 'address', 'country', 'deviceCount'],
+                  data.locations.map((l) => [
+                    l.id,
+                    l.name,
+                    l.type ?? '',
+                    l.address ?? '',
+                    l.country ?? '',
+                    l.deviceCount == null ? '' : String(l.deviceCount),
+                  ]),
+                );
+                toast(`Exported ${n} location${n === 1 ? '' : 's'}`, { tone: 'success' });
+              }}
+            >
+              Export locations
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!has('roleAssignments') || data.roleAssignments.length === 0}
+              onClick={() => {
+                const n = exportTableCsv(
+                  'greenlake-role-assignments.csv',
+                  ['id', 'principal', 'principalType', 'principalName', 'role', 'roleGrn', 'scope', 'source'],
+                  data.roleAssignments.map((r) => [
+                    r.id,
+                    r.principal,
+                    r.principalType,
+                    r.principalName ?? '',
+                    r.role,
+                    r.roleGrn,
+                    r.scope.join('; '),
+                    r.source ?? '',
+                  ]),
+                );
+                toast(`Exported ${n} role assignment${n === 1 ? '' : 's'}`, { tone: 'success' });
+              }}
+            >
+              Export roles
+            </Button>
             <Button variant="ghost" size="sm" onClick={() => void load()}>
               Refresh
             </Button>
@@ -254,12 +315,15 @@ export default function GreenLake() {
         }
       />
 
+      <VisualReferencePanel target={{ kind: 'connector', id: 'greenlake', plane: 'GREENLAKE' }} />
+      <ConfigRecommendationsPanel title="GreenLake / licence recommendations" limit={6} />
+
       {data.unavailable.length > 0 ? (
         <Alert
           tone="warning"
           title={`${data.unavailable.length} of 3 GreenLake sections could not be read`}
         >
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             {data.unavailable.map((s) => SECTION_LABEL[s]).join(', ')} returned no data because the
             read failed — the tables below show what was actually readable, not an empty workspace.
           </span>
@@ -268,7 +332,7 @@ export default function GreenLake() {
 
       {readOnly ? (
         <Alert tone="info" title="This workspace credential is read-only">
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             No write scope is declared for the GreenLake credential, so member, location, device,
             subscription and role changes are hidden. Declare a write scope on the GreenLake
             connection in Connected systems to enable them.
@@ -296,7 +360,7 @@ export default function GreenLake() {
             {data.users.map((u) => (
               <Table.Row key={u.id}>
                 <Table.Cell>
-                  <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 12 }}>
+                  <span className="nt-mono-11" style={{ fontSize: 12 }}>
                     {u.username}
                   </span>
                 </Table.Cell>
@@ -307,7 +371,7 @@ export default function GreenLake() {
                   </Badge>
                 </Table.Cell>
                 <Table.Cell numeric>
-                  <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 12 }}>
+                  <span className="nt-mono-11" style={{ fontSize: 12 }}>
                     {shortDateLocal(u.lastLogin)}
                   </span>
                 </Table.Cell>
@@ -333,7 +397,7 @@ export default function GreenLake() {
 
       {readOnly ? null : (
         <Card>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div className="nt-wrap-6" style={{ gap: 12, alignItems: "flex-end" }}>
             <Field
               label="Invite by email"
               value={inviteEmail}
@@ -349,7 +413,7 @@ export default function GreenLake() {
             >
               Send invite
             </Button>
-            <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+            <span className="nt-body-sm nt-hint-muted">
               GreenLake emails the invitation immediately — this is not a draft.
             </span>
           </div>
@@ -378,17 +442,17 @@ export default function GreenLake() {
                   {/* An unresolved principal shows its raw handle and type
                       rather than being dressed up as a named person. */}
                   {a.principalName ?? (
-                    <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 12 }}>
+                    <span className="nt-mono-11" style={{ fontSize: 12 }}>
                       {a.principal}
                     </span>
                   )}
                   {a.principalName ? null : <Badge tone="neutral">{a.principalType}</Badge>}
                 </Table.Cell>
                 <Table.Cell>
-                  <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 12 }}>{a.role}</span>
+                  <span className="nt-mono-11" style={{ fontSize: 12 }}>{a.role}</span>
                 </Table.Cell>
                 <Table.Cell>
-                  <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+                  <span className="nt-body-sm nt-hint-muted">
                     {a.scope.length === 1 && a.scope[0].includes('/workspaces/')
                       ? 'this workspace'
                       : countOf(a.scope.length, 'scope')}
@@ -416,7 +480,7 @@ export default function GreenLake() {
 
       {readOnly ? null : (
         <Card>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div className="nt-wrap-6" style={{ gap: 12, alignItems: "flex-end" }}>
             <Field
               label="Principal"
               value={rolePrincipal}
@@ -445,7 +509,7 @@ export default function GreenLake() {
               Grant role
             </Button>
           </div>
-          <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+          <span className="nt-body-sm nt-hint-muted">
             GreenLake withdrew its role-catalogue endpoint from the public API, so the portal cannot
             offer a role picker — copy the role GRN from the GreenLake console. Grants apply to this
             workspace.
@@ -461,7 +525,7 @@ export default function GreenLake() {
       {has('locations') ? (
         data.locations.length === 0 ? (
           <Alert tone="info" title="This workspace has no locations">
-            <span style={{ fontSize: 13 }}>
+            <span className="nt-body-sm">
               The locations feed was read successfully and returned nothing — the workspace genuinely
               has none defined yet.
             </span>
@@ -481,7 +545,7 @@ export default function GreenLake() {
                 <Table.Row key={l.id}>
                   <Table.Cell>{l.name}</Table.Cell>
                   <Table.Cell>
-                    <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+                    <span className="nt-body-sm nt-hint-muted">
                       {l.address ?? '—'}
                     </span>
                   </Table.Cell>
@@ -509,7 +573,7 @@ export default function GreenLake() {
 
       {readOnly ? null : (
         <Card>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div className="nt-wrap-6" style={{ gap: 12, alignItems: "flex-end" }}>
             <Field label="Name" value={locName} onChange={setLocName} placeholder="Campus-01" />
             <Field
               label="Street"
@@ -585,7 +649,7 @@ export default function GreenLake() {
           </div>
           {/* Both constraints cost a failed round-trip to discover, so the form
               states them rather than letting GreenLake reject the submission. */}
-          <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--nd-text-muted)' }}>
+          <p className="nt-hint-muted" style={{ margin: "8px 0 0", fontSize: 12 }}>
             Country must be the full name (“United States”, not “US”). The primary contact must be
             an existing workspace member’s username — GreenLake rejects the location otherwise.
           </p>
@@ -597,7 +661,7 @@ export default function GreenLake() {
         <>
           <SectionHeader label="Add to the workspace" meta="DEVICES & SUBSCRIPTIONS" />
           <Card>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div className="nt-wrap-6" style={{ gap: 12, alignItems: "flex-end" }}>
               <Field
                 label="Device serial"
                 value={devSerial}
@@ -628,13 +692,13 @@ export default function GreenLake() {
                 Add device
               </Button>
             </div>
-            <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+            <span className="nt-body-sm nt-hint-muted">
               GreenLake does not allow devices to be removed through its API, so an added device
               cannot be deleted from here.
             </span>
           </Card>
           <Card>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div className="nt-wrap-6" style={{ gap: 12, alignItems: "flex-end" }}>
               <Field
                 label="Subscription key"
                 value={subKey}
@@ -650,7 +714,7 @@ export default function GreenLake() {
               >
                 Submit key
               </Button>
-              <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+              <span className="nt-body-sm nt-hint-muted">
                 GreenLake validates subscription keys asynchronously — a submitted key is not an
                 added subscription until it appears on Licences.
               </span>

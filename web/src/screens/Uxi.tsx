@@ -14,14 +14,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Badge, Button, EmptyState, Spinner, Table } from '../nightdesk';
+import { Alert, Badge, Button, EmptyState, Spinner, Table, useToast } from '../nightdesk';
 import { getUxi } from '../api/client';
 import type { UxiData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
-import type { StatDef, Tone, UxiSensorRow } from '@hpe/shared';
+import { countOf, type StatDef, type Tone, type UxiSensorRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
+import { exportTableCsv } from '../lib/csv';
 
 function statusTone(sensor: UxiSensorRow): Tone {
   if (sensor.isOnline === false) return 'danger';
@@ -85,9 +86,32 @@ function UxiView({
   navigate: ReturnType<typeof useNavigate>;
   density: 'comfortable' | 'compact';
 }) {
+  const { toast } = useToast();
   const sensors = data.sensors;
   const missingSources = data.missingSources ?? [];
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  const exportSensorsCsv = () => {
+    const n = exportTableCsv(
+      'uxi-sensors',
+      ['id', 'name', 'serial', 'model', 'site', 'isOnline', 'isTesting', 'issueCount', 'wifiMac', 'ethernetMac'],
+      sensors.map((s) => [
+        s.id,
+        s.name,
+        s.serial ?? '',
+        s.model ?? '',
+        s.site ?? '',
+        s.isOnline === null ? '' : s.isOnline ? 'true' : 'false',
+        s.isTesting === null ? '' : s.isTesting ? 'true' : 'false',
+        s.issueCount,
+        s.wifiMac ?? '',
+        s.ethernetMac ?? '',
+      ]),
+    );
+    toast(n === 0 ? 'No sensors to export' : `Exported ${countOf(n, 'sensor')} (current view)`, {
+      tone: n === 0 ? 'warning' : 'success',
+    });
+  };
 
   const stats = useMemo<StatDef[]>(() => {
     const total = sensors.length;
@@ -114,7 +138,14 @@ function UxiView({
         overline="Operate / UXI"
         title="User Experience Insight"
         subtitle="Sensor fleet health and synthetic test issues from HPE Aruba UXI."
-        actions={data.dataSource === 'live' ? <Badge tone="info">LIVE</Badge> : null}
+        actions={
+          <>
+            {data.dataSource === 'live' ? <Badge tone="info">LIVE</Badge> : null}
+            <Button variant="secondary" size="sm" onClick={exportSensorsCsv} disabled={sensors.length === 0}>
+              Export CSV
+            </Button>
+          </>
+        }
       />
 
       <StatRow stats={stats} />
@@ -192,7 +223,7 @@ function UxiSensorRows({
         </Table.Cell>
         <Table.Cell>{sensor.name}</Table.Cell>
         <Table.Cell>
-          <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)', color: 'var(--nd-text-muted)' }}>
+          <span className="nt-hint-muted">
             {sensor.serial ?? '—'}
           </span>
         </Table.Cell>
@@ -202,7 +233,7 @@ function UxiSensorRows({
           <Badge tone={issuesTone(sensor)}>{sensor.issueCount}</Badge>
         </Table.Cell>
         <Table.Cell>
-          <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)', color: 'var(--nd-text-muted)' }}>
+          <span className="nt-hint-muted">
             {mac ?? '—'}
           </span>
         </Table.Cell>
@@ -221,7 +252,7 @@ function UxiSensorRows({
                     <Badge tone={SEVERITY_TONE[issue.severity] ?? 'neutral'} dot>
                       {issue.severity}
                     </Badge>
-                    <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)' }}>{issue.code}</span>
+                    <span className="nt-mono-11">{issue.code}</span>
                     <span style={{ color: 'var(--nd-text-muted)' }}>{issue.status}</span>
                     {issue.context ? <span style={{ color: 'var(--nd-text-secondary)' }}>{issue.context}</span> : null}
                   </div>

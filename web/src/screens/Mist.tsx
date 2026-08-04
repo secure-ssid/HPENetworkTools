@@ -18,14 +18,18 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Badge, Button, Spinner } from '../nightdesk';
+import {
+  PageSkeleton, Alert, Badge, Button, useToast } from '../nightdesk';
 import { getMist } from '../api/client';
 import type { MistData } from '../api/client';
 import { countOf, hhmmLocal, relativeAge } from '@hpe/shared';
 import type { MistPlaneStatus, MistSleRow, StatDef, Tone } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
+import { exportTableCsv } from '../lib/csv';
 import { SleAcrossSites } from './mist/sle';
 import { EstateRogueAps } from './mist/rogues';
 import { ApHealthSection } from './mist/apHealth';
@@ -40,13 +44,6 @@ const HEALTH_TONE: Record<MistPlaneStatus['health'], Tone> = {
   degraded: 'danger',
   unlinked: 'neutral',
 };
-
-const noteStyle = {
-  fontFamily: 'var(--nd-font-mono)',
-  fontSize: 'var(--nd-text-11)',
-  color: 'var(--nd-text-muted)',
-  lineHeight: 1.6,
-} as const;
 
 /** The header strip's sync phrase. Live is relative to now; the demo world's
  *  fixed stamp is shown as its own clock time and labelled a fixture — a
@@ -75,11 +72,7 @@ export default function Mist() {
   }, []);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -87,6 +80,7 @@ export default function Mist() {
 }
 
 function MistView({ data, navigate }: { data: MistData; navigate: ReturnType<typeof useNavigate> }) {
+  const { toast } = useToast();
   const { plane } = data;
   const sleRows = useMemo(
     () => Object.values(data.sleBySiteId ?? {}).filter((row): row is MistSleRow => row !== undefined),
@@ -138,7 +132,7 @@ function MistView({ data, navigate }: { data: MistData; navigate: ReturnType<typ
   }, [plane, data.sleBySiteId, data.rogues, sleRows, onWire]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+    <div className="nt-stack nt-gap-24">
       <ScreenHeader
         overline="Operate / Mist"
         title="Mist"
@@ -149,11 +143,57 @@ function MistView({ data, navigate }: { data: MistData; navigate: ReturnType<typ
               {plane.linked ? plane.health : 'not linked'}
             </Badge>
             {data.dataSource === 'live' ? <Badge tone="info">LIVE</Badge> : null}
+            {(data.rogues && data.rogues.length > 0) || (data.apStats && data.apStats.length > 0) ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const parts: string[] = [];
+                  if (data.rogues && data.rogues.length > 0) {
+                    const n = exportTableCsv(
+                      'mist-rogues.csv',
+                      ['site', 'bssid', 'ssid', 'channel', 'avgRssi', 'numAps', 'seenOnLan'],
+                      data.rogues.map((r) => [
+                        r.siteName,
+                        r.bssid,
+                        r.ssid ?? '',
+                        r.channel ?? '',
+                        r.avgRssi ?? '',
+                        r.numAps ?? '',
+                        r.seenOnLan === true ? 'yes' : r.seenOnLan === false ? 'no' : '',
+                      ]),
+                    );
+                    parts.push(`${n} rogues`);
+                  }
+                  if (data.apStats && data.apStats.length > 0) {
+                    const n = exportTableCsv(
+                      'mist-ap-health.csv',
+                      ['device', 'site', 'mac', 'serial', 'clients', 'cpuPct', 'extIp'],
+                      data.apStats.map((a) => [
+                        a.deviceName,
+                        a.siteName,
+                        a.mac ?? '',
+                        a.serial ?? '',
+                        a.numClients ?? '',
+                        a.cpuUtilPct ?? '',
+                        a.extIp ?? '',
+                      ]),
+                    );
+                    parts.push(`${n} APs`);
+                  }
+                  toast(`Exported ${parts.join(' · ')}`, {
+                    description: 'Client-side CSV of the current Mist payload.',
+                  });
+                }}
+              >
+                Export CSV
+              </Button>
+            ) : null}
           </>
         }
       />
 
-      <div style={{ ...noteStyle, fontSize: 'var(--nd-text-10)' }}>
+      <div className="nt-service-note" style={{ fontSize: "var(--nd-text-10)" }}>
         {`MIST PLANE · ${syncPhrase(data)}`}
         {plane.deviceCount !== null ? ` · ${countOf(plane.deviceCount, 'device').toUpperCase()} CLAIMED` : ''}
         {plane.note ? ` · ${plane.note}` : ''}
@@ -177,6 +217,9 @@ function MistView({ data, navigate }: { data: MistData; navigate: ReturnType<typ
           label === 'Devices' ? '/devices?plane=mist' : label === 'Clients' ? '/clients?plane=mist' : null
         }
       />
+
+      <VisualReferencePanel target={{ kind: 'connector', id: 'mist', plane: 'MIST' }} />
+      <ConfigRecommendationsPanel title="Mist estate recommendations" limit={6} />
 
       <SleAcrossSites sleBySiteId={data.sleBySiteId} />
       <EstateRogueAps rogues={data.rogues} />

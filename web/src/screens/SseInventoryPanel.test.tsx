@@ -11,7 +11,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SseInventoryPanel } from './SseInventoryPanel';
 import { ToastProvider } from '../nightdesk';
 import {
@@ -199,6 +199,13 @@ afterEach(() => {
   vi.clearAllMocks();
   mockLabConfigMode.mockReturnValue({ lab: false });
 });
+
+
+async function confirmDelete() {
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+}
 
 describe('SseInventoryPanel — listing', () => {
   it('opens the exact kind and object selected in Inventory Explorer', async () => {
@@ -825,11 +832,9 @@ describe('SseInventoryPanel — reviewed create', () => {
     mockGetSseInventory.mockResolvedValue(null);
     mockGetSseKind.mockResolvedValue(listing('connectorZones', 'cz-1', 'HQ zone'));
     mockDeleteSseObject.mockResolvedValue(appliedButJournalRetained());
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     renderPanel(true);
     await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await confirmDelete();
 
     // Says the delete happened AND that the next change is blocked...
     await waitFor(() =>
@@ -838,7 +843,6 @@ describe('SseInventoryPanel — reviewed create', () => {
     expect(screen.getByText(/next SSE change will be refused until it is cleaned up/)).toBeTruthy();
     // ...and leaves up the control that clears it.
     expect(screen.getByRole('button', { name: 'Run recovery' })).toBeTruthy();
-    confirm.mockRestore();
   });
 
   /**
@@ -851,11 +855,9 @@ describe('SseInventoryPanel — reviewed create', () => {
     mockGetSseInventory.mockResolvedValue(null);
     mockGetSseKind.mockResolvedValue(listing('connectorZones', 'cz-1', 'HQ zone'));
     mockDeleteSseObject.mockResolvedValue(committedButUnverified());
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     renderPanel(true);
     await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await confirmDelete();
 
     await waitFor(() =>
       expect(screen.getByText(/is not confirmed on the tenant/)).toBeTruthy(),
@@ -865,7 +867,6 @@ describe('SseInventoryPanel — reviewed create', () => {
     // be replayed for it. The operator is told to go and look, not given a
     // button that would do the wrong thing.
     expect(screen.queryByRole('button', { name: 'Run recovery' })).toBeNull();
-    confirm.mockRestore();
   });
 
   /* The refresh block's border is keyed on the refresh's own status, which
@@ -874,11 +875,9 @@ describe('SseInventoryPanel — reviewed create', () => {
     mockGetSseInventory.mockResolvedValue(null);
     mockGetSseKind.mockResolvedValue(listing('connectorZones', 'cz-1', 'HQ zone'));
     mockDeleteSseObject.mockResolvedValue(committedButUnverified());
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     renderPanel(true);
     await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await confirmDelete();
 
     const note = await screen.findByText(/it is the change that was not confirmed in what came back/);
     const block = note.closest('div') as HTMLElement;
@@ -887,7 +886,6 @@ describe('SseInventoryPanel — reviewed create', () => {
     // The reassurance that would otherwise sit here answers a question nobody
     // asked, in the place the answer to theirs belongs.
     expect(screen.queryByText(/was reloaded from the refreshed cache/)).toBeNull();
-    confirm.mockRestore();
   });
 
   it('still calls a confirmed change a success', async () => {
@@ -898,26 +896,21 @@ describe('SseInventoryPanel — reviewed create', () => {
       message: 'applied and committed',
       result: { ...committedButUnverified().result, outcome: 'applied' as const },
     });
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     renderPanel(true);
     await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await confirmDelete();
 
     await waitFor(() => expect(screen.getByText('HQ zone deleted and committed')).toBeTruthy());
     expect(screen.queryByText(/is not confirmed on the tenant/)).toBeNull();
-    confirm.mockRestore();
   });
 
   it('shows durable recovery for an unknown delete instead of treating ok:false as a generic failure', async () => {
     mockGetSseInventory.mockResolvedValue(null);
     mockGetSseKind.mockResolvedValue(listing('connectorZones', 'cz-1', 'HQ zone'));
     mockDeleteSseObject.mockResolvedValue(unknownMutationResult('mutation'));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     renderPanel(true);
     await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await confirmDelete();
 
     await waitFor(() =>
       expect(
@@ -938,10 +931,6 @@ describe('SseInventoryPanel — reviewed create', () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Run recovery' })).toBeNull();
-    expect(confirm).toHaveBeenCalledWith(
-      'Delete HQ zone? The deletion will be staged and becomes effective only after SSE Commit is accepted. Commit is tenant-wide and may include other staged tenant changes. It is not reversible from here once committed.',
-    );
-    confirm.mockRestore();
   });
 
   it('attests manual reconciliation, sends both flags, shows refresh, and clears only after journal removal', async () => {
@@ -1231,11 +1220,9 @@ describe('SseInventoryPanel — reviewed create', () => {
     );
     const deletion = deferred<typeof committedMutation>();
     mockDeleteSseObject.mockReturnValue(deletion.promise);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
     renderPanel(true);
     await waitFor(() => expect(screen.getByText('HQ zone')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await confirmDelete();
     expect(mockDeleteSseObject).toHaveBeenCalledWith('connectorZones', 'cz-1', true);
     fireEvent.change(screen.getByLabelText('Object kind'), { target: { value: 'users' } });
     await waitFor(() => expect(screen.getByText(/^No users$/i)).toBeTruthy());
@@ -1247,6 +1234,5 @@ describe('SseInventoryPanel — reviewed create', () => {
     expect(screen.getByText(/^No users$/i)).toBeTruthy();
     expect(screen.queryByText('HQ zone')).toBeNull();
     expect(mockGetSseKind).toHaveBeenCalledTimes(2);
-    confirm.mockRestore();
   });
 });

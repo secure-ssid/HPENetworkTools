@@ -194,7 +194,7 @@ export function ApHealthSection({ apStats }: { apStats: MistApStatsRow[] | undef
         : `${countOf(apStats.length, 'AP').toUpperCase()} · MIST AP-STATS`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="AP health" meta={meta} />
       {apStats === undefined ? (
         <div style={noteStyle}>

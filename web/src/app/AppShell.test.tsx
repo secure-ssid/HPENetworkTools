@@ -102,7 +102,7 @@ describe('AppShellLayout site-route breadcrumbs', () => {
     renderShellAtSite('/sites/foo%25');
 
     // The shell itself rendered (wordmark + breadcrumb nav + routed outlet).
-    expect(screen.getByText('Network Tools')).toBeTruthy();
+    expect(screen.getByText('NightDesk')).toBeTruthy();
     expect(screen.getByText('site content stub')).toBeTruthy();
 
     const crumbs = screen.getByRole('navigation', { name: 'Breadcrumbs' });

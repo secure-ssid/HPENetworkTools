@@ -72,61 +72,15 @@ function AssistantText({ content }: { content: string }) {
       </Text>,
     );
   }
-  return <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>{rows}</div>;
+  return <div className="nt-stack nt-gap-2">{rows}</div>;
 }
 
 function TranscriptRow({ entry }: { entry: ChatTranscriptEntry }) {
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '6px 0',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-      }}
-    >
-      <span
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 10.5,
-          color: 'var(--nd-accent-text)',
-          width: 110,
-          flex: '0 0 110px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {entry.tool}
-      </span>
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 10,
-          color: 'var(--nd-text-muted)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {entry.args}
-      </span>
-      <span
-        title={entry.resultPreview}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 10,
-          color: 'var(--nd-text-secondary)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
+    <div className="nt-chat-tool-row">
+      <span className="nt-chat-tool-row__tool">{entry.tool}</span>
+      <span className="nt-chat-tool-row__args">{entry.args}</span>
+      <span title={entry.resultPreview} className="nt-chat-tool-row__result">
         {entry.resultPreview}
       </span>
       <Badge tone={entry.ok ? 'success' : 'danger'}>{entry.ok ? 'ok' : 'fail'}</Badge>
@@ -225,14 +179,8 @@ export default function ChatPanel({
         {/* panel header: live provider/MCP status plus saved lab access. */}
         {status ? (
           <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              flexWrap: 'wrap',
-              paddingBottom: 12,
-              borderBottom: '1px solid var(--nd-border-subtle)',
-            }}
+            className="nt-filter-bar" style={{ gap: 8, paddingBottom: 12,
+              borderBottom: '1px solid var(--nd-border-subtle)' }}
           >
             {status.configured.mcp ? (
               <Badge tone={status.mcpReachable ? 'success' : 'warning'} dot>
@@ -284,7 +232,7 @@ export default function ChatPanel({
               </div>
             </EmptyState>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div className="nt-stack nt-gap-14">
               {messages.map((m, i) =>
                 m.role === 'user' ? (
                   <div key={i} style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -304,12 +252,7 @@ export default function ChatPanel({
                       {m.content}
                       {m.failed ? (
                         <div
-                          style={{
-                            marginTop: 4,
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 'var(--nd-text-10)',
-                            color: 'var(--nd-danger)',
-                          }}
+                          className="nt-hint-muted" style={{ marginTop: 4, color: "var(--nd-danger)" }}
                         >
                           NOT ANSWERED — SEND AGAIN TO ASK IT
                         </div>
@@ -317,21 +260,17 @@ export default function ChatPanel({
                     </div>
                   </div>
                 ) : (
-                  <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div key={i} className="nt-stack nt-gap-6">
                     {m.transcript?.map((t, j) => <TranscriptRow key={j} entry={t} />)}
                     <AssistantText content={m.content} />
                   </div>
                 ),
               )}
               {pending ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div className="nt-row nt-gap-8">
                   <Spinner size="sm" />
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10.5,
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     working…
                   </span>

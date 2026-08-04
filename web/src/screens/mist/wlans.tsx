@@ -56,7 +56,7 @@ export function WlanSummary({ wlans }: { wlans: SsidObject[] | null | undefined 
     wlans == null ? 'NOT REPORTED' : wlans.length === 0 ? 'NONE' : `${countOf(wlans.length, 'WLAN').toUpperCase()} · MIST`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="WLANs" meta={meta} />
       {wlans == null ? (
         <div style={noteStyle}>

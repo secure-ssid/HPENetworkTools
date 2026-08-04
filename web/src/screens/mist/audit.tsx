@@ -64,13 +64,8 @@ export function stampLabel(iso: string | null): string {
 function AuditRow({ entry }: { entry: MistAuditLogRow }) {
   return (
     <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 3,
-        padding: '9px 0',
-        borderBottom: '1px solid var(--nd-border-subtle)',
-      }}
+      className="nt-stack" style={{ gap: 3, padding: '9px 0',
+        borderBottom: '1px solid var(--nd-border-subtle)' }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
         <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', width: 96, flex: '0 0 96px' }}>
@@ -106,7 +101,7 @@ function AuditRow({ entry }: { entry: MistAuditLogRow }) {
 export function AuditLogSection({ audit, error }: { audit: MistAuditLogLive | null | undefined; error: string | null }) {
   const entries = audit?.entries ?? [];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="Org audit log" meta={audit?.entries ? `${audit.entries.length} SHOWN · MIST` : undefined} />
       {error !== null ? (
         <div style={noteStyle}>The audit log could not be read — {error}</div>
@@ -151,7 +146,7 @@ function RegistrationStatusBody({ status }: { status: MistWebhookRegistrationSta
       {status.error ? (
         <div style={noteStyle}>{status.error}</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div className="nt-stack nt-gap-6">
           {status.subscriptions.map((s) => (
             <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
               <Badge tone={s.enabled === true ? 'success' : 'neutral'} dot>
@@ -212,8 +207,8 @@ export function MistOpsSections() {
   }, []);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-18">
+      <div className="nt-stack nt-gap-2">
         <SectionHeader
           label="Webhook receiver"
           meta={status?.demo === true ? 'DEMO FIXTURE' : status ? (status.subscriptions.length > 0 ? 'REGISTERED' : 'NOT REGISTERED') : undefined}

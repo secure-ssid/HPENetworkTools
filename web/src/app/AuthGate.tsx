@@ -22,6 +22,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
 import type { ReactNode } from 'react';
 import { getAuthState, startLogin, type AuthState } from '../api/auth';
 import { onAuthLapse } from '../api/core';
+import { Button } from '../nightdesk';
 
 /**
  * The resolved sign-in state, published so the shell can name the signed-in
@@ -35,42 +36,6 @@ export function useAuth(): AuthState | null {
 }
 
 type Phase = { kind: 'checking' } | { kind: 'unreachable' } | { kind: 'ready'; state: AuthState };
-
-/** Dependency-free styling, matching the ErrorBoundary: this must render even if the shell cannot. */
-const panel: React.CSSProperties = {
-  minHeight: '100vh',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  background: 'var(--nd-bg-canvas)',
-  padding: 32,
-};
-
-const card: React.CSSProperties = {
-  maxWidth: 460,
-  width: '100%',
-  border: '1px solid var(--nd-border-default)',
-  background: 'var(--nd-bg-raised)',
-  padding: '28px 32px',
-};
-
-const eyebrow: React.CSSProperties = {
-  fontFamily: 'var(--nd-font-mono)',
-  fontSize: 'var(--nd-text-10)',
-  letterSpacing: '.12em',
-  textTransform: 'uppercase',
-  color: 'var(--nd-text-secondary)',
-};
-
-const button: React.CSSProperties = {
-  marginTop: 20,
-  padding: '9px 16px',
-  border: '1px solid var(--nd-border-strong)',
-  background: 'var(--nd-accent)',
-  color: 'var(--nd-bg-canvas)',
-  fontSize: 'var(--nd-text-13)',
-  cursor: 'pointer',
-};
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'checking' });
@@ -137,21 +102,25 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, []);
 
   if (phase.kind === 'checking') {
-    return <div style={panel} aria-busy="true" />;
+    return <div className="nt-auth-panel" aria-busy="true" />;
   }
 
   if (phase.kind === 'unreachable') {
     return (
-      <div style={panel}>
-        <div style={card}>
-          <div style={{ ...eyebrow, color: 'var(--nd-danger)' }}>Server unreachable</div>
-          <p style={{ marginTop: 10, fontSize: 'var(--nd-text-14)', color: 'var(--nd-text-primary)', lineHeight: 1.5 }}>
+      <div className="nt-auth-panel">
+        <div className="nt-auth-card">
+          <div className="nt-auth-card__eyebrow" style={{ color: 'var(--nd-danger)' }}>
+            Server unreachable
+          </div>
+          <p className="nt-auth-card__body">
             The portal could not ask the server whether you are signed in, so it cannot show you
             anything yet. This usually means the server is not running.
           </p>
-          <button type="button" style={button} onClick={check}>
-            Try again
-          </button>
+          <div style={{ marginTop: 20 }}>
+            <Button variant="primary" onClick={check}>
+              Try again
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -161,13 +130,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   if (state.configured && !state.authenticated) {
     return (
-      <div style={panel}>
-        <div style={card}>
-          <div style={eyebrow}>HPE Network Tools</div>
-          <h1 style={{ margin: '10px 0 0', fontSize: 'var(--nd-text-18)', color: 'var(--nd-text-primary)' }}>
+      <div className="nt-auth-panel">
+        <div className="nt-auth-card">
+          <div className="nt-auth-card__eyebrow">NightDesk</div>
+          <h1 className="nt-auth-card__title">
             {lapsed ? 'Your session has ended' : 'Sign in to continue'}
           </h1>
-          <p style={{ marginTop: 10, fontSize: 'var(--nd-text-13)', color: 'var(--nd-text-secondary)', lineHeight: 1.5 }}>
+          <p className="nt-auth-card__body">
             {lapsed
               ? 'The portal was signed out while you were working — usually because the server restarted, ' +
                 'which clears every session. Nothing you had open was submitted by this. Sign in again to ' +
@@ -176,13 +145,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
                 'recorded against the account you sign in with.'}
           </p>
           {state.groupGate ? (
-            <p style={{ marginTop: 10, fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-secondary)' }}>
-              Access is restricted to: {state.groupGate.join(', ')}
-            </p>
+            <p className="nt-auth-card__body">Access is restricted to: {state.groupGate.join(', ')}</p>
           ) : null}
-          <button type="button" style={button} onClick={() => startLogin()}>
-            Sign in
-          </button>
+          <div style={{ marginTop: 20 }}>
+            <Button variant="primary" onClick={() => startLogin()}>
+              Sign in
+            </Button>
+          </div>
         </div>
       </div>
     );

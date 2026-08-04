@@ -30,15 +30,14 @@
 
 import { useEffect, useState } from 'react';
 import {
+  PageSkeleton,
   Alert,
   Badge,
   Button,
   DataTable,
   Divider,
   EmptyState,
-  SectionHeader,
-  Spinner,
-  Switch,
+  SectionHeader, Switch,
   TableViewOptions,
   useToast,
 } from '../nightdesk';
@@ -161,11 +160,7 @@ export default function Licenses() {
   }, []);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -227,14 +222,10 @@ export default function Licenses() {
       title: 'Subscription',
       hideable: false,
       render: (l) => (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-stack nt-gap-2">
           <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{l.name}</span>
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-            }}
+            className="nt-hint-muted"
           >
             {l.sku}
           </span>
@@ -244,7 +235,7 @@ export default function Licenses() {
     {
       key: 'plane',
       title: 'Plane',
-      render: (l) => (showPlatformTags ? <Badge tone={l.planeTone}>{l.plane}</Badge> : null),
+      render: (l) => (showPlatformTags ? <Badge plane>{l.plane}</Badge> : null),
     },
     { key: 'term', title: 'Term', render: (l) => l.term },
     { key: 'qty', title: 'Qty', numeric: true, render: (l) => l.qty },
@@ -261,7 +252,7 @@ export default function Licenses() {
         // there is no figure; the mono label still says '—'.
         const pctNum = pctValue(l.pct);
         return (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="nt-row nt-gap-8">
             <div
               style={{
                 width: 80,
@@ -282,11 +273,7 @@ export default function Licenses() {
               />
             </div>
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {l.pct}
             </span>
@@ -311,7 +298,7 @@ export default function Licenses() {
   );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <ScreenHeader
         overline="Inventory / Licences"
         title="Licences & subscriptions"
@@ -319,12 +306,7 @@ export default function Licenses() {
         actions={
           <>
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-10)',
-                color: 'var(--nd-text-muted)',
-                letterSpacing: '.08em',
-              }}
+              className="nt-mono-label"
             >
               {stamp}
             </span>
@@ -353,14 +335,14 @@ export default function Licenses() {
       <ConfigRecommendationsPanel title="Licence / inventory recommendations" limit={8} />
 
       {hiddenIdleCount > 0 ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div className="nt-filter-bar">
           <Switch
             checked={showIdleCapacity}
             onCheckedChange={setShowIdleCapacity}
             label={`Show ${hiddenIdleCount} idle unassigned ${hiddenIdleCount === 1 ? 'subscription' : 'subscriptions'}`}
           />
           {!showIdleCapacity ? (
-            <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+            <span className="nt-body-sm" style={{ color: "var(--nd-text-muted)" }}>
               Hidden by default — zero-assignment idle seats are not operational inventory.
             </span>
           ) : null}
@@ -369,7 +351,7 @@ export default function Licenses() {
 
       {isDemo ? (
         <Alert tone="warning" title="Two reconciliation gaps worth money">
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             Six Foundation AP subscriptions are still assigned to devices decommissioned in May —
             reclaim them before the September renewal. Fourteen Warehouse switches carry no GreenLake
             record at all, which is fine for local management but means no TAC entitlement.
@@ -379,7 +361,7 @@ export default function Licenses() {
         <>
           {unchecked.length > 0 ? (
             <Alert tone="info" title="The estate comparison could not be run this cycle">
-              <span style={{ fontSize: 13 }}>
+              <span className="nt-body-sm">
                 {unchecked.map((u) => `${u.what} — ${u.detail}`).join('. ')}.
               </span>
             </Alert>
@@ -389,7 +371,7 @@ export default function Licenses() {
               tone="warning"
               title={`${countOf(gaps.length, 'reconciliation gap')} worth money`}
             >
-              <span style={{ fontSize: 13 }}>
+              <span className="nt-body-sm">
                 {gaps.map((g) => `${g.what} — ${g.detail}`).join('. ')}.
               </span>
             </Alert>
@@ -398,7 +380,7 @@ export default function Licenses() {
                with an `unchecked` row above, "not reported by this plane"
                would be a second, false explanation for the same silence. */
             <Alert tone="info" title="Reconciliation gaps are not reported by this plane">
-              <span style={{ fontSize: 13 }}>
+              <span className="nt-body-sm">
                 The subscriptions feed carries seat totals but no device assignments, so orphaned
                 subscriptions and unlicensed devices cannot be computed from live data.
               </span>
@@ -435,7 +417,7 @@ export default function Licenses() {
           invent a state), null (Mist reported nothing this cycle), an empty
           list (Mist answered; no site carries a usage row), and the rows. */}
       {data.mistLicenseUsages !== undefined ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-stack nt-gap-2">
           <SectionHeader
             label="Mist per-site subscription usage"
             meta={
@@ -469,23 +451,12 @@ export default function Licenses() {
                     {u.siteName}
                   </div>
                   <div
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {usageDevicePart(u)}
                   </div>
                 </div>
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-secondary)',
-                    textAlign: 'right',
-                  }}
-                >
+                <span className="nt-mono-11" style={{ color: 'var(--nd-text-secondary)', textAlign: 'right' }}>
                   {usageServicePart(u)}
                 </span>
               </div>
@@ -505,15 +476,8 @@ export default function Licenses() {
 
       <Divider variant="flair" />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-          gap: 34,
-          alignItems: 'start',
-        }}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-form-grid" style={{ gap: 34, alignItems: 'start' }}>
+        <div className="nt-stack nt-gap-2">
           {/* 'NEXT 180 DAYS' is the authored window and true of the fixture
               list. The live route now enforces the same window server-side
               (screens.ts RENEWAL_WINDOW_DAYS), so live mode may name it too —
@@ -528,37 +492,10 @@ export default function Licenses() {
           {/* Live expiry dates are month-precision, so two subscriptions
               expiring in the same month collide on `date` alone. */}
           {data.renewals.map((r, i) => (
-            <div
-              key={`${r.date}|${r.what}|${i}`}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 12,
-                padding: '10px 0',
-                borderBottom: '1px solid var(--nd-border-subtle)',
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-secondary)',
-                  width: 78,
-                  flex: '0 0 78px',
-                }}
-              >
-                {r.date}
-              </span>
-              <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-primary)' }}>
-                {r.what}
-              </span>
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: r.color,
-                }}
-              >
+            <div key={`${r.date}|${r.what}|${i}`} className="nt-renewal-row">
+              <span className="nt-renewal-row__date">{r.date}</span>
+              <span className="nt-renewal-row__what">{r.what}</span>
+              <span className="nt-renewal-row__days" style={{ color: r.color }}>
                 {r.days}
               </span>
             </div>
@@ -571,7 +508,7 @@ export default function Licenses() {
           ) : null}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-stack nt-gap-2">
           <SectionHeader
             label="Orphans & gaps"
             meta={
@@ -608,11 +545,7 @@ export default function Licenses() {
                   {o.what}
                 </div>
                 <div
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-hint-muted"
                 >
                   {o.detail}
                 </div>

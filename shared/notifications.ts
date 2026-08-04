@@ -308,3 +308,23 @@ export interface NotificationServiceStatus {
   };
   endpoints: { id: string; delivery: NotificationDelivery | null }[];
 }
+
+/**
+ * One live delivery attempt (demo or real). Bodies never appear here — only
+ * outcome metadata for operator debug. Served by GET /api/notifications/deliveries.
+ */
+export interface NotificationDeliveryAttempt {
+  id: string;
+  at: string; // ISO
+  endpointId: string;
+  endpointName: string;
+  eventKind: NotificationEvent['kind'];
+  eventId: string;
+  fingerprint: string;
+  title: string;
+  result: NotificationDelivery['lastResult'];
+  httpCode?: number;
+  error?: string;
+  /** True when this was the operator Test button path. */
+  test?: boolean;
+}

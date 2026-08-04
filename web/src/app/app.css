@@ -15,38 +15,50 @@
 
 .nt-screen-header {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: var(--nd-space-4);
   flex-wrap: wrap;
   min-width: 0;
-  padding-bottom: 10px;
+  padding: 4px 0 16px;
   border-bottom: 1px solid var(--nd-border-subtle);
+  background:
+    linear-gradient(90deg, rgba(224, 140, 98, 0.08), transparent 42%),
+    transparent;
+  border-radius: var(--nd-radius-md) var(--nd-radius-md) 0 0;
 }
 
 .nt-screen-header__copy {
   min-width: 0;
   display: flex;
-  align-items: baseline;
-  gap: var(--nd-space-3);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   flex: 1 1 320px;
 }
 
-/* The title is the one thing on the band that must never wrap or clip — a
-   two-line "Licences & / subscriptions" costs more height than the whole
-   density pass saved. The subtitle absorbs the squeeze instead. */
+.nt-screen-header__overline {
+  margin: 0;
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--nd-accent-text);
+}
+
 .nt-screen-header__title {
   flex: 0 0 auto;
   white-space: nowrap;
+  letter-spacing: -0.03em;
 }
 
 .nt-screen-header__subtitle {
   margin: 0;
   min-width: 0;
-  flex: 1 1 auto;
+  max-width: 62ch;
   font-size: var(--nd-text-12);
-  line-height: 1.4;
-  color: var(--nd-text-muted);
+  line-height: 1.45;
+  color: var(--nd-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -58,13 +70,15 @@
   gap: var(--nd-space-2);
   flex-wrap: wrap;
   max-width: 100%;
+  padding: 4px;
+  border-radius: var(--nd-radius-lg);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--nd-border-subtle);
 }
 
 @media (max-width: 900px) {
-  .nt-screen-header__copy {
-    flex-direction: column;
+  .nt-screen-header {
     align-items: flex-start;
-    gap: 2px;
   }
 
   .nt-screen-header__subtitle {
@@ -82,6 +96,7 @@
   /* Capped, not stretched: below ~1280 the search wraps onto its own row, and
      an uncapped input took the whole 1009px of it to hold one placeholder. */
   max-width: 620px;
+  /* cinema chrome lives in nightdesk/components.css */
 }
 
 .nt-shell-identity,
@@ -728,6 +743,30 @@
 .nt-configure {
   min-width: 0;
   max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.nt-configure__col {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  min-width: 0;
+}
+.nt-configure__queue {
+  border: 1px solid var(--nd-border-default);
+  border-radius: var(--nd-radius-lg);
+  background: var(--nd-bg-raised);
+  box-shadow: var(--nd-shadow-raised), 0 0 28px rgba(224, 140, 98, 0.06);
+  padding: 14px;
+}
+.nt-configure__queue-title {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-10);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--nd-accent-text);
+  margin-bottom: 8px;
 }
 
 .nt-configure__stats {
@@ -753,6 +792,54 @@
 .nt-configure-row__secondary,
 .nt-configure-row__summary {
   overflow-wrap: anywhere;
+}
+.nt-configure-row__name {
+  width: 150px;
+  flex: 0 0 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.nt-configure-row__name-primary {
+  font-family: var(--nd-font-mono);
+  font-size: 12.5px;
+  color: var(--nd-text-primary);
+}
+.nt-configure-row__name-meta {
+  font-family: var(--nd-font-mono);
+  font-size: 10px;
+  color: var(--nd-text-muted);
+}
+.nt-configure-row__secondary {
+  width: 160px;
+  flex: 0 0 160px;
+  font-size: 12px;
+  color: var(--nd-text-secondary);
+}
+.nt-configure-row__summary {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--nd-font-mono);
+  font-size: 10.5px;
+  color: var(--nd-text-muted);
+}
+.nt-configure-row__note {
+  display: block;
+  padding-top: 3px;
+}
+.nt-configure-row--vlan .nt-configure-row__name {
+  width: 60px;
+  flex: 0 0 60px;
+  font-family: var(--nd-font-mono);
+  font-size: 12.5px;
+  color: var(--nd-text-primary);
+  display: block;
+}
+.nt-configure-row--vlan .nt-configure-row__secondary {
+  width: 150px;
+  flex: 0 0 150px;
+  font-size: 12.5px;
 }
 
 .nt-configure-row__actions {
@@ -1298,4 +1385,76 @@
 
 .nt-configure-capability--more:hover {
   background: var(--nd-bg-surface);
+}
+
+/* Brokered-write ritual theater */
+.nt-configure__queue {
+  position: relative;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--nd-accent) 7%, transparent), transparent 48px),
+    var(--nd-bg-raised);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--nd-accent) 18%, transparent),
+    0 16px 40px rgba(0, 0, 0, 0.22);
+}
+.nt-configure__queue-title {
+  letter-spacing: 0.14em;
+  color: var(--nd-accent-text);
+}
+.nt-configure__queue::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: linear-gradient(180deg, var(--nd-accent), transparent 70%);
+  opacity: 0.7;
+  pointer-events: none;
+}
+.nt-configure-ritual-bar {
+  display: flex;
+  gap: 10px;
+  padding: 14px 0;
+  border-top: 1px solid var(--nd-border-subtle);
+  border-bottom: 1px solid var(--nd-border-subtle);
+  background: color-mix(in srgb, var(--nd-accent) 4%, transparent);
+}
+.nt-configure-drawer-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--nd-border-subtle);
+}
+.nt-configure-drawer-row--lg {
+  gap: 12px;
+  padding: 10px 0;
+}
+.nt-configure-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--nd-accent) 28%, var(--nd-border-default));
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--nd-accent) 10%, transparent), transparent 42%),
+    var(--nd-bg-raised);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--nd-accent) 8%, transparent);
+}
+.nt-configure-bulk-bar__count {
+  font-family: var(--nd-font-mono);
+  font-size: var(--nd-text-11);
+  color: var(--nd-accent-text);
+  letter-spacing: 0.08em;
+}
+.nt-configure-bulk-bar__hint {
+  font-size: 12px;
+  color: var(--nd-text-muted);
+}
+.nt-configure-bulk-bar__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }

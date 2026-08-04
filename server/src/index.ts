@@ -47,6 +47,8 @@ import { authConfigRouter, authRouter } from './routes/auth';
 import { clearpassDirectWriteRouter } from './routes/clearpassDirectWrite';
 import { visualReferencesRouter } from './routes/visualReferences';
 import { recommendationsRouter } from './routes/recommendations';
+import { openapiRouter } from './routes/openapi';
+import { debugRouter } from './routes/debug';
 import { actorContext, authenticateUpgrade, requireAuth, requireSameOrigin, setAuthGuardInstalled, type AuthGuard } from './services/auth';
 import { SsidDirectWriteError } from './services/ssidDirectWrite';
 
@@ -167,6 +169,10 @@ export function createApp(opts: AppOptions = {}): express.Express {
     // Only a LINKED plane can be degraded: an unlinked one contributes nothing
     // and is not a fault to report.
     const degraded = planes.filter((p) => p.linked && (p.health !== 'healthy' || p.stale));
+    const signedIn = Boolean((req as Request & { principal?: unknown }).principal);
+    const deepAllowed = signedIn || !settings.get().auth;
+    const wantDeep = req.query.deep === '1' || req.query.deep === 'true';
+    const mem = process.memoryUsage();
     res.json({
       ok: true,
       status: degraded.length > 0 ? 'degraded' : 'ok',
@@ -175,6 +181,29 @@ export function createApp(opts: AppOptions = {}): express.Express {
       demoMode: settings.get().demoMode,
       degradedPlanes: degraded.map((p) => p.id),
       planes,
+      // deep=1 adds process/notifier counts without secrets. Strangers never
+      // get it when OIDC is on — use /api/debug/runtime when signed in for the
+      // full operator panel.
+      ...(wantDeep && deepAllowed
+        ? {
+            deep: {
+              node: process.version,
+              memory: {
+                rss: mem.rss,
+                heapUsed: mem.heapUsed,
+                heapTotal: mem.heapTotal,
+              },
+              pollIntervalSec: settings.get().pollIntervalSec,
+              notifier: {
+                sampling: notifier.status().sampling,
+                deliveryLogSize: notifier.deliveries().length,
+                outboxSize: notifier.outbox().length,
+              },
+            },
+          }
+        : wantDeep && !deepAllowed
+          ? { deepWithheld: true as const }
+          : {}),
     });
   });
 
@@ -256,6 +285,8 @@ export function createApp(opts: AppOptions = {}): express.Express {
   app.use('/api', clearpassDirectWriteRouter);
   app.use('/api', visualReferencesRouter);
   app.use('/api', recommendationsRouter);
+  app.use('/api', openapiRouter);
+  app.use('/api', debugRouter);
 
   // Unknown API route → consistent JSON 404
   app.use('/api', (_req, res) => {

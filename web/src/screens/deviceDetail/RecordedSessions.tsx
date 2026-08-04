@@ -35,23 +35,16 @@ export function RecordedSessions({
       {sessionsError ? (
         <div
           role="alert"
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-danger)',
-            padding: '8px 0',
-          }}
+          className="nt-mono-11" style={{
+color: 'var(--nd-danger)',
+            padding: '8px 0'
+}}
         >
           {sessionsError}
         </div>
       ) : sessions.length === 0 ? (
         <div
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-text-muted)',
-            padding: '8px 0',
-          }}
+          className="nt-hint-muted" style={{ padding: '8px 0' }}
         >
           No recorded sessions for this device — every session opened above is recorded to the portal.
         </div>
@@ -60,20 +53,12 @@ export function RecordedSessions({
           <div key={s.file} style={{ borderBottom: '1px solid var(--nd-border-subtle)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-10)',
-                  color: 'var(--nd-text-muted)',
-                }}
+                className="nt-hint-muted"
               >
                 {new Date(s.openedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               </span>
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-secondary)',
-                }}
+                className="nt-mono-11" style={{ color: 'var(--nd-text-secondary)' }}
               >
                 {s.user}@{s.target}
               </span>
@@ -83,19 +68,16 @@ export function RecordedSessions({
             </div>
             {expanded?.file === s.file ? (
               <div
-                style={{
-                  maxHeight: 260,
+                className="nt-service-note" style={{
+maxHeight: 260,
                   overflowY: 'auto',
                   margin: '0 0 10px',
                   padding: '10px 12px',
                   border: '1px solid var(--nd-border-default)',
                   background: 'var(--nd-bg-raised)',
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-10)',
-                  lineHeight: 1.6,
                   whiteSpace: 'pre-wrap',
-                  overflowWrap: 'anywhere',
-                }}
+                  overflowWrap: 'anywhere'
+}}
               >
                 {expanded.events.map((e, i) => (
                   <div

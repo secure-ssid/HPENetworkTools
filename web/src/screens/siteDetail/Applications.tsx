@@ -79,7 +79,7 @@ export function SiteApplications({
             : (appsState ?? '').toUpperCase().replace('-', ' ');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="nt-stack nt-gap-10">
       <SectionHeader label="Application visibility" meta={meta} />
       {!centralClaimed ? (
         <div style={noteStyle}>No linked plane publishes DPI application data for this site.</div>

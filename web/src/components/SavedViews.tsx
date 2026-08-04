@@ -230,12 +230,7 @@ export function SavedViews({
           </form>
           {nameTaken ? (
             <div
-              style={{
-                padding: '6px 6px 0',
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted" style={{ padding: "6px 6px 0" }}
             >
               a view with this name exists — pick another name, or rename or delete it first
             </div>

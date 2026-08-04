@@ -28,6 +28,8 @@ import {
 import { h } from './handler';
 import { poller } from '../services/poller';
 import { settings } from '../config/settings';
+import { maybeNotModified, weakEtag } from '../lib/httpCache';
+import { sendCsv } from '../lib/csv';
 
 export const recommendationsRouter = Router();
 
@@ -134,28 +136,95 @@ function buildAll(): ConfigRecommendation[] {
   ];
 }
 
+function parseRecQuery(req: { query: import('express').Request['query'] }) {
+  return {
+    device: typeof req.query.device === 'string' ? req.query.device : undefined,
+    site: typeof req.query.site === 'string' ? req.query.site : undefined,
+    clientMac:
+      typeof req.query.client === 'string'
+        ? req.query.client
+        : typeof req.query.clientMac === 'string'
+          ? req.query.clientMac
+          : undefined,
+    category: typeof req.query.category === 'string' ? (req.query.category as RecommendationCategory) : undefined,
+    severity: typeof req.query.severity === 'string' ? (req.query.severity as RecommendationSeverity) : undefined,
+    limit: typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined,
+  };
+}
+
 recommendationsRouter.get(
   '/recommendations',
   h((req, res) => {
-    const q = {
-      device: typeof req.query.device === 'string' ? req.query.device : undefined,
-      site: typeof req.query.site === 'string' ? req.query.site : undefined,
-      clientMac: typeof req.query.client === 'string' ? req.query.client : typeof req.query.clientMac === 'string' ? req.query.clientMac : undefined,
-      category: typeof req.query.category === 'string' ? (req.query.category as RecommendationCategory) : undefined,
-      severity: typeof req.query.severity === 'string' ? (req.query.severity as RecommendationSeverity) : undefined,
-      limit: typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined,
-    };
+    const q = parseRecQuery(req);
     if (q.limit !== undefined && (!Number.isFinite(q.limit) || q.limit < 0)) {
       res.status(400).json({ error: 'limit must be a non-negative number', code: 'RECOMMENDATION_VALIDATION' });
       return;
     }
     const recommendations = filterRecommendations(buildAll(), q);
-    res.json({
+    const body = {
       recommendations,
       counts: recommendationCounts(recommendations),
-      readOnly: true,
+      readOnly: true as const,
       note: 'Suggestions only — the portal never auto-applies configuration from this endpoint.',
-    });
+    };
+    if (maybeNotModified(req, res, weakEtag(body))) return;
+    res.json(body);
+  }),
+);
+
+/**
+ * GET /api/recommendations/export — CSV of the same filtered suggestions.
+ * Read-only; never applies config. Optional filters match the JSON list.
+ */
+recommendationsRouter.get(
+  '/recommendations/export',
+  h((req, res) => {
+    const q = parseRecQuery(req);
+    // Export ignores limit so operators get the full filtered set.
+    const { limit: _limit, ...filters } = q;
+    void _limit;
+    if (q.limit !== undefined && (!Number.isFinite(q.limit) || q.limit < 0)) {
+      res.status(400).json({ error: 'limit must be a non-negative number', code: 'RECOMMENDATION_VALIDATION' });
+      return;
+    }
+    const recommendations = filterRecommendations(buildAll(), filters);
+    const header = [
+      'id',
+      'ruleId',
+      'severity',
+      'title',
+      'detail',
+      'category',
+      'actionType',
+      'device',
+      'site',
+      'clientMac',
+      'plane',
+      'handoffPath',
+      'evidence',
+      'impactCount',
+    ];
+    sendCsv(
+      res,
+      'config-recommendations.csv',
+      header,
+      recommendations.map((r: ConfigRecommendation) => [
+        r.id,
+        r.ruleId,
+        r.severity,
+        r.title,
+        r.detail,
+        r.category,
+        r.actionType,
+        r.device,
+        r.site,
+        r.clientMac,
+        r.plane,
+        r.handoffPath,
+        r.evidence,
+        r.impactCount,
+      ]),
+    );
   }),
 );
 

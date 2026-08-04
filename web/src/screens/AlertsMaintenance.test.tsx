@@ -143,6 +143,10 @@ function renderAlerts() {
   );
 }
 
+async function goToPolicyTab() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Policy' }));
+}
+
 beforeEach(() => {
   mockGetAlerts.mockReset();
   fetchMock.mockReset();
@@ -161,6 +165,7 @@ describe('the maintenance windows section', () => {
     stubFetch({ windows: [ACTIVE_WINDOW, UPCOMING_WINDOW] });
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     expect(await screen.findByText('MAINTENANCE WINDOWS (2)')).toBeTruthy();
     expect(screen.getByText('ISP cutover, ticket NET-4211')).toBeTruthy();
@@ -176,6 +181,7 @@ describe('the maintenance windows section', () => {
     stubFetch({ windows: 'reject' });
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     expect(await screen.findByText(/AP firmware staging — 3rd-floor-east radios/)).toBeTruthy();
     expect(screen.getByText(/CX firmware 10\.13\.1005 rollout — six access switches/)).toBeTruthy();
@@ -189,6 +195,7 @@ describe('the maintenance windows section', () => {
     stubFetch({ windows: [] });
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     fireEvent.click(await screen.findByRole('button', { name: 'New window' }));
     const dialog = await screen.findByRole('dialog');
@@ -225,6 +232,7 @@ describe('the maintenance windows section', () => {
     stubFetch({ windows: [ACTIVE_WINDOW] });
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     fireEvent.click(await screen.findByRole('switch', { name: /Enable window: ISP cutover/ }));
     await waitFor(() => {

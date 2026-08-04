@@ -20,6 +20,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ConfirmDialog,
   Badge,
   Button,
   Checkbox,
@@ -195,6 +196,8 @@ export function SseInventoryPanel({
 }: SseInventoryPanelProps) {
   const { toast } = useToast();
   const { lab } = useLabConfigMode();
+  const [pendingDelete, setPendingDelete] = useState<null | { row: SseObjectSummary; rowKind: SseObjectKind; query: string }>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [kind, setKind] = useState<SseObjectKind>(initialKind);
   const [q, setQ] = useState('');
   const [listingState, setListingState] = useState<ListingState>({
@@ -379,54 +382,62 @@ export function SseInventoryPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const remove = async (row: SseObjectSummary, rowKind: SseObjectKind, query: string) => {
-    const ok = window.confirm(
-      `Delete ${row.name}? The deletion will be staged and becomes effective only after SSE Commit is accepted. Commit is tenant-wide and may include other staged tenant changes. It is not reversible from here once committed.`,
-    );
-    if (!ok) return;
-    const result = await deleteSseObject(rowKind, row.id, lab ? undefined : true);
-    if (!mountedRef.current) return;
-    const needsRecovery = Boolean(result.result && (result.result.staged || result.result.outcome === 'unknown'));
-    if (result.result) {
-      recordOutcome(
-        result.result.commit,
-        result.result.cacheRefresh,
-        needsRecovery,
-        result.result.outcome === 'unverified',
-      );
+  const remove = (row: SseObjectSummary, rowKind: SseObjectKind, query: string) => {
+    setPendingDelete({ row, rowKind, query });
+  };
+
+  const confirmRemove = async () => {
+    if (!pendingDelete) return;
+    const { row, rowKind, query } = pendingDelete;
+    setDeleteBusy(true);
+    try {
+      const result = await deleteSseObject(rowKind, row.id, lab ? undefined : true);
+      if (!mountedRef.current) return;
+      const needsRecovery = Boolean(result.result && (result.result.staged || result.result.outcome === 'unknown'));
+      if (result.result) {
+        recordOutcome(
+          result.result.commit,
+          result.result.cacheRefresh,
+          needsRecovery,
+          result.result.outcome === 'unverified',
+        );
+      }
+      if (result.pendingCommit) {
+        setCommitWarning(TENANT_WIDE_RECOVERY_WARNING);
+        setStagedNotice(`Pending SSE recovery required. ${result.message}`);
+        setUnknownRecovery(false);
+        setRetryReviewed(false);
+        setManualReconciled(false);
+        return;
+      }
+      if (result.result && needsRecovery) {
+        setStagedNotice(recoveryNotice(row.name, 'delete', result.result));
+        setUnknownRecovery(result.result.outcome === 'unknown');
+        setRetryReviewed(false);
+        setManualReconciled(false);
+        if (result.result.outcome === 'unknown') setCommitWarning(MANUAL_CLEANUP_NO_COMMIT_NOTICE);
+        return;
+      }
+      if (!result.ok) {
+        toast(result.message, { tone: 'danger' });
+        return;
+      }
+      if (result.result?.journalRetained) {
+        setStagedNotice(`${row.name} was deleted and committed. ${JOURNAL_RETAINED_NOTICE}`);
+        setUnknownRecovery(false);
+        setRetryReviewed(false);
+        setManualReconciled(false);
+        toast(`${row.name} deleted and committed — its journal was left behind`, { tone: 'warning' });
+      } else if (result.result?.outcome === 'unverified') {
+        toast(`${row.name} committed, but the deletion is not confirmed on the tenant`, { tone: 'warning' });
+      } else {
+        toast(`${row.name} deleted and committed`, { tone: 'success' });
+      }
+      if (kindRef.current === rowKind) await load(rowKind, query);
+    } finally {
+      setDeleteBusy(false);
+      setPendingDelete(null);
     }
-    if (result.pendingCommit) {
-      setCommitWarning(TENANT_WIDE_RECOVERY_WARNING);
-      setStagedNotice(`Pending SSE recovery required. ${result.message}`);
-      setUnknownRecovery(false);
-      setRetryReviewed(false);
-      setManualReconciled(false);
-      return;
-    }
-    if (result.result && needsRecovery) {
-      setStagedNotice(recoveryNotice(row.name, 'delete', result.result));
-      setUnknownRecovery(result.result.outcome === 'unknown');
-      setRetryReviewed(false);
-      setManualReconciled(false);
-      if (result.result.outcome === 'unknown') setCommitWarning(MANUAL_CLEANUP_NO_COMMIT_NOTICE);
-      return;
-    }
-    if (!result.ok) {
-      toast(result.message, { tone: 'danger' });
-      return;
-    }
-    if (result.result?.journalRetained) {
-      setStagedNotice(`${row.name} was deleted and committed. ${JOURNAL_RETAINED_NOTICE}`);
-      setUnknownRecovery(false);
-      setRetryReviewed(false);
-      setManualReconciled(false);
-      toast(`${row.name} deleted and committed — its journal was left behind`, { tone: 'warning' });
-    } else if (result.result?.outcome === 'unverified') {
-      toast(`${row.name} committed, but the deletion is not confirmed on the tenant`, { tone: 'warning' });
-    } else {
-      toast(`${row.name} deleted and committed`, { tone: 'success' });
-    }
-    if (kindRef.current === rowKind) await load(rowKind, query);
   };
 
   const parsedExtra = (): Record<string, unknown> | null => {
@@ -617,7 +628,7 @@ export function SseInventoryPanel({
   const failure = readFailure(SSE_OBJECT_KIND_LABELS[kind], listing);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div className="nt-stack nt-gap-12">
       <SectionHeader
         label="Object inventory"
         meta={
@@ -845,7 +856,7 @@ export function SseInventoryPanel({
             <Spinner size="sm" />
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div className="nt-stack nt-gap-14">
             <FormField label={primaryLabel}>
               <Input
                 value={form.primaryName}
@@ -907,6 +918,19 @@ export function SseInventoryPanel({
           </div>
         )}
       </Drawer>
+      <ConfirmDialog
+        open={pendingDelete != null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        title={pendingDelete ? `Delete ${pendingDelete.row.name}?` : 'Delete object?'}
+        description="The deletion will be staged and becomes effective only after SSE Commit is accepted. Commit is tenant-wide and may include other staged tenant changes. It is not reversible from here once committed."
+        confirmLabel="Delete"
+        tone="danger"
+        busy={deleteBusy}
+        onConfirm={confirmRemove}
+      />
+
     </div>
   );
 }

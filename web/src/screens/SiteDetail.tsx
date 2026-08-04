@@ -30,15 +30,14 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
+  PageSkeleton,
   Alert,
   Badge,
   Button,
   Divider,
   EmptyState,
   Progress,
-  SectionHeader,
-  Spinner,
-  Stat,
+  SectionHeader, Stat,
   Table,
   useToast,
 } from '../nightdesk';
@@ -66,6 +65,7 @@ import { SiteFloorPlan } from './siteDetail/FloorPlan';
 import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ConfigActionPanel } from '../components/ConfigActionPanel';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { exportTableCsv } from '../lib/csv';
 import { SiteRogueAps } from './siteDetail/RogueAps';
 import { SiteSle } from './siteDetail/Sle';
 import { SiteApplications } from './siteDetail/Applications';
@@ -108,12 +108,7 @@ function provenance(detail: SiteDetailData): string {
 function ProvenanceNote({ label }: { label: string }) {
   return (
     <span
-      style={{
-        fontFamily: 'var(--nd-font-mono)',
-        fontSize: 'var(--nd-text-10)',
-        color: 'var(--nd-text-muted)',
-        letterSpacing: '.08em',
-      }}
+      className="nt-mono-label"
     >
       {label}
     </span>
@@ -138,7 +133,7 @@ function SiteDeviceTable({
   onOpen: (device: SiteDeviceRow) => void;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+    <div className="nt-stack" style={{ gap: 10, minWidth: 0 }}>
       <SectionHeader label="Devices at this site" meta="MIXED PLANES" />
       <Table density={density}>
         <Table.Head>
@@ -158,23 +153,14 @@ function SiteDeviceTable({
                 <button
                   type="button"
                   onClick={() => onOpen(d)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 0,
-                    cursor: 'pointer',
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-12)',
-                    color: 'var(--nd-accent-text)',
-                    textAlign: 'left',
-                  }}
+                  className="nt-mono-link" style={{ textAlign: "left", fontSize: "var(--nd-text-12)" }}
                 >
                   {d.name}
                 </button>
               </Table.Cell>
               <Table.Cell>{d.model}</Table.Cell>
               <Table.Cell>
-                {showPlatformTags ? <Badge tone={d.planeTone}>{d.plane}</Badge> : null}
+                {showPlatformTags ? <Badge plane>{d.plane}</Badge> : null}
               </Table.Cell>
               <Table.Cell>{d.role}</Table.Cell>
               <Table.Cell>
@@ -189,11 +175,7 @@ function SiteDeviceTable({
       </Table>
       {devices.length === 0 ? (
         <div
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 10.5,
-            color: 'var(--nd-text-muted)',
-          }}
+          className="nt-hint-muted"
         >
           no device claimed this site in the last pull
         </div>
@@ -221,18 +203,17 @@ function LocalReachabilityPanel({
 }) {
   const { collector, collectorTone, reachValue, collectorNote, core } = reachability;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div className="nt-stack nt-gap-12">
       <SectionHeader label="Local reachability" />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '2px 0 4px' }}>
+      <div className="nt-stack" style={{ gap: 12, padding: '2px 0 4px' }}>
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            gap: 10,
-          }}
+            gap: 10 }}
         >
-          <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>SSH collector</span>
+          <span className="nt-body-sm">SSH collector</span>
           <Badge tone={collectorTone} dot>
             {collector}
           </Badge>
@@ -248,11 +229,7 @@ function LocalReachabilityPanel({
           >
             <span className="nd-micro-label">Devices answering directly</span>
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               —
             </span>
@@ -261,12 +238,7 @@ function LocalReachabilityPanel({
           <Progress value={reachValue} label="Devices answering directly" note={`${reachValue}%`} />
         )}
         <div
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 10.5,
-            color: 'var(--nd-text-muted)',
-            lineHeight: 1.5,
-          }}
+          className="nt-hint-muted nt-lh-15"
         >
           {collectorNote}
         </div>
@@ -297,7 +269,7 @@ function OpenHereList({
   onAllAlerts: () => void;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader
         label="Open here"
         meta={
@@ -320,7 +292,7 @@ function OpenHereList({
           <Badge tone={a.tone} dot>
             {a.sev}
           </Badge>
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="nt-flex-1">
             <div
               style={{
                 fontSize: 'var(--nd-text-12)',
@@ -331,11 +303,7 @@ function OpenHereList({
               {a.title}
             </div>
             <div
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-10)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {a.meta}
             </div>
@@ -344,12 +312,7 @@ function OpenHereList({
       ))}
       {alerts.length === 0 ? (
         <div
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 10.5,
-            color: 'var(--nd-text-muted)',
-            padding: '10px 0',
-          }}
+          className="nt-hint-muted nt-pad-y-10"
         >
           {silenced.length > 0
             ? 'hushed, not quiet — everything firing here is silenced below'
@@ -357,61 +320,20 @@ function OpenHereList({
         </div>
       ) : null}
       {silenced.length > 0 ? (
-        <div
-          style={{
-            marginTop: 10,
-            border: '1px solid var(--nd-border-default)',
-            background: 'var(--nd-bg-raised)',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: 10,
-              flexWrap: 'wrap',
-              padding: '10px 14px',
-              borderBottom: '1px solid var(--nd-border-default)',
-            }}
-          >
-            <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-secondary)',
-                letterSpacing: '.08em',
-              }}
-            >
-              {`SILENCED (${silenced.length})`}
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+        <div className="nt-panel nt-mt-10">
+          <div className="nt-panel__head">
+            <span className="nt-panel__title">{`SILENCED (${silenced.length})`}</span>
+            <span className="nt-panel__hint">
               still firing — benched until the silence expires, never hidden
             </span>
           </div>
           {silenced.map((a) => (
-            <div
-              key={a.title}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                flexWrap: 'wrap',
-                padding: '8px 14px',
-              }}
-            >
+            <div key={a.title} className="nt-panel__row">
               <Badge tone={a.tone} dot>
                 {a.sev}
               </Badge>
-              <span style={{ fontSize: 13, color: 'var(--nd-text-primary)' }}>{a.title}</span>
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                }}
-              >
-                {`${a.reason} · until ${untilLabel(a.until)}`}
-              </span>
+              <span className="nt-body-sm">{a.title}</span>
+              <span className="nt-mono-label">{`${a.reason} · until ${untilLabel(a.until)}`}</span>
             </div>
           ))}
         </div>
@@ -440,18 +362,13 @@ function LiveTopologyPanel({
     const failed = nodeState === 'failed' || linkState === 'failed';
     const empty = nodeState === 'empty' || linkState === 'empty';
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="nt-stack nt-gap-10">
         <SectionHeader
           label="Topology"
           meta={failed ? 'READ FAILED' : empty ? 'EMPTY' : 'NOT REPORTED'}
         />
         <div
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-text-muted)',
-            lineHeight: 1.6,
-          }}
+          className="nt-hint-muted nt-lh-16"
         >
           {failed
             ? `The topology read did not complete${
@@ -478,7 +395,7 @@ function LiveTopologyPanel({
   const names = new Map(nodes.map((node) => [node.serial, node.name]));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div className="nt-stack nt-gap-12">
       <SectionHeader label="Topology" meta={sourceMeta} />
       {omissions.length > 0 ? (
         <Alert tone="warning" title="This diagram is not the whole graph the plane reported">
@@ -491,12 +408,7 @@ function LiveTopologyPanel({
       ) : null}
       <SiteTopologyDiagram topology={diagram} onDevice={onDevice} />
       <div
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 10.5,
-          color: 'var(--nd-text-muted)',
-          lineHeight: 1.5,
-        }}
+        className="nt-hint-muted nt-lh-15"
       >
         {diagram.note}
         {topology?.source.cached && readAt ? ` Cached read from ${readAt}.` : ''}
@@ -504,7 +416,7 @@ function LiveTopologyPanel({
           ? ` Link details failed${topology?.source.note ? ` — ${topology.source.note}` : ''}.`
           : ''}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         <SectionHeader label="Reported physical links" meta="PORT-TO-PORT" />
         {links.map((link, index) => (
           <div
@@ -517,15 +429,11 @@ function LiveTopologyPanel({
               borderBottom: '1px solid var(--nd-border-subtle)',
             }}
           >
-            <span style={{ color: 'var(--nd-text-secondary)' }}>
+            <span className="nt-text-sec">
               {names.get(link.from) ?? link.from} ↔ {names.get(link.to) ?? link.to}
             </span>
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-10)',
-                color: 'var(--nd-text-muted)',
-              }}
+              className="nt-hint-muted"
             >
               {liveTopologyLinkFact(link) || 'ports and speed not reported'}
             </span>
@@ -533,12 +441,7 @@ function LiveTopologyPanel({
         ))}
         {links.length === 0 ? (
           <div
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 10.5,
-              color: 'var(--nd-text-muted)',
-              padding: '8px 0',
-            }}
+            className="nt-hint-muted nt-pad-y-8"
           >
             {linkState === 'empty'
               ? `${plane ?? 'The linked plane'} reported devices but no physical links.`
@@ -596,11 +499,7 @@ export default function SiteDetail() {
   }, [param, pollIntervalSec]);
 
   if (detail === null) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="detail" />;
   }
   if (detail.apiError) return <ApiErrorState message={detail.apiError} />;
 
@@ -613,7 +512,7 @@ export default function SiteDetail() {
     // 'multiple') that no inventory row backs: without a site row there is
     // nothing to show, and a profile on its own would be a fabricated page.
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div className="nt-stack">
         <div>
           <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
             ← All sites
@@ -623,7 +522,7 @@ export default function SiteDetail() {
           title="Site not found"
           description={`No fixture or linked plane has reported '${param}'. It may be unmanaged, or the plane that owns it is not linked.`}
         >
-          <div style={{ marginTop: 16 }}>
+          <div className="nt-mt-16">
             <Button variant="primary" size="sm" onClick={() => navigate('/systems')}>
               Connected systems
             </Button>
@@ -673,7 +572,7 @@ export default function SiteDetail() {
       liveDevices.find((d) => /switch|\bsw\b|sw-/i.test(`${d.role} ${d.name}`))?.name ??
       null;
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div className="nt-stack">
         <ScreenHeader
           overline={`Sites / ${name}`}
           title={name}
@@ -688,6 +587,32 @@ export default function SiteDetail() {
               <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
                 ← All sites
               </Button>
+              {liveDevices.length > 0 ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    const n = exportTableCsv(
+                      `site-devices-${name}.csv`,
+                      ['name', 'model', 'plane', 'role', 'state', 'uptime', 'serial'],
+                      liveDevices.map((d) => [
+                        d.name,
+                        d.model,
+                        d.plane,
+                        d.role,
+                        d.state,
+                        d.uptime,
+                        d.serial ?? '',
+                      ]),
+                    );
+                    toast(`Exported ${n} device${n === 1 ? '' : 's'}`, {
+                      description: 'Site inventory rows currently loaded.',
+                    });
+                  }}
+                >
+                  Export devices
+                </Button>
+              ) : null}
               {launchPlane ? (
                 <Button
                   variant="secondary"
@@ -779,14 +704,14 @@ export default function SiteDetail() {
             onOpen={(device) => navigate(deviceDetailPath({ name: device.name, plane: device.plane, serial: device.serial }))}
           />
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
+          <div className="nt-stack" style={{ gap: 26, minWidth: 0 }}>
             <SiteSle
               sle={sections.sle}
               mistClaimed={mistClaimed}
               siteKey={String(site.id)}
               siteName={name}
             />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="nt-stack nt-gap-2">
               <SectionHeader label="Live site facts" />
               {facts.map((fact) => (
                 <div
@@ -795,22 +720,14 @@ export default function SiteDetail() {
                     display: 'flex',
                     gap: 12,
                     padding: '9px 0',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
+                    borderBottom: '1px solid var(--nd-border-subtle)' }}
                 >
                   <span
-                    style={{
-                      width: 100,
-                      flex: '0 0 100px',
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10,
-                      color: 'var(--nd-text-muted)',
-                      textTransform: 'uppercase',
-                    }}
+                    className="nt-mono-label nt-w-100"
                   >
                     {fact.k}
                   </span>
-                  <span style={{ color: 'var(--nd-text-secondary)' }}>{fact.v}</span>
+                  <span className="nt-text-sec">{fact.v}</span>
                 </div>
               ))}
             </div>
@@ -821,15 +738,10 @@ export default function SiteDetail() {
                 onTerminal={(target) => navigate(`/devices/${encodeURIComponent(target)}`)}
               />
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="nt-stack nt-gap-10">
                 <SectionHeader label="Local reachability" meta="NOT REPORTED" />
                 <div
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-muted)',
-                    lineHeight: 1.6,
-                  }}
+                  className="nt-hint-muted nt-lh-16"
                 >
                   No linked local collector reported reachability for this site.
                 </div>
@@ -857,7 +769,7 @@ export default function SiteDetail() {
   const centralClaimed = site.planes.some((p) => planeKeyOf(p.name) === 'central');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <ScreenHeader
         overline={`Sites / ${name}`}
         title={name}
@@ -872,6 +784,32 @@ export default function SiteDetail() {
             <Button variant="ghost" size="sm" onClick={() => navigate('/sites')}>
               ← All sites
             </Button>
+            {profile && profile.devices.length > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const n = exportTableCsv(
+                    `site-devices-${name}.csv`,
+                    ['name', 'model', 'plane', 'role', 'state', 'uptime', 'serial'],
+                    profile.devices.map((d) => [
+                      d.name,
+                      d.model,
+                      d.plane,
+                      d.role,
+                      d.state,
+                      d.uptime,
+                      d.serial ?? '',
+                    ]),
+                  );
+                  toast(`Exported ${n} device${n === 1 ? '' : 's'}`, {
+                    description: 'Site inventory rows currently loaded.',
+                  });
+                }}
+              >
+                Export devices
+              </Button>
+            ) : null}
             {profile ? (
               <>
                 <Button
@@ -911,7 +849,7 @@ export default function SiteDetail() {
           title="No data — plane not linked"
           description="Live mode returned no profile for this site. Link the plane that manages it, or the local collector, on Connected systems."
         >
-          <div style={{ marginTop: 16 }}>
+          <div className="nt-mt-16">
             <Button variant="primary" size="sm" onClick={() => navigate('/systems')}>
               Connect a system
             </Button>
@@ -955,18 +893,14 @@ export default function SiteDetail() {
           <Divider variant="flair" />
 
           {topology && topology.nodes.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="nt-stack nt-gap-10">
               <SectionHeader label="Topology" meta="RECORDED UPLINKS" />
               <SiteTopologyDiagram
                 topology={topology}
                 onDevice={(n) => navigate(`/devices/${encodeURIComponent(n)}`)}
               />
               <div
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10.5,
-                  color: 'var(--nd-text-muted)',
-                }}
+                className="nt-hint-muted"
               >
                 {topology.note}
               </div>
@@ -1000,14 +934,14 @@ export default function SiteDetail() {
             />
 
             {/* ---------------- right column ---------------- */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
+            <div className="nt-stack" style={{ gap: 26, minWidth: 0 }}>
               <SiteSle
                 sle={detail.sle}
                 mistClaimed={mistClaimed}
                 siteKey={String(site.id)}
                 siteName={name}
               />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div className="nt-stack nt-gap-2">
                 <SectionHeader label="Site facts" />
                 {profile.facts.map((f) => (
                   <div
@@ -1016,20 +950,10 @@ export default function SiteDetail() {
                       display: 'flex',
                       gap: 12,
                       padding: '9px 0',
-                      borderBottom: '1px solid var(--nd-border-subtle)',
-                    }}
+                      borderBottom: '1px solid var(--nd-border-subtle)' }}
                   >
                     <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-10)',
-                        letterSpacing: '.1em',
-                        textTransform: 'uppercase',
-                        color: 'var(--nd-text-muted)',
-                        width: 96,
-                        flex: '0 0 96px',
-                        paddingTop: 2,
-                      }}
+                      className="nt-fact-row__k nt-w-96"
                     >
                       {f.k}
                     </span>

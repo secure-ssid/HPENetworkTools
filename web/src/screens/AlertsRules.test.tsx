@@ -186,6 +186,10 @@ function renderAlerts() {
   );
 }
 
+async function goToPolicyTab() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Policy' }));
+}
+
 /** The device-down rules section container — toasts render outside it, so a
  *  scoped query never matches the summary a toast repeats. */
 function rulesSection() {
@@ -213,6 +217,7 @@ describe('the device-down rules section', () => {
     stubFetch([RULE_AP, RULE_ALL]);
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     expect(await screen.findByText('DEVICE-DOWN RULES (2)')).toBeTruthy();
     expect(rulesSection().getByText('Access points')).toBeTruthy();
@@ -233,6 +238,7 @@ describe('the device-down rules section', () => {
     stubFetch('reject');
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     expect(await screen.findByText('DEVICE-DOWN RULES (1)')).toBeTruthy();
     expect(screen.getByText(/demo fixture — the backend is unreachable/)).toBeTruthy();
@@ -250,6 +256,7 @@ describe('the device-down rules section', () => {
     stubFetch([]);
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     fireEvent.click(await screen.findByRole('button', { name: 'New rule' }));
     const dialog = await screen.findByRole('dialog');
@@ -297,6 +304,7 @@ describe('the device-down rules section', () => {
     stubFetch([RULE_AP]);
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
     const dialog = await screen.findByRole('dialog');
@@ -330,6 +338,7 @@ describe('the device-down rules section', () => {
     stubFetch([RULE_AP]);
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     fireEvent.click(
       await screen.findByRole('switch', {
@@ -349,6 +358,7 @@ describe('the device-down rules section', () => {
     stubFetch([RULE_AP]);
     mockGetAlerts.mockResolvedValue(liveData());
     renderAlerts();
+    await goToPolicyTab();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     const dialog = await screen.findByRole('dialog');

@@ -163,8 +163,8 @@ export function MistSection() {
   const delivering = status?.lastReceivedAt ?? null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="nt-stack nt-gap-18">
+      <div className="nt-stack nt-gap-10">
         <SectionHeader
           label="Webhook receiver"
           meta={status?.demo === true ? 'DEMO FIXTURE' : registered ? 'REGISTERED' : 'NOT REGISTERED'}
@@ -180,7 +180,7 @@ export function MistSection() {
             {status.error ? (
               <div style={noteStyle}>{status.error}</div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div className="nt-stack nt-gap-6">
                 {status.subscriptions.map((s) => (
                   <div
                     key={s.id}

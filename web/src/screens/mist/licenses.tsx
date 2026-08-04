@@ -52,7 +52,7 @@ export function LicenseUsageSection({ licenseUsages }: { licenseUsages: MistLice
         : `${countOf(licenseUsages.length, 'SITE').toUpperCase()} · USED / FULLY-LOADED · MIST`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="Licence usage per site" meta={meta} />
       {licenseUsages == null ? (
         <div style={noteStyle}>

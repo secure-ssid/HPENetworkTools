@@ -33,6 +33,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
+  PageSkeleton,
   Alert,
   Badge,
   Button,
@@ -51,6 +52,9 @@ import {
   useToast,
 } from '../nightdesk';
 import type { DataTableColumn } from '../nightdesk';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { ConfigActionPanel } from '../components/ConfigActionPanel';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import {
   applyConfigDirect,
   applySsidDirect,
@@ -109,6 +113,7 @@ import type {
   VlanScope,
 } from '@hpe/shared';
 import { useSettings } from '../app/SettingsContext';
+import { exportTableCsv } from '../lib/csv';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import {
@@ -671,11 +676,7 @@ export default function Configure() {
   };
 
   if (!data || !queue) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
   const observedInventory = data.inventoryMode === 'observed';
@@ -734,20 +735,17 @@ export default function Configure() {
         const lease = leaseNote(q, now);
         const leaseGone = lease?.startsWith('lease expired') ?? false;
         return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <span style={{ fontSize: 12.5, color: 'var(--nd-text-primary)', lineHeight: 1.4 }}>{q.what}</span>
+          <div className="nt-stack nt-gap-5">
+            <span className="nt-configure-queue__what">{q.what}</span>
             <span
-              style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}
+              className="nt-mono-label"
             >
               {q.where}
             </span>
             {lease ? (
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10,
-                  color: leaseGone ? 'var(--nd-warning)' : 'var(--nd-text-muted)',
-                }}
+                className="nt-hint-muted"
+                style={{ color: leaseGone ? 'var(--nd-warning)' : 'var(--nd-text-muted)' }}
               >
                 {lease}
               </span>
@@ -761,7 +759,7 @@ export default function Configure() {
       title: 'Ticket',
       width: 110,
       render: (q) => (
-        <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}>
+        <span className="nt-mono-label">
           {q.ticket}
         </span>
       ),
@@ -1197,7 +1195,7 @@ export default function Configure() {
   };
 
   return (
-    <div className="nt-configure" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-configure">
       <ScreenHeader
         overline="Configure / Changes"
         title="Configuration"
@@ -1226,7 +1224,7 @@ export default function Configure() {
       </div>
 
       <Alert tone="info" title={labConfigMode ? 'Lab write workflow is enabled' : 'Writes are brokered, never standing'}>
-        <span style={{ fontSize: 13 }}>
+        <span className="nt-body-sm">
           {labConfigMode
             ? genericTargetCanWrite
               ? 'Admitted Central port and VLAN writes apply immediately. SSIDs keep their dedicated scope-aware apply path.'
@@ -1234,6 +1232,10 @@ export default function Configure() {
             : writeSurfaceNote(data.capabilities)}
         </span>
       </Alert>
+
+      <VisualReferencePanel target={{ kind: 'service', id: 'configure' }} />
+      <ConfigRecommendationsPanel title="Config hygiene recommendations" limit={8} />
+      <ConfigActionPanel target={{ kind: 'service', id: 'configure' }} targetKind="configure" />
 
       {ssidDeepLinkWarning ? (
         <Alert tone="warning" title="WLAN edit was not opened">
@@ -1243,7 +1245,7 @@ export default function Configure() {
 
       {liveMode && data.inventoryMode === 'unavailable' ? (
         <Alert tone="warning" title="Live configuration inventory is not available">
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             {labConfigMode
               ? 'The linked planes do not currently expose configured port or VLAN rows for immediate apply. SSIDs retain their scope-aware path when the target connector admits writes.'
               : 'The broker queue is live, but the linked planes do not currently expose SSID, port, or VLAN inventory through this API. New changes can still be rendered and queued explicitly.'}
@@ -1252,7 +1254,7 @@ export default function Configure() {
       ) : null}
       {observedInventory ? (
         <Alert tone="info" title="Inventory observed from active client sessions">
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             These SSIDs, ports, and VLANs were seen in live session telemetry. They are partial evidence, not an
             authoritative running configuration; selecting a row uses it only as a starting point for a new change.
           </span>
@@ -1261,8 +1263,8 @@ export default function Configure() {
 
       <div className="nt-configure__layout">
         {/* ---------------- left: the three object lists ---------------- */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        <div className="nt-configure__col">
+          <div>
             <SectionHeader
               label="Wireless SSIDs"
               meta={
@@ -1279,60 +1281,31 @@ export default function Configure() {
                 style={ROW}
                 onClick={() => openSsid(w)}
               >
-                <div
-                  className="nt-configure-row__name"
-                  style={{
-                    width: 150,
-                    flex: '0 0 150px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 3,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 12.5,
-                      color: 'var(--nd-text-primary)',
-                    }}
-                  >
+                <div className="nt-configure-row__name">
+                  <span className="nt-configure-row__name-primary">
                     {w.name}
                   </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10,
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
+                  <span className="nt-configure-row__name-meta">
                     {w.vlan}
                   </span>
                 </div>
                 <span
                   className="nt-configure-row__secondary"
-                  style={{ width: 160, flex: '0 0 160px', fontSize: 12, color: 'var(--nd-text-secondary)' }}
                 >
                   {w.security}
                 </span>
                 <span
                   className="nt-configure-row__summary"
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                  }}
                 >
                   {w.targets}
                   {/* A fact with no column of its own — e.g. a Mist WLAN whose
                       payload carried the cleartext key says 'PSK set — redacted
                       by the portal'. The marker is rendered, never the secret. */}
-                  {w.note ? <span style={{ display: 'block', paddingTop: 3 }}>{w.note}</span> : null}
+                  {w.note ? <span className="nt-configure-row__note">{w.note}</span> : null}
                 </span>
                 <span className="nt-configure-row__actions">
                   {w.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
-                  {showPlatformTags ? <Badge tone={w.tone}>{w.plane}</Badge> : null}
+                  {showPlatformTags ? <Badge plane>{w.plane}</Badge> : null}
                   <span className="nt-configure-row__action">
                     {w.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
                   </span>
@@ -1353,7 +1326,7 @@ export default function Configure() {
             ) : null}
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          <div>
             <SectionHeader
               label="Switch ports"
               meta={
@@ -1474,7 +1447,7 @@ export default function Configure() {
             ) : null}
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          <div>
             <SectionHeader
               label="VLANs & roles"
               meta={
@@ -1493,40 +1466,15 @@ export default function Configure() {
                 style={ROW}
                 onClick={() => openVlan(v)}
               >
-                <span
-                  className="nt-configure-row__name"
-                  style={{
-                    width: 60,
-                    flex: '0 0 60px',
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 12.5,
-                    color: 'var(--nd-text-primary)',
-                  }}
-                >
-                  {v.id}
-                </span>
-                <span
-                  className="nt-configure-row__secondary"
-                  style={{ width: 150, flex: '0 0 150px', fontSize: 12.5, color: 'var(--nd-text-secondary)' }}
-                >
-                  {v.name}
-                </span>
+                <span className="nt-configure-row__name">{v.id}</span>
+                <span className="nt-configure-row__secondary">{v.name}</span>
                 <span
                   className="nt-configure-row__summary"
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                  }}
                 >
                   {v.detail}
                 </span>
                 <span className="nt-configure-row__actions">
-                  <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' }}>
-                    {v.role}
-                  </span>
+                  <span className="nt-hint-muted">{v.role}</span>
                   {v.origin === 'observed' ? <Badge tone="info">Observed</Badge> : null}
                   <span className="nt-configure-row__action">
                     {v.origin === 'observed' ? 'Use ▸' : 'Edit ▸'}
@@ -1550,10 +1498,29 @@ export default function Configure() {
         </div>
 
         {/* ---------------- right: queue + capability matrix ---------------- */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
+        <div className="nt-configure__col">
           {!labConfigMode ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            <div className="nt-configure__queue">
+            <div className="nt-configure__queue-title">Brokered write ritual</div>
             <SectionHeader label="Queued changes" meta={String(queue.length)} />
+            {queue.length > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const n = exportTableCsv(
+                    'configure-queue.csv',
+                    ['id', 'state', 'what', 'where', 'ticket', 'expiresAt'],
+                    queue.map((q) => [q.id ?? '', q.state, q.what, q.where, q.ticket, q.expiresAt ?? '']),
+                  );
+                  toast(`Exported ${n} queued change${n === 1 ? '' : 's'}`, {
+                    description: 'configure-queue.csv — current broker queue snapshot.',
+                  });
+                }}
+              >
+                Export queue CSV
+              </Button>
+            ) : null}
             {queue.length > 0 ? (
               <DataTable
                 ariaLabel="Queued changes"
@@ -1575,32 +1542,12 @@ export default function Configure() {
                 the same per-item push/discard the buttons below run, one
                 change at a time, with the per-item outcomes named. */}
             {queueSel.length > 0 ? (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  flexWrap: 'wrap',
-                  marginTop: 12,
-                  padding: '10px 12px',
-                  border: '1px solid var(--nd-border-default)',
-                  background: 'var(--nd-bg-raised)',
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-secondary)',
-                    letterSpacing: '.08em',
-                  }}
-                >
-                  {`${queueSel.length} SELECTED`}
-                </span>
-                <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+              <div className="nt-configure-bulk-bar">
+                <span className="nt-configure-bulk-bar__count">{`${queueSel.length} SELECTED`}</span>
+                <span className="nt-configure-bulk-bar__hint">
                   each change still goes through its own brokered review — the bar just iterates
                 </span>
-                <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="nt-configure-bulk-bar__actions">
                   <Button
                     variant="secondary"
                     size="sm"
@@ -1623,7 +1570,7 @@ export default function Configure() {
                 </span>
               </div>
             ) : null}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, paddingTop: 12 }}>
+            <div className="nt-row nt-wrap-6 nt-gap-8" style={{ paddingTop: 12 }}>
               <Button
                 variant="secondary"
                 size="sm"
@@ -1639,7 +1586,7 @@ export default function Configure() {
             </div>
           ) : null}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          <div>
             <SectionHeader
               label="Where a change can go"
               meta={dormantTargets.length > 0 ? `${writableTargets.length} REACHABLE` : undefined}
@@ -1699,9 +1646,9 @@ export default function Configure() {
         }
       >
         {kind ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div className="nt-drawer-stack">
             {kind === 'ssid' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div className="nt-drawer-stack">
                 {mistDirectAvailable ? (
                   <FormField
                     label="Plane"
@@ -1727,7 +1674,7 @@ export default function Configure() {
                   </Alert>
                 ) : null}
                 <div
-                  style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
+                  className="nt-form-grid"
                 >
                   <FormField label="SSID name">
                     <Input
@@ -1747,7 +1694,7 @@ export default function Configure() {
                   </FormField>
                 </div>
                 <div
-                  style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
+                  className="nt-form-grid"
                 >
                   <FormField
                     label="Security"
@@ -1773,7 +1720,7 @@ export default function Configure() {
                 </div>
                 {mistRefusal ? (
                   <Alert tone="warning" title="Apply is disabled — Mist cannot express this security mode">
-                    <span style={{ fontSize: 13 }}>The write was refused before it was built: {mistRefusal}.</span>
+                    <span className="nt-body-sm">The write was refused before it was built: {mistRefusal}.</span>
                   </Alert>
                 ) : null}
 
@@ -1781,7 +1728,7 @@ export default function Configure() {
                     Mist has no role/server-group/portal catalogs: those selects are Central-only,
                     and the section itself disappears when the Mist mode needs nothing (Open). */}
                 {!mistSsid || ssidRequirement.passphrase ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div className="nt-stack nt-gap-12">
                   <SectionHeader label="Security dependencies" meta={ssidCatalogLoading ? 'loading…' : undefined} />
                   {/* FormField only clones an id onto a SINGLE child element for the
                       label's htmlFor — the "unavailable" note is a sibling below it,
@@ -1800,7 +1747,7 @@ export default function Configure() {
                   </FormField>
                   ) : null}
                   {!mistSsid && ssidCatalog?.unavailable.includes('roles') ? (
-                    <span style={{ fontSize: 11, color: 'var(--nd-warning-text, var(--nd-text-muted))' }}>
+                    <span className="nt-warn-sm">
                       {ssidSectionUnavailableNote('roles')}
                     </span>
                   ) : null}
@@ -1818,7 +1765,7 @@ export default function Configure() {
                         />
                       </FormField>
                       {ssidCatalog?.unavailable.includes('authServerGroups') ? (
-                        <span style={{ fontSize: 11, color: 'var(--nd-warning-text, var(--nd-text-muted))' }}>
+                        <span className="nt-warn-sm">
                           {ssidSectionUnavailableNote('authServerGroups')}
                         </span>
                       ) : null}
@@ -1838,7 +1785,7 @@ export default function Configure() {
                         />
                       </FormField>
                       {ssidCatalog?.unavailable.includes('captivePortalProfiles') ? (
-                        <span style={{ fontSize: 11, color: 'var(--nd-warning-text, var(--nd-text-muted))' }}>
+                        <span className="nt-warn-sm">
                           {ssidSectionUnavailableNote('captivePortalProfiles')}
                         </span>
                       ) : null}
@@ -1859,15 +1806,15 @@ export default function Configure() {
                 ) : null}
 
                 {/* -- scope targets (immutable plane ids, grouped by category) -- */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div className="nt-stack nt-gap-8">
                   <SectionHeader label="Scope" meta={`${ssid.scopeIds?.length ?? 0} selected`} />
                   {ssidCatalogLoading ? (
-                    <div style={{ display: 'flex', justifyContent: 'center', padding: 16 }}>
+                    <div className="nt-center-pad">
                       <Spinner size="sm" />
                     </div>
                   ) : ssidCatalogError ? (
                     <Alert tone="danger" title="The scope catalog could not be read">
-                      <span style={{ fontSize: 13 }}>{ssidCatalogError}</span>
+                      <span className="nt-body-sm">{ssidCatalogError}</span>
                     </Alert>
                   ) : ssidScopeGroups.length === 0 ? (
                     <EmptyState
@@ -1876,15 +1823,9 @@ export default function Configure() {
                     />
                   ) : (
                     ssidScopeGroups.map((group) => (
-                      <div key={group.category} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <div key={group.category} className="nt-stack nt-gap-4">
                         <span
-                          style={{
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 10,
-                            letterSpacing: '.06em',
-                            textTransform: 'uppercase',
-                            color: 'var(--nd-text-muted)',
-                          }}
+                          className="nt-mono-label"
                         >
                           {SSID_SCOPE_CATEGORY_LABEL[group.category]}
                         </span>
@@ -1913,14 +1854,7 @@ export default function Configure() {
                 </div>
 
                 <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 10,
-                    padding: '14px 0',
-                    borderTop: '1px solid var(--nd-border-subtle)',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
+                  className="nt-stack nt-configure-ritual-bar"
                 >
                   {/* Mist WLANs carry `enabled`; Central's profile upsert always
                       writes enable:true, so the switch is Mist-only — offering it
@@ -1954,9 +1888,9 @@ export default function Configure() {
             ) : null}
 
             {kind === 'port' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div className="nt-drawer-stack">
                 <div
-                  style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
+                  className="nt-form-grid"
                 >
                   <FormField label="Switch">
                     {liveMode ? (
@@ -1999,7 +1933,7 @@ export default function Configure() {
                   />
                 </FormField>
                 <div
-                  style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}
+                  className="nt-form-grid"
                 >
                   <FormField label="Mode">
                     <Select
@@ -2017,14 +1951,7 @@ export default function Configure() {
                   </FormField>
                 </div>
                 <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 10,
-                    padding: '14px 0',
-                    borderTop: '1px solid var(--nd-border-subtle)',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
+                  className="nt-stack nt-configure-ritual-bar"
                 >
                   <Switch
                     label="Power over Ethernet"
@@ -2051,9 +1978,9 @@ export default function Configure() {
             ) : null}
 
             {kind === 'vlan' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div className="nt-drawer-stack">
                 <div
-                  style={{ display: 'grid', gridTemplateColumns: '80px minmax(0, 1fr)', gap: 14 }}
+                  className="nt-form-grid" style={{ gridTemplateColumns: "80px minmax(0, 1fr)", gap: 14 }}
                 >
                   <FormField label="ID">
                     <Input
@@ -2096,33 +2023,23 @@ export default function Configure() {
               </div>
             ) : null}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="nt-stack nt-gap-10">
               <SectionHeader label={labConfigMode ? 'What will be applied' : 'What gets pushed'} meta={previewMeta} />
               <Code block>{preview}</Code>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="nt-stack nt-gap-2">
               <SectionHeader label={liveMode ? 'Impact evidence' : 'Blast radius'} />
               {radius.map((r) => (
                 <div
                   key={r.what}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    padding: '8px 0',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
+                  className="nt-configure-drawer-row"
                 >
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
+                  <span className="nt-body-sec nt-flex-1">
                     {r.what}
                   </span>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 11,
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {r.count}
                   </span>
@@ -2131,10 +2048,10 @@ export default function Configure() {
             </div>
 
             {kind === 'ssid' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="nt-stack nt-gap-10">
                 <SectionHeader label={labConfigMode ? 'Exact scope assignments' : 'Review — exact scope assignments'} />
                 {(ssid.scopeIds ?? []).length === 0 ? (
-                  <span style={{ fontSize: 12.5, color: 'var(--nd-text-muted)' }}>
+                  <span className="nt-body-sm nt-hint-muted">
                     No scope selected yet — pick at least one above before applying.
                   </span>
                 ) : (
@@ -2151,7 +2068,7 @@ export default function Configure() {
                           borderBottom: '1px solid var(--nd-border-subtle)',
                         }}
                       >
-                        <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
+                        <span className="nt-body-sec nt-flex-1">
                           {option?.label ?? scopeId}
                         </span>
                         <Badge tone="neutral">{option ? SSID_SCOPE_CATEGORY_LABEL[option.category] : 'unknown'}</Badge>
@@ -2159,7 +2076,7 @@ export default function Configure() {
                     );
                   })
                 )}
-                <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' }}>
+                <span className="nt-hint-muted">
                   {mistSsid
                     ? 'site-scoped WLAN write · POST/PUT /api/v1/sites/{site}/wlans — no secret value is ever shown here.'
                     : 'device-function CAMPUS_AP · assigned via /network-config/v1alpha1/config-assignments — no secret value is ever shown here.'}
@@ -2174,7 +2091,7 @@ export default function Configure() {
                 ) : null}
                 {valueProblems.length > 0 ? (
                   <Alert tone="warning" title={`Apply is disabled — ${mistSsid ? 'Mist' : 'Central'} would refuse this form`}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                    <div className="nt-stack" style={{ gap: 4, fontSize: 13 }}>
                       {valueProblems.map((problem) => (
                         <span key={problem}>{problem}</span>
                       ))}
@@ -2183,12 +2100,12 @@ export default function Configure() {
                 ) : null}
                 {ssidMissingDependencies.length > 0 ? (
                   <Alert tone="warning" title="Apply is disabled — a required live dependency is unavailable">
-                    <span style={{ fontSize: 13 }}>
+                    <span className="nt-body-sm">
                       This plane did not report: {ssidMissingDependencies.join(', ')}.
                     </span>
                   </Alert>
                 ) : null}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div className="nt-filter-bar nt-gap-8">
                   <Button variant="primary" size="md" disabled={ssidApplyDisabled} onClick={() => void applySsid()}>
                     {ssidApplying ? 'Applying…' : labConfigMode ? 'Apply' : 'Apply directly'}
                   </Button>
@@ -2199,7 +2116,7 @@ export default function Configure() {
                 {ssidApplyResult ? (
                   ssidApplyResult.error ? (
                     <Alert tone="danger" title="Apply failed">
-                      <span style={{ fontSize: 13 }}>{ssidApplyResult.error}</span>
+                      <span className="nt-body-sm">{ssidApplyResult.error}</span>
                     </Alert>
                   ) : ssidApplyResult.result ? (
                     <Alert
@@ -2226,8 +2143,8 @@ export default function Configure() {
                               : 'Not applied'
                       }
                     >
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <span style={{ fontSize: 13 }}>
+                      <div className="nt-stack nt-gap-8">
+                        <span className="nt-body-sm">
                           Profile ({ssidApplyResult.result.profile.action}): {ssidApplyResult.result.profile.message}
                         </span>
                         {ssidApplyResult.result.assignments.map((a) => (
@@ -2249,12 +2166,7 @@ export default function Configure() {
                   ) : null
                 ) : null}
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                    lineHeight: 1.6,
-                  }}
+                  className="nt-hint-muted nt-lh-16"
                 >
                   {labConfigMode
                     ? 'Scope-aware direct apply. An audit event is recorded for every attempt.'
@@ -2262,7 +2174,7 @@ export default function Configure() {
                 </span>
               </div>
             ) : labConfigMode ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div className="nt-stack nt-gap-8">
                 {!genericTargetCanWrite ? (
                   <Alert tone="info" title="Central configuration writes are unavailable">
                     {centralCapability
@@ -2284,14 +2196,14 @@ export default function Configure() {
                 ) : null}
                 {valueProblems.length > 0 ? (
                   <Alert tone="warning" title="Apply is disabled — Central would refuse this form">
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                    <div className="nt-stack" style={{ gap: 4, fontSize: 13 }}>
                       {valueProblems.map((problem) => (
                         <span key={problem}>{problem}</span>
                       ))}
                     </div>
                   </Alert>
                 ) : null}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div className="nt-filter-bar nt-gap-8">
                   <Button
                     variant="primary"
                     size="md"
@@ -2307,7 +2219,7 @@ export default function Configure() {
                 {directApply ? (
                   directApply.error ? (
                     <Alert tone="danger" title="Apply failed">
-                      <span style={{ fontSize: 13 }}>{directApply.error}</span>
+                      <span className="nt-body-sm">{directApply.error}</span>
                     </Alert>
                   ) : directApply.result ? (
                     <Alert
@@ -2332,7 +2244,7 @@ export default function Configure() {
                             : 'Not applied'
                       }
                     >
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                      <div className="nt-stack-col nt-gap-6" style={{ fontSize: 13 }}>
                         <span>{directApply.result.message}</span>
                         {directApply.result.cacheRefresh?.attempted && !directApply.result.cacheRefresh.ok ? (
                           <span>
@@ -2345,18 +2257,13 @@ export default function Configure() {
                   ) : null
                 ) : null}
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                    lineHeight: 1.6,
-                  }}
+                  className="nt-hint-muted nt-lh-16"
                 >
                   Immediate lab apply. Every attempt remains audited, and the result below is the write evidence.
                 </span>
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div className="nt-stack nt-gap-8">
                 <FormField label="Ticket reference (required for the write lease)">
                   <Input
                     mono
@@ -2367,19 +2274,19 @@ export default function Configure() {
                 </FormField>
                 {queued ? (
                   <Alert tone="success" title="Queued for push">
-                    <span style={{ fontSize: 13 }}>{queuedChangeNote(ticket)}</span>
+                    <span className="nt-body-sm">{queuedChangeNote(ticket)}</span>
                   </Alert>
                 ) : null}
                 {valueProblems.length > 0 ? (
                   <Alert tone="warning" title="Queueing is disabled — the broker would refuse this form">
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                    <div className="nt-stack" style={{ gap: 4, fontSize: 13 }}>
                       {valueProblems.map((problem) => (
                         <span key={problem}>{problem}</span>
                       ))}
                     </div>
                   </Alert>
                 ) : null}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div className="nt-filter-bar nt-gap-8">
                   <Button
                     variant="primary"
                     size="md"
@@ -2403,22 +2310,18 @@ export default function Configure() {
                 {dryRun ? (
                   dryRun.error ? (
                     <Alert tone="danger" title="Dry run rejected">
-                      <span style={{ fontSize: 13 }}>{dryRun.error}</span>
+                      <span className="nt-body-sm">{dryRun.error}</span>
                     </Alert>
                   ) : dryRun.result ? (
                     <Alert
                       tone={dryRun.result.ok ? (dryRun.result.snapshot ? 'success' : 'info') : 'warning'}
                       title="Dry run"
                     >
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        <span style={{ fontSize: 13 }}>{dryRun.result.note}</span>
+                      <div className="nt-stack nt-gap-10">
+                        <span className="nt-body-sm">{dryRun.result.note}</span>
                         <Code block>{dryRun.result.rendered}</Code>
                         <span
-                          style={{
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 10.5,
-                            color: 'var(--nd-text-muted)',
-                          }}
+                          className="nt-hint-muted"
                         >
                           {dryRun.result.snapshot
                             ? `rollback snapshot stored — kept 24h${dryRun.result.httpCode ? ` · read-back HTTP ${dryRun.result.httpCode}` : ''}`
@@ -2431,12 +2334,7 @@ export default function Configure() {
                   ) : null
                 ) : null}
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                    lineHeight: 1.6,
-                  }}
+                  className="nt-hint-muted nt-lh-16"
                 >
                   {liveMode ? LIVE_PUSH_NOTES[kind] : CONFIG_PUSH_NOTES[kind]}
                 </span>
@@ -2465,27 +2363,41 @@ export default function Configure() {
             : "The write broker's audit log: what happened to every brokered change, with the ticket it was raised against. Payload bodies are deliberately not recorded."
         }
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <SectionHeader
-            label={labConfigMode ? 'Direct applies' : 'Brokered changes'}
-            // A bare count reads as "this is how many there are". When a
-            // generation could not be read it is only how many we could see.
-            meta={
-              history.kind === 'ok'
-                ? history.unreadable.length > 0
-                  ? `${history.events.length} readable`
-                  : String(history.events.length)
-                : undefined
-            }
-          />
+        <div className="nt-stack nt-gap-2">
+          <div className="nt-filter-bar nt-gap-8">
+            <div className="nt-flex-1-wide" style={{ minWidth: 160 }}>
+              <SectionHeader
+                label={labConfigMode ? 'Direct applies' : 'Brokered changes'}
+                // A bare count reads as "this is how many there are". When a
+                // generation could not be read it is only how many we could see.
+                meta={
+                  history.kind === 'ok'
+                    ? history.unreadable.length > 0
+                      ? `${history.events.length} readable`
+                      : String(history.events.length)
+                    : undefined
+                }
+              />
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={history.kind !== 'ok' || history.events.length === 0}
+              onClick={() => {
+                window.open('/api/configure/history/export?limit=200', '_blank', 'noopener,noreferrer');
+              }}
+            >
+              Download CSV
+            </Button>
+          </div>
           {history.kind === 'loading' ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: 32 }}>
+            <div className="nt-center-pad nt-center-pad" style={{ padding: 32 }}>
               <Spinner size="sm" />
             </div>
           ) : null}
           {history.kind === 'error' ? (
             <Alert tone="danger" title="The audit log could not be read">
-              <span style={{ fontSize: 13 }}>{history.message}</span>
+              <span className="nt-body-sm">{history.message}</span>
             </Alert>
           ) : null}
           {history.kind === 'offline' ? (
@@ -2504,7 +2416,7 @@ export default function Configure() {
               trail is missing — the absence would read as "nothing happened". */}
           {history.kind === 'ok' && history.unreadable.length > 0 ? (
             <Alert tone="warning" title="Part of the audit log could not be read">
-              <span style={{ fontSize: 13 }}>
+              <span className="nt-body-sm">
                 {history.unreadable.length === 1
                   ? `The rotated log ${history.unreadable[0]} exists on the server but could not be opened.`
                   : `${history.unreadable.length} rotated logs (${history.unreadable.join(', ')}) exist on the server but could not be opened.`}{' '}
@@ -2517,45 +2429,25 @@ export default function Configure() {
             ? history.events.map((e, i) => (
                 <div
                   key={`${e.ts}-${e.changeId}-${e.event}-${i}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12,
-                    padding: '10px 0',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
+                  className="nt-configure-drawer-row nt-configure-drawer-row--lg"
                 >
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10.5,
-                      color: 'var(--nd-text-muted)',
-                      width: 44,
-                      flex: '0 0 44px',
-                    }}
+                    className="nt-hint-muted nt-w-44"
                   >
                     {hhmm(e.ts)}
                   </span>
-                  <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    <span style={{ fontSize: 12.5, color: 'var(--nd-text-primary)', lineHeight: 1.4 }}>
+                  <div className="nt-stack-col--flex nt-gap-3">
+                    <span className="nt-text-pri-12" style={{ fontSize: 12.5 }}>
                       {e.event} {e.kind}
                     </span>
                     <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 10,
-                        color: 'var(--nd-text-muted)',
-                      }}
+                      className="nt-hint-muted"
                     >
                       {e.changeId}
                     </span>
                   </div>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10,
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {e.ticket}
                   </span>

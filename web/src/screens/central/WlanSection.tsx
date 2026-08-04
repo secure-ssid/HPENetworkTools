@@ -15,7 +15,6 @@ import { Badge, SectionHeader } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { SsidObject } from '@hpe/shared';
 import { buildSsidDeepLink } from '../configure/deepLink';
-import { noteStyle } from './style';
 
 function WlanRow({ row }: { row: SsidObject }) {
   const to = buildSsidDeepLink(row, 'CENTRAL') ?? '/configure';
@@ -44,12 +43,12 @@ function WlanRow({ row }: { row: SsidObject }) {
             </>
           ) : null}
         </span>
-        <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)' }}>
+        <span className="nt-hint-muted">
           {row.targets}
           {row.note ? ` · ${row.note}` : ''}
         </span>
       </span>
-      <span style={{ ...noteStyle, fontSize: 'var(--nd-text-10)', textAlign: 'right' }}>
+      <span className="nt-hint-muted" style={{ textAlign: "right" }}>
         {row.security} · {row.vlan}
       </span>
     </Link>
@@ -70,10 +69,10 @@ export function WlanSection({
       : `${countOf(wlans.length, 'WLAN').toUpperCase()} · CENTRAL`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="WLANs" meta={meta} />
       {!wlansReported ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           The WLAN inventory was not read this cycle — a failed read, no linked Central plane, or
           the gateway named it unavailable.{' '}
           <Link to="/configure" style={{ color: 'var(--nd-accent)' }}>
@@ -82,13 +81,13 @@ export function WlanSection({
           carries the same read when it is available.
         </div>
       ) : wlans.length === 0 ? (
-        <div style={noteStyle}>Central reported no WLANs — a real answer, not a failed read.</div>
+        <div className="nt-service-note">Central reported no WLANs — a real answer, not a failed read.</div>
       ) : (
         <>
           {wlans.map((row) => (
             <WlanRow key={`${row.name}|${row.vlan}|${row.targets}`} row={row} />
           ))}
-          <div style={{ ...noteStyle, fontSize: 10.5, paddingTop: 6 }}>
+          <div className="nt-service-note" style={{ fontSize: 10.5, paddingTop: 6 }}>
             Scope text as Central reports it — the same WLAN at several scopes is one row naming
             them all. Edits go through{' '}
             <Link to="/configure" style={{ color: 'var(--nd-accent)' }}>

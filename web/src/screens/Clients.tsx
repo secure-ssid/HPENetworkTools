@@ -47,6 +47,7 @@ import {
   Progress,
   SectionHeader,
   Select,
+  PageSkeleton,
   Spinner,
   Switch,
   TableViewOptions,
@@ -649,31 +650,63 @@ export default function Clients() {
   /* The header stamps SYNCED hh:mm, so a NOC tab must not sit on a mount-time
      snapshot under it: poll on the settings cadence, the same pattern
      Overview.tsx runs. One fetch at a time — a slow response never stacks up
-     behind the interval; fixture reads poll harmlessly. */
+     behind the interval; fixture reads poll harmlessly. Live lists page at 250. */
+  const clientsAccRef = useRef<ClientRow[]>([]);
+  const nextClientCursorRef = useRef<string | null>(null);
+  const loadMoreClientsRef = useRef<() => void>(() => {});
+  const [clientHasMore, setClientHasMore] = useState(false);
+  const [clientPageTotal, setClientPageTotal] = useState<number | null>(null);
+  const [loadingMoreClients, setLoadingMoreClients] = useState(false);
+  const CLIENT_PAGE = 250;
+
   useEffect(() => {
     let live = true;
     let inFlight = false;
-    const pull = () => {
-      if (inFlight) return;
-      inFlight = true;
-      void getClients()
+    const pull = (mode: 'replace' | 'append' = 'replace') => {
+      if (mode === 'replace' && inFlight) return;
+      if (mode === 'append' && !nextClientCursorRef.current) return;
+      if (mode === 'replace') inFlight = true;
+      if (mode === 'append') setLoadingMoreClients(true);
+      void getClients({
+        limit: CLIENT_PAGE,
+        ...(mode === 'append' && nextClientCursorRef.current
+          ? { cursor: nextClientCursorRef.current }
+          : {}),
+      })
         .then((d) => {
-          if (live) setData(d);
+          if (!live) return;
+          if (mode === 'append') {
+            const seen = new Set(clientsAccRef.current.map((r) => r.mac));
+            const extra = d.clients.filter((r) => !seen.has(r.mac));
+            const merged = [...clientsAccRef.current, ...extra];
+            clientsAccRef.current = merged;
+            setData({ ...d, clients: merged });
+          } else {
+            clientsAccRef.current = d.clients;
+            setData(d);
+          }
+          nextClientCursorRef.current = d.page?.nextCursor ?? null;
+          setClientHasMore(Boolean(d.page?.nextCursor));
+          setClientPageTotal(d.page?.total ?? null);
         })
         .finally(() => {
-          inFlight = false;
+          if (mode === 'replace') inFlight = false;
+          if (mode === 'append') setLoadingMoreClients(false);
         });
-      void getTaxonomySummary()
-        .then((t) => {
-          if (live) setClientTypeBuckets(t.clients.byType);
-        })
-        .catch(() => {
-          /* optional enrichment */
-        });
+      if (mode === 'replace') {
+        void getTaxonomySummary()
+          .then((t) => {
+            if (live) setClientTypeBuckets(t.clients.byType);
+          })
+          .catch(() => {
+            /* optional enrichment */
+          });
+      }
     };
-    pull();
+    loadMoreClientsRef.current = () => pull('append');
+    pull('replace');
     const every = Math.max(pollIntervalSec, 10) * 1000;
-    const id = setInterval(pull, every);
+    const id = setInterval(() => pull('replace'), every);
     return () => {
       live = false;
       clearInterval(id);
@@ -801,11 +834,7 @@ export default function Clients() {
   }, [coaOpen]);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -873,7 +902,7 @@ export default function Clients() {
           {
             key: 'Plane',
             value: (c: ClientRow) => reported(c.plane),
-            render: (c: ClientRow) => <Badge tone={c.planeTone}>{c.plane}</Badge>,
+            render: (c: ClientRow) => <Badge plane>{c.plane}</Badge>,
           },
         ]
       : []),
@@ -882,11 +911,11 @@ export default function Clients() {
       value: (c: ClientRow) => c.sources?.map((source) => source.row.plane).join(', ') ?? c.plane,
       render: (c: ClientRow) => {
         const sources = c.sources ?? [];
-        if (sources.length < 2) return <Badge tone={c.planeTone}>{c.plane}</Badge>;
+        if (sources.length < 2) return <Badge plane>{c.plane}</Badge>;
         const expanded = expandedSources[c.mac] === true;
         const labels = sources.map((source) => source.row.plane);
         return (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+          <div className="nt-col-start">
             <button
               type="button"
               className="nt-clients-table__link"
@@ -1521,26 +1550,37 @@ export default function Clients() {
     : null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <ScreenHeader
         overline="Operate / Clients"
         title="Clients"
         subtitle="Every session, wired or wireless, whichever plane authenticated it."
         actions={
           <>
-            <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-10)',
-                color: 'var(--nd-text-muted)',
-                letterSpacing: '.08em',
-              }}
-            >
-              {stamp}
-            </span>
+            <span className="nt-mono-label">{stamp}</span>
             {data.blended?.includes('clients') ? <Badge tone="info">LIVE</Badge> : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/auth-events')}>
               Auth events →
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const url = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('View link copied', {
+                      description: window.location.search || 'unfiltered clients list',
+                      tone: 'success',
+                    });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy view link
             </Button>
             <Button variant="secondary" size="sm" onClick={exportCsv}>
               Export sessions
@@ -1552,28 +1592,18 @@ export default function Clients() {
       <StatRow stats={data.stats} />
 
       {clientTypeBuckets.length > 0 ? (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--nd-text-muted)' }}>
-            Categories
-          </span>
+        <div className="nt-chip-row" role="group" aria-label="Client categories">
+          <span className="nt-chip-row__label">Categories</span>
           {clientTypeBuckets.map((b) => (
             <button
               key={b.key}
               type="button"
               onClick={() => setType(b.key === type ? 'all' : b.key)}
-              style={{
-                background: type === b.key ? 'var(--nd-bg-inset)' : 'none',
-                border: '1px solid var(--nd-border-default)',
-                borderRadius: 4,
-                padding: '2px 8px',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                gap: 6,
-                alignItems: 'center',
-              }}
+              className={type === b.key ? 'nt-chip nt-chip--active' : 'nt-chip'}
+              aria-pressed={type === b.key}
             >
               <Badge tone={b.tone ?? 'neutral'}>{b.label}</Badge>
-              <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>{b.count}</span>
+              <span className="nt-chip__count">{b.count}</span>
             </button>
           ))}
         </div>
@@ -1586,15 +1616,15 @@ export default function Clients() {
             missingSources.length === 1 ? '' : 's'
           } contributed no sessions: ${missingSources.join(', ')}`}
         >
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             Their client read has not come back, so whoever is associated through them is absent from the roster and
             from the counts above. Do not read this as the whole estate.
           </span>
         </Alert>
       ) : null}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ width: 230 }}>
+      <div className="nt-filter-bar">
+        <div className="nt-filter-field nt-filter-field--xl">
           <Input
             size="sm"
             mono
@@ -1604,7 +1634,7 @@ export default function Clients() {
             aria-label="Filter clients"
           />
         </div>
-        <div style={{ width: 150 }}>
+        <div className="nt-filter-field nt-filter-field--sm">
           <Select
             options={MEDIUM_OPTIONS}
             value={medium}
@@ -1613,7 +1643,7 @@ export default function Clients() {
             aria-label="Medium"
           />
         </div>
-        <div style={{ width: 160 }}>
+        <div className="nt-filter-field nt-filter-field--md">
           <Select
             options={typeOptions}
             value={type}
@@ -1622,7 +1652,7 @@ export default function Clients() {
             aria-label="Device type"
           />
         </div>
-        <div style={{ width: 190 }}>
+        <div className="nt-filter-field nt-filter-field--lg">
           <Select
             options={siteOptions}
             value={site}
@@ -1631,7 +1661,7 @@ export default function Clients() {
             aria-label="Site"
           />
         </div>
-        <div style={{ width: 190 }}>
+        <div className="nt-filter-field nt-filter-field--lg">
           <Select
             options={groupOptions}
             value={group}
@@ -1640,7 +1670,7 @@ export default function Clients() {
             aria-label="Group"
           />
         </div>
-        <div style={{ width: 150 }}>
+        <div className="nt-filter-field nt-filter-field--sm">
           <Select
             options={planeOptions}
             value={plane}
@@ -1656,14 +1686,7 @@ export default function Clients() {
           onChange={(config) => setTableColumns('clients', config)}
         />
         <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
-        <span
-          style={{
-            marginLeft: 'auto',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-text-muted)',
-          }}
-        >
+        <span className="nt-filter-bar__count">
           {/* The estate total is a fixture figure; a live feed counts only what
               the poller returned, so the tail drops rather than contradict the
               `Clients now` Stat above it. */}
@@ -1719,6 +1742,25 @@ export default function Clients() {
           />
         )
       ) : null}
+      {clientHasMore || clientPageTotal != null ? (
+        <div className="nt-filter-bar">
+          {clientPageTotal != null ? (
+            <span className="nt-mono-label">
+              Loaded {data.clients.length} of {clientPageTotal}
+            </span>
+          ) : null}
+          {clientHasMore ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={loadingMoreClients}
+              onClick={() => loadMoreClientsRef.current()}
+            >
+              {loadingMoreClients ? 'Loading…' : 'Load more'}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
 
       <Drawer
         open={cur != null}
@@ -1730,28 +1772,20 @@ export default function Clients() {
         description={drawer?.summary}
       >
         {cur && drawer ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="nt-drawer-stack">
+            <div className="nt-chip-row">
               <Badge tone={cur.healthTone} dot>
                 {cur.health}
               </Badge>
-              <Badge tone={cur.planeTone}>{cur.plane}</Badge>
+              <Badge plane>{cur.plane}</Badge>
               <ClientCategoryBadges type={cur.type} model={cur.model} />
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                }}
+                className="nt-hint-muted"
               >
                 {`${cur.sources?.length ?? 1} source${(cur.sources?.length ?? 1) === 1 ? '' : 's'}`}
               </span>
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                }}
+                className="nt-hint-muted"
               >
                 session {cur.session}
               </span>
@@ -1759,31 +1793,26 @@ export default function Clients() {
 
             {isUnverified(cur) ? (
               <div
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                  lineHeight: 1.6,
+                className="nt-hint-muted" style={{ lineHeight: 1.6,
                   padding: '10px 12px',
                   border: '1px solid var(--nd-border-default)',
-                  background: 'var(--nd-bg-raised)',
-                }}
+                  background: 'var(--nd-bg-raised)' }}
               >
                 {cur.plane} is behind, so this session was not re-confirmed on the last poll. Every
                 figure below is last-good at pull time, not current — treat it as unverified.
               </div>
             ) : null}
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+            <div className="nt-fact-grid">
               <div>
                 <SectionHeader label="Connection quality" meta={cur.quality === null ? 'NOT REPORTED' : `${cur.quality} / 100`} />
-                <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-secondary)' }}>
+                <span className="nt-fact-grid__k">
                   {cur.quality === null ? cur.health : `${cur.health} · ${cur.quality} / 100`}
                 </span>
               </div>
               <div>
                 <SectionHeader label="Current attachment" />
-                <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-secondary)' }}>
+                <span className="nt-fact-grid__k">
                   {`${cur.siteName} · ${cur.attach}${cur.where !== '—' ? ` · ${cur.where}` : ''}`}
                 </span>
               </div>
@@ -1806,51 +1835,29 @@ export default function Clients() {
               size="sm"
               aria-expanded={showDiagnostics}
               onClick={() => setShowDiagnostics((open) => !open)}
-              style={{ alignSelf: 'flex-start' }}
+              className="nt-self-start"
             >
               {showDiagnostics ? 'Hide diagnostics' : 'More diagnostics'}
             </Button>
 
             {showDiagnostics ? (
               <>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="nt-stack nt-gap-10">
               <SectionHeader label="Experience" meta={drawer.experienceMeta} />
               <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-                  gap: '14px 18px',
-                }}
+                className="nt-metrics-3"
               >
                 {drawer.metrics.map((m) => (
-                  <div key={m.k} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 9.5,
-                        letterSpacing: '.12em',
-                        textTransform: 'uppercase',
-                        color: 'var(--nd-text-muted)',
-                      }}
-                    >
-                      {m.k}
-                    </span>
-                    <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 15, color: m.color }}>
+                  <div key={m.k} className="nt-metric-tile">
+                    <span className="nt-metric-tile__k">{m.k}</span>
+                    <span className="nt-metric-tile__v" style={{ color: m.color }}>
                       {m.v}
                     </span>
-                    <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-10)',
-                        color: 'var(--nd-text-muted)',
-                      }}
-                    >
-                      {m.note}
-                    </span>
+                    <span className="nt-metric-tile__note">{m.note}</span>
                   </div>
                 ))}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 6 }}>
+              <div className="nt-stack nt-gap-8 nt-pad-top-6">
                 {cur.quality !== null ? (
                   <Progress
                     value={cur.quality}
@@ -1860,44 +1867,15 @@ export default function Clients() {
                 ) : (
                   <SectionHeader label="Connection quality score" meta="NOT REPORTED" />
                 )}
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                  }}
-                >
-                  {drawer.qualityNote}
-                </span>
+                <span className="nt-hint-muted">{drawer.qualityNote}</span>
               </div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="nt-stack nt-gap-2">
               <SectionHeader label="Where it is" meta={drawer.placeMeta} />
               {drawer.place.map((p) => (
-                <div
-                  key={p.k}
-                  style={{
-                    display: 'flex',
-                    gap: 12,
-                    padding: '8px 0',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 9.5,
-                      letterSpacing: '.12em',
-                      textTransform: 'uppercase',
-                      color: 'var(--nd-text-muted)',
-                      width: 104,
-                      flex: '0 0 104px',
-                      paddingTop: 2,
-                    }}
-                  >
-                    {p.k}
-                  </span>
+                <div key={p.k} className="nt-fact-row">
+                  <span className="nt-fact-row__k nt-fact-row__k--wide">{p.k}</span>
                   <span
                     style={{
                       flex: 1,
@@ -1913,16 +1891,11 @@ export default function Clients() {
               {/* A field the plane has no concept of gets an explanation, not a
                   dash that blames the plane for never modelling it. */}
               {drawer.placeNotes.length ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, paddingTop: 8 }}>
+                <div className="nt-stack nt-gap-3 nt-pad-top-8">
                   {drawer.placeNotes.map((note) => (
                     <span
                       key={note}
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-10)',
-                        color: 'var(--nd-text-muted)',
-                        lineHeight: 1.6,
-                      }}
+                      className="nt-hint-muted nt-lh-16"
                     >
                       {note}
                     </span>
@@ -1931,42 +1904,26 @@ export default function Clients() {
               ) : null}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="nt-stack nt-gap-2">
               <SectionHeader label="Client 360" meta={drawer.planesMeta} />
               {drawer.planes360 === undefined ? (
                 /* The per-client read lands after the drawer shell: say the
                    planes are being asked, never that none reported. */
-                <div style={{ display: 'flex', justifyContent: 'center', padding: '18px 0' }}>
+                <div className="nt-center-pad nt-pad-y-18">
                   <Spinner size="sm" />
                 </div>
               ) : drawer.planes360 === null ? (
-                <div
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-muted)',
-                    lineHeight: 1.6,
-                    padding: '9px 0',
-                  }}
-                >
+                <div className="nt-hint-muted nt-service-note nt-pad-row">
                   No cross-plane read came back for this client — the session above is unaffected;
                   only the per-plane correlation is missing.
                 </div>
               ) : (
                 drawer.planeRows.map((row, rowIdx) => (
-                  <div
-                    key={row.label}
-                    style={{
-                      display: 'flex',
-                      gap: 12,
-                      padding: '8px 0',
-                      borderBottom: '1px solid var(--nd-border-subtle)',
-                    }}
-                  >
-                    <span style={{ width: 104, flex: '0 0 104px', paddingTop: 1 }}>
+                  <div key={row.label} className="nt-fact-row">
+                    <span className="nt-fact-row__k nt-fact-row__k--wide nt-pad-top-1">
                       <Badge tone={row.tone}>{row.label}</Badge>
                     </span>
-                    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <div className="nt-stack nt-flex-1 nt-gap-3">
                       {row.lines.map((line, i) => (
                         <span
                           key={i}
@@ -1995,41 +1952,25 @@ export default function Clients() {
                           ))
                         : null}
                       {row.events.length > 0 ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, paddingTop: 2 }}>
+                        <div className="nt-stack-col nt-gap-3 nt-pad-top-2">
                           <span
-                            style={{
-                              fontFamily: 'var(--nd-font-mono)',
-                              fontSize: 'var(--nd-text-10)',
-                              color: 'var(--nd-text-muted)',
-                              letterSpacing: '.08em',
-                              textTransform: 'uppercase',
-                            }}
+                            className="nt-mono-label"
                           >
                             recent auth decisions
                           </span>
                           {row.events.map((e, i) => (
                             <div
                               key={i}
-                              style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}
+                              className="nt-row-baseline"
                             >
                               <span
-                                style={{
-                                  fontFamily: 'var(--nd-font-mono)',
-                                  fontSize: 10.5,
-                                  color: 'var(--nd-text-muted)',
-                                  width: 62,
-                                  flex: '0 0 62px',
-                                }}
+                                className="nt-hint-muted nt-w-62"
                               >
                                 {e.time}
                               </span>
                               <Badge tone={e.tone}>{e.result}</Badge>
                               <span
-                                style={{
-                                  fontFamily: 'var(--nd-font-mono)',
-                                  fontSize: 'var(--nd-text-10)',
-                                  color: 'var(--nd-text-muted)',
-                                }}
+                                className="nt-hint-muted"
                               >
                                 {nonEmpty([e.method, e.reason]).join(' · ')}
                               </span>
@@ -2043,26 +1984,21 @@ export default function Clients() {
               )}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div className="nt-stack nt-gap-12">
               <SectionHeader
                 label={sectionLive ? 'Reported network topology' : 'Path to the internet'}
                 meta={drawer.pathMeta}
               />
               {drawer.path.length === 0 ? (
                 <div
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-muted)',
-                    lineHeight: 1.6,
-                  }}
+                  className="nt-hint-muted nt-lh-16"
                 >
                   {drawer.pathEmpty}
                 </div>
               ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 0, paddingLeft: 2 }}>
+              <div className="nt-stack-col nt-gap-0" style={{ paddingLeft: 2 }}>
                 {drawer.path.map((h, i) => (
-                  <div key={`${h.name}-${i}`} style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
+                  <div key={`${h.name}-${i}`} className="nt-row-stretch">
                     <div
                       style={{
                         width: 11,
@@ -2093,48 +2029,31 @@ export default function Clients() {
                         />
                       ) : null}
                     </div>
-                    <div style={{ flex: 1, minWidth: 0, paddingBottom: 16 }}>
+                    <div className="nt-flex-1" style={{ paddingBottom: 16 }}>
                       <div
-                        style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}
+                        className="nt-filter-bar nt-gap-10"
                       >
                         {h.device ? (
                           <button
                             type="button"
                             onClick={() => openDevice(h.name)}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              padding: 0,
-                              cursor: 'pointer',
-                              fontFamily: 'var(--nd-font-mono)',
-                              fontSize: 'var(--nd-text-12)',
-                              color: 'var(--nd-accent-text)',
-                            }}
+                            className="nt-mono-link nt-body-sm"
                           >
                             {h.name}
                           </button>
                         ) : (
                           <span
-                            style={{
-                              fontFamily: 'var(--nd-font-mono)',
-                              fontSize: 'var(--nd-text-12)',
-                              color: 'var(--nd-text-primary)',
-                            }}
+                            className="nt-configure-row__name-primary"
                           >
                             {h.name}
                           </span>
                         )}
-                        <span style={{ fontSize: 11.5, color: 'var(--nd-text-muted)' }}>{h.role}</span>
+                        <span className="nt-hint-muted">{h.role}</span>
                         {showPlatformTags ? <Badge tone={h.tone}>{h.state}</Badge> : null}
                       </div>
                       {h.hasNext ? (
                         <div
-                          style={{
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 10.5,
-                            color: 'var(--nd-text-muted)',
-                            paddingTop: 5,
-                          }}
+                          className="nt-hint-muted nt-pad-top-5"
                         >
                           ↓ {h.link}
                         </div>
@@ -2146,12 +2065,7 @@ export default function Clients() {
               )}
               {drawer.pathNote ? (
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                    lineHeight: 1.6,
-                  }}
+                  className="nt-hint-muted nt-lh-16"
                 >
                   {drawer.pathNote}
                 </span>
@@ -2159,17 +2073,11 @@ export default function Clients() {
             </div>
 
             {cur.medium === 'wireless' ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div className="nt-stack nt-gap-2">
               <SectionHeader label="Session timeline" meta={drawer.timelineMeta} />
               {drawer.timeline.length === 0 ? (
                 <div
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-muted)',
-                    lineHeight: 1.6,
-                    padding: '9px 0',
-                  }}
+                  className="nt-hint-muted nt-lh-16 nt-pad-row"
                 >
                   {drawer.timelineEmpty}
                 </div>
@@ -2185,29 +2093,16 @@ export default function Clients() {
                   }}
                 >
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10.5,
-                      color: 'var(--nd-text-muted)',
-                      width: 44,
-                      flex: '0 0 44px',
-                    }}
+                    className="nt-hint-muted nt-w-44"
                   >
                     {t.time}
                   </span>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                      width: 74,
-                      flex: '0 0 74px',
-                      textTransform: 'uppercase',
-                    }}
+                    className="nt-hint-muted nt-w-74 nt-mono-label"
                   >
                     {t.plane}
                   </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="nt-flex-1">
                     <div
                       style={{
                         fontSize: 'var(--nd-text-12)',
@@ -2218,11 +2113,7 @@ export default function Clients() {
                       {t.what}
                     </div>
                     <div
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 'var(--nd-text-10)',
-                        color: 'var(--nd-text-muted)',
-                      }}
+                      className="nt-hint-muted"
                     >
                       {t.raw}
                     </div>
@@ -2236,9 +2127,9 @@ export default function Clients() {
               </>
             ) : null}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="nt-stack nt-gap-10">
               <SectionHeader label="Actions" />
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div className="nt-chip-wrap">
                 <Button
                   variant="secondary"
                   size="sm"
@@ -2262,7 +2153,7 @@ export default function Clients() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  style={{ color: 'var(--nd-danger)' }}
+                  className="nt-danger-text"
                   onClick={() => (coaOpen && coaMode === 'block' ? setCoaOpen(false) : openCoa('block'))}
                 >
                   Block endpoint
@@ -2280,7 +2171,7 @@ export default function Clients() {
                     background: 'var(--nd-bg-raised)',
                   }}
                 >
-                  <div style={{ flex: 1, minWidth: 240 }}>
+                  <div className="nt-flex-1-wide">
                     <FormField
                       label="Authorising ticket"
                       help={

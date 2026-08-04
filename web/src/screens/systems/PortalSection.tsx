@@ -58,6 +58,21 @@ export function PortalSection() {
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState(workspaceName);
+  const [nocWall, setNocWall] = useState(() => {
+    try {
+      return localStorage.getItem('hpe-nt.noc-wall') === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    document.documentElement.classList.toggle('nd-noc-wall', nocWall);
+    try {
+      localStorage.setItem('hpe-nt.noc-wall', nocWall ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, [nocWall]);
   /* The context value can change after mount — the server settings replace
      the localStorage seed when they land (SettingsContext). Re-seed the input
      from it, but never over text the operator typed and has not committed:
@@ -200,9 +215,9 @@ export function PortalSection() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div className="nt-stack nt-gap-14">
       <SectionHeader label="Portal" meta="THIS APP · POLLER" />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <div className="nt-filter-bar nt-gap-8">
         {portal ? (
           <>
             <Badge tone={portal.demoMode ? 'warning' : 'success'} dot>
@@ -212,11 +227,7 @@ export function PortalSection() {
           </>
         ) : (
           <span
-            style={{
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 10.5,
-              color: 'var(--nd-text-muted)',
-            }}
+            className="nt-hint-muted"
           >
             {loadError ?? (offline ? 'backend offline — portal settings unavailable' : 'reading portal settings…')}
           </span>
@@ -257,7 +268,7 @@ export function PortalSection() {
         </FormField>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 22, flexWrap: 'wrap' }}>
+      <div className="nt-row" style={{ gap: 22, flexWrap: 'wrap' }}>
         <Switch
           checked={portal?.demoMode ?? true}
           onCheckedChange={(v) => void toggleDemo(v)}
@@ -275,6 +286,11 @@ export function PortalSection() {
           onCheckedChange={(v) => void toggleConfigMode(v)}
           disabled={offline}
           label="Config mode (writes need no ticket)"
+        />
+        <Switch
+          checked={nocWall}
+          onCheckedChange={setNocWall}
+          label="NOC wall (larger type)"
         />
         <Switch
           checked={showPlatformTags}

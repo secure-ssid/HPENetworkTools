@@ -155,3 +155,16 @@ describe('GET /api/configure/history — partial reads', () => {
     }
   });
 });
+
+describe('GET /api/configure/history/export', () => {
+  it('streams CSV of audit rows without payload bodies', async () => {
+    const r = await fetch(`${base}/api/configure/history/export?limit=50`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type') ?? '').toMatch(/text\/csv/);
+    const text = await r.text();
+    expect(text.split('\n')[0]).toBe('ts,event,changeId,ticket,kind,result,who');
+    expect(text).toContain('queue');
+    expect(text).not.toContain('rendered');
+    expect(text).not.toContain('ip helper');
+  });
+});

@@ -12,3 +12,4 @@ export * from './data';
 export * from './feedback';
 export * from './forms';
 export * from './Drawer';
+export * from './overlays';

@@ -162,39 +162,48 @@ export function siteIdFor(name: string): SiteId | undefined {
 // Shell — HpeNetworkTools.dc.html
 // ---------------------------------------------------------------------------
 
-/** Nav groups from the sidebar markup (OPERATE / INVENTORY / GOVERN). */
+/**
+ * Nav groups — object-first IA (NightDesk 2.0).
+ * Primary rail stays job-oriented (~9 items). Plane consoles live under
+ * Platforms so operators pick a task, not a brand.
+ */
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Operate',
     items: [
       { label: 'Overview', view: 'overview' },
-      { label: 'Topology', view: 'topology' },
       { label: 'Alerts', view: 'alerts' },
+      { label: 'Topology', view: 'topology' },
       { label: 'Tickets', view: 'tickets' },
       { label: 'Clients', view: 'clients' },
-      { label: 'Auth events', view: 'auth' },
-      { label: 'ClearPass', view: 'clearpass' },
-      { label: 'Central', view: 'central' },
-      { label: 'Mist', view: 'mist' },
-      { label: 'UXI', view: 'uxi' },
     ],
   },
   {
-    label: 'Inventory',
+    label: 'Estate',
     items: [
-      { label: 'Inventory explorer', view: 'inventory' },
       { label: 'Sites', view: 'sites' },
       { label: 'Devices', view: 'devices' },
+      { label: 'Inventory explorer', view: 'inventory' },
+      { label: 'Auth events', view: 'auth' },
+    ],
+  },
+  {
+    label: 'Change',
+    items: [
+      { label: 'Configure', view: 'configure' },
+      { label: 'Compliance', view: 'compliance' },
       { label: 'Licences', view: 'licenses' },
     ],
   },
   {
-    label: 'Govern',
+    label: 'Platforms',
     items: [
-      { label: 'GreenLake', view: 'greenlake' },
-      { label: 'Configure', view: 'configure' },
-      { label: 'Compliance', view: 'compliance' },
       { label: 'Connected systems', view: 'systems' },
+      { label: 'Central', view: 'central' },
+      { label: 'Mist', view: 'mist' },
+      { label: 'ClearPass', view: 'clearpass' },
+      { label: 'UXI', view: 'uxi' },
+      { label: 'GreenLake', view: 'greenlake' },
     ],
   },
 ];
@@ -221,26 +230,26 @@ export const SEARCH_INDEX: SearchIndexEntry[] = [
   { kind: 'ticket', label: 'NET-4173 — Classic sync stalled', meta: 'P1 · open', view: 'tickets', arg: 'NET-4173' },
 ];
 
-/** Breadcrumb trails per view — NT_CRUMBS (workspace crumb is prepended at runtime). */
+/** Breadcrumb trails per view (workspace crumb is prepended at runtime). */
 export const CRUMBS: CrumbMap = {
   overview: [{ label: 'Overview' }],
   topology: [{ label: 'Operate' }, { label: 'Topology' }],
   alerts: [{ label: 'Operate' }, { label: 'Alerts' }],
   tickets: [{ label: 'Operate' }, { label: 'Tickets' }],
   clients: [{ label: 'Operate' }, { label: 'Clients' }],
-  auth: [{ label: 'Operate' }, { label: 'Auth & policy events' }],
-  clearpass: [{ label: 'Operate' }, { label: 'ClearPass' }],
-  central: [{ label: 'Operate' }, { label: 'Central' }],
-  mist: [{ label: 'Operate' }, { label: 'Mist' }],
-  uxi: [{ label: 'Operate' }, { label: 'UXI' }],
-  inventory: [{ label: 'Inventory' }, { label: 'Explorer' }],
-  sites: [{ label: 'Inventory' }, { label: 'Sites' }],
-  devices: [{ label: 'Inventory' }, { label: 'Devices' }],
-  licenses: [{ label: 'Inventory' }, { label: 'Licences' }],
-  greenlake: [{ label: 'Govern' }, { label: 'GreenLake workspace' }],
-  configure: [{ label: 'Govern' }, { label: 'Configuration' }],
-  compliance: [{ label: 'Govern' }, { label: 'Compliance' }],
-  systems: [{ label: 'Govern' }, { label: 'Connected systems' }],
+  auth: [{ label: 'Estate' }, { label: 'Auth & policy events' }],
+  clearpass: [{ label: 'Platforms' }, { label: 'ClearPass' }],
+  central: [{ label: 'Platforms' }, { label: 'Central' }],
+  mist: [{ label: 'Platforms' }, { label: 'Mist' }],
+  uxi: [{ label: 'Platforms' }, { label: 'UXI' }],
+  inventory: [{ label: 'Estate' }, { label: 'Explorer' }],
+  sites: [{ label: 'Estate' }, { label: 'Sites' }],
+  devices: [{ label: 'Estate' }, { label: 'Devices' }],
+  licenses: [{ label: 'Change' }, { label: 'Licences' }],
+  greenlake: [{ label: 'Platforms' }, { label: 'GreenLake workspace' }],
+  configure: [{ label: 'Change' }, { label: 'Configuration' }],
+  compliance: [{ label: 'Change' }, { label: 'Compliance' }],
+  systems: [{ label: 'Platforms' }, { label: 'Connected systems' }],
 };
 
 // ---------------------------------------------------------------------------

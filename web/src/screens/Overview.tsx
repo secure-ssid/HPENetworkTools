@@ -24,15 +24,17 @@ import {
   Button,
   Divider,
   EmptyState,
+  PageSkeleton,
   SectionHeader,
   Sparkline,
-  Spinner,
   Table,
+  useToast,
 } from '../nightdesk';
 import { getMetricsHistory, getOverview, metricsWindowLabel } from '../api/client';
 import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import type { OverviewData } from '../api/client';
 import { useSettings } from '../app/SettingsContext';
+import { useIncident } from '../app/IncidentContext';
 import { deviceDetailPath, pathForView } from '../app/nav';
 import { hhmmLocal as hhmm, countOf, envelopeAnomalies, planeMetricsKey } from '@hpe/shared';
 import type { LaunchpadRow, MetricsHistoryEnvelope, OverviewAlert, SiteHealthTone, SiteId } from '@hpe/shared';
@@ -40,6 +42,7 @@ import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import '../app/app.css';
 import { StatRow } from './StatRow';
+import { exportTableCsv } from '../lib/csv';
 
 const HEALTH_COLORS: Record<SiteHealthTone, string> = {
   ok: 'var(--nd-success)',
@@ -109,8 +112,10 @@ function siteOf(a: OverviewAlert): { name: string | null; id: SiteId | null; met
 }
 
 export default function Overview() {
+  const { patchIncident } = useIncident();
   const navigate = useNavigate();
   const { density, showPlatformTags, workspaceName, pollIntervalSec } = useSettings();
+  const { toast } = useToast();
   const [data, setData] = useState<OverviewData | null>(null);
   /* Per-plane device-count sparklines ride the metrics-history envelope, not
    * the overview payload; null (older server, unreachable API) simply leaves
@@ -148,11 +153,7 @@ export default function Overview() {
   }, [pollIntervalSec]);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="overview" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -205,11 +206,7 @@ export default function Overview() {
     if (series.length === 1) {
       return (
         <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-text-muted)',
-          }}
+          className="nt-hint-muted"
         >
           1 sample
         </span>
@@ -285,23 +282,77 @@ export default function Overview() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+    <div className="nt-stack nt-overview">
       <ScreenHeader
         overline={overline}
         title="Operations"
         subtitle={subtitle}
         actions={
           <>
-            <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-10)',
-                color: 'var(--nd-text-muted)',
-                letterSpacing: '.08em',
+            <span className="nt-mono-label">{synced}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const parts: string[] = [];
+                if (data.alerts.length > 0) {
+                  parts.push(
+                    `${exportTableCsv(
+                      'overview-alerts.csv',
+                      ['sev', 'title', 'plane', 'age', 'device', 'site', 'meta'],
+                      data.alerts.map((a) => [
+                        a.sev,
+                        a.title,
+                        a.plane,
+                        a.age,
+                        a.device,
+                        a.siteName ?? '',
+                        a.meta,
+                      ]),
+                    )} alerts`,
+                  );
+                }
+                if (data.sites.length > 0) {
+                  parts.push(
+                    `${exportTableCsv(
+                      'overview-sites.csv',
+                      ['name', 'siteId', 'plane', 'devices', 'clients', 'health', 'alerts'],
+                      data.sites.map((s) => [
+                        s.name,
+                        s.siteId,
+                        s.plane,
+                        s.devices,
+                        s.clients,
+                        s.health ?? '',
+                        s.alerts,
+                      ]),
+                    )} sites`,
+                  );
+                }
+                if (data.planes.length > 0) {
+                  parts.push(
+                    `${exportTableCsv(
+                      'overview-planes.csv',
+                      ['name', 'scope', 'state', 'sync', 'linked'],
+                      data.planes.map((p) => [
+                        p.name,
+                        p.scope,
+                        p.state,
+                        p.sync,
+                        p.linked ? 'yes' : 'no',
+                      ]),
+                    )} planes`,
+                  );
+                }
+                toast(parts.length ? `Exported ${parts.join(' · ')}` : 'Nothing to export', {
+                  description: parts.length
+                    ? 'Client-side CSV of the current Overview payload.'
+                    : 'Alerts, sites, and planes are empty.',
+                });
               }}
             >
-              {synced}
-            </span>
+              Export CSV
+            </Button>
             <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
               Connected systems
             </Button>
@@ -315,17 +366,10 @@ export default function Overview() {
 
       <Divider variant="flair" />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)',
-          gap: 34,
-          alignItems: 'start',
-        }}
-      >
+      <div className="nt-overview__layout">
         {/* ---------------- left column ---------------- */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div className="nt-configure__col">
+          <div className="nt-stack nt-gap-10">
             <SectionHeader
               label="Needs you now"
               meta={sectionMeta(alertsLive, alertsLink, () => navigate('/alerts'))}
@@ -372,22 +416,13 @@ export default function Overview() {
                         {/* The site as its own element when the row carries it —
                             openable when it also carries the canonical id, plain
                             text when the payload only named it. */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <div className="nt-filter-bar nt-gap-8">
                           {site.name !== null ? (
                             site.id !== null ? (
                               <button
                                 type="button"
                                 onClick={() => navigate(`/sites/${encodeURIComponent(site.id as SiteId)}`)}
-                                style={{
-                                  background: 'none',
-                                  border: 'none',
-                                  padding: 0,
-                                  cursor: 'pointer',
-                                  fontFamily: 'var(--nd-font-body)',
-                                  fontSize: 'var(--nd-text-11)',
-                                  color: 'var(--nd-accent-text)',
-                                  textAlign: 'left',
-                                }}
+                                className="nt-body-sm" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--nd-accent-text)", textAlign: "left" }}
                               >
                                 {site.name}
                               </button>
@@ -399,11 +434,7 @@ export default function Overview() {
                           ) : null}
                           {site.meta ? (
                             <span
-                              style={{
-                                fontFamily: 'var(--nd-font-mono)',
-                                fontSize: 'var(--nd-text-11)',
-                                color: 'var(--nd-text-muted)',
-                              }}
+                              className="nt-hint-muted"
                             >
                               {site.meta}
                             </span>
@@ -412,16 +443,12 @@ export default function Overview() {
                       </Table.Cell>
                       {showPlatformTags ? (
                         <Table.Cell>
-                          <Badge tone="neutral">{a.plane}</Badge>
+                          <Badge plane>{a.plane}</Badge>
                         </Table.Cell>
                       ) : null}
                       <Table.Cell numeric>
                         <span
-                          style={{
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 'var(--nd-text-11)',
-                            color: 'var(--nd-text-muted)',
-                          }}
+                          className="nt-hint-muted"
                         >
                           {a.age}
                         </span>
@@ -430,7 +457,15 @@ export default function Overview() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => navigate(deviceDetailPath({ name: a.device, plane: a.plane }))}
+                          onClick={() => {
+                            patchIncident({
+                              alertTitle: a.title,
+                              deviceName: a.device,
+                              devicePlane: a.plane,
+                              sourcePath: '/overview',
+                            });
+                            navigate(deviceDetailPath({ name: a.device, plane: a.plane }));
+                          }}
                         >
                           Inspect
                         </Button>
@@ -443,7 +478,7 @@ export default function Overview() {
             )}
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="nt-stack nt-gap-10">
             <SectionHeader
               label="Sites"
               meta={sectionMeta(sitesLive, sitesLink, () => navigate('/sites'))}
@@ -477,27 +512,14 @@ export default function Overview() {
                       <button
                         type="button"
                         onClick={() => navigate(`/sites/${encodeURIComponent(s.siteId)}`)}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          padding: 0,
-                          cursor: 'pointer',
-                          fontFamily: 'var(--nd-font-body)',
-                          fontSize: 'var(--nd-text-12)',
-                          color: 'var(--nd-text-primary)',
-                          textAlign: 'left',
-                        }}
+                        className="nt-linkish"
                       >
                         {s.name}
                       </button>
                     </Table.Cell>
                     <Table.Cell>
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-11)',
-                          color: 'var(--nd-text-secondary)',
-                        }}
+                        className="nt-mono-11" style={{ color: "var(--nd-text-secondary)" }}
                       >
                         {s.plane}
                       </span>
@@ -505,36 +527,16 @@ export default function Overview() {
                     <Table.Cell numeric>{s.devices}</Table.Cell>
                     <Table.Cell numeric>{s.clients}</Table.Cell>
                     <Table.Cell>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div className="nt-row" style={{ gap: 8, alignItems: 'center' }}>
                         {s.healthPct !== '—' ? (
-                          <div
-                            style={{
-                              width: 64,
-                              height: 3,
-                              background: 'var(--nd-bg-inset)',
-                              borderRadius: 99,
-                              overflow: 'hidden',
-                            }}
-                          >
+                          <div className="nt-health-bar">
                             <div
-                              style={{
-                                height: 3,
-                                borderRadius: 99,
-                                width: s.healthPct,
-                                background: HEALTH_COLORS[s.tone],
-                              }}
+                              className="nt-health-bar__fill"
+                              style={{ width: s.healthPct, background: HEALTH_COLORS[s.tone] }}
                             />
                           </div>
                         ) : null}
-                        <span
-                          style={{
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 'var(--nd-text-11)',
-                            color: 'var(--nd-text-muted)',
-                          }}
-                        >
-                          {s.health ?? '—'}
-                        </span>
+                        <span className="nt-mono-label">{s.health ?? '—'}</span>
                       </div>
                     </Table.Cell>
                     <Table.Cell>
@@ -549,8 +551,8 @@ export default function Overview() {
         </div>
 
         {/* ---------------- right column ---------------- */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 26, minWidth: 0 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-configure__col">
+          <div className="nt-stack nt-gap-2">
             <SectionHeader
               label="Management planes"
               meta={
@@ -570,8 +572,13 @@ export default function Overview() {
                 </Button>
               </EmptyState>
             ) : null}
-            {linkedPlanes.map((p) => (
-              <div key={p.name} className="nt-plane-mini">
+            {linkedPlanes.map((p) => {
+              const hot = p.tone === 'danger' || p.tone === 'warning';
+              return (
+              <div
+                key={p.name}
+                className={`nt-plane-mini${hot ? ' nt-plane-mini--ecg' : ''}`}
+              >
                 <div className="nt-plane-mini__id">
                   <span>{p.name}</span>
                   <small>{p.scope}</small>
@@ -582,7 +589,8 @@ export default function Overview() {
                 {planeSpark(p.name)}
                 <span className="nt-plane-mini__sync">{p.sync}</span>
               </div>
-            ))}
+              );
+            })}
             {/* The planes that were never given credentials say the same thing
                 as each other and nothing about the estate, so they collapse to
                 one line rather than filling the panel. */}
@@ -606,12 +614,7 @@ export default function Overview() {
                 window they were judged against; no dots, no note. */}
             {metrics !== null && data.planes.length > 0 ? (
               <div
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-10)',
-                  color: 'var(--nd-text-muted)',
-                  padding: '6px 0 2px',
-                }}
+                className="nt-hint-muted" style={{ padding: "6px 0 2px" }}
               >
                 {`devices reported per plane · ${metricsWindowLabel(metrics)}`}
                 {anyPlaneAnomaly ? ` · dots mark samples unusual vs ${retainedPhrase}` : null}
@@ -619,7 +622,7 @@ export default function Overview() {
             ) : null}
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="nt-stack nt-gap-10">
             <SectionHeader label="Launchpad" />
             {data.launchpad.length === 0 ? (
               <EmptyState
@@ -627,38 +630,19 @@ export default function Overview() {
                 description="Launchpad rows are built from the linked planes and the devices they report."
               />
             ) : null}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            <div className="nt-stack nt-gap-0">
               {data.launchpad.map((l) => (
                 <button
                   key={l.label}
                   type="button"
-                  className="nt-rowlink"
+                  className="nt-rowlink nt-launchpad-row"
                   onClick={() => runLaunch(l)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    width: '100%',
-                    background: 'none',
-                    border: 'none',
-                    borderBottom: '1px solid var(--nd-border-subtle)',
-                    borderLeft: '2px solid transparent',
-                    padding: '10px 8px',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                  }}
                 >
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: 'var(--nd-text-primary)' }}>
+                  <span className="nt-launchpad-row__label">
                     {l.label}
                   </span>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                      textTransform: 'uppercase',
-                      letterSpacing: '.08em',
-                    }}
+                    className="nt-mono-label"
                   >
                     {l.hint}
                   </span>
@@ -667,7 +651,7 @@ export default function Overview() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="nt-stack nt-gap-10">
             <SectionHeader label="Change log" meta={sourceBadge(changesLive)} />
             {/* The change log is the write broker's audit tail — empty until the
                 first brokered change, which is a fact, not a failure. It stops
@@ -714,18 +698,11 @@ export default function Overview() {
                 }}
               >
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                    width: 46,
-                    flex: '0 0 46px',
-                    paddingTop: 2,
-                  }}
+                  className="nt-sync-row__time"
                 >
                   {hhmm(c.time)}
                 </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="nt-flex-1">
                   <div
                     style={{
                       fontSize: 'var(--nd-text-12)',
@@ -736,11 +713,7 @@ export default function Overview() {
                     {c.text}
                   </div>
                   <div
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {c.who}
                   </div>

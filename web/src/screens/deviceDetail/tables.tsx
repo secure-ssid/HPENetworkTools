@@ -35,13 +35,7 @@ export type LiveFact = Fact & { tone?: string };
 export function LiveGapNote({ children }: { children: ReactNode }) {
   return (
     <div
-      style={{
-        fontFamily: 'var(--nd-font-mono)',
-        fontSize: 'var(--nd-text-10)',
-        color: 'var(--nd-text-muted)',
-        padding: '8px 0',
-        lineHeight: 1.6,
-      }}
+      className="nt-service-note" style={{ padding: '8px 0' }}
     >
       {children}
     </div>
@@ -77,14 +71,12 @@ export function DetailRow({
       }}
     >
       <span
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 'var(--nd-text-11)',
-          color: 'var(--nd-text-primary)',
+        className="nt-mono-11" style={{
+color: 'var(--nd-text-primary)',
           width: keyWidth,
           flex: `0 0 ${keyWidth}px`,
-          paddingTop: 1,
-        }}
+          paddingTop: 1
+}}
       >
         {keyText}
       </span>
@@ -101,26 +93,17 @@ export function DetailRow({
           </div>
         ) : null}
         <div
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-text-muted)',
-            lineHeight: 1.6,
-            overflowWrap: 'anywhere',
-          }}
+          className="nt-service-note" style={{ overflowWrap: 'anywhere' }}
         >
           {facts}
         </div>
       </div>
       {trailing ? (
         <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-text-muted)',
-            paddingTop: 2,
-            whiteSpace: 'nowrap',
-          }}
+          className="nt-hint-muted" style={{
+paddingTop: 2,
+            whiteSpace: 'nowrap'
+}}
         >
           {trailing}
         </span>

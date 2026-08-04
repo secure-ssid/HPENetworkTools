@@ -89,7 +89,7 @@ export function EstateRogueAps({ rogues }: { rogues: MistRogueApRow[] | undefine
         : `${onLan.length > 0 ? `${onLan.length} ON YOUR WIRE · ` : ''}${rows.length} HEARD · ${countOf(sites, 'SITE').toUpperCase()} · MIST`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="Rogue & neighbor APs" meta={meta} />
       {rogues === undefined ? (
         <div style={noteStyle}>

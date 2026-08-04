@@ -27,6 +27,7 @@ import { PLANE_IDS, type PlaneId } from '../planes/types';
 import type { ConnectionProbeResult } from '../planes/types';
 import { adapterCredentialsFor, connectorConfigFor } from '../connectors/catalog';
 import { probeConnector } from '../planes/connectionProbe';
+import { maybeNotModified, weakEtag } from '../lib/httpCache';
 
 export const systemsRouter = Router();
 
@@ -36,19 +37,21 @@ function asPlaneId(value: string): PlaneId | null {
 
 // -- Live state ----------------------------------------------------------------
 
-systemsRouter.get('/systems/state', (_req, res) => {
+systemsRouter.get('/systems/state', (req, res) => {
   const states = registry.states();
   const planes = {} as Record<PlaneId, unknown>;
   for (const id of PLANE_IDS) {
     planes[id] = { ...states[id], recentCalls: registry.recentCalls(id) };
   }
-  res.json({
-    dataSource: 'live',
+  const body = {
+    dataSource: 'live' as const,
     syncedAt: poller.lastSyncAny(),
     demoMode: settings.get().demoMode,
     planes,
     history: poller.history(),
-  });
+  };
+  if (maybeNotModified(req, res, weakEtag(body))) return;
+  res.json(body);
 });
 
 systemsRouter.post(
@@ -68,6 +71,45 @@ systemsRouter.post(
     });
   }),
 );
+
+/**
+ * GET /api/systems/:plane/health — single-plane drill-down for operators.
+ * Registry facts + recent call outcomes only; free-text notes become noteChars.
+ */
+systemsRouter.get('/systems/:plane/health', (req, res) => {
+  const id = asPlaneId(String(req.params.plane ?? ''));
+  if (!id) {
+    res.status(404).json({ error: 'unknown plane', code: 'PLANE_NOT_FOUND' });
+    return;
+  }
+  const st = registry.states()[id];
+  const calls = registry.recentCalls(id);
+  const events = registry.recentEvents(id);
+  const body = {
+    ok: true,
+    plane: id,
+    linked: st.linked,
+    health: st.health,
+    stale: st.stale,
+    reason: st.reason,
+    lastSync: st.lastSync,
+    ageSec: st.ageSec,
+    noteChars: typeof st.note === 'string' ? st.note.length : 0,
+    recentCalls: calls.slice(0, 40).map((c) => ({
+      time: c.time,
+      path: c.path,
+      ms: c.ms,
+      code: c.code,
+    })),
+    recentEvents: events.slice(0, 20).map((e) => ({
+      time: e.time,
+      what: e.what,
+      who: e.who,
+    })),
+  };
+  if (maybeNotModified(req, res, weakEtag(body))) return;
+  res.json(body);
+});
 
 // -- Connection test -----------------------------------------------------------
 

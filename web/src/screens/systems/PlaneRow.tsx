@@ -223,12 +223,7 @@ export interface HistoryRow {
 export function NothingReported({ label }: { label: string }) {
   return (
     <div
-      style={{
-        fontFamily: 'var(--nd-font-mono)',
-        fontSize: 10.5,
-        color: 'var(--nd-text-muted)',
-        padding: '8px 0',
-      }}
+      className="nt-hint-muted" style={{ padding: "8px 0" }}
     >
       {label}
     </div>

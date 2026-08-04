@@ -69,7 +69,7 @@ export function SleAcrossSites({ sleBySiteId }: { sleBySiteId: Partial<Record<st
         : `${countOf(rows.length, 'SITE').toUpperCase()} SCORED · MIST SLE`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="Wireless experience across sites" meta={meta} />
       {sleBySiteId === undefined ? (
         <div style={noteStyle}>

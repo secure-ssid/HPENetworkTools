@@ -25,6 +25,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { ToastProvider } from '../nightdesk';
 import Mist from './Mist';
 import { getMist } from '../api/client';
 import type { MistData } from '../api/client';
@@ -128,7 +129,9 @@ function stubOpsFetch(opts: { statusHttp?: number; audit?: MistAuditLogLive | nu
 function renderScreen() {
   return render(
     <MemoryRouter>
-      <Mist />
+      <ToastProvider>
+        <Mist />
+      </ToastProvider>
     </MemoryRouter>,
   );
 }
@@ -299,14 +302,14 @@ describe('Mist screen — nav wiring', () => {
   it('/mist resolves to the mist view, its path, crumbs and Operate-group item', async () => {
     expect(viewForPath('/mist')).toBe('mist');
     expect(pathForView('mist')).toBe('/mist');
-    expect(CRUMBS.mist).toEqual([{ label: 'Operate' }, { label: 'Mist' }]);
-    const operate = NAV_GROUPS.find((g) => g.label === 'Operate')!;
-    const item = operate.items.find((i) => i.view === 'mist');
+    expect(CRUMBS.mist).toEqual([{ label: 'Platforms' }, { label: 'Mist' }]);
+    const platforms = NAV_GROUPS.find((g) => g.label === 'Platforms')!;
+    const item = platforms.items.find((i) => i.view === 'mist');
     expect(item).toEqual({ label: 'Mist', view: 'mist' });
-    // It sits with the other plane screens, near ClearPass and UXI.
-    const views = operate.items.map((i) => i.view);
-    expect(views.indexOf('mist')).toBeGreaterThan(views.indexOf('clearpass'));
-    expect(views.indexOf('mist')).toBeLessThan(views.indexOf('uxi'));
+    // Plane consoles live under Platforms (object-first IA).
+    const views = platforms.items.map((i) => i.view);
+    expect(views.indexOf('mist')).toBeGreaterThan(views.indexOf('central'));
+    expect(views.indexOf('mist')).toBeLessThan(views.indexOf('clearpass'));
   });
 
   it('waits for the payload before rendering, then replaces the spinner', async () => {

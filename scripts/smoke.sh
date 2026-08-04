@@ -74,6 +74,8 @@ check POST /api/configure/render 400                       # no body → validat
 check GET /api/visual-references
 check GET /api/recommendations
 check GET /api/taxonomy/summary
+check GET /api/openapi.json
+check GET /api/taxonomy/summary
 # Malformed upload: path-like title + plain text must be refused (no product credentials needed).
 code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/visual-assets" \
   -H "Content-Type: text/plain" \

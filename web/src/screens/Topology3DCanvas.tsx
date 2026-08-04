@@ -32,14 +32,19 @@ interface Edge3D {
   line: THREE.Line;
 }
 
+/** NightDesk semantic tones — matches tokens.css copper NOC palette. */
 const TONE_COLORS: Record<string, number> = {
-  success: 0x10b981, // green
-  warning: 0xf59e0b, // yellow/amber
-  danger: 0xef4444,  // red
-  neutral: 0x6b7280, // gray
-  accent: 0x3b82f6,  // blue
-  info: 0x06b6d4,    // cyan
+  success: 0x3dd68c,
+  warning: 0xf0c34a,
+  danger: 0xff6f7a,
+  neutral: 0x6b7791,
+  accent: 0xe08c62,
+  info: 0x5eb4ff,
 };
+
+const ND_CANVAS = 0x0a0d12;
+const ND_EDGE = 0x2e3547;
+const ND_COOL = 0x6ea8ff;
 
 function createTextSprite(text: string, isSite: boolean): THREE.Sprite {
   const canvas = document.createElement('canvas');
@@ -47,9 +52,11 @@ function createTextSprite(text: string, isSite: boolean): THREE.Sprite {
   canvas.height = 128;
   const ctx = canvas.getContext('2d');
   if (ctx) {
-    ctx.font = isSite ? 'Bold 30px system-ui, -apple-system, sans-serif' : '24px system-ui, -apple-system, sans-serif';
-    ctx.fillStyle = isSite ? 'rgba(15, 23, 42, 0.88)' : 'rgba(30, 41, 59, 0.82)';
-    ctx.strokeStyle = isSite ? '#3b82f6' : '#64748b';
+    ctx.font = isSite
+      ? 'Bold 30px Inter, -apple-system, system-ui, sans-serif'
+      : '24px Inter, -apple-system, system-ui, sans-serif';
+    ctx.fillStyle = isSite ? 'rgba(24, 30, 42, 0.92)' : 'rgba(17, 22, 31, 0.9)';
+    ctx.strokeStyle = isSite ? '#e08c62' : '#3d4560';
     ctx.lineWidth = 3;
 
     const x = 16;
@@ -72,7 +79,7 @@ function createTextSprite(text: string, isSite: boolean): THREE.Sprite {
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = isSite ? '#f8fafc' : '#cbd5e1';
+    ctx.fillStyle = isSite ? '#f1f4fa' : '#9aa6bd';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const label = text.length > 24 ? `${text.slice(0, 22)}…` : text;
@@ -98,7 +105,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
 
     // Scene setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0f172a); // dark Slate theme matching Nightdesk
+    scene.background = new THREE.Color(ND_CANVAS);
 
     // Camera setup
     const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
@@ -115,15 +122,15 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
 
-    // Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    // Lights — copper-warm key + cool fill
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.72);
     scene.add(ambientLight);
 
-    const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.2);
+    const dirLight1 = new THREE.DirectionalLight(0xffe8dc, 1.15);
     dirLight1.position.set(50, 100, 50);
     scene.add(dirLight1);
 
-    const dirLight2 = new THREE.DirectionalLight(0x3b82f6, 0.5);
+    const dirLight2 = new THREE.DirectionalLight(ND_COOL, 0.4);
     dirLight2.position.set(-50, -50, -50);
     scene.add(dirLight2);
 
@@ -212,7 +219,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
 
         // Subtly connect device to its site sphere
         const clusterLineMat = new THREE.LineBasicMaterial({
-          color: 0x334155,
+          color: ND_EDGE,
           transparent: true,
           opacity: 0.35,
         });
@@ -283,7 +290,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
     // Create 3D Edges
     const edges3D: Edge3D[] = [];
     const lineMaterial = new THREE.LineBasicMaterial({
-      color: 0x475569,
+      color: ND_EDGE,
       transparent: true,
       opacity: 0.6,
       linewidth: 1,
@@ -417,8 +424,8 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
             left: '16px',
             background: 'rgba(15, 23, 42, 0.85)',
             backdropFilter: 'blur(8px)',
-            border: '1px solid var(--nd-border, #334155)',
-            color: '#f8fafc',
+            border: '1px solid var(--nd-border-default)',
+            color: 'var(--nd-text-primary)',
             padding: '8px 14px',
             borderRadius: '6px',
             fontSize: '13px',
@@ -427,7 +434,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
           }}
         >
           <div style={{ fontWeight: 600 }}>{hoveredNode.name}</div>
-          <div style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'capitalize' }}>
+          <div style={{ fontSize: '11px', color: 'var(--nd-text-muted)', textTransform: 'capitalize' }}>
             {hoveredNode.type} {hoveredNode.id !== hoveredNode.name ? `· ${hoveredNode.id}` : ''}
           </div>
         </div>
@@ -441,8 +448,8 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
           right: '16px',
           background: 'rgba(15, 23, 42, 0.85)',
           backdropFilter: 'blur(8px)',
-          border: '1px solid var(--nd-border, #334155)',
-          color: '#cbd5e1',
+          border: '1px solid var(--nd-border-default)',
+          color: 'var(--nd-text-secondary)',
           padding: '10px 14px',
           borderRadius: '6px',
           fontSize: '12px',
@@ -452,7 +459,7 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
           gap: '6px',
         }}
       >
-        <div style={{ fontWeight: 600, color: '#f8fafc', marginBottom: '2px' }}>3D Controls</div>
+        <div style={{ fontWeight: 600, color: 'var(--nd-text-primary)', marginBottom: '2px' }}>3D Controls</div>
         <div>Rotate: Left Click + Drag</div>
         <div>Pan: Right Click + Drag</div>
         <div>Zoom: Scroll Wheel</div>

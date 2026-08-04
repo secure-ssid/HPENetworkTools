@@ -14,7 +14,6 @@ import { useNavigate } from 'react-router-dom';
 import { Badge, SectionHeader, Table } from '../../nightdesk';
 import { countOf } from '@hpe/shared';
 import type { CentralDataset, CentralSiteRow, Tone } from '@hpe/shared';
-import { noteStyle } from './style';
 
 /** Health badge tone — the same 90/70 breaks the Sites screen's bar uses. */
 function healthTone(healthPct: number): Tone {
@@ -43,22 +42,22 @@ export function SitesSection({
         : `${countOf(sites.length, 'SITE').toUpperCase()} · CENTRAL`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <div className="nt-stack nt-gap-2">
       <SectionHeader label="Sites" meta={meta} />
       {sitesUnreported && sites.length === 0 ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           Central did not report its site list this cycle — a failed read, or no linked plane. No
           site counts can be asserted.
         </div>
       ) : sites.length === 0 ? (
-        <div style={noteStyle}>
+        <div className="nt-service-note">
           Central reported no sites and no devices or clients at any site — a real answer, not a
           failed read.
         </div>
       ) : (
         <>
           {shortInputs.length > 0 ? (
-            <div style={{ ...noteStyle, padding: '4px 0' }}>
+            <div className="nt-service-note" style={{ padding: "4px 0" }}>
               {`Short by what the pull did not carry: ${shortInputs.join(', ')} — the counts below cover only what Central reported.`}
             </div>
           ) : null}
@@ -83,14 +82,14 @@ export function SitesSection({
                   <Table.Cell>{s.clients === null ? '—' : s.clients}</Table.Cell>
                   <Table.Cell>
                     {s.healthPct === null ? (
-                      <span style={noteStyle}>—</span>
+                      <span className="nt-service-note">—</span>
                     ) : (
                       <Badge tone={healthTone(s.healthPct)}>{`${s.healthPct}%`}</Badge>
                     )}
                   </Table.Cell>
                   <Table.Cell>
                     {s.openAlerts === null ? (
-                      <span style={noteStyle}>—</span>
+                      <span className="nt-service-note">—</span>
                     ) : s.openAlerts === 0 ? (
                       <Badge tone="success">clear</Badge>
                     ) : (
@@ -101,7 +100,7 @@ export function SitesSection({
               ))}
             </Table.Body>
           </Table>
-          <div style={{ ...noteStyle, fontSize: 10.5, paddingTop: 6 }}>
+          <div className="nt-service-note" style={{ fontSize: 10.5, paddingTop: 6 }}>
             Counts are Central&rsquo;s own rows; health is the share of its known-state devices that
             are up.
           </div>

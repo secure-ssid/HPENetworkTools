@@ -45,6 +45,7 @@ import {
   Button,
   Checkbox,
   Code,
+  ConfirmDialog,
   Divider,
   Drawer,
   FormField,
@@ -52,7 +53,7 @@ import {
   SectionHeader,
   SegmentedControl,
   Select,
-  Spinner,
+  PageSkeleton,
   useToast,
 } from '../nightdesk';
 import {
@@ -83,6 +84,8 @@ import type {
   SystemTypeKey,
 } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
 import { ApiErrorState } from './ApiErrorState';
 import { useSettings } from '../app/SettingsContext';
 import { SseInventoryPanel } from './SseInventoryPanel';
@@ -91,6 +94,7 @@ import { MistSection } from './systems/MistSection';
 import { AssistantSection } from './systems/AssistantSection';
 import { IdentityProviderSection } from './systems/IdentityProviderSection';
 import { NotificationsSection } from './systems/NotificationsSection';
+import { RuntimeDebugSection } from './systems/RuntimeDebugSection';
 import {
   NothingReported,
   PlaneRow,
@@ -225,6 +229,8 @@ export default function Systems() {
   const [liveState, setLiveState] = useState<SystemsState | null>(null);
 
   const [detailName, setDetailName] = useState<string | null>(null);
+  const [retireOpen, setRetireOpen] = useState(false);
+  const [retireBusy, setRetireBusy] = useState(false);
   const [tab, setTab] = useState<DetailTab>('summary');
   const [showDormant, setShowDormant] = useState(false);
 
@@ -335,11 +341,7 @@ export default function Systems() {
   }, [requestedPlane, handledPlaneLink, searchParams, setSearchParams]);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
   if (liveState?.apiError) return <ApiErrorState message={liveState.apiError} />;
@@ -467,23 +469,32 @@ export default function Systems() {
     }
   };
 
+  const requestRetire = () => {
+    if (!cur || !curView?.planeId) {
+      toast('cannot retire — this plane is not in the registry', { tone: 'danger' });
+      return;
+    }
+    setRetireOpen(true);
+  };
+
   const retire = async () => {
     if (!cur || !curView?.planeId) {
       toast('cannot retire — this plane is not in the registry', { tone: 'danger' });
       return;
     }
-    const ok = window.confirm(
-      `Retire ${cur.name}? Stored credentials are cleared and the plane becomes unlinked.`,
-    );
-    if (!ok) return;
-    const res = await retireSystem(curView.planeId);
-    if (!res.ok) {
-      toast(res.message, { tone: 'danger' });
-      return;
+    setRetireBusy(true);
+    try {
+      const res = await retireSystem(curView.planeId);
+      if (!res.ok) {
+        toast(res.message, { tone: 'danger' });
+        return;
+      }
+      toast(`${cur.name} retired`, { description: res.message, tone: 'success' });
+      setDetailName(null);
+      await refresh();
+    } finally {
+      setRetireBusy(false);
     }
-    toast(`${cur.name} retired`, { description: res.message, tone: 'success' });
-    setDetailName(null);
-    await refresh();
   };
 
   // -- connect form ---------------------------------------------------------------
@@ -641,9 +652,10 @@ export default function Systems() {
   };
 
   return (
+    <>
     <div className="nt-systems">
       <ScreenHeader
-        overline="Govern / Connected systems"
+        overline="Platforms / Connected systems"
         title="Connected systems"
         subtitle="Live connector state and configuration."
         actions={
@@ -652,12 +664,7 @@ export default function Systems() {
                 fresh it is. Same vocabulary as SiteDetail so the portal does
                 not invent a third phrasing for one state. */}
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-10)',
-                color: 'var(--nd-text-muted)',
-                letterSpacing: '.08em',
-              }}
+              className="nt-mono-label"
             >
               {systemsLive
                 ? `LIVE · SYNCED ${data.syncedAt ? hhmm(data.syncedAt) : 'NEVER'}`
@@ -673,11 +680,14 @@ export default function Systems() {
         }
       />
 
+      <VisualReferencePanel target={{ kind: 'estate', id: 'systems' }} />
+      <ConfigRecommendationsPanel title="Connector health recommendations" limit={6} />
+
       {/* Authored on the demo section; derived from the registry's own 429s on
           a live one — never an incident on a plane that was never configured. */}
       {!systemsLive ? (
         <Alert tone="danger" title="Central Classic is throttling us" dismissible>
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             Two API clients share one token quota on the Classic tenant, so every third poll returns
             429 and inventory falls behind. Re-key the portal client, or retire the legacy scripts
             still using it.
@@ -685,21 +695,17 @@ export default function Systems() {
         </Alert>
       ) : pollFailure ? (
         <Alert tone="danger" title={pollFailure.title} dismissible>
-          <span style={{ fontSize: 13 }}>{pollFailure.body}</span>
+          <span className="nt-body-sm">{pollFailure.body}</span>
         </Alert>
       ) : throttle ? (
         <Alert tone="danger" title={throttle.title} dismissible>
-          <span style={{ fontSize: 13 }}>{throttle.body}</span>
+          <span className="nt-body-sm">{throttle.body}</span>
         </Alert>
       ) : null}
 
       {liveState === null ? (
         <div
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 10.5,
-            color: 'var(--nd-text-muted)',
-          }}
+          className="nt-hint-muted"
         >
           backend offline — fixture state
         </div>
@@ -769,98 +775,33 @@ export default function Systems() {
       {/* ---------------- sync history + permissions ---------------- */}
       <div
         className="nt-systems__lower-grid"
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)',
-          gap: 34,
-          alignItems: 'start',
-        }}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-stack nt-gap-2">
           <SectionHeader label="Sync history" meta="LAST 2 HOURS" />
           {history.map((h, i) => (
-            <div
-              key={`${h.time}-${h.system}-${i}`}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 12,
-                padding: '9px 0',
-                borderBottom: '1px solid var(--nd-border-subtle)',
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10.5,
-                  color: 'var(--nd-text-muted)',
-                  width: 44,
-                  flex: '0 0 44px',
-                }}
-              >
-                {hhmm(h.time)}
-              </span>
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10.5,
-                  color: 'var(--nd-text-secondary)',
-                  width: 88,
-                  flex: '0 0 88px',
-                }}
-              >
-                {h.system}
-              </span>
-              <span
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: 12.5,
-                  color: 'var(--nd-text-primary)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {h.what}
-              </span>
+            <div key={`${h.time}-${h.system}-${i}`} className="nt-sync-row">
+              <span className="nt-sync-row__time">{hhmm(h.time)}</span>
+              <span className="nt-sync-row__plane">{h.system}</span>
+              <span className="nt-sync-row__what">{h.what}</span>
               <Badge tone={h.tone}>{h.result}</Badge>
             </div>
           ))}
           {history.length === 0 ? (
-            <div
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 10.5,
-                color: 'var(--nd-text-muted)',
-                padding: '9px 0',
-              }}
-            >
-              no sync events recorded yet
-            </div>
+            <div className="nt-sync-row__empty">no sync events recorded yet</div>
           ) : null}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="nt-stack nt-gap-12">
           <SectionHeader label="Permissions model" />
-          <div style={{ fontSize: 13, color: 'var(--nd-text-secondary)', lineHeight: 1.6 }}>
+          <div className="nt-body-sm nt-lh-16">
             The portal never holds standing write access. Read scopes are permanent; write is
             brokered per change, expires in fifteen minutes, and is stamped with the ticket that
             authorised it.
           </div>
           {data.permissions.map((p) => (
-            <div
-              key={p.mode}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                padding: '8px 0',
-                borderBottom: '1px solid var(--nd-border-subtle)',
-              }}
-            >
+            <div key={p.mode} className="nt-perm-row">
               <Badge tone={p.tone}>{p.mode}</Badge>
-              <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
+              <span className="nt-body-sec nt-flex-1">
                 {p.what}
               </span>
             </div>
@@ -888,6 +829,11 @@ export default function Systems() {
       {/* ---------------- notifications (outbound alert webhooks) ---------------- */}
       <NotificationsSection />
 
+      <Divider variant="flair" />
+
+      {/* ---------------- runtime debug (no secrets) ---------------- */}
+      <RuntimeDebugSection />
+
       {/* ---------------- plane detail drawer ---------------- */}
       <Drawer
         open={cur !== null}
@@ -899,8 +845,8 @@ export default function Systems() {
         description={cur?.kind ?? ''}
       >
         {cur && curView ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="nt-stack nt-gap-18">
+            <div className="nt-chip-row">
               <Badge tone={curView.stateTone} dot>
                 {curView.stateLabel}
               </Badge>
@@ -911,11 +857,7 @@ export default function Systems() {
               ) : null}
               <Badge tone={cur.scopeTone}>{cur.scope}</Badge>
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 11,
-                  color: 'var(--nd-text-muted)',
-                }}
+                className="nt-hint-muted"
               >
                 {curView.live?.note ?? cur.scopeNote}
               </span>
@@ -924,11 +866,7 @@ export default function Systems() {
                   drawer shows a stale plane with nothing to explain it. */}
               {curView.live && retryNote(curView.live) ? (
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 11,
-                    color: 'var(--nd-warning)',
-                  }}
+                  className="nt-hint-muted nt-hint-muted" style={{ color: "var(--nd-warning)" }}
                 >
                   {retryNote(curView.live)}
                 </span>
@@ -938,63 +876,24 @@ export default function Systems() {
             <SegmentedControl options={TAB_OPTIONS} value={tab} onValueChange={(v) => setTab(v as DetailTab)} />
 
             {tab === 'summary' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                    gap: '8px 18px',
-                  }}
-                >
+              <div className="nt-stack nt-gap-18">
+                <div className="nt-fact-grid nt-fact-grid--dense">
                   {curView.facts.map((f) => (
-                    <div
-                      key={f.k}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 2,
-                        padding: '7px 0',
-                        borderBottom: '1px solid var(--nd-border-subtle)',
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 9.5,
-                          letterSpacing: '.12em',
-                          textTransform: 'uppercase',
-                          color: 'var(--nd-text-muted)',
-                        }}
-                      >
-                        {f.k}
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 11.5,
-                          color: 'var(--nd-text-secondary)',
-                        }}
-                      >
-                        {f.v}
-                      </span>
+                    <div key={f.k} className="nt-metric-tile nt-metric-tile--bordered">
+                      <span className="nt-fact-row__k" style={{ width: 'auto', flex: 'none' }}>{f.k}</span>
+                      <span className="nt-fact-row__v">{f.v}</span>
                     </div>
                   ))}
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div className="nt-stack nt-gap-2">
                   <SectionHeader label="Sites on this plane" />
                   {cur.sites.map((x) => {
                     const siteId = x.siteId;
                     return (
                       <div
                         key={x.name}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                          padding: '8px 0',
-                          borderBottom: '1px solid var(--nd-border-subtle)',
-                        }}
+                        className="nt-row-center nt-gap-10 nt-rule-row-md"
                       >
                         {/* A row that names a real site drills into it, closing
                             the drawer first (README navigation rules). The
@@ -1023,17 +922,13 @@ export default function Systems() {
                           </button>
                         ) : (
                           <span
-                            style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-primary)' }}
+                            className="nt-body-sm nt-flex-1" style={{ color: "var(--nd-text-primary)" }}
                           >
                             {x.name}
                           </span>
                         )}
                         <span
-                          style={{
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 10.5,
-                            color: 'var(--nd-text-muted)',
-                          }}
+                          className="nt-hint-muted"
                         >
                           {x.detail}
                         </span>
@@ -1045,31 +940,19 @@ export default function Systems() {
                   ) : null}
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div className="nt-stack nt-gap-2">
                   <SectionHeader label="Live on this plane" />
                   {cur.live.map((l) => (
                     <div
                       key={l.label}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 10,
-                        padding: '8px 0',
-                        borderBottom: '1px solid var(--nd-border-subtle)',
-                      }}
+                      className="nt-row-center nt-gap-10 nt-rule-row-md"
                     >
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 12,
-                          color: 'var(--nd-text-primary)',
-                          width: 80,
-                          flex: '0 0 80px',
-                        }}
+                        className="nt-mono-11 nt-mono-11" style={{ fontSize: 12, color: "var(--nd-text-primary)", width: 80, flex: "0 0 80px" }}
                       >
                         {l.value}
                       </span>
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
+                      <span className="nt-body-sec nt-flex-1">
                         {l.label}
                       </span>
                     </div>
@@ -1077,7 +960,7 @@ export default function Systems() {
                   {cur.live.length === 0 ? (
                     <NothingReported label="no sessions, devices or alerts sourced here yet" />
                   ) : null}
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 12 }}>
+                  <div className="nt-chip-wrap" style={{ paddingTop: 12 }}>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1105,53 +988,27 @@ export default function Systems() {
             ) : null}
 
             {tab === 'activity' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div className="nt-stack nt-gap-18">
+                <div className="nt-stack nt-gap-2">
                   <SectionHeader label="API calls" meta="LAST 20 MINUTES" />
                   {curCalls.map((c, i) => (
                     <div
                       key={`${c.time}-${i}`}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 10,
-                        padding: '7px 0',
-                        borderBottom: '1px solid var(--nd-border-subtle)',
-                      }}
+                      className="nt-row-center nt-gap-10" style={{ padding: "7px 0", borderBottom: "1px solid var(--nd-border-subtle)" }}
                     >
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 10.5,
-                          color: 'var(--nd-text-muted)',
-                          width: 44,
-                          flex: '0 0 44px',
-                        }}
+                        className="nt-hint-muted nt-w-44"
                       >
                         {hhmm(c.time)}
                       </span>
                       <span
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 11,
-                          color: 'var(--nd-text-secondary)',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
+                        className="nt-ellipsis nt-mono-11 nt-flex-1 nt-text-sec"
                       >
                         {c.path}
                       </span>
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 10.5,
-                          color: 'var(--nd-text-muted)',
-                          width: 56,
-                          textAlign: 'right',
-                        }}
+                        className="nt-hint-muted" style={{ width: 56,
+                          textAlign: 'right' }}
                       >
                         {c.ms}
                       </span>
@@ -1160,51 +1017,31 @@ export default function Systems() {
                   ))}
                   {curCalls.length === 0 ? (
                     <div
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 10.5,
-                        color: 'var(--nd-text-muted)',
-                        padding: '7px 0',
-                      }}
+                      className="nt-hint-muted" style={{ padding: '7px 0' }}
                     >
                       no calls recorded yet
                     </div>
                   ) : null}
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div className="nt-stack nt-gap-2">
                   <SectionHeader label="Recent events" />
                   {cur.events.map((e, i) => (
                     <div
                       key={`${e.time}-${i}`}
-                      style={{
-                        display: 'flex',
-                        gap: 12,
-                        padding: '9px 0',
-                        borderBottom: '1px solid var(--nd-border-subtle)',
-                      }}
+                      className="nt-row nt-gap-12 nt-rule-row"
                     >
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 10.5,
-                          color: 'var(--nd-text-muted)',
-                          width: 44,
-                          flex: '0 0 44px',
-                        }}
+                        className="nt-hint-muted nt-w-44"
                       >
                         {hhmm(e.time)}
                       </span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12.5, color: 'var(--nd-text-primary)', lineHeight: 1.4 }}>
+                      <div className="nt-flex-1">
+                        <div className="nt-body-sm nt-text-pri-12">
                           {e.what}
                         </div>
                         <div
-                          style={{
-                            fontFamily: 'var(--nd-font-mono)',
-                            fontSize: 10,
-                            color: 'var(--nd-text-muted)',
-                          }}
+                          className="nt-hint-muted"
                         >
                           {e.who}
                         </div>
@@ -1219,12 +1056,12 @@ export default function Systems() {
             ) : null}
 
             {tab === 'config' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              <div className="nt-stack nt-gap-18">
                 {curView?.planeId === 'sse' ? (
                   curView.live?.linked ? (
                     <SseInventoryPanel canWrite={curView.live?.capabilities?.directWrite === true} />
                   ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div className="nt-stack nt-gap-6">
                       <SectionHeader label="Object inventory" />
                       <NothingReported label="connect this plane with an Admin API token to browse its object inventory" />
                     </div>
@@ -1245,30 +1082,19 @@ export default function Systems() {
                   // reports itself — see systems/MistSection.tsx.
                   <MistSection />
                 ) : null}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div className="nt-stack nt-gap-2">
                   <SectionHeader label="What the portal pulls" />
                   {cur.pulls.map((p) => (
                     <div
                       key={p.what}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 10,
-                        padding: '8px 0',
-                        borderBottom: '1px solid var(--nd-border-subtle)',
-                      }}
+                      className="nt-row-center nt-gap-10 nt-rule-row-md"
                     >
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--nd-text-primary)' }}>
+                      <span className="nt-body-sm nt-flex-1" style={{ color: "var(--nd-text-primary)" }}>
                         {p.what}
                       </span>
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 10.5,
-                          color: 'var(--nd-text-muted)',
-                          width: 96,
-                          textAlign: 'right',
-                        }}
+                        className="nt-hint-muted" style={{ width: 96,
+                          textAlign: 'right' }}
                       >
                         {p.every}
                       </span>
@@ -1277,14 +1103,14 @@ export default function Systems() {
                   ))}
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="nt-stack nt-gap-10">
                   <SectionHeader label="Credential & connection" />
                   <Code block>{cur.configText}</Code>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="nt-stack nt-gap-10">
                   <SectionHeader label="Actions" />
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <div className="nt-chip-wrap">
                     <Button variant="secondary" size="sm" onClick={() => void syncAll()}>
                       Sync now
                     </Button>
@@ -1318,17 +1144,13 @@ export default function Systems() {
                     >
                       Open console ↗
                     </Button>
-                    <Button variant="danger" size="sm" onClick={() => void retire()}>
+                    <Button variant="danger" size="sm" onClick={requestRetire}>
                       Retire plane
                     </Button>
                   </div>
                   {!cur.consoleUrl ? (
                     <span
-                      style={{
-                        fontFamily: 'var(--nd-font-mono)',
-                        fontSize: 10.5,
-                        color: 'var(--nd-text-muted)',
-                      }}
+                      className="nt-hint-muted"
                     >
                       no console URL recorded for {cur.name} — nothing to hand off to
                     </span>
@@ -1353,9 +1175,9 @@ export default function Systems() {
         <form
           ref={connectorFormRef}
           onSubmit={(event) => event.preventDefault()}
-          style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+          className="nt-stack nt-gap-14"
         >
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} aria-label="Declared capabilities">
+          <div className="nt-chip-wrap nt-chip-wrap--tight" aria-label="Declared capabilities">
             <Badge tone={selectedEntry.tone}>{selectedEntry.contributesClients ? 'client source' : 'inventory source'}</Badge>
             {selectedEntry.writeCapabilities.length > 0 ? selectedEntry.writeCapabilities.map((capability) => (
               <Badge key={capability} tone="accent">write · {readableCapability(capability)}</Badge>
@@ -1370,7 +1192,7 @@ export default function Systems() {
                 ? `Authenticated probe: ${testResult.dataset ?? 'completed'}`
                 : 'Connection failed'}
             >
-              <span style={{ fontSize: 13 }}>{testResult.message}</span>
+              <span className="nt-body-sm">{testResult.message}</span>
             </Alert>
           ) : null}
 
@@ -1449,7 +1271,7 @@ export default function Systems() {
             </FormField>
           ) : null}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+          <div className="nt-form-grid nt-gap-12">
             {selectedAuth.fields.map((field) => (
               <FormField key={`${secretInputEpoch}-${draft.id}-${selectedAuth.kind}-${field.key}`} label={field.label}>
                 {field.secret ? (
@@ -1474,17 +1296,17 @@ export default function Systems() {
           </div>
 
           <details>
-            <summary style={{ cursor: 'pointer', fontSize: 12.5, color: 'var(--nd-text-secondary)' }}>
+            <summary className="nt-text-sec" style={{ cursor: "pointer", fontSize: 12.5 }}>
               Advanced policy
             </summary>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 10 }}>
+            <div className="nt-stack-col nt-gap-10" style={{ paddingTop: 10 }}>
               <Checkbox
                 label="Verify TLS certificate"
                 checked={draft.verifyTls}
                 onChange={(e) => updateDraft({ ...draft, verifyTls: e.target.checked })}
               />
               {!draft.verifyTls ? <Alert tone="warning" title="TLS verification disabled" /> : null}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+              <div className="nt-form-grid nt-gap-12">
                 <FormField label="Poll cadence (seconds)">
                   <Input
                     mono
@@ -1533,11 +1355,11 @@ export default function Systems() {
 
           {retestNeeded && !testResult ? (
             <Alert tone="warning" title="Re-test required">
-              <span style={{ fontSize: 13 }}>Policy or credentials changed after the authenticated probe.</span>
+              <span className="nt-body-sm">Policy or credentials changed after the authenticated probe.</span>
             </Alert>
           ) : null}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="nt-row nt-gap-8">
             <Button
               variant="secondary"
               size="md"
@@ -1561,5 +1383,16 @@ export default function Systems() {
         </form>
       </Drawer>
     </div>
+      <ConfirmDialog
+        open={retireOpen}
+        onOpenChange={setRetireOpen}
+        title={cur ? `Retire ${cur.name}?` : 'Retire plane?'}
+        description="Stored credentials are cleared and the plane becomes unlinked. This does not delete devices on the plane itself."
+        confirmLabel="Retire plane"
+        tone="danger"
+        busy={retireBusy}
+        onConfirm={retire}
+      />
+    </>
   );
 }

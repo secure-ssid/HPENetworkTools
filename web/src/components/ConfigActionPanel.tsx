@@ -82,7 +82,7 @@ export function ConfigActionPanel({
               </div>
             </div>
             {target ? (
-              <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 11, color: 'var(--nd-text-muted)' }}>
+              <div className="nt-hint-muted">
                 {target.kind}:{target.id}
                 {target.plane ? ` · ${target.plane}` : ''}
               </div>

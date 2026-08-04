@@ -17,9 +17,10 @@
  * Data: getAuthEvents() — live /api/auth-events when the server is up, fixtures otherwise.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
+  PageSkeleton,
   Badge,
   Button,
   Divider,
@@ -27,9 +28,7 @@ import {
   Input,
   Progress,
   SectionHeader,
-  Select,
-  Spinner,
-  Table,
+  Select, Table,
   useToast,
 } from '../nightdesk';
 import { getAuthEvents } from '../api/client';
@@ -39,10 +38,15 @@ import { deviceDetailPath, planeFilterForParam } from '../app/nav';
 import { hhmmLocal as hhmm, hhmmssLocal } from '@hpe/shared';
 import type { AuthEventRow } from '@hpe/shared';
 import { ScreenHeader } from './ScreenHeader';
+import { exportTableCsv } from '../lib/csv';
+import { VisualReferencePanel } from '../components/VisualReferencePanel';
+import { ConfigRecommendationsPanel } from '../components/ConfigRecommendationsPanel';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
 import { TIME_RANGE_MS, TimeRangeControl, timeRangeForParam, withinTimeRange } from '../components/TimeRangeControl';
 import type { TimeRange } from '../components/TimeRangeControl';
+
+const AUTH_EVENT_PAGE = 250;
 
 const RESULT_OPTIONS = [
   { value: 'all', label: 'All results' },
@@ -87,32 +91,62 @@ export default function AuthEvents() {
 
   /* A NOC tab must not sit on a mount-time snapshot under a SYNCED stamp:
      poll on the settings cadence, the same pattern Overview.tsx runs. One
-     fetch at a time; fixture reads poll harmlessly. */
+     fetch at a time; fixture reads poll harmlessly. Live lists page at 250
+     events so large ClearPass feeds can Load more. */
+  const eventsAccRef = useRef<AuthEventRow[]>([]);
+  const nextEventCursorRef = useRef<string | null>(null);
+  const loadMoreEventsRef = useRef<() => void>(() => {});
+  const [eventHasMore, setEventHasMore] = useState(false);
+  const [eventPageTotal, setEventPageTotal] = useState<number | null>(null);
+  const [loadingMoreEvents, setLoadingMoreEvents] = useState(false);
+
   useEffect(() => {
-    let live = true;
-    let inFlight = false;
-    const pull = () => {
-      if (inFlight) return;
-      inFlight = true;
-      void getAuthEvents()
-        .then((d) => {
-          if (live) {
-            setData(d);
-            setNowMs(Date.now());
-          }
-        })
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-    pull();
-    const every = Math.max(pollIntervalSec, 10) * 1000;
-    const id = setInterval(pull, every);
-    return () => {
-      live = false;
-      clearInterval(id);
-    };
-  }, [pollIntervalSec]);
+      let live = true;
+      let inFlight = false;
+      const pull = (mode: 'replace' | 'append' = 'replace') => {
+     if (mode === 'replace' && inFlight) return;
+     if (mode === 'append' && !nextEventCursorRef.current) return;
+     if (mode === 'replace') inFlight = true;
+     if (mode === 'append') setLoadingMoreEvents(true);
+     void getAuthEvents({
+       limit: AUTH_EVENT_PAGE,
+       ...(mode === 'append' && nextEventCursorRef.current
+         ? { cursor: nextEventCursorRef.current }
+         : {}),
+     })
+       .then((d) => {
+         if (!live) return;
+         if (mode === 'append') {
+           const keyOf = (e: AuthEventRow) =>
+             `${e.at ?? ''}|${e.mac}|${e.who}|${e.result}|${e.nas}|${e.time}`;
+           const seen = new Set(eventsAccRef.current.map(keyOf));
+           const extra = d.events.filter((e) => !seen.has(keyOf(e)));
+           const merged = [...eventsAccRef.current, ...extra];
+           eventsAccRef.current = merged;
+           setData({ ...d, events: merged });
+         } else {
+           eventsAccRef.current = d.events;
+           setData(d);
+         }
+         nextEventCursorRef.current = d.page?.nextCursor ?? null;
+         setEventHasMore(Boolean(d.page?.nextCursor));
+         setEventPageTotal(d.page?.total ?? null);
+         setNowMs(Date.now());
+       })
+       .finally(() => {
+         if (mode === 'replace') inFlight = false;
+         if (mode === 'append') setLoadingMoreEvents(false);
+       });
+      };
+      loadMoreEventsRef.current = () => pull('append');
+      pull('replace');
+      const every = Math.max(pollIntervalSec, 10) * 1000;
+      const id = setInterval(() => pull('replace'), every);
+      return () => {
+     live = false;
+     clearInterval(id);
+      };
+    }, [pollIntervalSec]);
 
   /* Deep links: ?q=<mac> (client drawer's Auth history), ?plane=<registryId>
      (Systems plane drawer). Applied when the URL changes while the screen is
@@ -129,11 +163,7 @@ export default function AuthEvents() {
   }
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -200,26 +230,69 @@ export default function AuthEvents() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <ScreenHeader
         overline="Operate / Auth events"
         title="Auth & policy events"
         subtitle="Every RADIUS decision, whichever plane asked the question."
         actions={
           <>
-            <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-10)',
-                color: 'var(--nd-text-muted)',
-                letterSpacing: '.08em',
-              }}
-            >
+            <span className="nt-mono-label">
               {synced}
             </span>
             {data.blended?.includes('authEvents') ? <Badge tone="info">LIVE</Badge> : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/clients')}>
               Clients →
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const next = new URLSearchParams();
+                  if (q.trim()) next.set('q', q.trim());
+                  if (plane !== 'all') next.set('plane', plane);
+                  if (timeRange !== 'all') next.set('range', timeRange);
+                  const qs = next.toString();
+                  const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ''}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('View link copied', { description: qs || 'unfiltered auth events', tone: 'success' });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy view link
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const n = exportTableCsv(
+                  'auth-events.csv',
+                  ['time', 'at', 'who', 'mac', 'result', 'service', 'method', 'role', 'reason', 'nas', 'plane'],
+                  rows.map((e) => [
+                    e.time,
+                    e.at ?? '',
+                    e.who,
+                    e.mac,
+                    e.result,
+                    e.service,
+                    e.method,
+                    e.role,
+                    e.reason,
+                    e.nas,
+                    e.plane,
+                  ]),
+                );
+                toast(`Exported ${n} event${n === 1 ? '' : 's'}`, {
+                  description: 'auth-events.csv — rows currently in view.',
+                });
+              }}
+            >
+              Export CSV
             </Button>
             <Button
               variant="secondary"
@@ -235,9 +308,11 @@ export default function AuthEvents() {
       />
 
       <StatRow stats={data.stats} />
+      <VisualReferencePanel target={{ kind: 'service', id: 'auth-events' }} />
+      <ConfigRecommendationsPanel title="Auth / policy recommendations" limit={5} />
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ width: 250 }}>
+      <div className="nt-filter-bar">
+        <div className="nt-filter-field nt-filter-field--xl" style={{ width: 250 }}>
           <Input
             size="sm"
             mono
@@ -247,7 +322,7 @@ export default function AuthEvents() {
             aria-label="Filter auth events"
           />
         </div>
-        <div style={{ width: 150 }}>
+        <div className="nt-filter-field nt-filter-field--sm">
           <Select
             options={RESULT_OPTIONS}
             value={result}
@@ -256,7 +331,7 @@ export default function AuthEvents() {
             aria-label="Result"
           />
         </div>
-        <div style={{ width: 200 }}>
+        <div className="nt-filter-field nt-filter-field--lg" style={{ width: 200 }}>
           <Select
             options={serviceOptions}
             value={service}
@@ -265,7 +340,7 @@ export default function AuthEvents() {
             aria-label="Service"
           />
         </div>
-        <div style={{ width: 160 }}>
+        <div className="nt-filter-field nt-filter-field--md">
           <Select
             options={planeOptions}
             value={plane}
@@ -275,27 +350,18 @@ export default function AuthEvents() {
           />
         </div>
         <TimeRangeControl value={timeRange} onValueChange={setTimeRange} />
-        <span
-          style={{
-            marginLeft: 'auto',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-text-muted)',
-          }}
-        >
+        <span className="nt-filter-bar__count">
           {/* The daily-indexed tail is a fixture total the API never returns —
               a live/blended feed shows only what it actually holds. */}
-          {rows.length} of {events.length} shown{sectionLive ? '' : ' · 1,904 events indexed today'}
+          {rows.length} of {events.length} shown
+          {eventPageTotal != null && eventPageTotal > events.length
+            ? ` · ${eventPageTotal} in feed`
+            : ''}
+          {sectionLive ? '' : ' · 1,904 events indexed today'}
         </span>
         {rangeCaveats.length > 0 ? (
           <span
-            style={{
-              flexBasis: '100%',
-              fontFamily: 'var(--nd-font-mono)',
-              fontSize: 'var(--nd-text-10)',
-              color: 'var(--nd-text-muted)',
-              lineHeight: 1.6,
-            }}
+            className="nt-service-note" style={{ flexBasis: "100%" }}
           >
             {rangeCaveats.join(' ')}
           </span>
@@ -320,11 +386,7 @@ export default function AuthEvents() {
             <Table.Row key={`${e.time}-${i}`}>
               <Table.Cell>
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-hint-muted"
                 >
                   {e.at ? hhmmssLocal(e.at) : e.time}
                 </span>
@@ -348,11 +410,7 @@ export default function AuthEvents() {
                     {e.who}
                   </span>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {e.mac}
                   </span>
@@ -361,11 +419,7 @@ export default function AuthEvents() {
               <Table.Cell>{e.service}</Table.Cell>
               <Table.Cell>
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-secondary)',
-                  }}
+                  className="nt-mono-11" style={{ color: "var(--nd-text-secondary)" }}
                 >
                   {e.method}
                 </span>
@@ -376,16 +430,12 @@ export default function AuthEvents() {
                 </Badge>
               </Table.Cell>
               <Table.Cell>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div className="nt-stack nt-gap-2">
                   <span style={{ fontSize: 'var(--nd-text-12)', color: 'var(--nd-text-secondary)' }}>
                     {e.reason}
                   </span>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-10)',
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {e.role}
                   </span>
@@ -395,16 +445,8 @@ export default function AuthEvents() {
                 <button
                   type="button"
                   onClick={() => navigate(deviceDetailPath({ name: e.nas, plane: e.plane }))}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    padding: 0,
-                    cursor: 'pointer',
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: 'var(--nd-accent-text)',
-                    textAlign: 'left',
-                  }}
+                  className="nt-mono-link"
+                  style={{ textAlign: 'left' }}
                 >
                   {e.nas}
                 </button>
@@ -416,6 +458,19 @@ export default function AuthEvents() {
           ))}
         </Table.Body>
       </Table>
+
+      {eventHasMore ? (
+        <div className="nt-center-pad" style={{ padding: '8px 0' }}>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={loadingMoreEvents}
+            onClick={() => loadMoreEventsRef.current()}
+          >
+            {loadingMoreEvents ? 'Loading…' : 'Load more'}
+          </Button>
+        </div>
+      ) : null}
 
       {/* An empty feed is a missing policy plane, not a tight filter — telling the
           operator to loosen filters already at 'all' blames them for the gap. */}
@@ -457,7 +512,7 @@ export default function AuthEvents() {
           alignItems: 'start',
         }}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div className="nt-stack nt-gap-14">
           {/* The live bars count rejects out of the poller's ≤200-event page —
               minutes of traffic, not a day. Only the fixture feed is a 24h cut. */}
           <SectionHeader
@@ -466,12 +521,7 @@ export default function AuthEvents() {
           />
           {data.failReasons.length === 0 ? (
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-                lineHeight: 1.6,
-              }}
+              className="nt-service-note"
             >
               {/* "No rejects" and "no feed at all" are different facts, and the
                   first one reads as a healthy network. The Stat row already
@@ -483,14 +533,10 @@ export default function AuthEvents() {
             </span>
           ) : null}
           {data.failReasons.map((r) => (
-            <div key={r.label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div key={r.label} className="nt-stack nt-gap-4">
               <Progress value={r.value} max={60} label={r.label} />
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-10)',
-                  color: 'var(--nd-text-muted)',
-                }}
+                className="nt-hint-muted"
               >
                 {r.note}
               </span>
@@ -498,17 +544,11 @@ export default function AuthEvents() {
           ))}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-stack nt-gap-2">
           <SectionHeader label="Policy services" meta="AUTHS / HOUR" />
           {data.policyServices.length === 0 ? (
             <span
-              style={{
-                fontFamily: 'var(--nd-font-mono)',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-text-muted)',
-                lineHeight: 1.6,
-                padding: '10px 0',
-              }}
+              className="nt-service-note" style={{ padding: "10px 0" }}
             >
               No policy service reported by a linked plane.
             </span>
@@ -529,23 +569,13 @@ export default function AuthEvents() {
                   {s.name}
                 </div>
                 <div
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-hint-muted"
                 >
                   {s.detail}
                 </div>
               </div>
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 11.5,
-                  color: 'var(--nd-text-secondary)',
-                  width: 64,
-                  textAlign: 'right',
-                }}
+                className="nt-mono-11" style={{ color: "var(--nd-text-secondary)", width: 64, textAlign: "right" }}
               >
                 {s.rate}
               </span>

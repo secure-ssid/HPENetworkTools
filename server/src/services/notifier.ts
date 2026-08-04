@@ -45,6 +45,7 @@ import {
   type NotificationDelivery,
   type NotificationEndpoint,
   type NotificationEvent,
+  type NotificationDeliveryAttempt,
   type NotificationOutboxEntry,
   type NotificationSampleState,
   type NotificationServiceStatus,
@@ -85,6 +86,7 @@ export interface NotifierOptions {
   timeoutMs?: number; // per-request, default 10s
   dataDir?: string; // audit-log destination, default: HPE_DATA_DIR or <repo>/data
   outboxCapacity?: number; // demo outbox ring size, default 100
+  deliveryLogCapacity?: number; // live attempt log ring size, default 100
   /**
    * Lets the delivery-time URL check pass for http/loopback targets so tests
    * can POST to a capture server. Hard-gated on NODE_ENV=test, exactly the
@@ -123,6 +125,8 @@ export class Notifier {
   private previous: NotificationSampleState | null = null;
   private lastSampleAt: string | null = null;
   private outboxEntries: NotificationOutboxEntry[] = [];
+  private deliveryAttempts: NotificationDeliveryAttempt[] = [];
+  private readonly deliveryLogCapacity: number;
 
   constructor(opts: NotifierOptions = {}) {
     this.store = opts.store ?? notificationStore;
@@ -137,6 +141,7 @@ export class Notifier {
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.dataDir = opts.dataDir ?? brokerDataDir();
     this.outboxCapacity = opts.outboxCapacity ?? 100;
+    this.deliveryLogCapacity = opts.deliveryLogCapacity ?? 100;
     this.allowInsecureUrlForTests =
       process.env.NODE_ENV === 'test' && opts.allowInsecureUrlForTests === true;
   }
@@ -180,6 +185,11 @@ export class Notifier {
    *  when demo mode swallowed a would-have-sent payload. */
   outbox(): NotificationOutboxEntry[] {
     return [...this.outboxEntries];
+  }
+
+  /** Live delivery attempt log (no bodies), newest first. */
+  deliveries(): NotificationDeliveryAttempt[] {
+    return [...this.deliveryAttempts];
   }
 
   /**
@@ -241,6 +251,10 @@ export class Notifier {
     const attemptedAt = new Date(this.nowMs()).toISOString();
     const tag = test ? 'test send — ' : '';
     const rendered = renderNotification(endpoint.template, event);
+    const finish = (delivery: NotificationDelivery): NotificationDelivery => {
+      this.pushDeliveryAttempt(endpoint, event, delivery, test);
+      return delivery;
+    };
 
     if (this.demoMode()) {
       this.pushOutbox({
@@ -256,7 +270,7 @@ export class Notifier {
       const delivery: NotificationDelivery = { lastAttemptAt: attemptedAt, lastResult: 'demo' };
       this.store.recordDelivery(endpoint.id, delivery);
       this.audit('notification-demo', event, endpoint, `${tag}demo mode — no network call; payload is in the outbox`);
-      return delivery;
+      return finish(delivery);
     }
 
     // Send-time SSRF check: the route validated at save time, but the file
@@ -271,7 +285,7 @@ export class Notifier {
       };
       this.store.recordDelivery(endpoint.id, delivery);
       this.audit('notification-failed', event, endpoint, `${tag}${delivery.lastError}`);
-      return delivery;
+      return finish(delivery);
     }
 
     const headers: Record<string, string> = { 'content-type': rendered.contentType };
@@ -307,7 +321,7 @@ export class Notifier {
             `${tag}HTTP ${res.status}${attempt > 1 ? ` after ${attempt} attempts` : ''}`,
             res.status,
           );
-          return delivery;
+          return finish(delivery);
         }
         lastError = `HTTP ${res.status}`;
         // A 4xx that is not 429 will answer the same way on every retry —
@@ -328,7 +342,7 @@ export class Notifier {
     };
     this.store.recordDelivery(endpoint.id, delivery);
     this.audit('notification-failed', event, endpoint, `${tag}${delivery.lastError}`, httpCode);
-    return delivery;
+    return finish(delivery);
   }
 
   /** The operator-pushed test: a synthetic 'test' event down the same render
@@ -400,6 +414,29 @@ export class Notifier {
 
   private pushOutbox(entry: NotificationOutboxEntry): void {
     this.outboxEntries = [entry, ...this.outboxEntries].slice(0, this.outboxCapacity);
+  }
+
+  private pushDeliveryAttempt(
+    endpoint: NotificationEndpoint,
+    event: NotificationEvent,
+    delivery: NotificationDelivery,
+    test: boolean,
+  ): void {
+    const entry: NotificationDeliveryAttempt = {
+      id: `del-${this.nowMs().toString(36)}${randomBytes(3).toString('hex')}`,
+      at: delivery.lastAttemptAt,
+      endpointId: endpoint.id,
+      endpointName: endpoint.name,
+      eventKind: event.kind,
+      eventId: event.id,
+      fingerprint: event.fingerprint,
+      title: event.title,
+      result: delivery.lastResult,
+      ...(delivery.httpCode !== undefined ? { httpCode: delivery.httpCode } : {}),
+      ...(delivery.lastError ? { error: delivery.lastError } : {}),
+      ...(test ? { test: true } : {}),
+    };
+    this.deliveryAttempts = [entry, ...this.deliveryAttempts].slice(0, this.deliveryLogCapacity);
   }
 
   /** One audit-log line per send/failure/demo. Never a payload body — the

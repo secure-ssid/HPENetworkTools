@@ -46,6 +46,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  PageSkeleton,
   Alert,
   Badge,
   Button,
@@ -104,6 +105,7 @@ import {
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
 import { StatRow } from './StatRow';
+import { exportTableCsv } from '../lib/csv';
 
 type ClearPassTab = 'endpoints' | 'auth' | 'network' | 'sources' | 'roles' | 'enforcement' | 'users' | 'services';
 
@@ -177,11 +179,7 @@ export default function ClearPass() {
   }, []);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -275,6 +273,7 @@ function ClearPassView({
   mergeDemo: (fn: (d: ClearPassData) => ClearPassData) => void;
   mergeDemoEndpointPage: (fn: (page: ClearPassEndpointPage) => ClearPassEndpointPage) => void;
 }) {
+  const { toast } = useToast();
   const [writeDrawer, setWriteDrawer] = useState<WriteDrawerState>(null);
   const [inventoryView, setInventoryView] = useState<StaticInventoryDetail | null>(null);
   /** The service whose detail drawer is open (null = none). */
@@ -327,7 +326,7 @@ function ClearPassView({
   const recentAuth = authEvents.slice(0, 20);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-stack">
       <ScreenHeader
         overline="Operate / ClearPass"
         title="ClearPass"
@@ -335,6 +334,32 @@ function ClearPassView({
         actions={
           <>
             {data.dataSource === 'live' ? <Badge tone="info">LIVE</Badge> : null}
+            {rows.length > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  const n = exportTableCsv(
+                    'clearpass-endpoints.csv',
+                    ['hostname', 'mac', 'ip', 'status', 'category', 'family', 'os'],
+                    rows.map((e) => [
+                      e.hostname ?? '',
+                      e.mac ?? '',
+                      e.ip ?? '',
+                      e.status ?? '',
+                      e.category ?? '',
+                      e.family ?? '',
+                      e.os ?? '',
+                    ]),
+                  );
+                  toast(`Exported ${n} endpoint${n === 1 ? '' : 's'}`, {
+                    description: 'clearpass-endpoints.csv — filtered rows on this loaded page.',
+                  });
+                }}
+              >
+                Export CSV
+              </Button>
+            ) : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/auth-events')}>
               Auth events →
             </Button>
@@ -356,16 +381,27 @@ function ClearPassView({
               : `ClearPass connector is ${clearpassHealth}`
           }
         >
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             {clearpassNote
               ? clearpassNote
               : clearpassHealth === 'unlinked'
                 ? 'Link ClearPass under Connected systems to pull the endpoint repository and auth feed.'
                 : 'Empty tables below are not proof that CPPM has no endpoints — the connector could not complete a healthy pull. Repair credentials or TLS on Connected systems, then retest.'}
+            {clearpassNote && /tls|certificate|cert|self-signed|untrusted/i.test(clearpassNote) ? (
+              <>
+                {' '}
+                If the host uses a private CA, either install the CA on this portal host or enable
+                verifyTls only after the chain is trusted — never leave TLS verification off in
+                production.
+              </>
+            ) : null}
           </span>
-          <div style={{ marginTop: 10 }}>
-            <Button variant="secondary" size="sm" onClick={() => navigate('/systems')}>
-              Open Connected systems
+          <div className="nt-filter-bar" style={{ marginTop: 10, gap: 8 }}>
+            <Button variant="secondary" size="sm" onClick={() => navigate('/systems?plane=clearpass')}>
+              Repair ClearPass on Connected systems
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => navigate('/systems')}>
+              All systems
             </Button>
           </div>
         </Alert>
@@ -378,7 +414,7 @@ function ClearPassView({
             missingSources.length === 1 ? '' : 's'
           } contributed no ClearPass data: ${missingSources.join(', ')}`}
         >
-          <span style={{ fontSize: 13 }}>
+          <span className="nt-body-sm">
             The endpoint repository or auth feed has not come back from this plane — treat the counts above as
             a lower bound, not the whole estate.
           </span>
@@ -407,8 +443,8 @@ function ClearPassView({
             }
           />
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <div style={{ width: 250 }}>
+          <div className="nt-filter-bar">
+            <div className="nt-filter-field" style={{ width: 250 }}>
               <Input
                 size="sm"
                 mono
@@ -421,7 +457,7 @@ function ClearPassView({
                 aria-label="Filter loaded endpoint page"
               />
             </div>
-            <div style={{ width: 160 }}>
+            <div className="nt-filter-field" style={{ width: 160 }}>
               <Select
                 options={statusOptions}
                 value={status}
@@ -433,7 +469,7 @@ function ClearPassView({
                 aria-label="Status on loaded page"
               />
             </div>
-            <div style={{ width: 180 }}>
+            <div className="nt-filter-field" style={{ width: 180 }}>
               <Select
                 options={categoryOptions}
                 value={category}
@@ -445,19 +481,19 @@ function ClearPassView({
                 aria-label="Category on loaded page"
               />
             </div>
-            {canWrite ? <div style={{ marginLeft: 'auto' }}>
+            {canWrite ? <div className="nt-ml-auto">
               <Button variant="secondary" size="sm" onClick={() => setWriteDrawer({ kind: 'register' })}>
                 Register endpoint
               </Button>
             </div> : null}
           </div>
 
-          <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+          <span className="nt-body-sm nt-hint-muted">
             Filters apply only to the {loadedEndpointCount} {loadedEndpointCount === 1 ? 'row' : 'rows'} loaded on this page.
           </span>
 
           {endpointPage === null ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
+            <div className="nt-center-pad">
               <Spinner size="sm" />
             </div>
           ) : endpointPage.state === 'unavailable' ? (
@@ -524,7 +560,7 @@ function ClearPassView({
           )}
 
           {endpointPage !== null && endpointPage.state === 'ok' ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="nt-row nt-gap-8">
               <Button
                 variant="secondary"
                 size="sm"
@@ -544,7 +580,7 @@ function ClearPassView({
                 Next
               </Button>
               {endpointPage.more === 'unknown' ? (
-                <span style={{ fontSize: 12, color: 'var(--nd-text-muted)' }}>
+                <span className="nt-body-sm nt-hint-muted">
                   ClearPass did not provide a total, so another page cannot be requested safely.
                 </span>
               ) : null}
@@ -577,11 +613,7 @@ function ClearPassView({
                   <Table.Row key={`${ev.time}-${i}`}>
                     <Table.Cell>
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 'var(--nd-text-11)',
-                          color: 'var(--nd-text-muted)',
-                        }}
+                        className="nt-hint-muted"
                       >
                         {ev.at ? hhmmssLocal(ev.at) : ev.time}
                       </span>
@@ -593,10 +625,10 @@ function ClearPassView({
                     </Table.Cell>
                     <Table.Cell>{ev.who}</Table.Cell>
                     <Table.Cell>
-                      <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)' }}>{ev.mac}</span>
+                      <span className="nt-mono-11">{ev.mac}</span>
                     </Table.Cell>
                     <Table.Cell>
-                      <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-secondary)' }}>
+                      <span className="nt-body-sec">
                         {ev.method}
                       </span>
                     </Table.Cell>
@@ -784,16 +816,7 @@ function EndpointTableRow({
         <button
           type="button"
           onClick={onOpenAuth}
-          style={{
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            cursor: 'pointer',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-accent-text)',
-            textAlign: 'left',
-          }}
+          className="nt-mono-link" style={{ textAlign: "left" }}
         >
           {row.mac}
         </button>
@@ -801,18 +824,18 @@ function EndpointTableRow({
       <Table.Cell>
         {row.hostname ?? '—'}
         {row.description ? (
-          <div style={{ fontSize: 'var(--nd-text-10)', color: 'var(--nd-text-muted)' }}>{row.description}</div>
+          <div className="nt-hint-muted">{row.description}</div>
         ) : null}
       </Table.Cell>
       <Table.Cell>
-        <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)', color: 'var(--nd-text-muted)' }}>
+        <span className="nt-hint-muted">
           {row.ip ?? '—'}
         </span>
       </Table.Cell>
       <Table.Cell>
         {row.category ?? '—'}
         {row.insightTags && row.insightTags.length > 0 ? (
-          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+          <div className="nt-chip-wrap nt-pad-top-4">
             {row.insightTags.map((tag) => (
               <Badge key={tag} tone="neutral">
                 {tag}
@@ -824,7 +847,7 @@ function EndpointTableRow({
       <Table.Cell>{[row.family, row.os].filter(Boolean).join(' · ') || '—'}</Table.Cell>
       <Table.Cell>{row.profile ?? '—'}</Table.Cell>
       <Table.Cell>
-        <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-10)', color: 'var(--nd-text-muted)' }}>
+        <span className="nt-hint-muted">
           {row.updatedAt ?? '—'}
         </span>
       </Table.Cell>
@@ -1002,11 +1025,7 @@ function NetworkDevicesSection({
                 </Table.Cell>
                 <Table.Cell>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 'var(--nd-text-11)',
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {d.ipAddress ?? '—'}
                   </span>
@@ -1208,7 +1227,7 @@ function DefaultProfileChain({
   return (
     <div>
       {policy.defaultProfile}
-      {detail ? <div style={{ fontSize: 'var(--nd-text-10)', color: 'var(--nd-text-muted)' }}>→ {detail}</div> : null}
+      {detail ? <div className="nt-hint-muted">→ {detail}</div> : null}
     </div>
   );
 }
@@ -1234,7 +1253,7 @@ function LocalUsersSection({
   return (
     <>
       <SectionHeader label="Local users" meta={inventoryMeta(rows)} />
-      {onAdd ? <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      {onAdd ? <div className="nt-row nt-gap-10">
         <Button variant="secondary" size="sm" onClick={onAdd}>
           Add local user
         </Button>
@@ -1258,7 +1277,7 @@ function LocalUsersSection({
             {(rows ?? []).map((u) => (
               <Table.Row key={u.id}>
                 <Table.Cell>
-                  <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)' }}>{u.userId}</span>
+                  <span className="nt-mono-11">{u.userId}</span>
                 </Table.Cell>
                 <Table.Cell>{u.username ?? '—'}</Table.Cell>
                 <Table.Cell>{u.roleName ?? '—'}</Table.Cell>
@@ -1359,7 +1378,7 @@ function ServicesSection({
                     {s.name}
                   </button>
                   {s.description ? (
-                    <div style={{ fontSize: 'var(--nd-text-10)', color: 'var(--nd-text-muted)' }}>{s.description}</div>
+                    <div className="nt-hint-muted">{s.description}</div>
                   ) : null}
                 </Table.Cell>
                 <Table.Cell>
@@ -1374,7 +1393,7 @@ function ServicesSection({
                 <Table.Cell>
                   {s.type ?? '—'}
                   {s.template ? (
-                    <div style={{ fontSize: 'var(--nd-text-10)', color: 'var(--nd-text-muted)' }}>{s.template}</div>
+                    <div className="nt-hint-muted">{s.template}</div>
                   ) : null}
                 </Table.Cell>
                 <Table.Cell>
@@ -1383,7 +1402,7 @@ function ServicesSection({
                 <Table.Cell>{s.orderNo ?? '—'}</Table.Cell>
                 <Table.Cell>{s.authSources && s.authSources.length > 0 ? s.authSources.join(', ') : '—'}</Table.Cell>
                 <Table.Cell>
-                  <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)' }}>
+                  <span className="nt-mono-11">
                     {s.rulesSummary ?? '—'}
                   </span>
                 </Table.Cell>
@@ -1444,13 +1463,6 @@ function ServicesSection({
 // that would carry any.
 // ---------------------------------------------------------------------------
 
-const serviceNoteStyle = {
-  fontFamily: 'var(--nd-font-mono)',
-  fontSize: 'var(--nd-text-11)',
-  color: 'var(--nd-text-muted)',
-  lineHeight: 1.6,
-} as const;
-
 /** A tri-state flag as CPPM words its own toggles; null is "the box did not say". */
 function flagText(value: boolean | null): string {
   return value === null ? 'Not reported' : value ? 'Enabled' : 'Disabled';
@@ -1468,14 +1480,14 @@ function matchTypeLabel(value: string | null): string {
 function ServiceDetailBody({ result }: { result: ClearPassServiceDetailResult }) {
   if (result.kind === 'not-reported') {
     return (
-      <div style={serviceNoteStyle}>
+      <div className="nt-service-note">
         No detail was reported for this service — the portal has no service read for this id.
       </div>
     );
   }
   if (result.kind === 'failed') {
     return (
-      <div style={{ ...serviceNoteStyle, color: 'var(--nd-danger)' }}>
+      <div className="nt-service-note nt-danger-text">
         The service detail read failed — {result.message}
       </div>
     );
@@ -1485,9 +1497,9 @@ function ServiceDetailBody({ result }: { result: ClearPassServiceDetailResult })
   const provenance = `CLEARPASS · READ ${hhmmLocal(detail.source.at)}${detail.source.cached ? ' · CACHED' : ''}`;
   if (state === 'failed') {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div style={{ ...serviceNoteStyle, fontSize: 'var(--nd-text-10)' }}>{provenance}</div>
-        <div style={{ ...serviceNoteStyle, color: 'var(--nd-danger)' }}>
+      <div className="nt-stack nt-gap-16">
+        <div className="nt-service-note" style={{ fontSize: 'var(--nd-text-10)'  }}>{provenance}</div>
+        <div className="nt-service-note nt-danger-text">
           The service read failed{detail.source.note ? ` — ${detail.source.note}` : ''}.
         </div>
       </div>
@@ -1495,9 +1507,9 @@ function ServiceDetailBody({ result }: { result: ClearPassServiceDetailResult })
   }
   if (state === 'empty' || detail.service === null) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div style={{ ...serviceNoteStyle, fontSize: 'var(--nd-text-10)' }}>{provenance}</div>
-        <div style={serviceNoteStyle}>
+      <div className="nt-stack nt-gap-16">
+        <div className="nt-service-note" style={{ fontSize: 'var(--nd-text-10)'  }}>{provenance}</div>
+        <div className="nt-service-note">
           {detail.source.note ?? 'ClearPass answered 404 for this service — no such service on this CPPM.'}
         </div>
       </div>
@@ -1511,12 +1523,12 @@ function ServiceDefinition({ detail }: { detail: ClearPassServiceDetailLive }) {
   const s = detail.service;
   if (s === null) return null; // unreachable past ServiceDetailBody's gate — never render a guessed object
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-      <div style={{ ...serviceNoteStyle, fontSize: 'var(--nd-text-10)' }}>
+    <div className="nt-stack nt-gap-22">
+      <div className="nt-service-note" style={{ fontSize: 'var(--nd-text-10)'  }}>
         {`CLEARPASS · READ ${hhmmLocal(detail.source.at)}${detail.source.cached ? ' · CACHED' : ''}`}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         <SectionHeader label="Summary" />
         <ReviewRow label="Name" value={s.name} />
         <ReviewRow label="ID" value={s.id} mono />
@@ -1529,7 +1541,7 @@ function ServiceDefinition({ detail }: { detail: ClearPassServiceDetailLive }) {
         <ReviewRow label="Monitor mode" value={flagText(s.monitorMode)} />
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="nt-stack nt-gap-8">
         <SectionHeader label="Match rules" />
         <ReviewRow label="Match type" value={matchTypeLabel(s.rulesMatchType)} />
         {s.rulesConditions.length > 0 ? (
@@ -1548,12 +1560,12 @@ function ServiceDefinition({ detail }: { detail: ClearPassServiceDetailLive }) {
                   <Table.Cell>{c.type ?? '—'}</Table.Cell>
                   <Table.Cell>{c.name ?? '—'}</Table.Cell>
                   <Table.Cell>
-                    <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)' }}>
+                    <span className="nt-mono-11">
                       {c.operator ?? '—'}
                     </span>
                   </Table.Cell>
                   <Table.Cell>
-                    <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 'var(--nd-text-11)' }}>
+                    <span className="nt-mono-11">
                       {c.value ?? '—'}
                     </span>
                   </Table.Cell>
@@ -1562,28 +1574,28 @@ function ServiceDefinition({ detail }: { detail: ClearPassServiceDetailLive }) {
             </Table.Body>
           </Table>
         ) : (
-          <div style={serviceNoteStyle}>No match conditions were reported for this service.</div>
+          <div className="nt-service-note">No match conditions were reported for this service.</div>
         )}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         <SectionHeader label="Authentication" />
         <ReviewRow label="Methods" value={s.authMethods.length > 0 ? s.authMethods.join(', ') : 'Not reported'} />
         <ReviewRow label="Sources" value={s.authSources.length > 0 ? s.authSources.join(', ') : 'Not reported'} />
         <ReviewRow label="Strip username" value={flagText(s.stripUsername)} />
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         <SectionHeader label="Authorization" />
         <ReviewRow label="Role mapping" value={s.roleMappingPolicy ?? 'Not reported'} />
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         <SectionHeader label="Enforcement" />
         <ReviewRow label="Policy" value={s.enforcementPolicy ?? 'Not reported'} />
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         <SectionHeader label="Options" />
         <ReviewRow label="Posture" value={flagText(s.postureEnabled)} />
         <ReviewRow label="Audit" value={flagText(s.auditEnabled)} />
@@ -1633,7 +1645,7 @@ function ServiceDetailDrawer({
       description="The service definition as ClearPass reports it — summary, match rules, authentication, authorization, enforcement and options."
     >
       {result === null ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+        <div className="nt-center-pad nt-center-pad" style={{ padding: 48 }}>
           <Spinner size="md" />
         </div>
       ) : (
@@ -1720,14 +1732,14 @@ function ReviewRow({ label, value, mono = false }: { label: string; value: strin
         borderBottom: '1px solid var(--nd-border-subtle)',
       }}
     >
-      <span style={{ flex: '0 0 110px', fontSize: 11, color: 'var(--nd-text-muted)' }}>{label}</span>
+      <span className="nt-fact-row__k nt-fact-row__k" style={{ flex: "0 0 110px" }}>{label}</span>
       <span
+        className={mono ? 'nt-mono-11' : undefined}
         style={{
           flex: 1,
           minWidth: 0,
-          fontSize: 12.5,
+          fontSize: mono ? undefined : 12.5,
           color: 'var(--nd-text-secondary)',
-          ...(mono ? { fontFamily: 'var(--nd-font-mono)', fontSize: 11.5 } : {}),
         }}
       >
         {value}
@@ -1745,7 +1757,7 @@ function WriteOutcomeAlert({ outcome }: { outcome: { error?: string; result?: Cl
   if (outcome.error) {
     return (
       <Alert tone="danger" title="Apply failed">
-        <span style={{ fontSize: 13 }}>{outcome.error}</span>
+        <span className="nt-body-sm">{outcome.error}</span>
       </Alert>
     );
   }
@@ -1764,7 +1776,7 @@ function WriteOutcomeAlert({ outcome }: { outcome: { error?: string; result?: Cl
       : 'Applied, not confirmed by the read-back';
   return (
     <Alert tone={tone} title={title}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+      <div className="nt-stack-col nt-gap-6" style={{ fontSize: 13 }}>
         <span>{r.message}</span>
         {stale ? (
           <span>
@@ -1801,7 +1813,7 @@ function ReviewedWriteFooter({
   outcome: { error?: string; result?: ClearPassWriteResult } | null;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="nt-stack nt-gap-10">
       {!lab ? <Checkbox
         label="I have reviewed this write — apply directly, no ticket."
         checked={reviewed}
@@ -1809,14 +1821,14 @@ function ReviewedWriteFooter({
       /> : null}
       {problems.length > 0 ? (
         <Alert tone="warning" title="Apply is disabled — the form would be refused">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+          <div className="nt-stack" style={{ gap: 4, fontSize: 13 }}>
             {problems.map((p) => (
               <span key={p}>{p}</span>
             ))}
           </div>
         </Alert>
       ) : null}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <div className="nt-filter-bar nt-gap-8">
         <Button
           variant="primary"
           size="md"
@@ -1831,12 +1843,7 @@ function ReviewedWriteFooter({
       </div>
       {outcome ? <WriteOutcomeAlert outcome={outcome} /> : null}
       <span
-        style={{
-          fontFamily: 'var(--nd-font-mono)',
-          fontSize: 10.5,
-          color: 'var(--nd-text-muted)',
-          lineHeight: 1.6,
-        }}
+        className="nt-hint-muted nt-lh-16"
       >
         Direct apply — no ticket, no queue. An audit event is still recorded for every attempt.
       </span>
@@ -1922,7 +1929,7 @@ function RegisterEndpointDrawer({
       title="Register endpoint"
       description={`Add one MAC to the ClearPass endpoint repository, with the profiling attributes you know. ${lab ? 'This lab write applies directly.' : 'The write goes to the linked CPPM only after your explicit review.'}`}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="nt-stack nt-gap-16">
         <FormField label="MAC address" help="Any separator — normalised to aa:bb:cc:dd:ee:ff before the write.">
           <Input mono value={mac} onChange={(e) => setMac(e.target.value)} placeholder="3c:22:fb:41:0a:19" />
         </FormField>
@@ -1947,7 +1954,7 @@ function RegisterEndpointDrawer({
           />
         </FormField>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-stack nt-gap-2">
           <SectionHeader label={lab ? 'Write summary' : 'Review — what gets written'} />
           <ReviewRow label="MAC" value={mac.trim() ? normalizeMac(mac) : '—'} mono />
           <ReviewRow label="Status" value={status} />
@@ -1963,7 +1970,7 @@ function RegisterEndpointDrawer({
             }
             mono={!!parsed.attributes}
           />
-          <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)', marginTop: 6 }}>
+          <span className="nt-hint-muted" style={{ marginTop: 6 }}>
             {demo
               ? 'demo mode — validated and audit-logged here; nothing is sent to a live CPPM.'
               : 'POST /api/endpoint on the linked CPPM, then a read-back to confirm it.'}
@@ -2057,7 +2064,7 @@ function EditEndpointDrawer({
       title={`Edit endpoint ${row.mac}`}
       description="Change the repository status and/or the operator note. The MAC is the endpoint's identity and is never rewritten."
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="nt-stack nt-gap-16">
         <FormField label="Status">
           <Select
             options={statusOptions}
@@ -2070,7 +2077,7 @@ function EditEndpointDrawer({
           <Input value={description} onChange={(e) => setDescription(e.target.value)} />
         </FormField>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-stack nt-gap-2">
           <SectionHeader label={lab ? 'Write summary' : 'Review — what gets written'} />
           <ReviewRow label="MAC" value={row.mac} mono />
           <ReviewRow label="Status" value={statusChanged ? `${row.status} → ${status}` : `${status} (unchanged)`} />
@@ -2078,7 +2085,7 @@ function EditEndpointDrawer({
             label="Description"
             value={descChanged ? `${row.description ?? '—'} → ${description || '(cleared)'}` : 'unchanged'}
           />
-          <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)', marginTop: 6 }}>
+          <span className="nt-hint-muted" style={{ marginTop: 6 }}>
             {demo
               ? 'demo mode — validated and audit-logged here; nothing is sent to a live CPPM.'
               : `PATCH /api/endpoint/${row.id} on the linked CPPM, then a read-back to confirm it.`}
@@ -2218,7 +2225,7 @@ function LocalUserWriteDrawer({
       title={title}
       description="A ClearPass local account. The password is write-only: it is sent to CPPM and never displayed, echoed, or read back — including here."
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="nt-stack nt-gap-16">
         {mode === 'create' ? (
           <FormField label="User ID" help="The login name — it cannot be changed afterwards.">
             <Input mono value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="noc-operator" />
@@ -2236,7 +2243,7 @@ function LocalUserWriteDrawer({
               aria-label="Role"
             />
           ) : (
-            <span style={{ fontSize: 12.5, color: 'var(--nd-text-muted)' }}>
+            <span className="nt-body-sm nt-hint-muted">
               Not reported by this CPPM — a role cannot be picked.
             </span>
           )}
@@ -2256,7 +2263,7 @@ function LocalUserWriteDrawer({
           />
         </FormField>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className="nt-stack nt-gap-2">
           <SectionHeader label={lab ? 'Write summary' : 'Review — what gets written'} />
           <ReviewRow label="User ID" value={mode === 'create' ? userId.trim() || '—' : (row?.userId ?? '—')} mono />
           <ReviewRow
@@ -2292,7 +2299,7 @@ function LocalUserWriteDrawer({
             }
           />
           <ReviewRow label="Password" value={password ? 'set — write-only, never displayed' : mode === 'create' ? '—' : 'unchanged'} />
-          <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)', marginTop: 6 }}>
+          <span className="nt-hint-muted" style={{ marginTop: 6 }}>
             {demo
               ? 'demo mode — validated and audit-logged here; nothing is sent to a live CPPM.'
               : mode === 'create'

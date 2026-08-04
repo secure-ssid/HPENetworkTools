@@ -6,6 +6,8 @@
  * (kind/label/meta); an empty query shows the first 6 entries; Enter opens the
  * first hit; clicking a row opens it; clicking anywhere outside closes.
  * Navigation is uniform by `view` + `arg` — see pathForSearchHit in ./nav.ts.
+ *
+ * NightDesk 2.0: glass “cinema” panel, kind gutter, copper active rule.
  */
 
 import { useEffect, useId, useRef, useState } from 'react';
@@ -120,10 +122,12 @@ export function SearchPanel() {
     }));
   const resultKey = (result: SearchResult) =>
     `${result.kind === 'switch' ? 'device' : result.kind}:${result.label.trim().toLowerCase()}`;
-  const matches = [...remoteMatches, ...localMatches].filter(
-    (result, index, rows) =>
-      rows.findIndex((candidate) => resultKey(candidate) === resultKey(result)) === index,
-  ).slice(0, 30);
+  const matches = [...remoteMatches, ...localMatches]
+    .filter(
+      (result, index, rows) =>
+        rows.findIndex((candidate) => resultKey(candidate) === resultKey(result)) === index,
+    )
+    .slice(0, 30);
 
   const openHit = (r: SearchResult) => {
     setOpen(false);
@@ -147,13 +151,10 @@ export function SearchPanel() {
   };
 
   return (
-    <div
-      className="nt-global-search"
-      ref={rootRef}
-      style={{ marginLeft: 'auto', position: 'relative', width: 'min(420px, 100%)' }}
-    >
+    <div className="nt-global-search" ref={rootRef}>
       <Input
         mono
+        className="nt-global-search__field"
         value={query}
         placeholder="Jump to a site, device, MAC, IP or ticket…"
         aria-label="Global search"
@@ -164,7 +165,6 @@ export function SearchPanel() {
         aria-activedescendant={
           open && matches[activeIndex] ? `${listboxId}-option-${activeIndex}` : undefined
         }
-        style={{ paddingRight: 74 }}
         onChange={(e) => {
           applyQuery(e.target.value);
           setOpen(true);
@@ -176,39 +176,16 @@ export function SearchPanel() {
         }}
         onKeyDown={onKeyDown}
       />
-      <div
-        style={{
-          position: 'absolute',
-          right: 8,
-          top: 7,
-          display: 'flex',
-          gap: 4,
-          alignItems: 'center',
-          pointerEvents: 'none',
-        }}
-      >
+      <div className="nt-global-search__hotkeys" aria-hidden="true">
         <Kbd>⌘</Kbd>
         <Kbd>K</Kbd>
       </div>
       {open ? (
-        <div
-          id={listboxId}
-          role="listbox"
-          style={{
-            position: 'absolute',
-            top: 38,
-            left: 0,
-            right: 0,
-            background: 'var(--nd-bg-raised)',
-            border: '1px solid var(--nd-border-default)',
-            borderRadius: 'var(--nd-radius-md)',
-            boxShadow: 'var(--nd-shadow-overlay)',
-            padding: 6,
-            maxHeight: 340,
-            overflow: 'auto',
-            zIndex: 30,
-          }}
-        >
+        <div id={listboxId} role="listbox" className="nt-global-search__panel">
+          <div className="nt-global-search__hint">
+            <span>Jump · estate cinema</span>
+            <span>↑↓ enter · esc</span>
+          </div>
           {matches.map((r, i) => (
             <button
               key={`${r.kind}-${r.label}-${i}`}
@@ -216,68 +193,17 @@ export function SearchPanel() {
               type="button"
               role="option"
               aria-selected={i === activeIndex}
+              className={`nt-global-search__hit${i === activeIndex ? ' nt-global-search__hit--active' : ''}`}
               onClick={() => openHit(r)}
               onMouseEnter={() => setActiveIndex(i)}
-              style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                background: i === activeIndex ? 'var(--nd-bg-surface)' : 'none',
-                border: 'none',
-                textAlign: 'left',
-                padding: '7px 8px',
-                borderRadius: 'var(--nd-radius-sm)',
-                cursor: 'pointer',
-                color: 'var(--nd-text-primary)',
-              }}
             >
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-10)',
-                  letterSpacing: '.1em',
-                  color: 'var(--nd-text-muted)',
-                  width: 52,
-                  flex: '0 0 52px',
-                  textTransform: 'uppercase',
-                }}
-              >
-                {r.kind}
-              </span>
-              <span
-                style={{
-                  fontSize: 13,
-                  flex: 1,
-                  minWidth: 0,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {r.label}
-              </span>
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 'var(--nd-text-11)',
-                  color: 'var(--nd-text-muted)',
-                }}
-              >
-                {r.meta}
-              </span>
+              <span className="nt-global-search__kind">{r.kind}</span>
+              <span className="nt-global-search__label">{r.label}</span>
+              <span className="nt-global-search__meta">{r.meta}</span>
             </button>
           ))}
           {matches.length === 0 ? (
-            <div
-              style={{
-                padding: '10px 8px',
-                fontSize: 'var(--nd-text-12)',
-                color: 'var(--nd-text-muted)',
-                fontFamily: 'var(--nd-font-display)',
-                fontStyle: 'italic',
-              }}
-            >
+            <div className="nt-global-search__empty">
               {unsearched.length > 0
                 ? `Nothing matched in the planes that answered. ${unsearched.join(', ')} could not be searched.`
                 : 'Nothing matches that. Try a hostname, MAC prefix or site.'}
@@ -286,14 +212,7 @@ export function SearchPanel() {
           {/* Shown alongside results too: a hit in one plane says nothing
               about what an unread plane would have matched. */}
           {unsearched.length > 0 && matches.length > 0 ? (
-            <div
-              style={{
-                padding: '8px',
-                fontSize: 'var(--nd-text-11)',
-                color: 'var(--nd-warning, var(--nd-text-muted))',
-                fontFamily: 'var(--nd-font-display)',
-              }}
-            >
+            <div className="nt-global-search__warn">
               {`Not searched: ${unsearched.join(', ')} — these results are incomplete.`}
             </div>
           ) : null}

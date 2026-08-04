@@ -226,11 +226,7 @@ function FacetPopover<Row>({
                   <span>{option.label}</span>
                 </label>
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-11)',
-                    color: option.count > 0 ? 'var(--nd-text-muted)' : 'var(--nd-border-strong)',
-                  }}
+                  className="nt-hint-muted" style={{ color: option.count > 0 ? 'var(--nd-text-muted)' : 'var(--nd-border-strong)' }}
                 >
                   {option.count}
                 </span>
@@ -291,16 +287,7 @@ export function FacetFilter<Row>({
         <button
           type="button"
           onClick={() => onChange({})}
-          style={{
-            background: 'none',
-            border: '1px solid var(--nd-border)',
-            borderRadius: 4,
-            padding: '2px 8px',
-            cursor: 'pointer',
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-11)',
-            color: 'var(--nd-accent-text)',
-          }}
+          className="nt-mono-link"
         >
           {`${active} facet value${active === 1 ? '' : 's'} — clear`}
         </button>

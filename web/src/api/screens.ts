@@ -177,6 +177,33 @@ export interface OverviewData extends ScreenEnvelope {
   workspace?: string;
 }
 
+/** Optional list paging envelope from `?limit=&cursor=` screen routes. */
+export interface ListPageMeta {
+  total: number;
+  limit: number;
+  cursor: string;
+  nextCursor: string | null;
+}
+
+/** Shared optional query for inventory/list screen GETs. */
+export interface ScreenListQuery {
+  limit?: number;
+  cursor?: string;
+  q?: string;
+  plane?: string;
+}
+
+function screenListPath(base: string, query?: ScreenListQuery): string {
+  if (!query) return base;
+  const params = new URLSearchParams();
+  if (query.limit != null) params.set('limit', String(query.limit));
+  if (query.cursor) params.set('cursor', query.cursor);
+  if (query.q) params.set('q', query.q);
+  if (query.plane) params.set('plane', query.plane);
+  const qs = params.toString();
+  return qs ? `${base}?${qs}` : base;
+}
+
 export interface AlertsData extends ScreenEnvelope {
   alerts: AlertRow[];
   syncedAt: string | null;
@@ -202,6 +229,8 @@ export interface AlertsData extends ScreenEnvelope {
    *  is short by whatever they hold. Absent means the route did not say; an
    *  empty array means it looked and every linked plane reported. */
   missingSources?: Plane[];
+  /** Present only when the request asked for `?limit=` paging. */
+  page?: ListPageMeta;
 }
 
 export interface TicketsData extends ScreenEnvelope {
@@ -211,6 +240,8 @@ export interface TicketsData extends ScreenEnvelope {
 export interface ClientsData extends ScreenEnvelope {
   stats: StatDef[];
   clients: ClientRow[];
+  /** Present only when the request asked for `?limit=` paging on the list. */
+  page?: ListPageMeta;
   /** The three keys below appear ONLY when the request named one client
    *  (`/api/clients?mac=…`) — the route does no per-object read for a plain
    *  list poll, which is what keeps the 60s tick off the tenant's call budget.
@@ -236,6 +267,8 @@ export interface AuthEventsData extends ScreenEnvelope {
   events: AuthEventRow[];
   failReasons: FailReasonRow[];
   policyServices: PolicyServiceRow[];
+  /** Present only when the request asked for `?limit=` paging on events. */
+  page?: ListPageMeta;
 }
 
 export interface ClearPassData extends ScreenEnvelope {
@@ -321,6 +354,8 @@ export interface SitesData extends ScreenEnvelope {
    *  publishes this, so a site absent from the map is "not reported by any
    *  plane", not a score of zero. Absent map entirely = older server. */
   sleBySiteId?: Partial<Record<string, MistSleRow>>;
+  /** Present only when the request asked for `?limit=` paging. */
+  page?: ListPageMeta;
 }
 
 export interface CentralData extends ScreenEnvelope {
@@ -408,6 +443,8 @@ export interface DevicesData extends ScreenEnvelope {
   missingInventories?: Plane[];
   /** Demo mode only: fixture names the operator hid, for the restore affordance. */
   hiddenDevices?: string[];
+  /** Present only when the request asked for `?limit=` paging. */
+  page?: ListPageMeta;
 }
 
 export interface DeviceDetailData extends ScreenEnvelope {
@@ -516,8 +553,8 @@ export async function getOverview(): Promise<OverviewData> {
   };
 }
 
-export async function getAlerts(): Promise<AlertsData> {
-  const result = await fetchScreen<AlertsData>('/api/alerts');
+export async function getAlerts(query?: ScreenListQuery): Promise<AlertsData> {
+  const result = await fetchScreen<AlertsData>(screenListPath('/api/alerts', query));
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') return apiFailure<AlertsData>(result.message, { alerts: [] });
   return { alerts: ALERTS, syncedAt: DEMO_SYNCED_AT, dataSource: 'demo' };
@@ -535,11 +572,20 @@ export async function getTickets(): Promise<TicketsData> {
  * naming a client makes the route issue that client's per-object detail read,
  * and doing that on a 60s timer across a whole list is what the tenant's daily
  * call budget cannot survive.
+ *
+ * List polls may pass optional `limit`/`cursor`/`q`/`plane` (never with `mac`).
  */
-export async function getClients(mac?: string): Promise<ClientsData> {
-  const result = await fetchScreen<ClientsData>(
-    mac ? `/api/clients?mac=${encodeURIComponent(mac)}` : '/api/clients',
-  );
+export async function getClients(macOrQuery?: string | ScreenListQuery, maybeQuery?: ScreenListQuery): Promise<ClientsData> {
+  const mac = typeof macOrQuery === 'string' ? macOrQuery : undefined;
+  const query = typeof macOrQuery === 'string' ? maybeQuery : macOrQuery;
+  let path: string;
+  if (mac) {
+    const params = new URLSearchParams({ mac });
+    path = `/api/clients?${params.toString()}`;
+  } else {
+    path = screenListPath('/api/clients', query);
+  }
+  const result = await fetchScreen<ClientsData>(path);
   if (result.kind === 'ok') return dropUnreadableBlocks(result.data, 'detail', 'topology');
   if (result.kind === 'http-error') {
     return apiFailure<ClientsData>(result.message, { stats: [], clients: [] });
@@ -632,8 +678,8 @@ export async function getSiteTopology(siteId: string): Promise<SiteTopologyLive 
   return readDetail<SiteTopologyLive>(`/api/sites/${encodeURIComponent(siteId)}`, 'topology');
 }
 
-export async function getAuthEvents(): Promise<AuthEventsData> {
-  const result = await fetchScreen<AuthEventsData>('/api/auth-events');
+export async function getAuthEvents(query?: ScreenListQuery): Promise<AuthEventsData> {
+  const result = await fetchScreen<AuthEventsData>(screenListPath('/api/auth-events', query));
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') {
     return apiFailure<AuthEventsData>(result.message, {
@@ -784,8 +830,8 @@ export async function getCentral(): Promise<CentralData> {
   return { ...demoCentralSections(), dataSource: 'demo', syncedAt: DEMO_SYNCED_AT };
 }
 
-export async function getSites(): Promise<SitesData> {
-  const result = await fetchScreen<SitesData>('/api/sites');
+export async function getSites(query?: ScreenListQuery): Promise<SitesData> {
+  const result = await fetchScreen<SitesData>(screenListPath('/api/sites', query));
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') return apiFailure<SitesData>(result.message, { stats: [], sites: [] });
   return { stats: SITE_STATS, sites: SITES, sleBySiteId: SITE_SLE, dataSource: 'demo' };
@@ -1036,8 +1082,8 @@ export async function getDeviceApTrends(
   return demo ? { kind: 'ok', live: demo } : { kind: 'not-reported' };
 }
 
-export async function getDevices(): Promise<DevicesData> {
-  const result = await fetchScreen<DevicesData>('/api/devices');
+export async function getDevices(query?: ScreenListQuery): Promise<DevicesData> {
+  const result = await fetchScreen<DevicesData>(screenListPath('/api/devices', query));
   if (result.kind === 'ok') return result.data;
   if (result.kind === 'http-error') return apiFailure<DevicesData>(result.message, { devices: [], lanes: {} });
   // Offline demo: carry the authored estate truth in the envelope so the
@@ -1047,6 +1093,59 @@ export async function getDevices(): Promise<DevicesData> {
     devices: DEVICES,
     lanes: LANE_META,
     reconciliation: DEVICE_RECONCILIATION,
+    dataSource: 'demo',
+  };
+}
+
+/** Bulk serial lookup — max 50. Offline: filter demo DEVICES the same way. */
+export async function getDevicesBulk(
+  serials: string[],
+  planes?: string[],
+): Promise<{ devices: DeviceRow[]; missing: string[]; requested: number; dataSource: 'live' | 'demo'; apiError?: string }> {
+  const cleaned = [...new Set(serials.map((s) => s.trim()).filter(Boolean))].slice(0, 50);
+  if (cleaned.length === 0) {
+    return { devices: [], missing: [], requested: 0, dataSource: 'demo' };
+  }
+  const params = new URLSearchParams({ serials: cleaned.join(',') });
+  if (planes && planes.length > 0) params.set('planes', planes.join(','));
+  const result = await fetchScreen<{
+    devices: DeviceRow[];
+    missing: string[];
+    requested: number;
+    dataSource?: 'live' | 'demo';
+  }>(`/api/devices/bulk?${params.toString()}`);
+  if (result.kind === 'ok') {
+    return {
+      devices: result.data.devices ?? [],
+      missing: result.data.missing ?? [],
+      requested: result.data.requested ?? cleaned.length,
+      dataSource: result.data.dataSource === 'live' ? 'live' : 'demo',
+    };
+  }
+  if (result.kind === 'http-error') {
+    return {
+      devices: [],
+      missing: cleaned,
+      requested: cleaned.length,
+      dataSource: 'live',
+      apiError: result.message,
+    };
+  }
+  const wanted = new Set(cleaned.map((s) => s.toLowerCase()));
+  const planeSet = planes && planes.length > 0 ? new Set(planes.map((p) => p.toLowerCase())) : null;
+  const devices = DEVICES.filter((d) => {
+    const serial = (d.serial ?? '').trim();
+    if (!serial || !wanted.has(serial.toLowerCase())) return false;
+    if (!planeSet) return true;
+    const plane = String(d.plane ?? '').toLowerCase();
+    const claimed = (d.claimedBy ?? []).map((p) => String(p).toLowerCase());
+    return planeSet.has(plane) || claimed.some((p) => planeSet.has(p));
+  });
+  const found = new Set(devices.map((d) => (d.serial ?? '').trim().toLowerCase()).filter(Boolean));
+  return {
+    devices,
+    missing: cleaned.filter((s) => !found.has(s.toLowerCase())),
+    requested: cleaned.length,
     dataSource: 'demo',
   };
 }

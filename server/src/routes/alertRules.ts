@@ -154,6 +154,33 @@ notificationCenterRouter.get(
   }),
 );
 
+/**
+ * SSE snapshot stream for the in-app bell. Same payload as GET .../center,
+ * pushed on an interval so the badge updates without a full page poll loop.
+ * Falls back clients keep using the JSON endpoint.
+ */
+notificationCenterRouter.get('/notifications/center/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const write = () => {
+    const body = notificationCenter.list();
+    res.write(`event: center\ndata: ${JSON.stringify(body)}\n\n`);
+  };
+  write();
+  const timer = setInterval(write, 15_000);
+  const heartbeat = setInterval(() => {
+    res.write(': ping\n\n');
+  }, 25_000);
+
+  req.on('close', () => {
+    clearInterval(timer);
+    clearInterval(heartbeat);
+  });
+});
+
 notificationCenterRouter.post(
   '/notifications/center/mark-read',
   h(async (req, res) => {

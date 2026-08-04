@@ -2,14 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { InventoryTreeNode, SseObjectKind } from '@hpe/shared';
 import { countOf } from '@hpe/shared';
-import { Alert, Badge, Button, EmptyState, Input, SectionHeader, Spinner } from '../nightdesk';
+import { Alert, Badge, Button, EmptyState, Input, SectionHeader, Spinner, useToast } from '../nightdesk';
 import { InventoryTree } from '../components/InventoryTree';
 import { getInventoryNode, getSystemsState, searchInventory } from '../api/client';
 import { ScreenHeader } from './ScreenHeader';
 import { SseInventoryPanel } from './SseInventoryPanel';
+import { exportTableCsv } from '../lib/csv';
 
 export default function Inventory() {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [params, setParams] = useSearchParams();
   const selectedId = params.get('node');
   const [selected, setSelected] = useState<InventoryTreeNode | null>(null);
@@ -177,15 +179,47 @@ export default function Inventory() {
       </div>
       {query.trim().length >= 2 ? (
         <div>
-          <SectionHeader
-            label="Search results"
-            meta={
-              // "50 OF 40" once the estate shrinks under a paged read. The
-              // two numbers came from two different reads, so pairing them
-              // states a ratio that was never true of either.
-              searchTotal === null || listMoved ? `${results.length} SHOWN` : `${results.length} OF ${searchTotal}`
-            }
-          />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <SectionHeader
+              label="Search results"
+              meta={
+                // "50 OF 40" once the estate shrinks under a paged read. The
+                // two numbers came from two different reads, so pairing them
+                // states a ratio that was never true of either.
+                searchTotal === null || listMoved ? `${results.length} SHOWN` : `${results.length} OF ${searchTotal}`
+              }
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={results.length === 0}
+              onClick={() => {
+                const n = exportTableCsv(
+                  'inventory-search',
+                  ['id', 'kind', 'label', 'meta', 'status', 'plane', 'serial', 'siteId', 'target'],
+                  results.map((node) => [
+                    node.id,
+                    node.kind,
+                    node.label,
+                    node.meta ?? '',
+                    node.status,
+                    node.identity?.plane ?? '',
+                    node.identity?.serial ?? '',
+                    node.identity?.siteId ?? '',
+                    node.target ?? '',
+                  ]),
+                );
+                toast(
+                  n === 0
+                    ? 'No results to export'
+                    : `Exported ${countOf(n, 'result')} (loaded search page${listMoved ? ' · list may have moved' : ''})`,
+                  { tone: n === 0 ? 'warning' : 'success' },
+                );
+              }}
+            >
+              Export CSV
+            </Button>
+          </div>
           {searching ? (
             <div role="status" aria-label="Searching inventory">
               <Spinner />

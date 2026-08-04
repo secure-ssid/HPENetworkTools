@@ -36,6 +36,7 @@ import {
   deleteNotificationEndpoint,
   deleteSmtpConfig,
   getNotificationEndpoints,
+  getNotificationDeliveries,
   getNotificationOutbox,
   getNotificationStatus,
   getReportPreview,
@@ -60,6 +61,7 @@ import {
   Button,
   Checkbox,
   Code,
+  ConfirmDialog,
   Drawer,
   FormField,
   Input,
@@ -68,6 +70,7 @@ import {
   Switch,
   useToast,
 } from '../../nightdesk';
+import { exportTableCsv } from '../../lib/csv';
 import {
   NOTIFICATION_KIND_LABEL,
   NOTIFICATION_TEMPLATE_OPTIONS,
@@ -105,10 +108,13 @@ function deliveryLine(view: NotificationEndpointView): { text: string; tone: 'su
 
 export function NotificationsSection() {
   const { toast } = useToast();
+  const [pendingRemove, setPendingRemove] = useState<NotificationEndpointView | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [endpoints, setEndpoints] = useState<NotificationEndpointView[] | null>(null);
   const [status, setStatus] = useState<NotificationServiceStatus | null>(null);
   const [outbox, setOutbox] = useState<NotificationOutbox | null>(null);
+  const [deliveries, setDeliveries] = useState<import('../../api/notifications').NotificationDeliveries | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -135,6 +141,8 @@ export function NotificationsSection() {
       } else {
         setOutbox(null);
       }
+      const del = await getNotificationDeliveries();
+      if (!('error' in del)) setDeliveries(del.deliveries);
     }
   };
 
@@ -208,16 +216,24 @@ export function NotificationsSection() {
     await load();
   };
 
-  const remove = async (view: NotificationEndpointView) => {
-    const ok = window.confirm(`Remove ${view.name}? Alert transitions will no longer be sent to ${view.url}.`);
-    if (!ok) return;
-    const res = await deleteNotificationEndpoint(view.id);
-    if ('error' in res) {
-      toast(res.error, { tone: 'danger' });
-      return;
+  const remove = (view: NotificationEndpointView) => {
+    setPendingRemove(view);
+  };
+
+  const confirmRemove = async () => {
+    if (!pendingRemove) return;
+    setRemoveBusy(true);
+    try {
+      const res = await deleteNotificationEndpoint(pendingRemove.id);
+      if ('error' in res) {
+        toast(res.error, { tone: 'danger' });
+        return;
+      }
+      toast(`${pendingRemove.name} removed`, { tone: 'success' });
+      await load();
+    } finally {
+      setRemoveBusy(false);
     }
-    toast(`${view.name} removed`, { tone: 'success' });
-    await load();
   };
 
   const test = async (view: NotificationEndpointView) => {
@@ -242,10 +258,11 @@ export function NotificationsSection() {
     setDraft((d) => ({ ...d, [key]: e.target.value }));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <>
+    <div className="nt-stack nt-gap-14">
       <SectionHeader label="Notifications" meta="ALERT WEBHOOKS · OUTBOUND" />
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <div className="nt-filter-bar nt-gap-8">
         {status ? (
           <>
             <Badge tone={status.demoMode ? 'warning' : 'success'} dot>
@@ -258,7 +275,7 @@ export function NotificationsSection() {
             </Badge>
           </>
         ) : (
-          <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' }}>
+          <span className="nt-hint-muted">
             {loadError ?? (offline ? 'backend offline — notification settings unavailable' : 'reading notification status…')}
           </span>
         )}
@@ -272,42 +289,22 @@ export function NotificationsSection() {
       ) : null}
 
       {/* ---------------- endpoint rows ---------------- */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div className="nt-stack nt-gap-2">
         {(endpoints ?? []).map((view) => {
           const delivery = deliveryLine(view);
           return (
-            <div
-              key={view.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                padding: '9px 0',
-                borderBottom: '1px solid var(--nd-border-subtle)',
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 12.5, color: 'var(--nd-text-primary)' }}>{view.name}</span>
+            <div key={view.id} className="nt-sync-row nt-row-start nt-pad-row">
+              <div className="nt-stack nt-stack-col--flex nt-gap-3">
+                <div className="nt-filter-bar nt-gap-8">
+                  <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{view.name}</span>
                   <Badge tone="neutral">{view.template}</Badge>
                   {view.hmacSecretConfigured ? <Badge tone="neutral">signed</Badge> : null}
                   <Badge tone={view.enabled ? 'success' : 'neutral'} dot>
                     {view.enabled ? 'enabled' : 'disabled'}
                   </Badge>
                 </div>
-                <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {view.url}
-                </span>
-                <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: `var(--nd-${delivery.tone === 'danger' ? 'danger' : delivery.tone === 'success' ? 'success' : delivery.tone === 'warning' ? 'warning' : 'text-muted'})` }}>
+                <span className="nt-hint-muted nt-ellipsis">{view.url}</span>
+                <span className="nt-hint-muted" style={{ color: `var(--nd-${delivery.tone === 'danger' ? 'danger' : delivery.tone === 'success' ? 'success' : delivery.tone === 'warning' ? 'warning' : 'text-muted'})` }}>
                   {delivery.text}
                 </span>
               </div>
@@ -324,52 +321,119 @@ export function NotificationsSection() {
           );
         })}
         {endpoints !== null && endpoints.length === 0 ? (
-          <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)', padding: '9px 0' }}>
+          <div className="nt-hint-muted nt-pad-row">
             no endpoints yet — the alert queue only reaches this screen until one is added
           </div>
         ) : null}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+      <div className="nt-filter-bar nt-gap-14">
         <Button variant="primary" size="sm" disabled={offline} onClick={openAdd}>
           Add endpoint
         </Button>
-        <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10, color: 'var(--nd-text-muted)' }}>
+        <span className="nt-configure-row__name-meta">
           HTTPS only · HMAC-SHA256 signature optional · failures stay on the row
         </span>
       </div>
 
       {/* ---------------- demo outbox ---------------- */}
       {outbox ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="nt-stack nt-gap-8">
           <SectionHeader label="Demo outbox" meta={`${outbox.entries.length} WOULD-HAVE-SENT · NOTHING LEFT THE PROCESS`} />
           {outbox.entries.length === 0 ? (
-            <div style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' }}>
+            <div className="nt-hint-muted">
               empty — nothing has fired, resolved or escalated since the sampler started
             </div>
           ) : (
             outbox.entries.map((entry) => (
               <div
                 key={entry.id}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 6,
-                  padding: '8px 0',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                }}
+                className="nt-stack" style={{ gap: 6, padding: '8px 0',
+                  borderBottom: '1px solid var(--nd-border-subtle)' }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div className="nt-filter-bar nt-gap-8">
                   <Badge tone={entry.event.kind === 'fired' ? 'danger' : entry.event.kind === 'resolved' ? 'success' : 'warning'}>
                     {NOTIFICATION_KIND_LABEL[entry.event.kind]}
                   </Badge>
-                  <span style={{ fontSize: 12.5, color: 'var(--nd-text-primary)' }}>{entry.endpointName}</span>
+                  <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{entry.endpointName}</span>
                   <Badge tone="neutral">demo</Badge>
-                  <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' }}>
+                  <span className="nt-hint-muted">
                     {new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {entry.contentType}
                   </span>
                 </div>
                 <Code block>{entry.body}</Code>
+              </div>
+            ))
+          )}
+        </div>
+      ) : null}
+
+      {/* ---------------- live delivery attempt log (no bodies) ---------------- */}
+      {deliveries ? (
+        <div className="nt-stack nt-gap-8">
+          <div className="nt-filter-bar nt-gap-8">
+            <SectionHeader
+              label="Delivery log"
+              meta={`${deliveries.entries.length} ATTEMPTS · OUTCOMES ONLY · NO PAYLOADS`}
+            />
+            {deliveries.entries.length > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="nt-ml-auto"
+                onClick={() => {
+                  const n = exportTableCsv(
+                    'notification-deliveries.csv',
+                    ['at', 'result', 'test', 'endpoint', 'title', 'httpCode', 'error'],
+                    deliveries.entries.map((e) => [
+                      e.at,
+                      e.result,
+                      e.test ? 'yes' : 'no',
+                      e.endpointName,
+                      e.title,
+                      e.httpCode ?? '',
+                      e.error ?? '',
+                    ]),
+                  );
+                  toast(`Exported ${n} attempt${n === 1 ? '' : 's'}`, {
+                    description: 'notification-deliveries.csv — outcomes only, no payloads.',
+                  });
+                }}
+              >
+                Export CSV
+              </Button>
+            ) : null}
+          </div>
+          {deliveries.entries.length === 0 ? (
+            <div className="nt-hint-muted">
+              empty — no test or transition delivery has been attempted since this process started
+            </div>
+          ) : (
+            deliveries.entries.map((entry) => (
+              <div
+                key={entry.id}
+                className="nt-filter-bar" style={{ gap: 8, padding: '6px 0',
+                  borderBottom: '1px solid var(--nd-border-subtle)' }}
+              >
+                <Badge
+                  tone={
+                    entry.result === 'delivered'
+                      ? 'success'
+                      : entry.result === 'demo'
+                        ? 'warning'
+                        : 'danger'
+                  }
+                >
+                  {entry.result}
+                </Badge>
+                {entry.test ? <Badge tone="neutral">test</Badge> : null}
+                <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{entry.endpointName}</span>
+                <span className="nt-body-sm nt-body-sec">{entry.title}</span>
+                <span className="nt-hint-muted nt-ml-auto">
+                  {new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  {entry.httpCode != null ? ` · HTTP ${entry.httpCode}` : ''}
+                  {entry.error ? ` · ${entry.error}` : ''}
+                </span>
               </div>
             ))
           )}
@@ -389,7 +453,7 @@ export function NotificationsSection() {
         title={editing ? `Edit ${editing.name}` : 'Add notification endpoint'}
         description="Alert queue transitions are POSTed here — fired, resolved, escalated."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div className="nt-stack nt-gap-14">
           <FormField label="Name" help="What this destination is called in the list and the audit log.">
             <Input value={draft.name} onChange={set('name')} placeholder="noc-slack" aria-label="Endpoint name" />
           </FormField>
@@ -444,7 +508,7 @@ export function NotificationsSection() {
             onCheckedChange={(v) => setDraft((d) => ({ ...d, enabled: v }))}
             label="Enabled — a disabled endpoint keeps its config but receives nothing"
           />
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="nt-chip-wrap">
             <Button variant="primary" disabled={saving || !draft.name.trim() || !draft.url.trim()} onClick={() => void save()}>
               {saving ? 'Saving…' : editing ? 'Save endpoint' : 'Add endpoint'}
             </Button>
@@ -455,6 +519,23 @@ export function NotificationsSection() {
         </div>
       </Drawer>
     </div>
+      <ConfirmDialog
+        open={pendingRemove != null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemove(null);
+        }}
+        title={pendingRemove ? `Remove ${pendingRemove.name}?` : 'Confirm'}
+        description={
+          pendingRemove
+            ? `Alert transitions will no longer be sent to ${pendingRemove.url}.`
+            : undefined
+        }
+        confirmLabel="Remove"
+        tone="danger"
+        busy={removeBusy}
+        onConfirm={confirmRemove}
+      />
+    </>
   );
 }
 
@@ -463,7 +544,6 @@ export function NotificationsSection() {
 // Email channel — SMTP relay, fleet summary report, SSL certificate watch
 // ---------------------------------------------------------------------------
 
-const monoSmall: React.CSSProperties = { fontFamily: 'var(--nd-font-mono)', fontSize: 10.5, color: 'var(--nd-text-muted)' };
 
 function when(iso: string): string {
   return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -493,6 +573,8 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
   const [draft, setDraft] = useState<SmtpDraft>(EMPTY_SMTP);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [pendingRemove, setPendingRemove] = useState(false);
+  const [removeBusy, setRemoveBusy] = useState(false);
 
   const load = async () => {
     const r = await getSmtpConfig();
@@ -555,17 +637,26 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
     await load();
   };
 
-  const remove = async () => {
+  const remove = () => {
     if (!smtp) return;
-    const ok = window.confirm(`Remove the SMTP relay (${smtp.host}:${smtp.port})? Scheduled reports will render as previews and go nowhere.`);
-    if (!ok) return;
-    const res = await deleteSmtpConfig();
-    if ('error' in res) {
-      toast(res.error, { tone: 'danger' });
-      return;
+    setPendingRemove(true);
+  };
+
+  const confirmRemove = async () => {
+    if (!smtp) return;
+    setRemoveBusy(true);
+    try {
+      const res = await deleteSmtpConfig();
+      if ('error' in res) {
+        toast(res.error, { tone: 'danger' });
+        return;
+      }
+      toast('SMTP relay removed', { tone: 'success' });
+      setPendingRemove(false);
+      await load();
+    } finally {
+      setRemoveBusy(false);
     }
-    toast('SMTP relay removed', { tone: 'success' });
-    await load();
   };
 
   const test = async () => {
@@ -589,9 +680,9 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
     setDraft((d) => ({ ...d, [key]: e.target.value }));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className="nt-stack nt-gap-8">
       <SectionHeader label="Email (SMTP)" meta="FLEET REPORTS BY EMAIL · OUTBOUND" />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <div className="nt-filter-bar nt-gap-8">
         {demoMode ? <Badge tone="warning" dot>demo — never dials</Badge> : null}
         {smtp ? (
           <Badge tone={smtp.tls ? 'success' : 'warning'} dot>
@@ -599,27 +690,27 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
           </Badge>
         ) : null}
       </div>
-      {error ? <span style={monoSmall}>{error}</span> : null}
-      {!loaded && !error ? <span style={monoSmall}>reading SMTP settings…</span> : null}
+      {error ? <span className="nt-hint-muted">{error}</span> : null}
+      {!loaded && !error ? <span className="nt-hint-muted">reading SMTP settings…</span> : null}
       {loaded && !error && !smtp ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-          <span style={monoSmall}>no relay configured — the fleet report renders as a preview and can be emailed nowhere</span>
+        <div className="nt-filter-bar nt-gap-14">
+          <span className="nt-hint-muted">no relay configured — the fleet report renders as a preview and can be emailed nowhere</span>
           <Button variant="primary" size="sm" onClick={openEdit}>
             Configure SMTP
           </Button>
         </div>
       ) : null}
       {smtp ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderBottom: '1px solid var(--nd-border-subtle)' }}>
-          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 12, color: 'var(--nd-text-primary)' }}>
+        <div className="nt-row-center nt-gap-10 nt-rule-row">
+          <div className="nt-stack-col--flex nt-gap-3">
+            <div className="nt-filter-bar nt-gap-8">
+              <span className="nt-mono-11" style={{ fontSize: 12, color: "var(--nd-text-primary)" }}>
                 {smtp.host}:{smtp.port}
               </span>
               {smtp.user ? <Badge tone="neutral">auth as {smtp.user}</Badge> : <Badge tone="neutral">no auth</Badge>}
               <Badge tone="neutral">{smtp.passwordConfigured ? 'password set — write-only' : 'no password'}</Badge>
             </div>
-            <span style={monoSmall}>from {smtp.from}</span>
+            <span className="nt-hint-muted">from {smtp.from}</span>
           </div>
           <Button variant="ghost" size="sm" disabled={testing} onClick={() => void test()}>
             {testing ? 'Testing…' : 'Test'}
@@ -640,7 +731,7 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
         title={smtp ? `Edit SMTP relay (${smtp.host})` : 'Configure SMTP relay'}
         description="Where fleet reports are emailed from. The password is write-only — never shown back."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div className="nt-stack nt-gap-14">
           <FormField label="Host" help="A hostname, not a URL — no scheme, no path.">
             <Input mono value={draft.host} onChange={set('host')} placeholder="smtp.example.com" aria-label="SMTP host" />
           </FormField>
@@ -682,7 +773,7 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
             onCheckedChange={(v) => setDraft((d) => ({ ...d, tls: v }))}
             label="STARTTLS — upgrade the connection before authenticating (off means plaintext)"
           />
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="nt-chip-wrap">
             <Button variant="primary" disabled={saving || !draft.host.trim() || !draft.from.trim()} onClick={() => void save()}>
               {saving ? 'Saving…' : 'Save relay'}
             </Button>
@@ -692,6 +783,18 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
           </div>
         </div>
       </Drawer>
+      <ConfirmDialog
+        open={pendingRemove}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemove(false);
+        }}
+        title={smtp ? `Remove SMTP relay ${smtp.host}:${smtp.port}?` : 'Remove SMTP relay?'}
+        description="Scheduled reports will render as previews and go nowhere until a relay is configured again."
+        confirmLabel="Remove relay"
+        tone="danger"
+        busy={removeBusy}
+        onConfirm={confirmRemove}
+      />
     </div>
   );
 }
@@ -825,33 +928,31 @@ function ReportCard() {
   const outcome = config ? reportOutcomeLine(config) : null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className="nt-stack nt-gap-8">
       <SectionHeader label="Fleet summary report" meta="DAILY/WEEKLY · UTC · BY EMAIL" />
-      {error ? <span style={monoSmall}>{error}</span> : null}
-      {!loaded && !error ? <span style={monoSmall}>reading report schedule…</span> : null}
+      {error ? <span className="nt-hint-muted">{error}</span> : null}
+      {!loaded && !error ? <span className="nt-hint-muted">reading report schedule…</span> : null}
       {config ? (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="nt-filter-bar nt-gap-8">
             <Badge tone={config.enabled ? 'success' : 'neutral'} dot>
               {config.enabled ? 'scheduled' : 'disabled'}
             </Badge>
             {schedule?.demoMode ? <Badge tone="warning" dot>demo — renders to outbox</Badge> : null}
-            <span style={monoSmall}>
+            <span className="nt-hint-muted">
               {config.frequency} at {String(config.hour).padStart(2, '0')}:00 UTC →{' '}
               {config.recipients.length > 0 ? config.recipients.join(', ') : 'no recipients'}
             </span>
             {outcome ? (
               <span
-                style={{
-                  ...monoSmall,
-                  color: `var(--nd-${outcome.tone === 'danger' ? 'danger' : outcome.tone === 'success' ? 'success' : outcome.tone === 'warning' ? 'warning' : 'text-muted'})`,
+                className="nt-hint-muted" style={{ color: `var(--nd-${outcome.tone === 'danger' ? 'danger' : outcome.tone === 'success' ? 'success' : outcome.tone === 'warning' ? 'warning' : 'text-muted'})`,
                 }}
               >
                 {outcome.text}
               </span>
             ) : null}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div className="nt-filter-bar nt-gap-8">
             <Button variant="primary" size="sm" disabled={sending} onClick={() => void sendNow()}>
               {sending ? 'Sending…' : 'Send now'}
             </Button>
@@ -866,11 +967,11 @@ function ReportCard() {
       ) : null}
 
       {previewOpen && preview ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 12.5, color: 'var(--nd-text-primary)' }}>{preview.subject}</span>
+        <div className="nt-stack nt-gap-6">
+          <div className="nt-filter-bar nt-gap-8">
+            <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{preview.subject}</span>
             {preview.demo ? <Badge tone="warning">demo data</Badge> : null}
-            <span style={monoSmall}>generated {when(preview.generatedAt)} · the email carries this text part plus an HTML rendering</span>
+            <span className="nt-hint-muted">generated {when(preview.generatedAt)} · the email carries this text part plus an HTML rendering</span>
           </div>
           {preview.notes.length > 0 ? (
             <Alert tone="warning" title="Data gaps in this report">
@@ -882,14 +983,14 @@ function ReportCard() {
       ) : null}
 
       {schedule?.demoMode && schedule.entries.length > 0 ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <span style={monoSmall}>{schedule.entries.length} would-have-sent report{schedule.entries.length === 1 ? '' : 's'} — nothing left the process</span>
+        <div className="nt-stack nt-gap-6">
+          <span className="nt-hint-muted">{schedule.entries.length} would-have-sent report{schedule.entries.length === 1 ? '' : 's'} — nothing left the process</span>
           {schedule.entries.map((entry) => (
-            <div key={entry.id} style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 0', borderBottom: '1px solid var(--nd-border-subtle)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div key={entry.id} className="nt-stack-col nt-gap-4 nt-rule-row-sm">
+              <div className="nt-filter-bar nt-gap-8">
                 <Badge tone="neutral">demo</Badge>
-                <span style={{ fontSize: 12.5, color: 'var(--nd-text-primary)' }}>{entry.subject}</span>
-                <span style={monoSmall}>
+                <span className="nt-body-sm nt-body-sm" style={{ color: "var(--nd-text-primary)" }}>{entry.subject}</span>
+                <span className="nt-hint-muted">
                   {when(entry.at)} · to {entry.recipients.length > 0 ? entry.recipients.join(', ') : 'no recipients'}
                 </span>
               </div>
@@ -905,7 +1006,7 @@ function ReportCard() {
         title="Fleet summary report schedule"
         description="Totals and offline devices by type, bell alert counts, and subscriptions approaching expiry — emailed through the configured SMTP relay."
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div className="nt-stack nt-gap-14">
           <Switch
             checked={draft.enabled}
             onCheckedChange={(v) => setDraft((d) => ({ ...d, enabled: v }))}
@@ -932,7 +1033,7 @@ function ReportCard() {
           <FormField label="Recipients" help="One or more email addresses, comma-separated.">
             <Input mono value={draft.recipients} onChange={(e) => setDraft((d) => ({ ...d, recipients: e.target.value }))} placeholder="noc@example.com, netops@example.com" aria-label="Report recipients" />
           </FormField>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="nt-chip-wrap">
             <Button variant="primary" disabled={saving} onClick={() => void save()}>
               {saving ? 'Saving…' : 'Save schedule'}
             </Button>
@@ -970,6 +1071,8 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
   const [addValue, setAddValue] = useState('');
   const [adding, setAdding] = useState(false);
   const [probingId, setProbingId] = useState<string | null>(null);
+  const [pendingRemove, setPendingRemove] = useState<SslProbeHost | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
 
   const load = async () => {
     const r = await getSslHosts();
@@ -1009,16 +1112,25 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
     await load();
   };
 
-  const remove = async (host: SslProbeHost) => {
-    const ok = window.confirm(`Stop watching ${host.host}:${host.port}? Its certificate expiry leaves the ladder.`);
-    if (!ok) return;
-    const res = await removeSslHost(host.id);
-    if ('error' in res) {
-      toast(res.error, { tone: 'danger' });
-      return;
+  const remove = (host: SslProbeHost) => {
+    setPendingRemove(host);
+  };
+
+  const confirmRemove = async () => {
+    if (!pendingRemove) return;
+    setRemoveBusy(true);
+    try {
+      const res = await removeSslHost(pendingRemove.id);
+      if ('error' in res) {
+        toast(res.error, { tone: 'danger' });
+        return;
+      }
+      toast(`${pendingRemove.host}:${pendingRemove.port} removed`, { tone: 'success' });
+      setPendingRemove(null);
+      await load();
+    } finally {
+      setRemoveBusy(false);
     }
-    toast(`${host.host}:${host.port} removed`, { tone: 'success' });
-    await load();
   };
 
   const probe = async (host: SslProbeHost) => {
@@ -1045,32 +1157,30 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className="nt-stack nt-gap-8">
       <SectionHeader label="SSL certificate watch" meta="EXPIRY LADDER · 90/60/30/15 DAYS" />
       {demoMode ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div className="nt-filter-bar nt-gap-8">
           <Badge tone="warning" dot>demo — probes never dial</Badge>
-          <span style={monoSmall}>a labelled demo certificate walks the ladder instead</span>
+          <span className="nt-hint-muted">a labelled demo certificate walks the ladder instead</span>
         </div>
       ) : null}
-      {error ? <span style={monoSmall}>{error}</span> : null}
-      {!loaded && !error ? <span style={monoSmall}>reading the watch list…</span> : null}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {error ? <span className="nt-hint-muted">{error}</span> : null}
+      {!loaded && !error ? <span className="nt-hint-muted">reading the watch list…</span> : null}
+      <div className="nt-stack nt-gap-2">
         {hosts.map((host) => {
           const line = probeLine(host);
           return (
             <div
               key={host.id}
-              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderBottom: '1px solid var(--nd-border-subtle)' }}
+              className="nt-row-center nt-gap-10 nt-rule-row"
             >
-              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={{ fontFamily: 'var(--nd-font-mono)', fontSize: 12, color: 'var(--nd-text-primary)' }}>
+              <div className="nt-stack-col--flex nt-gap-3">
+                <span className="nt-mono-11" style={{ fontSize: 12, color: "var(--nd-text-primary)" }}>
                   {host.host}:{host.port}
                 </span>
                 <span
-                  style={{
-                    ...monoSmall,
-                    color: `var(--nd-${line.tone === 'danger' ? 'danger' : line.tone === 'success' ? 'success' : line.tone === 'warning' ? 'warning' : 'text-muted'})`,
+                  className="nt-hint-muted" style={{ color: `var(--nd-${line.tone === 'danger' ? 'danger' : line.tone === 'success' ? 'success' : line.tone === 'warning' ? 'warning' : 'text-muted'})`,
                   }}
                 >
                   {line.text}
@@ -1086,10 +1196,10 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
           );
         })}
         {loaded && !error && hosts.length === 0 ? (
-          <div style={{ ...monoSmall, padding: '9px 0' }}>no hosts watched — add one and its certificate expiry joins the 90/60/30/15-day ladder</div>
+          <div className="nt-hint-muted nt-pad-row">no hosts watched — add one and its certificate expiry joins the 90/60/30/15-day ladder</div>
         ) : null}
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <div className="nt-filter-bar nt-gap-8">
         <Input
           mono
           value={addValue}
@@ -1101,6 +1211,18 @@ function SslHostsCard({ demoMode }: { demoMode: boolean | null }) {
           {adding ? 'Adding…' : 'Add host'}
         </Button>
       </div>
+      <ConfirmDialog
+        open={pendingRemove != null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemove(null);
+        }}
+        title={pendingRemove ? `Stop watching ${pendingRemove.host}:${pendingRemove.port}?` : 'Stop watching host?'}
+        description="Its certificate expiry leaves the notification ladder until the host is added again."
+        confirmLabel="Stop watching"
+        tone="danger"
+        busy={removeBusy}
+        onConfirm={confirmRemove}
+      />
     </div>
   );
 }

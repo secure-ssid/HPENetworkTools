@@ -4,6 +4,7 @@
 import { apiFetch } from './core';
 import type {
   FleetReport,
+  NotificationDeliveryAttempt,
   NotificationEndpointView,
   NotificationOutboxEntry,
   NotificationServiceStatus,
@@ -121,6 +122,23 @@ export async function getNotificationStatus(): Promise<{ status: NotificationSer
 export async function getNotificationOutbox(): Promise<{ outbox: NotificationOutbox } | Err> {
   return call('/api/notifications/outbox', undefined, (b: NotificationOutbox & { entries?: unknown }) =>
     Array.isArray(b.entries) ? { outbox: b } : undefined,
+  );
+}
+
+export interface NotificationDeliveries {
+  demoMode: boolean;
+  entries: NotificationDeliveryAttempt[];
+}
+
+/** GET /api/notifications/deliveries — live attempt log (no payload bodies). */
+export async function getNotificationDeliveries(): Promise<{ deliveries: NotificationDeliveries } | Err> {
+  return call(
+    '/api/notifications/deliveries',
+    undefined,
+    (b: { demoMode?: boolean; entries?: unknown }) =>
+      typeof b.demoMode === 'boolean' && Array.isArray(b.entries)
+        ? { deliveries: { demoMode: b.demoMode, entries: b.entries as NotificationDeliveryAttempt[] } }
+        : undefined,
   );
 }
 

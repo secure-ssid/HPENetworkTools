@@ -18,7 +18,8 @@
 
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Alert, Badge, Button, EmptyState, Heading, SectionHeader, Spinner, Textarea, useToast } from '../nightdesk';
+import {
+  PageSkeleton, Alert, Badge, Button, EmptyState, Heading, SectionHeader, Textarea, useToast } from '../nightdesk';
 import { addTicketNote, getTickets, resolveTicket } from '../api/client';
 import type { TicketsData } from '../api/client';
 import { hhmmLocal as hhmm, MAX_NOTE_CHARS, relativeAge, slaCountdown } from '@hpe/shared';
@@ -27,6 +28,7 @@ import { useSettings } from '../app/SettingsContext';
 import { deviceDetailPath } from '../app/nav';
 import { ScreenHeader } from './ScreenHeader';
 import { ApiErrorState } from './ApiErrorState';
+import { exportTableCsv } from '../lib/csv';
 
 type TicketNote = NonNullable<TicketsData['tickets'][number]['notes']>[number];
 
@@ -98,11 +100,7 @@ export default function Tickets() {
   }, [pollIntervalSec]);
 
   if (!data) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 96 }}>
-        <Spinner size="md" />
-      </div>
-    );
+    return <PageSkeleton variant="list" />;
   }
   if (data.apiError) return <ApiErrorState message={data.apiError} />;
 
@@ -111,7 +109,7 @@ export default function Tickets() {
 
   if (!cur) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+      <div className="nt-tickets">
         <ScreenHeader
           overline="Operate / Tickets"
           title="Tickets"
@@ -183,24 +181,55 @@ export default function Tickets() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="nt-tickets">
       <ScreenHeader
         overline="Operate / Tickets"
         title="Tickets"
         subtitle="One ticket, one workspace — evidence pulled from whichever plane owns the device."
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const n = exportTableCsv(
+                  'tickets.csv',
+                  ['id', 'title', 'priority', 'state', 'site', 'age', 'sla'],
+                  tickets.map((t) => [t.id, t.title, t.pri, t.state, t.siteName, ageOf(t, now), slaOf(t, now)]),
+                );
+                toast(`Exported ${n} ticket${n === 1 ? '' : 's'}`, {
+                  description: 'tickets.csv — current queue snapshot.',
+                });
+              }}
+            >
+              Export CSV
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void (async () => {
+                  const url = `${window.location.origin}${window.location.pathname}?sel=${encodeURIComponent(cur.id)}`;
+                  try {
+                    await navigator.clipboard.writeText(url);
+                    toast('Ticket link copied', { description: cur.id, tone: 'success' });
+                  } catch {
+                    toast('Could not copy link', { description: url, tone: 'warning' });
+                  }
+                })();
+              }}
+            >
+              Copy ticket link
+            </Button>
+          </>
+        }
       />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '300px minmax(0, 1fr)',
-          gap: 32,
-          alignItems: 'start',
-        }}
-      >
+      <div className="nt-tickets__grid">
         {/* ---------------- queue ---------------- */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div>
           <SectionHeader label="Queue" meta={`${openCount} open`} />
+          <div className="nt-tickets__queue">
           {tickets.map((t) => {
             const selected = t.id === cur.id;
             return (
@@ -208,73 +237,28 @@ export default function Tickets() {
                 key={t.id}
                 type="button"
                 onClick={() => setSearchParams({ sel: t.id }, { replace: true })}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 5,
-                  alignItems: 'stretch',
-                  textAlign: 'left',
-                  border: 'none',
-                  borderBottom: '1px solid var(--nd-border-subtle)',
-                  borderLeft: `2px solid ${selected ? 'var(--nd-accent)' : 'transparent'}`,
-                  background: selected ? 'var(--nd-bg-raised)' : 'transparent',
-                  padding: '11px 10px',
-                  cursor: 'pointer',
-                }}
+                className={`nt-tickets__queue-item${selected ? ' nt-tickets__queue-item--active' : ''}`}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 11,
-                      color: 'var(--nd-accent-text)',
-                    }}
-                  >
-                    {t.id}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10,
-                      color: 'var(--nd-text-muted)',
-                      marginLeft: 'auto',
-                    }}
-                  >
-                    {ageOf(t, now)}
-                  </span>
+                <div className="nt-row" style={{ alignItems: 'center', gap: 8 }}>
+                  <span className="nt-tickets__id">{t.id}</span>
+                  <span className="nt-tickets__age" style={{ marginLeft: 'auto' }}>{ageOf(t, now)}</span>
                 </div>
-                <span style={{ fontSize: 13, color: 'var(--nd-text-primary)', lineHeight: 1.35 }}>
-                  {t.title}
-                </span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span className="nt-tickets__title">{t.title}</span>
+                <div className="nt-row" style={{ alignItems: 'center', gap: 6 }}>
                   <Badge tone={priTone(t)}>{t.pri}</Badge>
-                  <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10,
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
-                    {t.siteName}
-                  </span>
+                  <span className="nt-tickets__site">{t.siteName}</span>
                 </div>
               </button>
             );
           })}
+          </div>
         </div>
 
         {/* ---------------- workspace ---------------- */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 22, minWidth: 0 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 12,
-                  color: 'var(--nd-accent-text)',
-                  letterSpacing: '.06em',
-                }}
-              >
+        <div className="nt-tickets__workspace">
+          <div className="nt-stack--tight">
+            <div className="nt-row">
+              <span className="nt-tickets__id" style={{ fontSize: 12, letterSpacing: '.06em' }}>
                 {cur.id}
               </span>
               <Badge tone={priTone(cur)} dot>
@@ -282,27 +266,13 @@ export default function Tickets() {
               </Badge>
               <Badge tone="neutral">{cur.state}</Badge>
               <span
-                style={{
-                  marginLeft: 'auto',
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 11,
-                  color: cur.state === 'resolved' ? 'var(--nd-text-muted)' : 'var(--nd-warning)',
-                }}
+                className={`nt-tickets__sla ${cur.state === 'resolved' ? 'nt-tickets__sla--done' : 'nt-tickets__sla--open'}`}
               >
                 {slaOf(cur, now)}
               </span>
             </div>
             <Heading level={3}>{cur.title}</Heading>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-                gap: 18,
-                padding: '14px 0',
-                borderTop: '1px solid var(--nd-border-subtle)',
-                borderBottom: '1px solid var(--nd-border-subtle)',
-              }}
-            >
+            <div className="nt-tickets__meta-grid">
               {(
                 [
                   ['Reported by', cur.reporter],
@@ -312,15 +282,7 @@ export default function Tickets() {
                 ] as const
               ).map(([k, v]) => (
                 <div key={k}>
-                  <div
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10,
-                      letterSpacing: '.12em',
-                      textTransform: 'uppercase',
-                      color: 'var(--nd-text-muted)',
-                    }}
-                  >
+                  <div className="nt-tickets__meta-k">
                     {k}
                   </div>
                   <div style={{ fontSize: 13, color: 'var(--nd-text-secondary)', marginTop: 3 }}>
@@ -336,7 +298,7 @@ export default function Tickets() {
           </Alert>
 
           {/* ---------------- evidence ---------------- */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div className="nt-stack nt-gap-2">
             <SectionHeader label="Evidence, gathered across planes" meta="AUTO-COLLECTED" />
             {cur.evidence.map((e, i) => (
               <div
@@ -349,19 +311,12 @@ export default function Tickets() {
                 }}
               >
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                    width: 46,
-                    flex: '0 0 46px',
-                    paddingTop: 2,
-                  }}
+                  className="nt-sync-row__time"
                 >
                   {hhmm(e.time)}
                 </span>
                 <div style={{ width: 88, flex: '0 0 88px', paddingTop: 1 }}>
-                  <Badge tone="neutral">{e.plane}</Badge>
+                  <Badge plane>{e.plane}</Badge>
                 </div>
                 <div
                   style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}
@@ -370,11 +325,7 @@ export default function Tickets() {
                     {e.finding}
                   </span>
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10.5,
-                      color: 'var(--nd-text-muted)',
-                    }}
+                    className="nt-hint-muted"
                   >
                     {e.raw}
                   </span>
@@ -393,9 +344,9 @@ export default function Tickets() {
           </div>
 
           {/* ---------------- next actions + note ---------------- */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div className="nt-stack nt-gap-12">
             <SectionHeader label="Next actions" />
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div className="nt-chip-wrap">
               <Button
                 variant="primary"
                 size="sm"
@@ -425,14 +376,14 @@ export default function Tickets() {
                 </Button>
               ) : null}
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 620 }}>
+            <div className="nt-stack" style={{ gap: 8, maxWidth: 620 }}>
               <Textarea
                 rows={3}
                 placeholder="Log a note — saved to the ticket record in this portal."
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
               />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div className="nt-row nt-gap-10">
                 <Button
                   variant="secondary"
                   size="sm"
@@ -443,29 +394,21 @@ export default function Tickets() {
                 </Button>
                 {overLimit ? (
                   <span
-                    style={{
-                      fontFamily: 'var(--nd-font-mono)',
-                      fontSize: 10.5,
-                      color: 'var(--nd-danger)',
-                    }}
+                    className="nt-hint-muted" style={{ color: "var(--nd-danger)" }}
                   >
                     {note.trim().length} / {MAX_NOTE_CHARS} characters — too long to log. Nothing is
                     truncated; shorten it and the button comes back.
                   </span>
                 ) : null}
                 <span
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 10.5,
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-hint-muted"
                 >
                   Persisted in the portal's ticket store — survives refresh · ServiceNow ref
                   INC0094{cur.inc} (correlation id only — nothing is mirrored from here)
                 </span>
               </div>
               {notes.length > 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                <div className="nt-stack nt-gap-0">
                   {notes.map((n, i) => (
                     <div
                       key={`${n.ts}-${i}`}
@@ -477,14 +420,7 @@ export default function Tickets() {
                       }}
                     >
                       <span
-                        style={{
-                          fontFamily: 'var(--nd-font-mono)',
-                          fontSize: 10,
-                          color: 'var(--nd-text-muted)',
-                          width: 46,
-                          flex: '0 0 46px',
-                          paddingTop: 2,
-                        }}
+                        className="nt-sync-row__time"
                       >
                         {hhmm(n.ts)}
                       </span>
@@ -504,12 +440,9 @@ export default function Tickets() {
                             place the log admits to a hole in itself. */}
                         {n.kind === 'action' || n.kind === 'retention' ? (
                           <span
+                            className="nt-mono-label"
                             style={{
-                              fontFamily: 'var(--nd-font-mono)',
-                              fontSize: 9.5,
-                              letterSpacing: '.1em',
-                              color:
-                                n.kind === 'retention' ? 'var(--nd-warning)' : 'var(--nd-accent-text)',
+                              color: n.kind === 'retention' ? 'var(--nd-warning)' : 'var(--nd-accent-text)',
                               marginRight: 8,
                             }}
                           >

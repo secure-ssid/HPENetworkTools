@@ -30,6 +30,7 @@ import { h } from './handler';
 import { writeBroker, type WriteBroker } from '../services/writeBroker';
 import { ssidDirectWrite, type SsidDirectWriteService } from '../services/ssidDirectWrite';
 import type { BrokerAuditEvent } from '@hpe/shared';
+import { sendCsv } from '../lib/csv';
 
 /** Audit-log page size: what the drawer asks for, clamped to what the log tail
  *  can sensibly answer. A missing/garbage `limit` is the default, never 0. */
@@ -107,6 +108,24 @@ export function makeConfigureRouter(broker: WriteBroker, ssidService: SsidDirect
     const read = broker.readRecentEvents(historyLimit(req.query.limit));
     const events: BrokerAuditEvent[] = read.events;
     res.json({ events, unreadable: read.unreadable });
+  });
+
+  /**
+   * CSV export of the same audit events — compliance download. Bodies stay
+   * excluded (BrokerAuditEvent never carries payloads).
+   */
+  router.get('/configure/history/export', (req, res) => {
+    const read = broker.readRecentEvents(historyLimit(req.query.limit ?? 1000));
+    sendCsv(
+      res,
+      'configure-history.csv',
+      ['ts', 'event', 'changeId', 'ticket', 'kind', 'result', 'who'],
+      read.events.map((e) => {
+        const who =
+          'who' in e && typeof (e as { who?: unknown }).who === 'string' ? (e as { who: string }).who : '';
+        return [e.ts, e.event, e.changeId, e.ticket, e.kind, e.result, who];
+      }),
+    );
   });
 
   router.post(

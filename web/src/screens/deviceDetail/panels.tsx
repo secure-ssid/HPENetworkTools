@@ -319,11 +319,7 @@ export function ConfigTabs({
       </div>
       {provenance ? (
         <span
-          style={{
-            fontFamily: 'var(--nd-font-mono)',
-            fontSize: 'var(--nd-text-10)',
-            color: 'var(--nd-text-muted)',
-          }}
+          className="nt-hint-muted"
         >
           {`snapshot v${provenance.version} · ${provenance.source} · ${hhmm(provenance.takenAt)}`}
         </span>
@@ -351,13 +347,10 @@ export function ConfigTabs({
               }}
             >
               <span
-                style={{
-                  fontFamily: 'var(--nd-font-mono)',
-                  fontSize: 10.5,
-                  color: 'var(--nd-text-muted)',
-                  width: 88,
-                  flex: '0 0 88px',
-                }}
+                className="nt-hint-muted" style={{
+width: 88,
+                  flex: '0 0 88px'
+}}
               >
                 {provenance ? hhmm(h.when) : h.when}
               </span>
@@ -372,11 +365,7 @@ export function ConfigTabs({
                   {h.what}
                 </div>
                 <div
-                  style={{
-                    fontFamily: 'var(--nd-font-mono)',
-                    fontSize: 'var(--nd-text-10)',
-                    color: 'var(--nd-text-muted)',
-                  }}
+                  className="nt-hint-muted"
                 >
                   {h.who}
                 </div>

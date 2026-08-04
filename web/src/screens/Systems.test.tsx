@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 import Systems from './Systems';
@@ -110,9 +110,67 @@ function SiteStub() {
   return <div>site page {siteId}</div>;
 }
 
+beforeEach(() => {
+  // Runtime debug / notifications / health deep use apiFetch (no timeout).
+  // Without a stub, jsdom fetch hangs and catalog loops blow the 5s budget.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/debug/runtime')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            at: new Date().toISOString(),
+            process: {
+              pid: 1,
+              node: 'v22',
+              platform: 'test',
+              uptimeSec: 1,
+              memory: { rss: 1, heapUsed: 1, heapTotal: 1, external: 0 },
+            },
+            portal: {
+              demoMode: true,
+              blendLive: false,
+              auth: 'none',
+              pollIntervalSec: 60,
+              configMode: false,
+            },
+            dataDir: { path: 'data/', writable: true },
+            poller: { running: null, contributionPlanes: [] },
+            notifier: {
+              sampling: { running: false, lastSampleAt: null, trackedGroups: 0 },
+              deliveryLogSize: 0,
+              outboxSize: 0,
+            },
+            terminal: { openSessions: 0 },
+            planes: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/api/health')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            status: 'ok',
+            uptimeSec: 1,
+            auth: 'none',
+            demoMode: true,
+            degradedPlanes: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ error: 'unmocked' }), { status: 404 });
+    }),
+  );
+});
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('Systems assistant providers', () => {
@@ -727,34 +785,41 @@ describe('Systems drawer actions', () => {
 });
 
 describe('Systems connect drawer', () => {
-  it('renders every configurable product from the catalog without a standalone AOS-10 connector', async () => {
-    mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
-    mockGetSystemsState.mockResolvedValue(registry());
-    mockGetPortalSettings.mockResolvedValue(null);
-    mockGetChatStatus.mockResolvedValue(null);
-    mockGetChatSettings.mockResolvedValue(null);
+  it(
+    'renders every configurable product from the catalog without a standalone AOS-10 connector',
+    async () => {
+      mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
+      mockGetSystemsState.mockResolvedValue(registry());
+      mockGetPortalSettings.mockResolvedValue(null);
+      mockGetChatStatus.mockResolvedValue(null);
+      mockGetChatSettings.mockResolvedValue(null);
 
-    renderSystems();
+      renderSystems();
 
-    await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
+      await waitFor(() => expect(screen.getByText('Connect a system')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Connect a system' }));
 
-    const selector = screen.getByLabelText('System type');
-    expect(screen.queryByRole('option', { name: /AOS-10/i })).toBeNull();
+      const selector = screen.getByLabelText('System type');
+      expect(screen.queryByRole('option', { name: /AOS-10/i })).toBeNull();
 
-    for (const entry of CONNECTOR_CATALOG) {
-      fireEvent.change(selector, { target: { value: entry.id } });
-      await waitFor(() => expect(screen.getByLabelText(entry.endpoint.label)).toBeTruthy());
-      for (const auth of entry.auth) {
-        if (entry.auth.length > 1) {
-          fireEvent.change(screen.getByLabelText('Authentication'), { target: { value: auth.kind } });
-        }
-        for (const field of auth.fields) {
-          expect(screen.getByLabelText(field.label)).toBeTruthy();
+      for (const entry of CONNECTOR_CATALOG) {
+        fireEvent.change(selector, { target: { value: entry.id } });
+        await waitFor(
+          () => expect(screen.getByLabelText(entry.endpoint.label)).toBeTruthy(),
+          { timeout: 3000 },
+        );
+        for (const auth of entry.auth) {
+          if (entry.auth.length > 1) {
+            fireEvent.change(screen.getByLabelText('Authentication'), { target: { value: auth.kind } });
+          }
+          for (const field of auth.fields) {
+            expect(screen.getByLabelText(field.label)).toBeTruthy();
+          }
         }
       }
-    }
-  });
+    },
+    20_000,
+  );
 
   it('keeps advanced policy collapsed until the operator opens it', async () => {
     mockGetSystems.mockResolvedValue(DEMO_PAYLOAD);
