@@ -81,7 +81,16 @@ export function planeSites(pull: PlanePull | undefined): SystemSiteRow[] {
   return [...byId.entries()].map(([siteId, s]) => ({
     siteId,
     name: s.name,
-    detail: `${countOf(s.devices, 'device')} · ${countOf(s.clients, 'client')}`,
+    // A tally over a dataset the pull never carried is not a tally. The sites
+    // list can arrive without the inventory beside it, and every row then read
+    // '0 devices' for an estate nobody had counted — a number an operator
+    // cannot check by looking at it, and one that travels alone into the
+    // Systems CSV. planeLiveStats, immediately below, has always asked whether
+    // a dataset was reported before publishing a figure from it.
+    detail: [
+      pull.devices === undefined ? 'devices not reported' : countOf(s.devices, 'device'),
+      pull.clients === undefined ? 'clients not reported' : countOf(s.clients, 'client'),
+    ].join(' · '),
   }));
 }
 
