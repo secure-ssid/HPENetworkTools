@@ -718,9 +718,6 @@ export default function Tickets() {
         subtitle="One ticket, one workspace — evidence pulled from whichever plane owns the device."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · queue
-            </span>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <div className="nt-w-180">
               <Input
@@ -854,7 +851,6 @@ export default function Tickets() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · queue theater · priority owns hue</div>
       <div className="nt-status-ribbon nt-tickets-ribbon" role="status" aria-label="Tickets status ribbon">
         <span className="nt-status-ribbon__item">queue · priority owns hue</span>
         <span className="nt-status-ribbon__item">alert → device → ticket</span>
@@ -1167,7 +1163,11 @@ export default function Tickets() {
           ) : null}
           {ticketHasMore || ticketPageTotal != null ? (
             <div className="nt-row nt-row-center nt-gap-8 nt-tickets__pager">
-              {ticketPageTotal != null ? (
+              {/* The "Loaded N of M" label sat directly above a table footer that
+              already stated the same totals, so a fully-loaded screen said it
+              twice. It earns its place only next to a Load more button, where
+              it says how much is still to come. */}
+          {ticketHasMore && ticketPageTotal != null ? (
                 <span className="nt-fs-12-muted">
                   Loaded {allTickets.length} of {ticketPageTotal}
                 </span>

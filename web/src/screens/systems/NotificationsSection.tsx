@@ -295,7 +295,6 @@ export function NotificationsSection() {
   return (
     <>
     <div id={systemsSectionDomId('notifications')} className="nt-systems-section nt-section-panel nt-stack nt-gap-14">
-      <div className="nt-plane-theater" role="note">HPE Network Tools · notify · outbound · severity owns hue</div>
       <div className="nt-filter-bar nt-gap-8">
         <SectionHeader label="Notifications" meta="ALERT WEBHOOKS · OUTBOUND" />
         <Button variant="ghost" size="sm" className="nt-ml-auto" onClick={copySectionLink}>
@@ -623,7 +622,6 @@ export function NotificationsSection() {
         description="Alert queue transitions are POSTed here — fired, resolved, escalated."
       >
         <div className="nt-stack nt-gap-14">
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Name" help="What this destination is called in the list and the audit log.">
             <Input value={draft.name} onChange={set('name')} placeholder="noc-slack" aria-label="Endpoint name" />
           </FormField>
@@ -904,7 +902,6 @@ function SmtpCard({ demoMode }: { demoMode: boolean | null }) {
         description="Where fleet reports are emailed from. The password is write-only — never shown back."
       >
         <div className="nt-stack nt-gap-14">
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Host" help="A hostname, not a URL — no scheme, no path.">
             <Input mono value={draft.host} onChange={set('host')} placeholder="smtp.example.com" aria-label="SMTP host" />
           </FormField>
@@ -1213,7 +1210,6 @@ function ReportCard() {
         description="Totals and offline devices by type, bell alert counts, and subscriptions approaching expiry — emailed through the configured SMTP relay."
       >
         <div className="nt-stack nt-gap-14">
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <Switch
             checked={draft.enabled}
             onCheckedChange={(v) => setDraft((d) => ({ ...d, enabled: v }))}

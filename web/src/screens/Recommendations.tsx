@@ -286,9 +286,6 @@ export default function Recommendations() {
         subtitle="Read-only config hygiene suggestions from observed inventory. The portal never auto-applies these — open a related screen to act."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · hygiene
-            </span>
             <Badge tone="neutral">READ ONLY</Badge>
             <Button variant="ghost" size="sm" onClick={copyFilterLink}>
               Copy filter link
@@ -309,7 +306,6 @@ export default function Recommendations() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · recommendation theater · severity owns hue · never auto-applied</div>
       <div className="nt-status-ribbon nt-reco-ribbon" role="status" aria-label="Recommendations status ribbon">
         <span className="nt-status-ribbon__item">reco · severity owns hue</span>
         <span className="nt-status-ribbon__item">never auto-applied</span>

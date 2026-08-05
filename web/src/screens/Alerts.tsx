@@ -1563,9 +1563,6 @@ export default function Alerts() {
         subtitle="Every plane's alarms in one queue, de-duplicated and aged."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · signal
-            </span>
             <span className="nt-mono-label">{synced}</span>
             {/* LIVE on pure live and alerts blend alike — blend-only left pure live quiet. */}
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
@@ -1707,7 +1704,6 @@ export default function Alerts() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · signal theater · severity owns hue</div>
       <div className="nt-status-ribbon nt-alerts-ribbon" role="status" aria-label="Alerts status ribbon">
         <span className="nt-status-ribbon__item">signals · severity owns hue</span>
         <span className="nt-status-ribbon__item">incident spine armed</span>
@@ -1755,7 +1751,6 @@ export default function Alerts() {
 
       {ackTarget ? (
         <div className="nt-alerts__ack nt-write-ritual" data-phase={ackBusy ? 'executing' : ackTicket ? 'confirm' : 'review'}>
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-flex-1-wide">
             <FormField
               label="Authorising ticket"
@@ -2229,9 +2224,13 @@ export default function Alerts() {
         )
       ) : null}
 
-      {alertHasMore || alertPageTotal != null ? (
+      {/* A paging footer over an empty queue read "Loaded 0 of 0 groups"
+          directly under an empty state that had just said the same thing, and
+          under a counter chip that had said it a third time. The footer is
+          only meaningful once something has actually been paged in. */}
+      {alertHasMore || (alertPageTotal != null && (data.groups?.length ?? 0) > 0) ? (
         <div className="nt-filter-bar nt-sticky-filters">
-          {alertPageTotal != null && data.groups ? (
+          {alertHasMore && alertPageTotal != null && data.groups ? (
             <span className="nt-mono-label">
               Loaded {data.groups.length} of {alertPageTotal} groups
             </span>
@@ -2698,7 +2697,6 @@ export default function Alerts() {
         }
       >
         <div className="nt-drawer-stack">
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField
             label="Duration"
             help="The group leaves the active queue until then — and stays listed under Silenced with its reason, so suppression is never invisible."
@@ -2748,7 +2746,6 @@ export default function Alerts() {
         description="While the window is active, matching alert groups are silenced — reason stamped, expiry automatic, suppression always listed."
       >
         <div className="nt-drawer-stack">
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Reason" help="Required — stamped on every silence this window raises, and audit-logged.">
             <Input
               value={wReason}
@@ -2850,7 +2847,6 @@ export default function Alerts() {
         description="A device that stops reporting raises no plane alert — a matching rule fires instead, once per outage, after the offline threshold."
       >
         <div className="nt-drawer-stack">
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Site filter" help="Site name or id, matched case-insensitively — blank watches every site.">
             <Input
               mono
@@ -2935,7 +2931,6 @@ export default function Alerts() {
         description={ruleDelete ? ruleSummary(ruleDelete) : undefined}
       >
         <div className="nt-drawer-stack">
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <span className="nt-service-note nt-fs-13-sec">
             The rule is removed immediately and the deletion is audit-logged. A device only this rule watched
             will page no one when it stops reporting.

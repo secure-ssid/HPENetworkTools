@@ -165,7 +165,6 @@ export function DpiApplicationsBody({ applications }: { applications: SiteApplic
       </div>
 
       <div className="nt-stack nt-gap-2">
-        <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · DPI theater · estimates · share of largest</div>
         <div className="nt-status-ribbon nt-status-ribbon--compact nt-dpi-ribbon" role="status" aria-label="DPI status ribbon">
           <span className="nt-status-ribbon__item">DPI · estimates</span>
           <span className="nt-status-ribbon__item">share of largest</span>

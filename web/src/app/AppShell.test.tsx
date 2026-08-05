@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AppShellLayout, THEME_STORAGE_KEY, applyShellTheme, readShellTheme, writeShellTheme } from './AppShell';
 import { noteBackendReachable, resetBackendReachability } from '../api/core';
@@ -174,9 +174,9 @@ describe('AppShellLayout platforms collapse', () => {
         </ToastProvider>
       </SettingsProvider>,
     );
-    expect(screen.queryByRole('button', { name: 'Central' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Central' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Platforms/i }));
-    expect(await screen.findByRole('button', { name: 'Central' })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Central' })).toBeNull());
   });
 });
 

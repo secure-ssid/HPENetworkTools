@@ -376,7 +376,6 @@ export function SearchPanel() {
       </div>
       {open ? (
         <div className="nt-global-search__panel nt-panel-glass">
-          <div className="nt-global-search__brand nt-cmdk__kicker" aria-hidden>HPE Network Tools · device cinema · ⌘K</div>
           <div className="nt-global-search__hint">
             <span>Jump · actions · screens · estate</span>
             <span className="nt-wrap-6">

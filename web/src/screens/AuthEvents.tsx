@@ -585,9 +585,6 @@ export default function AuthEvents() {
         subtitle="Every RADIUS decision, whichever plane asked the question."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · identity
-            </span>
             <Badge plane>ClearPass</Badge>
             <span className="nt-mono-label">
               {synced}
@@ -703,7 +700,6 @@ export default function AuthEvents() {
 }
       />
 
-      <div className="nt-plane-theater" role="note">HPE Network Tools · identity theater · auth outcome owns hue</div>
       <div className="nt-status-ribbon nt-auth-ribbon" role="status" aria-label="Auth events status ribbon">
         <span className="nt-status-ribbon__item">identity · outcome owns hue</span>
         <span className="nt-status-ribbon__item">RADIUS · CoA path</span>

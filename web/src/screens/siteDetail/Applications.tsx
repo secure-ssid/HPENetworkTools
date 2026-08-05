@@ -127,7 +127,6 @@ export function SiteApplications({
 
   return (
     <div className="nt-site-section nt-section-panel nt-stack nt-gap-10">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · applications theater · DPI visibility</div>
       <div className="nt-status-ribbon nt-status-ribbon--compact nt-apps-ribbon" role="status" aria-label="Applications status ribbon">
         <span className="nt-status-ribbon__item">apps · DPI</span>
         <span className="nt-status-ribbon__item">share owns attention</span>

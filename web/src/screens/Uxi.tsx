@@ -535,9 +535,6 @@ function UxiView({
         subtitle="Sensor fleet health and synthetic test issues from HPE Aruba UXI."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · experience
-            </span>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <div className="nt-filter-field nt-min-w-160">
               <Input
@@ -639,7 +636,6 @@ function UxiView({
         }
       />
 
-      <div className="nt-plane-theater" role="note">HPE Network Tools · UXI ECG · sensor fleet · synthetic issues</div>
       <div className="nt-status-ribbon nt-uxi-ribbon" role="status" aria-label="UXI status ribbon">
         <span className="nt-status-ribbon__item">UXI ECG · sensors</span>
         <span className="nt-status-ribbon__item">synthetic issues</span>

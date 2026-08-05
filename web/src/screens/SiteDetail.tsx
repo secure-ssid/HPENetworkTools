@@ -981,9 +981,6 @@ export default function SiteDetail() {
           }
           actions={
             <>
-              <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-                HPE Network Tools · site
-              </span>
               <ProvenanceNote label={source} />
               {/* LIVE on pure live and sites blend alike — provenance mono stamp alone is easy to miss. */}
               {detail.dataSource === 'live' || (detail.blended?.includes('sites') ?? false) ? (
@@ -1092,7 +1089,6 @@ export default function SiteDetail() {
             </>
           }
         />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · site detail · topology · estate slice</div>
         <div
           className="nt-status-ribbon"
           role="status"
@@ -1277,9 +1273,6 @@ export default function SiteDetail() {
         }
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · site
-            </span>
             <ProvenanceNote label={source} />
             {/* LIVE on pure live and sites blend alike — provenance mono stamp alone is easy to miss. */}
             {detail.dataSource === 'live' || (detail.blended?.includes('sites') ?? false) ? (
@@ -1409,7 +1402,6 @@ export default function SiteDetail() {
         </EmptyState>
       ) : (
         <>
-          <div className="nt-plane-theater" role="note">HPE Network Tools · site cinema · health owns hue · monochrome planes</div>
           <div
             className="nt-status-ribbon"
             role="status"

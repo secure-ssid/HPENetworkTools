@@ -123,7 +123,6 @@ export function SitesSection({
 
   return (
     <div id="central-section-sites" className="nt-stack nt-gap-2 nt-central-section nt-section-panel">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Central sites lane · estate slice</div>
       <div className="nt-status-ribbon nt-status-ribbon--compact nt-central-sites-ribbon" role="status" aria-label="Central sites status ribbon">
         <span className="nt-status-ribbon__item">Central sites</span>
         <span className="nt-status-ribbon__item">estate slice</span>

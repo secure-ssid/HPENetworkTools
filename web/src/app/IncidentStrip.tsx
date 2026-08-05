@@ -28,10 +28,11 @@ export function IncidentStrip() {
       data-has-device={incident.deviceName ? '1' : '0'}
       data-has-ticket={incident.ticketId ? '1' : '0'}
     >
-      <span className="nt-incident-strip__brand" aria-hidden>
-        HPE Network Tools · spine
-      </span>
-      <span className="nt-incident-strip__label">alert → device → ticket</span>
+      {/* The strip used to open with the product name and a static
+          "alert → device → ticket" legend, then print the real spine —
+          Alert · … → Device · … → Ticket · … — immediately after. The two
+          decorations took 350px of a 1450px bar and squeezed the only line
+          that carried anything into three wrapped rows. */}
       <span className="nt-incident-strip__title">{crumbs.join('  →  ')}</span>
       <div className="nt-incident-strip__actions">
         {incident.deviceName ? (

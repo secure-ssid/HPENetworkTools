@@ -55,7 +55,6 @@ export function RadiosPanel({ detail, plane }: { detail: DeviceDetailLive | null
     : [];
   return (
     <div className="nt-device-section nt-section-panel nt-stack-gap-2">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · device lane · state owns hue</div>
       <SectionHeader
         label="Radios"
         meta={radios.length > 0 ? `${radios.length} ON AIR` : undefined}
@@ -119,7 +118,6 @@ export function WlansPanel({ detail, plane }: { detail: DeviceDetailLive | null;
     : [];
   return (
     <div className="nt-stack-gap-2">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · device lane · state owns hue</div>
       <SectionHeader
         label="SSIDs broadcast"
         meta={wlans.length > 0 ? `${wlans.length} WLAN${wlans.length === 1 ? '' : 'S'}` : undefined}
@@ -205,7 +203,6 @@ export function PortsPanel({
   const hiddenAdminDown = adminDown.filter((p) => !interesting.includes(p)).length;
   return (
     <div className="nt-stack-gap-2">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · device lane · state owns hue</div>
       <SectionHeader
         label="Ports of interest"
         meta={
@@ -322,7 +319,6 @@ export function CompliancePanel({
   const scored = evidence !== null && evidence.mode !== 'unavailable' && evidence.checks.length > 0;
   return (
     <div className="nt-stack-gap-10">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · device lane · state owns hue</div>
       <SectionHeader label="Compliance" />
       {scored ? (
         <>

@@ -99,12 +99,19 @@ describe('Card', () => {
 describe('Divider', () => {
   it('exposes the separator role and defaults to the plain variant', () => {
     render(<Divider />);
-    expect(screen.getByRole('separator').className).toBe('nd-divider nd-divider--default');
+    const el = screen.getByRole('separator');
+    expect(el.className).toContain('nd-divider');
+    expect(el.className).toContain('nd-divider--default');
+    expect(el.className).toContain('nt-divider');
+    expect(el.className).toContain('nt-divider--default');
   });
 
   it('carries the flair variant', () => {
     render(<Divider variant="flair" />);
-    expect(screen.getByRole('separator').className).toContain('nd-divider--flair');
+    const el = screen.getByRole('separator');
+    expect(el.className).toContain('nd-divider--flair');
+    expect(el.className).toContain('nt-divider--flair');
+    expect(el.className).toContain('nt-divider-flair');
   });
 });
 

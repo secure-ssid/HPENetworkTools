@@ -322,7 +322,6 @@ export function RuntimeDebugSection() {
     <div className="nt-systems-section nt-section-panel nt-stack nt-gap-12" id={systemsSectionDomId('runtime-debug')} data-legacy-id="runtime-debug">
       <div className="nt-filter-bar nt-gap-10">
         <SectionHeader label="Runtime debug" meta="PROCESS · PLANES · INTEGRITY · NO SECRETS" />
-        <div className="nt-plane-theater" role="note">HPE Network Tools · runtime theater · process · integrity · no secrets</div>
       <div className="nt-status-ribbon nt-runtime-ribbon" role="status" aria-label="Runtime status ribbon">
         <span className="nt-status-ribbon__item">runtime · process</span>
         <span className="nt-status-ribbon__item">integrity · no secrets</span>

@@ -361,6 +361,28 @@ td .nt-note-right {
   align-items: center;
 }
 
+/* A labelled switch is a row, not a track.
+ * Seven competing .nd-switch/.nt-switch rules all hand the element the toggle
+ * *track* chrome (1px border, radius 999px, raised fill). That is right for a
+ * bare 40px toggle, but when the same element also wraps the caption the pill
+ * stretches the full row: in the Mist WLAN drawer the wrapper measured 492x24
+ * while the real track inside it measured only 32x18 — a second pill drawn
+ * around a row that already contains one. It also made an OFF toggle
+ * ("Client isolation") read as highlighted/selected. Strip the duplicate
+ * chrome; .nd-switch__track keeps the whole affordance.
+ * align-self is needed because these sit in column flex, where the default
+ * stretch overrides width:auto. */
+.nd-switch:has(> .nd-switch__label),
+.nt-switch:has(> .nt-switch__label) {
+  align-self: start;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  padding: 0;
+  box-shadow: none;
+  gap: 8px;
+}
+
 .nd-switch > .nd-switch__label,
 .nt-switch > .nt-switch__label {
   flex: 0 1 auto;
@@ -424,4 +446,23 @@ td .nt-note-right {
 .nd-section-header > .nd-section-header__meta {
   margin-left: 0;
   margin-right: auto;
+}
+
+/* A checkbox that wraps a caption is a row, not a box.
+ * `.nt-checkbox, .nd-checkbox { width: 16px; display: inline-grid }` is right
+ * for a bare <input>, but the same class is also on the <label> that wraps
+ * <input> + <span>. In the Mist WLAN drawer that pinned the label to 16px, so
+ * "Primary Site" wrapped to two lines inside a 46px column with ~430px of
+ * free row beside it. Scope the sizing fix to labels that actually contain an
+ * input, so bare inputs keep their 16px box. */
+:is(.nt-checkbox, .nd-checkbox, .nt-check, .nd-check):has(> input) {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+:is(.nt-checkbox, .nd-checkbox, .nt-check, .nd-check):has(> input) > input {
+  flex: 0 0 auto;
+  width: 16px;
 }

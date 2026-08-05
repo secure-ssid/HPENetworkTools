@@ -192,7 +192,6 @@ export default function ChatPanel({
       dataPhase={status?.writeMode === 'enabled' ? 'review' : undefined}
     >
       <div className="nt-chat-col nt-chat-shell nt-section-panel">
-        <div className="nt-plane-theater" role="note">HPE Network Tools · brokered assistant · tools · write-aware</div>
         <div className="nt-status-ribbon nt-chat-ribbon" role="status" aria-label="Assistant status ribbon">
           <span className="nt-status-ribbon__item">assistant · tools</span>
           <span className="nt-status-ribbon__item">write-aware · gated</span>

@@ -317,9 +317,6 @@ const RECEIVER_SEV_TONE: Record<Sev, 'danger' | 'warning' | 'info'> = {
 function PanelSkeleton({ label }: { label: string }) {
   return (
     <div role="status" aria-label={label} className="nt-stack nt-gap-8 nt-panel-skel">
-      <div className="nt-plane-theater" aria-hidden>
-        HPE Network Tools · {label}
-      </div>
       <Skeleton height={14} width="36%" />
       <Skeleton height={32} />
       <Skeleton height={32} />
@@ -1399,7 +1396,6 @@ export function CentralWebhooksPanel() {
 
   return (
     <div className="nt-stack-14 nt-recon-reveal nt-webhooks-panel nt-webhooks-shell nt-section-panel">
-      <div className="nt-plane-theater" role="note">HPE Network Tools · webhook theater · management · one-time HMAC ritual</div>
       <div className="nt-status-ribbon nd-status-ribbon" role="status" aria-label="HPE Network Tools webhook status ribbon">
         <span className="nt-status-ribbon__mark nd-status-ribbon__mark" aria-hidden />
         <span className="nt-status-ribbon__label nd-status-ribbon__label">Webhook theater · management plane · HMAC ritual · severity owns hue</span>
@@ -1807,7 +1803,6 @@ export function CentralWebhooksPanel() {
           Download server CSV
         </Button>
       </div>
-      <div className="nt-plane-theater" role="note">HPE Network Tools · webhook theater · ingress · severity owns hue</div>
       {receiverEvents === null ? (
         <PanelSkeleton label="Loading" />
       ) : receiverEvents.length === 0 ? (
@@ -1849,7 +1844,6 @@ export function CentralWebhooksPanel() {
                 : `Delete ${drawerRow?.name ?? 'webhook'}`
         }
       >
-        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
         {drawerLoading ? (
           <PanelSkeleton label="Loading" />
         ) : drawerMode === 'delete' ? (
@@ -2203,7 +2197,6 @@ export function CentralWebhooksPanel() {
         description="This modal cannot be reopened after it closes."
       >
         <div className="nt-stack-14">
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <Alert tone="danger" title="GET cannot retrieve this secret later">
             Copy the {oneTimeSecretAction === 'created' ? 'new webhook' : 'rotated'} HMAC key before closing.
             It is not saved by this portal.

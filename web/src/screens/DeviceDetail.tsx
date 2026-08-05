@@ -525,7 +525,6 @@ export default function DeviceDetail() {
       description="A reboot drops every client on this device. It is a brokered write: ticket-stamped, audit-logged, and only ever claimed when the plane accepts it."
     >
       <div className="nt-drawer-stack">
-        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
         <div className="nt-body-sec">
           Central-managed devices reboot through the troubleshooting API (
           <Code>POST …/reboot</Code>, accepted on HTTP 202). Local switches get an honest
@@ -727,9 +726,6 @@ export default function DeviceDetail() {
             </div>
           </div>
           <div className="nt-row nt-gap-8 nt-device-hero__rail">
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · device
-            </span>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
               ← Inventory
@@ -816,7 +812,6 @@ export default function DeviceDetail() {
             <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
           </div>
         </div>
-        <div className="nt-plane-theater" role="note">HPE Network Tools · device cinema · facts · trends · plane ECG</div>
         <nav className="nt-incident-spine" aria-label="Incident spine">
           <span className="nt-incident-spine__step">Alert</span>
           <span className="nt-incident-spine__chev" aria-hidden>→</span>
@@ -1205,9 +1200,6 @@ export default function DeviceDetail() {
           </div>
         </div>
         <div className="nt-row nt-gap-8 nt-device-hero__rail">
-          <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-            HPE Network Tools · device
-          </span>
           {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
           <Button variant="ghost" size="sm" onClick={() => navigate('/devices')}>
             ← Inventory

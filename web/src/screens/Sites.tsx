@@ -422,9 +422,6 @@ export default function Sites() {
         }
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · sites
-            </span>
             {sitesLive ? <Badge tone="info">LIVE</Badge> : null}
             <div className="nt-w-170">
               <Select
@@ -541,7 +538,6 @@ export default function Sites() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · sites theater · campus health owns hue</div>
       <div className="nt-status-ribbon nt-sites-ribbon" role="status" aria-label="Sites status ribbon">
         <span className="nt-status-ribbon__item">campus · health owns hue</span>
         <span className="nt-status-ribbon__item">estate map armed</span>
@@ -829,7 +825,11 @@ export default function Sites() {
 
       {siteHasMore || sitePageTotal != null ? (
         <div className="nt-filter-bar">
-          {sitePageTotal != null ? (
+          {/* The "Loaded N of M" label sat directly above a table footer that
+              already stated the same totals, so a fully-loaded screen said it
+              twice. It earns its place only next to a Load more button, where
+              it says how much is still to come. */}
+          {siteHasMore && sitePageTotal != null ? (
             <span className="nt-mono-label">
               Loaded {sites.length} of {sitePageTotal}
             </span>
@@ -880,7 +880,6 @@ export default function Sites() {
             submitAddSite();
           }}
         >
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <FormField label="Site name" htmlFor="add-site-name">
             <Input
               id="add-site-name"

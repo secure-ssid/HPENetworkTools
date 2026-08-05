@@ -149,7 +149,6 @@ export function ApplicationsSection({
 
   return (
     <div id="central-section-applications" className="nt-stack nt-gap-10 nt-central-section nt-section-panel">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Central DPI theater · app visibility</div>
       <div className="nt-status-ribbon nt-status-ribbon--compact nt-central-apps-ribbon" role="status" aria-label="Central apps status ribbon">
         <span className="nt-status-ribbon__item">Central DPI</span>
         <span className="nt-status-ribbon__item">app visibility</span>

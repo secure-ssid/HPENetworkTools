@@ -151,7 +151,6 @@ export function DsGallery() {
     <AppShell className="nt-dsg-shell" sidebar={sidebar} topbar={topbar}>
       <div className="nt-dsg-content nt-section-panel nt-recon-reveal">
       <Stack gap={22}>
-        <div className="nt-plane-theater" role="note">HPE Network Tools · design system</div>
         <div className="nt-status-ribbon nt-ds-ribbon" role="status" aria-label="Design system status ribbon">
           <span className="nt-status-ribbon__item">primitives · tokens</span>
           <span className="nt-status-ribbon__item">copper NOC</span>

@@ -104,7 +104,6 @@ export function Drawer({
       >
         <div className="nd-drawer__header nt-drawer__header">
           <div>
-            <div className="nt-drawer-kicker" aria-hidden>HPE Network Tools · drawer</div>
             {title ? <div id={titleId} className="nd-drawer__title nt-drawer__title">{title}</div> : null}
             {description ? <div id={descriptionId} className="nd-drawer__description nt-drawer__description">{description}</div> : null}
           </div>

@@ -1873,9 +1873,6 @@ export default function Clients() {
         subtitle="Every session, wired or wireless, whichever plane authenticated it."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · clients
-            </span>
             <span className="nt-mono-label">{stamp}</span>
             {/* LIVE when the sessions are live or blend-swapped — not only when
                 blend mode is on. Pure live used to omit the badge. */}
@@ -1968,7 +1965,6 @@ export default function Clients() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · session theater · association · roam · SNR</div>
       <div className="nt-status-ribbon nt-clients-ribbon" role="status" aria-label="Clients status ribbon">
         <span className="nt-status-ribbon__item">sessions · estate</span>
         <span className="nt-status-ribbon__item">state owns hue</span>
@@ -2532,7 +2528,11 @@ export default function Clients() {
       ) : null}
       {clientHasMore || clientPageTotal != null ? (
         <div className="nt-filter-bar">
-          {clientPageTotal != null ? (
+          {/* The "Loaded N of M" label sat directly above a table footer that
+              already stated the same totals, so a fully-loaded screen said it
+              twice. It earns its place only next to a Load more button, where
+              it says how much is still to come. */}
+          {clientHasMore && clientPageTotal != null ? (
             <span className="nt-mono-label">
               Loaded {data.clients.length} of {clientPageTotal}
             </span>
@@ -3017,7 +3017,6 @@ export default function Clients() {
                   className="nt-client-toolbar nt-write-ritual"
                   data-phase={coaBusy ? 'executing' : coaTicket ? 'confirm' : 'review'}
                 >
-                  <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
                   <div className="nt-flex-1-wide">
                     <FormField
                       label="Authorising ticket"

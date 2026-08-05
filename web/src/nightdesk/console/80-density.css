@@ -556,9 +556,49 @@ html[data-nd-density='comfortable'] .nt-main-canvas {
   align-items: center;
 }
 
+/* The search field is the topbar's centre of gravity — it is what the
+ * operator reaches for from any screen. As a plain flex item it inherited
+ * whatever space the breadcrumb left over, so it sat right of centre and
+ * shifted every time the breadcrumb changed length. Symmetric auto margins
+ * pin it to the true centre of the bar and let the two shoulders size
+ * themselves; the flex-basis keeps it from collapsing when the shoulders
+ * are wide. */
 .nd-shell__topbar.nt-toolbar-glass .nt-global-search {
-  flex: 1 1 220px;
+  flex: 0 1 clamp(280px, 34vw, 620px);
   min-width: 180px;
+  margin-inline: auto;
+}
+
+/* `margin-inline: auto` centres the field in the space the breadcrumb and the
+ * identity cluster leave over, not in the bar — so it still drifted, just the
+ * other way. Above the width where the two shoulders can never reach the
+ * middle third, centre it against the bar itself. Below that the flex
+ * behaviour above takes over, which is the right answer when space is tight:
+ * better an off-centre field than one sitting on top of the breadcrumb. */
+@media (min-width: 1180px) {
+  .nd-shell__topbar.nt-toolbar-glass {
+    position: relative;
+  }
+
+  .nd-shell__topbar.nt-toolbar-glass .nt-global-search {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: clamp(280px, 34vw, 620px);
+    margin-inline: 0;
+  }
+
+  /* The field no longer occupies flow space, so the shoulders would spread
+     into the middle and sit under it. Cap them at the space either side, and
+     push the trailing cluster back to the right edge it used to be held at by
+     the field's own width. */
+  .nd-shell__topbar.nt-toolbar-glass > :not(.nt-global-search) {
+    max-width: calc(50% - clamp(150px, 17vw, 310px) - 12px);
+  }
+
+  .nd-shell__topbar.nt-toolbar-glass > .nt-notify-anchor {
+    margin-left: auto;
+  }
 }
 
 /* Never let the breadcrumb collapse to nothing — it is the only thing telling
@@ -877,3 +917,522 @@ button.nt-shell-navgroup__label {
   margin-right: 0;
 }
 
+
+/* A standalone explanatory sentence sitting directly in a card is a
+ * paragraph, not a run of inline text. Left inline it shares line boxes
+ * with the inline-flex control group above it, so its rect interleaves
+ * with the fields and the primary button and the two read as overlapping
+ * (GreenLake "Grant role" and "Remove device"). Three elements app-wide
+ * match, and one is already authored block — this states the intent for
+ * all of them. */
+.nd-card > .nt-body-sm,
+.nd-card > .nt-hint-muted {
+  display: block;
+}
+
+/* Tickets is a stack, not a two-column grid.
+ *
+ * A late wave made every *-shell a grid (`.nt-alerts-shell, .nt-tickets-shell,
+ * …{ display: grid }`) while an older wave still set two tracks on
+ * `.nt-tickets` above 1100px. The element carries both classes, so the whole
+ * screen auto-placed into two columns: the screen header landed in a 397px
+ * column, the severity chips in the 654px one, the two chip rows split across
+ * both, and `.nt-tickets__grid` — which is itself the queue/detail split —
+ * was crushed into 397px, starving its detail pane down to 45px and spilling
+ * 280px of ticket body out of it.
+ *
+ * The master/detail split belongs to `.nt-tickets__grid`. The screen around it
+ * is a single column. Two classes beat the single-class media rule.
+ */
+.nt-tickets.nt-tickets-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  grid-template-columns: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * Screen filter row
+ *
+ * ScreenHeader now lifts filter fields out of the action row into their own
+ * band. Two things have to hold for that to be an improvement rather than a
+ * relocation: the band has to start at the left edge under the title (not
+ * inherit the action row's right alignment), and each field has to read on
+ * one line. Stacked label-over-control is why five dropdowns cost 84px of
+ * header on Compliance.
+ * ------------------------------------------------------------------------ */
+.nd-screen-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  grid-column: 1 / -1;
+  width: 100%;
+  margin-top: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--nd-hairline, rgb(255 255 255 / 7%));
+}
+
+.nd-screen-filters > * {
+  margin: 0;
+}
+
+/* Label beside the control, not above it. */
+.nd-screen-filters .nt-filter-field,
+.nd-screen-filters [class*='nt-w-'] {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  min-width: 0;
+}
+
+.nd-screen-filters label,
+.nd-screen-filters .nt-filter-field > span:first-child,
+.nd-screen-filters .nd-field__label,
+.nd-screen-filters .nt-field-label {
+  flex: 0 0 auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.nd-screen-filters select,
+.nd-screen-filters input,
+.nd-screen-filters .nd-select,
+.nd-screen-filters .nd-input {
+  min-width: 0;
+  height: 26px;
+  padding-block: 0;
+}
+
+/* The select wrapper reserves a stacked-label slot (column flex + row-gap)
+   even on the many fields that ship no label, so a 30px control measured
+   42px. In the filter row there is no label, so reclaim the slot. */
+.nd-screen-filters .nd-select-wrap.nd-select-wrap,
+.nd-screen-filters .nt-select-wrap.nt-select-wrap {
+  height: auto;
+  min-height: 0;
+  row-gap: 0;
+  align-self: center;
+}
+
+.nd-screen-filters .nd-select.nd-select,
+.nd-screen-filters .nd-input.nd-input {
+  height: 26px;
+  min-height: 26px;
+}
+
+/* Fields also carry a 12px bottom margin reserving a hint/error line. No
+   filter in this row shows one, so it was 12px of blank per field. */
+.nd-screen-filters .nd-select.nd-select,
+.nd-screen-filters .nd-input.nd-input,
+.nd-screen-filters select,
+.nd-screen-filters input {
+  margin-block-end: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Stat bands
+ *
+ * `.nt-stat-band` is laid out with `display: flex`, but it also carries
+ * `grid-template-columns: repeat(auto-fit, minmax(140px, 1fr))` — inert on a
+ * flex container. So `.nt-stat-grid` shrink-wrapped to its two narrowest
+ * tracks: 254px of grid inside a 1457px band on Compliance, with every tile
+ * 121px wide holding 143–239px of text. The overflow ran straight through the
+ * neighbouring tile, which is why "Coverage findings 12" was printed over
+ * "Sites complete". Four screens were affected.
+ *
+ * Let the grid take the band's width and size its own tracks to the content
+ * they actually hold.
+ * ------------------------------------------------------------------------ */
+.nt-stat-band > .nt-stat-grid {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
+}
+
+/* A tile that still runs long wraps its note rather than printing over its
+   neighbour. */
+.nt-stat-grid > * {
+  min-width: 0;
+}
+
+.nt-stat-grid .nt-stat__delta,
+.nt-stat-grid .nt-metric-tile__note {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The tile's own two-track grid sized both tracks to content, so on Configure
+   a 663px note sat in a 355px tile and printed past its right edge. Bound the
+   second track and let the note wrap inside it. */
+.nt-stat-grid > .nd-stat,
+.nt-stat-grid > .nt-metric-tile {
+  max-width: 100%;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.nt-stat-grid .nd-stat__value,
+.nt-stat-grid .nd-stat__delta {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------------------
+ * Labelled progress
+ *
+ * Seventeen separate rules pin `.nd-progress` to a 6–8px `overflow: hidden`
+ * box, all written for a bare track. The Progress component, though, renders
+ * its label and note *inside* that box, so any labelled bar drew its text in
+ * an 8px clipped container — on Compliance the head landed on top of the
+ * caption underneath. Give the container back its height when it actually
+ * holds a head; the track keeps its own.
+ * ------------------------------------------------------------------------ */
+.nd-progress:has(> .nd-progress__head),
+.nt-progress:has(> .nd-progress__head) {
+  display: grid;
+  gap: 4px;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+
+  /* Those same rules also give the container the track's own fill, border
+     and pill radius. Once it is tall enough to hold a label that paint sits
+     behind the text as a stray grey band — the track inside draws itself. */
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Ticket / timeline note rows
+ *
+ * `.nt-ticket-note-row` was a grid whose tracks did not match its markup:
+ * `10px 449px` for a timestamp and a note. The note was placed in the 10px
+ * track, overflowed to 26px, and the "ACTION" tag inside it wrapped to one
+ * letter per line — a 7x91px column of capitals down the ticket pane.
+ * The markup is a timestamp followed by its note; lay it out as one.
+ * ------------------------------------------------------------------------ */
+.nt-ticket-note-row {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 10px;
+  grid-template-columns: none;
+  grid-template-rows: none;
+}
+
+.nt-ticket-note-row > :first-child {
+  flex: 0 0 auto;
+}
+
+.nt-ticket-note-row > * + * {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nt-ticket-note {
+  display: block;
+  grid-template-columns: none;
+}
+
+/* The kind tag reads inline with the note it introduces, and never wraps
+   inside itself. */
+.nt-ticket-note > .nt-mono-label {
+  display: inline;
+  white-space: nowrap;
+}
+
+/* The ticket queue card is three stacked lines — id and age, title, priority
+   and site — but was laid out as three side-by-side grid columns 82/52/137px
+   wide. The title got 52px of a 302px card and broke mid-word
+   ("Riversid / e Clini…"). Stack it. */
+.nt-tickets__queue-item.nt-queue-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  grid-template-columns: none;
+}
+
+.nt-tickets__queue-item.nt-queue-row > * {
+  min-width: 0;
+}
+
+.nt-tickets__queue-item .nt-tickets__title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The incident spine's only line of content was capped at 315px inside a
+   1457px bar, so "Alert · … → Device · … → Ticket · …" wrapped to three rows
+   with 800px of the strip left empty beside it. Give it the room and let it
+   truncate rather than stack. */
+.nt-incident-strip__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The ticket pager drew a 324x14 empty bar under the queue when there was
+   nothing to page. */
+.nt-tickets__pager:empty {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * Prose alerts
+ *
+ * `.nd-alert__body` is capped at 72ch, which is the right measure to read at.
+ * The alert *box* around it, though, stretched to the full 1457px column, so
+ * Compliance and Licences drew bordered banners that were 40% full — several
+ * hundred pixels of ruled emptiness whose only job was to make the paragraph
+ * look unfinished. Let a prose-only alert be as wide as the prose it holds.
+ * Alerts that carry controls or a table still stretch; their content needs
+ * the room.
+ * ------------------------------------------------------------------------ */
+.nd-alert:not(:has(button)):not(:has(table)):not(:has(input)):not(:has(select)):not(:has(a[href])) {
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* ---------------------------------------------------------------------------
+ * Facet chip rows
+ *
+ * Screens print one chip row per filter dimension — Type, Issues, State,
+ * Plane, Site — as separate children of the screen stack, so each got the
+ * stack's 18px section gap. On Devices that was five 28px rows spread over
+ * 212px, none of them more than a third full. They are one block of filter
+ * state, not five sections: close the gap between consecutive rows and let
+ * the block read as a block.
+ * ------------------------------------------------------------------------ */
+/* The selector is doubled to clear `.nt-section-panel > *` and
+   `.nt-recon-reveal > *`, which reset every stack child's margin to 0 from a
+   later layer. */
+.nt-chip-row.nt-chip-row + .nt-chip-row.nt-chip-row {
+  margin-top: -14px;
+}
+
+.nt-chip-row__label {
+  align-self: center;
+}
+
+/* ClearPass CATEGORY: value and insight tags share one wrapping line.
+   Measured: stacked placeholder + badge row inflated every endpoint row
+   from 34px to 48px across a 50-row page. */
+.nd-cell-inline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+/* Systems plane row: the identity track held 1.6fr (351px) for a name that
+   measures ~180px, while AUTH wrapped "oauth client_credentials · expires in
+   23m" (308px need in 264px) and SCOPE broke "reviewed object writes,
+   tenant-wide commit" over three lines in 220px — 55px rows for one line of
+   data. Freed from identity, given to the two tracks that carry sentences. */
+.nt-plane-row.nt-plane-row {
+  grid-template-columns:
+    minmax(150px, 1.05fr) minmax(88px, auto) minmax(64px, 0.6fr)
+    minmax(76px, 0.6fr) minmax(56px, 0.5fr) minmax(120px, 1.5fr)
+    minmax(112px, 1.35fr) 14px;
+}
+
+@media (max-width: 1080px) {
+  .nt-plane-row.nt-plane-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+/* At 1332px the identity track is 150px and "HPE Aruba Networking SSE" needs
+   177px, so the name painted 27px past the cell. The row already keeps the
+   full value in each cell's title, so the name truncates rather than bleeds
+   into Status. */
+.nt-plane-row__identity {
+  min-width: 0;
+}
+
+.nt-plane-row__identity > strong,
+.nt-plane-row__identity > small {
+  min-width: 0;
+  /* The identity is a column flex that aligns to content, so the name sized
+     itself to 180px inside a 154px cell; 100% resolves against the cell. */
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   INVENTORY: THREE CONCENTRIC BOXES AROUND ONE TREE
+   Measured: .nt-inventory__tree-panel (1466px, 1px border, 14px radius)
+   wrapped .nt-inventory-tree (1441px, 1px border, 14px radius, identical
+   background) which wrapped .nt-inventory-tree__row (1423px, 1px border,
+   10px radius). Three rounded outlines and two identical fills for a
+   single list. Keep the outer panel; the tree and its rows become a
+   hairline-ruled list, which is what a hierarchy actually reads as.
+   ═══════════════════════════════════════════════════════════════════ */
+.nt-inventory-tree.nt-inventory-tree {
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.nt-inventory-tree__row.nt-inventory-tree__row {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--nd-border-subtle) 60%, transparent);
+  border-radius: 0;
+}
+
+.nt-inventory-tree__row.nt-inventory-tree__row:first-child {
+  border-top: 0;
+}
+
+/* A 640x72 bordered card holding a 610x34 input: 38px of chrome around a
+   control that already draws its own border. */
+.nt-inventory__search.nt-inventory__search {
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* ...and the browse layout drew a fourth outline 1px outside the panel's. */
+.nt-inventory__layout--browse.nt-inventory__layout--browse {
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* Service notes drew a full-width bordered banner around one sentence:
+   measured 18–55% filled (a 371px reading in a 1468px box on /central,
+   266px on /mist). A box that is three-quarters empty reads as a missing
+   panel. They hug their text, still capped at a sane reading measure. */
+.nt-service-note:not(:has(button, input, select, table, a[href])) {
+  inline-size: fit-content;
+  max-inline-size: min(100%, 88ch);
+}
+
+/* Tab panels opened 40px below the tab underline (12px panel padding, 6px
+   toolbar padding, and the toolbar's own leading) before the first control.
+   A tab panel needs to read as attached to its tab, not as a new section. */
+.nd-tabs {
+  row-gap: 4px;
+}
+
+.nd-tabs__content {
+  padding-top: 8px;
+}
+
+.nt-alerts__toolbar,
+.nt-tabs__content > .nt-toolbar,
+.nd-tabs__content > .nt-toolbar {
+  padding-top: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ONE EMPTY STATE, NOT TWO
+   A zero-row DataTable still painted its column-header row and its own
+   "No rows in this view" via tbody:empty::after, and the screen then
+   rendered its real EmptyState underneath — two answers to the same
+   question, ~90px apart, the first of them generic. Where a screen
+   supplies its own empty state, the empty table stands down; the
+   section header and its View options stay, so the columns are still
+   reachable once rows return.
+   ═══════════════════════════════════════════════════════════════════ */
+:where(.nt-stack, .nd-stack, div):has(+ .nd-empty) > .nd-table-scroll:has(> table > tbody:empty),
+.nd-table-scroll:has(> table > tbody:empty):has(+ .nd-empty) {
+  display: none;
+}
+
+/* `auto-fill` keeps the tracks it reserved even when nothing lands in them:
+   the AP metric row laid out 9 tracks of 128px for 4 gauges and left 642px
+   of empty grid on the right. `auto-fit` collapses the empty ones so the
+   gauges share the row they were given. */
+.nt-metric-grid-auto.nt-metric-grid-auto {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   FACET ROWS FLOW INSTEAD OF STACKING
+   Measured on /clients: seven facet rows filled 57%, 17%, 16%, 11%,
+   17%, 16% and 8% of 1468px — 220px of band for six rows that each
+   used under a fifth of the line. Each row is self-labelling
+   ("MEDIUM", "HEALTH"), so they can share a line.
+
+   The shells are column flex containers holding the whole screen, so
+   the direction is flipped to `row wrap` and every child that is not
+   a facet row is pinned back to a full line. Only shells that hold
+   two adjacent facet rows are touched.
+   ═══════════════════════════════════════════════════════════════════ */
+.nt-section-panel:has(> .nt-chip-row + .nt-chip-row) {
+  flex-flow: row wrap;
+  align-items: flex-start;
+}
+
+.nt-section-panel:has(> .nt-chip-row + .nt-chip-row) > *:not(.nt-chip-row) {
+  flex: 0 0 100%;
+  min-width: 0;
+}
+
+.nt-section-panel:has(> .nt-chip-row + .nt-chip-row) > .nt-chip-row {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+/* The -14px stack correction is for rows sitting one above another; on a
+   shared line it would lift the row off its own baseline. */
+.nt-section-panel:has(> .nt-chip-row + .nt-chip-row) > .nt-chip-row.nt-chip-row {
+  margin-top: 0;
+}
+
+/* Empty decorative gradient disc. .nt-write-ritual--banner renders a 26x28
+ * gold-gradient pill with no text and no control; it survived in the Mist
+ * WLAN drawer and on /greenlake, eating a ~40px row for nothing. Hide it only
+ * when it is genuinely empty, so any banner that gains real content still
+ * shows. (Stripping it from the JSX by regex is what broke SseInventoryPanel.) */
+.nt-write-ritual--banner:empty {
+  display: none;
+}
+
+/* Eighth brand copy, and the source of the overlap in the write drawer.
+ * components.css puts `content: 'HPE Network Tools · brokered write'` on
+ * .nd-drawer--write-ritual .nd-drawer__header::after. The header is a flex
+ * row (title block + close button), so the pseudo-element becomes a third
+ * flex item and lands to the RIGHT of the ×, wrapping to two lines and
+ * crowding it. The drawer is already titled "Wireless SSID" and says
+ * "brokered write" in its own body; the ribbon adds nothing.
+ * components.css is owned by another session, so override rather than edit. */
+.nd-drawer--write-ritual .nd-drawer__header.nd-drawer__header::after {
+  content: none;
+}
+
+/* Tinted container box around three toggles.
+ * .nt-configure-ritual-bar drew a 494x102 bordered, blue-tinted card whose
+ * only content is the WLAN enabled / Broadcast the SSID / Client isolation
+ * rows. With the switch pills removed the tint is the last thing making an
+ * OFF toggle look selected, and it is a box around rows that need none. */
+.nt-configure-ritual-bar {
+  border: 0;
+  border-radius: 0;
+  background: none;
+  padding: 0;
+  box-shadow: none;
+}

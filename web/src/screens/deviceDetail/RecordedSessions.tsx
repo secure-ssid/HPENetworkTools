@@ -79,7 +79,6 @@ export function RecordedSessions({
 
   return (
     <div className="nt-session-stack nt-device-section nt-section-panel">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · session cinema · recorded captures</div>
       <div className="nt-filter-bar nt-gap-8">
         <SectionHeader label="Recorded sessions" meta={sessions.length > 0 ? `${sessions.length} ON FILE` : undefined} />
         {sessions.length > 0 ? (

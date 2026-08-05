@@ -73,7 +73,12 @@ export function Card({
 }
 
 export function Divider({ variant = 'default' }: { variant?: 'default' | 'flair' }) {
-  return <div role="separator" className={`nd-divider nd-divider--${variant}${variant === 'flair' ? ' nt-divider-flair' : ''}`} />;
+  return (
+    <div
+      role="separator"
+      className={`nd-divider nd-divider--${variant} nt-divider nt-divider--${variant}${variant === 'flair' ? ' nt-divider-flair' : ''}`}
+    />
+  );
 }
 
 export function SectionHeader({ label, meta }: { label: ReactNode; meta?: ReactNode }) {

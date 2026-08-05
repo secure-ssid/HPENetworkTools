@@ -138,7 +138,6 @@ export function FirmwareSection({
 
   return (
     <div id="central-section-firmware" className="nt-stack nt-gap-2 nt-central-section nt-section-panel">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · firmware theater · compliance owns hue</div>
       <div className="nt-status-ribbon nt-status-ribbon--compact nt-firmware-ribbon" role="status" aria-label="Firmware status ribbon">
         <span className="nt-status-ribbon__item">firmware · compliance</span>
         <span className="nt-status-ribbon__item">owns hue</span>

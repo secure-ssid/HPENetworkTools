@@ -1396,9 +1396,6 @@ export default function Configure() {
         subtitle="Edit the object, not the console — the portal renders it for whichever plane owns it."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · write lane
-            </span>
             {liveMode ? <Badge tone="info">LIVE</Badge> : null}
             <Button
               variant="ghost"
@@ -1435,7 +1432,6 @@ export default function Configure() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · write lane · brokered ritual armed</div>
       <div className="nt-status-ribbon nt-configure-ribbon" role="status" aria-label="Configure status ribbon">
         <span className="nt-status-ribbon__item">write lane · brokered</span>
         <span className="nt-status-ribbon__item">ritual · review → confirm</span>
@@ -1887,7 +1883,6 @@ export default function Configure() {
           {!labConfigMode ? (
             <div id="configure-section-queue" className="nt-configure__queue nt-config-queue nt-write-ritual">
             <div className="nt-configure__queue-title nt-write-ritual__title">Brokered write ritual</div>
-            <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · change queue · review before broker</div>
             <div className="nt-row-between">
               <SectionHeader label="Queued changes" meta={String(queueView.length)} />
               <KeyboardShortcuts entries={DATATABLE_ROW_SHORTCUTS} />
@@ -2350,7 +2345,6 @@ export default function Configure() {
                     and the section itself disappears when the Mist mode needs nothing (Open). */}
                 {!mistSsid || ssidRequirement.passphrase ? (
                 <div className="nt-stack nt-gap-12">
-                  <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · SSID dependencies · security fabric</div>
                   <SectionHeader label="Security dependencies" meta={ssidCatalogLoading ? 'loading…' : undefined} />
                   {/* FormField only clones an id onto a SINGLE child element for the
                       label's htmlFor — the "unavailable" note is a sibling below it,
@@ -2650,13 +2644,11 @@ export default function Configure() {
             ) : null}
 
             <div className="nt-stack nt-gap-10">
-              <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · write preview · plane truth</div>
               <SectionHeader label={labConfigMode ? 'What will be applied' : 'What gets pushed'} meta={previewMeta} />
               <Code block>{preview}</Code>
             </div>
 
             <div className="nt-stack nt-gap-2">
-              <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · blast radius · impact owns hue</div>
               <SectionHeader label={liveMode ? 'Impact evidence' : 'Blast radius'} />
               {radius.map((r) => (
                 <div

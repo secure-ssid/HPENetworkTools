@@ -131,7 +131,6 @@ export function SiteFloorPlan({
   if (maps === undefined) {
     return (
       <div className="nt-stack nt-gap-10">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · floor plan lane · operator geometry</div>
         <SectionHeader label="Floor plan" meta="NOT REPORTED" />
         <div className="nt-service-note">The portal did not say whether this site has floor plans.</div>
       </div>
@@ -140,7 +139,6 @@ export function SiteFloorPlan({
   if (maps.length === 0) {
     return (
       <div className="nt-stack nt-gap-10">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · floor plan lane · operator geometry</div>
         <SectionHeader label="Floor plan" meta={mistClaimed ? 'NONE UPLOADED' : 'NOT PUBLISHED'} />
         <div className="nt-service-note">
           {mistClaimed
@@ -152,7 +150,6 @@ export function SiteFloorPlan({
   }
   return (
     <div className="nt-stack nt-gap-14 nt-floor-shell">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · floor plan lane · operator geometry</div>
       <SectionHeader
         label="Floor plan"
         meta={

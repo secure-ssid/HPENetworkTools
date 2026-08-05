@@ -572,7 +572,6 @@ export function SiteSle({
 
   return (
     <div className="nt-stack nt-gap-2 nt-recon-reveal">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · wireless theater · SLE owns hue · Mist ECG</div>
       <div className="nt-row-between-8">
         <SectionHeader
           label="Wireless experience"

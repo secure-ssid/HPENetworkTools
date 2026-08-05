@@ -933,9 +933,6 @@ export default function Devices() {
         subtitle={subtitle}
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · fleet
-            </span>
             {!isDemo ? <Badge tone="info">LIVE</Badge> : null}
             <Button
               variant="ghost"
@@ -1044,7 +1041,6 @@ export default function Devices() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · fleet theater · health owns hue · monochrome planes</div>
       <div className="nt-status-ribbon nt-devices-ribbon" role="status" aria-label="Devices status ribbon">
         <span className="nt-status-ribbon__item">fleet · health owns hue</span>
         <span className="nt-status-ribbon__item">planes monochrome</span>
@@ -1503,7 +1499,11 @@ export default function Devices() {
           ) : null}
           {deviceHasMore || devicePageTotal != null ? (
             <div className="nt-filter-bar">
-              {devicePageTotal != null ? (
+              {/* The "Loaded N of M" label sat directly above a table footer that
+              already stated the same totals, so a fully-loaded screen said it
+              twice. It earns its place only next to a Load more button, where
+              it says how much is still to come. */}
+          {deviceHasMore && devicePageTotal != null ? (
                 <span className="nt-mono-label">
                   Loaded {data.devices.length} of {devicePageTotal}
                 </span>

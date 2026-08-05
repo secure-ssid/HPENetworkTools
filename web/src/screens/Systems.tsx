@@ -912,9 +912,6 @@ export default function Systems() {
             {/* Design rule 1: the screen says which source answered and how
                 fresh it is. Same vocabulary as SiteDetail so the portal does
                 not invent a third phrasing for one state. */}
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools
-            </span>
             <span
               className="nt-mono-label"
             >
@@ -980,7 +977,6 @@ export default function Systems() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · systems spine · identity · brokers · health</div>
       <div className="nt-status-ribbon nt-systems-ribbon" role="status" aria-label="Systems status ribbon">
         <span className="nt-status-ribbon__item">systems spine · brokers</span>
         <span className="nt-status-ribbon__item">identity · health</span>
@@ -1874,7 +1870,6 @@ export default function Systems() {
           onSubmit={(event) => event.preventDefault()}
           className="nt-stack nt-gap-14"
         >
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-chip-wrap nt-chip-wrap--tight" aria-label="Declared capabilities">
             <Badge tone={selectedEntry.tone}>{selectedEntry.contributesClients ? 'client source' : 'inventory source'}</Badge>
             {selectedEntry.writeCapabilities.length > 0 ? selectedEntry.writeCapabilities.map((capability) => (

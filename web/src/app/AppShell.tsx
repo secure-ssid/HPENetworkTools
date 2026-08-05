@@ -79,7 +79,6 @@ export function RouteFallback() {
   return (
     <div className="nt-route-fallback nt-war-room-wake" role="status" aria-label="HPE Network Tools · loading screen">
       <div className="nt-route-fallback__card nt-panel-glass">
-        <div className="nt-route-fallback__kicker">HPE Network Tools · loading</div>
         <PageSkeleton variant="list" />
       </div>
     </div>
@@ -94,7 +93,7 @@ function readRailPref(): boolean {
   }
 }
 
-/** Platforms pinned open by default; a deliberate collapse persists as '0'. */
+/** Platforms pinned open by default; only an explicit collapse persists as '0'. */
 function readPlatformsOpenPref(): boolean {
   try {
     return window.localStorage.getItem(PLATFORMS_KEY) !== '0';
@@ -175,7 +174,6 @@ function BackendUnreachableBanner() {
   if (reachable) return null;
   return (
     <div className="nt-pad-12-0 nt-backend-banner">
-      <div className="nt-plane-theater" role="note">HPE Network Tools · backend offline · fixtures only</div>
       <Alert tone="danger" title="The portal backend is not answering">
         <span className="nt-fs-13">
           Nothing below is your estate. The screens fall back to built-in sample data when no
@@ -311,7 +309,7 @@ function NotificationBell() {
           data-unread={unread}
         >
           <div className="nt-row-between nt-pad-4-6">
-            <span className="nd-micro-label nt-micro-label">HPE Network Tools · Notifications</span>
+            <span className="nd-micro-label nt-micro-label">Notifications</span>
             <Button variant="ghost" size="sm" onClick={markAll} disabled={unread === 0}>
               Mark all read
             </Button>
@@ -322,10 +320,10 @@ function NotificationBell() {
               when it does; nothing here is a statement about your estate.
             </div>
           ) : view === null ? (
-            <div className="nt-notify-empty">HPE Network Tools · checking…</div>
+            <div className="nt-notify-empty">Checking…</div>
           ) : view.entries.length === 0 ? (
             <div className="nt-notify-empty">
-              HPE Network Tools · quiet — device-down alerts and recoveries land here.
+              Quiet — device-down alerts and recoveries land here.
             </div>
           ) : (
             <div className="nt-notify-scroll">
@@ -479,8 +477,11 @@ export function AppShellLayout() {
   const renderSidebar = (onNavigate?: () => void, collapsible = true) => (
     <>
       <div className="nt-shell-brand">
-        <div className="nt-shell-brand__mark nt-brand-mark" aria-hidden>HPE</div>
-        <div className="nt-logo-mark" aria-hidden="true">HPE</div>
+        {/* One mark, not two: both of these were rendering at 32x32 side by
+            side, so the sidebar opened with the logo drawn twice. */}
+        <div className="nt-shell-brand__mark nt-brand-mark" aria-hidden>
+          <span className="nt-brand-mark__nd">HPE</span>
+        </div>
         <div className="nt-shell-brand__copy">
           <div className="nt-shell-brand__name nd-shell__brand-name">HPE Network Tools</div>
           <div className="nt-shell-brand__tagline">GreenLake operations</div>
@@ -650,7 +651,7 @@ export function AppShellLayout() {
       >
         <nav className="nt-mobile-nav" aria-label="Primary navigation">
           <div className="nt-mobile-nav__brand nt-brand-mark-row" aria-hidden>
-            <span className="nt-mobile-nav__mark">HPE</span>
+            <span className="nt-mobile-nav__mark nt-brand-mark__nd">HPE</span>
             HPE Network Tools
           </div>
           {renderSidebar(() => setNavOpen(false), false)}

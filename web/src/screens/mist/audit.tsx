@@ -202,7 +202,6 @@ export function AuditLogSection({ audit, error }: { audit: MistAuditLogLive | nu
   return (
     <div id="mist-section-audit" className="nt-stack nt-gap-2">
       <div className="nt-row-between-12">
-        <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · Mist audit cinema · org trail</div>
         <SectionHeader
           label="Org audit log"
           meta={

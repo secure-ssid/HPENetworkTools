@@ -561,9 +561,6 @@ export default function Compliance() {
         }
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · baseline
-            </span>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <div className="nt-w-210">
               <Select
@@ -714,7 +711,6 @@ export default function Compliance() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · baseline theater · drift owns hue</div>
       <div className="nt-status-ribbon nt-compliance-ribbon" role="status" aria-label="Compliance status ribbon">
         <span className="nt-status-ribbon__item">baseline · drift owns hue</span>
         <span className="nt-status-ribbon__item">diff cinema armed</span>
@@ -1136,13 +1132,11 @@ export default function Compliance() {
             <div className="nt-baseline-bars">
             {data.baselines.map((b) => (
               <div key={b.label} className="nt-baseline-bar nt-stack-col nt-gap-4" style={{ ['--nd-health' as string]: `${b.value}%` }}>
-                <div className="nt-baseline-bar__head">
-                  <span>{b.label}</span>
-                  <span className="nt-mono-11">{b.value}%</span>
-                </div>
-                <div className="nt-baseline-bar__track" aria-hidden>
-                  <div className="nt-baseline-bar__fill" />
-                </div>
+                {/* This row used to draw its own head-and-track *and* a
+                    <Progress> underneath it, so every baseline printed its
+                    label and percentage twice and the second copy landed on
+                    top of the note. The shared component is the one that
+                    carries the ARIA. */}
                 <Progress value={b.value} label={b.label} note={`${b.value}%`} />
                 <span
                   className="nt-hint-muted"

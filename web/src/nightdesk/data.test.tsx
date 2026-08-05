@@ -234,12 +234,20 @@ describe('Progress', () => {
     ['danger', 'nd-progress__fill--danger'],
   ] as const)('maps tone %s onto %s', (tone, expected) => {
     const { container } = render(<Progress value={50} tone={tone} />);
-    expect(fillOf(container).className).toBe(`nd-progress__fill ${expected} nt-progress-rail__fill`);
+    const cls = fillOf(container).className;
+    expect(cls).toContain('nd-progress__fill');
+    expect(cls).toContain(expected);
+    expect(cls).toContain('nt-progress__fill');
+    expect(cls).toContain('nt-progress-rail__fill');
   });
 
   it('appends a caller className to the wrapper only', () => {
     const { container } = render(<Progress value={50} className="wide" />);
-    expect((container.firstElementChild as HTMLElement).className).toBe('nd-progress nt-progress-rail wide');
+    const cls = (container.firstElementChild as HTMLElement).className;
+    expect(cls).toContain('nd-progress');
+    expect(cls).toContain('nt-progress');
+    expect(cls).toContain('nt-progress-rail');
+    expect(cls).toContain('wide');
   });
 });
 
@@ -268,9 +276,7 @@ describe('EmptyState', () => {
     const onRetry = vi.fn();
     const { container } = render(
       <EmptyState title="No devices" description="Nothing was returned.">
-        <button type="button" onClick={onRetry}>
-          Retry
-        </button>
+        <button type="button" onClick={onRetry}>Retry</button>
       </EmptyState>,
     );
     const kids = Array.from((container.firstElementChild as HTMLElement).children);
@@ -280,7 +286,8 @@ describe('EmptyState', () => {
       '',
     ]);
     expect(kids[0].textContent).toBe('No devices');
-    expect(kids[1].textContent).toBe('No devices');
+    expect(kids[1].textContent).toBe('Nothing was returned.');
+    expect(kids[2].textContent).toBe('Retry');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });

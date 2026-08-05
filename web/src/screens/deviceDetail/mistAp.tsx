@@ -24,7 +24,11 @@ export function uptimeText(sec: number): string {
   return `${Math.max(1, Math.round(sec / 60))} min`;
 }
 
-/** One small gauge: a label, a track bar and the value, all nightdesk tokens. */
+/** One small gauge: a label, the value, and (when there is a percentage) the
+ *  track bar under it. Value before bar so that all four gauges in a row put
+ *  their numbers on the same baseline — with the bar in between, CPU and
+ *  Memory printed their readings ~30px below Uptime and Clients, and a row of
+ *  metrics you cannot scan across is not a row of metrics. */
 function Gauge({ label, pct, value }: { label: string; pct: number | null; value: string }) {
   return (
     <div className="nt-mist-section nt-section-panel nt-stack nt-gap-5 nt-min-w-0">
@@ -32,6 +36,11 @@ function Gauge({ label, pct, value }: { label: string; pct: number | null; value
         className="nt-mono-label"
       >
         {label}
+      </span>
+      <span
+        className="nt-configure-row__name-primary"
+      >
+        {value}
       </span>
       {pct !== null ? (
         <span
@@ -43,11 +52,6 @@ function Gauge({ label, pct, value }: { label: string; pct: number | null; value
           />
         </span>
       ) : null}
-      <span
-        className="nt-configure-row__name-primary"
-      >
-        {value}
-      </span>
     </div>
   );
 }
@@ -150,7 +154,6 @@ export function MistApPanel({ row }: { row: MistApStatsRow }) {
   const lldp = row.lldpUplink;
   return (
     <div className="nt-stack nt-gap-2">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · AP RF theater · Mist stats</div>
       <SectionHeader label="AP health & RF" meta="MIST AP STATS" />
 
       <div

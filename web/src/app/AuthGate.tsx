@@ -142,7 +142,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
       <div className="nt-auth-panel nt-auth-shell">
         <div className="nt-auth-card nd-auth-card nt-panel-glass">
           <div className="nt-auth-panel__brand">
-            <div className="nt-logo-mark" aria-hidden="true">HPE</div>
+            <div className="nt-logo-mark nt-brand-mark" aria-hidden="true">
+              <span className="nt-brand-mark__nd">HPE</span>
+            </div>
             <div className="nt-auth-card__eyebrow nd-auth-card__eyebrow">HPE Network Tools</div>
           </div>
           <h1 className="nt-auth-card__title nd-auth-card__title">

@@ -236,7 +236,6 @@ export function PortalSection() {
           Copy section link
         </Button>
       </div>
-      <div className="nt-plane-theater" role="note">HPE Network Tools · portal · workspace · preferences</div>
       <div className="nt-status-ribbon nt-portal-ribbon" role="status" aria-label="Portal status ribbon">
         <span className="nt-status-ribbon__item">portal · workspace</span>
         <span className="nt-status-ribbon__item">preferences · density</span>

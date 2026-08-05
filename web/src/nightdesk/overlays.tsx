@@ -86,6 +86,9 @@ export function Modal({
       >
         <div className="nd-modal__header nt-modal__header">
           <div>
+            <div className="nt-modal-kicker" aria-hidden>
+              HPE Network Tools · modal
+            </div>
             <div id={titleId} className="nd-modal__title nt-modal__title">
               {title}
             </div>
@@ -153,7 +156,6 @@ export function ConfirmDialog({
         </>
       }
     >
-      <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
     </Modal>
   );
 }

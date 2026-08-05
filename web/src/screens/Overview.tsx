@@ -561,9 +561,6 @@ export default function Overview() {
         subtitle={subtitle}
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · war room
-            </span>
             <span className="nt-mono-label">{synced}</span>
             {pureLive ? <Badge tone="info">LIVE</Badge> : null}
             <ActionOverflow label="Overview actions">
@@ -722,7 +719,6 @@ export default function Overview() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · war-room spine · planes · freshness · P1 heat</div>
       <div className="nt-status-ribbon nt-overview-ribbon" role="status" aria-label="Overview status ribbon">
         <span className="nt-status-ribbon__item">war-room · P1 heat</span>
         <span className="nt-status-ribbon__item">freshness · shift strip</span>

@@ -175,16 +175,22 @@ export function VisualReferencePanel({
 
   return (
     <div className="nt-visual-ref nt-recon-reveal nt-visual-ref-shell nt-section-panel">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · visual lane · operator sketches · never telemetry</div>
       <div className="nt-row-between-12">
         <SectionHeader
           label="Visual references"
           meta="OPERATOR CONTEXT · NOT TELEMETRY"
         />
-        <Button variant="secondary" size="sm" onClick={downloadServerCsv}>
-          Download references CSV
-        </Button>
-        {editable ? (
+        {/* An empty panel already offers "Add visual reference" inside its
+            empty state, which is where the eye lands; the header repeated the
+            same button ~110px above it on ten screens, and "Download
+            references CSV" next to it wrote an empty file. While the composer
+            is open the header keeps its control, because that is the Cancel. */}
+        {references !== null && references.length > 0 ? (
+          <Button variant="secondary" size="sm" onClick={downloadServerCsv}>
+            Download references CSV
+          </Button>
+        ) : null}
+        {editable && (composerOpen || (references !== null && references.length > 0)) ? (
           <Button
             variant="secondary"
             size="sm"

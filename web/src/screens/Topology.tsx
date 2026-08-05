@@ -963,10 +963,7 @@ export default function Topology() {
         title="Topology"
         subtitle="Every reported neighbour fact across every plane — sites collapsed to cards, expanded on click, provenance on every edge."
         actions={
-          <div className="nt-chip-wrap nt-chip-wrap--tight">
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · graph
-            </span>
+          <>
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <Button
               size="sm"
@@ -1109,10 +1106,9 @@ export default function Topology() {
                 2D Cards
               </Button>
             </div>
-          </div>
+          </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · graph theater · path · focus node</div>
       <div className="nt-status-ribbon nt-topology-ribbon" role="status" aria-label="Topology status ribbon">
         <span className="nt-status-ribbon__item">graph · path focus</span>
         <span className="nt-status-ribbon__item">node cinema</span>

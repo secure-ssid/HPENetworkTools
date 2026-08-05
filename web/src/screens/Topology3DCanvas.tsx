@@ -477,7 +477,6 @@ export const Topology3DCanvas: React.FC<Topology3DCanvasProps> = ({ graph, onSel
 
   return (
     <div className="nt-topo3d nt-topo-host nt-topo3d-shell nt-panel-glass">
-      <div className="nt-topo3d__brand" aria-hidden>HPE Network Tools · graph</div>
       <div ref={containerRef} className="nt-topo3d__canvas" />
 
       {/* Hover Info Tooltip */}

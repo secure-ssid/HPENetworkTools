@@ -602,9 +602,6 @@ export default function GreenLake() {
         subtitle={`Workspace members, locations and role grants, plus the ${lab ? 'direct' : 'reviewed'} changes this credential may make. Subscriptions are reconciled on Licences.`}
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · platform
-            </span>
             <Badge plane>GreenLake</Badge>
             {/* Inventory only lands from the linked plane — never fixtures. */}
             <Badge tone="info">LIVE</Badge>
@@ -736,7 +733,6 @@ export default function GreenLake() {
 }
       />
 
-      <div className="nt-plane-theater" role="note">HPE Network Tools · GreenLake ECG · members · write ritual armed</div>
       <div className="nt-status-ribbon nt-greenlake-ribbon" role="status" aria-label="GreenLake status ribbon">
         <span className="nt-status-ribbon__item">cloud · ECG live</span>
         <span className="nt-status-ribbon__item">write ritual armed</span>
@@ -768,7 +764,6 @@ export default function GreenLake() {
 
       {!readOnly && !lab ? (
         <Card className="nt-card--write-ritual" dataPhase={busy ? 'executing' : 'review'}>
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <Checkbox
             label="I have reviewed this write — apply with review confirmation (not a draft)."
             checked={reviewed}
@@ -1148,7 +1143,6 @@ export default function GreenLake() {
 
       {readOnly ? null : (
         <Card className="nt-card--write-ritual" dataPhase={busy ? 'executing' : 'review'}>
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-wrap-6 nt-end-align">
             <Field
               label="Invite by email"
@@ -1441,7 +1435,6 @@ export default function GreenLake() {
 
       {readOnly ? null : (
         <Card className="nt-card--write-ritual" dataPhase={busy ? 'executing' : 'review'}>
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-wrap-6 nt-end-align">
             <Field
               label="Principal"
@@ -1695,7 +1688,6 @@ export default function GreenLake() {
 
       {readOnly ? null : (
         <Card className="nt-card--write-ritual" dataPhase={busy ? 'executing' : 'review'}>
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
           <div className="nt-wrap-6 nt-end-align">
             <Field label="Name" value={locName} onChange={setLocName} placeholder="Campus-01" />
             <Field

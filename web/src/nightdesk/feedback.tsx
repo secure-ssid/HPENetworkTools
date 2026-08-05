@@ -23,13 +23,13 @@ export function Alert({
     onDismiss?.();
   };
   return (
-    <div className={`nd-alert nd-alert--${tone} nt-callout-glass`} role="alert" data-tone={tone}>
-      <div className="nd-alert__content nt-callout-glass__content">
-        {title ? <div className="nd-alert__title nt-callout-glass__title">{title}</div> : null}
-        {children ? <div className="nd-alert__body nt-callout-glass__body">{children}</div> : null}
+    <div className={`nd-alert nd-alert--${tone} nt-alert nt-alert--${tone} nt-callout-glass`} role="alert" data-tone={tone}>
+      <div className="nd-alert__content nt-alert__content nt-callout-glass__content">
+        {title ? <div className="nd-alert__title nt-alert__title nt-callout-glass__title">{title}</div> : null}
+        {children ? <div className="nd-alert__body nt-alert__body nt-callout-glass__body">{children}</div> : null}
       </div>
       {dismissible ? (
-        <button type="button" className="nd-alert__dismiss nt-callout-glass__dismiss" onClick={dismiss}>
+        <button type="button" className="nd-alert__dismiss nt-alert__dismiss nt-callout-glass__dismiss" onClick={dismiss}>
           Dismiss
         </button>
       ) : null}
@@ -85,9 +85,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="nd-toast-region nt-toast-region" role="status" aria-live="polite" aria-atomic="false">
         {items.map((t) => (
-          <div key={t.id} className={`nd-toast nt-toast${t.tone ? ` nd-toast--${t.tone} nt-toast--${t.tone}` : ''}`} data-tone={t.tone || undefined}>
-            <div className="nd-toast__title nt-toast__title">{t.title}</div>
-            {t.description ? <div className="nd-toast__desc nt-toast__desc">{t.description}</div> : null}
+          <div key={t.id} className={`nd-toast nt-toast nt-toast-cinema${t.tone ? ` nd-toast--${t.tone} nt-toast--${t.tone}` : ''}`} data-tone={t.tone || undefined}>
+            <div className="nt-toast__body">
+              <div className="nd-toast__title nt-toast__title">{t.title}</div>
+              {t.description ? <div className="nd-toast__desc nt-toast__desc">{t.description}</div> : null}
+            </div>
+            <button
+              type="button"
+              className="nd-toast__dismiss nt-toast__dismiss"
+              aria-label="Dismiss notification"
+              onClick={() => setItems((xs) => xs.filter((x) => x.id !== t.id))}
+            >
+              ×
+            </button>
           </div>
         ))}
       </div>

@@ -76,7 +76,7 @@ export function Avatar({ name, size = 'sm' }: { name: string; size?: 'sm' | 'md'
     .join('')
     .toUpperCase();
   return (
-    <span className={`nd-avatar nd-avatar--${size} nt-avatar`} title={name} data-size={size}>
+    <span className={`nd-avatar nd-avatar--${size} nt-avatar nt-avatar--${size}`} title={name} data-size={size}>
       {initials}
     </span>
   );
@@ -108,21 +108,24 @@ export function Progress({
   const known = Number.isFinite(raw);
   const pct = known ? Math.max(0, Math.min(100, raw)) : 0;
   return (
-    <div className={cx('nd-progress', 'nt-progress-rail', className)} data-tone={tone}>
+    <div className={cx('nd-progress', `nd-progress--${tone}`, 'nt-progress', `nt-progress--${tone}`, 'nt-progress-rail', className)} data-tone={tone}>
       {label || note ? (
-        <div className="nd-progress__head nt-progress-rail__head">
-          {label ? <span className="nd-micro-label nt-micro-label">{label}</span> : <span />}
-          {note ? <span className="nd-progress__note nt-progress-rail__note">{note}</span> : null}
+        <div className="nd-progress__head nt-progress__head nt-progress-rail__head">
+          {label ? <span className="nd-micro-label nt-micro-label nt-progress__label">{label}</span> : <span />}
+          {note ? <span className="nd-progress__note nt-progress__note nt-progress-rail__note">{note}</span> : null}
         </div>
       ) : null}
       <div
-        className="nd-progress__track nt-progress-rail"
+        className="nd-progress__track nt-progress__track nt-progress-rail"
         role="progressbar"
         aria-valuenow={known ? value : undefined}
         aria-valuemin={0}
         aria-valuemax={max}
       >
-        <div className={`nd-progress__fill nd-progress__fill--${tone} nt-progress-rail__fill`} style={{ ["--nd-health" as string]: `${pct}%` }} />
+        <div
+          className={`nd-progress__fill nd-progress__fill--${tone} nt-progress__fill nt-progress-rail__fill`}
+          style={{ ['--nd-health' as string]: `${pct}%` }}
+        />
       </div>
     </div>
   );
@@ -155,7 +158,7 @@ export function EmptyState({
 export function Spinner({ size = 'sm' }: { size?: 'sm' | 'md' }) {
   return (
     <span
-      className={`nd-spinner nd-spinner--${size} nt-spinner`}
+      className={`nd-spinner nd-spinner--${size} nt-spinner nt-spinner--${size}`}
       role="status"
       aria-label="Loading"
       data-size={size}

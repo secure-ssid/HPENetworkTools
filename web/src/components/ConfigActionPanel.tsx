@@ -51,7 +51,6 @@ export function ConfigActionPanel({
 
   return (
     <div className="nt-stack-12">
-      <div className="nt-plane-theater" role="note">HPE Network Tools · write ritual · preview before push</div>
       <SectionHeader label="Configuration actions" meta="CAPABILITY GATED" />
       {caps.map((cap) => {
         if (cap.readOnlyReason) {

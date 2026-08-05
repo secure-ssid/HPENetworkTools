@@ -293,7 +293,6 @@ function CentralView({
         }
       />
 
-      <div className="nt-plane-theater" role="note">HPE Network Tools · Central ECG · monochrome plane · state owns hue</div>
       <div className="nt-status-ribbon nt-central-ribbon" role="status" aria-label="Central status ribbon">
         <span className="nt-status-ribbon__item">Central ECG · state owns hue</span>
         <span className="nt-status-ribbon__item">sites · WLAN · firmware</span>

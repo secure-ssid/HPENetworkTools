@@ -333,9 +333,12 @@ export function ConfigRecommendationsPanel({
 
   return (
     <div className="nt-stack-12 nt-recs-shell nt-section-panel">
-      <div className="nt-plane-theater" role="note">HPE Network Tools · recommendation lane · severity owns hue · never auto-applied</div>
       <div className="nt-row-between-8">
-        <SectionHeader label={title} meta="READ ONLY · NO AUTO-APPLY" />
+        {/* The server's own note already says the endpoint never auto-applies;
+            a hard-coded restatement in the header made the panel open with the
+            same sentence twice. The meta only stands in when there is no
+            note. */}
+        <SectionHeader label={title} meta={note ? undefined : 'READ ONLY · NO AUTO-APPLY'} />
         <ActionOverflow label={`${title} actions`}>
           {showCopyLink ? (
             <Button variant="ghost" size="sm" onClick={copyPanelContextLink}>

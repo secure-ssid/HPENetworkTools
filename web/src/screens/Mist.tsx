@@ -443,7 +443,6 @@ function MistView({ data, navigate }: { data: MistData; navigate: ReturnType<typ
         }
       />
 
-      <div className="nt-plane-theater" role="note">HPE Network Tools · Mist ECG · SLE / rogues / AP cinema</div>
       <div className="nt-status-ribbon nt-mist-ribbon" role="status" aria-label="Mist status ribbon">
         <span className="nt-status-ribbon__item">Mist ECG · SLE</span>
         <span className="nt-status-ribbon__item">rogues · AP cinema</span>

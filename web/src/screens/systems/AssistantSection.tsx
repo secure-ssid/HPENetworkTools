@@ -211,7 +211,6 @@ export function AssistantSection() {
           Copy section link
         </Button>
       </div>
-      <div className="nt-plane-theater" role="note">HPE Network Tools · assistant providers · lab write gated</div>
       <div className="nt-status-ribbon nt-assistant-cfg-ribbon" role="status" aria-label="Assistant config status ribbon">
         <span className="nt-status-ribbon__item">providers · MCP</span>
         <span className="nt-status-ribbon__item">lab write gated</span>

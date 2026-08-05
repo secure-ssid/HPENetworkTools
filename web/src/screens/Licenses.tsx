@@ -131,9 +131,13 @@ function utilisationTint(pct: string): Tone | null {
    same field the Status badge renders means the cell and the badge can never
    disagree, and the cutoffs stay where they are made — server-side, not
    re-parsed here from a display date ('support 31 Jan 27' does not parse
-   honestly). */
-function expiryTint(l: SubscriptionRow): Tone {
-  return l.tone;
+   honestly).
+
+   As with utilisation, only the tones that ask for attention wash the cell —
+   'active' and 'idle' are the expected state and the Status badge already
+   says so. */
+function expiryTint(l: SubscriptionRow): Tone | null {
+  return l.tone === 'warning' || l.tone === 'danger' ? l.tone : null;
 }
 
 /* The two counts a usage row may carry, each omitted when the row did not
@@ -495,9 +499,6 @@ export default function Licenses() {
         subtitle="GreenLake subscriptions, controller perpetuals and Mist SUBs, reconciled against what is actually racked."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · entitlement
-            </span>
             <Badge plane>GreenLake</Badge>
             {/* LIVE on pure live and licenses blend alike — stamp alone is easy to miss. */}
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
@@ -604,7 +605,6 @@ export default function Licenses() {
         }
       />
 
-      <div className="nt-plane-theater" role="note">HPE Network Tools · entitlement theater · subscription health owns hue</div>
       <div className="nt-status-ribbon nt-licenses-ribbon" role="status" aria-label="Licenses status ribbon">
         <span className="nt-status-ribbon__item">entitlements · health owns hue</span>
         <span className="nt-status-ribbon__item">subscription capacity</span>

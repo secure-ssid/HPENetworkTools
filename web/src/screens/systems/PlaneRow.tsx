@@ -244,9 +244,6 @@ export interface HistoryRow {
 export function NothingReported({ label }: { label: string }) {
   return (
     <div className="nt-hint-muted nt-pad-8-0 nt-nothing-reported" role="status">
-      <span className="nt-nothing-reported__mark" aria-hidden>
-        ND
-      </span>
       <span>{label}</span>
     </div>
   );

@@ -408,7 +408,6 @@ function InterfaceErrors({ live }: { live: SwitchInterfaceTrendsLive }) {
   }
   return (
     <div className="nt-stack nt-gap-2">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · trend cinema · telemetry owns hue</div>
       <SectionHeader
         label="Interface errors"
         meta={moved.length > 0 ? `${countOf(moved.length, 'counter')} MOVED` : undefined}
@@ -776,7 +775,6 @@ export function HardwareTrendsPanel({
 
   return (
     <div className="nt-stack nt-gap-2">
-      <div className="nt-plane-theater nt-plane-theater--compact" role="note">HPE Network Tools · trend cinema · telemetry owns hue</div>
       <SectionHeader label="Hardware trends" meta={meta || undefined} />
       <div className="nt-row nt-gap-8 nt-self-start nt-pad-4-0">
         <SegmentedControl

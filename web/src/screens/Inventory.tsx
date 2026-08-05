@@ -325,9 +325,6 @@ export default function Inventory() {
         subtitle="Browse connected systems, sites, devices, and SSE objects without loading the entire estate at once."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · estate map
-            </span>
             {/* LIVE when the systems registry is non-demo — offline/demo stay quiet (Loop 171). */}
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
             <Button
@@ -388,7 +385,6 @@ export default function Inventory() {
           </>
         }
       />
-      <div className="nt-plane-theater" role="note">HPE Network Tools · estate map · tree · reconcile cinema</div>
       <div className="nt-status-ribbon nt-inventory-ribbon" role="status" aria-label="Inventory status ribbon">
         <span className="nt-status-ribbon__item">estate map · tree</span>
         <span className="nt-status-ribbon__item">reconcile cinema</span>

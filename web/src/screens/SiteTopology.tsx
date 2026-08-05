@@ -583,9 +583,6 @@ export function SiteTopologyDiagram({
         if (focusId !== null) setFocusId(null);
       }}
     >
-      <div className="nt-plane-theater" role="note">
-        HPE Network Tools · site topology · path owns attention · state owns hue
-      </div>
       <div className="nt-status-ribbon nt-site-topo-ribbon" role="status" aria-label="Site topology status ribbon">
         <span className="nt-status-ribbon__item">path · owns attention</span>
         <span className="nt-status-ribbon__item">state owns hue</span>

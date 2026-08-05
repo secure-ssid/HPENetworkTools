@@ -164,9 +164,6 @@ export function ShiftStrip() {
       data-p1={snap.p1Count > 0 ? '1' : '0'}
       data-degraded={snap.degraded.length > 0 ? '1' : '0'}
     >
-      <span className="nt-shift-strip__brand nd-shift-strip__brand" aria-hidden>
-        HPE Network Tools
-      </span>
       <span className="nt-shift-strip__chip" title="Active workspace">
         <span className="nt-shift-strip__dot" aria-hidden />
         {snap.env}
@@ -174,7 +171,13 @@ export function ShiftStrip() {
 
       <span className={modeChip} title="Data mode">
         <span
-          className={`nt-shift-strip__dot${snap.mode === 'live' ? ' nt-shift-strip__dot--live' : ''}`}
+          className={`nt-shift-strip__dot${
+            snap.mode === 'live'
+              ? ' nt-shift-strip__dot--live nt-live-dot'
+              : snap.mode === 'demo'
+                ? ' nt-shift-strip__dot--demo nt-demo-dot'
+                : ''
+          }`}
           aria-hidden
         />
         {modeLabel}
@@ -187,7 +190,10 @@ export function ShiftStrip() {
         aria-label={`${snap.p1Count} P1${snap.p1Count === 1 ? '' : 's'}, open alerts`}
         onClick={() => navigate('/alerts?sev=P1')}
       >
-        <span className="nt-shift-strip__dot" aria-hidden />
+        <span
+          className={`nt-shift-strip__dot${snap.p1Count > 0 ? ' nt-shift-strip__dot--p1 nt-degraded-dot' : ''}`}
+          aria-hidden
+        />
         {snap.p1Count} P1{snap.p1Count === 1 ? '' : 's'}
       </button>
 
@@ -206,7 +212,12 @@ export function ShiftStrip() {
         }
         onClick={() => navigate('/systems')}
       >
-        <span className="nt-shift-strip__dot" aria-hidden />
+        <span
+          className={`nt-shift-strip__dot${
+            snap.degraded.length > 0 ? ' nt-shift-strip__dot--degraded nt-degraded-dot' : ' nt-shift-strip__dot--ok nt-live-dot'
+          }`}
+          aria-hidden
+        />
         {snap.degraded.length > 0
           ? `${snap.degraded.length} plane${snap.degraded.length === 1 ? '' : 's'} degraded`
           : 'Planes ok'}

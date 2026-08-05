@@ -515,20 +515,22 @@ function ClearPassView({
     {
       key: 'category',
       title: 'Category',
-      render: (row) => (
-        <>
-          {row.category ?? '—'}
-          {row.insightTags && row.insightTags.length > 0 ? (
-            <div className="nt-chip-wrap nt-pad-top-4">
-              {row.insightTags.map((tag) => (
-                <Badge key={tag} tone="neutral">
-                  {tag}
-                </Badge>
-              ))}
-            </div>
-          ) : null}
-        </>
-      ),
+      render: (row) => {
+        const tags = row.insightTags ?? [];
+        /* Tags sit on the same line as the category: a stacked placeholder plus
+           a badge row cost every endpoint an extra 24px of row height. */
+        if (!row.category && tags.length === 0) return '—';
+        return (
+          <span className="nt-chip-wrap nd-cell-inline">
+            {row.category ? <span>{row.category}</span> : null}
+            {tags.map((tag) => (
+              <Badge key={tag} tone="neutral">
+                {tag}
+              </Badge>
+            ))}
+          </span>
+        );
+      },
     },
     {
       key: 'os',
@@ -703,9 +705,6 @@ function ClearPassView({
         subtitle="Endpoint policy, profiling, and authentication from HPE ClearPass."
         actions={
           <>
-            <span className="nt-systems-brand nt-screen-kicker" aria-hidden>
-              HPE Network Tools · access
-            </span>
             <Badge plane>ClearPass</Badge>
             {/* LIVE on pure live and clearpass blend alike — stamp alone is easy to miss. */}
             {sectionLive ? <Badge tone="info">LIVE</Badge> : null}
@@ -865,7 +864,6 @@ function ClearPassView({
 }
       />
 
-      <div className="nt-plane-theater" role="note">HPE Network Tools · ClearPass ECG · policy · endpoints · identity</div>
       <div className="nt-status-ribbon nt-clearpass-ribbon" role="status" aria-label="ClearPass status ribbon">
         <span className="nt-status-ribbon__item">CPPM ECG · policy</span>
         <span className="nt-status-ribbon__item">endpoints · identity</span>
@@ -3098,7 +3096,6 @@ function RegisterEndpointDrawer({
       description={`Add one MAC to the ClearPass endpoint repository, with the profiling attributes you know. ${lab ? 'This lab write applies directly.' : 'The write goes to the linked CPPM only after your explicit review.'}`}
     >
       <div className="nt-stack nt-gap-16">
-        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
         <FormField label="MAC address" help="Any separator — normalised to aa:bb:cc:dd:ee:ff before the write.">
           <Input mono value={mac} onChange={(e) => setMac(e.target.value)} placeholder="3c:22:fb:41:0a:19" />
         </FormField>
@@ -3236,7 +3233,6 @@ function EditEndpointDrawer({
       description="Change the repository status and/or the operator note. The MAC is the endpoint's identity and is never rewritten."
     >
       <div className="nt-stack nt-gap-16">
-        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
         <FormField label="Status">
           <Select
             options={statusOptions}
@@ -3400,7 +3396,6 @@ function LocalUserWriteDrawer({
       description="A ClearPass local account. The password is write-only: it is sent to CPPM and never displayed, echoed, or read back — including here."
     >
       <div className="nt-stack nt-gap-16">
-        <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
         {mode === 'create' ? (
           <FormField label="User ID" help="The login name — it cannot be changed afterwards.">
             <Input mono value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="noc-operator" />

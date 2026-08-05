@@ -828,7 +828,6 @@ export function SseInventoryPanel({
 
   return (
     <div className="nt-stack nt-gap-12 nt-recon-reveal nt-sse-shell nt-section-panel">
-      <div className="nt-plane-theater" role="note">HPE Network Tools · SSE inventory · brokered estate slice</div>
       <div className="nt-status-ribbon nt-sse-ribbon" role="status" aria-label="SSE inventory status ribbon">
         <span className="nt-status-ribbon__item">SSE · brokered estate</span>
         <span className="nt-status-ribbon__item">object inventory</span>
@@ -1267,9 +1266,6 @@ export function SseInventoryPanel({
             : `${lab ? 'This direct write applies immediately.' : 'Review the change before it applies.'} Commit is tenant-wide and may include other staged tenant changes; a failed commit stages this change for a safe retry.`
         }
       >
-        {drawerMode === 'create' || (drawerMode === 'edit' && canWrite && !drawerBuiltIn) ? (
-          <div className="nt-write-ritual nt-write-ritual--banner" aria-hidden />
-        ) : null}
         {drawerLoading ? (
           <div className="nt-center-pad-32" role="status" aria-label="Loading object">
             <div className="nt-stack nt-gap-6">

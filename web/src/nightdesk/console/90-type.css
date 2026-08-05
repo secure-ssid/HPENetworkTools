@@ -274,3 +274,18 @@ pre {
   border-color: color-mix(in srgb, currentColor 32%, transparent);
   background: color-mix(in srgb, currentColor 12%, transparent);
 }
+
+/* ── Reading measure ──────────────────────────────────────────────────────
+   Measured across 16 routes: guidance prose rendered at 223–267 characters
+   per line (recommendation bodies, section hints, field help). Typographic
+   best practice is 45–90; past ~90 the eye loses the line return. Capped on
+   text-bearing leaves only, so rows, cells and flex tracks keep their width. */
+.nt-fs-13-sec:not(:has(*)),
+.nt-fs-12-sec-lh:not(:has(*)),
+.nt-hint-muted:not(:has(*)),
+.nt-hint-muted.nt-fs-12:not(:has(*)),
+.nd-field__help:not(:has(*)),
+.nt-field-block__help:not(:has(*)),
+.nt-body-sm.nt-lh-16:not(:has(*)) {
+  max-inline-size: 74ch;
+}

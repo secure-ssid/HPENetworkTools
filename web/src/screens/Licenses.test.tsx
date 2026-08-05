@@ -428,7 +428,11 @@ describe('Licences table superpowers', () => {
 
   /* The expiry tint is the row's own status tone — the payload's days-to-expiry
      judgement, rendered identically by the Status badge beside it. */
-  it('tints expiry with the row’s own status tone', async () => {
+  /* Only the tones that ask for attention wash the cell. Tinting 'active' and
+     'idle' too painted the column one solid band, so the rows that needed
+     looking at stopped standing out; the Status badge still names every
+     row's state. */
+  it('tints expiry only where the row’s status asks for attention', async () => {
     mockGetLicenses.mockResolvedValue({
       ...LIVE,
       subscriptions: [
@@ -442,10 +446,10 @@ describe('Licences table superpowers', () => {
     await screen.findByText('sub-retiring');
 
     const cell = (text: string) => screen.getByText(text).closest('td') as HTMLElement;
-    expect(cell('01 Feb 27').className).toContain('nd-table__td--tint-success');
+    expect(cell('01 Feb 27').className).not.toContain('nd-table__td--tint');
     expect(cell('14 Sep 26').className).toContain('nd-table__td--tint-warning');
     expect(cell('12 Aug 26').className).toContain('nd-table__td--tint-danger');
-    expect(cell('support 31 Jan 27').className).toContain('nd-table__td--tint-neutral');
+    expect(cell('support 31 Jan 27').className).not.toContain('nd-table__td--tint');
   });
 
   it('is a selection keyboard grid without a primary Enter action (Loop 162 bulk)', async () => {

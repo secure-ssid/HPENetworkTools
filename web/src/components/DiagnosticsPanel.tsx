@@ -514,7 +514,6 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
 
   return (
     <div className="nt-diag nt-diagnostics-shell nt-diag-panel nt-section-panel">
-      <div className="nt-plane-theater" role="note">HPE Network Tools · diagnostics · honest probes</div>
       <Alert tone="info" title="Reviewed operational action">
         Traceroute runs through New Central after explicit review. It is an operational action, not a configuration mutation.
         Portal cancellation stops operator polling only because Central exposes no documented traceroute cancel operation.

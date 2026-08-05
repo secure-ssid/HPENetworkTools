@@ -1596,3 +1596,54 @@ html[data-nd-theme='light'] .nt-configure-bulk-bar {
   text-align: left;
   margin: 0;
 }
+
+/* ── Control geometry ────────────────────────────────────────────────
+ *
+ * Two problems the operator sees as "squares" and "square circles":
+ *
+ * 1. Every control had drifted to a 0–2px radius while the surfaces around
+ *    them kept the 12–16px token radii, and the one switch on the page is a
+ *    999px pill. A 2px button next to a 999px track next to a 12px box reads
+ *    as three unrelated design systems on one toolbar row. Controls now share
+ *    --nd-radius-sm; a switch track stays a pill because that is what makes a
+ *    switch legible as a switch.
+ *
+ * 2. Each Alerts facet trigger was wrapped in `.nt-facet-filter` — panel
+ *    chrome meant for a *column* of facet options (title + checkbox list).
+ *    Wrapped around a single 28px dropdown button it added 10px/12px padding,
+ *    a border and a background, turning a 28px control into a 50px box. The
+ *    wrapper only carries chrome when it actually holds a facet column.
+ */
+.nd-btn.nd-btn,
+.nd-input.nd-input,
+.nd-select,
+.nd-tabs__trigger,
+.nd-shortcuts__trigger,
+.nd-navitem,
+.nt-shell-rail-toggle,
+.nt-shift-strip__chip {
+  border-radius: var(--nd-radius-sm, 5px);
+}
+
+.nt-facet-filter.nd-viewopts,
+.nd-facet.nd-viewopts {
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 0;
+}
+
+/* ── Closed popover wrappers are not panels ──────────────────────────────
+   `.nd-viewopts` carries the popover's panel chrome (1px border, 14px
+   radius, raised fill, 10px/12px padding). On `.nt-saved-views` that chrome
+   was painted around the *closed* trigger, so a 28px button measured 50px
+   and single-handedly set the /alerts toolbar to 57px — every other control
+   in the row is 24–30px. The panel treatment belongs on the open panel
+   (`.nd-viewopts__panel`), which keeps it. */
+.nd-viewopts.nt-saved-views {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
