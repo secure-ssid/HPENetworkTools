@@ -20,14 +20,16 @@ import {
   recommendationsForClient,
   recommendationsForDevice,
   type ClientRecommendationInput,
+  type ClientRow,
   type ConfigRecommendation,
   type DeviceRecommendationInput,
   type RecommendationCategory,
   type RecommendationSeverity,
+  type ScreenSection,
 } from '@hpe/shared';
 import { h } from './handler';
 import { poller } from '../services/poller';
-import { settings } from '../config/settings';
+import { effectiveSectionSource, settings } from '../config/settings';
 import { maybeNotModified, weakEtag } from '../lib/httpCache';
 import { sendCsv } from '../lib/csv';
 import { queryOneOf, queryString } from '../lib/query';
@@ -45,16 +47,30 @@ const REC_CATEGORIES = [
 
 export const recommendationsRouter = Router();
 
-function useDemoInventory(): boolean {
-  try {
-    return !!settings.get().demoMode;
-  } catch {
-    return true;
-  }
+/**
+ * Whether a dataset should come from the authored estate.
+ *
+ * Recommendations are advice about the network the operator is looking at, so
+ * each dataset follows its OWN screen's effective source — per-section
+ * overrides and the blend swap included — exactly as the notifier, the alert
+ * engine and the fleet report already do. The portal-wide demoMode flag was
+ * not that rule: an operator who pinned Devices to live still got findings
+ * derived from fixtures, and nothing disclosed it because nothing had failed.
+ *
+ * settings.get() is deliberately not wrapped. It throws only when the settings
+ * file is unreadable, and answering that with fixtures would turn a broken
+ * portal into confident advice about somebody else's network.
+ */
+function servesFixtures(section: ScreenSection, liveCount: number): boolean {
+  const s = settings.get();
+  if (effectiveSectionSource(s, section) !== 'demo') return false;
+  const blend = s.blendLive === true && s.sectionMode?.[section] !== 'demo';
+  return !(blend && liveCount > 0);
 }
 
 function deviceInputs(): DeviceRecommendationInput[] {
-  if (useDemoInventory()) {
+  const live = poller.getCache().devices ?? [];
+  if (servesFixtures('devices', live.length)) {
     return DEVICES.map((d) => ({
       name: d.name,
       type: d.type,
@@ -73,7 +89,6 @@ function deviceInputs(): DeviceRecommendationInput[] {
       localShell: d.localShell,
     }));
   }
-  const live = poller.getCache().devices ?? [];
   return live.map((d) => ({
     name: d.name,
     type: d.type,
@@ -93,8 +108,8 @@ function deviceInputs(): DeviceRecommendationInput[] {
   }));
 }
 
-function clientInputs(): ClientRecommendationInput[] {
-  if (useDemoInventory()) {
+function clientInputs(fixtures: boolean, live: readonly ClientRow[]): ClientRecommendationInput[] {
+  if (fixtures) {
     return CLIENTS.map((c) => ({
       name: c.name,
       mac: c.mac,
@@ -111,7 +126,6 @@ function clientInputs(): ClientRecommendationInput[] {
       role: c.role,
     }));
   }
-  const live = poller.getCache().clients ?? [];
   return live.map((c) => ({
     name: c.name,
     mac: c.mac,
@@ -129,7 +143,15 @@ function clientInputs(): ClientRecommendationInput[] {
   }));
 }
 
-function endpointMap() {
+/** The client estate and the decision that produced it — endpointMap needs the
+ *  same verdict, and /taxonomy/summary must not reach a different one. */
+function clientSource(): { fixtures: boolean; inputs: ClientRecommendationInput[] } {
+  const live = poller.getCache().clients ?? [];
+  const fixtures = servesFixtures('clients', live.length);
+  return { fixtures, inputs: clientInputs(fixtures, live) };
+}
+
+function endpointMap(fixtures: boolean) {
   const map = new Map<string, (typeof CLEARPASS_ENDPOINTS)[number]>();
   // Live mode must never borrow the demo endpoint repository. ClearPass's
   // endpoint read is best-effort and absent from a perfectly healthy pull, and
@@ -137,7 +159,7 @@ function endpointMap() {
   // recommendationsForClient marks a finding `evidence: 'partial'` with a note
   // when no endpoint row is supplied, and a borrowed row silences exactly that
   // disclosure. An absent repository is no rows, not invented ones.
-  const rows = useDemoInventory() ? CLEARPASS_ENDPOINTS : (poller.getCache().endpoints ?? []);
+  const rows = fixtures ? CLEARPASS_ENDPOINTS : (poller.getCache().endpoints ?? []);
   for (const row of rows) {
     map.set(row.mac.toLowerCase(), row);
   }
@@ -146,8 +168,11 @@ function endpointMap() {
 
 function buildAll(): ConfigRecommendation[] {
   const devices = deviceInputs();
-  const clients = clientInputs();
-  const endpoints = endpointMap();
+  // Clients and their ClearPass endpoint rows must come from the SAME estate:
+  // the two are joined by MAC, and a MAC matched across two different networks
+  // is a coincidence, not evidence. One decision, used for both.
+  const { fixtures: clientFixtures, inputs: clients } = clientSource();
+  const endpoints = endpointMap(clientFixtures);
   return [
     ...devices.flatMap(recommendationsForDevice),
     ...clients.flatMap((c) => recommendationsForClient(c, endpoints.get(c.mac.toLowerCase()) ?? null)),
@@ -269,7 +294,7 @@ recommendationsRouter.get(
   '/taxonomy/summary',
   h((_req, res) => {
     const devices = deviceInputs();
-    const clients = clientInputs();
+    const clients = clientSource().inputs;
     res.json({
       devices: {
         total: devices.length,
