@@ -3587,16 +3587,27 @@ export interface DiagnosticHistoryGap {
 /**
  * A read of the Diagnostics audit history, with the holes it knows about.
  *
- * `entries` alone cannot express why it is short. A generation deleted by
- * retention and a generation that would not open both produce a list missing
- * a stretch of runs, and neither is distinguishable from a device that was
- * simply never diagnosed. Both are carried out so the panel can say which.
+ * `entries` alone cannot express why it is short. Four different things make
+ * it short, and none of them is distinguishable from a device that was simply
+ * never diagnosed, so all four are carried out for the panel to name:
+ * a generation deleted by retention, a generation that would not open, a line
+ * that could not be read as a run, and a read that stopped at its limit.
  */
 export interface DiagnosticHistoryRead {
   entries: DiagnosticAuditEntry[];
   discarded: DiagnosticHistoryGap[];
   /** Basenames of rotated generations present on disk that could not be read. */
   unreadable: string[];
+  /** Lines that survived the read but could not be understood as a run — a
+   *  partial write from a crash mid-append, or an entry written before a field
+   *  the parser now requires. Dropping these silently means schema drift
+   *  quietly ERASES runs from what is meant to be an audit log. */
+  malformed: number;
+  /** The read stopped at its cap with more history behind it. The cap counts
+   *  runs across ALL devices while the panel filters to one, so this is not a
+   *  window the caller can shrug at: a device diagnosed a while ago falls off
+   *  the end entirely and its panel shows nothing at all. */
+  truncated: boolean;
 }
 
 export interface DiagnosticAuditEntry {

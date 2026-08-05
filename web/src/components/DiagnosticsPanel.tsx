@@ -228,9 +228,14 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
   // `history` because they survive the identity filter below: a generation
   // that was deleted or would not open cannot be searched for this device, so
   // it is exactly the rows we cannot rule out that are missing.
-  const [historyGaps, setHistoryGaps] = useState<{ discarded: number; unreadable: number }>(
-    { discarded: 0, unreadable: 0 },
+  const [historyGaps, setHistoryGaps] = useState<{ discarded: number; unreadable: number; malformed: number; truncated: boolean }>(
+    { discarded: 0, unreadable: 0, malformed: 0, truncated: false },
   );
+  // Any one of the four is enough to make the list short, and they are checked
+  // in one place so the caveat and the toolbar that offers the full log can
+  // never disagree about whether there is a hole.
+  const historyIncomplete =
+    historyGaps.discarded > 0 || historyGaps.unreadable > 0 || historyGaps.malformed > 0 || historyGaps.truncated;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -258,7 +263,7 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
     setUseManagementInterface(false);
     setBusy(false);
     setError(null);
-    setHistoryGaps({ discarded: 0, unreadable: 0 });
+    setHistoryGaps({ discarded: 0, unreadable: 0, malformed: 0, truncated: false });
     setLoading(true);
   }
 
@@ -302,7 +307,12 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
         if (!isCurrent(generation)) return;
         setDevice(findEligibleDevice(eligibility.devices, plane, serial, deviceName));
         setHistory(read.entries.filter((entry) => matchesIdentity(entry, plane, serial, deviceName)).slice(0, 5));
-        setHistoryGaps({ discarded: read.discarded.length, unreadable: read.unreadable.length });
+        setHistoryGaps({
+          discarded: read.discarded.length,
+          unreadable: read.unreadable.length,
+          malformed: read.malformed,
+          truncated: read.truncated,
+        });
       })
       .catch((err: Error) => {
         if (!isCurrent(generation)) return;
@@ -660,8 +670,13 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
           otherwise are in a generation retention deleted or one that will not
           open. The wording stays at "may not be listed" because that is the
           honest limit of what we know — the deleted entries cannot be
-          searched for this device. */}
-      {historyGaps.discarded > 0 || historyGaps.unreadable > 0 ? (
+          searched for this device.
+
+          Each cause states its OWN reason. They are not interchangeable: a
+          line that failed to parse is not a retention decision, and saying so
+          would attach a confident false explanation to a real gap. A caveat
+          that names the wrong cause sends someone to check the wrong thing. */}
+      {historyIncomplete ? (
         <Alert tone="warning" title="Audit history is incomplete">
           {historyGaps.discarded > 0
             ? `${historyGaps.discarded} older ${historyGaps.discarded === 1 ? 'stretch' : 'stretches'} of history ${historyGaps.discarded === 1 ? 'was' : 'were'} discarded by the retention policy. `
@@ -669,11 +684,17 @@ export function DiagnosticsPanel({ deviceName, plane, serial }: DiagnosticsPanel
           {historyGaps.unreadable > 0
             ? `${historyGaps.unreadable} rotated ${historyGaps.unreadable === 1 ? 'generation' : 'generations'} could not be read. `
             : ''}
+          {historyGaps.malformed > 0
+            ? `${historyGaps.malformed} ${historyGaps.malformed === 1 ? 'line' : 'lines'} could not be read as a diagnostic run — a partial write, or an entry older than the fields now required. `
+            : ''}
+          {historyGaps.truncated
+            ? 'The read stopped at its limit, which counts runs across all devices, so older runs for this one are beyond it. '
+            : ''}
           Earlier diagnostics for this device may not be listed{history.length ? '' : ' — including any that would have appeared here'}.
         </Alert>
       ) : null}
 
-      {history.length || historyGaps.discarded > 0 || historyGaps.unreadable > 0 ? (
+      {history.length || historyIncomplete ? (
         <div className="nt-filter-bar nt-gap-8">
           <Button
             variant="ghost"

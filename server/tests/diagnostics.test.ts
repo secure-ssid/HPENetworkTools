@@ -963,6 +963,55 @@ describe('DiagnosticsService audit history', () => {
     });
   });
 
+  /* A JSONL append that was interrupted leaves a half-written final line, and
+   * an entry written before a field the parser now insists on fails the same
+   * guard. Both used to vanish: the run happened, the record was written, and
+   * the audit log quietly stopped mentioning it. Schema drift silently
+   * erasing runs is the failure an audit log exists to prevent. */
+  it('counts lines it could not read as runs, and does not call them retention', () => {
+    const file = path.join(root, 'diagnostics-history.jsonl');
+    const good = {
+      id: 'ok-1', at: '2026-07-29T10:00:00Z', device: 'ap-1', serial: 'AP-SERIAL',
+      plane: 'CENTRAL', operation: 'traceroute', state: 'succeeded', target: '[redacted]',
+    };
+    fs.writeFileSync(file, [
+      JSON.stringify(good),
+      '{"id":"truncated-by-a-crash","at":"2026-07-29T10:0',
+      JSON.stringify({ ...good, id: 'older-format', serial: undefined }),
+      'not json at all',
+    ].join('\n') + '\n');
+
+    const svc = service([device()], { request: async () => ({ status: 200, body: {} }) });
+    const read = svc.history();
+    expect(read.entries.map((e) => e.id)).toEqual(['ok-1']);
+    expect(read.malformed).toBe(3);
+    // Not laundered into a cause that has its own words in the panel.
+    expect(read.discarded).toEqual([]);
+    expect(read.unreadable).toEqual([]);
+  });
+
+  /* The cap counts runs across ALL devices and the panel then filters to one,
+   * so a device diagnosed a while back can be pushed off the end entirely by
+   * other devices' activity — and its panel shows nothing whatsoever. That is
+   * a window used as though it were a complete record. */
+  it('reports a read that stopped at its limit, and does not cry truncation over a whole log', () => {
+    const file = path.join(root, 'diagnostics-history.jsonl');
+    const row = (n: number) => JSON.stringify({
+      id: `run-${n}`, at: `2026-07-29T10:00:${String(n % 60).padStart(2, '0')}Z`,
+      device: 'ap-1', serial: 'AP-SERIAL', plane: 'CENTRAL',
+      operation: 'traceroute', state: 'succeeded', target: '[redacted]',
+    });
+
+    fs.writeFileSync(file, Array.from({ length: 5 }, (_, i) => row(i)).join('\n') + '\n');
+    expect(service([device()], { request: async () => ({ status: 200, body: {} }) }).history().truncated).toBe(false);
+
+    // MAX_HISTORY is 100; one more line than that exists behind the read.
+    fs.writeFileSync(file, Array.from({ length: 140 }, (_, i) => row(i)).join('\n') + '\n');
+    const capped = service([device()], { request: async () => ({ status: 200, body: {} }) }).history();
+    expect(capped.truncated).toBe(true);
+    expect(capped.entries.length).toBe(100);
+  });
+
   /* Rotation deletes the oldest generation and leaves a tombstone in its
    * place, precisely so a deleted stretch of history does not read as a
    * stretch in which nothing happened. Every reader of a rotating log applies
@@ -1044,6 +1093,6 @@ describe('DiagnosticsService audit history', () => {
     fs.rmSync(path.join(root, 'diagnostics-history.jsonl'), { force: true });
 
     expect(service([device()], { request: async () => ({ status: 200, body: {} }) }, scheduler()).history())
-      .toEqual({ entries: [], discarded: [], unreadable: [] });
+      .toEqual({ entries: [], discarded: [], unreadable: [], malformed: 0, truncated: false });
   });
 });

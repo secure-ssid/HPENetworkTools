@@ -51,11 +51,13 @@ const history = vi.mocked(getDiagnosticHistory);
 /** A history read with no known holes — the shape most tests want. */
 const historyOf = (
   entries: DiagnosticAuditEntry[] = [],
-  gaps: Partial<Pick<DiagnosticHistoryRead, 'discarded' | 'unreadable'>> = {},
+  gaps: Partial<Pick<DiagnosticHistoryRead, 'discarded' | 'unreadable' | 'malformed' | 'truncated'>> = {},
 ): DiagnosticHistoryRead => ({
   entries,
   discarded: gaps.discarded ?? [],
   unreadable: gaps.unreadable ?? [],
+  malformed: gaps.malformed ?? 0,
+  truncated: gaps.truncated ?? false,
 });
 const review = vi.mocked(reviewDiagnostic);
 const start = vi.mocked(startDiagnostic);
@@ -739,6 +741,32 @@ describe('DiagnosticsPanel', () => {
 
     expect(await screen.findByText('Audit history is incomplete')).toBeTruthy();
     expect(screen.getByText(/could not be read/)).toBeTruthy();
+  });
+
+  it('discloses a line that could not be parsed, without blaming retention for it', async () => {
+    eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
+    history.mockResolvedValue(historyOf([], { malformed: 3 }));
+
+    render(<DiagnosticsPanel deviceName="ap-1" plane="CENTRAL" serial="AP-SERIAL" />);
+    await screen.findByLabelText('Traceroute target');
+
+    expect(await screen.findByText('Audit history is incomplete')).toBeTruthy();
+    expect(screen.getByText(/3 lines could not be read as a diagnostic run/)).toBeTruthy();
+    // The cause must be its own. Schema drift and a retention decision are
+    // different problems with different fixes, and naming the wrong one sends
+    // the reader to check something that is working.
+    expect(screen.queryByText(/discarded by the retention policy/)).toBeNull();
+  });
+
+  it('discloses a read that stopped at its limit — other devices can push this one off the end', async () => {
+    eligibility.mockResolvedValue({ operation: 'traceroute', source: 'live-inventory', devices: [AP] });
+    history.mockResolvedValue(historyOf([], { truncated: true }));
+
+    render(<DiagnosticsPanel deviceName="ap-1" plane="CENTRAL" serial="AP-SERIAL" />);
+    await screen.findByLabelText('Traceroute target');
+
+    expect(await screen.findByText('Audit history is incomplete')).toBeTruthy();
+    expect(screen.getByText(/counts runs across all devices/)).toBeTruthy();
   });
 
   // Must not over-apply: a warning shown over an intact log is a warning

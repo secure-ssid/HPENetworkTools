@@ -151,6 +151,11 @@ export async function getDiagnosticHistory(): Promise<DiagnosticHistoryRead> {
     entries: body.entries ?? [],
     discarded: body.discarded ?? [],
     unreadable: body.unreadable ?? [],
+    // A server too old to send these is not evidence of a clean read, but it
+    // is the only honest default: claiming a gap we were not told about would
+    // put a permanent caveat on every panel.
+    malformed: body.malformed ?? 0,
+    truncated: body.truncated ?? false,
   };
 }
 

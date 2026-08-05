@@ -584,19 +584,25 @@ export class DiagnosticsService {
   /**
    * The audit history, newest first, WITH the holes it knows about.
    *
-   * Two things make this list short in ways the list cannot show. A rotation
+   * Four things make this list short in ways the list cannot show. A rotation
    * deletes the oldest generation and leaves a tombstone behind; the strict
    * parse below rejects that tombstone, because it has no id, operation or
-   * state — nothing was run. And a generation still on disk may refuse to
-   * open. Both leave a stretch of runs missing, and a stretch of missing runs
-   * is indistinguishable from a device that was never diagnosed at all.
+   * state — nothing was run. A generation still on disk may refuse to open. A
+   * line may survive the read and still fail the parse — a half-written record
+   * from a crash mid-append, or one written before a field this parser now
+   * insists on, which is how schema drift erases runs from an audit log. And
+   * the read itself stops at MAX_HISTORY across all devices, while the panel
+   * then filters to one device, so a run can be pushed off the end by other
+   * devices' activity. All four leave a stretch of runs missing, and a stretch
+   * of missing runs is indistinguishable from a device that was never
+   * diagnosed at all.
    *
    * This used to report both to the console with the note that the shape had
    * nowhere to put them. It has somewhere now: an operator reading the panel
    * is the one who needs to know, and they are not reading the server log.
    */
   history(): DiagnosticHistoryRead {
-    const empty: DiagnosticHistoryRead = { entries: [], discarded: [], unreadable: [] };
+    const empty: DiagnosticHistoryRead = { entries: [], discarded: [], unreadable: [], malformed: 0, truncated: false };
     try {
       const file = path.join(this.dataDir, 'diagnostics-history.jsonl');
       // Newest first, across rotated generations: a rotation must not make the
@@ -608,6 +614,7 @@ export class DiagnosticsService {
         );
       }
       const discarded: DiagnosticHistoryGap[] = [];
+      let malformed = 0;
       const entries: DiagnosticAuditEntry[] = read.entries
         .flatMap((line) => {
           try {
@@ -637,7 +644,10 @@ export class DiagnosticsService {
               ].includes(raw.state)
               ? raw.state as DiagnosticAuditEntry['state']
               : null;
-            if (!id || !at || !device || !serial || !plane || !operation || !state) return [];
+            if (!id || !at || !device || !serial || !plane || !operation || !state) {
+              malformed += 1;
+              return [];
+            }
             return [{
               id,
               at,
@@ -650,10 +660,11 @@ export class DiagnosticsService {
               ...(typeof raw.httpCode === 'number' ? { httpCode: raw.httpCode } : {}),
             }];
           } catch {
+            malformed += 1;
             return [];
           }
         });
-      return { entries, discarded, unreadable: read.unreadable };
+      return { entries, discarded, unreadable: read.unreadable, malformed, truncated: read.truncated };
     } catch {
       return empty;
     }
