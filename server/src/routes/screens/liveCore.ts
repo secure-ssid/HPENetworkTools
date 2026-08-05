@@ -393,6 +393,16 @@ export function mergeLiveSites(
     const floorPct = healthPct === null ? null : Math.round((up / devs.length) * 100);
     const bandOf = (pct: number): SiteHealthTone => (pct >= 90 ? 'ok' : pct >= 70 ? 'warn' : 'bad');
     const certified = healthPct !== null && floorPct !== null && bandOf(healthPct) === bandOf(floorPct);
+    // The bar's WIDTH, which is a claim of its own. Withholding the verdict
+    // while still drawing the bar full-width left a site where one switch of
+    // twenty-four answered rendering as a complete bar — grey and labelled
+    // '—', but geometrically indistinguishable from a fully healthy site, and
+    // geometry is what gets scanned. When the band could not be certified the
+    // width falls back to the floor: the share of the WHOLE estate confirmed
+    // up, the only figure a partly-read inventory earned. It is what the
+    // authored rows draw for exactly this shape — SITES gives Riverside
+    // healthPct '4%' across 24 devices with health null, not '100%'.
+    const widthPct = certified ? healthPct : floorPct;
     // This site's alert picture cannot be asserted when a plane that claims it
     // is behind, or when nothing here has a verifiable state: the feed the
     // 'clear' badge would be read off is last-good, not current. The fixture
@@ -411,7 +421,7 @@ export function mergeLiveSites(
       devices: devs.length,
       clients: clientsReported ? formatCount(cls.length) : '—',
       health: certified && healthPct !== null ? `${healthPct}%` : null,
-      healthPct: healthPct === null ? '—' : `${healthPct}%`,
+      healthPct: widthPct === null ? '—' : `${widthPct}%`,
       tone: certified && healthPct !== null ? bandOf(healthPct) : 'stale',
       alerts: alertsReported ? (open.length > 0 ? `${open.length} open` : siteStale ? 'stale' : 'clear') : '—',
       alertTone: alertsReported ? (open.length > 0 ? 'warning' : siteStale ? 'neutral' : 'success') : 'neutral',

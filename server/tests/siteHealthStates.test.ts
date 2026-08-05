@@ -131,6 +131,10 @@ describe('mergeLiveSites certification over a partially read inventory', () => {
     // Was 'ok' — the green chip, off a sample of one.
     expect(site.tone).toBe('stale');
     expect(site.health).toBeNull();
+    // And the bar is drawn to what the estate earned, which is what the
+    // authored SITES row for Riverside draws: '4%' across 24 devices, not a
+    // full bar. 1 of 24 confirmed up.
+    expect(site.healthPct).toBe('4%');
   });
 
   it('withholds the verdict when the unread devices would change the band', () => {
@@ -138,8 +142,40 @@ describe('mergeLiveSites certification over a partially read inventory', () => {
     const site = siteRow(['up', 'up', 'unverified']);
     expect(site.health).toBeNull();
     expect(site.tone).toBe('stale');
-    // The measured share is still reported — withheld verdict, not withheld data.
+    // Cycle 93 left this at '100%' on the reasoning that the measured share
+    // was data rather than verdict. The bar's width is not neutral reporting:
+    // a full-width bar reads as a full site however it is coloured. With the
+    // band withheld the width is the floor — 2 of 3 confirmed up.
+    expect(site.healthPct).toBe('67%');
+  });
+
+  it('draws a certified site to its measured share, unchanged', () => {
+    // The guard: certification is what makes the measured share safe to draw,
+    // and where it holds nothing about the bar moves.
+    const site = siteRow([...Array<string>(147).fill('up'), 'unknown']);
+    expect(site.tone).toBe('ok');
     expect(site.healthPct).toBe('100%');
+    expect(site.health).toBe('100%');
+  });
+
+  it('never draws a withheld site wider than the estate confirmed', () => {
+    // The invariant behind the fix. It is scoped to sites whose verdict was
+    // withheld on purpose: where the band IS certified the width matches the
+    // label beside it, so the two agree and the reading is disclosed. It is
+    // only when the label reads '—' that the bar is the sole thing speaking.
+    for (const states of [
+      ['up', 'unverified', 'unverified'],
+      ['up', 'up', 'unverified'],
+      ['up', ...Array<string>(23).fill('unverified')],
+      ['unverified', 'unverified'],
+      ['up', 'up', 'up', 'unknown', 'unknown'],
+    ]) {
+      const site = siteRow(states);
+      if (site.health !== null) continue; // certified: width and label agree
+      const drawn = site.healthPct === '—' ? 0 : Number(site.healthPct.replace('%', ''));
+      const confirmedUp = states.filter((x) => x === 'up').length;
+      expect(drawn).toBeLessThanOrEqual(Math.round((confirmedUp / states.length) * 100));
+    }
   });
 
   it('still certifies a healthy campus with a single unread device', () => {
