@@ -525,6 +525,7 @@ describe('Compliance config drift (running-config backups)', () => {
       toTakenAt: '2026-07-25T12:00:00Z',
       added: 2,
       removed: 1,
+      collapsed: false,
       lines: [
         { kind: 'same', text: 'hostname sw-core-a' },
         { kind: 'del', text: 'ntp server 10.42.0.20 iburst' },

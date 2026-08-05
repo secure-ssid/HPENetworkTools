@@ -48,7 +48,8 @@ import {
   DEVICES,
   deviceProfile,
   deviceTerminalKind,
-  diffConfigLines,
+  diffConfigLinesWithFidelity,
+  collapsedDiffNote,
   unifiedConfigDiffText,
   type ConfigBackupDeviceRow,
   type ConfigBackupDiff,
@@ -649,7 +650,12 @@ export class ConfigBackupService {
     if (before === null || after === null) {
       throw new ConfigBackupError(404, `version body missing on disk for '${device}'`);
     }
-    const lines = diffConfigLines(before, after);
+    const { lines, collapsed } = diffConfigLinesWithFidelity(before, after);
+    // The note goes in `text` rather than beside it because `text` is what the
+    // screen renders and what an operator copies into a change ticket. A
+    // caveat that only exists in a sibling field does not travel with the
+    // evidence it qualifies.
+    const body = unifiedConfigDiffText(lines);
     return {
       device,
       fromVersion: from,
@@ -658,8 +664,9 @@ export class ConfigBackupService {
       toTakenAt: toMeta.takenAt,
       added: lines.filter((l) => l.kind === 'add').length,
       removed: lines.filter((l) => l.kind === 'del').length,
+      collapsed,
       lines,
-      text: unifiedConfigDiffText(lines),
+      text: collapsed ? [...collapsedDiffNote(), body].join('\n') : body,
     };
   }
 

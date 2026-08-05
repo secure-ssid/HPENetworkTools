@@ -109,12 +109,39 @@ export interface ConfigBackupDiff {
   toVersion: number;
   fromTakenAt: string;
   toTakenAt: string;
+  /**
+   * Lines the rendered diff marks as added / removed. When `collapsed` is
+   * true these are an UPPER BOUND on what differs, not a count of it: the
+   * unaligned fallback re-emits the whole changed region on both sides, so a
+   * line identical in both versions is counted once as removed and once as
+   * added.
+   */
   added: number;
   removed: number;
+  /**
+   * True when the changed region exceeded CONFIG_DIFF_MAX_CELLS and the diff
+   * fell back to whole-block removal + addition.
+   *
+   * Required rather than optional on purpose: a renderer that forgets this
+   * field prints a precise-looking '+3000 -3000' over an approximate diff,
+   * which is the single thing the field exists to prevent.
+   */
+  collapsed: boolean;
   /** Typed lines for the UI's coloured renderer. */
   lines: ConfigDiffLine[];
   /** The same diff as unified text ('+ '/'- '/'  ' prefixes) for copy/paste. */
   text: string;
+}
+
+/**
+ * A diff plus whether it is the exact alignment or the collapsed fallback.
+ * The two are not distinguishable from the lines alone — a genuinely
+ * rewritten config and a config the matrix could not align produce the same
+ * shape — so the fact travels beside them rather than being inferred.
+ */
+export interface ConfigDiffResult {
+  lines: ConfigDiffLine[];
+  collapsed: boolean;
 }
 
 /** Versions kept per device (Oxidized-style rolling window). */
@@ -141,6 +168,15 @@ export const CONFIG_DIFF_MAX_CELLS = 4_000_000;
  * diff, never a wrong alignment presented as precise.
  */
 export function diffConfigLines(before: string, after: string): ConfigDiffLine[] {
+  return diffConfigLinesWithFidelity(before, after).lines;
+}
+
+/**
+ * The same diff, plus whether the matrix was actually built. Callers that
+ * publish a +/- COUNT need this; callers that only display the lines do not,
+ * which is why `diffConfigLines` still exists unchanged.
+ */
+export function diffConfigLinesWithFidelity(before: string, after: string): ConfigDiffResult {
   const a = before === '' ? [] : before.split('\n');
   const b = after === '' ? [] : after.split('\n');
 
@@ -158,7 +194,9 @@ export function diffConfigLines(before: string, after: string): ConfigDiffLine[]
   const out: ConfigDiffLine[] = [];
   for (let i = 0; i < start; i += 1) out.push({ kind: 'same', text: a[i]! });
 
-  if (midA.length * midB.length > CONFIG_DIFF_MAX_CELLS) {
+  const collapsed = midA.length * midB.length > CONFIG_DIFF_MAX_CELLS;
+
+  if (collapsed) {
     for (const text of midA) out.push({ kind: 'del', text });
     for (const text of midB) out.push({ kind: 'add', text });
   } else {
@@ -200,7 +238,26 @@ export function diffConfigLines(before: string, after: string): ConfigDiffLine[]
   }
 
   for (let k = endA; k < a.length; k += 1) out.push({ kind: 'same', text: a[k]! });
-  return out;
+  return { lines: out, collapsed };
+}
+
+/**
+ * The header the collapsed fallback carries into the copy-pasteable diff
+ * text, in the '! ' convention the compliance evidence block already uses —
+ * `DiffCode` renders it as context, so it cannot be mistaken for a config
+ * line that was added or removed.
+ *
+ * It says what the operator cannot otherwise tell: whether this device's
+ * running config was rewritten wholesale, or whether the portal simply could
+ * not align it. Those call for very different reactions.
+ */
+export function collapsedDiffNote(): string[] {
+  return [
+    '! The changed region was too large to align line by line, so it is shown as one',
+    '! whole-block removal followed by one whole-block addition. Every real difference is',
+    '! present, but lines identical in both versions appear on both sides, so the +/-',
+    '! counts are an upper bound and not the number of lines that actually differ.',
+  ];
 }
 
 /** Render typed diff lines as unified text: '+ '/'- '/'  ' — the shape

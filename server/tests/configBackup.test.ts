@@ -23,8 +23,11 @@ import {
   CONFIG_BACKUP_KEEP_VERSIONS,
   DEVICES,
   DEVICE_CONFIGS,
+  CONFIG_DIFF_MAX_CELLS,
+  collapsedDiffNote,
   configDiffHasChanges,
   diffConfigLines,
+  diffConfigLinesWithFidelity,
   unifiedConfigDiffText,
 } from '@hpe/shared';
 import type {
@@ -137,6 +140,97 @@ describe('diffConfigLines', () => {
   it('renders unified text with +/-/space prefixes DiffCode colours', () => {
     const text = unifiedConfigDiffText(diffConfigLines('a\nold', 'a\nnew'));
     expect(text).toBe('  a\n- old\n+ new');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Telling an unalignable diff apart from a wholesale rewrite
+// ---------------------------------------------------------------------------
+
+/** Two configs whose changed middle is too big for the LCS matrix, but which
+ *  differ in only two lines. Trimming cannot shrink it: the first and last
+ *  lines differ, so the whole file is the changed middle. */
+function unalignablePair(): { before: string; after: string; shared: string[] } {
+  const shared = Array.from({ length: 2100 }, (_, i) => `interface GigabitEthernet1/0/${i}`);
+  return {
+    before: ['hostname sw-old', ...shared, 'end-old'].join('\n'),
+    after: ['hostname sw-new', ...shared, 'end-new'].join('\n'),
+    shared,
+  };
+}
+
+describe('diffConfigLinesWithFidelity', () => {
+  it('reports an exact alignment as exact', () => {
+    const result = diffConfigLinesWithFidelity('a\nold\nb', 'a\nnew\nb');
+    expect(result.collapsed).toBe(false);
+    expect(result.lines.map((l) => `${l.kind}:${l.text}`)).toEqual(['same:a', 'del:old', 'add:new', 'same:b']);
+  });
+
+  it('admits when the changed region was too large to align', () => {
+    const { before, after } = unalignablePair();
+    expect(diffConfigLinesWithFidelity(before, after).collapsed).toBe(true);
+  });
+
+  it('still returns a correct superset — no real change goes missing', () => {
+    const { before, after } = unalignablePair();
+    const { lines } = diffConfigLinesWithFidelity(before, after);
+    const removed = lines.filter((l) => l.kind === 'del').map((l) => l.text);
+    const added = lines.filter((l) => l.kind === 'add').map((l) => l.text);
+    expect(removed).toContain('hostname sw-old');
+    expect(added).toContain('hostname sw-new');
+    expect(removed).toContain('end-old');
+    expect(added).toContain('end-new');
+  });
+
+  it('counts identical lines on both sides, which is why the counts need a caveat', () => {
+    const { before, after, shared } = unalignablePair();
+    const { lines } = diffConfigLinesWithFidelity(before, after);
+    const added = lines.filter((l) => l.kind === 'add').length;
+    const removed = lines.filter((l) => l.kind === 'del').length;
+    // Only two lines really differ on each side. The collapsed diff reports
+    // every shared line as removed AND added, so the numbers an operator sees
+    // overstate the change by three orders of magnitude.
+    expect(added).toBe(shared.length + 2);
+    expect(removed).toBe(shared.length + 2);
+    expect(lines.some((l) => l.kind === 'same')).toBe(false);
+  });
+
+  it('leaves diffConfigLines behaving exactly as before', () => {
+    const { before, after } = unalignablePair();
+    expect(diffConfigLines(before, after)).toEqual(diffConfigLinesWithFidelity(before, after).lines);
+    expect(diffConfigLines('a\nb', 'a\nb').every((l) => l.kind === 'same')).toBe(true);
+  });
+
+  it('bounds the matrix where the shared constant says it does', () => {
+    expect(CONFIG_DIFF_MAX_CELLS).toBe(4_000_000);
+  });
+});
+
+describe('ConfigBackupService.diffVersions — fidelity reaches the operator', () => {
+  it('says so in the copied text when the diff could not be aligned', () => {
+    const svc = makeService({ inventory: [{ name: 'sw-a', type: 'switch' }] });
+    const { before, after } = unalignablePair();
+    svc.recordSnapshot('sw-a', before, 'test');
+    svc.recordSnapshot('sw-a', after, 'test');
+    const diff = svc.diffVersions('sw-a', 1, 2);
+    expect(diff.collapsed).toBe(true);
+    for (const line of collapsedDiffNote()) expect(diff.text).toContain(line);
+    // The note leads, so it is read before the wall of +/- lines, and it is
+    // context rather than an added or removed config line.
+    expect(diff.text.startsWith('! ')).toBe(true);
+    expect(diff.text).toContain('upper bound');
+  });
+
+  it('stays silent on a diff that aligned — an always-on caveat says nothing', () => {
+    const svc = makeService({ inventory: [{ name: 'sw-a', type: 'switch' }] });
+    svc.recordSnapshot('sw-a', 'hostname sw-a\nntp server 10.0.0.1', 'test');
+    svc.recordSnapshot('sw-a', 'hostname sw-a\nntp server 10.0.0.2', 'test');
+    const diff = svc.diffVersions('sw-a', 1, 2);
+    expect(diff.collapsed).toBe(false);
+    expect(diff.text).not.toContain('!');
+    expect(diff.text).toBe('  hostname sw-a\n- ntp server 10.0.0.1\n+ ntp server 10.0.0.2');
+    expect(diff.added).toBe(1);
+    expect(diff.removed).toBe(1);
   });
 });
 
