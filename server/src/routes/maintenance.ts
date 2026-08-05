@@ -30,6 +30,7 @@ import { Router } from 'express';
 import {
   DEMO_MAINTENANCE_WINDOWS,
   isValidTimeZone,
+  resolveServerTimeZone,
   MAX_SILENCE_REASON_CHARS,
   parseTimeHHMM,
   windowSpanAt,
@@ -65,7 +66,10 @@ function annotate(window: MaintenanceWindow, now: number, demo?: true): Maintena
 export function maintenanceScheduleCsv(schedule: MaintenanceSchedule): string {
   if (schedule.kind === 'once') return `once ${schedule.start} → ${schedule.end}`;
   const days = [...schedule.days].sort((a, b) => a - b).join(' ');
-  return `weekly ${days} ${schedule.startTime}–${schedule.endTime}${schedule.tz ? ` ${schedule.tz}` : ''}`;
+  // A window stored before the route pinned zones has no tz. Exported into a
+  // change ticket, a bare '22:00' reads as a fact; say which clock it is on.
+  const zone = schedule.tz ? ` ${schedule.tz}` : ' (server local zone, unpinned)';
+  return `weekly ${days} ${schedule.startTime}–${schedule.endTime}${zone}`;
 }
 
 /**
@@ -230,7 +234,12 @@ function readSchedule(raw: unknown): { schedule: MaintenanceSchedule } | { error
     if (tz && !isValidTimeZone(tz)) {
       return { error: `unknown time zone '${tz}' — use an IANA name like 'Europe/London', or omit it for the server's local zone` };
     }
-    return { schedule: { kind: 'weekly', days: [...new Set(days as number[])].sort(), startTime, endTime, ...(tz ? { tz } : {}) } };
+    // Pin the zone now. The operator is choosing 22:00 on the clock this server
+    // is keeping at this moment, and that is the only moment their intent is
+    // unambiguous; leaving it absent re-decides the question on every later
+    // evaluation, in whatever zone the process is restarted into.
+    const pinned = tz ?? resolveServerTimeZone();
+    return { schedule: { kind: 'weekly', days: [...new Set(days as number[])].sort(), startTime, endTime, ...(pinned ? { tz: pinned } : {}) } };
   }
   return { error: "schedule.kind must be 'once' or 'weekly' — RRULE-lite, nothing more" };
 }

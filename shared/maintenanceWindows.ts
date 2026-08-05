@@ -54,7 +54,9 @@ export interface OnceSchedule {
 /**
  * Same wall-clock span on named weekdays, recurring forever. `days` holds
  * 0=Sunday..6=Saturday; startTime/endTime are 'HH:MM' 24-hour wall time in
- * `tz` (an IANA zone name; absent = the server's local zone). endTime earlier
+ * `tz` (an IANA zone name; absent = the server's local zone, resolved afresh
+ * on EVERY evaluation — see resolveServerTimeZone for why the route pins it at
+ * creation instead). endTime earlier
  * than startTime means the span ends the FOLLOWING day. endTime equal to
  * startTime is refused — it would read as either zero-length or 24 hours, and
  * a schedule nobody can agree on is not a schedule.
@@ -168,6 +170,30 @@ export function parseTimeHHMM(value: string): number | null {
   const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value.trim());
   if (!m) return null;
   return Number(m[1]) * 60 + Number(m[2]);
+}
+
+/**
+ * The host's IANA zone, for pinning a window the operator did not zone
+ * explicitly.
+ *
+ * An absent `tz` does not mean "no zone" — it means "whatever zone this
+ * process happens to be in, asked again every evaluation". That is a schedule
+ * with no fixed meaning: the same stored window silences 22:00 CDT today and
+ * 22:00 UTC after a restart in a container that defaults to UTC, five hours
+ * away from the maintenance it was written for. Nothing about the record
+ * changes when it moves, so there is no way to notice.
+ *
+ * Returns undefined rather than guessing if the environment reports a zone it
+ * cannot then format in — storing a zone that fails to resolve would be worse
+ * than storing none, because the code path for none is at least exercised.
+ */
+export function resolveServerTimeZone(): string | undefined {
+  try {
+    const tz = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return tz && isValidTimeZone(tz) ? tz : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Whether `tz` names a zone Intl can format in — the route's validation and

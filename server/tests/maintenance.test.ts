@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { isValidTimeZone, resolveServerTimeZone } from '@hpe/shared';
 import type { AlertRow, MaintenanceWindow } from '@hpe/shared';
 
 let server: Server;
@@ -498,12 +499,52 @@ describe('maintenance-window routes', () => {
     expect(badKind.body.error).toContain('once');
   });
 
+  it('a weekly window created without a zone comes back pinned to one', async () => {
+    const res = await sendJson('POST', '/api/maintenance-windows', {
+      reason: 'core switch stack firmware',
+      matchers: { device: 'sw-core-1' },
+      schedule: { kind: 'weekly', days: [6], startTime: '02:00', endTime: '04:00' },
+    });
+    expect(res.status).toBe(201);
+    const w = res.body.window as MaintenanceWindow;
+    created.push(w.id);
+    // Unpinned, '02:00' means whatever zone this process is restarted into.
+    // The operator chose 02:00 on the clock the server was keeping when they
+    // pressed the button, and that intent is only knowable at that moment.
+    const schedule = w.schedule as Extract<MaintenanceWindow['schedule'], { kind: 'weekly' }>;
+    expect(schedule.tz).toBeTruthy();
+    expect(isValidTimeZone(schedule.tz!)).toBe(true);
+    expect(schedule.tz).toBe(resolveServerTimeZone());
+
+    // It survives the round-trip to disk, which is the point — the pin has to
+    // outlive the process that made it.
+    const listed = await getJson('/api/maintenance-windows');
+    const back = (listed.body.windows as any[]).find((x) => x.id === w.id);
+    expect(back.schedule.tz).toBe(schedule.tz);
+  });
+
+  it('an explicit zone is never overwritten by the server\'s own', async () => {
+    const res = await sendJson('POST', '/api/maintenance-windows', {
+      reason: 'London DC power work',
+      matchers: { device: 'gw-lon-1' },
+      schedule: { kind: 'weekly', days: [0], startTime: '01:00', endTime: '05:00', tz: 'Europe/London' },
+    });
+    expect(res.status).toBe(201);
+    const w = res.body.window as MaintenanceWindow;
+    created.push(w.id);
+    expect((w.schedule as any).tz).toBe('Europe/London');
+  });
+
   it('POST creates, GET annotates, PATCH toggles, DELETE removes — all audited', async () => {
     const before = auditEvents(join(tmpDir, 'data')).length;
     const createdRes = await sendJson('POST', '/api/maintenance-windows', {
       reason: 'ISP cutover, ticket NET-4211',
       matchers: { device: 'gw-edge-1', site: 'Campus-01 HQ' },
-      schedule: { kind: 'weekly', days: [2, 4], startTime: '22:00', endTime: '02:00' },
+      // Tomorrow's weekday in UTC, 22:00-23:00: strictly ahead of any instant
+      // today, so 'upcoming' holds whatever time the suite actually runs at.
+      // (The overnight-crossing case this once posted is covered properly, at a
+      // pinned `now`, in maintenanceWindows.test.ts.)
+      schedule: { kind: 'weekly', days: [(new Date().getUTCDay() + 1) % 7], startTime: '22:00', endTime: '23:00', tz: 'UTC' },
     });
     expect(createdRes.status).toBe(201);
     const w = createdRes.body.window as MaintenanceWindow;
@@ -514,7 +555,7 @@ describe('maintenance-window routes', () => {
     const listed = await getJson('/api/maintenance-windows');
     const annotated = (listed.body.windows as any[]).find((x) => x.id === w.id);
     expect(annotated.demo).toBeUndefined();
-    expect(annotated.state).toBe('upcoming'); // Tuesday 03:00 is outside Tue 22:00
+    expect(annotated.state).toBe('upcoming');
     expect(typeof annotated.spanStart).toBe('string');
 
     const toggled = await sendJson('PATCH', `/api/maintenance-windows/${w.id}`, { enabled: false });

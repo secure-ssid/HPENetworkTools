@@ -17,6 +17,7 @@ import {
   isValidTimeZone,
   maintenanceSiteMatches,
   parseTimeHHMM,
+  resolveServerTimeZone,
   windowMatchesAlert,
   windowSpanAt,
   windowToSilenceMatcher,
@@ -237,5 +238,47 @@ describe('the demo fixtures', () => {
     expect(fixture!.correlation).toContain('within 30m after change');
     expect(fixture!.correlation).toContain('not a proven cause');
     expect(demoAlertTimeline('some|other|fingerprint')).toBeNull();
+  });
+});
+
+describe('resolveServerTimeZone — pinning a window the operator did not zone', () => {
+  it('reports a zone Intl can actually format in, so a pinned window stays evaluable', () => {
+    const tz = resolveServerTimeZone();
+    expect(tz).toBeTruthy();
+    expect(isValidTimeZone(tz!)).toBe(true);
+  });
+
+  it('pinning is a no-op today and a rescue tomorrow: same answer now, fixed answer after a move', () => {
+    // A window pinned to the host zone must evaluate identically to the same
+    // window left unpinned — pinning records what was already meant, it does
+    // not change today's behaviour.
+    const tz = resolveServerTimeZone()!;
+    const now = Date.parse('2026-08-04T03:00:00.000Z');
+    const unpinned = { schedule: { kind: 'weekly' as const, days: [0, 1, 2, 3, 4, 5, 6], startTime: '22:00', endTime: '23:00' } };
+    const pinned = { schedule: { ...unpinned.schedule, tz } };
+    const a = windowSpanAt(unpinned, now);
+    const b = windowSpanAt(pinned, now);
+    expect(b.state).toBe(a.state);
+    if (a.state !== 'expired' && b.state !== 'expired') expect(b.span.start).toBe(a.span.start);
+
+    // The difference only shows when the process's zone is not the pinned one:
+    // the pinned window holds its ground, the unpinned one follows the host.
+    const elsewhere = tz === 'UTC' ? 'Asia/Tokyo' : 'UTC';
+    const moved = windowSpanAt({ schedule: { ...unpinned.schedule, tz: elsewhere } }, now);
+    if (moved.state !== 'expired' && b.state !== 'expired') {
+      expect(moved.span.start === b.span.start).toBe(elsewhere === tz);
+    }
+  });
+});
+
+describe('maintenanceScheduleCsv — what an exported row admits about its clock', () => {
+  it('names the pinned zone, and says so when there is not one', async () => {
+    const { maintenanceScheduleCsv } = await import('../src/routes/maintenance');
+    expect(maintenanceScheduleCsv({ kind: 'weekly', days: [6], startTime: '02:00', endTime: '04:00', tz: 'Europe/London' })).toContain('Europe/London');
+    // A row exported into a change ticket outlives the server that produced
+    // it. '02:00' with no zone reads as a fact anywhere it is pasted.
+    const legacy = maintenanceScheduleCsv({ kind: 'weekly', days: [6], startTime: '02:00', endTime: '04:00' });
+    expect(legacy).toContain('unpinned');
+    expect(legacy).not.toMatch(/04:00$/);
   });
 });
