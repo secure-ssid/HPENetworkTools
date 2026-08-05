@@ -227,7 +227,44 @@ describe('mapCentralSsid', () => {
       targets: 'Enabled profile · scope assignment not read',
       plane: 'CENTRAL',
       tone: 'accent',
+      // Central said enable:true, so the row says so as a field and not only
+      // as a word inside `targets`.
+      enabled: true,
     });
+  });
+
+  it('publishes a disabled profile as disabled', () => {
+    // The case with teeth: the edit drawer renders `ssid.enabled ?? true`, so
+    // dropping a reported false showed a switched-off WLAN as switched on.
+    const row = mapCentralSsid({ ssid: 'Guest', enable: false, opmode: 'WPA2_PERSONAL' });
+
+    expect(row?.enabled).toBe(false);
+    expect(row?.targets).toContain('Disabled profile');
+  });
+
+  it('omits the state when Central never reported it', () => {
+    // `enabled` absent is the documented spelling of "not reported"; a profile
+    // whose admin state never arrived must not acquire one here.
+    const row = mapCentralSsid({ ssid: 'Legacy', opmode: 'WPA2_PERSONAL' });
+
+    expect(row).not.toHaveProperty('enabled');
+    expect(row?.targets).toContain('State not reported');
+  });
+
+  it('never lets the sentence and the field disagree', () => {
+    // The contradiction itself, pinned: whatever `targets` says about the
+    // admin state, the structured field must say the same thing.
+    for (const [raw, word] of [
+      [{ ssid: 'A', enable: true }, 'Enabled profile'],
+      [{ ssid: 'A', enable: false }, 'Disabled profile'],
+      [{ ssid: 'A' }, 'State not reported'],
+    ] as const) {
+      const row = mapCentralSsid(raw);
+      expect(row?.targets).toContain(word);
+      const fromField =
+        row?.enabled === undefined ? 'State not reported' : row.enabled ? 'Enabled profile' : 'Disabled profile';
+      expect(fromField).toBe(word);
+    }
   });
 });
 

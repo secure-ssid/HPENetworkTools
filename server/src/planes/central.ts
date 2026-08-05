@@ -595,6 +595,12 @@ export function mapCentralSsid(raw: unknown): SsidObject | null {
     targets: `${enabled === null ? 'State not reported' : enabled ? 'Enabled profile' : 'Disabled profile'} · scope assignment not read`,
     plane: 'CENTRAL',
     tone: 'accent',
+    // The admin state Central DID report, published as the field rather than
+    // only as a word inside `targets`. Omitting it left the row saying
+    // 'Disabled profile' in one breath while `enabled: undefined` — the
+    // documented spelling of "not reported" — said the plane never mentioned
+    // it. The edit drawer reads the field, not the sentence.
+    ...(enabled !== null ? { enabled } : {}),
   };
 }
 
