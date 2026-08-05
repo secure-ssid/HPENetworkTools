@@ -340,6 +340,33 @@ describe('mapAos8SsidProfile', () => {
     expect(mapAos8SsidProfile({ opmode: 'wpa2-aes' })).toBeNull();
     expect(mapAos8SsidProfile(null)).toBeNull();
   });
+
+  it('says disabled when the controller reported the filter off', () => {
+    // The defect: an explicitly OFF filter used to read 'not reported', which
+    // is what the row says when the controller never mentioned it at all.
+    for (const off of [false, 'disable', 0]) {
+      expect(mapAos8SsidProfile({ essid: 'MERIDIAN-CLIN', 'broadcast-filter': off })?.targets).toBe(
+        'Broadcast filter disabled',
+      );
+    }
+  });
+
+  it('keeps every spelling of on reading as enabled', () => {
+    for (const on of [true, 'enable', 1]) {
+      expect(mapAos8SsidProfile({ essid: 'MERIDIAN-CLIN', 'broadcast-filter': on })?.targets).toBe(
+        'Broadcast filter enabled',
+      );
+    }
+  });
+
+  it('still says not reported when the controller was silent', () => {
+    // The guard that keeps the fix honest: absent, and anything unrecognised,
+    // must not become a confident 'disabled'.
+    expect(mapAos8SsidProfile({ essid: 'MERIDIAN-CLIN' })?.targets).toBe('Broadcast filter not reported');
+    expect(mapAos8SsidProfile({ essid: 'MERIDIAN-CLIN', 'broadcast-filter': 'sometimes' })?.targets).toBe(
+      'Broadcast filter not reported',
+    );
+  });
 });
 
 // -- pull() end-to-end -------------------------------------------------------------

@@ -368,6 +368,15 @@ function aos8SecurityLabel(opmode: string | null): string {
   return opmode;
 }
 
+/** An AOS-8 config boolean, which arrives as a bool, an 'enable'/'disable'
+ *  word or 0/1. null when the key was absent or carried something else — a
+ *  flag nobody reported is not a flag that is off. */
+function aos8Flag(raw: unknown): boolean | null {
+  if (raw === true || raw === 'enable' || raw === 1) return true;
+  if (raw === false || raw === 'disable' || raw === 0) return false;
+  return null;
+}
+
 /**
  * A configured MM `wlan_ssid_prof` row → SsidObject. The broadcast name is
  * `essid` (the profile-name is only the config-object key), matching Central's
@@ -380,15 +389,25 @@ export function mapAos8SsidProfile(raw: unknown): SsidObject | null {
   const name = str(r.essid) ?? str(r['profile-name']) ?? str(r.profile_name);
   if (!name) return null;
   const vlan = str(r.vlan) ?? '—';
-  const broadcastFilter = r['broadcast-filter'];
-  const filterOn = broadcastFilter === true || broadcastFilter === 'enable' || broadcastFilter === 1;
+  // Three states, not two. The MM spells this flag true/'enable'/1 and
+  // false/'disable'/0, and only an absent or unrecognised value is genuinely
+  // unreported. Testing for "on" alone reported a filter the controller had
+  // explicitly called OFF as one it had never mentioned — the same word the
+  // row uses for a read that did not happen. Central and Mist both keep the
+  // three apart (mapCentralSsid's state word, mist's wlanStateWord).
+  const broadcastFilter = aos8Flag(r['broadcast-filter']);
   return {
     kind: 'ssid',
     origin: 'configured',
     name,
     vlan,
     security: aos8SecurityLabel(str(r.opmode)),
-    targets: filterOn ? 'Broadcast filter enabled' : 'Broadcast filter not reported',
+    targets:
+      broadcastFilter === null
+        ? 'Broadcast filter not reported'
+        : broadcastFilter
+          ? 'Broadcast filter enabled'
+          : 'Broadcast filter disabled',
     plane: 'AOS-8',
     tone: 'accent',
   };
