@@ -9,9 +9,10 @@
  *              renewal re-arms; first sight notifies once at its tightest
  *              band, the same band never re-notifies, a tighter band does;
  *              departed items are pruned from the state;
- *   gate     — reportDue: disabled, UTC hour match, weekly fires Monday,
- *              the 20h/6d minimum gap since the last fire (sent OR
- *              attempted), and force bypassing the clock;
+ *   gate     — reportDue: disabled, the scheduled occurrence (UTC hour,
+ *              Monday for weekly), one fire per occurrence (sent OR
+ *              attempted), catching up a late occurrence, refusing one that
+ *              is too far behind, and force bypassing the clock;
  *   content  — buildFleetReport: per-type totals, offline cap 25 + '+N
  *              more', bell counts at 24h/168h, subscriptions ≤90d capped 15,
  *              the UTC-dated subject, data-gap notes;
@@ -24,7 +25,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   EXPIRY_THRESHOLDS,
-  REPORT_MIN_GAP_MS,
+  REPORT_CATCHUP_MAX_MS,
+  lastScheduledOccurrence,
   buildFleetReport,
   daysUntilExpiry,
   evaluateExpiryLadder,
@@ -169,46 +171,115 @@ describe('reportDue', () => {
     expect(check.reason).toContain('disabled');
   });
 
-  it('fires when the UTC hour matches', () => {
+  it('fires at the scheduled hour, and still fires after it', () => {
     expect(reportDue(config(), MONDAY_6AM).due).toBe(true);
-    expect(reportDue(config(), MONDAY_6AM + 3_600_000).due).toBe(false);
-    expect(reportDue(config(), MONDAY_6AM + 3_600_000).reason).toContain('06:00 UTC');
-    // A different configured hour: 23 matches 23, not 6.
+    // An hour late is still the same report. The old gate demanded an exact
+    // hour match, so this was the moment a day's report became unsendable.
+    // Catch-up needs a prior fire to anchor to — see the never-fired case.
+    const established = config({ lastSentAt: new Date(MONDAY_6AM - DAY + 60_000).toISOString() });
+    const late = reportDue(established, MONDAY_6AM + 3_600_000);
+    expect(late.due).toBe(true);
+    expect(late.reason).toContain('late');
+    // Before the hour comes round, the day's occurrence has not arrived.
+    expect(reportDue(config(), MONDAY_6AM - 3_600_000).due).toBe(false);
+    // A different configured hour: 23 is the slot, not 6.
     expect(reportDue(config({ hour: 23 }), MONDAY_6AM + 17 * 3_600_000).due).toBe(true);
+  });
+
+  it('a laptop asleep through the scheduled hour still gets its report', () => {
+    // 06:00 UTC is 01:00 where the operator lives. The machine is shut. It
+    // opens at 08:00 UTC and the day's report should be waiting, labelled.
+    const established = config({ lastSentAt: new Date(MONDAY_6AM - DAY + 60_000).toISOString() });
+    const woke = reportDue(established, MONDAY_6AM + 2 * 3_600_000);
+    expect(woke.due).toBe(true);
+    expect(woke.reason).toContain('2h late');
+    expect(woke.missedOccurrence).toBeUndefined();
+  });
+
+  it('too far behind is refused as that report, and says so instead of going quiet', () => {
+    const staleBy = REPORT_CATCHUP_MAX_MS.daily + 3_600_000;
+    const established = config({ lastSentAt: new Date(MONDAY_6AM - DAY + 60_000).toISOString() });
+    const check = reportDue(established, MONDAY_6AM + staleBy);
+    expect(check.due).toBe(false);
+    expect(check.reason).toContain('did not go out');
+    expect(check.missedOccurrence).toBe(new Date(MONDAY_6AM).toISOString());
+  });
+
+  it('one fire per occurrence — a restart inside the hour cannot send twice', () => {
+    const sent = config({ lastSentAt: new Date(MONDAY_6AM + 60_000).toISOString() });
+    for (const minutes of [2, 30, 59]) {
+      const check = reportDue(sent, MONDAY_6AM + minutes * 60_000);
+      expect(check.due).toBe(false);
+      expect(check.reason).toContain('already been handled');
+    }
+    // ...and the next day's occurrence is a different one, so it fires. A
+    // 20h elapsed-time gap would have been fine here but not after a late
+    // catch-up, which is why the gate counts occurrences instead.
+    expect(reportDue(sent, MONDAY_6AM + DAY).due).toBe(true);
+  });
+
+  it('a late catch-up does not swallow the next occurrence', () => {
+    // Sent 11h late (17:00). Tomorrow 06:00 is only 13h after that — inside
+    // the old 20h minimum gap, which would have skipped the day entirely.
+    const lateFire = config({ lastSentAt: new Date(MONDAY_6AM + 11 * 3_600_000).toISOString() });
+    expect(reportDue(lateFire, MONDAY_6AM + DAY).due).toBe(true);
+  });
+
+  it('lastScheduledOccurrence walks back to the slot, and to Monday for weekly', () => {
+    expect(lastScheduledOccurrence({ frequency: 'daily', hour: 6 }, MONDAY_6AM + 3_600_000)).toBe(MONDAY_6AM);
+    // Before today's slot, the most recent one is yesterday's.
+    expect(lastScheduledOccurrence({ frequency: 'daily', hour: 6 }, MONDAY_6AM - 60_000)).toBe(MONDAY_6AM - DAY);
+    // Weekly from a Thursday still points at Monday's slot.
+    const thursday = lastScheduledOccurrence({ frequency: 'weekly', hour: 6 }, MONDAY_6AM + 3 * DAY);
+    expect(thursday).toBe(MONDAY_6AM);
+    expect(new Date(thursday).getUTCDay()).toBe(1);
   });
 
   it('weekly fires on Mondays only', () => {
     const weekly = config({ frequency: 'weekly' });
     expect(reportDue(weekly, MONDAY_6AM).due).toBe(true);
-    // Same hour, Sunday: not a Monday.
-    expect(reportDue(weekly, SUNDAY - 6 * 3_600_000).due).toBe(false);
-    expect(reportDue(weekly, SUNDAY - 6 * 3_600_000).reason).toContain('Monday');
+    // Same hour on a Sunday is not the slot. For a schedule that has been
+    // running, Monday's report is already handled and the next is Monday.
+    const running = config({ frequency: 'weekly', lastSentAt: new Date(MONDAY_6AM + 60_000).toISOString() });
+    const sunday = reportDue(running, SUNDAY + 5 * DAY);
+    expect(sunday.due).toBe(false);
+    expect(sunday.reason).toContain('Monday');
+    // Ran two Mondays back, then the machine was away for the next one: the
+    // dropped Monday is named rather than passed over in silence.
+    const ranTwoWeeksBack = config({ frequency: 'weekly', lastSentAt: new Date(MONDAY_6AM - 14 * DAY + 60_000).toISOString() });
+    const missed = reportDue(ranTwoWeeksBack, SUNDAY - 6 * 3_600_000);
+    expect(missed.due).toBe(false);
+    expect(missed.reason).toContain('Monday');
+    expect(missed.missedOccurrence).toBeTruthy();
   });
 
-  it('the minimum gap since the last fire holds — 20h daily, 6d weekly', () => {
-    const sentTwoHoursAgo = config({ lastSentAt: new Date(MONDAY_6AM - 2 * 3_600_000).toISOString() });
-    const check = reportDue(sentTwoHoursAgo, MONDAY_6AM);
-    expect(check.due).toBe(false);
-    expect(check.reason).toContain('minimum gap');
-    // 21h ago: past the 20h daily gap.
-    const sentLongAgo = config({ lastSentAt: new Date(MONDAY_6AM - 21 * 3_600_000).toISOString() });
-    expect(reportDue(sentLongAgo, MONDAY_6AM).due).toBe(true);
-    // Weekly: 5 days ago is inside the 6d gap, 7 is past it.
-    const weeklyRecent = config({ frequency: 'weekly', lastSentAt: new Date(MONDAY_6AM - 5 * DAY).toISOString() });
-    expect(reportDue(weeklyRecent, MONDAY_6AM).due).toBe(false);
-    const weeklyOld = config({ frequency: 'weekly', lastSentAt: new Date(MONDAY_6AM - 7 * DAY).toISOString() });
-    expect(reportDue(weeklyOld, MONDAY_6AM).due).toBe(true);
-    expect(REPORT_MIN_GAP_MS.daily).toBe(20 * 3_600_000);
-    expect(REPORT_MIN_GAP_MS.weekly).toBe(6 * DAY);
+  it('a fire BEFORE an occurrence does not close it — an ad-hoc send is not the schedule', () => {
+    // Sent at 04:00, whether by the operator's Send now or as a late catch-up
+    // of yesterday's slot. 06:00 is a different occurrence and still owed.
+    const sentEarlier = config({ lastSentAt: new Date(MONDAY_6AM - 2 * 3_600_000).toISOString() });
+    expect(reportDue(sentEarlier, MONDAY_6AM).due).toBe(true);
+    const weeklyLastWeek = config({ frequency: 'weekly', lastSentAt: new Date(MONDAY_6AM - 5 * DAY).toISOString() });
+    expect(reportDue(weeklyLastWeek, MONDAY_6AM).due).toBe(true);
   });
 
-  it('a failed attempt also spaces retries (lastAttemptAt counts)', () => {
-    const failedAnHourAgo = config({
+  it('a failed attempt does not retry every tick (lastAttemptAt closes the occurrence)', () => {
+    // The property that matters: a failure at 06:00 must not re-fire at 06:01,
+    // 06:02, ... The attempt stamp sits at/after the occurrence, closing it.
+    const failedAtTheHour = config({
       lastSentAt: new Date(MONDAY_6AM - 30 * 3_600_000).toISOString(),
-      lastAttemptAt: new Date(MONDAY_6AM - 3_600_000).toISOString(),
+      lastAttemptAt: new Date(MONDAY_6AM + 30_000).toISOString(),
       lastResult: 'failed',
     });
-    expect(reportDue(failedAnHourAgo, MONDAY_6AM).due).toBe(false);
+    for (const minutes of [1, 5, 45]) {
+      expect(reportDue(failedAtTheHour, MONDAY_6AM + minutes * 60_000).due).toBe(false);
+    }
+    // Tomorrow is a new occurrence — a failure does not disable the report.
+    expect(reportDue(failedAtTheHour, MONDAY_6AM + DAY).due).toBe(true);
+  });
+
+  it('the catch-up bounds stay well inside one period, so a catch-up is never the next slot', () => {
+    expect(REPORT_CATCHUP_MAX_MS.daily).toBeLessThan(DAY);
+    expect(REPORT_CATCHUP_MAX_MS.weekly).toBeLessThan(7 * DAY);
   });
 
   it('force bypasses the clock and the disabled flag — the operator asked', () => {

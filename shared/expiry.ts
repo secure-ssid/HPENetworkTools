@@ -15,10 +15,11 @@
  *   - FLEET REPORT. A daily/weekly summary — fleet totals by device type,
  *     the offline table, alert counts from the notification center, and
  *     subscriptions approaching expiry — rendered to text + HTML here, sent
- *     by the server scheduler. The GATE is pure (reportDue): enabled, the
- *     scheduled UTC hour, Monday for weekly, and a minimum gap between
- *     fires; `force` is the operator's test button and bypasses the clock,
- *     never the honesty.
+ *     by the server scheduler. The GATE is pure (reportDue): enabled, and
+ *     whether the most recent scheduled occurrence (the UTC hour, Monday for
+ *     weekly) has been handled yet and is still close enough behind to send;
+ *     `force` is the operator's test button and bypasses the clock, never the
+ *     honesty.
  *   - EXPIRY LADDER. Subscriptions and SSL certificates walk down the
  *     thresholds 90/60/30/15: an item whose days-left is D matches every
  *     threshold ≥ D, its band is the TIGHTEST match, and it notifies once
@@ -118,9 +119,24 @@ export function isReportFrequency(value: unknown): value is ReportFrequency {
 /** The minimum time between two fires: a tick that lands twice in its
  *  scheduled hour must not send twice, and a failed fire retries at the next
  *  scheduled window, not every tick. */
-export const REPORT_MIN_GAP_MS: Record<ReportFrequency, number> = {
-  daily: 20 * 3_600_000,
-  weekly: 6 * 86_400_000,
+/**
+ * How late a scheduled report may still go out.
+ *
+ * The gate used to demand an exact match on the scheduled UTC hour, which
+ * meant the report only existed for the 60 minutes that hour was on the clock.
+ * Miss those 60 minutes — a closed laptop, a restart, a machine asleep at
+ * 06:00 UTC because that is 01:00 where the operator lives — and the day's
+ * report was gone, with nothing recorded to say it had been due.
+ *
+ * A report is worth sending late; that is most of what it is for. It is not
+ * worth sending arbitrarily late, because the content is built at send time
+ * and describes the fleet now, not the fleet at the hour it was meant to
+ * cover. These bounds are well inside one period, so a catch-up can never be
+ * confused with the next occurrence.
+ */
+export const REPORT_CATCHUP_MAX_MS: Record<ReportFrequency, number> = {
+  daily: 12 * 3_600_000,
+  weekly: 72 * 3_600_000,
 };
 
 export const MAX_REPORT_RECIPIENTS = 25;
@@ -156,35 +172,82 @@ export interface ReportDueCheck {
   /** Why — surfaced verbatim in the UI and the audit log, so "the report
    *  did not go out" always comes with its reason. */
   reason: string;
+  /** Set only when a scheduled occurrence went by unsent and is now too late
+   *  to catch up. The scheduler records this as a 'skipped' fire: a report
+   *  nobody sent and nobody missed is the failure this whole gate exists to
+   *  make visible. */
+  missedOccurrence?: string;
 }
 
 /**
- * The gate, in order: force → enabled → scheduled UTC hour → weekly fires
- * Monday → minimum gap since the last fire. `force` is the test button: it
- * bypasses the clock (hour, Monday, gap) and the enabled flag — an operator
- * pressing Send now is the schedule's one explicit override — but never the
- * SMTP-configured and recipient checks, which are about whether a send is
- * possible at all.
+ * The most recent scheduled instant at or before `nowMs` — today's slot if the
+ * hour has come round, otherwise yesterday's, stepped back to Monday for a
+ * weekly schedule. Pure UTC arithmetic, so no DST discontinuity to fall into.
+ */
+export function lastScheduledOccurrence(config: Pick<ReportConfig, 'frequency' | 'hour'>, nowMs: number): number {
+  const now = new Date(nowMs);
+  let at = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), config.hour);
+  if (at > nowMs) at -= 86_400_000;
+  if (config.frequency === 'weekly') {
+    while (new Date(at).getUTCDay() !== 1) at -= 86_400_000;
+  }
+  return at;
+}
+
+/**
+ * The gate, in order: force → enabled → has this occurrence been handled →
+ * is it too late to still send it. `force` is the test button: it bypasses the
+ * clock and the enabled flag — an operator pressing Send now is the schedule's
+ * one explicit override — but never the SMTP-configured and recipient checks,
+ * which are about whether a send is possible at all.
+ *
+ * The gate keys on the SCHEDULED OCCURRENCE rather than on hours elapsed since
+ * the last fire. That is what stops a repeat: once a fire is recorded at or
+ * after an occurrence, that occurrence is closed, so no number of restarts
+ * inside the hour can send twice. An elapsed-time gap cannot do the same job
+ * without also swallowing the next day's report whenever one goes out late —
+ * a report sent 11 hours behind schedule would have put the following morning
+ * inside a 20-hour exclusion window.
  */
 export function reportDue(config: ReportConfig, nowMs: number, force = false): ReportDueCheck {
   if (force) return { due: true, reason: 'forced — an operator asked for it now' };
   if (!config.enabled) return { due: false, reason: 'the report is disabled' };
-  const now = new Date(nowMs);
-  if (now.getUTCHours() !== config.hour) {
-    return { due: false, reason: `scheduled for ${String(config.hour).padStart(2, '0')}:00 UTC` };
-  }
-  if (config.frequency === 'weekly' && now.getUTCDay() !== 1) {
-    return { due: false, reason: 'weekly reports fire on Mondays' };
-  }
+  const hh = `${String(config.hour).padStart(2, '0')}:00 UTC`;
+  const occurrence = lastScheduledOccurrence(config, nowMs);
+  // Weekly slots name their weekday: 'the 06:00 UTC report' is ambiguous about
+  // which day it belonged to once it is quoted anywhere else.
+  const cadence = config.frequency === 'weekly' ? 'Monday ' : '';
+  const slot = `${cadence}${hh} report for ${new Date(occurrence).toISOString().slice(0, 10)}`;
   const last = latestOf(config.lastSentAt, config.lastAttemptAt);
-  if (last !== null) {
-    const gap = REPORT_MIN_GAP_MS[config.frequency];
-    if (nowMs - last < gap) {
-      const hours = Math.max(1, Math.round(gap / 3_600_000));
-      return { due: false, reason: `last fired ${new Date(last).toISOString()} — the ${hours}h minimum gap has not elapsed` };
-    }
+  if (last !== null && last >= occurrence) {
+    const next = config.frequency === 'weekly' ? 'Monday' : 'tomorrow';
+    return { due: false, reason: `the ${slot} has already been handled — the next is ${next} at ${hh}` };
   }
-  return { due: true, reason: `scheduled ${config.frequency} report at ${String(config.hour).padStart(2, '0')}:00 UTC` };
+  const lateBy = nowMs - occurrence;
+  if (last === null) {
+    // Nothing has ever fired, so there is no evidence this schedule was even
+    // enabled when that slot went by. Catching it up would mean a report
+    // landing in the NOC's inbox as a side effect of pressing Save, and
+    // calling it 'missed' would blame the schedule for a slot older than
+    // itself. A schedule with no history starts at its next real occurrence.
+    if (lateBy >= 3_600_000) {
+      return { due: false, reason: `scheduled for ${hh} — no report has fired yet, so this schedule starts at its next slot` };
+    }
+    return { due: true, reason: `scheduled ${config.frequency} report at ${hh}` };
+  }
+  if (lateBy > REPORT_CATCHUP_MAX_MS[config.frequency]) {
+    const hours = Math.round(lateBy / 3_600_000);
+    return {
+      due: false,
+      reason: `the ${slot} did not go out and is now ${hours}h behind — too late to send as that report`,
+      missedOccurrence: new Date(occurrence).toISOString(),
+    };
+  }
+  if (lateBy >= 3_600_000) {
+    const hours = Math.round(lateBy / 3_600_000);
+    return { due: true, reason: `${slot}, sent ${hours}h late — this process was not running at the scheduled hour` };
+  }
+  return { due: true, reason: `scheduled ${config.frequency} report at ${hh}` };
 }
 
 function latestOf(...isos: (string | undefined)[]): number | null {

@@ -156,6 +156,42 @@ describe('the scheduled gate', () => {
     expect(h.sendImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('a slept-through hour is caught up late; one too far behind is recorded, once', async () => {
+    demo = false;
+    configureSmtp();
+    store.setReport({ enabled: true, frequency: 'daily', hour: 6, recipients: ['noc@example.com'] });
+    const h = harness();
+
+    // Establish the schedule, then close the laptop.
+    now = MONDAY_6AM;
+    await h.service.tickNow();
+    expect(h.sendImpl).toHaveBeenCalledTimes(1);
+
+    // Opened at 09:00 the next day — three hours past the slot. The report is
+    // the reason to open the laptop; it should be waiting, and say it is late.
+    now = MONDAY_6AM + DAY + 3 * 3_600_000;
+    await h.service.tickNow();
+    expect(h.sendImpl).toHaveBeenCalledTimes(2);
+    expect(store.report().lastResult).toBe('sent');
+
+    // Away for two days. The slot is far behind, so it is not sent as that
+    // day's report — but it must not vanish either.
+    now = MONDAY_6AM + 3 * DAY + 20 * 3_600_000;
+    await h.service.tickNow();
+    expect(h.sendImpl).toHaveBeenCalledTimes(2);
+    expect(store.report().lastResult).toBe('skipped');
+    expect(store.report().lastError ?? '').toContain('did not go out');
+
+    // And the record lands once, not once per 60-second tick.
+    const afterFirst = store.report().lastAttemptAt;
+    now += 60_000;
+    await h.service.tickNow();
+    now += 60_000;
+    await h.service.tickNow();
+    expect(store.report().lastAttemptAt).toBe(afterFirst);
+    expect(h.sendImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('a disabled schedule never fires on the clock, but force sends anyway', async () => {
     demo = false;
     configureSmtp();

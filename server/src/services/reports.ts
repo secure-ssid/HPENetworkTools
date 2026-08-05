@@ -6,8 +6,10 @@
  * jobs:
  *
  *   - THE FLEET REPORT. Every tick asks the pure gate (shared/expiry.ts
- *     reportDue): enabled → scheduled UTC hour → Monday for weekly → the
- *     minimum gap since the last fire. A due fire builds the report from the
+ *     reportDue): enabled → has this scheduled occurrence been handled → is
+ *     it still close enough behind to send. An occurrence that went by while
+ *     this process was down is caught up (and says it is late) or, past the
+ *     catch-up bound, recorded as a 'skipped' fire so it is not silent. A due fire builds the report from the
  *     SAME source decisions the screens make (devices and subscriptions
  *     follow their section's demo/live source with the blend swap, alerts
  *     come from the notification center) and emails it through the stored
@@ -271,7 +273,16 @@ export class ReportService {
   private async maybeSendReport(nowMs: number): Promise<void> {
     const config = this.store.report();
     const check = reportDue(config, nowMs);
-    if (!check.due) return;
+    if (!check.due) {
+      // A scheduled hour that went by with this process not running is the one
+      // "not due" worth writing down. Recording it stamps lastAttemptAt, which
+      // closes that occurrence — so this lands exactly once per missed report
+      // rather than once per 60-second tick.
+      if (check.missedOccurrence) {
+        this.store.recordReportFire({ at: new Date(nowMs).toISOString(), result: 'skipped', error: check.reason });
+      }
+      return;
+    }
     await this.fire(config, nowMs, check.reason);
   }
 
