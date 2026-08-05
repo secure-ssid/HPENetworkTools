@@ -50,6 +50,7 @@ import {
   type Sev,
   type SiteId,
   type SitePlaneBadge,
+  type SiteHealthTone,
   type SiteRow,
   type StatDef,
   type SubscriptionRow,
@@ -379,6 +380,19 @@ export function mergeLiveSites(
     const up = knownStateDevices.filter((d) => d.state === 'up').length;
     const healthPct =
       knownStateDevices.length > 0 ? Math.round((up / knownStateDevices.length) * 100) : null;
+    // The percentage is the share of devices that ANSWERED, so a site where
+    // most of the estate went unread can print a figure the estate never
+    // earned. The band is the part that claims something — 'ok' is the green
+    // chip an operator scans past — so it is only asserted when the devices
+    // reconcile could not verify are too few to move it: floorPct is where the
+    // site lands if every unread device turns out to be down. Same band either
+    // way, and the reading is safe whatever they were. Different bands, and
+    // the honest answer is that the inventory cannot support a verdict, which
+    // is what SiteRow's `health: null` means and what SITES authors for
+    // Riverside. One unread device in a healthy campus still reads 'ok'.
+    const floorPct = healthPct === null ? null : Math.round((up / devs.length) * 100);
+    const bandOf = (pct: number): SiteHealthTone => (pct >= 90 ? 'ok' : pct >= 70 ? 'warn' : 'bad');
+    const certified = healthPct !== null && floorPct !== null && bandOf(healthPct) === bandOf(floorPct);
     // This site's alert picture cannot be asserted when a plane that claims it
     // is behind, or when nothing here has a verifiable state: the feed the
     // 'clear' badge would be read off is last-good, not current. The fixture
@@ -396,9 +410,9 @@ export function mergeLiveSites(
       mix: mixString(devs),
       devices: devs.length,
       clients: clientsReported ? formatCount(cls.length) : '—',
-      health: healthPct === null ? null : `${healthPct}%`,
+      health: certified && healthPct !== null ? `${healthPct}%` : null,
       healthPct: healthPct === null ? '—' : `${healthPct}%`,
-      tone: healthPct === null ? 'stale' : healthPct >= 90 ? 'ok' : healthPct >= 70 ? 'warn' : 'bad',
+      tone: certified && healthPct !== null ? bandOf(healthPct) : 'stale',
       alerts: alertsReported ? (open.length > 0 ? `${open.length} open` : siteStale ? 'stale' : 'clear') : '—',
       alertTone: alertsReported ? (open.length > 0 ? 'warning' : siteStale ? 'neutral' : 'success') : 'neutral',
       // An adapter that genuinely stamps a per-site sync wins; otherwise the

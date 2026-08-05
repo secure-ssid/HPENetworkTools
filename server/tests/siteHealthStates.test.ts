@@ -62,10 +62,14 @@ function device(name: string, state: string): ReconciledDeviceRow {
   };
 }
 
-function siteHealth(states: string[]): string | null {
+function siteRow(states: string[]) {
   const devices = states.map((st, i) => device(`uxi-${i}`, st));
   const [site] = mergeLiveSites([], devices, [], []);
-  return site.health;
+  return site;
+}
+
+function siteHealth(states: string[]): string | null {
+  return siteRow(states).health;
 }
 
 describe('mergeLiveSites health over the live state vocabulary', () => {
@@ -81,7 +85,8 @@ describe('mergeLiveSites health over the live state vocabulary', () => {
   });
 
   it('does not let an unread device dilute the devices that were read', () => {
-    expect(siteHealth(['up', 'up', 'unverified'])).toBe('100%');
+    // Half the read devices are down either way, so the unread one cannot
+    // change the verdict and the site is still reported on what it showed.
     expect(siteHealth(['up', 'offline', 'unknown'])).toBe('50%');
   });
 
@@ -98,5 +103,67 @@ describe('mergeLiveSites health over the live state vocabulary', () => {
     const [site] = mergeLiveSites([], devices, [], []);
     expect(site.devices).toBe(3);
     expect(site.health).toBe('50%');
+  });
+});
+
+/**
+ * A site cannot be certified on the strength of the devices that answered.
+ *
+ * The percentage is the share of KNOWN-STATE devices that are up, which is the
+ * documented contract and stays that way. The band is the part that makes a
+ * claim: 'ok' renders as the green 'Healthy' chip an operator scans past. It
+ * was read straight off that percentage, so a site where one switch answered
+ * and twenty went unread certified itself green on a sample of one.
+ *
+ * The band is now asserted only when the unread devices cannot move it —
+ * floorPct is where the site lands if every one of them turns out to be down.
+ * Same band either way and the reading holds whatever they were; different
+ * bands and the inventory cannot support a verdict, which is what SiteRow's
+ * `health: null` means and the shape SITES authors for Riverside (health null,
+ * tone 'stale'). reconcile writes 'unverified' for exactly this — design rule
+ * 1, every claimant stale, "we cannot assert live state".
+ */
+describe('mergeLiveSites certification over a partially read inventory', () => {
+  it('refuses to call a site healthy when one device of twenty-four answered', () => {
+    // Riverside's shape: 1 confirmed up, 23 reconcile could not verify.
+    const site = siteRow(['up', ...Array<string>(23).fill('unverified')]);
+    expect(site.devices).toBe(24);
+    // Was 'ok' — the green chip, off a sample of one.
+    expect(site.tone).toBe('stale');
+    expect(site.health).toBeNull();
+  });
+
+  it('withholds the verdict when the unread devices would change the band', () => {
+    // 100% of what answered, but 67% if the third device is down: ok vs bad.
+    const site = siteRow(['up', 'up', 'unverified']);
+    expect(site.health).toBeNull();
+    expect(site.tone).toBe('stale');
+    // The measured share is still reported — withheld verdict, not withheld data.
+    expect(site.healthPct).toBe('100%');
+  });
+
+  it('still certifies a healthy campus with a single unread device', () => {
+    // 147 up, 1 unknown: 100% measured, 99% floor — both 'ok', so the gap
+    // cannot change the reading and the site is not dragged to 'Unreported'.
+    const site = siteRow([...Array<string>(147).fill('up'), 'unknown']);
+    expect(site.tone).toBe('ok');
+    expect(site.health).toBe('100%');
+  });
+
+  it('never counts an unread device as a failure', () => {
+    // The mirror error. 'stale' is neutral ('Unreported'); 'bad' is a verdict
+    // that the site is broken, which nobody established.
+    expect(siteRow(['up', 'unverified', 'unverified']).tone).toBe('stale');
+    expect(siteRow(['unverified', 'unverified']).tone).toBe('stale');
+  });
+
+  it('leaves a fully read site exactly as it was, verdict and all', () => {
+    const ok = siteRow([...Array<string>(9).fill('up'), 'offline']);
+    expect(ok.healthPct).toBe('90%');
+    expect(ok.health).toBe('90%');
+    expect(ok.tone).toBe('ok');
+    const bad = siteRow(['up', 'offline', 'offline', 'offline']);
+    expect(bad.health).toBe('25%');
+    expect(bad.tone).toBe('bad');
   });
 });
