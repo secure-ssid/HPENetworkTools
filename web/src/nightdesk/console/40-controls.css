@@ -1647,3 +1647,52 @@ html[data-nd-theme='light'] .nt-configure-bulk-bar {
   background: none;
   box-shadow: none;
 }
+
+/* ── Top bar: the search box was painting on top of the right-hand controls ──
+ * components.css centres it with
+ *   @media (min-width:1180px) .nd-shell__topbar.nt-toolbar-glass
+ *   .nt-global-search { position:absolute; left:50%; transform:translate(-50%);
+ *   width: clamp(280px,34vw,620px) }
+ * Absolute positioning takes it OUT of the topbar's flex flow, so the bar
+ * lays itself out as though the search were not there and then paints a
+ * 620px box across whatever is already sitting in the middle. Measured leaf
+ * overlaps on /topology: 10 pairs at 1180px, 8 at 1280px, 4 at 1332px — the
+ * input ran under the notification badge (19x18), "Dark" (27x14), "Assistant"
+ * (53x12) and its own ⌘K hint. This is why sweep3 never caught it: that
+ * harness only scans .nd-shell__content, and the topbar is outside it.
+ *
+ * Put it back in flow and let flex do the centring. position:relative is kept
+ * (not static) because .nt-global-search__panel anchors its dropdown to it.
+ *
+ * The bar stays a single 45px row at every width. components.css also has an
+ * @media (max-width:1320px) rule giving the search `order:10; flex:1 0 100%;
+ * width:100%!important` to bump it onto a row of its own, but that needs
+ * flex-wrap and the bar has none; allowing the wrap measured the bar at 121px
+ * (nearly triple), and with flex-shrink pinned to 0 it would otherwise just
+ * overflow. Six items fit on one line down to 1180px once the search is
+ * allowed to shrink, so let it shrink rather than wrap. */
+.nd-shell__topbar.nt-toolbar-glass .nt-global-search.nt-global-search {
+  position: relative;
+  left: auto;
+  right: auto;
+  transform: none;
+  /* A 26vw basis summed the six items to 957px inside a 938px bar at 1180px
+     and pushed the operator badge onto a second line. A small basis plus
+     grow lets the search absorb the slack instead of creating it; it still
+     reaches its 620px cap from ~1400px up. */
+  flex: 1 1 180px;
+  width: auto;
+  min-width: 180px;
+  max-width: 620px;
+  order: 0;
+  /* 12px top + 34px input + 12px input margin + 12px bottom = 70px. That
+     padding is the popover shell's, and it never showed while the element was
+     out of flow; in flow it set the whole bar to 72px against a 45px design.
+     The dropdown anchors to this box and still clears the input. */
+  padding: 0;
+}
+
+.nd-shell__topbar.nt-toolbar-glass .nt-global-search .nd-input,
+.nd-shell__topbar.nt-toolbar-glass .nt-global-search .nt-global-search__field {
+  margin-bottom: 0;
+}
