@@ -72,7 +72,7 @@ function centralSiteSummaryRows(): Array<Record<string, unknown>> {
     return [];
   }
   return centralSiteRows({
-    devices: pull?.devices ?? [],
+    devices: pull?.devices ?? null,
     clients: pull?.clients ?? null,
     alerts: pull?.alerts ?? null,
     siteIds: (pull?.sites ?? []).map((s) => s.id),
@@ -128,7 +128,7 @@ function liveCentralSections(): ReturnType<typeof centralSections> & { notReport
         );
   const sections = centralSections({
     plane: liveCentralPlaneStatus(),
-    devices: pull?.devices ?? [],
+    devices: pull?.devices ?? null,
     clients: pull?.clients ?? null,
     alerts,
     wlans: pull?.config?.ssids ?? null,

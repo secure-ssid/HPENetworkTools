@@ -338,7 +338,11 @@ describe('GET /api/central — live mode', () => {
       // health, never a fabricated percentage.
       expect(body.sites).toHaveLength(1);
       expect(body.sites[0].healthPct).toBeNull();
-      expect(body.sites[0].devices).toBe(0);
+      // And no fabricated count either. This response already says devices
+      // were not reported, two fields up; a 0 here made the same payload
+      // contradict itself, and central-sites.csv carried the 0 out of the
+      // portal with nothing attached to say where it came from.
+      expect(body.sites[0].devices).toBeNull();
       expect(body.sites[0].openAlerts).toBe(1);
       expect(body.sites[0].clients).toBe(1);
     } finally {

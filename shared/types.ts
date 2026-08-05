@@ -526,13 +526,16 @@ export interface CentralFleetSummary {
  * One site in the plane's estate summary. Counts come off the plane's own
  * rows (never the cross-plane merge — this screen is what CENTRAL sees).
  * `clients` null = the plane reported no client roster this cycle;
+ * `devices` null = it reported no device inventory this cycle, which is not a
+ * site of no devices — the pull can carry sites and miss devices, and every
+ * row then counted the estate it had not been given;
  * `healthPct` is the share of known-state devices that are up, null when
  * nothing at the site has a verifiable state — never a fabricated 0.
  */
 export interface CentralSiteRow {
   siteId: SiteId;
   siteName: string;
-  devices: number;
+  devices: number | null;
   clients: number | null;
   healthPct: number | null;
   /** null = the alert feed was not reported this cycle, so no open count can

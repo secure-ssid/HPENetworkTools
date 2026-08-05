@@ -72,12 +72,16 @@ export function centralFleetSummary(devices: readonly DeviceRow[]): CentralFleet
  * does not zero them.
  */
 export function centralSiteRows(input: {
-  devices: readonly DeviceRow[];
+  devices: readonly DeviceRow[] | null;
   clients: readonly ClientRow[] | null;
   alerts: readonly AlertRow[] | null;
   siteIds?: readonly SiteId[];
 }): CentralSiteRow[] {
-  const { devices, clients, alerts } = input;
+  const { clients, alerts } = input;
+  // null is "the pull carried no device inventory", which the site rows must
+  // not spend as an empty estate: sites and devices are separate reads and one
+  // can arrive without the other.
+  const devices = input.devices ?? [];
   const ids: SiteId[] = [];
   const note = (id: SiteId): void => {
     if (BOOKKEEPING_SITE_IDS.includes(id) || ids.includes(id)) return;
@@ -98,7 +102,7 @@ export function centralSiteRows(input: {
     return {
       siteId,
       siteName,
-      devices: siteDevices.length,
+      devices: input.devices === null ? null : siteDevices.length,
       clients: clients === null ? null : clients.filter((c) => c.siteId === siteId).length,
       healthPct: known.length === 0 ? null : Math.round((up / known.length) * 100),
       openAlerts:
@@ -197,13 +201,13 @@ export interface CentralSections {
 
 export function centralSections(input: {
   plane: CentralPlaneStatus;
-  devices: readonly DeviceRow[];
+  devices: readonly DeviceRow[] | null;
   clients: readonly ClientRow[] | null;
   alerts: readonly AlertRow[] | null;
   wlans: readonly SsidObject[] | null;
   siteIds?: readonly SiteId[];
 }): CentralSections {
-  const fleet = centralFleetSummary(input.devices);
+  const fleet = centralFleetSummary(input.devices ?? []);
   const sites = centralSiteRows({
     devices: input.devices,
     clients: input.clients,
@@ -221,7 +225,7 @@ export function centralSections(input: {
     }),
     fleet,
     sites,
-    firmware: centralFirmwareRows(input.devices),
+    firmware: centralFirmwareRows(input.devices ?? []),
     wlans: [...(input.wlans ?? [])],
     alerts: [...(input.alerts ?? [])],
   };
