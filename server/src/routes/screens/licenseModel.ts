@@ -287,31 +287,77 @@ export function liveLicenseStats(
   devices: ReconciledDeviceRow[],
   assignments: SubscriptionAssignment[] | null,
 ): StatDef[] {
-  const totalQty = subs.reduce((n, s) => n + (s.qtyValue ?? 0), 0);
-  const totalAssigned = subs.reduce((n, s) => n + (s.assignedValue ?? 0), 0);
-  const unassigned = Math.max(0, totalQty - totalAssigned);
+  // Both halves of every seat sum are optional — greenlake omits `qtyValue`
+  // and `assignedValue` rather than guessing — and both were folded to zero.
+  // `licencesNeedingRenewal` learned this for dates twenty lines up: a
+  // subscription the entitlement plane gave no seat count for is not a
+  // subscription with no seats.
+  const qtyKnown = subs.filter(
+    (s): s is LiveSubscription & { qtyValue: number } => s.qtyValue !== undefined,
+  );
+  const assignedKnown = subs.filter(
+    (s): s is LiveSubscription & { assignedValue: number } => s.assignedValue !== undefined,
+  );
+  // Utilisation is a ratio, so it may only be taken over rows that reported
+  // BOTH halves. Dividing an assigned total that counted rows with no seat
+  // count by a seat total that could not count them returned percentages far
+  // over 100 — and anything at or over 80 is painted as a healthy tile.
+  const measurable = subs.filter(
+    (s): s is LiveSubscription & { qtyValue: number; assignedValue: number } =>
+      s.qtyValue !== undefined && s.assignedValue !== undefined,
+  );
+  const partial = measurable.length < subs.length;
+  const totalQty = qtyKnown.reduce((n, s) => n + s.qtyValue, 0);
+  const totalAssigned = assignedKnown.reduce((n, s) => n + s.assignedValue, 0);
+  const ratioQty = measurable.reduce((n, s) => n + s.qtyValue, 0);
+  const ratioAssigned = measurable.reduce((n, s) => n + s.assignedValue, 0);
+  const unassigned = Math.max(0, ratioQty - ratioAssigned);
   const { expired, expiring, undated } = licencesNeedingRenewal(subs);
   const idle = subs.filter((s) => s.assignedValue === 0);
   const soonest = expiring.reduce<LiveSubscription | null>(
     (a, s) => (a === null || (s.daysLeft ?? 0) < (a.daysLeft ?? 0) ? s : a),
     null,
   );
-  const pct = totalQty > 0 ? Math.round((totalAssigned / totalQty) * 100) : null;
+  const pct = ratioQty > 0 ? Math.round((ratioAssigned / ratioQty) * 100) : null;
   return [
-    { label: 'Subscriptions', value: formatCount(subs.length), delta: countOf(totalQty, 'seat'), tone: 'neutral' },
+    {
+      label: 'Subscriptions',
+      value: formatCount(subs.length),
+      delta:
+        subs.length > 0 && qtyKnown.length === 0
+          ? `${countOf(subs.length, 'subscription')} · no seat count reported`
+          : qtyKnown.length < subs.length
+            ? `${countOf(totalQty, 'seat')} over ${qtyKnown.length} of ${subs.length}`
+            : countOf(totalQty, 'seat'),
+      tone: 'neutral',
+    },
     {
       label: 'Assigned',
-      value: formatCount(totalAssigned),
-      delta: pct === null ? 'utilisation unknown' : `${pct}% utilised`,
-      tone: pct !== null && pct >= 80 ? 'positive' : 'neutral',
+      // Not '0'. A plane that never stated an assignment has not stated none.
+      value: assignedKnown.length === 0 && subs.length > 0 ? '—' : formatCount(totalAssigned),
+      delta:
+        assignedKnown.length === 0 && subs.length > 0
+          ? `${countOf(subs.length, 'subscription')} · none states an assignment`
+          : pct === null
+            ? 'utilisation unknown'
+            : partial
+              ? `${pct}% utilised over ${measurable.length} of ${subs.length}`
+              : `${pct}% utilised`,
+      // Green is a claim about the whole pool. With any subscription silent on
+      // either half the figure is a floor, and a floor is not an all-clear.
+      tone: pct !== null && pct >= 80 && !partial ? 'positive' : 'neutral',
     },
     {
       label: 'Unassigned',
-      value: formatCount(unassigned),
+      value: measurable.length === 0 && subs.length > 0 ? '—' : formatCount(unassigned),
       delta:
-        idle.length > 0
-          ? `${countOf(idle.length, 'subscription')} with none assigned`
-          : 'all subscriptions in use',
+        measurable.length === 0 && subs.length > 0
+          ? `${countOf(subs.length, 'subscription')} · none states both a seat count and an assignment`
+          : idle.length > 0
+            ? `${countOf(idle.length, 'subscription')} with none assigned`
+            : partial
+              ? `counted across ${measurable.length} of ${subs.length} subscriptions`
+              : 'all subscriptions in use',
       tone: unassigned > 0 ? 'negative' : 'neutral',
     },
     {
