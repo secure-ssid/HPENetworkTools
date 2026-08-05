@@ -139,8 +139,23 @@ export function validateDeviceDownRule(input: DeviceDownRuleInput): string[] {
 
 /** One device as one evaluation sample sees it. */
 export interface ObservedDevice {
-  /** The tracking identity: serial when the plane reports one, else the name. */
+  /** The tracking identity: serial when the plane reports one, else the name.
+   *  Rendered on the notification and in the audit line, so it stays the bare
+   *  reported value — the grouping key is built separately. */
   serial: string;
+  /**
+   * Which of the two the `serial` field above actually is.
+   *
+   * It decides how widely that identity may be trusted. A serial is unique
+   * across the estate; a device name is not unique at all — four of the seven
+   * adapters publish no serial, and 'ap-lobby' or 'sw-idf-1' is a naming
+   * convention repeated at every site in a real network.
+   *
+   * Optional because only `toObservation` produces observations from plane
+   * rows; anything constructing one by hand is treated as serial-identified,
+   * which is the pre-existing behaviour.
+   */
+  identifiedBy?: 'serial' | 'name';
   name: string;
   type: string; // DeviceType, but compared through the alias table
   /** The plane's own state word, verbatim — deviceIsOffline reads it. */
@@ -148,6 +163,28 @@ export interface ObservedDevice {
   siteId?: string;
   siteName?: string;
   plane?: string;
+}
+
+/**
+ * The key two sightings must share to be treated as one device.
+ *
+ * A reported serial stands on its own: it is unique estate-wide, so the same
+ * serial from two planes is the same box even if they label its site
+ * differently. A name is only ever meaningful inside its site, and often not
+ * even there, so a name-identified sighting is keyed to where it was seen.
+ *
+ * Merging on a bare name is not a cosmetic error. The merge resolves 'up'
+ * over 'down', so folding two same-named devices at different sites together
+ * hands the down one the up one's state, and it can then never alert.
+ */
+export function observationIdentityKey(row: ObservedDevice): string {
+  // A serial-identified row keeps the bare serial as its key. That is what
+  // already sits in every persisted state file, so upgrading re-baselines
+  // only the name-identified devices, which are the ones that were sharing
+  // an entry and had no usable clock anyway.
+  if (row.identifiedBy !== 'name') return row.serial;
+  const scope = (row.siteId ?? row.siteName ?? '').trim().toLowerCase();
+  return `name:${scope}:${row.name.trim().toLowerCase()}`;
 }
 
 /**
@@ -181,7 +218,10 @@ export type DeviceDownRuleRef = Pick<DeviceDownRule, 'id' | 'offlineMinutes' | '
 /** What the engine remembers about one device, persisted in the rule store's
  *  own JSON file so a restart picks the tracking up exactly where it left off. */
 export interface TrackedDeviceState {
-  serial: string; // the tracking identity (map key)
+  /** The device's reported serial, or its name when the plane published none.
+   *  Shown to the operator; the MAP KEY is observationIdentityKey, which is
+   *  not the same string whenever this is a name. */
+  serial: string;
   name: string; // last-observed display name, for the snapshot's readability
   status: 'up' | 'down';
   /** ISO the current outage started. Null while up, AND null for a device
@@ -304,14 +344,20 @@ export function evaluateDeviceDownRules(
 
   for (const device of devices) {
     const offline = deviceIsOffline(device.state);
-    const prev = state.get(device.serial);
+    // Keyed on the identity, not on `serial`. `serial` holds the device NAME
+    // whenever the plane published no serial, and a name is not unique — two
+    // sites' 'ap-lobby' shared one entry and overwrote each other's outage
+    // clock every evaluation, so neither could hold a threshold long enough
+    // to alert.
+    const identity = observationIdentityKey(device);
+    const prev = state.get(identity);
     const rule = selectRuleForDevice(rules, device);
 
     if (!prev) {
       // First sight EVER: baseline. Offline at first sight means the outage
       // start is unknowable — offlineSince stays null and this outage can
       // never alert (see the header).
-      state.set(device.serial, {
+      state.set(identity, {
         serial: device.serial,
         name: device.name,
         status: offline ? 'down' : 'up',
@@ -346,7 +392,7 @@ export function evaluateDeviceDownRules(
         const started = Date.parse(prev.offlineSince ?? '');
         events.push({
           kind: 'recovered',
-          dedupKey: `${device.serial}@${prev.offlineSince}`,
+          dedupKey: `${identity}@${prev.offlineSince}`,
           rule: ruleRef,
           device,
           outageStart: prev.offlineSince ?? nowIso,
@@ -373,7 +419,7 @@ export function evaluateDeviceDownRules(
         if (downMs >= thresholdMs && !alreadyAlerted && !coolingDown) {
           events.push({
             kind: 'fired',
-            dedupKey: `${device.serial}@${prev.offlineSince}`,
+            dedupKey: `${identity}@${prev.offlineSince}`,
             rule,
             device,
             outageStart: prev.offlineSince,
@@ -405,7 +451,7 @@ export function evaluateDeviceDownRules(
   let evicted = 0;
   let trackedBeyondCap = 0;
   if (state.size > MAX_TRACKED_DEVICES) {
-    const observed = new Set(devices.map((device) => device.serial));
+    const observed = new Set(devices.map(observationIdentityKey));
     for (const key of [...state.keys()]) {
       if (state.size <= MAX_TRACKED_DEVICES) break;
       if (observed.has(key)) continue;

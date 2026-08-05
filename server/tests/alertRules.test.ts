@@ -46,9 +46,11 @@ import {
   validateDeviceDownRule,
   type DeviceDownEvent,
   type DeviceDownRule,
+  type DeviceRow,
   type ObservedDevice,
   type TrackedDeviceState,
   MAX_TRACKED_DEVICES,
+  observationIdentityKey,
 } from '@hpe/shared';
 
 let server: Server;
@@ -61,6 +63,8 @@ let alertRulesService: typeof import('../src/services/alertRules').alertRulesSer
 let notifier: typeof import('../src/services/notifier').notifier;
 let notificationStore: typeof import('../src/services/notifierStore').notificationStore;
 let notificationCenter: typeof import('../src/services/notificationCenter').notificationCenter;
+let toObservation: typeof import('../src/services/alertRules').toObservation;
+let dedupeObservations: typeof import('../src/services/alertRules').dedupeObservations;
 
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'hpe-alert-rules-'));
@@ -71,6 +75,8 @@ beforeAll(async () => {
   alertRuleStore = mod.alertRuleStore;
   AlertRulesService = mod.AlertRulesService;
   alertRulesService = mod.alertRulesService;
+  toObservation = mod.toObservation;
+  dedupeObservations = mod.dedupeObservations;
   notifier = (await import('../src/services/notifier')).notifier;
   notificationStore = (await import('../src/services/notifierStore')).notificationStore;
   notificationCenter = (await import('../src/services/notificationCenter')).notificationCenter;
@@ -967,5 +973,111 @@ describe('evaluateDeviceDownRules — the tracked-estate cap', () => {
     const result = evaluateDeviceDownRules([rule()], estate(10), emptyState(), T0);
     expect(result.evicted).toBe(0);
     expect(result.trackedBeyondCap).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which sightings are the same device
+// ---------------------------------------------------------------------------
+
+describe('observationIdentityKey', () => {
+  const seen = (over: Partial<ObservedDevice>): ObservedDevice => ({
+    serial: 'ap-lobby',
+    identifiedBy: 'name',
+    name: 'ap-lobby',
+    type: 'ap',
+    state: 'up',
+    ...over,
+  });
+
+  it('trusts a reported serial estate-wide, however the planes label the site', () => {
+    const a = seen({ serial: 'CN01ABC', identifiedBy: 'serial', siteId: 'campus-01' });
+    const b = seen({ serial: 'CN01ABC', identifiedBy: 'serial', siteId: 'meridian-hq' });
+    expect(observationIdentityKey(a)).toBe(observationIdentityKey(b));
+  });
+
+  it('scopes a name to its site, because names repeat across a real estate', () => {
+    const lobbyA = seen({ siteId: 'campus-01' });
+    const lobbyB = seen({ siteId: 'campus-02' });
+    expect(observationIdentityKey(lobbyA)).not.toBe(observationIdentityKey(lobbyB));
+  });
+
+  it('still merges two planes reporting the same name at the same site', () => {
+    const central = seen({ siteId: 'campus-01', plane: 'CENTRAL' });
+    const opsramp = seen({ siteId: 'campus-01', plane: 'OPSRAMP' });
+    expect(observationIdentityKey(central)).toBe(observationIdentityKey(opsramp));
+  });
+
+  it('treats a hand-built observation as serial-identified, as it always was', () => {
+    // The bare serial, unchanged: every persisted state file is already keyed
+    // this way, so an upgrade re-baselines only the name-identified devices.
+    expect(observationIdentityKey({ serial: 'SER-1', name: 'ap-1', type: 'ap', state: 'up' })).toBe('SER-1');
+  });
+});
+
+describe('toObservation / dedupeObservations', () => {
+  const row = (over: Partial<DeviceRow>): DeviceRow =>
+    ({
+      name: 'ap-lobby',
+      type: 'ap',
+      state: 'up',
+      siteId: 'campus-01',
+      siteName: 'Campus-01',
+      plane: 'CENTRAL',
+      ...over,
+    }) as DeviceRow;
+
+  it('falls back to the name when a plane publishes no serial', () => {
+    const o = toObservation(row({ name: 'sw-idf-1' }));
+    expect(o.serial).toBe('sw-idf-1');
+    expect(o.identifiedBy).toBe('name');
+  });
+
+  it('does not accept a blank or placeholder serial as an identity', () => {
+    for (const serial of ['', '   ', '—']) {
+      const o = toObservation(row({ serial }));
+      expect(o.identifiedBy).toBe('name');
+      expect(o.serial).toBe('ap-lobby');
+    }
+  });
+
+  it('keeps two same-named devices at different sites apart', () => {
+    // The regression: both collapsed to one entry keyed 'ap-lobby', and
+    // up-wins then gave the dark one the healthy one's state, so it could
+    // never alert. Nothing anywhere said a device had stopped being watched.
+    const observed = [
+      toObservation(row({ siteId: 'campus-01', state: 'down' })),
+      toObservation(row({ siteId: 'campus-02', state: 'up' })),
+    ];
+    const deduped = dedupeObservations(observed);
+    expect(deduped).toHaveLength(2);
+    expect(deduped.filter((d) => d.state === 'down')).toHaveLength(1);
+  });
+
+  it('still collapses one device two planes both claim', () => {
+    const observed = [
+      toObservation(row({ serial: 'CN01ABC', plane: 'CENTRAL', state: 'down' })),
+      toObservation(row({ serial: 'CN01ABC', plane: 'MIST', state: 'up' })),
+    ];
+    const deduped = dedupeObservations(observed);
+    expect(deduped).toHaveLength(1);
+    // Up-wins survives for the case it was written for.
+    expect(deduped[0]!.state).toBe('up');
+  });
+
+  it('lets a genuinely dark device alert even when its name twin is fine', () => {
+    const rules = [rule()];
+    // Both up first: an outage that began before the engine ever saw the
+    // device has an unknowable start and deliberately never alerts.
+    const sample = (campusState: string) =>
+      dedupeObservations([
+        toObservation(row({ siteId: 'campus-01', state: campusState })),
+        toObservation(row({ siteId: 'campus-02', state: 'up' })),
+      ]);
+    let state = evaluateDeviceDownRules(rules, sample('up'), emptyState(), T0).state;
+    state = evaluateDeviceDownRules(rules, sample('down'), state, T0 + MIN).state;
+    const fired = evaluateDeviceDownRules(rules, sample('down'), state, T0 + 30 * MIN);
+    expect(fired.events.map((e) => e.kind)).toEqual(['fired']);
+    expect(fired.events[0]!.device.siteId).toBe('campus-01');
   });
 });

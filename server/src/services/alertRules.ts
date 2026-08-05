@@ -48,6 +48,7 @@ import {
   deviceIsOffline,
   MAX_TRACKED_DEVICES,
   evaluateDeviceDownRules,
+  observationIdentityKey,
   type DeviceDownEvent,
   type DeviceDownRule,
   type DeviceDownRuleInput,
@@ -205,10 +206,16 @@ export const alertRuleStore = new AlertRuleStore();
 
 /** One DeviceRow as the engine's observation. The tracking identity is the
  *  serial when the plane reports one, else the name (the authored fixtures
- *  carry no serials). */
-function toObservation(row: DeviceRow): ObservedDevice {
+ *  carry no serials, and neither do the AOS-8, EdgeConnect, GreenLake or
+ *  OpsRamp adapters), with `identifiedBy` recording which it was. */
+export function toObservation(row: DeviceRow): ObservedDevice {
+  // '' and the portal's '—' placeholder are not serials. `??` would have let
+  // both through, and every device sharing a blank would have become one.
+  const serial = row.serial?.trim();
+  const reported = serial !== undefined && serial !== '' && serial !== '—';
   return {
-    serial: row.serial ?? row.name,
+    identifiedBy: reported ? 'serial' : 'name',
+    serial: reported ? serial : row.name,
     name: row.name,
     type: row.type,
     state: row.state,
@@ -224,13 +231,21 @@ function toObservation(row: DeviceRow): ObservedDevice {
  * that knows it says so — one plane still hearing from it means the device
  * is alive, and a down-page on partial evidence is the false alarm that
  * kills trust in the whole feature.
+ *
+ * That reasoning holds only while a group really is one device. Grouping on a
+ * bare name folded every same-named device in the estate into one entry, and
+ * up-wins then handed the down ones the up one's state — so an 'ap-lobby'
+ * that went dark at one site was silently covered by the 'ap-lobby' still
+ * answering at another. observationIdentityKey scopes a name to its site for
+ * exactly this reason.
  */
-function dedupeObservations(rows: readonly ObservedDevice[]): ObservedDevice[] {
+export function dedupeObservations(rows: readonly ObservedDevice[]): ObservedDevice[] {
   const byIdentity = new Map<string, ObservedDevice[]>();
   for (const row of rows) {
-    const group = byIdentity.get(row.serial);
+    const key = observationIdentityKey(row);
+    const group = byIdentity.get(key);
     if (group) group.push(row);
-    else byIdentity.set(row.serial, [row]);
+    else byIdentity.set(key, [row]);
   }
   const out: ObservedDevice[] = [];
   for (const group of byIdentity.values()) {
