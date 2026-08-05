@@ -233,6 +233,31 @@ export function isOfflineState(state: string): boolean {
   return state === 'down' || state === 'offline';
 }
 
+/**
+ * A device state a health percentage may be computed from.
+ *
+ * The live vocabulary is five words: adapters emit 'up', 'down', 'offline' or
+ * 'unknown', and reconcile writes 'unverified' when every claimant is stale.
+ * The split is between a state that was READ and one that was not — 'unknown'
+ * and 'unverified' are absences, and an absence must not move a percentage in
+ * either direction.
+ *
+ * A reported-offline device is the opposite of an absence, and dropping it
+ * raises the health number by removing a device that is down — the one
+ * direction this error must never run. UXI is why the test cannot be the
+ * literal pair 'up'/'down': mapUxiSensor words an offline sensor 'offline',
+ * as the authored fixtures do, while central/mist/aos8 normalize to 'down'.
+ * isOfflineState already held that equivalence for the fleet report; the
+ * health bar was the surface that did not ask it.
+ *
+ * A word outside those five answers false, so it neither counts as up nor
+ * dilutes the denominator. An adapter that starts emitting one belongs in its
+ * own normalizer (central.ts deviceState is the pattern), not here.
+ */
+export function isAssertableState(state: string): boolean {
+  return state === 'up' || isOfflineState(state);
+}
+
 export interface FleetReportDevice {
   name: string;
   type: string;

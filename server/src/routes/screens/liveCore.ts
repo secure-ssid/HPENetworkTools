@@ -54,6 +54,7 @@ import {
   type StatDef,
   type SubscriptionRow,
   formatCount,
+  isAssertableState,
 } from '@hpe/shared';
 
 /**
@@ -374,7 +375,7 @@ export function mergeLiveSites(
         if (!badges.has(name)) badges.set(name, { name, tone: name === d.plane ? d.planeTone : 'neutral' });
       }
     }
-    const knownStateDevices = devs.filter((d) => d.state === 'up' || d.state === 'down');
+    const knownStateDevices = devs.filter((d) => isAssertableState(d.state));
     const up = knownStateDevices.filter((d) => d.state === 'up').length;
     const healthPct =
       knownStateDevices.length > 0 ? Math.round((up / knownStateDevices.length) * 100) : null;

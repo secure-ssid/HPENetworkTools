@@ -40,6 +40,7 @@ import {
   type SsidObject,
   type StatDef,
 } from './types';
+import { isAssertableState } from './expiry';
 
 /**
  * The demo world's frozen clock for the plane status block — the same stamp
@@ -50,10 +51,6 @@ export const CENTRAL_DEMO_LAST_SYNC = '2026-07-26T11:59:00.000Z';
 
 /** Bookkeeping pseudo-sites (types.ts SITE_IDS) never become site rows. */
 const BOOKKEEPING_SITE_IDS: readonly string[] = ['core-services', 'workspace', 'multiple'];
-
-/** 'up'/'down' are the states a claim can be verified against — the same
- *  pair mergeLiveSites uses for the Sites screen's health bar. */
-const KNOWN_STATES: readonly string[] = ['up', 'down'];
 
 /** Fleet rollup: totals by device type and by verbatim state word. */
 export function centralFleetSummary(devices: readonly DeviceRow[]): CentralFleetSummary {
@@ -92,7 +89,7 @@ export function centralSiteRows(input: {
 
   return ids.map((siteId) => {
     const siteDevices = devices.filter((d) => d.siteId === siteId);
-    const known = siteDevices.filter((d) => KNOWN_STATES.includes(d.state));
+    const known = siteDevices.filter((d) => isAssertableState(d.state));
     const up = known.filter((d) => d.state === 'up').length;
     const siteName =
       siteDevices[0]?.siteName ??
