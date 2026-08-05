@@ -1453,9 +1453,17 @@ export const CLIENT_360_PLANES: readonly PlaneKey[] = [
   'edgeconnect',
 ];
 
-/** The most auth decisions one 360 section carries. The full log belongs to
- *  the Auth events screen (the drawer links to it); this is the recent
- *  summary, newest first. */
+/**
+ * The most auth decisions one 360 section carries. The full log belongs to
+ * the Auth events screen (the drawer links to it); this is the recent
+ * summary, newest first.
+ *
+ * A client the operator opens 360 on is often one whose supplicant is
+ * retrying, so the count above this limit is frequently the whole story: five
+ * failures and forty failures call for different responses, and the section
+ * carries the same five rows either way. Whatever this drops is therefore
+ * counted and said, in the same breath as the link to the full log.
+ */
 export const CLIENT_360_AUTH_EVENT_LIMIT = 5;
 
 /**
@@ -1528,9 +1536,9 @@ export function clientPlaneSections(
     const key = planeKeyOf(row.plane);
     if (key && !sessionByPlane.has(key)) sessionByPlane.set(key, row);
   }
-  const authEvents = world.authEvents
-    .filter((event) => matches(event.mac))
-    .slice(0, CLIENT_360_AUTH_EVENT_LIMIT);
+  const authEventsAll = world.authEvents.filter((event) => matches(event.mac));
+  const authEvents = authEventsAll.slice(0, CLIENT_360_AUTH_EVENT_LIMIT);
+  const authEventsOverflow = authEventsAll.length - authEvents.length;
   const endpoint = world.endpoints.find((row) => matches(row.mac));
   const siteSle = siteId ? world.mistSle.find((row) => row.siteId === siteId) : undefined;
 
@@ -1573,6 +1581,15 @@ export function clientPlaneSections(
       }
       if (!authRead) parts.push('the auth log was not read this cycle');
       if (!endpointsRead) parts.push('the endpoint repository was not read this cycle');
+      // Said last, because it qualifies the rows shown above it rather than
+      // explaining an absence. ClearPass already discloses its own 200-row
+      // cap upstream; this is the second cut, and it is the one an operator
+      // is looking straight at.
+      if (authEventsOverflow > 0) {
+        parts.push(
+          `showing the ${authEvents.length} most recent of ${authEventsAll.length} auth events for this MAC — the rest are on the Auth events screen`,
+        );
+      }
       sections.push({
         plane,
         label,

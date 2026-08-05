@@ -241,6 +241,37 @@ describe('clientPlaneSections over synthetic worlds', () => {
     expect(section(sections, 'clearpass').authEvents).toHaveLength(CLIENT_360_AUTH_EVENT_LIMIT);
   });
 
+  it('says how many decisions the cap dropped, not just the ones it kept', () => {
+    // Five failures and forty failures are different incidents, and the
+    // section shows the same five rows for both. The count is the difference.
+    const many = Array.from({ length: 40 }, (_, i) => authEvent(MAC, { time: `09:${i}:00` }));
+    const clearpass = section(clientPlaneSections(MAC, 'campus-01', world({ authEvents: many })), 'clearpass');
+    expect(clearpass.state).toBe('ok');
+    expect(clearpass.reason).toContain('40 auth events');
+    expect(clearpass.reason).toContain(`${CLIENT_360_AUTH_EVENT_LIMIT} most recent`);
+    expect(clearpass.reason).toContain('Auth events screen');
+  });
+
+  it('stays quiet when nothing was dropped — a caveat that is always on says nothing', () => {
+    const exact = Array.from({ length: CLIENT_360_AUTH_EVENT_LIMIT }, (_, i) =>
+      authEvent(MAC, { time: `09:4${i}:00` }),
+    );
+    const clearpass = section(clientPlaneSections(MAC, 'campus-01', world({ authEvents: exact })), 'clearpass');
+    expect(clearpass.authEvents).toHaveLength(CLIENT_360_AUTH_EVENT_LIMIT);
+    expect(clearpass.reason ?? '').not.toContain('most recent');
+  });
+
+  it('keeps the dropped-rows count apart from an unread repository', () => {
+    const many = Array.from({ length: 12 }, (_, i) => authEvent(MAC, { time: `09:${i}:00` }));
+    const clearpass = section(
+      clientPlaneSections(MAC, 'campus-01', world({ authEvents: many, unread: { clearpass: ['endpoints'] } })),
+      'clearpass',
+    );
+    // Two different facts about two different datasets, worded apart.
+    expect(clearpass.reason).toContain('the endpoint repository was not read this cycle');
+    expect(clearpass.reason).toContain('12 auth events');
+  });
+
   it('an unavailable plane is not-fetched with the reason it was given', () => {
     const sections = clientPlaneSections(
       MAC,
