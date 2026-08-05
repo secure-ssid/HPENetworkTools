@@ -12,6 +12,7 @@ import {
   buildDemoTopologyGraph,
   buildTopologyGraph,
   demoTopologyNotes,
+  detailState,
   filterTopologyGraph,
   TOPOLOGY_EXPORT_PARTS,
   type Plane,
@@ -31,12 +32,36 @@ import type { ReconciledDeviceRow } from '../../services/reconcile';
 import { blending, dataSource, envelope, stalePlanes, withBlended } from './context';
 import { settle, livePlaneSiteTopology } from './detailCache';
 import { liveMerged } from './liveCore';
-import { liveMistApStats } from './mistApStats';
+import { liveMistApStats, mistApStatsUnread } from './mistApStats';
 import { devicesForTopology, liveTopologyNotes } from './topologyModel';
 
 function portWords(ports: readonly { name: string }[]): string | null {
   const names = [...new Set(ports.map((port) => port.name.trim()).filter(Boolean))];
   return names.length > 0 ? names.join('+') : null;
+}
+
+/**
+ * Was this site's topology read left unanswered?
+ *
+ * `livePlaneSiteTopology` never throws. A read that broke comes back as a stub
+ * whose sections are all 'failed' and whose note says why; a read the detail
+ * budget refused comes back with no sections at all, which reads as
+ * 'not-fetched'. Both carry NO `links` array -- and that is not the same as
+ * `links: []`, which Central sets when it answers and the site genuinely has
+ * no neighbour facts (readSiteTopology marks that section 'empty').
+ *
+ * `centralTopologyReports` below folds all four states into zero reports,
+ * because zero reports is the only thing an edge list can say. So the reason
+ * has to be carried out here, or the caption downstream will read a broken
+ * read as a quiet estate. This is the same distinction detailState exists for,
+ * and the one the site page already draws (siteDetailScreen.ts).
+ */
+function topologyUnanswered(topology: SiteTopologyLive | null): boolean {
+  // A null is not a failure: the adapter had no site key to ask with, or does
+  // not do topology at all. Neither is Central declining to answer.
+  if (topology === null) return false;
+  const state = detailState(topology.source, 'links');
+  return state === 'failed' || state === 'not-fetched';
 }
 
 function centralTopologyReports(topology: SiteTopologyLive | null, stale: boolean): TopologyEdgeReportInput[] {
@@ -67,10 +92,16 @@ function centralTopologyReports(topology: SiteTopologyLive | null, stale: boolea
   });
 }
 
-async function liveTopologyReports(sites: readonly SiteRow[]): Promise<TopologyEdgeReportInput[]> {
+async function liveTopologyReports(
+  sites: readonly SiteRow[],
+): Promise<{ reports: TopologyEdgeReportInput[]; unread: Plane[] }> {
   const stale = stalePlanes();
   const mistAt = poller.freshness().mist;
   const reports: TopologyEdgeReportInput[] = [];
+  const unread: Plane[] = [];
+  // Every LLDP edge below is built from the AP walk, so an absent walk is an
+  // absent half of the graph rather than a graph with nothing in it.
+  if (mistApStatsUnread()) unread.push('MIST');
   for (const row of liveMistApStats()) {
     const lldp = row.lldpUplink;
     const systemName = (lldp?.systemName ?? '').trim();
@@ -99,7 +130,10 @@ async function liveTopologyReports(sites: readonly SiteRow[]): Promise<TopologyE
   for (const topology of centralTopologies) {
     reports.push(...centralTopologyReports(topology, stale.has('central')));
   }
-  return reports;
+  // One caveat however many sites went unanswered: the caption names the plane
+  // that could not be read, not a tally the reader has no way to check.
+  if (centralTopologies.some(topologyUnanswered)) unread.push('CENTRAL');
+  return { reports, unread };
 }
 
 /**
@@ -156,12 +190,12 @@ export async function topologyBody(): Promise<Record<string, unknown>> {
     return envelope({ graph: buildDemoTopologyGraph(), notes: demoTopologyNotes() });
   }
   const devices: TopologyDeviceInput[] = devicesForTopology(live.devices);
-  const reports = await liveTopologyReports(live.sites);
+  const { reports, unread } = await liveTopologyReports(live.sites);
   const payload: Record<string, unknown> = {
     dataSource: 'live',
     syncedAt: poller.lastSyncFor('devices', 'sites'),
     graph: buildTopologyGraph(devices, reports, estateTopologySites(live.sites, live.devices)),
-    notes: liveTopologyNotes(reports),
+    notes: liveTopologyNotes(reports, unread),
   };
   return dataSource() === 'demo' ? withBlended(payload, ['devices']) : payload;
 }

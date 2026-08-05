@@ -29,6 +29,7 @@ import type {
   TopologyDeviceNode,
   TopologyLink,
 } from '@hpe/shared';
+import { registry } from '../../planes/registry';
 import { poller } from '../../services/poller';
 
 /** The Mist contribution's AP stats rows — empty when the plane is unlinked
@@ -36,6 +37,22 @@ import { poller } from '../../services/poller';
  *  emptied, on a failed walk). */
 export function liveMistApStats(): MistApStatsRow[] {
   return poller.contributionsByPlane().get('mist')?.mistApStats ?? [];
+}
+
+/**
+ * Was Mist's AP walk missing from this cycle rather than genuinely empty?
+ *
+ * `liveMistApStats` ends in `?? []`, which is the laundering the comment above
+ * warns about: a linked Mist whose walk failed and a Mist that manages no APs
+ * both arrive as zero rows. Every LLDP edge on the estate graph is built from
+ * this dataset, so the difference decides whether a graph with no Mist edges
+ * means "no AP reported a neighbour" or "we never saw the APs".
+ *
+ * Unlinked is not unread — a plane nobody connected owes no answer.
+ */
+export function mistApStatsUnread(): boolean {
+  if (!registry.state('mist').linked) return false;
+  return poller.contributionsByPlane().get('mist')?.mistApStats === undefined;
 }
 
 /** Case- and separator-insensitive MAC key (the adapter's own macKey rule). */

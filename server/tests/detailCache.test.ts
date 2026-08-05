@@ -12,6 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DetailFetchState } from '@hpe/shared';
+import { detailState } from '@hpe/shared';
 import {
   DETAIL_FAILURE_TTL_MS,
   DETAIL_TTL_MS,
@@ -19,6 +20,7 @@ import {
   cachedDetail,
   isFailedRead,
   resetDetailCache,
+  topologyStub,
 } from '../src/routes/screens/detailCache';
 
 interface Payload {
@@ -143,5 +145,40 @@ describe('cachedDetail', () => {
     now += DETAIL_FAILURE_TTL_MS + 1;
     await cachedDetail<Payload>('k', DETAIL_TTL_MS, run);
     expect(adapter).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * The stub is the only record that a topology read went wrong.
+ *
+ * Callers that want an edge list read `topology.links` and get nothing back
+ * from a stub, which is indistinguishable from a site with no neighbours --
+ * so the reason has to survive somewhere else, and `source.sections` is it.
+ * The estate graph's "could not be read" caption is derived from exactly this,
+ * so if a stub ever starts claiming a state it did not reach, the caption goes
+ * quiet at the moment it is most needed.
+ */
+describe('topologyStub — a failed read must not read as an empty site', () => {
+  it('marks an attempted read that broke as failed, not empty', () => {
+    const stub = topologyStub('site-1', 'central', 'topology: HTTP 503', true);
+    expect(detailState(stub.source, 'links')).toBe('failed');
+    expect(detailState(stub.source, 'nodes')).toBe('failed');
+    // 'empty' is the word Central uses when it answers and the site has none.
+    expect(detailState(stub.source, 'links')).not.toBe('empty');
+    expect(stub.source.note).toBe('topology: HTTP 503');
+  });
+
+  it('marks a read the budget refused as never attempted', () => {
+    const stub = topologyStub('site-1', 'central', 'detail budget spent', false);
+    expect(detailState(stub.source, 'links')).toBe('not-fetched');
+    expect(stub.source.note).toBe('detail budget spent');
+  });
+
+  it('carries no links array either way, so no caller can mistake one for []', () => {
+    for (const attempted of [true, false]) {
+      const stub = topologyStub('site-1', 'central', 'note', attempted);
+      expect(stub.links).toBeUndefined();
+      expect(stub.nodes).toBeUndefined();
+    }
   });
 });
