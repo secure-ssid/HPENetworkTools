@@ -2071,6 +2071,105 @@ describe('CentralAdapter.clientDetail()', () => {
     expect(d.source.cached).toBe(false);
   });
 
+  it('does not report 0 bps when the usage series carries no usage columns', async () => {
+    // Central names its columns in `keys`. A payload built from a different
+    // metric set leaves both figures null on every sample, which summed to
+    // zero bytes and shipped as an average of 0 bps marked 'ok' — the drawer
+    // rendered "0 bps · avg over 10m" over a client Central never priced.
+    const { adapter } = makeDetailAdapter(
+      detailHandler({
+        '/clients-usage': {
+          body: {
+            interval: '5 mins',
+            keys: ['sessionCount', 'apCount'],
+            samples: [
+              { data: [3, 1], ts: '2026-07-28T15:40:00Z' },
+              { data: [4, 1], ts: '2026-07-28T15:45:00Z' },
+            ],
+          },
+        },
+      }),
+    );
+    const d = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(d.tput).toBeNull();
+    expect(d.source.sections.tput).toBe('empty');
+    // The series itself WAS read, and still ships. Only the figure derived
+    // from the columns Central did not send is withheld.
+    expect(d.source.sections.usageSeries).toBe('ok');
+    expect(d.usageSeries).toHaveLength(2);
+  });
+
+  it('does not report 0 bps when every usage bucket came back blank', async () => {
+    // The same silence, arriving one row at a time rather than in the header.
+    const { adapter } = makeDetailAdapter(
+      detailHandler({
+        '/clients-usage': {
+          body: {
+            interval: '5 mins',
+            keys: ['txUsage', 'rxUsage'],
+            samples: [
+              { data: [null, null], ts: '2026-07-28T15:40:00Z' },
+              { data: ['', undefined], ts: '2026-07-28T15:45:00Z' },
+            ],
+          },
+        },
+      }),
+    );
+    const d = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(d.tput).toBeNull();
+    expect(d.source.sections.tput).toBe('empty');
+  });
+
+  it('still averages over the whole series when only some buckets answered', async () => {
+    // A gap in the middle of a read window is ordinary, and one bucket that
+    // answered is enough to price the window. The divisor stays the whole
+    // series because Clients.tsx recovers the bucket interval from
+    // tputWindowSec / usageSeries.length to size its "busiest 5m" figure —
+    // shrinking the window here would silently inflate that number.
+    const { adapter } = makeDetailAdapter(
+      detailHandler({
+        '/clients-usage': {
+          body: {
+            interval: '5 mins',
+            keys: ['txUsage', 'rxUsage'],
+            samples: [
+              { data: [1000, 500], ts: '2026-07-28T15:40:00Z' },
+              { data: [null, null], ts: '2026-07-28T15:45:00Z' },
+            ],
+          },
+        },
+      }),
+    );
+    const d = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(d.source.sections.tput).toBe('ok');
+    expect(d.tputWindowSec).toBe(600);
+    expect(d.tput).toBeCloseTo((1500 * 8) / 600, 6);
+  });
+
+  it('reports a real zero as zero when Central states it', async () => {
+    // The guard, and the whole point of the distinction: a client that
+    // genuinely moved no bytes in the window is a fact Central can state,
+    // and it must keep arriving as 0 bps marked 'ok', not as silence.
+    const { adapter } = makeDetailAdapter(
+      detailHandler({
+        '/clients-usage': {
+          body: {
+            interval: '5 mins',
+            keys: ['txUsage', 'rxUsage'],
+            samples: [
+              { data: [0, 0], ts: '2026-07-28T15:40:00Z' },
+              { data: [0, 0], ts: '2026-07-28T15:45:00Z' },
+            ],
+          },
+        },
+      }),
+    );
+    const d = (await adapter.clientDetail(DETAIL_MAC))!;
+    expect(d.tput).toBe(0);
+    expect(d.source.sections.tput).toBe('ok');
+    expect(d.tputWindowSec).toBe(600);
+  });
+
   it('asks clients-usage for THIS client only, and sends no end-at', async () => {
     // Unfiltered, /clients-usage is TENANT-WIDE (verified live: ~78 MB per
     // 5-min bucket vs 984 B for one client) — attributing that series to one

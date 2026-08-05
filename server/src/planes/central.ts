@@ -2480,8 +2480,21 @@ export class CentralAdapter implements PlaneAdapter {
       );
       out.usageSeries = samples;
       sections.usageSeries = samples.length > 0 ? 'ok' : 'empty';
-      if (samples.length > 0 && intervalSec !== null) {
-        const bytes = samples.reduce((sum, s) => sum + (s.txBytes ?? 0) + (s.rxBytes ?? 0), 0);
+      // A bucket Central stated no usage for is not a bucket of no usage.
+      // mapUsageSamples nulls BOTH figures when the payload's `keys` array
+      // carries neither txUsage nor rxUsage, so a series built from some
+      // other metric set summed to zero bytes and shipped as 0 bps marked
+      // 'ok' — a flat claim that this client moved nothing. The browser
+      // already reads this same series the careful way: usagePeakAndSplit
+      // skips any sample where neither half is a finite number, and prints
+      // no split line at all when none of them is.
+      const reported = samples.filter((s) => s.txBytes !== null || s.rxBytes !== null);
+      if (reported.length > 0 && intervalSec !== null) {
+        const bytes = reported.reduce((sum, s) => sum + (s.txBytes ?? 0) + (s.rxBytes ?? 0), 0);
+        // The divisor stays the whole series on purpose. Clients.tsx recovers
+        // the bucket interval as tputWindowSec / usageSeries.length to size
+        // its "busiest 5m" figure, so the window has to keep describing the
+        // series it was read over.
         const windowSec = samples.length * intervalSec;
         // Central reports usage TOTALS per bucket, never an instantaneous
         // rate, so this is an AVERAGE — tputWindowSec is what the renderer
