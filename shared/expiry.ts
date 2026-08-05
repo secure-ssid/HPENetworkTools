@@ -320,6 +320,12 @@ export interface FleetReport {
   alerts24h: number;
   alerts168h: number;
   alerts24hBySeverity: Record<string, number>;
+  /** Alerts whose createdAt could not be read, so they fell out of BOTH
+   *  windows. The subscription section already counts what it had to drop
+   *  (FleetReportInput.notes, 'no readable expiry date'); an alert with an
+   *  unreadable timestamp is the same fact about a different column, and a
+   *  count that quietly excludes it is not the count it claims to be. */
+  alertsUndated: number;
   expiring: FleetReportExpiry[];
   expiringOverflow: number;
   notes: string[];
@@ -378,9 +384,13 @@ export function buildFleetReport(input: FleetReportInput): FleetReport {
   let alerts24h = 0;
   let alerts168h = 0;
   const alerts24hBySeverity: Record<string, number> = {};
+  let alertsUndated = 0;
   for (const a of input.alerts) {
     const at = Date.parse(a.createdAt);
-    if (Number.isNaN(at)) continue;
+    if (Number.isNaN(at)) {
+      alertsUndated += 1;
+      continue;
+    }
     const age = nowMs - at;
     if (age < 0 || age > 168 * 3_600_000) continue;
     alerts168h += 1;
@@ -415,6 +425,7 @@ export function buildFleetReport(input: FleetReportInput): FleetReport {
     alerts24h,
     alerts168h,
     alerts24hBySeverity,
+    alertsUndated,
     expiring,
     expiringOverflow: expiringAll.length - expiring.length,
     notes,
@@ -454,6 +465,11 @@ export function renderReportText(report: Omit<FleetReport, 'text' | 'html'>): st
     .join(', ');
   lines.push(`  last 24h: ${report.alerts24h}${sev ? ` (${sev})` : ''}`);
   lines.push(`  last 168h: ${report.alerts168h}`);
+  if (report.alertsUndated > 0) {
+    lines.push(
+      `  ${report.alertsUndated} alert${report.alertsUndated === 1 ? '' : 's'} carried no readable timestamp — absent from both counts, not ignored`,
+    );
+  }
   lines.push('');
   lines.push(
     `SUBSCRIPTIONS EXPIRING WITHIN ${REPORT_EXPIRY_WINDOW_DAYS} DAYS (${report.expiring.length + report.expiringOverflow}${report.expiringOverflow > 0 ? `, first ${report.expiring.length}` : ''})`,
@@ -523,6 +539,11 @@ export function renderReportHtml(report: Omit<FleetReport, 'text' | 'html'>): st
     .map(([k, n]) => `${esc(k)} ${n}`)
     .join(', ');
   parts.push(`<p style="font-size:13px;">Last 24h: <strong>${report.alerts24h}</strong>${sev ? ` (${sev})` : ''} · last 168h: <strong>${report.alerts168h}</strong></p>`);
+  if (report.alertsUndated > 0) {
+    parts.push(
+      `<p style="font-size:13px;">${report.alertsUndated} alert${report.alertsUndated === 1 ? '' : 's'} carried no readable timestamp — absent from both counts, not ignored.</p>`,
+    );
+  }
   parts.push(
     `<h2 ${h2}>SUBSCRIPTIONS EXPIRING WITHIN ${REPORT_EXPIRY_WINDOW_DAYS} DAYS (${report.expiring.length + report.expiringOverflow})</h2>`,
   );

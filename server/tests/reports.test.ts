@@ -26,7 +26,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NotificationCenterStore } from '../src/services/notificationCenter';
 import { NotificationStore } from '../src/services/notifierStore';
 import { ReportService, type SubscriptionFeed } from '../src/services/reports';
-import type { FleetReportAlert, FleetReportDevice, SmtpConfig } from '@hpe/shared';
+import {
+  NOTIFICATION_CENTER_CAPACITY,
+  type FleetReportAlert,
+  type FleetReportDevice,
+  type SmtpConfig,
+} from '@hpe/shared';
 
 const DAY = 86_400_000;
 /** 2026-08-02 12:00 UTC — a Sunday. */
@@ -300,6 +305,35 @@ describe('the preview', () => {
     expect(report.expiring).toHaveLength(1);
     expect(report.expiring[0]!.daysLeft).toBe(40);
     expect(report.notes.some((n) => n.includes('no readable expiry date'))).toBe(true);
+  });
+
+  it('says the alert counts are a floor when the bell is full', async () => {
+    // notificationCenter.add keeps the newest NOTIFICATION_CENTER_CAPACITY
+    // entries and drops the rest on write, so a full store hands the report a
+    // floor. 'last 168h: 200' otherwise reads as the week's alert count when
+    // it is only as much of the week as the bell still holds.
+    const h = harness({
+      alerts: Array.from({ length: NOTIFICATION_CENTER_CAPACITY }, (_, i) => ({
+        createdAt: new Date(SUNDAY - (i + 1) * 60_000).toISOString(),
+        severity: 'info',
+      })),
+    });
+    const report = await h.service.buildPreview();
+    expect(report.alerts24h).toBe(NOTIFICATION_CENTER_CAPACITY);
+    expect(report.notes.some((n) => n.includes('notification center is full'))).toBe(true);
+    expect(report.notes.some((n) => n.includes('a floor'))).toBe(true);
+    expect(report.text).toContain('DATA GAPS');
+  });
+
+  it('does not caveat a bell with room left in it', async () => {
+    const h = harness({
+      alerts: Array.from({ length: NOTIFICATION_CENTER_CAPACITY - 1 }, (_, i) => ({
+        createdAt: new Date(SUNDAY - (i + 1) * 60_000).toISOString(),
+        severity: 'info',
+      })),
+    });
+    const report = await h.service.buildPreview();
+    expect(report.notes.some((n) => n.includes('notification center is full'))).toBe(false);
   });
 });
 

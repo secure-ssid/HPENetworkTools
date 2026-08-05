@@ -376,6 +376,18 @@ export class ReportService {
         `${subs.unparsed} subscription row${subs.unparsed === 1 ? '' : 's'} carried no readable expiry date — absent from the expiry section, not ignored`,
       );
     }
+    // The bell is a capped feed, not an archive: notificationCenter.add keeps
+    // the newest NOTIFICATION_CENTER_CAPACITY entries and drops the rest on
+    // write. A full store therefore hands this report a floor rather than a
+    // total, and 'last 168h: 200' would read as the week's alert count when
+    // it is only as much of the week as the feed still holds. The same rule
+    // writeBroker.readRecentEvents states: a window caller may ignore a
+    // truncated read, a COUNTING caller may not, and this section counts.
+    if (alerts.length >= NOTIFICATION_CENTER_CAPACITY) {
+      notes.push(
+        `the notification center is full at ${NOTIFICATION_CENTER_CAPACITY} entries — the alert counts are a floor, and older alerts inside these windows are no longer held`,
+      );
+    }
     return buildFleetReport({ nowMs, demo: this.demoMode(), devices, alerts, subscriptions: subs.rows, notes });
   }
 

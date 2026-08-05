@@ -282,6 +282,48 @@ describe('buildFleetReport', () => {
     expect(report.text).toContain('+4 more not listed');
   });
 
+  it('counts the alerts it could not place in time instead of dropping them', () => {
+    // An entry whose createdAt will not parse falls out of BOTH windows. The
+    // subscription section already owns up to exactly this ('no readable
+    // expiry date'); a report that quietly shrinks its alert count is telling
+    // the reader the week was quieter than it was.
+    const alerts = [
+      { createdAt: new Date(SUNDAY - 2 * 3_600_000).toISOString(), severity: 'danger' },
+      { createdAt: 'not a date', severity: 'danger' },
+      { createdAt: '', severity: 'warning' },
+    ];
+    const report = buildFleetReport({ nowMs: SUNDAY, demo: false, devices: [], alerts, subscriptions: [] });
+    expect(report.alerts24h).toBe(1);
+    expect(report.alerts168h).toBe(1);
+    expect(report.alertsUndated).toBe(2);
+    expect(report.text).toContain('2 alerts carried no readable timestamp');
+    expect(report.text).toContain('not ignored');
+    expect(report.html).toContain('2 alerts carried no readable timestamp');
+  });
+
+  it('agrees with itself in the singular, and stays silent when every alert parsed', () => {
+    const one = buildFleetReport({
+      nowMs: SUNDAY,
+      demo: false,
+      devices: [],
+      alerts: [{ createdAt: 'nope', severity: 'info' }],
+      subscriptions: [],
+    });
+    expect(one.text).toContain('1 alert carried no readable timestamp');
+
+    // A caveat that is always on is worth nothing on the day it matters.
+    const clean = buildFleetReport({
+      nowMs: SUNDAY,
+      demo: false,
+      devices: [],
+      alerts: [{ createdAt: new Date(SUNDAY - 3_600_000).toISOString(), severity: 'info' }],
+      subscriptions: [],
+    });
+    expect(clean.alertsUndated).toBe(0);
+    expect(clean.text).not.toContain('no readable timestamp');
+    expect(clean.html).not.toContain('no readable timestamp');
+  });
+
   it('data gaps render as notes — never a confident zero', () => {
     const report = buildFleetReport({
       nowMs: SUNDAY,

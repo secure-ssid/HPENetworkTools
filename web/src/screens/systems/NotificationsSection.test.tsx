@@ -569,6 +569,7 @@ const PREVIEW: FleetReport = {
   alerts24h: 1,
   alerts168h: 3,
   alerts24hBySeverity: { danger: 1 },
+  alertsUndated: 0,
   expiring: [],
   expiringOverflow: 0,
   notes: [],
