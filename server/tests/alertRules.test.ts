@@ -48,6 +48,7 @@ import {
   type DeviceDownRule,
   type ObservedDevice,
   type TrackedDeviceState,
+  MAX_TRACKED_DEVICES,
 } from '@hpe/shared';
 
 let server: Server;
@@ -896,5 +897,75 @@ describe('the demo showcase through the REAL dispatch path', () => {
     } finally {
       notificationStore.remove(endpoint.id);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The tracked-estate cap
+// ---------------------------------------------------------------------------
+
+describe('evaluateDeviceDownRules — the tracked-estate cap', () => {
+  const estate = (n: number, downSerial?: string): ObservedDevice[] =>
+    Array.from({ length: n }, (_, i) =>
+      dev({ serial: `SER-${i}`, name: `ap-${i}`, state: `SER-${i}` === downSerial ? 'down' : 'up' }),
+    );
+
+  it('still alerts for an estate one device larger than the cap', () => {
+    // The regression this guards: eviction used to run on every first sight,
+    // so an over-cap estate evicted a device it had just observed. That
+    // device was unknown next pass, so it baselined, which evicted the next
+    // one — the whole estate re-baselined every evaluation and no outage
+    // clock survived. A device offline at first sight can never alert, so the
+    // engine went silent for every estate above the cap and looked healthy.
+    const rules = [rule()];
+    const big = MAX_TRACKED_DEVICES + 1;
+    let state = evaluateDeviceDownRules(rules, estate(big), emptyState(), T0).state;
+    state = evaluateDeviceDownRules(rules, estate(big), state, T0 + MIN).state;
+    state = evaluateDeviceDownRules(rules, estate(big, 'SER-0'), state, T0 + 2 * MIN).state;
+    expect(state.get('SER-0')?.offlineSince).not.toBeNull();
+
+    const fired = evaluateDeviceDownRules(rules, estate(big, 'SER-0'), state, T0 + 30 * MIN);
+    expect(fired.events.map((e) => e.kind)).toEqual(['fired']);
+  });
+
+  it('never evicts a device the sample still contains', () => {
+    const big = MAX_TRACKED_DEVICES + 25;
+    const result = evaluateDeviceDownRules([rule()], estate(big), emptyState(), T0);
+    expect(result.state.size).toBe(big);
+    expect(result.evicted).toBe(0);
+    expect(result.trackedBeyondCap).toBe(25);
+  });
+
+  it('still evicts churned identities, which is what the cap is for', () => {
+    // Fill past the cap with kit that is then replaced wholesale.
+    const gone = evaluateDeviceDownRules([rule()], estate(MAX_TRACKED_DEVICES), emptyState(), T0).state;
+    const replacements = Array.from({ length: 10 }, (_, i) =>
+      dev({ serial: `NEW-${i}`, name: `ap-new-${i}` }),
+    );
+    const after = evaluateDeviceDownRules([rule()], replacements, gone, T0 + MIN);
+    expect(after.evicted).toBe(10);
+    expect(after.state.size).toBe(MAX_TRACKED_DEVICES);
+    expect(after.trackedBeyondCap).toBe(0);
+    // Oldest-discovered first, and every survivor is either live or younger.
+    expect(after.state.has('SER-0')).toBe(false);
+    expect(after.state.has('NEW-0')).toBe(true);
+  });
+
+  it('writes nothing on a quiet minute even above the cap', () => {
+    // Thrashing also meant `changed` was true on every evaluation forever,
+    // so a quiet estate rewrote its whole state file every poll.
+    const rules = [rule()];
+    const big = MAX_TRACKED_DEVICES + 1;
+    const first = evaluateDeviceDownRules(rules, estate(big), emptyState(), T0);
+    expect(first.changed).toBe(true);
+    const quiet = evaluateDeviceDownRules(rules, estate(big), first.state, T0 + MIN);
+    expect(quiet.changed).toBe(false);
+    expect(quiet.events).toEqual([]);
+  });
+
+  it('reports nothing to disclose for an estate that fits', () => {
+    const result = evaluateDeviceDownRules([rule()], estate(10), emptyState(), T0);
+    expect(result.evicted).toBe(0);
+    expect(result.trackedBeyondCap).toBe(0);
   });
 });

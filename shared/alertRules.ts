@@ -223,6 +223,13 @@ export interface RuleEvaluationResult {
   state: Map<string, TrackedDeviceState>;
   /** False when nothing moved, so the caller skips the persist write. */
   changed: boolean;
+  /** Identities dropped by the cap this pass — all of them absent from the
+   *  sample, none of them a device the engine can still see. */
+  evicted: number;
+  /** Live devices held ABOVE MAX_TRACKED_DEVICES because evicting them would
+   *  have blinded the engine to an estate it can see. Non-zero means the cap
+   *  is being deliberately exceeded, which the caller should say out loud. */
+  trackedBeyondCap: number;
 }
 
 /** Does a rule speak for this device? Disabled rules speak for nothing. */
@@ -262,9 +269,17 @@ export function selectRuleForDevice(
   return best;
 }
 
-/** The tracked-estate cap. Churned identities (renamed APs, replaced kit)
- *  would otherwise accumulate forever; eviction is oldest-discovered first,
- *  which is safe: a rediscovered device simply baselines again. */
+/**
+ * The tracked-estate cap. Churned identities (renamed APs, replaced kit)
+ * would otherwise accumulate forever; eviction is oldest-discovered first.
+ *
+ * It bounds identities the sample NO LONGER CONTAINS. A device still being
+ * observed is never evicted, however old its entry, because "a rediscovered
+ * device simply baselines again" is only harmless for a device that actually
+ * went away. For a device still in front of the engine, re-baselining is not
+ * a fresh start but an erasure: it takes the outage clock back to null, and a
+ * device whose outage start is unknowable can never alert.
+ */
 export const MAX_TRACKED_DEVICES = 500;
 
 /**
@@ -305,13 +320,6 @@ export function evaluateDeviceDownRules(
         lastAlertedAt: null,
       });
       changed = true;
-      // The cap is the only eviction; over it, the oldest-discovered
-      // identities go first. A rediscovered one just baselines again.
-      while (state.size > MAX_TRACKED_DEVICES) {
-        const oldest = state.keys().next().value;
-        if (oldest === undefined) break;
-        state.delete(oldest);
-      }
       continue;
     }
 
@@ -385,7 +393,34 @@ export function evaluateDeviceDownRules(
     }
   }
 
-  return { events, state, changed };
+  // Eviction happens ONCE, after the sample is fully known, and only ever
+  // takes identities the sample no longer contains. Doing it inside the
+  // first-sight branch meant an estate one device larger than the cap evicted
+  // a device it had just seen, which made that device unknown on the next
+  // pass, which baselined it, which evicted the next one: every device in the
+  // estate re-baselined every evaluation, no outage clock ever survived, and
+  // the engine went permanently silent for exactly the large estates that
+  // need it most. Silence is what a healthy estate looks like, so nothing
+  // about the failure was visible.
+  let evicted = 0;
+  let trackedBeyondCap = 0;
+  if (state.size > MAX_TRACKED_DEVICES) {
+    const observed = new Set(devices.map((device) => device.serial));
+    for (const key of [...state.keys()]) {
+      if (state.size <= MAX_TRACKED_DEVICES) break;
+      if (observed.has(key)) continue;
+      state.delete(key);
+      evicted += 1;
+      changed = true;
+    }
+    // Whatever is left over the cap is live estate. Holding it is the lesser
+    // harm — the alternative is an engine that cannot see devices that are
+    // right there — but it is a bound being knowingly exceeded, not a bound
+    // that held.
+    trackedBeyondCap = Math.max(0, state.size - MAX_TRACKED_DEVICES);
+  }
+
+  return { events, state, changed, evicted, trackedBeyondCap };
 }
 
 // ---------------------------------------------------------------------------

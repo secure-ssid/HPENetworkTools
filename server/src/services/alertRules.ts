@@ -46,6 +46,7 @@ import {
   DEMO_DEVICE_DOWN_RULE,
   DEVICES,
   deviceIsOffline,
+  MAX_TRACKED_DEVICES,
   evaluateDeviceDownRules,
   type DeviceDownEvent,
   type DeviceDownRule,
@@ -298,6 +299,7 @@ export class AlertRulesService {
    *  (the showcase must not put rows in the operator's data). */
   private demoState: Map<string, TrackedDeviceState> | null = null;
   private lastEvaluatedAt: string | null = null;
+  private warnedBeyondCap = 0;
 
   constructor(opts: AlertRulesServiceOptions = {}) {
     this.store = opts.store ?? alertRuleStore;
@@ -353,6 +355,16 @@ export class AlertRulesService {
       // A real transition is durably queued before alertedFor is committed.
       // If enqueue persistence fails, the state stays retryable on the next
       // evaluation; ticket mutation failures are retained inside the outbox.
+      if (result.trackedBeyondCap > 0 && result.trackedBeyondCap !== this.warnedBeyondCap) {
+        // Said once per new figure, not once per minute: an operator who sees
+        // this every evaluation stops reading it, and this is the line that
+        // explains why memory is above the configured bound.
+        this.warnedBeyondCap = result.trackedBeyondCap;
+        console.warn(
+          `alert rules: tracking ${result.trackedBeyondCap} device(s) above the ${MAX_TRACKED_DEVICES} cap — ` +
+            'the estate is larger than the cap and evicting live devices would stop them alerting',
+        );
+      }
       for (const event of result.events) this.incidentAutomation.handleDeviceDownEvent(event);
       if (result.changed) this.store.saveState(result.state);
       const events: DeviceDownEvent[] = [...result.events];
