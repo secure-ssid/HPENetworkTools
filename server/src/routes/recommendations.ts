@@ -131,7 +131,13 @@ function clientInputs(): ClientRecommendationInput[] {
 
 function endpointMap() {
   const map = new Map<string, (typeof CLEARPASS_ENDPOINTS)[number]>();
-  const rows = useDemoInventory() ? CLEARPASS_ENDPOINTS : poller.getCache().endpoints ?? CLEARPASS_ENDPOINTS;
+  // Live mode must never borrow the demo endpoint repository. ClearPass's
+  // endpoint read is best-effort and absent from a perfectly healthy pull, and
+  // falling back to fixtures handed the rule engine somebody else's estate:
+  // recommendationsForClient marks a finding `evidence: 'partial'` with a note
+  // when no endpoint row is supplied, and a borrowed row silences exactly that
+  // disclosure. An absent repository is no rows, not invented ones.
+  const rows = useDemoInventory() ? CLEARPASS_ENDPOINTS : (poller.getCache().endpoints ?? []);
   for (const row of rows) {
     map.set(row.mac.toLowerCase(), row);
   }
