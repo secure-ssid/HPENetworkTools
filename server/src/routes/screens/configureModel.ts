@@ -276,6 +276,7 @@ const EVENTS_READ = 1000;
 export function pushOutcomesToday(): {
   applied: number;
   accepted: number;
+  unknown: number;
   failed: number;
   total: number;
   unreadable: number;
@@ -294,10 +295,17 @@ export function pushOutcomesToday(): {
   const windowEndedInsideToday = oldestRead === undefined || localDayKey(oldestRead.ts) === today;
   const applied = pushes.filter((event) => event.result.startsWith('applied')).length;
   const accepted = pushes.filter((event) => event.result.startsWith('accepted')).length;
+  // A push whose transport confirmation was lost is the one outcome the broker
+  // refuses to decide: it keeps the change `applying`, warns that a retry needs
+  // reconciliation first, and says in as many words that the PUT may have
+  // reached Central. Counting it by subtraction made it a failure — the count
+  // of things that definitely did not happen, holding one that might have.
+  const unknown = pushes.filter((event) => event.result.startsWith('outcome-unknown')).length;
   return {
     applied,
     accepted,
-    failed: pushes.length - applied - accepted,
+    unknown,
+    failed: pushes.length - applied - accepted - unknown,
     total: pushes.length,
     unreadable: read.unreadable.length,
     truncated: read.truncated && windowEndedInsideToday,
@@ -335,6 +343,7 @@ export function liveConfigureStats(
   const {
     applied: pushedToday,
     accepted: acceptedToday,
+    unknown: unknownToday,
     failed: failedToday,
     unreadable: unreadableLogs,
     truncated: logTruncated,
@@ -342,6 +351,9 @@ export function liveConfigureStats(
   const pushDetail =
     [
       failedToday > 0 ? `▲ ${failedToday} failed` : null,
+      // Named before the merely-unconfirmed: this one is not waiting on a
+      // plane to finish, it is waiting on a person to go and find out.
+      unknownToday > 0 ? `${unknownToday} outcome unknown — may have landed, needs reconciliation` : null,
       acceptedToday > 0 ? `${acceptedToday} accepted, unconfirmed` : null,
       unreadableLogs > 0
         ? `${countOf(unreadableLogs, 'log generation')} unreadable — count may be short`
@@ -376,8 +388,13 @@ export function liveConfigureStats(
       // it outright; an acceptance nobody has confirmed withdraws it too,
       // because the change may not be on the device; and a hole in the record
       // withdraws the confidence to make the claim at all.
+      // A lost outcome holds the tile at negative alongside a real failure. Not
+      // because the push is known to have failed — the whole point is that
+      // nobody knows — but because a change is stranded mid-apply and only an
+      // operator can settle it. Neutral is for uncertainty that resolves
+      // itself; this does not.
       tone:
-        failedToday > 0
+        failedToday > 0 || unknownToday > 0
           ? 'negative'
           : pushedToday > 0 && acceptedToday === 0 && unreadableLogs === 0 && !logTruncated
             ? 'positive'

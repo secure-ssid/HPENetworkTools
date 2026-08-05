@@ -136,6 +136,50 @@ describe('Configure "Pushed today" tile', () => {
     expect(pushOutcomesToday()).toMatchObject({ applied: 1, accepted: 1, failed: 0 });
   });
 
+  /* The broker's most careful outcome. When the transport confirmation is lost
+   * it will not say the push failed: it keeps the change `applying`, returns
+   * outcomeUnknown, and warns that any retry needs reconciliation first,
+   * because the PUT may already be on the device. The tile computed `failed`
+   * by subtracting applied and accepted from the total, so that deliberate
+   * refusal to decide landed in the column of things that definitely did not
+   * happen — and "1 failed" is an instruction to go and push it again. */
+  it('does not report a push whose outcome was lost as a push that failed', () => {
+    stubLog([push('outcome-unknown (reconciliation required)', 'c1'), push('applied', 'c2')]);
+
+    const tile = pushedTile();
+    // One landed; the stranded change is not laundered into the headline.
+    expect(tile.value).toBe('1');
+    expect(tile.delta).toContain('1 outcome unknown');
+    expect(tile.delta).toContain('needs reconciliation');
+    // The word that would send an operator to re-push a change that may
+    // already be applied.
+    expect(tile.delta).not.toContain('failed');
+    expect(pushOutcomesToday()).toMatchObject({ applied: 1, unknown: 1, failed: 0 });
+  });
+
+  it('keeps a stranded push at negative rather than quietly softening it', () => {
+    stubLog([push('outcome-unknown (reconciliation required)', 'c1')]);
+
+    const tile = pushedTile();
+    expect(tile.value).toBe('0');
+    // Nothing is known to have failed, but a change is stuck mid-apply and
+    // only a person can settle it — this must not read as a calm day.
+    expect(tile.tone).toBe('negative');
+    expect(tile.delta).not.toContain('failed');
+  });
+
+  it('still counts the outcomes that genuinely failed', () => {
+    // The guard: separating the unknown one must not empty the failed column.
+    stubLog([
+      push('outcome-unknown (reconciliation required)', 'c1'),
+      push('rejected', 'c2'),
+      push('lease-expired', 'c3'),
+    ]);
+
+    expect(pushOutcomesToday()).toMatchObject({ applied: 0, unknown: 1, failed: 2, total: 3 });
+    expect(pushedTile().delta).toContain('2 failed');
+  });
+
   /* readRecentEvents' own doc: a rotated generation that cannot be opened
    * makes the log come back short, and "nothing was brokered here" and "part
    * of the record is unreachable" are opposite claims. A count taken over a
