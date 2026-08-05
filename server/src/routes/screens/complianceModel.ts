@@ -169,11 +169,19 @@ function configDriftEvidenceLine(summary: ConfigBackupSummary | null | undefined
  *
  * `configBackup` is the backup service's rollup (see configDriftStat); omit
  * it only where the findings engine alone is wanted.
+ *
+ * `partialInventories` is the same argument one step along. A plane whose
+ * inventory walk stopped early DID contribute, so planesMissingDataset cannot
+ * see it and every number here silently narrows to the rows that arrived --
+ * the identical harm the paragraph above describes, from a plane that
+ * answered rather than one that did not. It gates the same tones, because a
+ * scorecard drawn over part of an estate is no greener for the reason.
  */
 export function liveComplianceData(
   devices: ReconciledDeviceRow[],
   missingInventories: readonly string[] = [],
   configBackup?: ConfigBackupSummary | null,
+  partialInventories: readonly string[] = [],
 ): LiveComplianceData {
   if (devices.length === 0) return { stats: [], findings: [], baselines: [], diff: '' };
 
@@ -240,7 +248,13 @@ export function liveComplianceData(
       .map((device) => device.siteId),
   );
   const cleanSites = sites.size - affectedSites.size;
-  const partial = missingInventories.length > 0;
+  const unread = missingInventories.length > 0;
+  const cutShort = partialInventories.length > 0;
+  // Every tone below asks one question -- was this run over the whole estate?
+  // -- and both causes answer it the same way.
+  const partial = unread || cutShort;
+  const clause = (...parts: (string | null)[]): string =>
+    parts.filter((part): part is string => part !== null).join(' · ');
   const totalChecks = devices.length * checks.length;
   const failedChecks = checks.reduce((sum, check) => sum + devices.filter(check.missing).length, 0);
 
@@ -251,9 +265,13 @@ export function liveComplianceData(
         label: 'Devices in scope',
         value: String(devices.length),
         // "from live inventory" implies the whole of it. Say which part.
-        delta: partial
-          ? `from ${missingInventories.length} unread inventor${missingInventories.length === 1 ? 'y' : 'ies'} short of the estate`
-          : 'from live inventory',
+        delta:
+          clause(
+            unread
+              ? `from ${missingInventories.length} unread inventor${missingInventories.length === 1 ? 'y' : 'ies'} short of the estate`
+              : null,
+            cutShort ? `${partialInventories.join(', ')} read stopped early` : null,
+          ) || 'from live inventory',
         tone: 'neutral',
       },
       {
@@ -268,7 +286,11 @@ export function liveComplianceData(
       {
         label: 'Sites complete',
         value: `${cleanSites} / ${sites.size}`,
-        delta: partial ? `${missingInventories.join(', ')} not in this run` : 'for available evidence fields',
+        delta:
+          clause(
+            unread ? `${missingInventories.join(', ')} not in this run` : null,
+            cutShort ? `${partialInventories.join(', ')} only partly in this run` : null,
+          ) || 'for available evidence fields',
         tone: cleanSites === sites.size && !partial ? 'positive' : 'neutral',
       },
       configDriftStat(configBackup),
@@ -279,8 +301,13 @@ export function liveComplianceData(
       'Live evidence coverage',
       // The evidence text is the copy-pasteable artifact. Its scope belongs
       // in it, at the top, not only in a banner that does not survive a copy.
-      ...(partial
+      ...(unread
         ? [`! Scope: ${missingInventories.join(', ')} contributed no inventory — this run does not cover them`]
+        : []),
+      ...(cutShort
+        ? [
+            `! Scope: ${partialInventories.join(', ')} stopped short of a full inventory — this run covers only the devices that were read`,
+          ]
         : []),
       ...baselines.map((baseline) => `${baseline.value === 100 ? '+' : '-'} ${baseline.label}: ${baseline.note}`),
       configDriftEvidenceLine(configBackup),

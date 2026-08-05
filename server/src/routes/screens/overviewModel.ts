@@ -25,6 +25,7 @@ import {
   ageMinutes,
   planesMissingDataset,
   planesMissingDevices,
+  planesPartialDataset,
 } from './liveCore';
 import {
   PLANE_MARK,
@@ -222,6 +223,12 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
   // at first did not.
   const missingDevices = planesMissingDataset('devices');
   const missingAlerts = planesMissingDataset('alerts');
+  // A plane whose walk stopped early DID answer, so it is absent from both
+  // lists above and its rows are in both totals. Left unsaid, 'all verified'
+  // and 'none critical' get said over a read that was cut short -- which is
+  // the one case the sentence below them was written to rule out.
+  const partialDevices = planesPartialDataset('devices');
+  const partialAlerts = planesPartialDataset('alerts');
   const subs = poller.getCache().subscriptions as LiveSubscription[];
   // Same derivation as the Licences screen's tile — the two answer the same
   // question and must never disagree.
@@ -247,7 +254,7 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
   const driftMissing = planesMissingDevices();
   const drift =
     live.devices.length > 0
-      ? liveComplianceData(live.devices, driftMissing).findings.length
+      ? liveComplianceData(live.devices, driftMissing, undefined, partialDevices).findings.length
       : null;
   return [
     {
@@ -264,6 +271,7 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
           // Last, but present in every branch: "3 down" over a fraction that
           // is missing a plane is still an incomplete answer.
           missingDevices.length > 0 ? `${missingDevices.join(', ')} not counted` : null,
+          partialDevices.length > 0 ? `${partialDevices.join(', ')} read stopped early` : null,
         ]
           .filter((part): part is string => part !== null)
           .join(' · ') || 'all verified',
@@ -278,6 +286,7 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
         [
           p1 > 0 ? `▲ ${p1} critical` : null,
           missingAlerts.length > 0 ? `${missingAlerts.join(', ')} did not answer` : null,
+          partialAlerts.length > 0 ? `${partialAlerts.join(', ')} answered in part` : null,
         ]
           .filter((part): part is string => part !== null)
           .join(' · ') || 'none critical',
@@ -291,7 +300,9 @@ export function liveOverviewStats(live: { devices: ReconciledDeviceRow[]; alerts
           ? 'no live inventory evidence'
           : driftMissing.length > 0
             ? `${driftMissing.join(', ')} not scanned`
-            : 'live evidence coverage findings',
+            : partialDevices.length > 0
+              ? `${partialDevices.join(', ')} only partly scanned`
+              : 'live evidence coverage findings',
       tone: drift !== null && drift > 0 ? 'negative' : 'neutral',
     },
     {

@@ -28,7 +28,7 @@ import {
   withBlended,
 } from './context';
 import { liveComplianceData } from './complianceModel';
-import { liveDeviceData, planesMissingDataset } from './liveCore';
+import { liveDeviceData, planesMissingDataset, planesPartialDataset } from './liveCore';
 
 const COMPLIANCE_SEV = new Set(['high', 'med', 'low']);
 /** Fix-class vocabulary on FindingRow.fix (exact, case-insensitive). */
@@ -95,7 +95,13 @@ function complianceBody(): Record<string, unknown> {
     // Compliance was the last screen still pinned to fixtures under a blend.
     if (blendFor('compliance') && datasetReported('devices')) {
       const blendMissing = planesMissingDataset('devices');
-      const blendCompliance = liveComplianceData(liveDeviceData().devices, blendMissing, configBackups.summary());
+      const blendPartial = planesPartialDataset('devices');
+      const blendCompliance = liveComplianceData(
+        liveDeviceData().devices,
+        blendMissing,
+        configBackups.summary(),
+        blendPartial,
+      );
       return withBlended(
         envelopeFor('compliance', {
           ...blendCompliance,
@@ -119,12 +125,21 @@ function complianceBody(): Record<string, unknown> {
   // that did not keeps a coverage run over a fraction of the estate from
   // reading as a verdict on all of it.
   const missingInventories = planesMissingDataset('devices');
+  // A walk that stopped early is not an unread inventory, and the audit
+  // artifact this screen produces has to tell the reader which it was.
+  const partialInventories = planesPartialDataset('devices');
   const compliance = devicesReported
-    ? liveComplianceData(liveDeviceData().devices, missingInventories, configBackups.summary())
+    ? liveComplianceData(
+        liveDeviceData().devices,
+        missingInventories,
+        configBackups.summary(),
+        partialInventories,
+      )
     : { stats: [], findings: [], baselines: [], diff: '' };
   return envelopeFor('compliance', {
     ...compliance,
     missingInventories,
+    partialInventories,
     evidenceMode: devicesReported ? 'coverage' : 'unavailable',
   });
 }

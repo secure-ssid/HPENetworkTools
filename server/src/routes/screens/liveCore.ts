@@ -80,6 +80,9 @@ export function liveDeviceData(): { devices: ReconciledDeviceRow[]; doubleClaime
   return { devices: devices.map(withLiveShellGate), doubleClaimed, unclaimed };
 }
 
+/** The datasets both plane-coverage helpers below answer for. */
+type PartialDatasetKey = 'devices' | 'alerts' | 'clients' | 'authEvents' | 'endpoints';
+
 /**
  * Linked planes whose contribution to one dataset is missing from it.
  *
@@ -97,7 +100,7 @@ export function liveDeviceData(): { devices: ReconciledDeviceRow[]; doubleClaime
  * same class of lie in the other direction — the omitted/zero distinction the
  * rest of this file keeps.
  */
-export function planesMissingDataset(key: 'devices' | 'alerts' | 'clients' | 'authEvents' | 'endpoints'): Plane[] {
+export function planesMissingDataset(key: PartialDatasetKey): Plane[] {
   const contributions = poller.contributionsByPlane();
   const out: Plane[] = [];
   for (const id of PLANE_IDS) {
@@ -107,6 +110,37 @@ export function planesMissingDataset(key: 'devices' | 'alerts' | 'clients' | 'au
     // can produce one — GreenLake and SSE are linked but never emit alerts.
     if (key === 'alerts' && !state.capabilities?.alertFeed) continue;
     if (contributions.get(id)?.[key] === undefined) out.push(PLANE_LABEL[id]);
+  }
+  return out;
+}
+
+/**
+ * Linked planes whose contribution to one dataset arrived INCOMPLETE.
+ *
+ * `planesMissingDataset` above finds an omitted key, because omission is the
+ * only shape an absent dataset has. A walk that stopped early is a different
+ * fact and cannot be found that way: it ships real rows, so the key is
+ * present. central.ts's `partialDatasets` says so in as many words -- "a
+ * truncated dataset still ships its rows, so omission alone cannot express
+ * it" -- and names the dataset in PlanePull.partial instead.
+ *
+ * The inventory tree is the only reader that list ever had, and it words the
+ * case properly ("read stopped early -- at least N, the total is unknown").
+ * Every merged screen over the same pull counted the rows that arrived and
+ * presented them as the estate.
+ *
+ * A plane that is partial AND absent belongs to planesMissingDataset alone:
+ * "did not report" is the stronger, truer sentence, and saying both would
+ * name one plane twice in one caption.
+ */
+export function planesPartialDataset(key: PartialDatasetKey): Plane[] {
+  const contributions = poller.contributionsByPlane();
+  const out: Plane[] = [];
+  for (const id of PLANE_IDS) {
+    if (!registry.state(id).linked) continue;
+    const pull = contributions.get(id);
+    if (pull === undefined || pull[key] === undefined) continue;
+    if (pull.partial?.includes(key)) out.push(PLANE_LABEL[id]);
   }
   return out;
 }
